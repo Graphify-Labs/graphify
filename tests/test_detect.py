@@ -1632,3 +1632,12 @@ def test_detect_surfaces_unreadable_dir_instead_of_silent_skip(tmp_path, capsys)
     assert any(f.endswith("a.py") for f in code)  # rest of tree still enumerated
     assert len(res["walk_errors"]) >= 1
     assert "could not scan" in capsys.readouterr().err
+
+def test_classify_docx():
+    assert classify_file(Path("report.docx")) == FileType.DOCUMENT
+
+def test_classify_xlsx():
+    assert classify_file(Path("data.xlsx")) == FileType.DOCUMENT
+
+def test_classify_pptx():
+    assert classify_file(Path("slides.pptx")) == FileType.DOCUMENT
