@@ -1842,6 +1842,16 @@ def dispatch_command(cmd: str) -> None:
         result = run_benchmark(graph_path, corpus_words=corpus_words)
         print_benchmark(result)
 
+    elif cmd == "enrich-skill":
+        from graphify.__main__ import enrich_skill_install
+
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            enrich_skill_install()
+        else:
+            print("Usage: graphify enrich-skill install", file=sys.stderr)
+            sys.exit(1)
+
     elif cmd == "enrich":
         from graphify.enrich import enrich as _enrich
 
