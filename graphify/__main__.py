@@ -649,6 +649,9 @@ def main() -> None:
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
+        print(
+            "  enrich <path> [--index-dir <dir>] [--watch] [--dry-run] [--master-only]  enrich INDEX.md files from graph.json"
+        )
         print()
         return
 
