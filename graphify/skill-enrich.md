@@ -28,6 +28,7 @@ Claude Code generates folder summaries; graphify CLI handles all structural work
 graphify <corpus_path>
 ```
 Run the full graphify pipeline first, then come back to this skill.
+If `graph.json` exists but contains no nodes (`"nodes": []`), abort and tell the user to run `graphify <corpus_path>` first.
 
 ## Workflow
 
@@ -50,13 +51,14 @@ This writes INDEX.md files containing:
 Read `<corpus_path>/graphify-out/graph.json`. Structure:
 ```json
 {
-  "nodes": [{"id": "...", "label": "...", "source_file": "...", "file_type": "...", "community": 0}],
+  "nodes": [{"id": "...", "label": "...", "source_file": "...", "file_type": "..."}],
   "links": [{"source": "...", "target": "...", "relation": "...", "confidence": "..."}]
 }
 ```
 
 Group nodes by `parent folder` of their `source_file` path, relative to `corpus_path`.
 Exclude any node whose `source_file` contains `graphify-out`.
+You will use these folder groups in Step 3 to generate summaries, which Step 4 then patches into the INDEX.md files.
 
 ### Step 3 — Generate folder summaries
 
@@ -97,15 +99,18 @@ Key Files, Subfolders, Cross-References, Open Items, Type, Owner, Status.
 ### Step 5 — Update master INDEX.md
 
 Read `<index-dir>/INDEX.md` (or `<corpus_path>/INDEX.md` if no --index-dir).
+If `--index-dir` was not passed, `index-dir` defaults to `corpus_path`.
 In the `## Folder map` table, the `What's there` column may be empty or contain
 a plain entity list. Replace each cell with the one-sentence version of the
-folder summary (first sentence only, truncated to ~100 chars if needed).
+folder summary (first sentence only, truncated at the last word boundary before 100 characters if needed).
 
 ### Step 6 — Commit
 
+Skip this step if `--dry-run` was passed.
+
 ```bash
 git add <index-dir or corpus_path>
-git commit -m "enrich: update INDEX.md summaries via Claude Code"
+git commit -m "enrich: update INDEX.md summaries"
 ```
 
 ## Notes
