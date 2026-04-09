@@ -29,3 +29,11 @@ def test_enrich_skill_install_copies_file(tmp_path, monkeypatch):
     assert skill_dst.exists(), f"SKILL.md not found at {skill_dst}"
     content = skill_dst.read_text()
     assert "graphify-enrich" in content
+
+
+def test_enrich_skill_in_help():
+    result = subprocess.run(
+        [sys.executable, "-m", "graphify", "--help"],
+        capture_output=True, text=True
+    )
+    assert "enrich-skill" in result.stdout
