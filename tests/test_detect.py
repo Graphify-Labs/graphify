@@ -1691,3 +1691,14 @@ def test_pptx_to_markdown_returns_empty_on_error(tmp_path):
     result = pptx_to_markdown(fake)
     assert isinstance(result, str)
     assert result == ""
+
+def test_count_words_docx(tmp_path):
+    pytest.importorskip("docx")
+    from docx import Document
+    doc = Document()
+    doc.add_heading("Title", level=1)
+    doc.add_paragraph("This document has several words in it.")
+    docx = tmp_path / "test.docx"
+    doc.save(docx)
+    from graphify.detect import count_words
+    assert count_words(docx) > 5
