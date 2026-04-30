@@ -136,7 +136,8 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
     """Merge nodes that share a normalised label, rewriting edge references.
 
     Prefers IDs without chunk suffixes (_c\\d+) and shorter IDs when tied.
-    Drops self-loops created by the merge. Called in build() automatically.
+    Drops self-loops created by the merge. Must be called explicitly before
+    passing extractions to build() — it is not called automatically.
     """
     _CHUNK_SUFFIX = re.compile(r"_c\d+$")
     canonical: dict[str, dict] = {}  # norm_label -> surviving node

@@ -4,9 +4,19 @@ from pathlib import Path
 ast = json.loads(Path('.graphify_ast.json').read_text())
 sem = json.loads(Path('.graphify_semantic.json').read_text())
 
-seen = {n['id'] for n in ast['nodes']}
-merged_nodes = list(ast['nodes'])
+# Semantic nodes take priority: richer labels, rationale, cross-file context.
+# AST source_location is backfilled onto semantic nodes that lack it so precise
+# line numbers are never lost.
+ast_by_id = {n['id']: n for n in ast['nodes']}
+seen: set = set()
+merged_nodes = []
 for n in sem['nodes']:
+    seen.add(n['id'])
+    ast_node = ast_by_id.get(n['id'])
+    if ast_node and not n.get('source_location') and ast_node.get('source_location'):
+        n = dict(n, source_location=ast_node['source_location'])
+    merged_nodes.append(n)
+for n in ast['nodes']:
     if n['id'] not in seen:
         merged_nodes.append(n)
         seen.add(n['id'])

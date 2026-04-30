@@ -284,13 +284,18 @@ Replace INPUT_PATH with the actual path.
 
 Read `.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
 
-Then regenerate the report and save the labels for the visualizer:
+Then regenerate the report and save the labels for the visualizer.
 
-```powershell
-python "$GRAPHIFY_SCRIPTS\label_communities.py" "INPUT_PATH" 'LABELS_JSON'
+**Write** your labels dict as JSON to `.graphify_labels_input.json` using the Write tool (do NOT inline it in the shell command — long label strings exceed Windows shell limits). For example:
+```json
+{"0": "Attention Mechanism", "1": "Training Pipeline"}
 ```
 
-Replace `LABELS_JSON` with the JSON string of your labels dict (e.g. `'{"0": "Attention Mechanism", "1": "Training Pipeline"}'`).
+Then run:
+```powershell
+python "$GRAPHIFY_SCRIPTS\label_communities.py" "INPUT_PATH"
+```
+
 Replace INPUT_PATH with the actual path.
 
 ### Step 6 - Generate Obsidian vault (opt-in) + HTML
@@ -309,6 +314,16 @@ Generate the HTML graph (always, unless `--no-viz`):
 
 ```powershell
 python "$GRAPHIFY_SCRIPTS\export_html.py"
+```
+
+### Step 6b - Wiki (only if --wiki flag)
+
+**Only run this step if `--wiki` was explicitly given in the original command.**
+
+Run this before Step 9 (cleanup) so `.graphify_labels.json` is still available.
+
+```powershell
+python "$GRAPHIFY_SCRIPTS\export_wiki.py"
 ```
 
 ### Step 7 - Neo4j export (only if --neo4j or --neo4j-push flag)
@@ -488,13 +503,16 @@ python "$GRAPHIFY_SCRIPTS\query_graph.py" "QUESTION" MODE BUDGET
 
 Replace `QUESTION` with the user's actual question, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above.
 
-After writing the answer, save it back into the graph so it improves future queries:
+After writing the answer, save it back into the graph so it improves future queries.
+
+**Write** your full answer text to `.graphify_answer_tmp.txt` using the Write tool (do NOT inline it in the shell command — long answers exceed Windows shell limits), then:
 
 ```powershell
-python -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
+python -m graphify save-result --question "QUESTION" --answer-file .graphify_answer_tmp.txt --type query --nodes NODE1 NODE2
+Remove-Item -ErrorAction SilentlyContinue .graphify_answer_tmp.txt
 ```
 
-Replace `QUESTION` with the question, `ANSWER` with your full answer text, `SOURCE_NODES` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
+Replace `QUESTION` with the question and `NODE1 NODE2` with the node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
 
 ---
 
@@ -514,10 +532,11 @@ python "$GRAPHIFY_SCRIPTS\path_between_nodes.py" "NODE_A" "NODE_B"
 
 Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then explain the path in plain language - what each hop means, why it's significant.
 
-After writing the explanation, save it back:
+After writing the explanation, save it back. **Write** your explanation to `.graphify_answer_tmp.txt` using the Write tool, then:
 
 ```powershell
-python -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
+python -m graphify save-result --question "Path from NODE_A to NODE_B" --answer-file .graphify_answer_tmp.txt --type path_query --nodes NODE_A NODE_B
+Remove-Item -ErrorAction SilentlyContinue .graphify_answer_tmp.txt
 ```
 
 ---
@@ -538,10 +557,11 @@ python "$GRAPHIFY_SCRIPTS\explain_node.py" "NODE_NAME"
 
 Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
 
-After writing the explanation, save it back:
+After writing the explanation, save it back. **Write** your explanation to `.graphify_answer_tmp.txt` using the Write tool, then:
 
 ```powershell
-python -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
+python -m graphify save-result --question "Explain NODE_NAME" --answer-file .graphify_answer_tmp.txt --type explain --nodes NODE_NAME
+Remove-Item -ErrorAction SilentlyContinue .graphify_answer_tmp.txt
 ```
 
 ---

@@ -6,8 +6,15 @@ from graphify.report import generate
 from pathlib import Path
 
 input_path = sys.argv[1] if len(sys.argv) > 1 else '.'
-labels_json = sys.argv[2] if len(sys.argv) > 2 else '{}'
-labels = {int(k): v for k, v in json.loads(labels_json).items()}
+# Read labels from file to avoid shell command-line length limits.
+# Falls back to inline sys.argv[2] for backward compatibility.
+_labels_file = Path('.graphify_labels_input.json')
+if _labels_file.exists():
+    labels = {int(k): v for k, v in json.loads(_labels_file.read_text()).items()}
+elif len(sys.argv) > 2:
+    labels = {int(k): v for k, v in json.loads(sys.argv[2]).items()}
+else:
+    labels = {}
 
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 detection  = json.loads(Path('.graphify_detect.json').read_text())
