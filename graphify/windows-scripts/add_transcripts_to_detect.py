@@ -1,5 +1,8 @@
+import sys
 import json
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 transcripts_file = Path('graphify-out/.graphify_transcripts.json')
 detect_file = Path('.graphify_detect.json')

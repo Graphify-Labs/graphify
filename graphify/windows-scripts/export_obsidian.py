@@ -2,6 +2,8 @@ import sys, json
 from graphify.build import build_from_json
 from graphify.export import to_obsidian, to_canvas
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 obsidian_dir = sys.argv[1] if len(sys.argv) > 1 else 'graphify-out/obsidian'
 

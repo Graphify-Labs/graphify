@@ -1,7 +1,10 @@
+import sys
 import json
 from pathlib import Path
 from datetime import datetime, timezone
 from graphify.detect import save_manifest
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 detect = json.loads(Path('.graphify_detect.json').read_text(encoding='utf-8'))
 save_manifest(detect['files'])

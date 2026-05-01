@@ -991,6 +991,14 @@ def to_graphml(
     node_community = _node_community_map(communities)
     for node_id in H.nodes():
         H.nodes[node_id]["community"] = node_community.get(node_id, -1)
+        # GraphML does not support None values - replace with empty string
+        for key, val in list(H.nodes[node_id].items()):
+            if val is None:
+                H.nodes[node_id][key] = ""
+    for u, v in H.edges():
+        for key, val in list(H.edges[u, v].items()):
+            if val is None:
+                H.edges[u, v][key] = ""
     nx.write_graphml(H, output_path)
 
 

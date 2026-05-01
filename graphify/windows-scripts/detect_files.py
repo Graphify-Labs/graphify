@@ -1,6 +1,8 @@
 import sys, json
 from graphify.detect import detect
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 def _is_assets(path_str: str) -> bool:
     return any(part.lower() == 'assets' for part in Path(path_str).parts)

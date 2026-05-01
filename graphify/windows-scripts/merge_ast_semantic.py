@@ -1,5 +1,8 @@
+import sys
 import json
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 ast = json.loads(Path('.graphify_ast.json').read_text(encoding='utf-8'))
 sem = json.loads(Path('.graphify_semantic.json').read_text(encoding='utf-8'))

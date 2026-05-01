@@ -2,6 +2,8 @@ import sys, json
 from graphify.extract import collect_files, extract
 from pathlib import Path
 import json
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 code_files = []
 detect = json.loads(Path('.graphify_detect.json').read_text(encoding='utf-8'))

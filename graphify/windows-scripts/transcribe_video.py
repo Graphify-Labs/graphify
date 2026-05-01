@@ -1,6 +1,9 @@
+import sys
 import json, os
 from pathlib import Path
 from graphify.transcribe import transcribe_all
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding='utf-8'))
 video_files = detect.get('files', {}).get('video', [])

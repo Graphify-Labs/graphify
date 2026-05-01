@@ -1,9 +1,12 @@
+import sys
 import json
 from graphify.analyze import graph_diff
 from graphify.build import build_from_json
 from networkx.readwrite import json_graph
 import networkx as nx
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 old_data = json.loads(Path('.graphify_old.json').read_text(encoding='utf-8')) if Path('.graphify_old.json').exists() else None
 new_extract = json.loads(Path('.graphify_extract.json').read_text(encoding='utf-8'))

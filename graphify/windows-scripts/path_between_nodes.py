@@ -2,6 +2,8 @@ import sys, json
 import networkx as nx
 from networkx.readwrite import json_graph
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 a_term = sys.argv[1] if len(sys.argv) > 1 else ''
 b_term = sys.argv[2] if len(sys.argv) > 2 else ''

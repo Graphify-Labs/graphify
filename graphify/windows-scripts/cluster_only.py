@@ -1,3 +1,4 @@
+import sys
 import json
 from graphify.cluster import cluster, score_all
 from graphify.analyze import god_nodes, surprising_connections
@@ -6,6 +7,8 @@ from graphify.export import to_json
 from networkx.readwrite import json_graph
 import networkx as nx
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')

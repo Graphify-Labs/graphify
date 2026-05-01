@@ -2,6 +2,8 @@ import sys, json
 from networkx.readwrite import json_graph
 import networkx as nx
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 question = sys.argv[1] if len(sys.argv) > 1 else ''
 mode = sys.argv[2] if len(sys.argv) > 2 else 'bfs'

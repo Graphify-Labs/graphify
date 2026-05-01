@@ -3,6 +3,8 @@ from graphify.build import build_from_json
 from graphify.cluster import cluster
 from graphify.export import push_to_neo4j
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 uri      = sys.argv[1] if len(sys.argv) > 1 else 'bolt://localhost:7687'
 user     = sys.argv[2] if len(sys.argv) > 2 else 'neo4j'

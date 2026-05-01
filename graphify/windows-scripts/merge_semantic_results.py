@@ -1,5 +1,8 @@
+import sys
 import json
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 cached = json.loads(Path('.graphify_cached.json').read_text(encoding='utf-8')) if Path('.graphify_cached.json').exists() else {'nodes': [], 'edges': [], 'hyperedges': []}
 new = json.loads(Path('.graphify_semantic_new.json').read_text(encoding='utf-8')) if Path('.graphify_semantic_new.json').exists() else {'nodes': [], 'edges': [], 'hyperedges': []}

@@ -1,6 +1,9 @@
+import sys
 import json, sys
 from graphify.benchmark import run_benchmark, print_benchmark
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 detection = json.loads(Path('.graphify_detect.json').read_text(encoding='utf-8'))
 total_words = detection.get('total_words', 0)

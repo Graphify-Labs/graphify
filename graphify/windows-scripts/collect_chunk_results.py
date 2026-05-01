@@ -1,5 +1,8 @@
+import sys
 import json, sys
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 out_dir = Path('graphify-out')
 chunk_files = sorted(out_dir.glob('.graphify_chunk_*.json'))

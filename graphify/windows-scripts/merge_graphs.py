@@ -1,5 +1,8 @@
+import sys
 import json
 from pathlib import Path
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 
 # Load existing graph.json (NetworkX node-link format: nodes + links keys)
 existing_data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
