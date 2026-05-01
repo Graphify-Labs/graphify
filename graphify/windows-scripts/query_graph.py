@@ -7,7 +7,7 @@ question = sys.argv[1] if len(sys.argv) > 1 else ''
 mode = sys.argv[2] if len(sys.argv) > 2 else 'bfs'
 token_budget = int(sys.argv[3]) if len(sys.argv) > 3 else 2000
 
-data = json.loads(Path('graphify-out/graph.json').read_text())
+data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
 terms = [t.lower() for t in question.split() if len(t) > 3]

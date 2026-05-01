@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-ast = json.loads(Path('.graphify_ast.json').read_text())
-sem = json.loads(Path('.graphify_semantic.json').read_text())
+ast = json.loads(Path('.graphify_ast.json').read_text(encoding='utf-8'))
+sem = json.loads(Path('.graphify_semantic.json').read_text(encoding='utf-8'))
 
 # Semantic nodes take priority: richer labels, rationale, cross-file context.
 # AST source_location is backfilled onto semantic nodes that lack it so precise
@@ -30,7 +30,7 @@ merged = {
     'input_tokens': sem.get('input_tokens', 0),
     'output_tokens': sem.get('output_tokens', 0),
 }
-Path('.graphify_extract.json').write_text(json.dumps(merged, indent=2))
+Path('.graphify_extract.json').write_text(json.dumps(merged, indent=2), encoding='utf-8')
 total = len(merged_nodes)
 edges = len(merged_edges)
 print(f'Merged: {total} nodes, {edges} edges ({len(ast["nodes"])} AST + {len(sem["nodes"])} semantic)')

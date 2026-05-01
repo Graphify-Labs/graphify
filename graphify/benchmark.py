@@ -85,7 +85,7 @@ def run_benchmark(
         # Rough estimate: each node label is ~3 words, plus source context
         corpus_words = G.number_of_nodes() * 50
 
-    corpus_tokens = corpus_words * 100 // 75  # words → tokens (100 words ≈ 133 tokens)
+    corpus_tokens = corpus_words * 100 // 75  # words -> tokens (100 words ~= 133 tokens)
 
     qs = questions or _SAMPLE_QUESTIONS
     per_question = []
@@ -118,8 +118,8 @@ def print_benchmark(result: dict) -> None:
         return
 
     print(f"\ngraphify token reduction benchmark")
-    print(f"{'─' * 50}")
-    print(f"  Corpus:          {result['corpus_words']:,} words → ~{result['corpus_tokens']:,} tokens (naive)")
+    print(f"{'-' * 50}")
+    print(f"  Corpus:          {result['corpus_words']:,} words -> ~{result['corpus_tokens']:,} tokens (naive)")
     print(f"  Graph:           {result['nodes']:,} nodes, {result['edges']:,} edges")
     print(f"  Avg query cost:  ~{result['avg_query_tokens']:,} tokens")
     print(f"  Reduction:       {result['reduction_ratio']}x fewer tokens per query")

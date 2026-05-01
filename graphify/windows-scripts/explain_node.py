@@ -6,7 +6,7 @@ from pathlib import Path
 term = sys.argv[1] if len(sys.argv) > 1 else ''
 term_lower = term.lower()
 
-data = json.loads(Path('graphify-out/graph.json').read_text())
+data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
 scored = sorted(

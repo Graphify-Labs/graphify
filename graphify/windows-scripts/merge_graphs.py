@@ -2,14 +2,14 @@ import json
 from pathlib import Path
 
 # Load existing graph.json (NetworkX node-link format: nodes + links keys)
-existing_data = json.loads(Path('graphify-out/graph.json').read_text())
+existing_data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 existing_nodes = existing_data.get('nodes', [])
 # NetworkX serialises edges as 'links'; also handle 'edges' for compatibility
 existing_edges = existing_data.get('links', existing_data.get('edges', []))
 existing_hyperedges = existing_data.get('hyperedges', [])
 
 # Load new extraction (changed files only, produced by Step 3)
-new_extraction = json.loads(Path('.graphify_extract.json').read_text())
+new_extraction = json.loads(Path('.graphify_extract.json').read_text(encoding='utf-8'))
 new_nodes = new_extraction.get('nodes', [])
 new_edges = new_extraction.get('edges', [])
 new_hyperedges = new_extraction.get('hyperedges', [])
@@ -42,5 +42,5 @@ merged = {
     'output_tokens': new_extraction.get('output_tokens', 0),
 }
 
-Path('.graphify_extract.json').write_text(json.dumps(merged, indent=2))
+Path('.graphify_extract.json').write_text(json.dumps(merged, indent=2), encoding='utf-8')
 print(f'Merged: {len(merged_nodes)} nodes, {len(merged_edges)} edges ({len(existing_nodes)} existing + {len(new_nodes)} new/changed)')

@@ -8,8 +8,8 @@ from pathlib import Path
 
 input_path = sys.argv[1] if len(sys.argv) > 1 else '.'
 
-extraction = json.loads(Path('.graphify_extract.json').read_text())
-detection  = json.loads(Path('.graphify_detect.json').read_text())
+extraction = json.loads(Path('.graphify_extract.json').read_text(encoding='utf-8'))
+detection  = json.loads(Path('.graphify_detect.json').read_text(encoding='utf-8'))
 
 G = build_from_json(extraction)
 communities = cluster(G)
@@ -21,7 +21,7 @@ labels = {cid: 'Community ' + str(cid) for cid in communities}
 questions = suggest_questions(G, communities, labels)
 
 report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, input_path, suggested_questions=questions)
-Path('graphify-out/GRAPH_REPORT.md').write_text(report)
+Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding='utf-8')
 to_json(G, communities, 'graphify-out/graph.json')
 
 analysis = {
@@ -31,7 +31,7 @@ analysis = {
     'surprises': surprises,
     'questions': questions,
 }
-Path('.graphify_analysis.json').write_text(json.dumps(analysis, indent=2))
+Path('.graphify_analysis.json').write_text(json.dumps(analysis, indent=2), encoding='utf-8')
 if G.number_of_nodes() == 0:
     print('ERROR: Graph is empty - extraction produced no nodes.')
     print('Possible causes: all files were skipped, binary-only corpus, or extraction failed.')

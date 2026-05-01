@@ -5,8 +5,8 @@ from networkx.readwrite import json_graph
 import networkx as nx
 from pathlib import Path
 
-old_data = json.loads(Path('.graphify_old.json').read_text()) if Path('.graphify_old.json').exists() else None
-new_extract = json.loads(Path('.graphify_extract.json').read_text())
+old_data = json.loads(Path('.graphify_old.json').read_text(encoding='utf-8')) if Path('.graphify_old.json').exists() else None
+new_extract = json.loads(Path('.graphify_extract.json').read_text(encoding='utf-8'))
 G_new = build_from_json(new_extract)
 
 if old_data:

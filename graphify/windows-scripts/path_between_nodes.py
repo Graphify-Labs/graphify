@@ -6,7 +6,7 @@ from pathlib import Path
 a_term = sys.argv[1] if len(sys.argv) > 1 else ''
 b_term = sys.argv[2] if len(sys.argv) > 2 else ''
 
-data = json.loads(Path('graphify-out/graph.json').read_text())
+data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
 def find_node(term):

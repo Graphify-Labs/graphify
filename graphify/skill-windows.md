@@ -58,16 +58,16 @@ If no path was given, use `.` (current directory). Do not ask the user for a pat
 
 Follow these steps in order. Do not skip steps.
 
-**Script directory:** Before running any command, determine `$GRAPHIFY_SCRIPTS` as the `windows-scripts\` folder inside this skill's base directory (shown in the `Base directory for this skill:` header when the skill loads). All Python helper scripts below are invoked as `python "$GRAPHIFY_SCRIPTS\<script>.py"`.
+**Script directory:** Before running any command, determine `$GRAPHIFY_SCRIPTS` as the `.\Lib\site-packages graphify\windows-scripts\` folder inside the folder of the active Python environment. All Python helper scripts below are invoked as `python "$GRAPHIFY_SCRIPTS\<script>.py"`.
 
 ### Step 1 - Ensure graphify is installed
 
 ```powershell
 # Detect Python and install graphify if needed
-python -c "import graphify" 2>$null
+python "$GRAPHIFY_SCRIPTS\check_graphify_installed.py" 2>$null
 if ($LASTEXITCODE -ne 0) { pip install graphifyy -q 2>&1 | Select-Object -Last 3 }
 # Write interpreter path for all subsequent steps
-python -c "import sys; open('.graphify_python', 'w').write(sys.executable)"
+python "$GRAPHIFY_SCRIPTS\write_python_path.py"
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
@@ -75,27 +75,14 @@ If the import succeeds, print nothing and move straight to Step 2.
 ### Step 2 - Detect files
 
 ```powershell
-python "$GRAPHIFY_SCRIPTS\detect_files.py" INPUT_PATH > .graphify_detect.json
+python "$GRAPHIFY_SCRIPTS\detect_files.py" INPUT_PATH
+python "$GRAPHIFY_SCRIPTS\print_detect_summary.py"
 ```
 
-Replace INPUT_PATH with the actual path the user provided. Do NOT cat or print the JSON - read it silently and present a clean summary instead:
-
-```
-Corpus: X files · ~Y words
-  code:     N files (.py .ts .go ...)
-  docs:     N files (.md .txt ...)
-  papers:   N files (.pdf ...)
-  images:   N files
-  video:    N files (.mp4 .mp3 ...)
-```
-
-Omit any category with 0 files from the summary.
-
-Then act on it:
-- If `total_files` is 0: stop with "No supported files found in [path]."
-- If `skipped_sensitive` is non-empty: mention file count skipped, not the file names.
-- If `total_words` > 2,000,000 OR `total_files` > 200: show the warning and the top 5 subdirectories by file count, then ask which subfolder to run on. Wait for the user's answer before proceeding.
-- Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
+Replace INPUT_PATH with the actual path the user provided. Relay the script's output to the user, then:
+- If exit code is 1: stop — no supported files found.
+- If exit code is 2: the output already shows the top 5 subdirectories; ask the user which subfolder to run on and wait for their answer before proceeding.
+- If the output contains `HAS_VIDEO=true`: proceed to Step 2.5; otherwise skip to Step 3.
 
 ### Step 2.5 - Transcribe video / audio files (only if video files detected)
 
@@ -123,10 +110,10 @@ Set it as `$env:GRAPHIFY_WHISPER_PROMPT` before running the transcription comman
 ```
 
 After transcription:
-- Read the transcript paths from `graphify-out\.graphify_transcripts.json`
-- Add them to the docs list before dispatching semantic subagents in Step 3B
-- Print how many transcripts were created: `Transcribed N video file(s) -> treating as docs`
-- If transcription fails for a file, print a warning and continue with the rest
+```powershell
+python "$GRAPHIFY_SCRIPTS\add_transcripts_to_detect.py"
+```
+This merges transcript paths into `.graphify_detect.json` so they are treated as docs in Step 3B. Relay its output to the user.
 
 **Whisper model:** Default is `base`. If the user passed `--whisper-model <name>`, set `$env:GRAPHIFY_WHISPER_MODEL = "<name>"` before running the command above.
 
@@ -155,10 +142,10 @@ python "$GRAPHIFY_SCRIPTS\ast_extraction.py"
 **MANDATORY: You MUST use the Agent tool here. Reading files yourself one-by-one is forbidden - it is 5-10x slower. If you do not use the Agent tool you are doing this wrong.**
 
 Before dispatching subagents, print a timing estimate:
-- Load `total_words` and file counts from `.graphify_detect.json`
-- Estimate agents needed: `ceil(uncached_non_code_files / 22)` (chunk size is 20-25)
-- Estimate time: ~45s per agent batch (they run in parallel, so total ≈ 45s × ceil(agents/parallel_limit))
-- Print: "Semantic extraction: ~N files → X agents, estimated ~Ys"
+```powershell
+python "$GRAPHIFY_SCRIPTS\print_timing_estimate.py"
+```
+Relay its output to the user.
 
 **Step B0 - Check extraction cache first**
 
@@ -244,13 +231,11 @@ Output exactly this JSON (no other text):
 
 **Step B3 - Collect, cache, and merge**
 
-Wait for all subagents. For each result:
-- Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
-- If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
-- If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
-
-If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
+After all subagents have completed:
+```powershell
+python "$GRAPHIFY_SCRIPTS\collect_chunk_results.py"
+```
+Relay its output to the user. If exit code is 1, stop and tell the user to re-run ensuring `subagent_type="general-purpose"` is used.
 
 Save new results to cache:
 ```powershell
@@ -374,15 +359,13 @@ To configure in Claude Desktop, add to `claude_desktop_config.json`:
 }
 ```
 
-### Step 8 - Token reduction benchmark (only if total_words > 5000)
-
-If `total_words` from `.graphify_detect.json` is greater than 5,000, run:
+### Step 8 - Token reduction benchmark
 
 ```powershell
 python "$GRAPHIFY_SCRIPTS\run_benchmark.py"
 ```
 
-Print the output directly in chat. If `total_words <= 5000`, skip silently - the graph value is structural clarity, not token compression, for small corpora.
+Print the output directly in chat. The script skips silently for small corpora (≤ 5,000 words).
 
 ---
 
