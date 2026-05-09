@@ -454,8 +454,13 @@ def load_manifest(manifest_path: str = _MANIFEST_PATH) -> dict[str, float]:
 
 
 def save_manifest(files: dict[str, list[str]], manifest_path: str = _MANIFEST_PATH) -> None:
-    """Save current file mtimes so the next --update run can diff against them."""
-    manifest: dict[str, float] = {}
+    """Save current file mtimes so the next --update run can diff against them.
+
+    Merges into the existing manifest so that --update runs (which only pass changed
+    files) don't lose the mtime entries of unchanged files.  Without this, the next
+    --update treats every unchanged file as new and re-runs the full pipeline.
+    """
+    manifest: dict[str, float] = load_manifest(manifest_path)
     for file_list in files.values():
         for f in file_list:
             try:
