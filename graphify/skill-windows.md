@@ -60,17 +60,33 @@ Follow these steps in order. Do not skip steps.
 
 **Script directory:** Before running any command, determine `$GRAPHIFY_SCRIPTS` as the `.\Lib\site-packages graphify\windows-scripts\` folder inside the folder of the active Python environment. All Python helper scripts below are invoked as `python "$GRAPHIFY_SCRIPTS\<script>.py"`.
 
-### Step 1 - Ensure graphify is installed
+### Step 1 - Verify Python environment and graphify installation
+
+Check whether Python is available:
 
 ```powershell
-# Detect Python and install graphify if needed
-python "$GRAPHIFY_SCRIPTS\check_graphify_installed.py" 2>$null
-if ($LASTEXITCODE -ne 0) { pip install graphifyy -q 2>&1 | Select-Object -Last 3 }
-# Write interpreter path for all subsequent steps
-python "$GRAPHIFY_SCRIPTS\write_python_path.py"
+$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
 ```
 
-If the import succeeds, print nothing and move straight to Step 2.
+If `$pythonCmd` is null, stop immediately and tell the user:
+> "Python environment not found. Please activate your Python environment and retry."
+Do **not** attempt to install Python or any package. Return control to the user.
+
+If Python is found, check whether the graphify scripts directory exists:
+
+```powershell
+Test-Path $GRAPHIFY_SCRIPTS
+```
+
+If this returns `False`, stop immediately and tell the user:
+> "graphify is not installed in this Python environment. Please run `pip install graphifyy` to install it, then retry."
+Do **not** run `pip install` or any install command. Return control to the user.
+
+If both checks pass, write the interpreter path and move straight to Step 2:
+
+```powershell
+python "$GRAPHIFY_SCRIPTS\write_python_path.py"
+```
 
 ### Step 2 - Detect files
 
