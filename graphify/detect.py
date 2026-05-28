@@ -1348,7 +1348,7 @@ def detect_incremental(
         if Path(key).is_absolute():
             reanchored[key] = val
         else:
-            reanchored[os.path.normpath(os.path.join(root_str, key))] = val
+            reanchored[str(Path(root_str) / key)] = val
     manifest = reanchored
 
     if not manifest:
