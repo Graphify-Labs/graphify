@@ -87,7 +87,6 @@ def _file_stem(path: Path) -> str:
     return path.stem
 
 
-<<<<<<< HEAD
 def _file_node_id(rel_path: Path) -> str:
     """File-level node ID matching the skill.md spec: ``{parent_dir}_{stem}`` —
     one parent directory level, no extension. ``rel_path`` MUST be relative to
@@ -96,18 +95,6 @@ def _file_node_id(rel_path: Path) -> str:
     ID semantic subagents generate, or AST and semantic extraction split a file
     into two disconnected ghost nodes (#1033)."""
     return _make_id(_file_stem(rel_path))
-=======
-def _file_node_id(path: Path) -> str:
-    """Canonical file-level node ID matching the semantic subagent format (parent_dir_stem).
-
-    The semantic subagent (skill.md) uses ``{parent_dir}_{filename_without_ext}``, while
-    the AST extractor was using the full relative path including extension. This mismatch
-    split one file into two disconnected nodes (#1033). Using ``_file_stem`` as the base
-    produces ``script_pipeline_step`` instead of ``script_pipeline_step_py``, matching the
-    subagent format so Step-3C deduplication merges AST and semantic nodes for the same file.
-    """
-    return _make_id(_file_stem(path))
->>>>>>> 588f3d5 (fix: normalize file-level node IDs to stem-based format)
 
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, str]] = {}
@@ -4332,7 +4319,6 @@ def extract_dart(path: Path) -> dict:
     src_clean = comment_string_pattern.sub(_comment_replace, src)
 
     stem = _file_stem(path)
-<<<<<<< HEAD
     file_nid = _make_id(str(path))
 
     # Check if this is a part-of file and redirect to parent
@@ -4354,11 +4340,6 @@ def extract_dart(path: Path) -> dict:
     if not is_part:
         nodes.append({"id": file_nid, "label": path.name, "file_type": "code",
                       "source_file": str(path), "source_location": None})
-=======
-    file_nid = _file_node_id(path)
-    nodes = [{"id": file_nid, "label": path.name, "file_type": "code",
-              "source_file": str(path), "source_location": None}]
->>>>>>> 588f3d5 (fix: normalize file-level node IDs to stem-based format)
     edges = []
     defined: set[str] = set()
 
@@ -8870,6 +8851,56 @@ def extract_elixir(path: Path) -> dict:
     return {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls, "input_tokens": 0, "output_tokens": 0}
 
 
+def _resolve_markdown_link(raw_target: str, source_path: Path) -> Path | None:
+    """Resolve a markdown link target to an existing file path in the corpus.
+
+    Handles relative paths, anchors, and extensionless references.
+    Returns None for external URLs or unresolvable paths.
+    """
+    target = raw_target.strip()
+    if not target or target.startswith(("http://", "https://", "mailto:", "#", "ftp://")):
+        return None
+    anchor_idx = target.find("#")
+    if anchor_idx > 0:
+        target = target[:anchor_idx]
+    if not target:
+        return None
+    resolved = (source_path.parent / target).resolve()
+    if resolved.exists() and resolved.is_file():
+        return resolved
+    for ext in (".md", ".mdx", ".qmd", ".html", ".txt"):
+        candidate = resolved.with_suffix(ext)
+        if candidate.exists():
+            return candidate
+    if resolved.suffix:
+        return None
+    for ext in (".md", ".mdx", ".qmd", ".html", ".txt"):
+        candidate = (source_path.parent / (target + ext)).resolve()
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_markdown_wikilink(page_name: str, source_path: Path) -> Path | None:
+    """Resolve a [[wikilink]] to an existing .md file.
+
+    Wikilinks use the page name as the filename (e.g. [[API Reference]] →
+    ``API Reference.md``). Searches the source file's directory and
+    subdirectories.
+    """
+    name = page_name.strip()
+    if not name:
+        return None
+    for ext in (".md", ".mdx", ".qmd"):
+        candidate = (source_path.parent / f"{name}{ext}").resolve()
+        if candidate.exists():
+            return candidate
+    for ext in (".md", ".mdx", ".qmd"):
+        for candidate in sorted(source_path.parent.rglob(f"{name}{ext}")):
+            return candidate.resolve()
+    return None
+
+
 def extract_markdown(path: Path) -> dict:
     """Extract structural nodes and edges from a Markdown file.
 
@@ -8954,6 +8985,26 @@ def extract_markdown(path: Path) -> dict:
 
             heading_stack.append((level, h_nid))
             continue
+
+    # Extract markdown links [text](path) and [[wikilinks]] as first-class edges
+    link_re = re.compile(r'\[([^\]]*)\]\(([^\)]+)\)')
+    wikilink_re = re.compile(r'\[\[([^\]]+)\]\]')
+    for line_num_0, line_text in enumerate(lines):
+        line_num = line_num_0 + 1
+        for match in link_re.finditer(line_text):
+            link_text, raw_target = match.groups()
+            target = _resolve_markdown_link(raw_target, path)
+            if target is not None:
+                target_nid = _file_node_id(target)
+                add_edge(file_nid, target_nid, "links_to", line_num, weight=1.0,
+                         context=link_text.strip()[:200])
+        for match in wikilink_re.finditer(line_text):
+            page_name = match.group(1)
+            target = _resolve_markdown_wikilink(page_name, path)
+            if target is not None:
+                target_nid = _file_node_id(target)
+                add_edge(file_nid, target_nid, "links_to", line_num, weight=1.0,
+                         context=page_name.strip()[:200])
 
     return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
 
@@ -11743,17 +11794,11 @@ def extract(
 
     _augment_symbol_resolution_edges(paths, all_nodes, all_edges, root)
 
-<<<<<<< HEAD
     # Remap file node IDs from absolute-path-derived to the canonical
     # {parent_dir}_{stem} spec form so (a) graph.json edge endpoints are stable
     # across machines (#502) and (b) AST file nodes match the IDs semantic
     # subagents generate (#1033). Resolve before relativizing so paths passed in
     # relative form still anchor to the (resolved) root.
-=======
-    # Remap legacy absolute-path-derived file node IDs to the canonical
-    # stem-based format so existing graph.json files from pre-v8.0.17 still
-    # merge correctly on re-extract (#502, #1033).
->>>>>>> 588f3d5 (fix: normalize file-level node IDs to stem-based format)
     id_remap: dict[str, str] = {}
     # Symbol node IDs embed the file stem as a prefix (_file_node_id of the path
     # the extractor saw). For a root-level file that stem picks up the absolute
@@ -11764,7 +11809,6 @@ def extract(
     # prefix can't cross-contaminate. Keyed by resolved path -> (old_pref, new_pref).
     prefix_remap: dict[Path, tuple[str, str]] = {}
     for path in paths:
-<<<<<<< HEAD
         old_id = _make_id(str(path))
         try:
             rel = path.relative_to(root)
@@ -11779,13 +11823,6 @@ def extract(
         old_pref = _file_node_id(path)
         if old_pref != new_id:
             prefix_remap[path.resolve()] = (old_pref, new_id)
-=======
-        canonical = _file_node_id(path)
-        old_ids = {_make_id(str(path)), _make_id(str(path.relative_to(root)))}
-        for old_id in old_ids:
-            if old_id != canonical:
-                id_remap[old_id] = canonical
->>>>>>> 588f3d5 (fix: normalize file-level node IDs to stem-based format)
     if id_remap:
         for n in all_nodes:
             if n.get("id") in id_remap:
