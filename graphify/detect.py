@@ -1341,6 +1341,16 @@ def detect_incremental(
     # against. Legacy absolute-keyed manifests pass through unchanged.
     manifest = load_manifest(manifest_path, root=root)
 
+    # Re-anchor relative manifest keys to absolute paths for comparison with detect() output (#777)
+    root_str = str(root.resolve())
+    reanchored: dict[str, dict] = {}
+    for key, val in manifest.items():
+        if Path(key).is_absolute():
+            reanchored[key] = val
+        else:
+            reanchored[os.path.normpath(os.path.join(root_str, key))] = val
+    manifest = reanchored
+
     if not manifest:
         # No previous run - treat everything as new
         full["incremental"] = True
