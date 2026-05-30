@@ -14,6 +14,7 @@ from pathlib import Path
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+_AST_CACHE_VERSION = "ast-v2-member-calls-lsp-ranges"
 
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
@@ -311,6 +312,12 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast") -> dict |
     if entry.exists():
         try:
             result = json.loads(entry.read_text(encoding="utf-8"))
+            if kind == "ast":
+                if not isinstance(result, dict):
+                    return None
+                if result.get("_cache_version") != _AST_CACHE_VERSION:
+                    return None
+                result.pop("_cache_version", None)
         except (json.JSONDecodeError, OSError):
             return None
         # Re-anchor relative source_file fields so callers see the same
@@ -319,6 +326,22 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast") -> dict |
         if isinstance(result, dict):
             _absolutize_source_files_in(result, root)
         return result
+    # Migration fallback: check legacy flat cache/ dir for AST entries
+    if kind == "ast":
+        legacy = Path(root).resolve() / _GRAPHIFY_OUT / "cache" / f"{h}.json"
+        if legacy.exists():
+            try:
+                result = json.loads(legacy.read_text(encoding="utf-8"))
+                if not isinstance(result, dict):
+                    return None
+                if result.get("_cache_version") != _AST_CACHE_VERSION:
+                    return None
+                result.pop("_cache_version", None)
+            except (json.JSONDecodeError, OSError):
+                return None
+            if isinstance(result, dict):
+                _absolutize_source_files_in(result, root)
+            return result
     return None
 
 
@@ -350,6 +373,8 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
         import copy as _copy
         on_disk = _copy.deepcopy(result)
         _relativize_source_files_in(on_disk, root)
+    if kind == "ast" and isinstance(on_disk, dict):
+        on_disk["_cache_version"] = _AST_CACHE_VERSION
     h = file_hash(p, root)
     target_dir = cache_dir(root, kind)
     entry = target_dir / f"{h}.json"

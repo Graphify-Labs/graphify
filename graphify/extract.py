@@ -604,6 +604,9 @@ class LanguageConfig:
     call_accessor_node_types: frozenset = frozenset()  # member/attribute nodes
     call_accessor_field: str = "attribute"          # field on accessor for method name
     call_accessor_object_field: str = ""            # field on accessor for the receiver/object
+    call_receiver_field: str | None = None          # field on call node for receiver/object
+    call_implicit_receiver: str | None = None        # receiver for bare calls in method bodies
+    skip_member_call_resolution: bool = False       # do not resolve obj.foo via bare "foo"
 
     # Stop recursion at these types in walk_calls
     function_boundary_types: frozenset = frozenset()
@@ -1454,6 +1457,20 @@ def _python_collect_param_refs(params_node, source: bytes) -> list[tuple[str, st
             type_node = child.child_by_field_name("type")
             _python_collect_type_refs(type_node, source, False, out)
     return out
+
+
+def _range_dict(node) -> dict:
+    """Return an LSP-compatible zero-based range for a tree-sitter node."""
+    return {
+        "start": {
+            "line": node.start_point[0],
+            "character": node.start_point[1],
+        },
+        "end": {
+            "line": node.end_point[0],
+            "character": node.end_point[1],
+        },
+    }
 
 
 def _python_param_names(params_node, source: bytes) -> set[str]:
@@ -2749,6 +2766,9 @@ _RUBY_CONFIG = LanguageConfig(
     import_types=frozenset(),
     call_types=frozenset({"call"}),
     call_function_field="method",
+    call_receiver_field="receiver",
+    call_implicit_receiver="self",
+    skip_member_call_resolution=True,
     call_accessor_node_types=frozenset(),
     name_fallback_child_types=("constant", "scope_resolution", "identifier"),
     body_fallback_child_types=("body_statement",),
@@ -4514,8 +4534,9 @@ def _extract_generic(
             callee_name: str | None = None
             is_member_call: bool = False
             is_this_field_call: bool = False
-            swift_receiver: str | None = None
-            member_receiver: str | None = None
+            receiver_name: str | None = None
+            receiver_node_type: str | None = None
+            callee_node = None
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -4524,6 +4545,7 @@ def _extract_generic(
                 if first:
                     if first.type == "simple_identifier":
                         callee_name = _read_text(first, source)
+                        callee_node = first
                     elif first.type == "navigation_expression":
                         is_member_call = True
                         for child in first.children:
@@ -4531,10 +4553,12 @@ def _extract_generic(
                                 for sc in child.children:
                                     if sc.type == "simple_identifier":
                                         callee_name = _read_text(sc, source)
+                                        callee_node = sc
                         # #1356: capture the receiver so the cross-file pass can
                         # resolve it through the file's type table.
                         recv_node = first.children[0] if first.children else None
-                        swift_receiver = _swift_receiver_name(recv_node, source)
+                        receiver_name = _swift_receiver_name(recv_node, source)
+                        receiver_node_type = recv_node.type if recv_node is not None else None
             elif config.ts_module == "tree_sitter_kotlin":
                 # Kotlin: first child may be simple_identifier/identifier or
                 # navigation_expression. PyPI's `tree_sitter_kotlin` produces
@@ -4545,11 +4569,13 @@ def _extract_generic(
                 if first:
                     if first.type in ("simple_identifier", "identifier"):
                         callee_name = _read_text(first, source)
+                        callee_node = first
                     elif first.type == "navigation_expression":
                         is_member_call = True
                         for child in reversed(first.children):
                             if child.type in ("simple_identifier", "identifier"):
                                 callee_name = _read_text(child, source)
+                                callee_node = child
                                 break
             elif config.ts_module == "tree_sitter_scala":
                 # Scala: first child
@@ -4557,21 +4583,25 @@ def _extract_generic(
                 if first:
                     if first.type == "identifier":
                         callee_name = _read_text(first, source)
+                        callee_node = first
                     elif first.type == "field_expression":
                         is_member_call = True
                         field = first.child_by_field_name("field")
                         if field:
                             callee_name = _read_text(field, source)
+                            callee_node = field
                         else:
                             for child in reversed(first.children):
                                 if child.type == "identifier":
                                     callee_name = _read_text(child, source)
+                                    callee_node = child
                                     break
             elif config.ts_module == "tree_sitter_c_sharp" and node.type == "invocation_expression":
                 # C#: try name field, then first named child
                 name_node = node.child_by_field_name("name")
                 if name_node:
                     callee_name = _read_text(name_node, source)
+                    callee_node = name_node
                 else:
                     for child in node.children:
                         if child.is_named:
@@ -4581,6 +4611,7 @@ def _extract_generic(
                                 is_member_call = True
                             else:
                                 callee_name = raw
+                            callee_node = child
                             break
             elif config.ts_module == "tree_sitter_php":
                 # PHP: distinguish call expression subtypes
@@ -4588,23 +4619,27 @@ def _extract_generic(
                     func_node = node.child_by_field_name("function")
                     if func_node:
                         callee_name = _read_text(func_node, source)
+                        callee_node = func_node
                 elif node.type == "scoped_call_expression":
                     # Static method call: Helper::format() → callee = "Helper"
                     scope_node = node.child_by_field_name("scope")
                     if scope_node:
                         callee_name = _read_text(scope_node, source)
+                        callee_node = scope_node
                 else:
                     # member_call_expression: $obj->method()
                     is_member_call = True
                     name_node = node.child_by_field_name("name")
                     if name_node:
                         callee_name = _read_text(name_node, source)
+                        callee_node = name_node
             elif config.ts_module == "tree_sitter_cpp":
                 # C++: function field, then field_expression/qualified_identifier
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
                 if func_node:
                     if func_node.type == "identifier":
                         callee_name = _read_text(func_node, source)
+                        callee_node = func_node
                     elif func_node.type == "field_expression":
                         # `f.bar()` / `f->bar()` / `this->bar()`: receiver is the
                         # `argument` (object) field, callee is the `field` (#1547).
@@ -4615,11 +4650,14 @@ def _extract_generic(
                         name = func_node.child_by_field_name("field")
                         if name:
                             callee_name = _read_text(name, source)
+                            callee_node = name
                         obj = func_node.child_by_field_name("argument")
                         if obj is not None and obj.type == "identifier":
-                            member_receiver = _read_text(obj, source)
+                            receiver_name = _read_text(obj, source)
+                            receiver_node_type = obj.type
                         elif obj is not None and obj.type == "this":
-                            member_receiver = "this"
+                            receiver_name = "this"
+                            receiver_node_type = obj.type
                     elif func_node.type == "qualified_identifier":
                         # `Foo::bar()`: the scope (`Foo`) is the receiver type named
                         # explicitly in source (EXTRACTED), the name is the callee.
@@ -4627,9 +4665,11 @@ def _extract_generic(
                         name = func_node.child_by_field_name("name")
                         if name:
                             callee_name = _read_text(name, source)
+                            callee_node = name
                         scope = func_node.child_by_field_name("scope")
                         if scope is not None:
-                            member_receiver = _read_text(scope, source)
+                            receiver_name = _read_text(scope, source)
+                            receiver_node_type = scope.type
             elif config.ts_module == "tree_sitter_java" and node.type == "object_creation_expression":
                 # `new Foo(...)` — the constructed type is in the `type` field, not
                 # `name`, so the generic path misses it (#1373). Reduce a qualified
@@ -4640,6 +4680,7 @@ def _extract_generic(
                     raw = _read_text(type_node, source).split("<", 1)[0].strip()
                     if raw:
                         callee_name = raw.rsplit(".", 1)[-1]
+                        callee_node = type_node
             elif config.ts_module == "tree_sitter_ruby":
                 # Ruby's `call` node carries `receiver` and `method` as direct
                 # fields (no intermediate accessor node), so the generic accessor
@@ -4649,23 +4690,39 @@ def _extract_generic(
                 meth = node.child_by_field_name("method")
                 if meth is not None:
                     callee_name = _read_text(meth, source)
+                    callee_node = meth
                 recv = node.child_by_field_name("receiver")
                 if recv is not None:
                     is_member_call = True
-                    if recv.type in ("identifier", "constant"):
-                        member_receiver = _read_text(recv, source)
+                    receiver_name = _read_text(recv, source)
+                    receiver_node_type = recv.type
             else:
                 # Generic: get callee from call_function_field
+                receiver_node = (
+                    node.child_by_field_name(config.call_receiver_field)
+                    if config.call_receiver_field
+                    else None
+                )
+                if receiver_node is not None:
+                    receiver_name = _read_text(receiver_node, source)
+                    receiver_node_type = receiver_node.type
+                    is_member_call = True
+                elif config.call_implicit_receiver:
+                    receiver_name = config.call_implicit_receiver
+                    receiver_node_type = "implicit_receiver"
+                    is_member_call = True
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
                 if func_node:
                     if func_node.type == "identifier":
                         callee_name = _read_text(func_node, source)
+                        callee_node = func_node
                     elif func_node.type in config.call_accessor_node_types:
                         is_member_call = True
                         if config.call_accessor_field:
                             attr = func_node.child_by_field_name(config.call_accessor_field)
                             if attr:
                                 callee_name = _read_text(attr, source)
+                                callee_node = attr
                         if config.call_accessor_object_field:
                             # Capture a simple-identifier receiver (e.g. `ClassName`
                             # in `ClassName.method()`) so cross-file member-call
@@ -4674,7 +4731,8 @@ def _extract_generic(
                             # UNLESS the chain is `this.field.method()` (#1316).
                             obj = func_node.child_by_field_name(config.call_accessor_object_field)
                             if obj is not None and obj.type == "identifier":
-                                member_receiver = _read_text(obj, source)
+                                receiver_name = _read_text(obj, source)
+                                receiver_node_type = obj.type
                             elif (obj is not None
                                   and obj.type in config.call_accessor_node_types
                                   and config.call_accessor_object_field):
@@ -4682,11 +4740,18 @@ def _extract_generic(
                                 if inner_obj is not None and inner_obj.type == "this":
                                     inner_prop = obj.child_by_field_name(config.call_accessor_field)
                                     if inner_prop is not None:
-                                        member_receiver = _read_text(inner_prop, source)
+                                        receiver_name = _read_text(inner_prop, source)
+                                        receiver_node_type = "this_field"
                                         is_this_field_call = True
                     else:
                         # Try reading the node directly (e.g. Java name field is the callee)
                         callee_name = _read_text(func_node, source)
+                        callee_node = func_node
+
+            if callee_name and config.call_implicit_receiver and not receiver_name:
+                receiver_name = config.call_implicit_receiver
+                receiver_node_type = "implicit_receiver"
+                is_member_call = True
 
             if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
                 # A capitalized-receiver member call (`ClassName.method()`) must defer
@@ -4695,16 +4760,28 @@ def _extract_generic(
                 # viewset action delegates to a same-named service action — which would
                 # match `tgt_nid == caller_nid` and silently drop the call (#1446). The
                 # captured receiver is resolved later in _resolve_python_member_calls.
-                if is_member_call and member_receiver and (member_receiver[:1].isupper() or is_this_field_call):
+                if is_member_call and receiver_name and (receiver_name[:1].isupper() or is_this_field_call):
                     tgt_nid = None
                 else:
-                    tgt_nid = label_to_nid.get(callee_name)
+                    # Explicit receiver calls such as `obj.foo` must not resolve to a
+                    # bare local `foo()`. Bare Ruby calls are different: they are
+                    # implicit-self calls, so same-file/local resolution is valid.
+                    allow_bare_resolution = not (
+                        is_member_call
+                        and config.skip_member_call_resolution
+                        and receiver_node_type != "implicit_receiver"
+                    )
+                    tgt_nid = (
+                        label_to_nid.get(callee_name)
+                        if allow_bare_resolution
+                        else None
+                    )
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
                         seen_call_pairs.add(pair)
                         line = node.start_point[0] + 1
-                        edges.append({
+                        edge = {
                             "source": caller_nid,
                             "target": tgt_nid,
                             "relation": "calls",
@@ -4713,30 +4790,42 @@ def _extract_generic(
                             "source_file": str_path,
                             "source_location": f"L{line}",
                             "weight": 1.0,
-                        })
+                        }
+                        if receiver_name:
+                            edge["receiver"] = receiver_name
+                            edge["receiver_node_type"] = receiver_node_type
+                            edge["call_shape"] = f"{receiver_name}.{callee_name}"
+                        if callee_node is not None:
+                            edge["callee_range"] = _range_dict(callee_node)
+                        edges.append(edge)
                 elif callee_name and not tgt_nid:
                     # Callee not in this file — save for cross-file resolution in extract()
-                    rc_entry = {
+                    raw_call = {
                         "caller_nid": caller_nid,
                         "callee": callee_name,
                         "is_member_call": is_member_call,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
-                        "receiver": swift_receiver or member_receiver,
                     }
+                    if receiver_name:
+                        raw_call["receiver"] = receiver_name
+                        raw_call["receiver_node_type"] = receiver_node_type
+                        raw_call["call_shape"] = f"{receiver_name}.{callee_name}"
+                    if callee_node is not None:
+                        raw_call["callee_range"] = _range_dict(callee_node)
                     # Ruby: attach the receiver's inferred type from the method's
                     # local `var = Const.new` bindings, when unambiguously known.
-                    if member_receiver and config.ts_module == "tree_sitter_ruby":
-                        rc_entry["receiver_type"] = ruby_var_types.get(
+                    if receiver_name and config.ts_module == "tree_sitter_ruby":
+                        raw_call["receiver_type"] = ruby_var_types.get(
                             caller_nid, {}
-                        ).get(member_receiver)
+                        ).get(receiver_name)
                     # Tag the C++ raw_call's language so the cross-file C++ resolver
                     # claims it unambiguously: a `.h` file routes to extract_cpp or
                     # extract_objc by content, and both resolvers see `.h` in their
                     # suffix sets, so a source_file suffix alone can't separate them.
                     if config.ts_module == "tree_sitter_cpp":
-                        rc_entry["lang"] = "cpp"
-                    raw_calls.append(rc_entry)
+                        raw_call["lang"] = "cpp"
+                    raw_calls.append(raw_call)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
             # (executor.submit(fn), Thread(target=fn), map(fn, xs)) is a real dependency
@@ -15469,6 +15558,19 @@ def extract(
             sf_rel = sf_path
         nid_to_file_nid[n["id"]] = _file_node_id(sf_rel)
 
+    unresolved_calls: list[dict] = []
+
+    def _record_unresolved_call(rc: dict, status: str, candidate_count: int = 0) -> None:
+        call = {
+            k: v
+            for k, v in rc.items()
+            if k != "caller_nid"
+        }
+        call["caller"] = rc.get("caller_nid")
+        call["resolution_status"] = status
+        call["candidate_count"] = candidate_count
+        unresolved_calls.append(call)
+
     existing_pairs = {(e["source"], e["target"]) for e in all_edges}
     # Call-like pairs only, for the indirect_call dedup: an `imports` edge from a
     # file to the symbol it imports is EXPECTED and must not suppress an
@@ -15486,9 +15588,19 @@ def extract(
         # Skip member-call callees: obj.log() → "log" has no import evidence
         # and collides with any top-level function named "log" in the corpus.
         if rc.get("is_member_call"):
+            _record_unresolved_call(
+                rc,
+                "member_call",
+                len(global_label_to_nids.get(callee.lower(), [])),
+            )
             continue
         candidates = global_label_to_nids.get(callee.lower(), [])
         if not candidates:
+            _record_unresolved_call(
+                rc,
+                "no_candidate",
+                len(candidates),
+            )
             continue
         caller = rc["caller_nid"]
         caller_file_nid = nid_to_file_nid.get(caller)
@@ -15542,6 +15654,7 @@ def extract(
                         rc.get("source_file", ""),
                     )
                     if tgt is None:
+                        _record_unresolved_call(rc, "ambiguous", len(candidates))
                         continue
                     has_import_evidence = False
         if rc.get("indirect"):
@@ -15599,7 +15712,7 @@ def extract(
     run_language_resolvers(paths, per_file, all_nodes, all_edges)
 
     # Relativize source_file fields so paths are portable across machines (#555)
-    for item in all_nodes + all_edges:
+    for item in all_nodes + all_edges + unresolved_calls:
         sf = item.get("source_file")
         if not sf:
             continue
@@ -15631,6 +15744,7 @@ def extract(
     return {
         "nodes": all_nodes,
         "edges": all_edges,
+        "unresolved_calls": unresolved_calls,
         "input_tokens": 0,
         "output_tokens": 0,
     }

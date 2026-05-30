@@ -471,7 +471,7 @@ def test_monoliths_render_inline_single_file_no_references():
 
 
 def test_monolith_roundtrip_passes_for_aider_and_devin():
-    """Each monolith is diff-clean vs v8 except the file_type enum unification."""
+    """Each monolith has no unexpected v8 drift."""
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
         problems = gen.monolith_roundtrip(platforms[key])
@@ -547,6 +547,7 @@ def test_generated_runbooks_pass_root_to_save_manifest():
     ]
     targets += sorted((REPO_ROOT / "graphify" / "skills").glob("*/references/update.md"))
     checked = 0
+    update_helpers = 0
     for path in targets:
         for ln in path.read_text(encoding="utf-8").splitlines():
             if "save_manifest(" in ln and "import" not in ln:
@@ -554,7 +555,22 @@ def test_generated_runbooks_pass_root_to_save_manifest():
                 assert "root=" in ln, (
                     f"{path.relative_to(REPO_ROOT)}: save_manifest without root= (#1417): {ln.strip()!r}"
                 )
-    assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
+            if "merge_update_files(" in ln:
+                update_helpers += 1
+                assert "root=" in ln, (
+                    f"{path.relative_to(REPO_ROOT)}: merge_update_files without root=: {ln.strip()!r}"
+                )
+    assert checked >= 3, f"expected save_manifest calls across full-build runbooks, found {checked}"
+    assert update_helpers >= 1, f"expected update runbooks to call merge_update_files(root=...), found {update_helpers}"
+
+
+def test_monoliths_use_canonical_pipeline():
+    """Aider and Devin inline the same post-AST pipeline as split skills."""
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        rendered = gen.render(platforms[key])[0].content
+        assert "_get_extractor" in rendered, f"[{key}] skips document extractor detection"
+        assert "finalize_extraction_files" in rendered, f"[{key}] bypasses pipeline finalization"
 
 
 def test_devin_keeps_its_multi_field_frontmatter():

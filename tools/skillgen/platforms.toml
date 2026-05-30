@@ -184,9 +184,9 @@ dispatch = "manual-paste"
 extraction = "verbose"
 
 # Monoliths: rendered inline as a single body, no split, no references/. The
-# render must be diff-clean against the v8 blob in roundtrip_ref except for the
-# file_type enum unification (5-value -> 6-value superset). monolith-roundtrip
-# guards that.
+# expected/ snapshots guard their rendered text. monolith-roundtrip still checks
+# historical byte-for-byte compatibility for monoliths without intentional
+# pipeline changes.
 
 [platform.aider]
 bucket = "monolith"

@@ -242,22 +242,28 @@ def test_load_cached_absolutizes_source_file(tmp_path):
     assert loaded["edges"][0]["source_file"] == abs_src
 
 
-def test_load_cached_passes_through_legacy_absolute_source_file(tmp_path):
-    """Cache entries written by an older graphify (with absolute source_file
-    inside) must still load correctly: the absolutize step is a no-op for
-    already-absolute values."""
+def test_load_cached_passes_through_absolute_source_file(tmp_path):
+    """Current-version cache entries with absolute source_file values still
+    load correctly: the absolutize step is a no-op for already-absolute
+    values."""
     import json
-    from graphify.cache import load_cached, file_hash, cache_dir
+    from graphify.cache import (
+        _AST_CACHE_VERSION,
+        cache_dir,
+        file_hash,
+        load_cached,
+    )
 
     (tmp_path / "src").mkdir()
     src = tmp_path / "src" / "foo.py"
     src.write_text("pass\n")
     abs_src = str(src.resolve())
 
-    # Hand-write a legacy-format cache entry (absolute source_file).
+    # Hand-write a current-format cache entry with an absolute source_file.
     h = file_hash(src, tmp_path)
     entry = cache_dir(tmp_path, "ast") / f"{h}.json"
     entry.write_text(json.dumps({
+        "_cache_version": _AST_CACHE_VERSION,
         "nodes": [{"id": "n1", "source_file": abs_src}],
         "edges": [],
     }))

@@ -203,7 +203,7 @@ For any code files detected, run AST extraction in parallel with Part B subagent
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.extract import collect_files, extract
+from graphify.extract import collect_files, extract, _get_extractor
 from pathlib import Path
 import json
 
@@ -211,14 +211,20 @@ code_files = []
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text())
 for f in detect.get('files', {}).get('code', []):
     code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
+for f in detect.get('files', {}).get('document', []):
+    p = Path(f)
+    if _get_extractor(p) is not None:
+        code_files.append(p)
 
 if code_files:
     result = extract(code_files)
     Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2))
-    print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
+    node_count = len(result['nodes'])
+    edge_count = len(result['edges'])
+    print(f'AST: {node_count} nodes, {edge_count} edges')
 else:
     Path('graphify-out/.graphify_ast.json').write_text(json.dumps({'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}))
-    print('No code files - skipping AST extraction')
+    print('No structurally extractable files - skipping AST extraction')
 "
 ```
 
@@ -250,10 +256,10 @@ detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text())
 # extraction step re-read every source file (#1392).
 all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
 
-cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files)
+cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH')
 
 # Always (re)write the cache file: write hits, else DELETE any leftover from a
-# prior run so Part C never merges a stale .graphify_cached.json (#1392).
+# prior run so Part C never merges a stale graphify-out/.graphify_cached.json (#1392).
 if cached_nodes or cached_edges or cached_hyperedges:
     Path('graphify-out/.graphify_cached.json').write_text(json.dumps({'nodes': cached_nodes, 'edges': cached_edges, 'hyperedges': cached_hyperedges}))
 else:
@@ -374,7 +380,7 @@ from graphify.cache import save_semantic_cache
 from pathlib import Path
 
 new = json.loads(Path('graphify-out/.graphify_semantic_new.json').read_text()) if Path('graphify-out/.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []))
+saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root='INPUT_PATH')
 print(f'Cached {saved} files')
 "
 ```
@@ -418,34 +424,16 @@ Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.gra
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
+from graphify.pipeline import finalize_extraction_files
 from pathlib import Path
-from graphify.semantic_cleanup import sanitize_semantic_fragment
 
-ast = json.loads(Path('graphify-out/.graphify_ast.json').read_text())
-sem = json.loads(Path('graphify-out/.graphify_semantic.json').read_text())
-
-# Merge: AST nodes first, semantic nodes deduplicated by id
-seen = {n['id'] for n in ast['nodes']}
-merged_nodes = list(ast['nodes'])
-for n in sem['nodes']:
-    if n['id'] not in seen:
-        merged_nodes.append(n)
-        seen.add(n['id'])
-
-merged_edges = ast['edges'] + sem['edges']
-merged_hyperedges = sem.get('hyperedges', [])
-merged = {
-    'nodes': merged_nodes,
-    'edges': merged_edges,
-    'hyperedges': merged_hyperedges,
-    'input_tokens': sem.get('input_tokens', 0),
-    'output_tokens': sem.get('output_tokens', 0),
-}
-merged = sanitize_semantic_fragment(merged)
-Path('graphify-out/.graphify_extract.json').write_text(json.dumps(merged, indent=2))
-total = len(merged_nodes)
-edges = len(merged_edges)
-print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(sem[\"nodes\"])} semantic)')
+merged, lsp_summary, stats = finalize_extraction_files(
+    root=Path('INPUT_PATH'),
+    graphify_out=Path('graphify-out'),
+)
+print(f'Combined: {stats[\"nodes\"]} nodes, {stats[\"edges\"]} edges')
+if lsp_summary.get('hooks_enabled'):
+    print(f'LSP hooks: {len(lsp_summary.get(\"hooks\", []))} hook(s), {lsp_summary.get(\"merged_edges\", 0)} edge(s)')
 "
 ```
 
@@ -794,7 +782,7 @@ from graphify.detect import save_manifest
 
 # Save manifest for --update
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text())
-save_manifest(detect['files'], root='INPUT_PATH')
+save_manifest(detect.get('all_files') or detect['files'], root='INPUT_PATH')
 
 # Update cumulative cost tracker
 extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
@@ -820,7 +808,7 @@ cost_path.write_text(json.dumps(cost, indent=2))
 print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
 print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
 "
-rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json graphify-out/.graphify_labels.json graphify-out/.graphify_incremental.json graphify-out/.graphify_transcripts.json graphify-out/.graphify_old.json; find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
+rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json graphify-out/.graphify_labels.json graphify-out/.graphify_incremental.json graphify-out/.graphify_transcripts.json graphify-out/.graphify_old.json; find graphify-out -maxdepth 1 -path 'graphify-out/.graphify_chunk_*.json' -delete 2>/dev/null
 rm -f graphify-out/.needs_update 2>/dev/null || true
 ```
 
@@ -858,7 +846,7 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 ## Interpreter guard for subcommands
 
-Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `.graphify_python` exists. If it's missing (e.g. user deleted `graphify-out/`), re-resolve the interpreter first:
+Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `graphify-out/.graphify_python` exists. If it's missing (e.g. user deleted `graphify-out/`), re-resolve the interpreter first:
 
 ```bash
 if [ ! -f graphify-out/.graphify_python ]; then
@@ -909,7 +897,7 @@ import json
 from pathlib import Path
 
 result = json.loads(open('graphify-out/.graphify_incremental.json').read()) if Path('graphify-out/.graphify_incremental.json').exists() else {}
-code_exts = {'.py','.ts','.js','.go','.rs','.java','.cpp','.c','.rb','.swift','.kt','.cs','.scala','.php','.cc','.cxx','.hpp','.h','.kts','.lua','.toc'}
+code_exts = {'.py','.ts','.js','.go','.rs','.java','.cpp','.c','.rb','.swift','.kt','.cs','.scala','.php','.cc','.cxx','.hpp','.h','.kts','.lua','.toc','.f','.F','.f90','.F90','.f95','.F95','.f03','.F03','.f08','.F08'}
 new_files = result.get('new_files', {})
 all_changed = [f for files in new_files.values() for f in files]
 code_only = all(Path(f).suffix.lower() in code_exts for f in all_changed)
@@ -919,7 +907,7 @@ print('code_only:', code_only)
 
 If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run only Step 3A (AST) on the changed files, skip Step 3B entirely (no subagents), then go straight to merge and Steps 4-8.
 
-If `code_only` is False (any changed file is a doc/paper/image): run the full Steps 3A-3C pipeline as normal.
+If `code_only` is False (any changed file is a doc/paper/image): run the full Steps 3A-3C pipeline as normal, then continue to the merge block below and Steps 4-8.
 
 If no new files exist (only deletions), create an empty extraction so the merge step can prune:
 
@@ -938,24 +926,12 @@ Then:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
-import sys, json
-from graphify.build import build_from_json
-from graphify.export import to_json
-from networkx.readwrite import json_graph
-import networkx as nx
-from pathlib import Path
+from graphify.pipeline import merge_update_files
 
-# Load existing graph
-existing_data = json.loads(Path('graphify-out/graph.json').read_text())
-G_existing = json_graph.node_link_graph(existing_data, edges='links')
-
-# Load new extraction
-new_extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
-G_new = build_from_json(new_extraction, directed=IS_DIRECTED)
-
-# Merge: new nodes/edges into existing graph
-G_existing.update(G_new)
-print(f'Merged: {G_existing.number_of_nodes()} nodes, {G_existing.number_of_edges()} edges')
+merged_out, stats = merge_update_files(root='INPUT_PATH')
+print(f'[graphify update] Merged extraction written ({stats[\"nodes\"]} nodes, {stats[\"edges\"]} edges)')
+if stats.get('manifest_saved'):
+    print('[graphify update] Manifest saved.')
 "
 ```
 
