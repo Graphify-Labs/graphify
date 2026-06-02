@@ -1402,7 +1402,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
     if platform_name in ("claude", "windows"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _remove_claude_skill_registration(project_dir)
-        claude_uninstall(project_dir)
+        claude_uninstall(project_dir, project=True)
     elif platform_name == "gemini":
         gemini_uninstall(project_dir, project=True)
     elif platform_name == "cursor":
@@ -1629,8 +1629,16 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     print("\nDone. Run 'pip uninstall graphifyy' to remove the package itself.")
 
 
-def claude_uninstall(project_dir: Path | None = None) -> None:
-    """Remove the graphify section from the local CLAUDE.md."""
+def claude_uninstall(project_dir: Path | None = None, *, project: bool = False) -> None:
+    """Remove the graphify skill (tree) and the graphify section from CLAUDE.md.
+
+    Mirrors gemini_uninstall: the skill removal runs first so it happens even
+    when there's no CLAUDE.md section to strip. _remove_skill_file routes
+    through _remove_skill_tree, so the on-demand reference/ files installed in
+    split mode are removed too instead of being orphaned.
+    """
+    _remove_skill_file("claude", project=project, project_dir=project_dir)
+
     target = (project_dir or Path(".")) / "CLAUDE.md"
 
     if not target.exists():

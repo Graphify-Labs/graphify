@@ -219,3 +219,22 @@ def test_uninstall_keeps_unrelated_user_files(tmp_path):
     assert stray.exists(), "uninstall must not delete unrelated user files"
     assert not skill.exists()
     assert not (skill.parent / "reference").exists()
+
+
+def test_claude_uninstall_removes_the_split_tree(tmp_path):
+    """The user-facing `graphify claude uninstall` (and bare `graphify uninstall`,
+    which calls claude_uninstall) must remove the installed skill tree, not just
+    the CLAUDE.md section — otherwise split mode orphans a 6-file reference/ dir."""
+    from graphify.__main__ import claude_uninstall
+
+    skill = _install_claude(tmp_path)
+    skill_dir = skill.parent
+    assert (skill_dir / "reference").is_dir()
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(tmp_path)
+        with patch("graphify.__main__.Path.home", return_value=tmp_path):
+            claude_uninstall()  # user scope: previously only stripped CLAUDE.md
+    finally:
+        os.chdir(old_cwd)
+    assert not skill_dir.exists(), "claude uninstall must remove SKILL.md + reference/"
