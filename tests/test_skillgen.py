@@ -540,3 +540,132 @@ def test_always_on_files_are_guarded_by_check(tmp_path):
     ]
     problems = gen.check(mutated)
     assert any("always_on/claude-md.md" in p for p in problems)
+
+
+# --- the per-host coverage audit (the systemic guard) --------------------------
+
+
+def test_audit_coverage_passes_for_every_split_host():
+    """Every split host's render single-homes its own v8 body's headings."""
+    platforms = gen.load_platforms()
+    for key, p in platforms.items():
+        if p.bucket != "split":
+            continue
+        problems = gen.audit_coverage(p)
+        assert problems == [], f"[{key}]\n" + "\n".join(problems)
+
+
+def test_audit_reads_each_host_against_its_own_v8_body():
+    """The audit baseline is the host's OWN v8 skill body, not claude's monolith.
+
+    This is the structural fix: a per-host body, so a drop on one host surfaces.
+    """
+    assert gen._v8_baseline_ref("claude") == "origin/v8:graphify/skill.md"
+    assert gen._v8_baseline_ref("trae") == "origin/v8:graphify/skill-trae.md"
+    assert gen._v8_baseline_ref("vscode") == "origin/v8:graphify/skill-vscode.md"
+
+
+def test_audit_catches_an_induced_per_host_drop():
+    """Re-inducing the trae regression (claude-flavored hooks) fails the audit.
+
+    Pointing trae back at the shared CLAUDE.md hooks body drops the
+    '## For native AGENTS.md integration (Trae)' heading from its render. The
+    per-host audit must catch that against trae's own v8 body. The old audit
+    (every host vs claude's monolith) could not see it, because claude's monolith
+    never had that heading.
+    """
+    import dataclasses
+
+    platforms = gen.load_platforms()
+    regressed = dataclasses.replace(platforms["trae"], hooks_variant="claude-md")
+    problems = gen.audit_coverage(regressed)
+    assert any("native AGENTS.md integration (Trae)" in p for p in problems), problems
+
+
+def test_audit_catches_a_dropped_non_allowlisted_heading():
+    """A core fragment that drops a real v8 heading fails the audit.
+
+    Guards that the audit is not a rubber stamp: a host whose v8 has a heading
+    that is neither allowlisted nor present anywhere in the render must fail.
+    """
+    platforms = gen.load_platforms()
+    trae = platforms["trae"]
+    real_arts = gen.render(trae)
+    # Drop the Honesty Rules heading from the rendered core to simulate a real
+    # content loss, then re-run the single-home check by hand against trae's v8.
+    v8_headings = gen.headings(gen._git_show(gen._v8_baseline_ref("trae")))
+    assert "## Honesty Rules" in v8_headings
+    by_path = {a.path: a.content for a in real_arts}
+    core_no_honesty = by_path[trae.skill_dst].replace("## Honesty Rules", "## Closing notes")
+    core_headings = set(gen.headings(core_no_honesty))
+    allowlist = gen._audit_allowlist("trae")
+    homes = [h for h in v8_headings if h == "## Honesty Rules" and h in core_headings]
+    assert "## Honesty Rules" not in allowlist
+    assert homes == [], "a dropped, non-allowlisted heading should have no home"
+
+
+def test_audit_allowlist_documents_only_consolidations():
+    """The allowlist holds only the wave-2/3 consolidations, nothing genuine.
+
+    A genuine drop (trae's native AGENTS.md integration) must never be in the
+    allowlist, or the guard would rubber-stamp the regression it exists to catch.
+    """
+    all_allowlisted = set(gen.SHARED_INTRO_ALLOWLIST)
+    for hs in gen._CONSOLIDATION_ALLOWLIST.values():
+        all_allowlisted |= set(hs)
+    assert "## For native AGENTS.md integration (Trae)" not in all_allowlisted
+    # Only the two minimal-body hosts carry per-host consolidations.
+    assert set(gen._CONSOLIDATION_ALLOWLIST) == {"kilo", "vscode"}
+
+
+# --- the trae / trae-cn native AGENTS.md integration fix -----------------------
+
+
+def test_trae_renders_native_agents_md_integration_not_claude():
+    """trae wires `graphify trae install` -> AGENTS.md, never `graphify claude install`."""
+    core, refs = _platform_artifacts("trae")
+    hooks = refs["hooks.md"]
+    # The hooks reference carries the v8 native AGENTS.md integration section.
+    assert "## For native AGENTS.md integration (Trae)" in hooks
+    assert "graphify trae install" in hooks
+    assert "graphify trae-cn install" in hooks
+    assert "writes a `## graphify` section to the local `AGENTS.md`" in hooks
+    # The claude-flavored install command must NOT appear for trae.
+    assert "graphify claude install" not in hooks
+    assert "native CLAUDE.md integration" not in hooks
+    # The lean-core pointer names AGENTS.md, not CLAUDE.md.
+    assert "## For the commit hook and native AGENTS.md integration" in core
+    assert "wire graphify into a project's AGENTS.md" in core
+    assert "native CLAUDE.md integration" not in core
+
+
+def test_trae_dispatch_carries_the_no_pretooluse_caveat():
+    """trae's B2 dispatch block restores the v8 no-PreToolUse-hook caveat."""
+    core, _ = _platform_artifacts("trae")
+    b2 = core[core.index("**Step B2"):core.index("Pass the extraction prompt")]
+    assert "Trae does NOT support PreToolUse hooks" in b2
+    assert "AGENTS.md rules are the always-on mechanism instead" in b2
+
+
+def test_trae_hooks_reference_includes_the_pretooluse_note():
+    """The trae hooks reference keeps the v8 PreToolUse note in full."""
+    _, refs = _platform_artifacts("trae")
+    hooks = refs["hooks.md"]
+    assert "Unlike Claude Code, Trae does NOT support PreToolUse hooks" in hooks
+    assert "Run `/graphify --update` manually after code changes" in hooks
+
+
+def test_claude_flavored_hosts_keep_their_hooks_text_unchanged():
+    """Hosts whose v8 shipped the claude-flavored hooks keep it (faithful to them).
+
+    droid's v8 dispatch never had the Trae caveat and its hooks section names
+    CLAUDE.md; restoring trae must not bleed into droid or any other host.
+    """
+    for key in ("claude", "droid", "codex", "windows", "kilo", "vscode"):
+        core, refs = _platform_artifacts(key)
+        hooks = refs["hooks.md"]
+        assert "graphify claude install" in hooks, f"[{key}] lost the claude install command"
+        assert "native CLAUDE.md integration" in hooks, f"[{key}] lost the CLAUDE.md heading"
+        assert "Trae does NOT support PreToolUse hooks" not in core, f"[{key}] leaked the trae caveat"
+        assert "Trae does NOT support PreToolUse hooks" not in hooks, f"[{key}] leaked the trae caveat"
+        assert "## For the commit hook and native CLAUDE.md integration" in core, f"[{key}] pointer drifted"

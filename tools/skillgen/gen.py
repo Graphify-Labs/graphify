@@ -11,7 +11,7 @@ Usage (from the repo root)::
     python -m tools.skillgen                 # regen every platform's artifacts
     python -m tools.skillgen --platform claude
     python -m tools.skillgen --check         # byte-diff render vs committed + expected/, exit 1 on drift
-    python -m tools.skillgen --audit-coverage# assert every v8 heading lands in core or one fragment
+    python -m tools.skillgen --audit-coverage# per host: assert every heading of that host's own v8 body single-homes in its render
     python -m tools.skillgen --schema-singleton  # assert the file_type enum is byte-identical everywhere
     python -m tools.skillgen --monolith-roundtrip# assert each monolith == v8 modulo the enum unification
     python -m tools.skillgen --always-on-roundtrip# assert each always_on/*.md reproduces its former constant
@@ -38,10 +38,18 @@ FRAGMENTS_DIR = SKILLGEN_DIR / "fragments"
 EXPECTED_DIR = SKILLGEN_DIR / "expected"
 PLATFORMS_TOML = SKILLGEN_DIR / "platforms.toml"
 
-# Immutable coverage baseline for --audit-coverage. The working-tree skill.md is
-# being replaced by the lean core, so the audit reads the monolith straight from
-# git instead of from disk.
-V8_BASELINE_REF = "origin/v8:graphify/skill.md"
+# Immutable coverage baseline for --audit-coverage. The working-tree skill bodies
+# are being replaced by the lean core, so the audit reads each host's v8 body
+# straight from git instead of from disk. claude's v8 body is graphify/skill.md;
+# every other split host has its own graphify/skill-<host>.md. Auditing each host
+# against ITS OWN v8 body is the per-host guard: a drop that only hits one host
+# (e.g. trae losing its AGENTS.md integration section) is invisible when every
+# host is checked against claude's monolith, so the audit must be per-host.
+def _v8_baseline_ref(platform_key: str) -> str:
+    """The git ref for a split host's own v8 skill body."""
+    if platform_key == "claude":
+        return "origin/v8:graphify/skill.md"
+    return f"origin/v8:graphify/skill-{platform_key}.md"
 
 # Immutable baseline for --always-on-roundtrip. The six always-on instruction
 # blocks used to be triple-quoted constants in graphify/__main__.py; they are now
@@ -72,16 +80,16 @@ ALWAYS_ON_BLOCKS = {
 ENUM_VALUES = "code|document|paper|image|rationale|concept"
 ENUM_PROSE = "`code`, `document`, `paper`, `image`, `rationale`, `concept`"
 
-# The eight on-demand references every split platform renders. Six are
-# shared-verbatim; two (extraction-spec, query) are variant-selected and their
-# source is resolved per platform from the extraction/query_variant fields.
+# The eight on-demand references every split platform renders. Five are
+# shared-verbatim; three (extraction-spec, query, hooks) are variant-selected and
+# their source is resolved per platform from the extraction/query_variant/
+# hooks_variant fields.
 _SHARED_REFERENCES = {
     "update": "references/shared/update.md",
     "exports": "references/shared/exports.md",
     "github-and-merge": "references/shared/github-and-merge.md",
     "transcribe": "references/shared/transcribe.md",
     "add-watch": "references/shared/add-watch.md",
-    "hooks": "references/shared/hooks.md",
 }
 _EXTRACTION_SOURCE = {
     "verbose": "references/shared/extraction-spec.md",
@@ -90,6 +98,21 @@ _EXTRACTION_SOURCE = {
 _QUERY_SOURCE = {
     "cli": "references/query/cli.md",
     "cli-inline": "references/query/cli-inline.md",
+}
+# The hooks reference is host-flavored. Most hosts read CLAUDE.md and wire
+# always-on via `graphify claude install` (the shared body). Trae and trae-cn read
+# AGENTS.md and wire it via `graphify trae install`, with the v8 caveat that Trae
+# does NOT support PreToolUse hooks (so AGENTS.md rules are the only always-on
+# mechanism). Each variant also drives the @@HOOKS_TARGET@@ pointer text in the
+# core. The variant key matches the prose target file the pointer names.
+_HOOKS_SOURCE = {
+    "claude-md": "references/shared/hooks.md",
+    "agents-md": "references/host/hooks-agents-md.md",
+}
+# The prose file name the lean-core hooks pointer names, per hooks variant.
+_HOOKS_TARGET = {
+    "claude-md": "CLAUDE.md",
+    "agents-md": "AGENTS.md",
 }
 
 # The v8 claude monolith (the coverage baseline) carries claude's CLI + vocab-
@@ -102,6 +125,69 @@ _CLI_ONLY_QUERY_HEADINGS = {
     "### Step 0 — Constrained query expansion (REQUIRED before traversal)",
     "### Step 1 — Traversal",
 }
+
+# Allowlist for the per-host coverage audit (waves 2-3 consolidations).
+#
+# The lean core is one shared template across every split host, so a few v8
+# headings deliberately do NOT survive verbatim in a given host's render. These
+# are intentional consolidations, not content drops, and the audit must not flag
+# them. Two classes:
+#
+# 1. SHARED_INTRO_ALLOWLIST — the lean intro consolidation. "## What graphify is
+#    for" is the lean intro the core carries; the minimal v8 bodies (kilo, vscode)
+#    had verbose intro prose with no such heading, while the richer v8 bodies
+#    already had it. Listing it documents the wave-2/3 intro consolidation; it
+#    single-homes in every render, so it is never itself a coverage hole. The enum
+#    unification (Decision A) is prose, not a heading, and is guarded separately by
+#    schema-singleton.
+#
+# 2. _CONSOLIDATION_ALLOWLIST[host] — per-host v8 headings the shared lean core
+#    re-homes under a reworded or re-leveled heading while preserving (or
+#    enriching) the content. The two minimal v8 bodies, kilo (414 L) and vscode
+#    (258 L), are the only hosts affected: the shared core is a richer superset
+#    that renamed their terse step/part headings and promoted kilo's
+#    "### Kilo-specific rules" to "## Kilo-specific rules". The mapped content
+#    lives in the core or a reference under the new heading; the audit confirms
+#    every NON-allowlisted v8 heading is single-homed, so a genuine drop (e.g.
+#    trae's native AGENTS.md integration) still fails loudly.
+#
+# Adding a heading here is a deliberate, reviewed act: it asserts "this v8
+# heading was consolidated on purpose and its content is covered elsewhere."
+SHARED_INTRO_ALLOWLIST: frozenset[str] = frozenset({
+    "## What graphify is for",  # lean intro; v8 hosts had verbose intro prose, no heading.
+})
+
+_CONSOLIDATION_ALLOWLIST: dict[str, frozenset[str]] = {
+    # kilo's terse v8 step/part/section headings, renamed/re-leveled by the
+    # shared lean core. Content is preserved under the core's richer headings
+    # (Step 4 build/cluster/analyze, Step 5 label, Step 6 HTML, Step 9 report)
+    # and the query stub + references/query.md; "### Kilo-specific rules" is the
+    # same content promoted to "## Kilo-specific rules".
+    "kilo": frozenset({
+        "### Step 2.5 - Transcribe video or audio files (only if video files were detected)",
+        "#### Part B - Semantic extraction for docs, papers, and images",
+        "#### Part C - Merge AST and semantic extraction",
+        "### Step 4 - Build the graph and generate outputs",
+        "### Step 5 - Save manifest, clean up, and report",
+        "### Query mode",
+        "### Kilo-specific rules",
+    }),
+    # vscode's minimal v8 step/part headings, renamed by the shared lean core.
+    # The build/cluster, report/visualization, and completion-summary content is
+    # all present under the core's Step 4/5/6/9 headings.
+    "vscode": frozenset({
+        "#### Part A - Structural extraction (AST, free, no API cost)",
+        "#### Part B - Semantic extraction (AI, costs tokens)",
+        "### Step 4 - Build graph and cluster",
+        "### Step 5 - Generate report and visualization",
+        "### After completing all steps",
+    }),
+}
+
+
+def _audit_allowlist(platform_key: str) -> frozenset[str]:
+    """The full set of v8 headings the audit may skip for this host."""
+    return SHARED_INTRO_ALLOWLIST | _CONSOLIDATION_ALLOWLIST.get(platform_key, frozenset())
 
 
 @dataclass(frozen=True)
@@ -122,6 +208,7 @@ class Platform:
     extraction: str = "verbose"
     shell: str = "posix"
     claude_md: bool = False
+    hooks_variant: str = "claude-md"
     extra_sections: tuple[str, ...] = ()
     # monolith-only inputs
     monolith: str | None = None
@@ -132,7 +219,13 @@ class Platform:
         refs = dict(_SHARED_REFERENCES)
         refs["extraction-spec"] = _EXTRACTION_SOURCE[self.extraction]
         refs["query"] = _QUERY_SOURCE[self.query_variant]
+        refs["hooks"] = _HOOKS_SOURCE[self.hooks_variant]
         return refs
+
+    @property
+    def hooks_target(self) -> str:
+        """The prose file name the lean-core hooks pointer names for this host."""
+        return _HOOKS_TARGET[self.hooks_variant]
 
 
 def load_platforms() -> dict[str, Platform]:
@@ -154,6 +247,7 @@ def load_platforms() -> dict[str, Platform]:
             extraction=cfg.get("extraction", "verbose"),
             shell=cfg.get("shell", "posix"),
             claude_md=bool(cfg.get("claude_md", False)),
+            hooks_variant=cfg.get("hooks_variant", "claude-md"),
             extra_sections=tuple(cfg.get("extra_sections", [])),
             monolith=cfg.get("monolith"),
             roundtrip_ref=cfg.get("roundtrip_ref"),
@@ -220,6 +314,7 @@ def _render_core(platform: Platform) -> str:
         .replace("@@INSTALL@@", install)
         .replace("@@DISPATCH@@", dispatch)
         .replace("@@QUERY_STUB@@", query_stub)
+        .replace("@@HOOKS_TARGET@@", platform.hooks_target)
         .replace("@@EXTRA@@", extra)
     )
     if "@@" in body:
@@ -378,11 +473,6 @@ def headings(markdown: str) -> list[str]:
     return out
 
 
-def _v8_baseline() -> str:
-    """Read the immutable v8 monolith from git as the coverage baseline."""
-    return _git_show(V8_BASELINE_REF)
-
-
 def _git_show(ref: str) -> str:
     """Read a blob from git, normalised to LF."""
     result = subprocess.run(
@@ -397,19 +487,30 @@ def _git_show(ref: str) -> str:
 
 
 def audit_coverage(platform: Platform) -> list[str]:
-    """Assert every v8 heading lands in the core or exactly one reference.
+    """Assert every heading of THIS host's v8 body single-homes in its render.
 
-    A few v8 headings are intentionally re-homed: the query section heading
-    stays in the lean core as the query stub, while its deeper sub-headings move
-    to the query reference. The audit checks single-home coverage, not byte
-    identity of the heading text in the core (the core's pointer headings are
-    allowed to differ).
+    The audit reads the host's OWN v8 skill body (graphify/skill.md for claude,
+    graphify/skill-<host>.md otherwise) and checks that every v8 heading lands in
+    that host's generated core or in exactly one of its reference fragments. This
+    is the per-host guard: a content drop that only hits one host (the trae native
+    AGENTS.md integration regression that motivated this change) is invisible when
+    every host is checked against claude's monolith, so each host is checked
+    against itself.
+
+    Three classes of v8 heading are exempt and documented as deltas, not holes:
+      - the lean core's query stub re-homes claude's CLI vocab-expansion
+        sub-headings into the query reference (_CLI_ONLY_QUERY_HEADINGS);
+      - waves 2-3 consolidations (the lean "## What graphify is for" intro and the
+        per-host re-homed step/part headings on the minimal kilo/vscode bodies),
+        tracked in the audit allowlist.
+    Anything NOT exempt and NOT single-homed fails the audit.
     """
     if platform.bucket != "split":
         return []  # monoliths are guarded by the round-trip validator instead.
 
     problems: list[str] = []
-    baseline_headings = headings(_v8_baseline())
+    baseline_headings = headings(_git_show(_v8_baseline_ref(platform.key)))
+    allowlist = _audit_allowlist(platform.key)
 
     artifacts = render(platform)
     by_path = {a.path: a.content for a in artifacts}
@@ -422,6 +523,9 @@ def audit_coverage(platform: Platform) -> list[str]:
         ref_headings[name] = set(headings(by_path[rel]))
 
     for h in baseline_headings:
+        # Allowlisted consolidations + the lean intro are intentional deltas.
+        if h in allowlist:
+            continue
         # Query sub-headings that are private to the CLI + vocab-expansion design
         # do not appear in a cli-inline platform's query reference (Decision C).
         if platform.query_variant != "cli" and h in _CLI_ONLY_QUERY_HEADINGS:
@@ -589,7 +693,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument("--platform", help="render or check just this platform key")
     p.add_argument("--check", action="store_true", help="byte-diff render vs committed + expected/, exit 1 on drift")
-    p.add_argument("--audit-coverage", action="store_true", help="assert every v8 heading is single-homed")
+    p.add_argument("--audit-coverage", action="store_true", help="per host: assert every heading of that host's own v8 body single-homes in its render")
     p.add_argument("--schema-singleton", action="store_true", help="assert the file_type enum is byte-identical everywhere")
     p.add_argument("--monolith-roundtrip", action="store_true", help="assert each monolith == v8 modulo the enum unification")
     p.add_argument("--always-on-roundtrip", action="store_true", help="assert each always_on/*.md reproduces its former __main__.py constant byte for byte")
@@ -613,7 +717,7 @@ def main(argv: list[str] | None = None) -> int:
             for m in all_problems:
                 print(f"  {m}", file=sys.stderr)
             return 1
-        print("audit-coverage OK: every v8 heading lands in the core or exactly one fragment.")
+        print("audit-coverage OK: every per-host v8 heading single-homes in that host's render.")
         return 0
 
     if args.schema_singleton:

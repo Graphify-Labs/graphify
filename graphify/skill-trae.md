@@ -231,6 +231,7 @@ Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-2
 
 > Uses the `Task` tool for parallel subagent dispatch.
 > Call `Task` once per chunk — ALL in the same response so they run in parallel.
+> Trae does NOT support PreToolUse hooks — AGENTS.md rules are the always-on mechanism instead.
 
 Pass the extraction prompt as the task description:
 
@@ -597,9 +598,9 @@ Neither is part of the default build. When the user runs `/graphify add <url>` t
 
 ---
 
-## For the commit hook and native CLAUDE.md integration
+## For the commit hook and native AGENTS.md integration
 
-When the user asks to install the post-commit auto-rebuild hook or wire graphify into a project's CLAUDE.md, see `references/hooks.md`.
+When the user asks to install the post-commit auto-rebuild hook or wire graphify into a project's AGENTS.md, see `references/hooks.md`.
 
 ---
 

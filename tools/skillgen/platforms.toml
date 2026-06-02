@@ -25,6 +25,11 @@
 #   extraction    verbose | compact. Selects the extraction-spec reference body.
 #   shell         posix | powershell. Selects the Step 1 install fragment.
 #   claude_md     bool. Whether the host gets an always-on block (installer-side).
+#   hooks_variant claude-md | agents-md. Selects the hooks reference body and the
+#                 lean-core hooks pointer target. Default claude-md (the host reads
+#                 CLAUDE.md, `graphify claude install`). agents-md is for hosts that
+#                 read AGENTS.md and wire always-on via `graphify <host> install`
+#                 with the no-PreToolUse-hook caveat (trae, trae-cn).
 #   extra_sections ordered list of extra tail fragments (under fragments/extra/),
 #                 inserted before Honesty Rules.
 #   monolith      core fragment basename for a monolith (monolith only).
@@ -124,9 +129,13 @@ core = "core"
 skill_dst = "graphify/skill-trae.md"
 refs_dst = "graphify/skills/trae/references"
 description = "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
-dispatch = "task-tool-disk"
+# Trae reads AGENTS.md, not CLAUDE.md, and has no PreToolUse hook. The dispatch
+# block carries the no-PreToolUse caveat and the hooks reference wires
+# `graphify trae install` -> AGENTS.md. trae-cn reuses this same bundle.
+dispatch = "task-tool-disk-trae"
 query_variant = "cli-inline"
 extraction = "verbose"
+hooks_variant = "agents-md"
 
 [platform.kiro]
 bucket = "split"
