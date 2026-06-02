@@ -13,6 +13,7 @@ import json
 
 from graphify.__main__ import (
     _SETTINGS_HOOK,
+    _READ_SETTINGS_HOOK,
     _CLAUDE_MD_SECTION,
     _AGENTS_MD_SECTION,
     _GEMINI_MD_SECTION,
@@ -31,6 +32,7 @@ from graphify.__main__ import (
 # against the actual payload text the assistant will receive.
 _INSTALL_TEXTS: dict[str, str] = {
     "_SETTINGS_HOOK": json.dumps(_SETTINGS_HOOK),
+    "_READ_SETTINGS_HOOK": json.dumps(_READ_SETTINGS_HOOK),
     "_CLAUDE_MD_SECTION": _CLAUDE_MD_SECTION,
     "_AGENTS_MD_SECTION": _AGENTS_MD_SECTION,
     "_GEMINI_MD_SECTION": _GEMINI_MD_SECTION,
@@ -45,11 +47,12 @@ _INSTALL_TEXTS: dict[str, str] = {
 
 
 def test_every_install_surface_recommends_graphify_query():
-    """All ten install surfaces must point the assistant at `graphify query`
-    as the first action for codebase questions. This is the load-bearing
-    fix for issue #580 — the alternative (reading GRAPH_REPORT.md) costs
-    ~10x more tokens per question and made the project worse-than-baseline
-    in real Claude Code sessions."""
+    """Every install surface (including the Read|Glob hook payload added for
+    issue #1114) must point the assistant at `graphify query` as the first
+    action for codebase questions. This is the load-bearing fix for issue
+    #580 — the alternative (reading GRAPH_REPORT.md) costs ~10x more tokens
+    per question and made the project worse-than-baseline in real Claude
+    Code sessions."""
     missing: list[str] = []
     for name, text in _INSTALL_TEXTS.items():
         if "graphify query" not in text:
@@ -91,6 +94,45 @@ def test_no_install_surface_demands_reading_the_full_report_first():
         f"banned report-first phrasing reappeared: {hits}. "
         f"This regresses issue #580."
     )
+
+
+def test_query_first_surfaces_also_cover_reading_files():
+    """Issue #1114: the query-first guidance must name reading source files (not
+    only grepping) as the action graphify displaces. The Read-tool bypass — an
+    agent answering a question by Read-ing many files one at a time — is invisible
+    to a grep-only nudge, so the always-on prose has to say it in words too."""
+    read_cover = {
+        "_CLAUDE_MD_SECTION": _CLAUDE_MD_SECTION,
+        "_AGENTS_MD_SECTION": _AGENTS_MD_SECTION,
+        "_GEMINI_MD_SECTION": _GEMINI_MD_SECTION,
+        "_VSCODE_INSTRUCTIONS_SECTION": _VSCODE_INSTRUCTIONS_SECTION,
+        "_ANTIGRAVITY_RULES": _ANTIGRAVITY_RULES,
+        "_KIRO_STEERING": _KIRO_STEERING,
+        "_CURSOR_RULE": _CURSOR_RULE,
+        "_DEVIN_RULES": _DEVIN_RULES,
+    }
+    # Accept any of the read-covering phrasings: the D1 clause ("reading source
+    # files"), the wiki bullets ("reading raw files"), or the VSCode template
+    # ("read source files when ..."). Whitespace is normalized so the assertion
+    # survives line wrapping in the multi-line constants.
+    accepted = ("reading source files", "reading raw files", "read source files when")
+    missing = [
+        name
+        for name, text in read_cover.items()
+        if not any(phrase in " ".join(text.lower().split()) for phrase in accepted)
+    ]
+    assert not missing, (
+        f"these surfaces still only displace grep, not reading: {missing}. "
+        f"This regresses issue #1114."
+    )
+
+
+def test_read_hook_payload_recommends_query():
+    """The new Read|Glob hook payload steers to `graphify query` like every other
+    surface, and frames reading raw source files as the displaced action."""
+    payload = json.dumps(_READ_SETTINGS_HOOK)
+    assert "graphify query" in payload
+    assert "reading raw source files" in payload
 
 
 def test_report_is_still_referenced_as_fallback():

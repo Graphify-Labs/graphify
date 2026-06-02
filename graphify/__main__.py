@@ -192,6 +192,8 @@ def _print_project_git_add_hint(paths: list[Path]) -> None:
 _SETTINGS_HOOK = {
     # Claude Code v2.1.117+ removed dedicated Grep/Glob tools; searches now go through Bash.
     # We match on Bash and inspect the command string to avoid firing on every shell call.
+    # The search arm nudges grep/rg/find/etc.; the content-read arm nudges multi-file
+    # cat/head/tail/sed/awk (single-file reads stay silent so the nudge does not become spam).
     "matcher": "Bash",
     "hooks": [
         {
@@ -200,12 +202,60 @@ _SETTINGS_HOOK = {
                 "CMD=$(python3 -c \""
                 "import json,sys; d=json.load(sys.stdin); "
                 "print(d.get('tool_input',d).get('command',''))\" 2>/dev/null || true); "
+                "REST=\"${CMD#* }\"; "
                 "case \"$CMD\" in "
+                # --- search commands (existing set, unchanged payload) ---
                 r"*grep*|*rg\ *|*ripgrep*|*find\ *|*fd\ *|*ack\ *|*ag\ *) "
                 "  [ -f graphify-out/graph.json ] && "
                 r"""  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify: knowledge graph at graphify-out/. For focused questions, run `graphify query \"<question>\"` (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context."}}' """
                 "  || true ;; "
+                # --- multi-file content reads (new) ---
+                r"cat\ *|head\ *|tail\ *|sed\ *|awk\ *) "
+                "  case \"$CMD\" in "
+                r"    *\>*|*\<\<*|*\|*|*graphify-out/*) ;; "
+                r"    *\**|*\?*|*\[*) "
+                "      [ -f graphify-out/graph.json ] && "
+                r"""      echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify: knowledge graph at graphify-out/. Before reading multiple source files, run `graphify query \"<question>\"` / `graphify explain \"<concept>\"` (scoped subgraph) or `graphify path \"<A>\" \"<B>\"` for relationships. Read raw files only to modify/debug specific code or when the graph lacks the detail."}}' """
+                "      || true ;; "
+                "    *) case \"$REST\" in "
+                r"        */*\ */*|*/*\ *.[A-Za-z0-9]*|*.[A-Za-z0-9]*\ */*|*.[A-Za-z0-9]*\ *.[A-Za-z0-9]*) "
+                "          [ -f graphify-out/graph.json ] && "
+                r"""          echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify: knowledge graph at graphify-out/. Before reading multiple source files, run `graphify query \"<question>\"` / `graphify explain \"<concept>\"` (scoped subgraph) or `graphify path \"<A>\" \"<B>\"` for relationships. Read raw files only to modify/debug specific code or when the graph lacks the detail."}}' """
+                "          || true ;; "
+                "      esac ;; "
+                "  esac ;; "
                 "esac"
+            ),
+        }
+    ],
+}
+
+_READ_SETTINGS_HOOK = {
+    # Claude Code routes file reads through the Read tool and globbing through Glob.
+    # A query-first nudge on Bash search alone misses the agent that answers a question
+    # by Read-ing many source files. We match Read|Glob, inspect the target path, and
+    # nudge only for source/doc files outside graphify-out/. Never blocks.
+    "matcher": "Read|Glob",
+    "hooks": [
+        {
+            "type": "command",
+            "command": (
+                "HIT=$(python3 -c \""
+                "import json,sys,os;"
+                "d=json.load(sys.stdin);"
+                "t=d.get('tool_input',d);"
+                "p=t.get('file_path') or t.get('pattern') or '';"
+                "b=t.get('path') or '';"
+                "s=(p+' '+b).lower();"
+                # never nudge on the graph's own outputs
+                "ok='graphify-out/' not in s and 'graphify-out\\\\\\\\' not in s;"
+                # source/doc suffix allowlist (closed set: unknown ext stays silent)
+                "exts=('.py','.js','.ts','.tsx','.jsx','.go','.rs','.java','.rb','.c','.h','.cpp','.hpp','.cc','.cs','.kt','.swift','.php','.scala','.sh','.md','.rst','.txt','.mdx');"
+                "hit=ok and any(e in s for e in exts);"
+                "sys.stdout.write('HIT' if hit else '')\" 2>/dev/null || true); "
+                "if [ \"$HIT\" = HIT ] && [ -f graphify-out/graph.json ]; then "
+                r"""  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify: knowledge graph at graphify-out/. For focused questions, run `graphify query \"<question>\"` (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of reading raw source files. Read GRAPH_REPORT.md only for broad architecture context."}}'; """
+                "fi || true"
             ),
         }
     ],
@@ -447,7 +497,7 @@ _CLAUDE_MD_SECTION = """\
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
 Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output. Prefer them over grepping or reading source files directly to answer a question.
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
@@ -465,7 +515,7 @@ This project has a knowledge graph at graphify-out/ with god nodes, community st
 When the user types `/graphify`, invoke the `skill` tool with `skill: "graphify"` before doing anything else.
 
 Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output. Prefer them over grepping or reading source files directly to answer a question.
 - Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
@@ -480,7 +530,7 @@ _GEMINI_MD_SECTION = """\
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
 Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output. Prefer them over grepping or reading source files directly to answer a question.
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
@@ -706,7 +756,7 @@ description: Consult the graphify knowledge graph at graphify-out/ for codebase 
 This project has a graphify knowledge graph at graphify-out/.
 
 Rules:
-- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (CLI) or `query_graph` (MCP). Use `graphify path "<A>" "<B>"` / `shortest_path` for relationships and `graphify explain "<concept>"` / `get_node` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
+- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (CLI) or `query_graph` (MCP). Use `graphify path "<A>" "<B>"` / `shortest_path` for relationships and `graphify explain "<concept>"` / `get_node` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output. Prefer them over grepping or reading source files directly to answer a question.
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
@@ -734,7 +784,7 @@ inclusion: always
 graphify: A knowledge graph of this project lives in `graphify-out/`. \
 For codebase, architecture, or dependency questions, when `graphify-out/graph.json` exists, \
 first run `graphify query "<question>"` (or `graphify path "<A>" "<B>"` / `graphify explain "<concept>"`). \
-These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output. \
+These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output. Prefer these over grepping or reading source files directly. \
 Read `GRAPH_REPORT.md` only for broad architecture review or when those commands do not surface enough context.
 """
 
@@ -893,7 +943,7 @@ alwaysApply: true
 
 This project has a graphify knowledge graph at graphify-out/.
 
-- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (or `graphify path "<A>" "<B>"` / `graphify explain "<concept>"`). These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
+- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (or `graphify path "<A>" "<B>"` / `graphify explain "<concept>"`). These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output. Prefer them over grepping or reading source files directly to answer a question.
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
@@ -936,7 +986,7 @@ _DEVIN_RULES = """\
 This project has a graphify knowledge graph at graphify-out/.
 
 Rules:
-- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (or `graphify path "<A>" "<B>"` / `graphify explain "<concept>"`). These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
+- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (or `graphify path "<A>" "<B>"` / `graphify explain "<concept>"`). These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output. Prefer them over grepping or reading source files directly to answer a question.
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
@@ -1547,8 +1597,9 @@ def _install_claude_hook(project_dir: Path) -> None:
     hooks = settings.setdefault("hooks", {})
     pre_tool = hooks.setdefault("PreToolUse", [])
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash") and "graphify" in str(h))]
+    hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Read|Glob") and "graphify" in str(h))]
     hooks["PreToolUse"].append(_SETTINGS_HOOK)
+    hooks["PreToolUse"].append(_READ_SETTINGS_HOOK)
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     print(f"  .claude/settings.json  ->  PreToolUse hook registered")
 
@@ -1563,7 +1614,7 @@ def _uninstall_claude_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash") and "graphify" in str(h))]
+    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Read|Glob") and "graphify" in str(h))]
     if len(filtered) == len(pre_tool):
         return
     settings["hooks"]["PreToolUse"] = filtered

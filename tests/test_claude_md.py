@@ -134,3 +134,68 @@ def test_uninstall_removes_settings_hook(tmp_path):
         settings = json.loads(settings_path.read_text())
         hooks = settings.get("hooks", {}).get("PreToolUse", [])
         assert not any(h.get("matcher") == "Bash" and "graphify" in str(h) for h in hooks)
+
+
+# ---------------------------------------------------------------------------
+# settings.json Read|Glob PreToolUse hook (issue #1114)
+# ---------------------------------------------------------------------------
+
+def test_install_settings_json_has_read_matcher(tmp_path):
+    """claude_install also registers a Read-tool PreToolUse hook so a query-first
+    nudge fires when the agent answers a question by Read-ing source files, not
+    just by grepping through Bash."""
+    import json
+    claude_install(tmp_path)
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    hooks = settings["hooks"]["PreToolUse"]
+    read_hooks = [h for h in hooks if "Read" in (h.get("matcher") or "") and "graphify" in str(h)]
+    assert len(read_hooks) == 1
+
+
+def test_install_settings_json_has_glob_matcher(tmp_path):
+    """The same hook (or a sibling) covers the Glob tool too."""
+    import json
+    claude_install(tmp_path)
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    hooks = settings["hooks"]["PreToolUse"]
+    assert any("Glob" in (h.get("matcher") or "") and "graphify" in str(h) for h in hooks)
+
+
+def test_install_settings_json_idempotent_read_hook(tmp_path):
+    """Reinstall must not accumulate duplicate Read hooks. This is the regression
+    that fails unless the matcher-keyed dedup filter is extended to cover the new
+    Read|Glob matcher."""
+    import json
+    claude_install(tmp_path)
+    claude_install(tmp_path)
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    hooks = settings["hooks"]["PreToolUse"]
+    read_hooks = [h for h in hooks if "Read" in (h.get("matcher") or "") and "graphify" in str(h)]
+    assert len(read_hooks) == 1
+
+
+def test_uninstall_removes_read_hook(tmp_path):
+    """claude_uninstall drops the Read|Glob graphify hook too (symmetric filter)."""
+    import json
+    claude_install(tmp_path)
+    claude_uninstall(tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    if settings_path.exists():
+        settings = json.loads(settings_path.read_text())
+        hooks = settings.get("hooks", {}).get("PreToolUse", [])
+        assert not any("Read" in (h.get("matcher") or "") and "graphify" in str(h) for h in hooks)
+
+
+def test_bash_hook_command_covers_multi_file_reads(tmp_path):
+    """The broadened Bash hook command also matches multi-file content reads
+    (cat/head/tail/sed/awk), not only the search tools."""
+    import json
+    claude_install(tmp_path)
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    hooks = settings["hooks"]["PreToolUse"]
+    bash_hooks = [h for h in hooks if h.get("matcher") == "Bash" and "graphify" in str(h)]
+    assert len(bash_hooks) == 1
+    cmd = bash_hooks[0]["hooks"][0]["command"]
+    assert r"cat\ *|head\ *|tail\ *|sed\ *|awk\ *" in cmd
+    # the original search arm must remain byte-identical
+    assert r"*grep*|*rg\ *|*ripgrep*|*find\ *|*fd\ *|*ack\ *|*ag\ *" in cmd
