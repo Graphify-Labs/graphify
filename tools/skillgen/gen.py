@@ -12,15 +12,18 @@ Usage (from the repo root)::
     python -m tools.skillgen --platform claude
     python -m tools.skillgen --check         # byte-diff render vs committed + expected/, exit 1 on drift
     python -m tools.skillgen --audit-coverage# assert every v8 heading lands in core or one fragment
+    python -m tools.skillgen --schema-singleton  # assert the file_type enum is byte-identical everywhere
+    python -m tools.skillgen --monolith-roundtrip# assert each monolith == v8 modulo the enum unification
     python -m tools.skillgen --bless         # rewrite expected/ from the current render
 
-The render is idempotent: fragments concatenate in a fixed order, the reference
-index is sorted by name, output is LF-newline, and no timestamp or version is
-ever written into a generated file.
+The render is idempotent: the core template's per-platform slots are filled in a
+fixed order, the reference index is sorted by name, output is LF-newline, and no
+timestamp or version is ever written into a generated file.
 """
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 import tomllib
@@ -39,6 +42,43 @@ PLATFORMS_TOML = SKILLGEN_DIR / "platforms.toml"
 # git instead of from disk.
 V8_BASELINE_REF = "origin/v8:graphify/skill.md"
 
+# The full six-value file_type enum (Decision A). Every rendered platform — split
+# or monolith — must carry exactly this enum, byte for byte. schema-singleton
+# guards it.
+ENUM_VALUES = "code|document|paper|image|rationale|concept"
+ENUM_PROSE = "`code`, `document`, `paper`, `image`, `rationale`, `concept`"
+
+# The eight on-demand references every split platform renders. Six are
+# shared-verbatim; two (extraction-spec, query) are variant-selected and their
+# source is resolved per platform from the extraction/query_variant fields.
+_SHARED_REFERENCES = {
+    "update": "references/shared/update.md",
+    "exports": "references/shared/exports.md",
+    "github-and-merge": "references/shared/github-and-merge.md",
+    "transcribe": "references/shared/transcribe.md",
+    "add-watch": "references/shared/add-watch.md",
+    "hooks": "references/shared/hooks.md",
+}
+_EXTRACTION_SOURCE = {
+    "verbose": "references/shared/extraction-spec.md",
+    "compact": "references/shared/extraction-spec-compact.md",
+}
+_QUERY_SOURCE = {
+    "cli": "references/query/cli.md",
+    "cli-inline": "references/query/cli-inline.md",
+}
+
+# The v8 claude monolith (the coverage baseline) carries claude's CLI + vocab-
+# expansion query design. These two sub-headings are private to that design
+# (Decision C). A cli-inline platform's query reference uses the NetworkX-
+# fallback traversal instead and has no vocab-expansion step, so these headings
+# are legitimately absent there and must not count as a coverage hole. The
+# top-level query/path/explain headings are still required everywhere.
+_CLI_ONLY_QUERY_HEADINGS = {
+    "### Step 0 — Constrained query expansion (REQUIRED before traversal)",
+    "### Step 1 — Traversal",
+}
+
 
 @dataclass(frozen=True)
 class Platform:
@@ -47,10 +87,28 @@ class Platform:
     key: str
     bucket: str
     skill_dst: str
+    # split-only template inputs
     core: str | None = None
     refs_dst: str | None = None
-    query_variant: str | None = None
-    references: dict[str, str] = field(default_factory=dict)
+    name: str = "graphify"
+    description: str | None = None
+    trigger: str | None = "/graphify"
+    dispatch: str | None = None
+    query_variant: str = "cli-inline"
+    extraction: str = "verbose"
+    shell: str = "posix"
+    claude_md: bool = False
+    extra_sections: tuple[str, ...] = ()
+    # monolith-only inputs
+    monolith: str | None = None
+    roundtrip_ref: str | None = None
+
+    def reference_sources(self) -> dict[str, str]:
+        """Resolve the rendered-name -> source-fragment map for this split platform."""
+        refs = dict(_SHARED_REFERENCES)
+        refs["extraction-spec"] = _EXTRACTION_SOURCE[self.extraction]
+        refs["query"] = _QUERY_SOURCE[self.query_variant]
+        return refs
 
 
 def load_platforms() -> dict[str, Platform]:
@@ -64,8 +122,17 @@ def load_platforms() -> dict[str, Platform]:
             skill_dst=cfg["skill_dst"],
             core=cfg.get("core"),
             refs_dst=cfg.get("refs_dst"),
-            query_variant=cfg.get("query_variant"),
-            references=dict(cfg.get("references", {})),
+            name=cfg.get("name", "graphify"),
+            description=cfg.get("description"),
+            trigger=cfg.get("trigger", "/graphify"),
+            dispatch=cfg.get("dispatch"),
+            query_variant=cfg.get("query_variant", "cli-inline"),
+            extraction=cfg.get("extraction", "verbose"),
+            shell=cfg.get("shell", "posix"),
+            claude_md=bool(cfg.get("claude_md", False)),
+            extra_sections=tuple(cfg.get("extra_sections", [])),
+            monolith=cfg.get("monolith"),
+            roundtrip_ref=cfg.get("roundtrip_ref"),
         )
     return out
 
@@ -90,31 +157,78 @@ class RenderedArtifact:
     content: str
 
 
+def _render_frontmatter(platform: Platform) -> str:
+    """Render the YAML frontmatter from the platform's name/description/trigger.
+
+    The trigger line is omitted when the platform has no trigger (kiro/pi).
+    The description is preserved verbatim from platforms.toml — never invented.
+    """
+    if platform.description is None:
+        raise ValueError(f"split platform '{platform.key}' is missing a description")
+    lines = ["---", f"name: {platform.name}", f'description: "{platform.description}"']
+    if platform.trigger:
+        lines.append(f"trigger: {platform.trigger}")
+    lines.append("---")
+    return "\n".join(lines)
+
+
+def _render_core(platform: Platform) -> str:
+    """Fill the shared core template's per-platform slots for this platform."""
+    template = _read_fragment(f"core/{platform.core}.md")
+
+    if platform.dispatch is None:
+        raise ValueError(f"split platform '{platform.key}' is missing a dispatch variant")
+
+    install = _read_fragment(f"shell/{platform.shell}.md").rstrip("\n")
+    dispatch = _read_fragment(f"dispatch/{platform.dispatch}.md").rstrip("\n")
+    query_stub = _read_fragment(f"query-stub/{platform.query_variant}.md").rstrip("\n")
+
+    if platform.extra_sections:
+        extra = "".join(
+            _read_fragment(f"extra/{name}.md").rstrip("\n") + "\n\n"
+            for name in platform.extra_sections
+        )
+    else:
+        extra = ""
+
+    body = (
+        template.replace("@@FRONTMATTER@@", _render_frontmatter(platform))
+        .replace("@@INSTALL@@", install)
+        .replace("@@DISPATCH@@", dispatch)
+        .replace("@@QUERY_STUB@@", query_stub)
+        .replace("@@EXTRA@@", extra)
+    )
+    if "@@" in body:
+        leftover = sorted(set(re.findall(r"@@\w+@@", body)))
+        raise ValueError(f"unfilled core slots for '{platform.key}': {leftover}")
+    return _normalise(body)
+
+
 def render(platform: Platform) -> list[RenderedArtifact]:
     """Render every committed artifact for one platform.
 
-    Returns the lean core SKILL.md plus one file per reference, in a stable
-    order (core first, then references sorted by name).
+    A split platform yields the lean core SKILL.md plus one file per reference,
+    in a stable order (core first, then references sorted by name). A monolith
+    yields a single inline skill body.
     """
     if platform.bucket == "monolith":
-        # Reserved for aider/devin in a later wave: a single inline skill body.
-        body = _read_fragment(f"core/{platform.core}.md")
+        body = _read_fragment(f"core/{platform.monolith}.md")
         return [RenderedArtifact(platform.skill_dst, body)]
 
     if platform.bucket != "split":
         raise ValueError(f"unknown bucket '{platform.bucket}' for platform '{platform.key}'")
 
-    artifacts: list[RenderedArtifact] = []
-    core_body = _read_fragment(f"core/{platform.core}.md")
-    artifacts.append(RenderedArtifact(platform.skill_dst, core_body))
-
     if platform.refs_dst is None:
         raise ValueError(f"split platform '{platform.key}' is missing refs_dst")
 
-    # Sorted reference index keeps the output idempotent regardless of toml order.
-    for name in sorted(platform.references):
-        src = platform.references[name]
-        body = _read_fragment(src)
+    artifacts: list[RenderedArtifact] = [
+        RenderedArtifact(platform.skill_dst, _render_core(platform))
+    ]
+
+    references = platform.reference_sources()
+    # Sorted reference index keeps the output idempotent regardless of map order.
+    for name in sorted(references):
+        body = _read_fragment(references[name])
         rel = f"{platform.refs_dst}/{name}.md"
         artifacts.append(RenderedArtifact(rel, body))
     return artifacts
@@ -218,16 +332,19 @@ def headings(markdown: str) -> list[str]:
 
 def _v8_baseline() -> str:
     """Read the immutable v8 monolith from git as the coverage baseline."""
+    return _git_show(V8_BASELINE_REF)
+
+
+def _git_show(ref: str) -> str:
+    """Read a blob from git, normalised to LF."""
     result = subprocess.run(
-        ["git", "show", V8_BASELINE_REF],
+        ["git", "show", ref],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        raise SystemExit(
-            f"error: could not read {V8_BASELINE_REF}: {result.stderr.strip()}"
-        )
+        raise SystemExit(f"error: could not read {ref}: {result.stderr.strip()}")
     return result.stdout
 
 
@@ -240,6 +357,9 @@ def audit_coverage(platform: Platform) -> list[str]:
     identity of the heading text in the core (the core's pointer headings are
     allowed to differ).
     """
+    if platform.bucket != "split":
+        return []  # monoliths are guarded by the round-trip validator instead.
+
     problems: list[str] = []
     baseline_headings = headings(_v8_baseline())
 
@@ -249,11 +369,15 @@ def audit_coverage(platform: Platform) -> list[str]:
 
     # Map each reference's rendered heading set.
     ref_headings: dict[str, set[str]] = {}
-    for name in platform.references:
+    for name in platform.reference_sources():
         rel = f"{platform.refs_dst}/{name}.md"
         ref_headings[name] = set(headings(by_path[rel]))
 
     for h in baseline_headings:
+        # Query sub-headings that are private to the CLI + vocab-expansion design
+        # do not appear in a cli-inline platform's query reference (Decision C).
+        if platform.query_variant != "cli" and h in _CLI_ONLY_QUERY_HEADINGS:
+            continue
         homes = []
         if h in core_headings:
             homes.append("core")
@@ -267,6 +391,98 @@ def audit_coverage(platform: Platform) -> list[str]:
     return problems
 
 
+def _enum_lines(content: str) -> list[str]:
+    """Return every line in a rendered artifact that carries the file_type enum."""
+    return [
+        line
+        for line in content.splitlines()
+        if ENUM_VALUES in line or ENUM_PROSE in line
+    ]
+
+
+# Legacy enum fragments that must never survive the six-value unification. Each
+# is a strict prefix of the full superset, so a line carrying one WITHOUT the
+# full superset is a stale 4- or 5-value enum.
+_LEGACY_ENUMS = (
+    "code|document|paper|image|rationale",  # 5-value
+    "code|document|paper|image",  # 4-value
+)
+
+
+def legacy_enum_lines(content: str) -> list[str]:
+    """Return lines carrying a legacy (sub-superset) file_type enum.
+
+    A line counts as legacy only when it has a 4- or 5-value enum fragment but
+    NOT the full six-value superset. The schema-singleton guard treats any such
+    line as drift.
+    """
+    out: list[str] = []
+    for line in content.splitlines():
+        if ENUM_VALUES in line:
+            continue
+        if any(bad in line for bad in _LEGACY_ENUMS):
+            out.append(line.strip())
+    return out
+
+
+def schema_singleton(platforms: dict[str, Platform]) -> list[str]:
+    """Assert the file_type enum block is byte-identical across every platform.
+
+    Every rendered artifact that mentions the enum — the verbose and compact
+    extraction specs, and the inline monolith bodies — must carry exactly the
+    six-value superset and nothing else. A stray 4- or 5-value enum line is the
+    failure this guard exists to catch.
+    """
+    problems: list[str] = []
+    for key in sorted(platforms):
+        for art in render(platforms[key]):
+            for stripped in legacy_enum_lines(art.content):
+                problems.append(
+                    f"[{key}] {art.path}: legacy file_type enum (not the six-value superset): {stripped!r}"
+                )
+    return problems
+
+
+def monolith_roundtrip(platform: Platform) -> list[str]:
+    """Assert a monolith renders diff-clean vs its v8 blob modulo the enum.
+
+    The only lines allowed to differ between the rendered monolith and the v8
+    source are the file_type enum lines, which are unified to the six-value
+    superset. Every other line must match byte for byte.
+    """
+    if platform.bucket != "monolith":
+        return []
+    if platform.roundtrip_ref is None:
+        return [f"[{platform.key}] monolith is missing roundtrip_ref"]
+
+    rendered = render(platform)[0].content
+    original = _normalise(_git_show(platform.roundtrip_ref))
+
+    rendered_lines = rendered.splitlines()
+    original_lines = original.splitlines()
+
+    problems: list[str] = []
+    if len(rendered_lines) != len(original_lines):
+        problems.append(
+            f"[{platform.key}] line count differs: rendered {len(rendered_lines)} vs v8 {len(original_lines)} "
+            "(the only allowed change is the enum line(s), which must not add or remove lines)"
+        )
+        return problems
+
+    for i, (r, o) in enumerate(zip(rendered_lines, original_lines), start=1):
+        if r == o:
+            continue
+        # The only permitted diff is an enum line unified to the six-value superset.
+        if ENUM_VALUES in r or ENUM_PROSE in r:
+            continue
+        problems.append(
+            f"[{platform.key}] line {i} differs and is not an enum unification:\n"
+            f"    v8:       {o!r}\n"
+            f"    rendered: {r!r}"
+        )
+    return problems
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="python -m tools.skillgen",
@@ -275,6 +491,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--platform", help="render or check just this platform key")
     p.add_argument("--check", action="store_true", help="byte-diff render vs committed + expected/, exit 1 on drift")
     p.add_argument("--audit-coverage", action="store_true", help="assert every v8 heading is single-homed")
+    p.add_argument("--schema-singleton", action="store_true", help="assert the file_type enum is byte-identical everywhere")
+    p.add_argument("--monolith-roundtrip", action="store_true", help="assert each monolith == v8 modulo the enum unification")
     p.add_argument("--bless", action="store_true", help="rewrite expected/ from the current render")
     return p.parse_args(argv)
 
@@ -289,14 +507,38 @@ def main(argv: list[str] | None = None) -> int:
         for key in keys:
             if key not in platforms:
                 raise SystemExit(f"error: unknown platform '{key}'")
-            probs = audit_coverage(platforms[key])
-            all_problems.extend(f"[{key}] {m}" for m in probs)
+            all_problems.extend(f"[{key}] {m}" for m in audit_coverage(platforms[key]))
         if all_problems:
             print("audit-coverage FAILED:", file=sys.stderr)
             for m in all_problems:
                 print(f"  {m}", file=sys.stderr)
             return 1
         print("audit-coverage OK: every v8 heading lands in the core or exactly one fragment.")
+        return 0
+
+    if args.schema_singleton:
+        problems = schema_singleton(
+            {args.platform: platforms[args.platform]} if args.platform else platforms
+        )
+        if problems:
+            print("schema-singleton FAILED (file_type enum drift):", file=sys.stderr)
+            for m in problems:
+                print(f"  {m}", file=sys.stderr)
+            return 1
+        print("schema-singleton OK: the file_type enum is the six-value superset everywhere.")
+        return 0
+
+    if args.monolith_roundtrip:
+        keys = [args.platform] if args.platform else sorted(platforms)
+        all_problems = []
+        for key in keys:
+            all_problems.extend(monolith_roundtrip(platforms[key]))
+        if all_problems:
+            print("monolith-roundtrip FAILED:", file=sys.stderr)
+            for m in all_problems:
+                print(f"  {m}", file=sys.stderr)
+            return 1
+        print("monolith-roundtrip OK: each monolith matches v8 modulo the enum unification.")
         return 0
 
     artifacts = render_all(platforms, only=args.platform)

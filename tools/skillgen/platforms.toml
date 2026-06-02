@@ -5,34 +5,64 @@
 # under graphify/. Run `python -m tools.skillgen` from the repo root to
 # regenerate, `--check` to fail on drift, `--bless` to refresh expected/.
 #
-# Each [platform.<key>] table declares how that host's skill is assembled.
-# Wave 2 ships claude only. The codex/windows/remaining hosts land in later
-# waves; their tables will be appended here without changing claude's render.
+# Each [platform.<key>] table declares how that host's skill is assembled. Split
+# platforms share one lean core template (fragments/core/core.md) with a handful
+# of per-platform slots filled from the fields below; monoliths render a single
+# inline body. The shared references are assembled automatically — a platform
+# declares only its deltas.
 #
 # Keys:
 #   bucket        split | monolith. split = lean core + references sidecar.
-#   core          core fragment basename under fragments/core/ (split only).
+#   core          core template basename under fragments/core/ (split only).
 #   skill_dst     rendered SKILL.md path, relative to the repo root.
 #   refs_dst      rendered references/ dir, relative to the repo root (split only).
-#   query_variant which fragments/references/query/<variant>.md to use.
-#   references    ordered map of rendered-name -> source fragment path
-#                 (relative to fragments/). The rendered reference index is
-#                 sorted by name regardless of this order, so the output is
-#                 idempotent.
+#   name          frontmatter name (default "graphify"; graphify-windows for windows).
+#   description   frontmatter description, PRESERVED VERBATIM per platform. Required.
+#   trigger       frontmatter trigger (default "/graphify"; omit -> no trigger line).
+#   dispatch      Part-B dispatch fragment basename under fragments/dispatch/.
+#   query_variant cli | cli-inline. Selects both the core query stub and the
+#                 query reference body.
+#   extraction    verbose | compact. Selects the extraction-spec reference body.
+#   shell         posix | powershell. Selects the Step 1 install fragment.
+#   claude_md     bool. Whether the host gets an always-on block (installer-side).
+#   extra_sections ordered list of extra tail fragments (under fragments/extra/),
+#                 inserted before Honesty Rules.
+#   monolith      core fragment basename for a monolith (monolith only).
+#   roundtrip_ref git ref the monolith must match modulo the enum (monolith only).
 
 [platform.claude]
 bucket = "split"
-core = "claude"
+core = "core"
 skill_dst = "graphify/skill.md"
 refs_dst = "graphify/skills/claude/references"
+description = "any input (code, docs, papers, images, videos) to knowledge graph. Use when user asks any question about a codebase, documents, or project content - especially if graphify-out/ exists, treat the question as a /graphify query."
+dispatch = "agent-tool-disk"
 query_variant = "cli"
+extraction = "verbose"
+shell = "posix"
+claude_md = true
 
-[platform.claude.references]
-"extraction-spec" = "references/shared/extraction-spec.md"
-"update" = "references/shared/update.md"
-"query" = "references/query/cli.md"
-"exports" = "references/shared/exports.md"
-"github-and-merge" = "references/shared/github-and-merge.md"
-"transcribe" = "references/shared/transcribe.md"
-"add-watch" = "references/shared/add-watch.md"
-"hooks" = "references/shared/hooks.md"
+[platform.codex]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-codex.md"
+refs_dst = "graphify/skills/codex/references"
+description = "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
+dispatch = "codex-agenttask"
+query_variant = "cli-inline"
+extraction = "compact"
+shell = "posix"
+
+[platform.windows]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-windows.md"
+refs_dst = "graphify/skills/windows/references"
+name = "graphify-windows"
+description = "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
+dispatch = "agent-tool-disk-powershell"
+query_variant = "cli-inline"
+extraction = "verbose"
+shell = "powershell"
+claude_md = true
+extra_sections = ["powershell-troubleshooting"]

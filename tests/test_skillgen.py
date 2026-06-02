@@ -197,3 +197,128 @@ def test_enum_is_full_six_value_superset_in_extraction_spec():
     spec = refs["extraction-spec.md"]
     assert "`code`, `document`, `paper`, `image`, `rationale`, `concept`" in spec
     assert '"file_type":"code|document|paper|image|rationale|concept"' in spec
+
+
+# --- codex + windows (the divergent split hosts) -------------------------------
+
+
+def _platform_artifacts(key):
+    platforms = gen.load_platforms()
+    arts = gen.render_all(platforms, only=key)
+    skill_dst = platforms[key].skill_dst
+    core = next(a for a in arts if a.path == skill_dst)
+    refs = {a.path.rsplit("/", 1)[-1]: a.content for a in arts if a.path != skill_dst}
+    return core.content, refs
+
+
+def test_check_passes_for_codex_and_windows():
+    """The committed codex/windows artifacts match a fresh render and expected/."""
+    platforms = gen.load_platforms()
+    for key in ("codex", "windows"):
+        artifacts = gen.render_all(platforms, only=key)
+        problems = gen.check(artifacts)
+        assert problems == [], f"[{key}]\n" + "\n".join(problems)
+
+
+def test_audit_coverage_passes_for_codex_and_windows():
+    """Every v8 heading single-homes for the cli-inline split hosts too."""
+    platforms = gen.load_platforms()
+    for key in ("codex", "windows"):
+        problems = gen.audit_coverage(platforms[key])
+        assert problems == [], f"[{key}]\n" + "\n".join(problems)
+
+
+def test_descriptions_are_preserved_verbatim():
+    """Each platform keeps its own v8 frontmatter description, never unified."""
+    core_claude, _ = _platform_artifacts("claude")
+    core_codex, _ = _platform_artifacts("codex")
+    core_windows, _ = _platform_artifacts("windows")
+    # claude keeps its own wording; codex/windows share the v8 progressive-host
+    # wording. They are NOT unified to one description in this stage.
+    assert "treat the question as a /graphify query." in core_claude
+    assert "Provides persistent graph with god nodes" in core_codex
+    assert "Provides persistent graph with god nodes" in core_windows
+    assert "treat the question as a /graphify query." not in core_codex
+
+
+def test_windows_frontmatter_name_and_shell_and_extra():
+    """windows: graphify-windows name, powershell install, troubleshooting tail."""
+    core, _ = _platform_artifacts("windows")
+    assert core.startswith("---\nname: graphify-windows\n")
+    assert "```powershell" in core
+    assert "function Find-GraphifyPython" in core
+    assert "## Troubleshooting" in core
+    assert "### PowerShell 5.1: Vertical scrolling stops working" in core
+    # The troubleshooting section sits before Honesty Rules, single separator.
+    assert "\n4. **Skip graspologic**" in core
+    assert core.index("## Troubleshooting") < core.index("## Honesty Rules")
+
+
+def test_codex_dispatch_is_agenttask_and_collects_in_memory():
+    """codex: spawn/wait/close_agent dispatch needing multi_agent = true."""
+    core, _ = _platform_artifacts("codex")
+    assert "spawn_agent" in core
+    assert "wait_agent" in core
+    assert "close_agent" in core
+    assert "multi_agent = true" in core
+    assert "Codex collects in memory" in core
+    # The B2 dispatch slot itself (Codex heading -> Step B3) must not carry the
+    # claude Agent-tool example. The shared Step B3 prose mentions the agent type
+    # in a re-run hint, so scope the check to the dispatch block only.
+    b2 = core[core.index("**Step B2"):core.index("**Step B3")]
+    assert "Concrete example for 3 chunks" not in b2
+    assert "Agent tool call 1" not in b2
+
+
+def test_codex_and_windows_unify_enum_to_six_values():
+    """codex (was 4-value) and windows (was 5-value) now carry the superset."""
+    for key in ("codex", "windows"):
+        _, refs = _platform_artifacts(key)
+        spec = refs["extraction-spec.md"]
+        assert "`code`, `document`, `paper`, `image`, `rationale`, `concept`" in spec
+        assert '"file_type":"code|document|paper|image|rationale|concept"' in spec
+        # No legacy 4-value enum survives anywhere in the rendered bundle.
+        for body in refs.values():
+            assert '"file_type":"code|document|paper|image"' not in body
+
+
+def test_codex_uses_compact_extraction_windows_uses_verbose():
+    """The extraction variant differs: codex compact, windows verbose."""
+    _, codex_refs = _platform_artifacts("codex")
+    _, windows_refs = _platform_artifacts("windows")
+    assert "(compact)" in codex_refs["extraction-spec.md"]
+    assert "(compact)" not in windows_refs["extraction-spec.md"]
+
+
+def test_cli_inline_query_stub_has_no_vocab_expansion():
+    """cli-inline hosts get the NetworkX-fallback stub, not vocab-expansion."""
+    for key in ("codex", "windows"):
+        core, refs = _platform_artifacts(key)
+        # The core stub points at the query reference without the vocab step.
+        assert "expand the question against the graph's own vocabulary" not in core
+        assert "NetworkX traversal" in core
+        # The query reference carries the path/explain headings but not the
+        # claude-only vocab-expansion sub-headings.
+        q = refs["query.md"]
+        assert "## For /graphify path" in q
+        assert "## For /graphify explain" in q
+        assert "Constrained query expansion" not in q
+
+
+def test_schema_singleton_passes_across_all_platforms():
+    """The file_type enum is the six-value superset in every rendered artifact."""
+    platforms = gen.load_platforms()
+    problems = gen.schema_singleton(platforms)
+    assert problems == [], "\n".join(problems)
+
+
+def test_schema_singleton_catches_legacy_enums():
+    """The guard's line scanner flags 4- and 5-value pipe enums, not the superset."""
+    four = 'file_type":"code|document|paper|image"'
+    five = 'file_type":"code|document|paper|image|rationale"'
+    superset = '"file_type":"code|document|paper|image|rationale|concept"'
+    assert gen.legacy_enum_lines(four) == [four]
+    assert gen.legacy_enum_lines(five) == [five]
+    # The full six-value superset is never flagged.
+    assert gen.legacy_enum_lines(superset) == []
+    assert gen.legacy_enum_lines("no enum here") == []

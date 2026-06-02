@@ -187,22 +187,49 @@ def test_hard_fail_when_bundle_dir_present_but_references_missing(tmp_path, monk
             shutil.rmtree(skills_root, ignore_errors=True)
 
 
+def _first_unbuilt_progressive_host():
+    """Find a progressive host whose bundle dir has not shipped in this build.
+
+    The wave ships bundles incrementally (claude, then codex/windows, then the
+    rest), so this picks whichever progressive host is still bundle-less right
+    now instead of hard-coding one that a later wave will build. Returns the
+    host name and its packaged monolith path, or (None, None) if all built.
+    """
+    skills_root = PKG_DIR / "skills"
+    for name, cfg in mainmod._PLATFORM_CONFIG.items():
+        bundle = cfg.get("skill_refs")
+        if not bundle:
+            continue
+        if (skills_root / bundle).exists():
+            continue
+        # Resolve the packaged monolith for this host (skill.md for claude-named).
+        suffix = "" if name == "claude" else f"-{name}"
+        monolith = PKG_DIR / f"skill{suffix}.md"
+        if monolith.exists():
+            return name, monolith
+    return None, None
+
+
 def test_unbuilt_bundle_host_falls_back_to_monolith(tmp_path):
     """A progressive host whose bundle has not shipped installs the monolith.
 
-    claude's bundle now ships, but the other progressive hosts (codex,
-    opencode, kilo, ...) do not have a bundle yet. They must still install their
-    byte-identical monolith with no references/ sidecar.
+    claude/codex/windows bundles now ship; the remaining progressive hosts do
+    not have a bundle yet. They must still install their byte-identical monolith
+    with no references/ sidecar. The host is chosen dynamically so this stays
+    valid as later waves ship more bundles.
     """
-    assert not (PKG_DIR / "skills" / "codex").exists(), (
-        "this test assumes codex's bundle has not shipped yet"
-    )
-    _install(tmp_path, "codex")
-    skill_dir = tmp_path / ".agents" / "skills" / "graphify"
+    host, monolith = _first_unbuilt_progressive_host()
+    if host is None:
+        pytest.skip("every progressive host bundle has shipped; nothing to fall back")
+    assert not (PKG_DIR / "skills" / mainmod._PLATFORM_CONFIG[host]["skill_refs"]).exists()
+    _install(tmp_path, host)
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        dst = mainmod._platform_skill_destination(host)
+    skill_dir = dst.parent
     assert (skill_dir / "SKILL.md").exists()
     assert not (skill_dir / "references").exists()
-    # Byte-identical to the packaged monolithic skill-codex.md.
-    assert (skill_dir / "SKILL.md").read_bytes() == (PKG_DIR / "skill-codex.md").read_bytes()
+    # Byte-identical to the packaged monolith for that host.
+    assert (skill_dir / "SKILL.md").read_bytes() == monolith.read_bytes()
 
 
 def test_claude_install_ships_lean_core_and_references(tmp_path):
