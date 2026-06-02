@@ -52,6 +52,15 @@ def _check_skill_version(skill_dst: Path) -> None:
     if not skill_dst.exists():
         print("  warning: skill dir exists but SKILL.md is missing. Run 'graphify install' to repair.")
         return
+    # A progressive SKILL.md links to its references/ sidecar. If the body points
+    # at references/ but the dir is gone (manual delete, partial upgrade), the
+    # on-demand fragments won't load — flag it for repair.
+    try:
+        body = skill_dst.read_text(encoding="utf-8")
+    except OSError:
+        body = ""
+    if "references/" in body and not (skill_dst.parent / "references").exists():
+        print("  warning: skill references/ sidecar is missing. Run 'graphify install' to repair.", file=sys.stderr)
     installed = version_file.read_text(encoding="utf-8").strip()
     if installed != __version__:
         print(f"  warning: skill is from graphify {installed}, package is {__version__}. Run 'graphify install' to update.", file=sys.stderr)
@@ -104,12 +113,76 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
     return Path.home() / cfg["skill_dst"]
 
 
+def _packaged_skill_refs_dir(platform_name: str) -> Path | None:
+    """Return the packaged references source dir for a progressive platform, else None.
+
+    A platform opts into progressive disclosure by setting ``skill_refs`` in its
+    ``_PLATFORM_CONFIG`` entry. The value names a bundle under
+    ``graphify/skills/<bundle>/references/``. Reuse keys (e.g. trae-cn) point at
+    their twin's bundle. ``gemini`` has no config entry and is never progressive.
+
+    Returns None when this build ships no split bundles at all (the
+    ``graphify/skills/`` root is absent). In that state every platform installs
+    today's monolithic SKILL.md and no references/ sidecar, which is the
+    intended behavior until the fragment bundles land in the package.
+    """
+    if platform_name == "gemini":
+        return None
+    bundle = _PLATFORM_CONFIG[platform_name].get("skill_refs")
+    if not bundle:
+        return None
+    if not (Path(__file__).parent / "skills").is_dir():
+        return None
+    return Path(__file__).parent / "skills" / bundle / "references"
+
+
+def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
+    """Atomically install a packaged references/ sidecar next to SKILL.md.
+
+    Stages the packaged dir into ``references.tmp`` (copytree), drops any stale
+    ``references/`` already on disk, then ``os.replace``-renames the staged dir
+    into place. The rename is atomic on the same filesystem, so an interrupted
+    install never leaves a half-written references/ visible to the agent.
+    """
+    refs_dst = skill_dst.parent / "references"
+    refs_staged = skill_dst.parent / "references.tmp"
+    if refs_staged.exists():
+        shutil.rmtree(refs_staged)
+    try:
+        shutil.copytree(refs_src, refs_staged)
+        if refs_dst.exists():
+            shutil.rmtree(refs_dst)
+        os.replace(refs_staged, refs_dst)
+    except Exception:
+        if refs_staged.exists():
+            shutil.rmtree(refs_staged, ignore_errors=True)
+        raise
+
+
 def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
-    """Copy a packaged skill file and write its version stamp."""
+    """Copy a packaged skill file and write its version stamp.
+
+    For progressive platforms (those with ``skill_refs`` set), the packaged
+    ``references/`` sidecar is installed alongside SKILL.md and the single
+    ``.graphify_version`` stamp covers both. For monolith platforms (no
+    ``skill_refs``), any orphan ``references/`` left by a prior progressive
+    install is removed so the on-disk layout matches the package.
+    """
     skill_file = "skill.md" if platform_name == "gemini" else _PLATFORM_CONFIG[platform_name]["skill_file"]
     skill_src = Path(__file__).parent / skill_file
     if not skill_src.exists():
         print(f"error: {skill_file} not found in package - reinstall graphify", file=sys.stderr)
+        sys.exit(1)
+
+    refs_src = _packaged_skill_refs_dir(platform_name)
+    if refs_src is not None and not refs_src.exists():
+        # Progressive platform declared a references bundle that is missing from
+        # the package. Fail loud rather than silently shipping an empty sidecar.
+        print(
+            f"error: references for '{platform_name}' not found in package "
+            f"({refs_src}) - reinstall graphify",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
@@ -124,6 +197,16 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         except OSError:
             pass
         raise
+
+    if refs_src is not None:
+        _install_skill_references(skill_dst, refs_src)
+        print(f"  references       ->  {skill_dst.parent / 'references'}")
+    else:
+        # Monolith (or progressive-with-no-refs): clear any orphan references/.
+        orphan_refs = skill_dst.parent / "references"
+        if orphan_refs.exists():
+            shutil.rmtree(orphan_refs)
+
     (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
     print(f"  skill installed  ->  {skill_dst}")
     return skill_dst
@@ -140,6 +223,10 @@ def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir
     version_file = skill_dst.parent / ".graphify_version"
     if version_file.exists():
         version_file.unlink()
+        removed = True
+    refs_dir = skill_dst.parent / "references"
+    if refs_dir.exists():
+        shutil.rmtree(refs_dir)
         removed = True
     for d in (skill_dst.parent, skill_dst.parent.parent, skill_dst.parent.parent.parent):
         try:
@@ -226,23 +313,28 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_file": "skill.md",
         "skill_dst": Path(".claude") / "skills" / "graphify" / "SKILL.md",
         "claude_md": True,
+        "skill_refs": "claude",
     },
     "codex": {
         "skill_file": "skill-codex.md",
         "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "codex",
     },
     "opencode": {
         "skill_file": "skill-opencode.md",
         "skill_dst": Path(".config") / "opencode" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "opencode",
     },
     "kilo": {
         "skill_file": "skill-kilo.md",
         "skill_dst": Path(".config") / "kilo" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "kilo",
     },
     "aider": {
+        # Monolith: aider ships the full SKILL.md inline, no references/ sidecar.
         "skill_file": "skill-aider.md",
         "skill_dst": Path(".aider") / "graphify" / "SKILL.md",
         "claude_md": False,
@@ -251,68 +343,87 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_file": "skill-copilot.md",
         "skill_dst": Path(".copilot") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "copilot",
     },
     "claw": {
         "skill_file": "skill-claw.md",
         "skill_dst": Path(".openclaw") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "claw",
     },
     "droid": {
         "skill_file": "skill-droid.md",
         "skill_dst": Path(".factory") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "droid",
     },
     "trae": {
         "skill_file": "skill-trae.md",
         "skill_dst": Path(".trae") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "trae",
     },
     "trae-cn": {
+        # Reuses trae's split bundle (same skill body + references).
         "skill_file": "skill-trae.md",
         "skill_dst": Path(".trae-cn") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "trae",
     },
     "hermes": {
+        # Reuses claw's split bundle.
         "skill_file": "skill-claw.md",
         "skill_dst": Path(".hermes") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "claw",
     },
     "kiro": {
         "skill_file": "skill-kiro.md",
         "skill_dst": Path(".kiro") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "kiro",
     },
     "pi": {
         "skill_file": "skill-pi.md",
         "skill_dst": Path(".pi") / "agent" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "pi",
     },
     "antigravity": {
+        # Rides claude's split bundle (shares skill.md).
         "skill_file": "skill.md",
         "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "claude",
     },
     "antigravity-windows": {
+        # Rides windows' split bundle.
         "skill_file": "skill-windows.md",
         "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "windows",
     },
     "windows": {
         "skill_file": "skill-windows.md",
         "skill_dst": Path(".claude") / "skills" / "graphify" / "SKILL.md",
         "claude_md": True,
+        "skill_refs": "windows",
     },
     "kimi": {
+        # Reuses claude's split bundle (shares skill.md).
         "skill_file": "skill.md",
         "skill_dst": Path(".kimi") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "claude",
     },
     "amp": {
         "skill_file": "skill-amp.md",
         "skill_dst": Path(".amp") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+        "skill_refs": "amp",
     },
     "devin": {
+        # Monolith: devin ships the full SKILL.md inline, no references/ sidecar.
         "skill_file": "skill-devin.md",
         # User scope: ~/.config/devin/skills/graphify/SKILL.md
         # Project scope: .devin/skills/graphify/SKILL.md (overridden in _platform_skill_destination)
@@ -625,11 +736,31 @@ Type `/graphify` in Copilot Chat to build or update the graph.
 def vscode_install(project_dir: Path | None = None) -> None:
     """Install graphify skill for VS Code Copilot Chat + write .github/copilot-instructions.md."""
     skill_src = Path(__file__).parent / "skill-vscode.md"
+    refs_bundle = "vscode"
     if not skill_src.exists():
         skill_src = Path(__file__).parent / "skill-copilot.md"
+        refs_bundle = "copilot"
     skill_dst = Path.home() / ".copilot" / "skills" / "graphify" / "SKILL.md"
     skill_dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(skill_src, skill_dst)
+    tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
+    try:
+        shutil.copy(skill_src, tmp_dst)
+        os.replace(tmp_dst, skill_dst)
+    except Exception:
+        try:
+            tmp_dst.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    # Progressive-capable: install the packaged references/ sidecar when present.
+    refs_src = Path(__file__).parent / "skills" / refs_bundle / "references"
+    if refs_src.exists():
+        _install_skill_references(skill_dst, refs_src)
+        print(f"  references       ->  {skill_dst.parent / 'references'}")
+    else:
+        orphan_refs = skill_dst.parent / "references"
+        if orphan_refs.exists():
+            shutil.rmtree(orphan_refs)
     (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
     print(f"  skill installed  ->  {skill_dst}")
 
@@ -665,6 +796,9 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
     version_file = skill_dst.parent / ".graphify_version"
     if version_file.exists():
         version_file.unlink()
+    refs_dir = skill_dst.parent / "references"
+    if refs_dir.exists():
+        shutil.rmtree(refs_dir)
     for d in (
         skill_dst.parent,
         skill_dst.parent.parent,
@@ -873,6 +1007,9 @@ def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
     version_file = skill_dst.parent / ".graphify_version"
     if version_file.exists():
         version_file.unlink()
+    refs_dir = skill_dst.parent / "references"
+    if refs_dir.exists():
+        shutil.rmtree(refs_dir)
     for d in (
         skill_dst.parent,
         skill_dst.parent.parent,
@@ -1711,7 +1848,10 @@ def main() -> None:
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
     _silent_cmds = {"install", "uninstall", "hook-check"}
     if not any(arg in _silent_cmds for arg in sys.argv):
-        for skill_dst in {Path.home() / cfg["skill_dst"] for cfg in _PLATFORM_CONFIG.values()}:
+        # Resolve each platform's real user-scope destination so per-platform
+        # overrides (gemini, opencode, devin, antigravity, amp) check the dir
+        # they actually install into, not the bare cfg['skill_dst'].
+        for skill_dst in {_platform_skill_destination(name) for name in _PLATFORM_CONFIG}:
             _check_skill_version(skill_dst)
 
     if len(sys.argv) >= 2 and sys.argv[1] in ("-v", "--version", "version"):
