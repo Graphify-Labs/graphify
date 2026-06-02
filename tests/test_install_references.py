@@ -194,3 +194,43 @@ def test_monolith_install_clears_orphan_references(tmp_path, fake_bundle):
     _install(tmp_path, "aider")
     assert skill_dst.exists()
     assert not orphan.exists()
+
+
+@pytest.fixture()
+def fake_amp_bundle():
+    """Stage a fake references/ bundle for amp inside the real package."""
+    bundle = mainmod._PLATFORM_CONFIG["amp"]["skill_refs"]
+    skills_root = PKG_DIR / "skills"
+    refs_dir = skills_root / bundle / "references"
+    created_root = not skills_root.exists()
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    (refs_dir / "exports.md").write_text("# amp exports fragment\n", encoding="utf-8")
+    try:
+        yield
+    finally:
+        import shutil
+        if created_root:
+            shutil.rmtree(skills_root, ignore_errors=True)
+        else:
+            shutil.rmtree(skills_root / bundle, ignore_errors=True)
+
+
+def test_amp_user_install_carries_references(tmp_path, monkeypatch, fake_amp_bundle):
+    """amp is progressive: its corrected user dir also gets the references/ sidecar."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install"])
+        main()
+        skill_dir = home / ".config" / "agents" / "skills" / "graphify"
+        assert (skill_dir / "SKILL.md").exists()
+        assert (skill_dir / "references" / "exports.md").exists()
+
+        monkeypatch.setattr(sys, "argv", ["graphify", "amp", "uninstall"])
+        main()
+
+    assert not skill_dir.exists()

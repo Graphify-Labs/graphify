@@ -784,3 +784,104 @@ def test_gemini_uninstall_noop_if_not_installed(tmp_path):
     from graphify.__main__ import gemini_uninstall
 
     gemini_uninstall(tmp_path)  # should not raise
+
+
+def test_amp_user_install_lands_in_config_agents(tmp_path, monkeypatch):
+    """`graphify amp install` (user scope) must drop the skill into an Amp search
+    root: ~/.config/agents/skills, not the old ~/.amp/skills."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install"])
+    with patch("graphify.__main__.Path.home", return_value=home):
+        main()
+
+    correct = home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
+    old = home / ".amp" / "skills" / "graphify" / "SKILL.md"
+    assert correct.exists(), f"amp skill missing from Amp search root {correct}"
+    assert not old.exists(), f"amp skill must not land at the unsearched {old}"
+    # AGENTS.md still written in the project for the always-on rules.
+    assert (project / "AGENTS.md").exists()
+
+
+def test_amp_install_cleans_legacy_amp_skills_dir(tmp_path, monkeypatch):
+    """A pre-fix ~/.amp/skills/graphify install is removed on the next install."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    legacy = home / ".amp" / "skills" / "graphify"
+    legacy.mkdir(parents=True)
+    (legacy / "SKILL.md").write_text("old amp skill", encoding="utf-8")
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install"])
+    with patch("graphify.__main__.Path.home", return_value=home):
+        main()
+
+    assert not legacy.exists(), "legacy ~/.amp/skills/graphify should be cleaned up"
+    assert (home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md").exists()
+
+
+def test_amp_user_uninstall_removes_skill_and_agents(tmp_path, monkeypatch):
+    """`graphify amp uninstall` removes the user-scope skill and AGENTS.md section."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install"])
+        main()
+        skill = home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
+        assert skill.exists()
+
+        monkeypatch.setattr(sys, "argv", ["graphify", "amp", "uninstall"])
+        main()
+
+    assert not skill.exists()
+    assert not (home / ".config" / "agents" / "skills").exists()
+    assert not (project / "AGENTS.md").exists()
+
+
+def test_amp_project_install_lands_in_dot_agents(tmp_path, monkeypatch):
+    """Project-scope amp install lands in .agents/skills, an Amp project search root."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install", "--project"])
+    with patch("graphify.__main__.Path.home", return_value=home):
+        main()
+
+    assert (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert not (project / ".amp" / "skills" / "graphify" / "SKILL.md").exists()
+    assert (project / "AGENTS.md").exists()
+    # User scope untouched.
+    assert not (home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md").exists()
+
+
+def test_uninstall_all_removes_amp_user_skill(tmp_path, monkeypatch):
+    """The user-scope `graphify uninstall` enumeration removes the amp skill."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install"])
+        main()
+        skill = home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
+        assert skill.exists()
+
+        monkeypatch.setattr(sys, "argv", ["graphify", "uninstall"])
+        main()
+
+    assert not skill.exists()

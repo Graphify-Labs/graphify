@@ -98,6 +98,11 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".devin" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "devin" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "amp":
+        if project:
+            return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
+
     if platform_name in ("antigravity", "antigravity-windows"):
         if project:
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
@@ -417,8 +422,10 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_refs": "claude",
     },
     "amp": {
+        # Amp searches .agents/skills (project) and ~/.config/agents/skills (user),
+        # not .amp/skills. The user-scope path is set in _platform_skill_destination.
         "skill_file": "skill-amp.md",
-        "skill_dst": Path(".amp") / "skills" / "graphify" / "SKILL.md",
+        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "amp",
     },
@@ -1478,6 +1485,35 @@ def _agents_install(project_dir: Path, platform: str) -> None:
         )
 
 
+def _amp_legacy_cleanup() -> None:
+    """Best-effort removal of the pre-fix ~/.amp/skills/graphify install dir.
+
+    Older graphify versions wrote the Amp skill to ~/.amp/skills, which Amp does
+    not search. Clean it up on install so a stale, never-loaded copy does not
+    linger. Failures are ignored (the new path is what matters).
+    """
+    legacy = Path.home() / ".amp" / "skills" / "graphify"
+    if legacy.exists():
+        shutil.rmtree(legacy, ignore_errors=True)
+        if not legacy.exists():
+            print(f"  legacy removed   ->  {legacy}")
+
+
+def _amp_install(project_dir: Path | None = None) -> None:
+    """User-scope Amp install: skill into ~/.config/agents/skills + AGENTS.md."""
+    _amp_legacy_cleanup()
+    _copy_skill_file("amp")
+    _agents_install(project_dir or Path("."), "amp")
+
+
+def _amp_uninstall(project_dir: Path | None = None) -> None:
+    """User-scope Amp uninstall: remove the skill and the AGENTS.md section."""
+    removed = _remove_skill_file("amp")
+    if removed:
+        print("skill removed")
+    _agents_uninstall(project_dir or Path("."), platform="amp")
+
+
 def _project_install(platform_name: str, project_dir: Path | None = None) -> None:
     """Install platform skill/config files in the current project."""
     project_dir = project_dir or Path(".")
@@ -1722,6 +1758,9 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     _antigravity_uninstall(pd)
     # AGENTS.md covers: codex, aider, opencode, claw, droid, trae, trae-cn, hermes, copilot
     _agents_uninstall(pd)
+    # Amp also drops a user-scope skill at ~/.config/agents/skills, which the
+    # AGENTS.md cleanup above does not touch.
+    _remove_skill_file("amp")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
@@ -1862,7 +1901,7 @@ def main() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codex|opencode|aider|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codex|opencode|aider|amp|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -2215,7 +2254,22 @@ def main() -> None:
         else:
             print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
             sys.exit(1)
-    elif cmd in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif cmd == "amp":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("amp", Path("."))
+            else:
+                _amp_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("amp", Path("."))
+            else:
+                _amp_uninstall(Path("."))
+        else:
+            print("Usage: graphify amp [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd == "install":
             if "--project" in sys.argv[3:]:
