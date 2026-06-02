@@ -1,0 +1,38 @@
+# skillgen platform manifest
+#
+# Build-time only. This file (and everything under tools/skillgen/) is NOT
+# shipped in the wheel; it drives the render of the committed skill artifacts
+# under graphify/. Run `python -m tools.skillgen` from the repo root to
+# regenerate, `--check` to fail on drift, `--bless` to refresh expected/.
+#
+# Each [platform.<key>] table declares how that host's skill is assembled.
+# Wave 2 ships claude only. The codex/windows/remaining hosts land in later
+# waves; their tables will be appended here without changing claude's render.
+#
+# Keys:
+#   bucket        split | monolith. split = lean core + references sidecar.
+#   core          core fragment basename under fragments/core/ (split only).
+#   skill_dst     rendered SKILL.md path, relative to the repo root.
+#   refs_dst      rendered references/ dir, relative to the repo root (split only).
+#   query_variant which fragments/references/query/<variant>.md to use.
+#   references    ordered map of rendered-name -> source fragment path
+#                 (relative to fragments/). The rendered reference index is
+#                 sorted by name regardless of this order, so the output is
+#                 idempotent.
+
+[platform.claude]
+bucket = "split"
+core = "claude"
+skill_dst = "graphify/skill.md"
+refs_dst = "graphify/skills/claude/references"
+query_variant = "cli"
+
+[platform.claude.references]
+"extraction-spec" = "references/shared/extraction-spec.md"
+"update" = "references/shared/update.md"
+"query" = "references/query/cli.md"
+"exports" = "references/shared/exports.md"
+"github-and-merge" = "references/shared/github-and-merge.md"
+"transcribe" = "references/shared/transcribe.md"
+"add-watch" = "references/shared/add-watch.md"
+"hooks" = "references/shared/hooks.md"

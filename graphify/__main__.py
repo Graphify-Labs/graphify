@@ -126,19 +126,23 @@ def _packaged_skill_refs_dir(platform_name: str) -> Path | None:
     ``graphify/skills/<bundle>/references/``. Reuse keys (e.g. trae-cn) point at
     their twin's bundle. ``gemini`` has no config entry and is never progressive.
 
-    Returns None when this build ships no split bundles at all (the
-    ``graphify/skills/`` root is absent). In that state every platform installs
-    today's monolithic SKILL.md and no references/ sidecar, which is the
-    intended behavior until the fragment bundles land in the package.
+    Bundles ship one platform-group at a time. A host whose bundle directory
+    ``graphify/skills/<bundle>/`` is not in this build has not gone progressive
+    yet, so this returns None and the host installs today's monolithic SKILL.md
+    with no references/ sidecar. Only when the bundle directory IS present does
+    this return the references path; if that directory then lacks its
+    ``references/`` subdir, ``_copy_skill_file`` hard-fails (a malformed bundle,
+    the empty-sidecar regression the wheel-content test also guards).
     """
     if platform_name == "gemini":
         return None
     bundle = _PLATFORM_CONFIG[platform_name].get("skill_refs")
     if not bundle:
         return None
-    if not (Path(__file__).parent / "skills").is_dir():
+    bundle_dir = Path(__file__).parent / "skills" / bundle
+    if not bundle_dir.is_dir():
         return None
-    return Path(__file__).parent / "skills" / bundle / "references"
+    return bundle_dir / "references"
 
 
 def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:

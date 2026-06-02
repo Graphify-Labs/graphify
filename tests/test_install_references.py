@@ -1,15 +1,21 @@
 """Tests for the progressive-disclosure references/ sidecar install path.
 
-The real fragment bundles do not ship in the package yet (they land in a later
-phase), so these tests stage a hand-made fake bundle under
-``graphify/skills/<platform>/references/`` and exercise the full install,
-version-stamp, reinstall, and uninstall flow through the live code path. This
-proves the net-new dir-copy plumbing without the real fragments.
+The real claude bundle now ships in the package (graphify/skills/claude/), so
+claude and its reuse twins (antigravity, kimi) install progressively: a lean
+SKILL.md plus a references/ sidecar. Every other host whose bundle has not
+shipped yet still installs today's byte-identical monolith.
+
+The plumbing tests below stage a hand-made fake bundle in claude's slot so the
+dir-copy, version-stamp, reinstall, and uninstall flow can be exercised with
+fixed, asserted content. The fixture backs up the real committed bundle and
+restores it on teardown, so the working tree is never disturbed.
 """
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,28 +30,38 @@ PKG_DIR = Path(graphify.__file__).parent
 
 @pytest.fixture()
 def fake_bundle():
-    """Create a fake references/ bundle inside the real package for one platform.
+    """Stage a fake references/ bundle in claude's slot, then restore the real one.
 
-    Yields the platform name. Cleans up the staged dir afterward so the working
-    tree is left untouched. claude is used because its skill_refs bundle is
-    "claude" and it has no extra plugin wiring.
+    Yields the platform name. claude is used because its skill_refs bundle is
+    "claude" and it has no extra plugin wiring. The real committed bundle is
+    moved aside for the duration and put back afterward, so the on-disk package
+    is left exactly as found.
     """
     platform = "claude"
     bundle = mainmod._PLATFORM_CONFIG[platform]["skill_refs"]
     skills_root = PKG_DIR / "skills"
-    refs_dir = skills_root / bundle / "references"
+    bundle_dir = skills_root / bundle
+    refs_dir = bundle_dir / "references"
+
     created_root = not skills_root.exists()
+    backup_dir = None
+    if bundle_dir.exists():
+        backup_dir = Path(tempfile.mkdtemp()) / "bundle_backup"
+        shutil.move(str(bundle_dir), str(backup_dir))
+
     refs_dir.mkdir(parents=True, exist_ok=True)
     (refs_dir / "extraction-spec.md").write_text("# extraction spec fragment\n", encoding="utf-8")
     (refs_dir / "query.md").write_text("# query fragment\n", encoding="utf-8")
     try:
         yield platform
     finally:
-        import shutil
-        if created_root:
+        if bundle_dir.exists():
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+        if backup_dir is not None:
+            shutil.move(str(backup_dir), str(bundle_dir))
+            shutil.rmtree(backup_dir.parent, ignore_errors=True)
+        elif created_root:
             shutil.rmtree(skills_root, ignore_errors=True)
-        else:
-            shutil.rmtree(skills_root / bundle, ignore_errors=True)
 
 
 def _install(tmp_path, platform):
@@ -126,7 +142,6 @@ def test_check_skill_version_warns_on_missing_references(tmp_path, fake_bundle, 
     skill = skill_dir / "SKILL.md"
     # Force the body to reference the sidecar, then delete the sidecar.
     skill.write_text("See references/extraction-spec.md for the schema.\n", encoding="utf-8")
-    import shutil
     shutil.rmtree(skill_dir / "references")
 
     mainmod._check_skill_version(skill)
@@ -135,15 +150,27 @@ def test_check_skill_version_warns_on_missing_references(tmp_path, fake_bundle, 
     assert "references/ sidecar is missing" in err
 
 
-def test_hard_fail_when_declared_bundle_missing(tmp_path, monkeypatch):
-    """skills/ present but a declared bundle absent is a packaging error: exit 1."""
-    # Stage a skills/ root with a DIFFERENT bundle so the root exists but
-    # claude's declared references dir is missing.
+def test_hard_fail_when_bundle_dir_present_but_references_missing(tmp_path, monkeypatch):
+    """A bundle dir that exists but has no references/ subdir is a malformed
+    package: exit 1 rather than silently shipping an empty sidecar.
+
+    A wholly-absent bundle dir is the opposite case (a host whose wave has not
+    shipped) and falls back to monolith, covered by
+    ``test_unbuilt_bundle_host_falls_back_to_monolith``.
+    """
+    platform = "claude"
+    bundle = mainmod._PLATFORM_CONFIG[platform]["skill_refs"]
     skills_root = PKG_DIR / "skills"
+    bundle_dir = skills_root / bundle
+
     created_root = not skills_root.exists()
-    other = skills_root / "decoy" / "references"
-    other.mkdir(parents=True, exist_ok=True)
-    (other / "x.md").write_text("x\n", encoding="utf-8")
+    backup_dir = None
+    if bundle_dir.exists():
+        backup_dir = Path(tempfile.mkdtemp()) / "bundle_backup"
+        shutil.move(str(bundle_dir), str(backup_dir))
+    # Bundle dir present, but no references/ subdir inside it.
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "SKILL.md").write_text("body\n", encoding="utf-8")
     try:
         with pytest.raises(SystemExit) as exc:
             with patch("graphify.__main__.Path.home", return_value=tmp_path):
@@ -151,23 +178,75 @@ def test_hard_fail_when_declared_bundle_missing(tmp_path, monkeypatch):
                 mainmod._copy_skill_file("claude")
         assert exc.value.code == 1
     finally:
-        import shutil
-        if created_root:
+        if bundle_dir.exists():
+            shutil.rmtree(bundle_dir, ignore_errors=True)
+        if backup_dir is not None:
+            shutil.move(str(backup_dir), str(bundle_dir))
+            shutil.rmtree(backup_dir.parent, ignore_errors=True)
+        elif created_root:
             shutil.rmtree(skills_root, ignore_errors=True)
-        else:
-            shutil.rmtree(skills_root / "decoy", ignore_errors=True)
 
 
-def test_no_skills_dir_ships_monolith_only(tmp_path):
-    """With no skills/ root, every progressive host gets a plain SKILL.md."""
-    # The package ships no skills/ dir in this phase.
-    assert not (PKG_DIR / "skills").exists(), "this test assumes no bundles ship yet"
-    _install(tmp_path, "claude")
-    skill_dir = tmp_path / ".claude" / "skills" / "graphify"
+def test_unbuilt_bundle_host_falls_back_to_monolith(tmp_path):
+    """A progressive host whose bundle has not shipped installs the monolith.
+
+    claude's bundle now ships, but the other progressive hosts (codex,
+    opencode, kilo, ...) do not have a bundle yet. They must still install their
+    byte-identical monolith with no references/ sidecar.
+    """
+    assert not (PKG_DIR / "skills" / "codex").exists(), (
+        "this test assumes codex's bundle has not shipped yet"
+    )
+    _install(tmp_path, "codex")
+    skill_dir = tmp_path / ".agents" / "skills" / "graphify"
     assert (skill_dir / "SKILL.md").exists()
     assert not (skill_dir / "references").exists()
-    # Byte-identical to the packaged monolithic skill.md.
-    assert (skill_dir / "SKILL.md").read_bytes() == (PKG_DIR / "skill.md").read_bytes()
+    # Byte-identical to the packaged monolithic skill-codex.md.
+    assert (skill_dir / "SKILL.md").read_bytes() == (PKG_DIR / "skill-codex.md").read_bytes()
+
+
+def test_claude_install_ships_lean_core_and_references(tmp_path):
+    """claude's real bundle ships: a lean SKILL.md plus the references/ sidecar."""
+    skills_claude = PKG_DIR / "skills" / "claude" / "references"
+    assert skills_claude.is_dir(), "claude bundle must ship in this build"
+    _install(tmp_path, "claude")
+    skill_dir = tmp_path / ".claude" / "skills" / "graphify"
+    skill = skill_dir / "SKILL.md"
+    refs = skill_dir / "references"
+    assert skill.exists()
+    assert refs.is_dir()
+    body = skill.read_text(encoding="utf-8")
+    # The installed SKILL.md is exactly the packaged lean core (skill.md IS the
+    # lean core now, not the old monolith).
+    assert body == (PKG_DIR / "skill.md").read_text(encoding="utf-8")
+    # The lean core points at its references and dropped the on-demand content.
+    assert "references/extraction-spec.md" in body
+    # The full embedded subagent prompt was moved out into the references.
+    assert '"file_type":"code|document|paper|image|rationale|concept"' not in body
+    # The lean core is materially smaller than the old ~1156-line monolith.
+    assert len(body.splitlines()) < 800
+    # The version stamp covers SKILL.md + references/ together.
+    assert (skill_dir / ".graphify_version").read_text() == mainmod.__version__
+    # The eight on-demand fragments all landed.
+    names = sorted(p.name for p in refs.glob("*.md"))
+    assert names == [
+        "add-watch.md",
+        "exports.md",
+        "extraction-spec.md",
+        "github-and-merge.md",
+        "hooks.md",
+        "query.md",
+        "transcribe.md",
+        "update.md",
+    ]
+
+
+def test_claude_twins_ride_the_claude_bundle(tmp_path):
+    """antigravity and kimi reuse claude's split bundle, so they go progressive too."""
+    for platform in ("antigravity", "kimi"):
+        refs_src = mainmod._packaged_skill_refs_dir(platform)
+        assert refs_src is not None
+        assert refs_src == PKG_DIR / "skills" / "claude" / "references"
 
 
 def test_pyproject_declares_references_globs():
@@ -181,6 +260,40 @@ def test_pyproject_declares_references_globs():
     pkg_data = data["tool"]["setuptools"]["package-data"]["graphify"]
     assert "skills/*/SKILL.md" in pkg_data
     assert "skills/*/references/*.md" in pkg_data
+
+
+def test_built_wheel_contains_claude_references():
+    """The built wheel must carry the claude bundle's references, not an empty
+    sidecar. This is the headline regression guard: if the package-data globs
+    fail to match, the wheel ships SKILL.md with no references/ and a claude
+    install silently loses every on-demand fragment.
+    """
+    import subprocess
+    import sys
+    import tempfile
+    import zipfile
+
+    repo_root = PKG_DIR.parent
+    if not (repo_root / "pyproject.toml").exists():
+        pytest.skip("pyproject.toml not adjacent to package (installed wheel)")
+    if not (PKG_DIR / "skills" / "claude" / "references" / "extraction-spec.md").exists():
+        pytest.skip("claude bundle is not present in this build")
+
+    with tempfile.TemporaryDirectory() as outdir:
+        result = subprocess.run(
+            [sys.executable, "-m", "build", "--wheel", "--no-isolation", "--outdir", outdir, str(repo_root)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"wheel build unavailable in this environment: {result.stderr[-400:]}")
+        wheels = list(Path(outdir).glob("*.whl"))
+        assert wheels, "no wheel was produced"
+        with zipfile.ZipFile(wheels[0]) as zf:
+            names = set(zf.namelist())
+        assert "graphify/skill.md" in names
+        assert "graphify/skills/claude/references/extraction-spec.md" in names
+        assert "graphify/skills/claude/references/query.md" in names
 
 
 def test_monolith_install_clears_orphan_references(tmp_path, fake_bundle):
@@ -198,21 +311,25 @@ def test_monolith_install_clears_orphan_references(tmp_path, fake_bundle):
 
 @pytest.fixture()
 def fake_amp_bundle():
-    """Stage a fake references/ bundle for amp inside the real package."""
+    """Stage a fake references/ bundle for amp inside the real package.
+
+    amp's bundle ("amp") has not shipped yet, so there is nothing to back up;
+    the staged dir is removed on teardown.
+    """
     bundle = mainmod._PLATFORM_CONFIG["amp"]["skill_refs"]
     skills_root = PKG_DIR / "skills"
-    refs_dir = skills_root / bundle / "references"
+    bundle_dir = skills_root / bundle
+    refs_dir = bundle_dir / "references"
+    assert not bundle_dir.exists(), "amp bundle is expected to be unbuilt in this wave"
     created_root = not skills_root.exists()
     refs_dir.mkdir(parents=True, exist_ok=True)
     (refs_dir / "exports.md").write_text("# amp exports fragment\n", encoding="utf-8")
     try:
         yield
     finally:
-        import shutil
+        shutil.rmtree(bundle_dir, ignore_errors=True)
         if created_root:
             shutil.rmtree(skills_root, ignore_errors=True)
-        else:
-            shutil.rmtree(skills_root / bundle, ignore_errors=True)
 
 
 def test_amp_user_install_carries_references(tmp_path, monkeypatch, fake_amp_bundle):
