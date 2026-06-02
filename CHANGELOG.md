@@ -2,6 +2,14 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.8.28 (2026-06-01)
+
+- Feat: Kilo Code support — `graphify install --platform kilo` installs a native skill (`~/.config/kilo/skills/graphify/SKILL.md`) and `/graphify` command, plus a `.kilo` `tool.execute.before` plugin (mirroring the OpenCode integration). Existing `.kilo/kilo.jsonc` config is read but never rewritten — plugin registration goes to `kilo.json` so user comments are preserved (#512)
+- Feat: modernized Dart extractor — comment stripping, `part of` redirection, nested-generic-aware `extends`/`with`/`implements` parsing, generic type-argument mapping, and generic call detection (#1098)
+- Fix: `uv tool install graphifyy` / `pip install graphifyy` no longer fails to build on Linux/macOS — `tree-sitter-dm` (BYOND DreamMaker) ships only a Windows wheel, so on other platforms it compiled from source and aborted the entire install when a C toolchain or `python3-dev` headers were missing. It is now an optional extra (`graphifyy[dm]`, also in `[all]`) instead of a core dependency, so the default install needs no compiler (#1104).
+  - **Upgrade note:** DreamMaker `.dm`/`.dme` users must reinstall with `graphifyy[dm]` (or `[all]`) to keep AST extraction — on `uv tool upgrade` the now-optional grammar is removed. `.dmi`/`.dmm`/`.dmf` parsing is unaffected (no tree-sitter dependency).
+- Fix: community IDs are now assigned by a total order (`(-size, sorted node IDs)`) so an identical grouping always gets identical IDs across runs — previously the equal-sized small communities that dominate a sparse graph were numbered by the partitioner's (not seed-stable) enumeration order, making a per-node community diff report large spurious "churn" even though the actual grouping was reproducible (#1090 follow-up)
+
 ## 0.8.27 (2026-05-31)
 
 - Feat: standalone CLI now auto-names communities with the configured backend instead of leaving `Community N` placeholders — community labeling was previously an agent-only step (skill.md Step 5), so bare-CLI runs never got semantic names; `cluster-only` now auto-labels when no `.graphify_labels.json` exists, new `graphify label <path>` subcommand (re)generates names on demand, `--no-label` opts out, `--backend=<name>` overrides auto-detection; one batched LLM call with per-community placeholder fallback and graceful degradation on missing backend/API error; works with all built-in and custom OpenAI-compatible backends (#1097)

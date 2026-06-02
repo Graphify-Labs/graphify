@@ -11,7 +11,7 @@
   <a href="https://safishamsi.gumroad.com/l/qetvlo"><img src="https://img.shields.io/badge/Book-The%20Memory%20Layer-2ea44f?style=flat&logo=gitbook&logoColor=white" alt="The Memory Layer"/></a>
   <a href="https://github.com/safishamsi/graphify/actions/workflows/ci.yml"><img src="https://github.com/safishamsi/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
-  <a href="https://clickpy.clickhouse.com/dashboard/graphifyy"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fsql-clickhouse.clickhouse.com%2F%3Fquery%3DSELECT%2520concat%2528toString%2528round%2528sum%2528count%2529%2F1000%2529%2529%2C%2520%2527k%2527%2529%2520AS%2520c%2520FROM%2520pypi.pypi_downloads%2520WHERE%2520project%253D%2527graphifyy%2527%2520FORMAT%2520JSON%26user%3Ddemo&query=%24.data%5B0%5D.c&label=downloads&color=blue" alt="Downloads"/></a>
+  <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
   <a href="https://www.linkedin.com/in/safi-shamsi"><img src="https://img.shields.io/badge/LinkedIn-Safi%20Shamsi-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://x.com/graphifyy"><img src="https://img.shields.io/badge/X-graphifyy-000000?logo=x&logoColor=white" alt="X"/></a>
@@ -153,21 +153,22 @@ Install only what you need:
 
 | Extra | What it adds | Install |
 |---|---|---|
-| `pdf` | PDF extraction | `pip install "graphifyy[pdf]"` |
-| `office` | `.docx` and `.xlsx` support | `pip install "graphifyy[office]"` |
-| `google` | Google Sheets rendering | `pip install "graphifyy[google]"` |
-| `video` | Video/audio transcription (faster-whisper + yt-dlp) | `pip install "graphifyy[video]"` |
-| `mcp` | MCP stdio server | `pip install "graphifyy[mcp]"` |
-| `neo4j` | Neo4j push support | `pip install "graphifyy[neo4j]"` |
-| `svg` | SVG graph export | `pip install "graphifyy[svg]"` |
-| `leiden` | Leiden community detection (Python < 3.13 only) | `pip install "graphifyy[leiden]"` |
-| `ollama` | Ollama local inference | `pip install "graphifyy[ollama]"` |
-| `openai` | OpenAI / OpenAI-compatible APIs | `pip install "graphifyy[openai]"` |
-| `gemini` | Google Gemini API | `pip install "graphifyy[gemini]"` |
-| `bedrock` | AWS Bedrock (uses IAM, no API key) | `pip install "graphifyy[bedrock]"` |
-| `sql` | SQL schema extraction | `pip install "graphifyy[sql]"` |
-| `chinese` | Chinese query segmentation (jieba) | `pip install "graphifyy[chinese]"` |
-| `all` | Everything above | `pip install "graphifyy[all]"` |
+| `pdf` | PDF extraction | `uv tool install "graphifyy[pdf]"` |
+| `office` | `.docx` and `.xlsx` support | `uv tool install "graphifyy[office]"` |
+| `google` | Google Sheets rendering | `uv tool install "graphifyy[google]"` |
+| `video` | Video/audio transcription (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
+| `mcp` | MCP stdio server | `uv tool install "graphifyy[mcp]"` |
+| `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
+| `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
+| `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
+| `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
+| `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
+| `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
+| `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
+| `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
+| `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
+| `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
+| `all` | Everything above | `uv tool install "graphifyy[all]"` |
 
 ---
 
@@ -222,15 +223,15 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 
 | Type | Extensions |
 |------|-----------|
-| Code (33 languages) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .rb .cs .kt .scala .php .swift .lua .luau .zig .ps1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .csproj .fsproj .vbproj .razor .cshtml` |
+| Code (33 languages) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .rb .cs .kt .scala .php .swift .lua .luau .zig .ps1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .csproj .fsproj .vbproj .razor .cshtml` (`.dm`/`.dme` AST extraction requires `uv tool install graphifyy[dm]`) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Docs | `.md .mdx .qmd .html .txt .rst .yaml .yml` |
-| Office | `.docx .xlsx` (requires `pip install graphifyy[office]`) |
-| Google Workspace | `.gdoc .gsheet .gslides` (opt-in; requires `gws` auth and `--google-workspace`; Sheets need `pip install graphifyy[google]`) |
+| Office | `.docx .xlsx` (requires `uv tool install graphifyy[office]`) |
+| Google Workspace | `.gdoc .gsheet .gslides` (opt-in; requires `gws` auth and `--google-workspace`; Sheets need `uv tool install graphifyy[google]`) |
 | PDFs | `.pdf` |
 | Images | `.png .jpg .webp .gif` |
-| Video / Audio | `.mp4 .mov .mp3 .wav` and more (requires `pip install graphifyy[video]`) |
-| YouTube / URLs | any video URL (requires `pip install graphifyy[video]`) |
+| Video / Audio | `.mp4 .mov .mp3 .wav` and more (requires `uv tool install graphifyy[video]`) |
+| YouTube / URLs | any video URL (requires `uv tool install graphifyy[video]`) |
 
 Code is extracted locally with no API calls (AST via tree-sitter). Everything else goes through your AI assistant's model API.
 
@@ -240,7 +241,7 @@ in a headless extraction, install and authenticate the
 [`gws` CLI](https://github.com/googleworkspace/cli), then run:
 
 ```bash
-pip install "graphifyy[google]"  # needed for Google Sheets table rendering
+uv tool install "graphifyy[google]"  # needed for Google Sheets table rendering
 gws auth login -s drive
 graphify extract ./docs --google-workspace
 ```
