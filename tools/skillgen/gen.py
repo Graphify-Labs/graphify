@@ -42,6 +42,27 @@ PLATFORMS_TOML = SKILLGEN_DIR / "platforms.toml"
 # git instead of from disk.
 V8_BASELINE_REF = "origin/v8:graphify/skill.md"
 
+# Immutable baseline for --always-on-roundtrip. The six always-on instruction
+# blocks used to be triple-quoted constants in graphify/__main__.py; they are now
+# packaged graphify/always_on/*.md files the module reads at load. This ref points
+# at the pre-extraction source so the round-trip validator can prove each rendered
+# file reproduces its former constant byte for byte, regardless of how the live
+# module now loads them.
+ALWAYS_ON_BASELINE_REF = "HEAD:graphify/__main__.py"
+
+# The always-on instruction blocks: rendered-file basename -> the __main__.py
+# constant it must reproduce. Rendered to graphify/always_on/<basename>.md from
+# the matching fragment under fragments/always-on/. These are not platform-
+# specific, so they render once in a full run (not under --platform).
+ALWAYS_ON_BLOCKS = {
+    "claude-md": "_CLAUDE_MD_SECTION",
+    "agents-md": "_AGENTS_MD_SECTION",
+    "gemini-md": "_GEMINI_MD_SECTION",
+    "vscode-instructions": "_VSCODE_INSTRUCTIONS_SECTION",
+    "antigravity-rules": "_ANTIGRAVITY_RULES",
+    "kiro-steering": "_KIRO_STEERING",
+}
+
 # The full six-value file_type enum (Decision A). Every rendered platform — split
 # or monolith — must carry exactly this enum, byte for byte. schema-singleton
 # guards it.
@@ -234,14 +255,38 @@ def render(platform: Platform) -> list[RenderedArtifact]:
     return artifacts
 
 
+def render_always_on() -> list[RenderedArtifact]:
+    """Render the six always-on instruction blocks to graphify/always_on/*.md.
+
+    These are the blocks the installer injects into shared files (CLAUDE.md,
+    AGENTS.md, GEMINI.md, .github/copilot-instructions.md, Antigravity rules,
+    Kiro steering). They used to be triple-quoted constants in __main__.py and
+    are now packaged markdown the module reads at load. Rendering them through
+    skillgen puts them under the --check / expected/ drift guard like every other
+    generated artifact. They are not platform-specific, so they render once.
+    """
+    out: list[RenderedArtifact] = []
+    for basename in sorted(ALWAYS_ON_BLOCKS):
+        body = _read_fragment(f"always-on/{basename}.md")
+        out.append(RenderedArtifact(f"graphify/always_on/{basename}.md", body))
+    return out
+
+
 def render_all(platforms: dict[str, Platform], only: str | None = None) -> list[RenderedArtifact]:
-    """Render the selected platforms (or all), flattened into one artifact list."""
+    """Render the selected platforms (or all), flattened into one artifact list.
+
+    A full render (no ``only``) also includes the always-on blocks; a single
+    ``--platform`` render does not, since the always-on files are shared, not
+    per-platform.
+    """
     keys = [only] if only else sorted(platforms)
     out: list[RenderedArtifact] = []
     for key in keys:
         if key not in platforms:
             raise SystemExit(f"error: unknown platform '{key}'. Known: {', '.join(sorted(platforms))}")
         out.extend(render(platforms[key]))
+    if only is None:
+        out.extend(render_always_on())
     return out
 
 
@@ -483,6 +528,57 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     return problems
 
 
+def _always_on_constants(ref: str) -> dict[str, str]:
+    """Parse the always-on string constants out of a __main__.py blob.
+
+    Reads the module source from git and walks its top-level assignments,
+    returning ``name -> value`` for each constant in ALWAYS_ON_BLOCKS. Parsing
+    the source (rather than importing the live module) keeps the baseline
+    immutable: the validator proves fidelity against the pre-extraction text even
+    after the live module is rewritten to read the packaged files.
+    """
+    import ast
+
+    src = _git_show(ref)
+    wanted = set(ALWAYS_ON_BLOCKS.values())
+    out: dict[str, str] = {}
+    for node in ast.parse(src).body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        name = node.targets[0].id
+        if name in wanted and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            out[name] = node.value.value
+    return out
+
+
+def always_on_roundtrip() -> list[str]:
+    """Assert each always_on/*.md reproduces its former constant byte for byte.
+
+    The six always-on instruction blocks were extracted from triple-quoted
+    constants in __main__.py into packaged markdown. This validator renders each
+    block and compares it, byte for byte, against the constant's value in the
+    pre-extraction source (ALWAYS_ON_BASELINE_REF). A mismatch means the
+    extraction is not faithful and the install-string / issue-#580 contract would
+    break.
+    """
+    baseline = _always_on_constants(ALWAYS_ON_BASELINE_REF)
+    problems: list[str] = []
+    rendered = {a.path: a.content for a in render_always_on()}
+    for basename, const_name in sorted(ALWAYS_ON_BLOCKS.items()):
+        path = f"graphify/always_on/{basename}.md"
+        if const_name not in baseline:
+            problems.append(f"could not find constant {const_name} in {ALWAYS_ON_BASELINE_REF}")
+            continue
+        if rendered[path] != baseline[const_name]:
+            problems.append(
+                f"always_on/{basename}.md does not reproduce {const_name} byte for byte "
+                f"(rendered {len(rendered[path])} chars vs baseline {len(baseline[const_name])} chars)"
+            )
+    return problems
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="python -m tools.skillgen",
@@ -493,6 +589,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--audit-coverage", action="store_true", help="assert every v8 heading is single-homed")
     p.add_argument("--schema-singleton", action="store_true", help="assert the file_type enum is byte-identical everywhere")
     p.add_argument("--monolith-roundtrip", action="store_true", help="assert each monolith == v8 modulo the enum unification")
+    p.add_argument("--always-on-roundtrip", action="store_true", help="assert each always_on/*.md reproduces its former __main__.py constant byte for byte")
     p.add_argument("--bless", action="store_true", help="rewrite expected/ from the current render")
     return p.parse_args(argv)
 
@@ -539,6 +636,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {m}", file=sys.stderr)
             return 1
         print("monolith-roundtrip OK: each monolith matches v8 modulo the enum unification.")
+        return 0
+
+    if args.always_on_roundtrip:
+        problems = always_on_roundtrip()
+        if problems:
+            print("always-on-roundtrip FAILED:", file=sys.stderr)
+            for m in problems:
+                print(f"  {m}", file=sys.stderr)
+            return 1
+        print("always-on-roundtrip OK: each always_on/*.md reproduces its former constant byte for byte.")
         return 0
 
     artifacts = render_all(platforms, only=args.platform)

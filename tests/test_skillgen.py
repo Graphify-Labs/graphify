@@ -467,3 +467,76 @@ def test_devin_keeps_its_multi_field_frontmatter():
     assert "argument-hint:" in head
     assert "model:" in head
     assert "allowed-tools:" in head
+
+
+# --- the always-on instruction blocks (D2-a) -----------------------------------
+
+
+def test_always_on_renders_six_blocks():
+    """render_always_on yields exactly the six always-on instruction files."""
+    arts = gen.render_always_on()
+    paths = sorted(a.path for a in arts)
+    assert paths == [
+        "graphify/always_on/agents-md.md",
+        "graphify/always_on/antigravity-rules.md",
+        "graphify/always_on/claude-md.md",
+        "graphify/always_on/gemini-md.md",
+        "graphify/always_on/kiro-steering.md",
+        "graphify/always_on/vscode-instructions.md",
+    ]
+
+
+def test_always_on_included_in_full_render_not_per_platform():
+    """A full render carries the always-on files; a --platform render does not."""
+    platforms = gen.load_platforms()
+    full = {a.path for a in gen.render_all(platforms)}
+    claude_only = {a.path for a in gen.render_all(platforms, only="claude")}
+    assert "graphify/always_on/claude-md.md" in full
+    assert "graphify/always_on/claude-md.md" not in claude_only
+
+
+def test_always_on_roundtrip_is_byte_faithful():
+    """Each always_on/*.md reproduces its former __main__.py constant byte for byte.
+
+    This is the load-bearing fidelity check behind the D2-a extraction: the
+    install-string / issue-#580 tests still import the constants from
+    graphify.__main__, so the packaged markdown must round-trip exactly or those
+    contracts silently change.
+    """
+    problems = gen.always_on_roundtrip()
+    assert problems == [], "\n".join(problems)
+
+
+def test_extracted_constants_equal_the_packaged_always_on_files():
+    """The live module constants now equal the packaged files they read at load."""
+    from graphify import __main__ as mainmod
+
+    pairs = {
+        "_CLAUDE_MD_SECTION": "claude-md",
+        "_AGENTS_MD_SECTION": "agents-md",
+        "_GEMINI_MD_SECTION": "gemini-md",
+        "_VSCODE_INSTRUCTIONS_SECTION": "vscode-instructions",
+        "_ANTIGRAVITY_RULES": "antigravity-rules",
+        "_KIRO_STEERING": "kiro-steering",
+    }
+    pkg = Path(mainmod.__file__).parent
+    for const_name, basename in pairs.items():
+        on_disk = (pkg / "always_on" / f"{basename}.md").read_text(encoding="utf-8")
+        assert getattr(mainmod, const_name) == on_disk, const_name
+
+
+def test_always_on_files_are_guarded_by_check(tmp_path):
+    """A hand-edit of an always_on/*.md is caught by --check (the drift guard)."""
+    platforms = gen.load_platforms()
+    arts = gen.render_all(platforms)
+    # The committed + expected/ snapshots match a fresh render.
+    assert gen.check(arts) == [], "\n".join(gen.check(arts))
+    # A mutated artifact is flagged.
+    mutated = [
+        gen.RenderedArtifact(a.path, a.content + "drift\n")
+        if a.path == "graphify/always_on/claude-md.md"
+        else a
+        for a in arts
+    ]
+    problems = gen.check(mutated)
+    assert any("always_on/claude-md.md" in p for p in problems)
