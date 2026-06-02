@@ -228,17 +228,32 @@ def test_audit_coverage_passes_for_codex_and_windows():
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
 
 
-def test_descriptions_are_preserved_verbatim():
-    """Each platform keeps its own v8 frontmatter description, never unified."""
-    core_claude, _ = _platform_artifacts("claude")
-    core_codex, _ = _platform_artifacts("codex")
-    core_windows, _ = _platform_artifacts("windows")
-    # claude keeps its own wording; codex/windows share the v8 progressive-host
-    # wording. They are NOT unified to one description in this stage.
-    assert "treat the question as a /graphify query." in core_claude
-    assert "Provides persistent graph with god nodes" in core_codex
-    assert "Provides persistent graph with god nodes" in core_windows
-    assert "treat the question as a /graphify query." not in core_codex
+UNIFIED_DESCRIPTION = (
+    "Use for any question about a codebase, its architecture, file relationships, "
+    "or project content — especially when graphify-out/ exists, where the question "
+    "should be treated as a graphify query first. Turns any input (code, docs, "
+    "papers, images, videos) into a persistent knowledge graph with god nodes, "
+    "community detection, and query/path/explain tools."
+)
+
+
+def test_descriptions_are_unified():
+    """Every platform now carries one unified frontmatter description, byte for byte.
+
+    The two drifted v8 descriptions (claude's short one and the richer 14-host
+    line) were collapsed into a single discovery-tuned line that leads with the
+    use-condition. Every split host and both monoliths must carry it verbatim,
+    and none of the old wording may survive.
+    """
+    expected_line = f'description: "{UNIFIED_DESCRIPTION}"'
+    platforms = gen.load_platforms()
+    for key, p in platforms.items():
+        body = gen.render(p)[0].content
+        assert expected_line in body, f"[{key}] missing the unified description line"
+        # None of the drifted v8 wording may survive on any platform.
+        assert "Provides persistent graph with god nodes" not in body, f"[{key}] kept old wording"
+        assert "treat the question as a /graphify query." not in body, f"[{key}] kept old wording"
+        assert "clustered communities" not in body, f"[{key}] kept old wording"
 
 
 def test_windows_frontmatter_name_and_shell_and_extra():
@@ -370,8 +385,6 @@ def test_kilo_renders_its_rules_tail_section():
     core, _ = _platform_artifacts("kilo")
     assert "## Kilo-specific rules" in core
     assert core.index("## Kilo-specific rules") < core.index("## Honesty Rules")
-    # kilo keeps its own short ASCII-arrow description verbatim.
-    assert "knowledge graph -> clustered communities" in core
 
 
 def test_dispatch_variants_are_host_specific():
@@ -440,21 +453,39 @@ def test_monolith_roundtrip_passes_for_aider_and_devin():
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
 
 
-def test_monoliths_unify_the_enum_and_only_the_enum():
-    """The rendered monolith differs from v8 on exactly the enum line(s)."""
+def test_monoliths_change_only_the_enum_and_the_description():
+    """The rendered monolith differs from v8 on exactly the enum + description lines.
+
+    Two changes are now in play for the monoliths: the file_type enum unified to
+    the six-value superset (the prose guidance line + the schema line) and the
+    frontmatter description unified across all platforms. Nothing else may differ.
+    """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
         rendered = gen.render(platforms[key])[0].content.splitlines()
         original = gen._normalise(gen._git_show(platforms[key].roundtrip_ref)).splitlines()
         assert len(rendered) == len(original), f"[{key}] line count changed"
         diff_idx = [i for i, (r, o) in enumerate(zip(rendered, original)) if r != o]
-        # Exactly two lines change: the prose enum guidance and the schema line.
-        assert len(diff_idx) == 2, f"[{key}] expected 2 changed lines, got {len(diff_idx)}"
+        # Exactly three lines change: the prose enum guidance, the schema line,
+        # and the frontmatter description.
+        assert len(diff_idx) == 3, f"[{key}] expected 3 changed lines, got {len(diff_idx)}"
+        enum_changes = 0
+        desc_changes = 0
         for i in diff_idx:
             line = rendered[i]
-            assert gen.ENUM_VALUES in line or gen.ENUM_PROSE in line, (
-                f"[{key}] changed line {i} is not an enum unification: {line!r}"
-            )
+            if gen.ENUM_VALUES in line or gen.ENUM_PROSE in line:
+                enum_changes += 1
+            elif line.lstrip().startswith("description:"):
+                desc_changes += 1
+                assert UNIFIED_DESCRIPTION in line, (
+                    f"[{key}] description line is not the unified text: {line!r}"
+                )
+            else:
+                raise AssertionError(
+                    f"[{key}] changed line {i} is neither enum nor description: {line!r}"
+                )
+        assert enum_changes == 2, f"[{key}] expected 2 enum line changes, got {enum_changes}"
+        assert desc_changes == 1, f"[{key}] expected 1 description change, got {desc_changes}"
         # The six-value superset replaced the five-value enum in both files.
         assert any(gen.ENUM_VALUES in line for line in rendered)
 

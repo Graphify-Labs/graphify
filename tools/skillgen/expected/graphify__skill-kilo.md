@@ -1,6 +1,6 @@
 ---
 name: graphify
-description: "any input (code, docs, papers, images) -> knowledge graph -> clustered communities -> HTML + JSON + audit report"
+description: "Use for any question about a codebase, its architecture, file relationships, or project content — especially when graphify-out/ exists, where the question should be treated as a graphify query first. Turns any input (code, docs, papers, images, videos) into a persistent knowledge graph with god nodes, community detection, and query/path/explain tools."
 trigger: /graphify
 ---
 

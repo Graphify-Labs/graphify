@@ -613,12 +613,28 @@ def schema_singleton(platforms: dict[str, Platform]) -> list[str]:
     return problems
 
 
-def monolith_roundtrip(platform: Platform) -> list[str]:
-    """Assert a monolith renders diff-clean vs its v8 blob modulo the enum.
+def _is_enum_line(line: str) -> bool:
+    """Whether a rendered line carries the unified six-value file_type enum."""
+    return ENUM_VALUES in line or ENUM_PROSE in line
 
-    The only lines allowed to differ between the rendered monolith and the v8
-    source are the file_type enum lines, which are unified to the six-value
-    superset. Every other line must match byte for byte.
+
+def _is_frontmatter_description_line(line: str) -> bool:
+    """Whether a line is a YAML frontmatter description field.
+
+    The unified description (graphify #1106) rewrites the frontmatter
+    ``description`` on every host, monoliths included. That line is now an
+    allowed diff against v8 alongside the enum unification.
+    """
+    return line.lstrip().startswith("description:")
+
+
+def monolith_roundtrip(platform: Platform) -> list[str]:
+    """Assert a monolith renders diff-clean vs its v8 blob modulo allowed changes.
+
+    Two classes of line are allowed to differ between the rendered monolith and
+    the v8 source: the file_type enum lines (unified to the six-value superset)
+    and the frontmatter ``description`` line (unified across all platforms for
+    discovery). Every other line must match byte for byte.
     """
     if platform.bucket != "monolith":
         return []
@@ -635,18 +651,19 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     if len(rendered_lines) != len(original_lines):
         problems.append(
             f"[{platform.key}] line count differs: rendered {len(rendered_lines)} vs v8 {len(original_lines)} "
-            "(the only allowed change is the enum line(s), which must not add or remove lines)"
+            "(the only allowed changes are the enum line(s) and the description line, "
+            "which must not add or remove lines)"
         )
         return problems
 
     for i, (r, o) in enumerate(zip(rendered_lines, original_lines), start=1):
         if r == o:
             continue
-        # The only permitted diff is an enum line unified to the six-value superset.
-        if ENUM_VALUES in r or ENUM_PROSE in r:
+        # The permitted diffs are the enum unification and the unified description.
+        if _is_enum_line(r) or _is_frontmatter_description_line(r):
             continue
         problems.append(
-            f"[{platform.key}] line {i} differs and is not an enum unification:\n"
+            f"[{platform.key}] line {i} differs and is not an enum or description unification:\n"
             f"    v8:       {o!r}\n"
             f"    rendered: {r!r}"
         )
