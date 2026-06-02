@@ -121,3 +121,73 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     assert (out_dir / "graphify-out" / "graph.json").exists(), (
         "graph.json must be written on the happy path"
     )
+
+
+def _code_only_corpus(tmp_path):
+    """A corpus with only code — no docs/papers/images, so semantic extraction
+    (the only LLM-dependent step) is never requested."""
+    (tmp_path / "auth.py").write_text(
+        "def login(user):\n    return validate(user)\n\n"
+        "def validate(user):\n    return True\n"
+    )
+    return tmp_path
+
+
+def _clear_backend_keys(monkeypatch):
+    for key in (
+        "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "MOONSHOT_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_extract_codeonly_succeeds_without_api_key(monkeypatch, tmp_path):
+    """A code-only corpus is pure local AST and must run with no LLM API key.
+
+    Regression: `graphify extract` validated a backend upfront and exited 1 with
+    'no LLM API key found' even for a code-only corpus that never calls a model.
+    The keyless AST path now runs to a written graph.json.
+    """
+    corpus = _code_only_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--out", str(out_dir)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    graph = out_dir / "graphify-out" / "graph.json"
+    assert graph.exists(), "code-only extract must write graph.json without a key"
+    import json
+    assert len(json.loads(graph.read_text()).get("nodes", [])) > 0
+
+
+def test_extract_without_key_still_errors_when_docs_present(
+    monkeypatch, tmp_path, capsys
+):
+    """The key requirement must still fire when there is real semantic work:
+    a doc/paper/image needs an LLM, so a keyless extract exits 1 with guidance."""
+    corpus = _make_corpus(tmp_path)  # includes a Markdown doc -> needs semantic
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    # Deterministic regardless of ambient AWS/Ollama: no backend is detectable.
+    monkeypatch.setattr("graphify.llm.detect_backend", lambda: None)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--out", str(out_dir)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "no LLM API key found" in err
+    assert "code-only corpus needs no key" in err
+    assert not (out_dir / "graphify-out" / "graph.json").exists()
