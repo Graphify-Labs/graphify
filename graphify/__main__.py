@@ -210,6 +210,21 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
 
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
     skill_dst.parent.mkdir(parents=True, exist_ok=True)
+
+    # Install the references/ sidecar (or clear an orphan one) BEFORE writing
+    # SKILL.md, so SKILL.md is the last artifact laid down. An install that is
+    # interrupted partway then leaves no SKILL.md rather than a SKILL.md that
+    # points at an absent references/ dir.
+    if refs_src is not None:
+        _install_skill_references(skill_dst, refs_src)
+        print(f"  references       ->  {skill_dst.parent / 'references'}")
+    else:
+        # Monolith (or progressive-with-no-refs): clear any orphan references/.
+        orphan_refs = skill_dst.parent / "references"
+        if orphan_refs.exists():
+            shutil.rmtree(orphan_refs)
+
+    # SKILL.md last (crash-safety), via an atomic temp + rename.
     tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
     try:
         shutil.copy(skill_src, tmp_dst)
@@ -220,15 +235,6 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         except OSError:
             pass
         raise
-
-    if refs_src is not None:
-        _install_skill_references(skill_dst, refs_src)
-        print(f"  references       ->  {skill_dst.parent / 'references'}")
-    else:
-        # Monolith (or progressive-with-no-refs): clear any orphan references/.
-        orphan_refs = skill_dst.parent / "references"
-        if orphan_refs.exists():
-            shutil.rmtree(orphan_refs)
 
     (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
     print(f"  skill installed  ->  {skill_dst}")
