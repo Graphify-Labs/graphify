@@ -416,3 +416,54 @@ def test_every_split_host_renders_eight_references():
             continue
         _, refs = _platform_artifacts(key)
         assert sorted(refs) == expected, f"[{key}] reference set drift: {sorted(refs)}"
+
+
+# --- the aider + devin monoliths -----------------------------------------------
+
+
+def test_monoliths_render_inline_single_file_no_references():
+    """aider and devin render one inline body, no split and no references dir."""
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        assert platforms[key].bucket == "monolith"
+        arts = gen.render(platforms[key])
+        assert len(arts) == 1, f"[{key}] monolith should render exactly one file"
+        assert arts[0].path == f"graphify/skill-{key}.md"
+        assert "references/" not in arts[0].content or "see `references/" not in arts[0].content.lower()
+
+
+def test_monolith_roundtrip_passes_for_aider_and_devin():
+    """Each monolith is diff-clean vs v8 except the file_type enum unification."""
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        problems = gen.monolith_roundtrip(platforms[key])
+        assert problems == [], f"[{key}]\n" + "\n".join(problems)
+
+
+def test_monoliths_unify_the_enum_and_only_the_enum():
+    """The rendered monolith differs from v8 on exactly the enum line(s)."""
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        rendered = gen.render(platforms[key])[0].content.splitlines()
+        original = gen._normalise(gen._git_show(platforms[key].roundtrip_ref)).splitlines()
+        assert len(rendered) == len(original), f"[{key}] line count changed"
+        diff_idx = [i for i, (r, o) in enumerate(zip(rendered, original)) if r != o]
+        # Exactly two lines change: the prose enum guidance and the schema line.
+        assert len(diff_idx) == 2, f"[{key}] expected 2 changed lines, got {len(diff_idx)}"
+        for i in diff_idx:
+            line = rendered[i]
+            assert gen.ENUM_VALUES in line or gen.ENUM_PROSE in line, (
+                f"[{key}] changed line {i} is not an enum unification: {line!r}"
+            )
+        # The six-value superset replaced the five-value enum in both files.
+        assert any(gen.ENUM_VALUES in line for line in rendered)
+
+
+def test_devin_keeps_its_multi_field_frontmatter():
+    """devin renders inline, so its 4+-field frontmatter is preserved verbatim."""
+    platforms = gen.load_platforms()
+    body = gen.render(platforms["devin"])[0].content
+    head = body.split("---", 2)[1]
+    assert "argument-hint:" in head
+    assert "model:" in head
+    assert "allowed-tools:" in head

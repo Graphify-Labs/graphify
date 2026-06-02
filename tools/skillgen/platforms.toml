@@ -159,3 +159,20 @@ description = "any input (code, docs, papers, images) → knowledge graph → cl
 dispatch = "manual-paste"
 query_variant = "cli-inline"
 extraction = "verbose"
+
+# Monoliths: rendered inline as a single body, no split, no references/. The
+# render must be diff-clean against the v8 blob in roundtrip_ref except for the
+# file_type enum unification (5-value -> 6-value superset). monolith-roundtrip
+# guards that.
+
+[platform.aider]
+bucket = "monolith"
+skill_dst = "graphify/skill-aider.md"
+monolith = "aider"
+roundtrip_ref = "origin/v8:graphify/skill-aider.md"
+
+[platform.devin]
+bucket = "monolith"
+skill_dst = "graphify/skill-devin.md"
+monolith = "devin"
+roundtrip_ref = "origin/v8:graphify/skill-devin.md"
