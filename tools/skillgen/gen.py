@@ -45,10 +45,12 @@ V8_BASELINE_REF = "origin/v8:graphify/skill.md"
 # Immutable baseline for --always-on-roundtrip. The six always-on instruction
 # blocks used to be triple-quoted constants in graphify/__main__.py; they are now
 # packaged graphify/always_on/*.md files the module reads at load. This ref points
-# at the pre-extraction source so the round-trip validator can prove each rendered
-# file reproduces its former constant byte for byte, regardless of how the live
-# module now loads them.
-ALWAYS_ON_BASELINE_REF = "HEAD:graphify/__main__.py"
+# at the pre-extraction source (v8, before the extraction commit on this branch)
+# so the round-trip validator can prove each rendered file reproduces its former
+# constant byte for byte. It deliberately does NOT track HEAD: once the extraction
+# lands, HEAD's constants are _always_on(...) calls, not the literals the
+# validator needs to compare against.
+ALWAYS_ON_BASELINE_REF = "origin/v8:graphify/__main__.py"
 
 # The always-on instruction blocks: rendered-file basename -> the __main__.py
 # constant it must reproduce. Rendered to graphify/always_on/<basename>.md from
