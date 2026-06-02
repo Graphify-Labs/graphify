@@ -66,3 +66,96 @@ extraction = "verbose"
 shell = "powershell"
 claude_md = true
 extra_sections = ["powershell-troubleshooting"]
+
+[platform.opencode]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-opencode.md"
+refs_dst = "graphify/skills/opencode/references"
+description = "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
+dispatch = "opencode-mention"
+query_variant = "cli-inline"
+extraction = "verbose"
+
+[platform.kilo]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-kilo.md"
+refs_dst = "graphify/skills/kilo/references"
+description = "any input (code, docs, papers, images) -> knowledge graph -> clustered communities -> HTML + JSON + audit report"
+dispatch = "agent-tool-disk"
+query_variant = "cli-inline"
+extraction = "verbose"
+extra_sections = ["kilo-rules"]
+
+[platform.copilot]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-copilot.md"
+refs_dst = "graphify/skills/copilot/references"
+description = "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
+dispatch = "agent-tool-disk"
+query_variant = "cli-inline"
+extraction = "verbose"
+
+[platform.claw]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-claw.md"
+refs_dst = "graphify/skills/claw/references"
+description = "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
+dispatch = "agent-tool-disk"
+query_variant = "cli-inline"
+extraction = "compact"
+
+[platform.droid]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-droid.md"
+refs_dst = "graphify/skills/droid/references"
+description = "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
+dispatch = "task-tool-disk"
+query_variant = "cli-inline"
+extraction = "verbose"
+
+[platform.trae]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-trae.md"
+refs_dst = "graphify/skills/trae/references"
+description = "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
+dispatch = "task-tool-disk"
+query_variant = "cli-inline"
+extraction = "verbose"
+
+[platform.kiro]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-kiro.md"
+refs_dst = "graphify/skills/kiro/references"
+description = "Turn any folder of files (code, docs, papers, images, video) into a queryable knowledge graph with community detection, an honest audit trail, and three outputs: interactive HTML, GraphRAG-ready JSON, and a plain-language GRAPH_REPORT.md. Use when asked to analyze a codebase, understand architecture, map dependencies, or build a knowledge graph."
+trigger = ""
+dispatch = "agent-tool-disk"
+query_variant = "cli-inline"
+extraction = "compact"
+
+[platform.pi]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-pi.md"
+refs_dst = "graphify/skills/pi/references"
+description = "any input (code, docs, papers, images, video) → knowledge graph → clustered communities → HTML + JSON + GRAPH_REPORT.md. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
+trigger = ""
+dispatch = "agent-tool-disk"
+query_variant = "cli-inline"
+extraction = "compact"
+
+[platform.vscode]
+bucket = "split"
+core = "core"
+skill_dst = "graphify/skill-vscode.md"
+refs_dst = "graphify/skills/vscode/references"
+description = "any input (code, docs, papers, images) → knowledge graph → clustered communities → HTML + JSON + audit report. Use when user asks any question about a codebase, project content, architecture, or file relationships — especially if graphify-out/ exists. Provides persistent graph with god nodes, community detection, and BFS/DFS query tools."
+dispatch = "manual-paste"
+query_variant = "cli-inline"
+extraction = "verbose"

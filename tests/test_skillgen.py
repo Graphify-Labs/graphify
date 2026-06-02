@@ -322,3 +322,97 @@ def test_schema_singleton_catches_legacy_enums():
     # The full six-value superset is never flagged.
     assert gen.legacy_enum_lines(superset) == []
     assert gen.legacy_enum_lines("no enum here") == []
+
+
+# --- the remaining progressive hosts -------------------------------------------
+
+_PROGRESSIVE_HOSTS = (
+    "opencode",
+    "kilo",
+    "copilot",
+    "claw",
+    "droid",
+    "trae",
+    "kiro",
+    "pi",
+    "vscode",
+)
+
+
+def test_all_progressive_hosts_check_and_audit_clean():
+    """check + audit-coverage pass for every rendered progressive host."""
+    platforms = gen.load_platforms()
+    for key in _PROGRESSIVE_HOSTS:
+        arts = gen.render_all(platforms, only=key)
+        assert gen.check(arts) == [], f"[{key}] check\n" + "\n".join(gen.check(arts))
+        probs = gen.audit_coverage(platforms[key])
+        assert probs == [], f"[{key}] audit\n" + "\n".join(probs)
+
+
+def test_kiro_and_pi_omit_the_trigger_line():
+    """kiro and pi render no frontmatter trigger (trigger absent in v8)."""
+    for key in ("kiro", "pi"):
+        core, _ = _platform_artifacts(key)
+        head = core.split("---", 2)[1]
+        assert "trigger:" not in head, f"[{key}] unexpectedly has a trigger line"
+
+
+def test_triggered_hosts_keep_the_trigger_line():
+    """The other split hosts keep trigger: /graphify in the frontmatter."""
+    for key in ("opencode", "kilo", "copilot", "claw", "droid", "trae", "vscode"):
+        core, _ = _platform_artifacts(key)
+        head = core.split("---", 2)[1]
+        assert "trigger: /graphify" in head, f"[{key}] missing trigger line"
+
+
+def test_kilo_renders_its_rules_tail_section():
+    """kilo gets the Kilo-specific rules tail before Honesty Rules."""
+    core, _ = _platform_artifacts("kilo")
+    assert "## Kilo-specific rules" in core
+    assert core.index("## Kilo-specific rules") < core.index("## Honesty Rules")
+    # kilo keeps its own short ASCII-arrow description verbatim.
+    assert "knowledge graph -> clustered communities" in core
+
+
+def test_dispatch_variants_are_host_specific():
+    """Each dispatch variant lands in the right host's B2 slot."""
+    expect = {
+        "opencode": "@mention",
+        "droid": "Task(description=",
+        "trae": "Task(description=",
+        "vscode": "paste each response back",
+    }
+    for key, marker in expect.items():
+        core, _ = _platform_artifacts(key)
+        b2 = core[core.index("**Step B2"):core.index("**Step B3")]
+        assert marker.lower() in b2.lower(), f"[{key}] dispatch slot missing {marker!r}"
+
+
+def test_compact_extraction_hosts_use_the_compact_spec():
+    """kiro, pi, claw use the compact extraction body; the rest use verbose."""
+    for key in ("kiro", "pi", "claw"):
+        _, refs = _platform_artifacts(key)
+        assert "(compact)" in refs["extraction-spec.md"], f"[{key}] not compact"
+    for key in ("opencode", "kilo", "copilot", "droid", "trae", "vscode"):
+        _, refs = _platform_artifacts(key)
+        assert "(compact)" not in refs["extraction-spec.md"], f"[{key}] should be verbose"
+
+
+def test_every_split_host_renders_eight_references():
+    """All twelve split hosts render exactly the eight on-demand references."""
+    platforms = gen.load_platforms()
+    expected = [
+        "add-watch.md",
+        "exports.md",
+        "extraction-spec.md",
+        "github-and-merge.md",
+        "hooks.md",
+        "query.md",
+        "transcribe.md",
+        "update.md",
+    ]
+    for key, p in platforms.items():
+        if p.bucket != "split":
+            continue
+        _, refs = _platform_artifacts(key)
+        assert sorted(refs) == expected, f"[{key}] reference set drift: {sorted(refs)}"

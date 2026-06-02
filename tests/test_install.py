@@ -243,18 +243,25 @@ def test_opencode_skill_contains_mention():
 
 
 def test_opencode_skill_uses_opencode_agent_guidance():
-    """OpenCode skill must not reference Codex/Claude agent type names."""
+    """OpenCode's dispatch slot uses @mention, not the Claude Agent-tool example.
+
+    The progressive split consolidates the bespoke v8 opencode prose into the
+    shared core. opencode's distinguishing delta is the @mention dispatch block;
+    its B2 slot must carry that and must NOT carry the Claude Agent-tool example.
+    (The shared Step B3 re-run hint names the general-purpose agent type as the
+    canonical example for every host; that lives in the shared core, not in
+    opencode's dispatch slot.)
+    """
     import graphify
 
     skill = (Path(graphify.__file__).parent / "skill-opencode.md").read_text()
-    assert "general-purpose" not in skill
-    assert 'subagent_type="general-purpose"' not in skill
+    assert "@mention" in skill
     assert "@agent" in skill
-    assert "serial fallback" in skill
-    assert "reduce semantic chunks to 10-12 files each" in skill
-    assert "10-12 files each if the smaller-chunk large-corpus policy was applied" in skill
-    assert "process chunks one at a time" in skill
-    assert "Wait for the user's answer before proceeding" not in skill
+    # Scope the agent-type check to opencode's dispatch slot (B2 -> B3).
+    b2 = skill[skill.index("**Step B2"):skill.index("**Step B3")]
+    assert "general-purpose" not in b2
+    assert "Concrete example for 3 chunks" not in b2
+    assert "OpenCode platform" in b2
 
 
 def test_kilo_skill_mentions_task_tool():
@@ -274,12 +281,18 @@ def test_kilo_skill_avoids_double_quoted_python_c_fstring_dict_keys():
     assert not re.search(r"print\(f'.*\[[\"'][^\"']+[\"']\]", skill)
 
 
-def test_claw_skill_is_sequential():
-    """OpenClaw skill file must describe sequential extraction."""
+def test_claw_skill_uses_agent_tool_dispatch():
+    """OpenClaw rides the shared Agent-tool disk-collect dispatch.
+
+    The consolidated design moves claw off the v8 sequential OpenClaw flow onto
+    the same agent-tool-disk dispatch as claude (per-platform-deltas), so its B2
+    slot uses the Agent tool and must not carry the Codex or OpenCode mechanics.
+    """
     import graphify
 
     skill = (Path(graphify.__file__).parent / "skill-claw.md").read_text()
-    assert "sequential" in skill.lower()
+    b2 = skill[skill.index("**Step B2"):skill.index("**Step B3")]
+    assert 'subagent_type="general-purpose"' in b2
     assert "spawn_agent" not in skill
     assert "@mention" not in skill
 
