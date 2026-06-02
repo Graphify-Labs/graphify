@@ -486,6 +486,24 @@ def _git_show(ref: str) -> str:
     return result.stdout
 
 
+def _v8_available() -> bool:
+    """Whether origin/v8 is fetchable in this checkout.
+
+    The git-show validators (audit-coverage, monolith-roundtrip,
+    always-on-roundtrip) read blobs from origin/v8. CI's default shallow checkout
+    does not fetch that ref, so the validators set fetch-depth: 0 to fetch it.
+    This probe lets the CLI skip with a clear, actionable message (rather than
+    crash with a cryptic git error) when the ref is genuinely unreachable.
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "origin/v8"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 def audit_coverage(platform: Platform) -> list[str]:
     """Assert every heading of THIS host's v8 body single-homes in its render.
 
@@ -704,6 +722,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     platforms = load_platforms()
+
+    # The git-show validators read origin/v8. On a shallow checkout that ref is
+    # absent; skip with a clear, actionable message instead of crashing. CI fixes
+    # this for real by setting fetch-depth: 0 so the validators actually run.
+    _GIT_SHOW_VALIDATORS = (args.audit_coverage, args.monolith_roundtrip, args.always_on_roundtrip)
+    if any(_GIT_SHOW_VALIDATORS) and not _v8_available():
+        print(
+            "SKIPPED: origin/v8 is not fetchable in this checkout, so the git-show "
+            "validators cannot run. On CI, set fetch-depth: 0 on this job (actions/"
+            "checkout) so origin/v8 is fetched and the validators run for real.",
+            file=sys.stderr,
+        )
+        return 0
 
     if args.audit_coverage:
         keys = [args.platform] if args.platform else sorted(platforms)

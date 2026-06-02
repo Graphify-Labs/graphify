@@ -277,7 +277,14 @@ def test_claude_twins_ride_the_claude_bundle(tmp_path):
 
 
 def test_pyproject_declares_references_globs():
-    """package-data must declare the split-bundle globs so they ship once authored."""
+    """package-data must declare the references + always-on globs that ship the bundles.
+
+    The references sidecar ships under graphify/skills/<host>/references/ and the
+    always-on injection blocks under graphify/always_on/. The earlier
+    skills/*/SKILL.md glob matched nothing (no graphify/skills/<host>/SKILL.md
+    exists; the skill bodies are graphify/skill*.md, listed explicitly), so it was
+    removed. This test guards the real shipped layout.
+    """
     import tomllib
 
     pyproject = PKG_DIR.parent / "pyproject.toml"
@@ -285,26 +292,64 @@ def test_pyproject_declares_references_globs():
         pytest.skip("pyproject.toml not adjacent to package (installed wheel)")
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     pkg_data = data["tool"]["setuptools"]["package-data"]["graphify"]
-    assert "skills/*/SKILL.md" in pkg_data
     assert "skills/*/references/*.md" in pkg_data
+    assert "always_on/*.md" in pkg_data
+    # The dead glob that matched no file must not creep back in.
+    assert "skills/*/SKILL.md" not in pkg_data
 
 
-def test_built_wheel_contains_claude_references():
-    """The built wheel must carry the claude bundle's references, not an empty
-    sidecar. This is the headline regression guard: if the package-data globs
-    fail to match, the wheel ships SKILL.md with no references/ and a claude
-    install silently loses every on-demand fragment.
+# The full progressive-disclosure payload the wheel must ship: 15 skill bodies,
+# 96 references (12 split hosts x 8 each), and 6 always-on injection blocks.
+_EXPECTED_SKILL_BODIES = (
+    "skill.md",
+    "skill-codex.md",
+    "skill-opencode.md",
+    "skill-kilo.md",
+    "skill-aider.md",
+    "skill-amp.md",
+    "skill-copilot.md",
+    "skill-claw.md",
+    "skill-windows.md",
+    "skill-droid.md",
+    "skill-trae.md",
+    "skill-kiro.md",
+    "skill-vscode.md",
+    "skill-pi.md",
+    "skill-devin.md",
+)
+_SPLIT_HOSTS = (
+    "claude", "codex", "windows", "opencode", "kilo", "copilot",
+    "claw", "droid", "trae", "kiro", "pi", "vscode",
+)
+_REFERENCE_NAMES = (
+    "add-watch.md", "exports.md", "extraction-spec.md", "github-and-merge.md",
+    "hooks.md", "query.md", "transcribe.md", "update.md",
+)
+_ALWAYS_ON_NAMES = (
+    "agents-md.md", "antigravity-rules.md", "claude-md.md",
+    "gemini-md.md", "kiro-steering.md", "vscode-instructions.md",
+)
+
+
+def _build_wheel_names(repo_root):
+    """Build the wheel and return the set of arcnames inside it.
+
+    Fails loudly (not skip) when the build backend is unavailable: `build` is a
+    declared dev dependency, so an environment that runs this test is expected to
+    have it. A silent skip is how a packaging regression slips through CI.
     """
     import subprocess
     import sys
     import tempfile
     import zipfile
 
-    repo_root = PKG_DIR.parent
-    if not (repo_root / "pyproject.toml").exists():
-        pytest.skip("pyproject.toml not adjacent to package (installed wheel)")
-    if not (PKG_DIR / "skills" / "claude" / "references" / "extraction-spec.md").exists():
-        pytest.skip("claude bundle is not present in this build")
+    try:
+        import build  # noqa: F401
+    except ImportError:
+        raise AssertionError(
+            "the 'build' module is required for the wheel-content test but is not "
+            "installed; it is a declared dev dependency (run `uv sync --all-extras`)"
+        )
 
     with tempfile.TemporaryDirectory() as outdir:
         result = subprocess.run(
@@ -312,15 +357,62 @@ def test_built_wheel_contains_claude_references():
             capture_output=True,
             text=True,
         )
-        if result.returncode != 0:
-            pytest.skip(f"wheel build unavailable in this environment: {result.stderr[-400:]}")
+        assert result.returncode == 0, (
+            "wheel build failed:\n"
+            f"stdout:\n{result.stdout[-1000:]}\n"
+            f"stderr:\n{result.stderr[-1000:]}"
+        )
         wheels = list(Path(outdir).glob("*.whl"))
         assert wheels, "no wheel was produced"
         with zipfile.ZipFile(wheels[0]) as zf:
-            names = set(zf.namelist())
-        assert "graphify/skill.md" in names
-        assert "graphify/skills/claude/references/extraction-spec.md" in names
-        assert "graphify/skills/claude/references/query.md" in names
+            return set(zf.namelist())
+
+
+def test_built_wheel_ships_the_full_skill_payload():
+    """The built wheel must carry every skill body, reference, and always-on block.
+
+    This is the headline regression guard. If the package-data globs fail to match
+    (e.g. the stale skills/*/SKILL.md glob that matched nothing), the wheel ships a
+    SKILL.md with no references/ sidecar and an install silently loses every
+    on-demand fragment. The test asserts the whole shipped layout: 15 skill
+    bodies, 96 references, and 6 always-on injection blocks. It FAILS (not skips)
+    when the build backend is missing, because build is a declared dev dependency.
+    """
+    repo_root = PKG_DIR.parent
+    if not (repo_root / "pyproject.toml").exists():
+        pytest.skip("pyproject.toml not adjacent to package (installed wheel)")
+    # In this wave every split-host bundle ships, so its absence is a real failure,
+    # not a reason to skip.
+    assert (PKG_DIR / "skills" / "claude" / "references" / "extraction-spec.md").exists(), (
+        "the claude bundle must ship in this build; the references sidecar is missing"
+    )
+
+    names = _build_wheel_names(repo_root)
+
+    missing_bodies = [b for b in _EXPECTED_SKILL_BODIES if f"graphify/{b}" not in names]
+    assert not missing_bodies, f"wheel is missing skill bodies: {missing_bodies}"
+    assert len(_EXPECTED_SKILL_BODIES) == 15
+
+    missing_refs = [
+        f"graphify/skills/{host}/references/{ref}"
+        for host in _SPLIT_HOSTS
+        for ref in _REFERENCE_NAMES
+        if f"graphify/skills/{host}/references/{ref}" not in names
+    ]
+    assert not missing_refs, f"wheel is missing references: {missing_refs}"
+    assert len(_SPLIT_HOSTS) * len(_REFERENCE_NAMES) == 96
+
+    missing_always_on = [
+        f"graphify/always_on/{name}"
+        for name in _ALWAYS_ON_NAMES
+        if f"graphify/always_on/{name}" not in names
+    ]
+    assert not missing_always_on, f"wheel is missing always-on blocks: {missing_always_on}"
+    assert len(_ALWAYS_ON_NAMES) == 6
+
+    # The specific headline file that the stale glob would have dropped.
+    assert "graphify/skills/claude/references/extraction-spec.md" in names
+    assert "graphify/skills/trae/references/hooks.md" in names
 
 
 def test_monolith_install_clears_orphan_references(tmp_path, fake_bundle):

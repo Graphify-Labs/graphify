@@ -604,6 +604,26 @@ def test_audit_catches_a_dropped_non_allowlisted_heading():
     assert homes == [], "a dropped, non-allowlisted heading should have no home"
 
 
+def test_git_show_validators_skip_cleanly_without_origin_v8(monkeypatch, tmp_path, capsys):
+    """On a shallow checkout (no origin/v8) the validators skip with exit 0.
+
+    CI sets fetch-depth: 0 so they run for real; this guards the fallback so a
+    shallow clone gets a clear message instead of a crash.
+    """
+    import subprocess as sp
+
+    repo = tmp_path / "shallow"
+    repo.mkdir()
+    sp.run(["git", "init", "-q", str(repo)], check=True)
+    monkeypatch.setattr(gen, "REPO_ROOT", repo)
+    assert gen._v8_available() is False
+    for flag in ("--audit-coverage", "--monolith-roundtrip", "--always-on-roundtrip"):
+        assert gen.main([flag]) == 0
+    out = capsys.readouterr()
+    assert "SKIPPED" in out.err
+    assert "fetch-depth: 0" in out.err
+
+
 def test_audit_allowlist_documents_only_consolidations():
     """The allowlist holds only the wave-2/3 consolidations, nothing genuine.
 
