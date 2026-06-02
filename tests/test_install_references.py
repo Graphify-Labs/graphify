@@ -299,7 +299,7 @@ def test_pyproject_declares_references_globs():
 
 
 # The full progressive-disclosure payload the wheel must ship: 15 skill bodies,
-# 96 references (12 split hosts x 8 each), and 6 always-on injection blocks.
+# 104 references (13 split hosts x 8 each), and 6 always-on injection blocks.
 _EXPECTED_SKILL_BODIES = (
     "skill.md",
     "skill-codex.md",
@@ -319,7 +319,7 @@ _EXPECTED_SKILL_BODIES = (
 )
 _SPLIT_HOSTS = (
     "claude", "codex", "windows", "opencode", "kilo", "copilot",
-    "claw", "droid", "trae", "kiro", "pi", "vscode",
+    "claw", "droid", "amp", "trae", "kiro", "pi", "vscode",
 )
 _REFERENCE_NAMES = (
     "add-watch.md", "exports.md", "extraction-spec.md", "github-and-merge.md",
@@ -400,7 +400,7 @@ def test_built_wheel_ships_the_full_skill_payload():
         if f"graphify/skills/{host}/references/{ref}" not in names
     ]
     assert not missing_refs, f"wheel is missing references: {missing_refs}"
-    assert len(_SPLIT_HOSTS) * len(_REFERENCE_NAMES) == 96
+    assert len(_SPLIT_HOSTS) * len(_REFERENCE_NAMES) == 104
 
     missing_always_on = [
         f"graphify/always_on/{name}"
@@ -413,6 +413,8 @@ def test_built_wheel_ships_the_full_skill_payload():
     # The specific headline file that the stale glob would have dropped.
     assert "graphify/skills/claude/references/extraction-spec.md" in names
     assert "graphify/skills/trae/references/hooks.md" in names
+    # amp is now a split host too; its bundle must ship like every other.
+    assert "graphify/skills/amp/references/hooks.md" in names
 
 
 def test_monolith_install_clears_orphan_references(tmp_path, fake_bundle):
@@ -428,32 +430,18 @@ def test_monolith_install_clears_orphan_references(tmp_path, fake_bundle):
     assert not orphan.exists()
 
 
-@pytest.fixture()
-def fake_amp_bundle():
-    """Stage a fake references/ bundle for amp inside the real package.
+def test_amp_user_install_carries_references(tmp_path, monkeypatch):
+    """amp is progressive: its corrected user dir also gets the references/ sidecar.
 
-    amp's bundle ("amp") has not shipped yet, so there is nothing to back up;
-    the staged dir is removed on teardown.
+    amp's real bundle now ships in the package (graphify/skills/amp/), so the
+    install copies the actual committed references alongside SKILL.md. This is the
+    case the progressive split was built to cover: amp was the omitted 13th host.
     """
-    bundle = mainmod._PLATFORM_CONFIG["amp"]["skill_refs"]
-    skills_root = PKG_DIR / "skills"
-    bundle_dir = skills_root / bundle
-    refs_dir = bundle_dir / "references"
-    assert not bundle_dir.exists(), "amp bundle is expected to be unbuilt in this wave"
-    created_root = not skills_root.exists()
-    refs_dir.mkdir(parents=True, exist_ok=True)
-    (refs_dir / "exports.md").write_text("# amp exports fragment\n", encoding="utf-8")
-    try:
-        yield
-    finally:
-        shutil.rmtree(bundle_dir, ignore_errors=True)
-        if created_root:
-            shutil.rmtree(skills_root, ignore_errors=True)
-
-
-def test_amp_user_install_carries_references(tmp_path, monkeypatch, fake_amp_bundle):
-    """amp is progressive: its corrected user dir also gets the references/ sidecar."""
     from graphify.__main__ import main
+
+    assert (PKG_DIR / "skills" / "amp" / "references" / "hooks.md").exists(), (
+        "amp's references bundle must ship in this build"
+    )
 
     home = tmp_path / "home"
     project = tmp_path / "project"
@@ -464,7 +452,9 @@ def test_amp_user_install_carries_references(tmp_path, monkeypatch, fake_amp_bun
         main()
         skill_dir = home / ".config" / "agents" / "skills" / "graphify"
         assert (skill_dir / "SKILL.md").exists()
+        # A representative reference from the shipped amp bundle lands too.
         assert (skill_dir / "references" / "exports.md").exists()
+        assert (skill_dir / "references" / "hooks.md").exists()
 
         monkeypatch.setattr(sys, "argv", ["graphify", "amp", "uninstall"])
         main()

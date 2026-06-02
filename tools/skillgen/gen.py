@@ -100,14 +100,45 @@ _QUERY_SOURCE = {
     "cli-inline": "references/query/cli-inline.md",
 }
 # The hooks reference is host-flavored. Most hosts read CLAUDE.md and wire
-# always-on via `graphify claude install` (the shared body). Trae and trae-cn read
-# AGENTS.md and wire it via `graphify trae install`, with the v8 caveat that Trae
-# does NOT support PreToolUse hooks (so AGENTS.md rules are the only always-on
-# mechanism). Each variant also drives the @@HOOKS_TARGET@@ pointer text in the
-# core. The variant key matches the prose target file the pointer names.
+# always-on via `graphify claude install` (the shared body). The agents-md hosts
+# (trae, trae-cn, amp) read AGENTS.md and wire it via `graphify <host> install`.
+# The agents-md fragment is a per-host template: the install/uninstall commands,
+# the host display name, the heading suffix, and the PreToolUse caveat are slots
+# filled from _AGENTS_MD_HOOKS per host. trae carries the v8 caveat that Trae does
+# NOT support PreToolUse hooks; amp's v8 had no such caveat, so its slot is empty.
+# Each variant also drives the @@HOOKS_TARGET@@ pointer text in the core. The
+# variant key matches the prose target file the pointer names.
 _HOOKS_SOURCE = {
     "claude-md": "references/shared/hooks.md",
     "agents-md": "references/host/hooks-agents-md.md",
+}
+
+# Per-host slots for the agents-md hooks reference template. Rendered EXACTLY as
+# that host's v8 skill body had the "## For native AGENTS.md integration" section.
+# trae's v8 heading carried a "(Trae)" suffix, the trae/trae-cn alt-command
+# comments, and the no-PreToolUse-hooks Note; amp's v8 had a bare heading, a single
+# install/uninstall line, and NO caveat. These are byte-faithful to v8.
+_TRAE_PRETOOLUSE_NOTE = (
+    "\n> **Note:** Unlike Claude Code, Trae does NOT support PreToolUse hooks. "
+    "The AGENTS.md rules are the always-on mechanism — there is no automatic graph "
+    "rebuild on tool use. Run `/graphify --update` manually after code changes if "
+    "the graph needs refreshing.\n"
+)
+_AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
+    "trae": {
+        "heading_suffix": " (Trae)",
+        "host_display": "Trae",
+        "install_block": "graphify trae install       # or: graphify trae-cn install",
+        "uninstall_block": "graphify trae uninstall     # or: graphify trae-cn uninstall   # remove the section",
+        "pretooluse_note": _TRAE_PRETOOLUSE_NOTE,
+    },
+    "amp": {
+        "heading_suffix": "",
+        "host_display": "Amp",
+        "install_block": "graphify amp install",
+        "uninstall_block": "graphify amp uninstall  # remove the section",
+        "pretooluse_note": "",
+    },
 }
 # The prose file name the lean-core hooks pointer names, per hooks variant.
 _HOOKS_TARGET = {
@@ -323,6 +354,36 @@ def _render_core(platform: Platform) -> str:
     return _normalise(body)
 
 
+def _render_agents_md_hooks(platform: Platform) -> str:
+    """Fill the agents-md hooks template's per-host slots for this platform.
+
+    The fragment is one template shared by every AGENTS.md host (trae, trae-cn,
+    amp). The install/uninstall commands, the host display name, the heading
+    suffix, and the PreToolUse caveat are filled from _AGENTS_MD_HOOKS so each host
+    renders its OWN v8 wording — trae keeps the "(Trae)" heading suffix and the
+    no-PreToolUse Note; amp gets a bare heading, single-line commands, and no
+    caveat (its v8 never had one).
+    """
+    template = _read_fragment(_HOOKS_SOURCE["agents-md"])
+    slots = _AGENTS_MD_HOOKS.get(platform.key)
+    if slots is None:
+        raise ValueError(
+            f"platform '{platform.key}' uses the agents-md hooks variant but has no "
+            f"_AGENTS_MD_HOOKS entry"
+        )
+    body = (
+        template.replace("@@AGENTS_HEADING_SUFFIX@@", slots["heading_suffix"])
+        .replace("@@HOST_DISPLAY@@", slots["host_display"])
+        .replace("@@AGENTS_INSTALL_BLOCK@@", slots["install_block"])
+        .replace("@@AGENTS_UNINSTALL_BLOCK@@", slots["uninstall_block"])
+        .replace("@@AGENTS_PRETOOLUSE_NOTE@@", slots["pretooluse_note"])
+    )
+    if "@@" in body:
+        leftover = sorted(set(re.findall(r"@@\w+@@", body)))
+        raise ValueError(f"unfilled agents-md hooks slots for '{platform.key}': {leftover}")
+    return _normalise(body)
+
+
 def render(platform: Platform) -> list[RenderedArtifact]:
     """Render every committed artifact for one platform.
 
@@ -347,7 +408,12 @@ def render(platform: Platform) -> list[RenderedArtifact]:
     references = platform.reference_sources()
     # Sorted reference index keeps the output idempotent regardless of map order.
     for name in sorted(references):
-        body = _read_fragment(references[name])
+        # The agents-md hooks reference is a per-host template; everything else is
+        # read verbatim.
+        if name == "hooks" and platform.hooks_variant == "agents-md":
+            body = _render_agents_md_hooks(platform)
+        else:
+            body = _read_fragment(references[name])
         rel = f"{platform.refs_dst}/{name}.md"
         artifacts.append(RenderedArtifact(rel, body))
     return artifacts

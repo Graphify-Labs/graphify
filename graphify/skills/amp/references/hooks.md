@@ -18,16 +18,16 @@ If a post-commit hook already exists, graphify appends to it rather than replaci
 
 ---
 
-## For native AGENTS.md integration@@AGENTS_HEADING_SUFFIX@@
+## For native AGENTS.md integration
 
-Run once per project to make graphify always-on in @@HOST_DISPLAY@@ sessions:
+Run once per project to make graphify always-on in Amp sessions:
 
 ```bash
-@@AGENTS_INSTALL_BLOCK@@
+graphify amp install
 ```
 
-This writes a `## graphify` section to the local `AGENTS.md` that instructs @@HOST_DISPLAY@@ to check the graph before answering codebase questions and rebuild it after code changes. No manual `/graphify` needed in future sessions.
-@@AGENTS_PRETOOLUSE_NOTE@@
+This writes a `## graphify` section to the local `AGENTS.md` that instructs Amp to check the graph before answering codebase questions and rebuild it after code changes. No manual `/graphify` needed in future sessions.
+
 ```bash
-@@AGENTS_UNINSTALL_BLOCK@@
+graphify amp uninstall  # remove the section
 ```

@@ -347,6 +347,7 @@ _PROGRESSIVE_HOSTS = (
     "copilot",
     "claw",
     "droid",
+    "amp",
     "trae",
     "kiro",
     "pi",
@@ -374,7 +375,7 @@ def test_kiro_and_pi_omit_the_trigger_line():
 
 def test_triggered_hosts_keep_the_trigger_line():
     """The other split hosts keep trigger: /graphify in the frontmatter."""
-    for key in ("opencode", "kilo", "copilot", "claw", "droid", "trae", "vscode"):
+    for key in ("opencode", "kilo", "copilot", "claw", "droid", "amp", "trae", "vscode"):
         core, _ = _platform_artifacts(key)
         head = core.split("---", 2)[1]
         assert "trigger: /graphify" in head, f"[{key}] missing trigger line"
@@ -392,6 +393,7 @@ def test_dispatch_variants_are_host_specific():
     expect = {
         "opencode": "@mention",
         "droid": "Task(description=",
+        "amp": "Task(description=",
         "trae": "Task(description=",
         "vscode": "paste each response back",
     }
@@ -406,7 +408,7 @@ def test_compact_extraction_hosts_use_the_compact_spec():
     for key in ("kiro", "pi", "claw"):
         _, refs = _platform_artifacts(key)
         assert "(compact)" in refs["extraction-spec.md"], f"[{key}] not compact"
-    for key in ("opencode", "kilo", "copilot", "droid", "trae", "vscode"):
+    for key in ("opencode", "kilo", "copilot", "droid", "amp", "trae", "vscode"):
         _, refs = _platform_artifacts(key)
         assert "(compact)" not in refs["extraction-spec.md"], f"[{key}] should be verbose"
 
@@ -720,3 +722,67 @@ def test_claude_flavored_hosts_keep_their_hooks_text_unchanged():
         assert "Trae does NOT support PreToolUse hooks" not in core, f"[{key}] leaked the trae caveat"
         assert "Trae does NOT support PreToolUse hooks" not in hooks, f"[{key}] leaked the trae caveat"
         assert "## For the commit hook and native CLAUDE.md integration" in core, f"[{key}] pointer drifted"
+
+
+# --- the amp native AGENTS.md integration (the 13th split host) ----------------
+
+
+def test_amp_renders_native_agents_md_integration_v8_faithfully():
+    """amp wires `graphify amp install` -> AGENTS.md exactly as its v8 body had it.
+
+    amp shares the agents-md hooks variant with trae but renders its OWN wording:
+    a bare "## For native AGENTS.md integration" heading (no "(Trae)" suffix),
+    single-line install/uninstall commands (no trae-cn alt), and crucially NO
+    PreToolUse caveat (amp's v8 never carried one).
+    """
+    core, refs = _platform_artifacts("amp")
+    hooks = refs["hooks.md"]
+    # amp's bare v8 heading and Amp-worded prose.
+    assert "## For native AGENTS.md integration" in hooks
+    assert "## For native AGENTS.md integration (Trae)" not in hooks
+    assert "make graphify always-on in Amp sessions" in hooks
+    assert "instructs Amp to check the graph" in hooks
+    # amp's single-line install/uninstall, no trae-cn alt comments.
+    assert "graphify amp install" in hooks
+    assert "graphify amp uninstall  # remove the section" in hooks
+    assert "graphify trae install" not in hooks
+    assert "graphify trae-cn" not in hooks
+    assert "or: graphify" not in hooks
+    # No claude flavoring on amp.
+    assert "graphify claude install" not in hooks
+    assert "native CLAUDE.md integration" not in hooks
+    # The lean-core pointer names AGENTS.md, not CLAUDE.md.
+    assert "## For the commit hook and native AGENTS.md integration" in core
+    assert "wire graphify into a project's AGENTS.md" in core
+    assert "native CLAUDE.md integration" not in core
+
+
+def test_amp_has_no_pretooluse_caveat_anywhere():
+    """amp's v8 had no no-PreToolUse-hooks note, so neither its core nor hooks may.
+
+    This is the explicit guard against injecting trae-specific wording into amp.
+    The caveat belongs to trae alone; amp uses the plain task-tool-disk dispatch
+    and a caveat-free AGENTS.md integration section.
+    """
+    core, refs = _platform_artifacts("amp")
+    hooks = refs["hooks.md"]
+    assert "PreToolUse" not in core, "amp leaked a PreToolUse caveat into its core"
+    assert "PreToolUse" not in hooks, "amp leaked a PreToolUse caveat into its hooks reference"
+    assert "Trae does NOT support" not in core
+    assert "Trae does NOT support" not in hooks
+    # amp's dispatch is the plain task-tool-disk block (no trae caveat line).
+    b2 = core[core.index("**Step B2"):core.index("Pass the extraction prompt")]
+    assert "Trae" not in b2
+
+
+def test_amp_audit_coverage_passes_against_its_own_v8():
+    """The per-host audit (the guard amp is the exact case for) passes for amp.
+
+    amp was omitted from wave 3's render list, so its v8 body was never audited
+    against a lean split. The audit reads origin/v8:graphify/skill-amp.md and
+    confirms every heading single-homes in amp's core + references.
+    """
+    platforms = gen.load_platforms()
+    assert gen._v8_baseline_ref("amp") == "origin/v8:graphify/skill-amp.md"
+    problems = gen.audit_coverage(platforms["amp"])
+    assert problems == [], "\n".join(problems)
