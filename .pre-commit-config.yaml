@@ -1,0 +1,22 @@
+# Run with: uv run pre-commit install   (pre-commit is already a dev dependency)
+# One-off across the tree: uv run pre-commit run --all-files
+#
+# The skillgen hook is the local anti-drift guard. The skill files under
+# graphify/ are generated from the fragments in tools/skillgen/; a hand-edit to
+# a generated file fails this check the same way CI does. Run
+# `python -m tools.skillgen` then `--bless` to regenerate after a fragment edit.
+repos:
+  - repo: local
+    hooks:
+      - id: skillgen-check
+        name: skillgen --check (generated skill artifacts are up to date)
+        entry: python -m tools.skillgen --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.14
+    hooks:
+      - id: ruff
+        args: ["--config", "pyproject.toml"]

@@ -8,6 +8,22 @@ on:
   workflow_dispatch:
 
 jobs:
+  skillgen-check:
+    # Fast lint-style guard: the skill files under graphify/ are generated from
+    # the fragments in tools/skillgen/. This fails if someone hand-edited a
+    # generated file or forgot to re-run the generator and bless expected/.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Check generated skill artifacts are up to date
+        run: uv run python -m tools.skillgen --check
+
   test:
     runs-on: ubuntu-latest
     strategy:
