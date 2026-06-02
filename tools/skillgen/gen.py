@@ -14,6 +14,7 @@ Usage (from the repo root)::
     python -m tools.skillgen --audit-coverage# assert every v8 heading lands in core or one fragment
     python -m tools.skillgen --schema-singleton  # assert the file_type enum is byte-identical everywhere
     python -m tools.skillgen --monolith-roundtrip# assert each monolith == v8 modulo the enum unification
+    python -m tools.skillgen --always-on-roundtrip# assert each always_on/*.md reproduces its former constant
     python -m tools.skillgen --bless         # rewrite expected/ from the current render
 
 The render is idempotent: the core template's per-platform slots are filled in a
