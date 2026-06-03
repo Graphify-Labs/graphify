@@ -225,7 +225,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 
 | Type | Extensions |
 |------|-----------|
-| Code (33 languages) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .rb .cs .kt .scala .php .swift .lua .luau .zig .ps1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .csproj .fsproj .vbproj .razor .cshtml` (`.dm`/`.dme` AST extraction requires `uv tool install graphifyy[dm]`) |
+| Code (34 languages) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .rb .cs .kt .scala .php .swift .res .resi .lua .luau .zig .ps1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .csproj .fsproj .vbproj .razor .cshtml` (`.res`/`.resi` AST extraction requires `uv tool install graphifyy[rescript]`; `.dm`/`.dme` AST extraction requires `uv tool install graphifyy[dm]`) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Docs | `.md .mdx .qmd .html .txt .rst .yaml .yml` |
 | Office | `.docx .xlsx` (requires `uv tool install graphifyy[office]`) |

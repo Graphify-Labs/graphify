@@ -65,6 +65,7 @@ gemini = ["openai", "tiktoken"]
 openai = ["openai", "tiktoken"]
 chinese = ["jieba"]
 sql = ["tree-sitter-sql"]
+rescript = ["tree-sitter-rescript @ git+https://github.com/rescript-lang/tree-sitter-rescript.git@v6.0.0"]
 # tree-sitter-dm (BYOND DreamMaker) ships only a Windows wheel, so on Linux/Mac it
 # must compile from source (needs a C toolchain + python3-dev). Keeping it optional
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).

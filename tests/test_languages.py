@@ -6,7 +6,7 @@ from graphify.extract import (
     extract_java, extract_c, extract_cpp, extract_ruby,
     extract_csharp, extract_kotlin, extract_scala, extract_php,
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
-    extract_groovy, extract_sln, extract_csproj, extract_razor,
+    extract_groovy, extract_sln, extract_csproj, extract_razor, extract_rescript,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell,
 )
@@ -1553,3 +1553,537 @@ def test_razor_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids
+
+# ── ReScript ─────────────────────────────────────────────────────────────────
+
+
+def test_rescript_no_error():
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    assert "error" not in r
+
+
+def test_rescript_finds_type():
+    """Polyvariant, variant, alias, and record types all emit Type nodes."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    labels = _labels(r)
+    assert "theme" in labels       # polyvariant
+    assert "direction" in labels   # variant
+    assert "label" in labels       # alias
+    assert "entry" in labels       # record
+
+
+def test_rescript_finds_value_let():
+    """Plain value lets are bare labels (no parens). Covers number, array,
+    record, tuple-destructure, record-destructure, and annotated value lets."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    labels = _labels(r)
+    assert "allThemes" in labels      # array literal
+    assert "origin" in labels         # record literal
+    assert "width" in labels          # tuple destructure
+    assert "height" in labels         # tuple destructure
+    assert "name" in labels           # record destructure
+    assert "position" in labels       # record destructure
+    assert "defaultEntry" in labels   # type-annotated value
+
+
+def test_rescript_finds_function_let():
+    """Function lets carry the `name()` label shape. Covers simple, typed,
+    intra-file-call-bearing, qualified-call-bearing, and pipe-bearing fns."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    labels = _labels(r)
+    assert "identity()" in labels
+    assert "move()" in labels          # typed params + return
+    assert "pair()" in labels          # intra-file call
+    assert "firstTheme()" in labels    # qualified call
+    assert "counts()" in labels        # pipe expression
+
+
+def test_rescript_finds_externals():
+    """`external f: T => U = "js"` → Function node `f()`; `external v: T = "js"`
+    → Variable node `v` (callable discrimination on annotation type)."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    labels = _labels(r)
+    assert "alert()" in labels   # function_type annotation
+    assert "pi" in labels        # plain type annotation
+    assert "pi()" not in labels
+
+
+def test_rescript_finds_module():
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    assert "Internal" in _labels(r)
+
+
+def test_rescript_finds_module_members():
+    """Members of `module Internal` attach to Internal with the right
+    label shapes: types and value lets are bare, function lets are
+    `.name()` (method shape)."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    labels = _labels(r)
+    assert "cached" in labels           # nested type
+    assert "defaultCache" in labels     # nested value
+    assert ".parse()" in labels         # nested function
+
+
+def test_rescript_intra_file_call_edge():
+    """`let pair = (a, b) => identity(b)` produces a `calls` edge from
+    `pair()` to the local `identity()` function."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    calls = _calls(r)
+    assert ("pair()", "identity()") in calls
+
+
+def test_rescript_call_edges_have_call_context():
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    call_edges = _edges_with_relation(r, "calls")
+    assert call_edges
+    assert all(e.get("context") == "call" for e in call_edges)
+
+
+def test_rescript_call_edges_have_extracted_confidence():
+    """Intra-file calls (caller and callee both in this file) are
+    EXTRACTED, not INFERRED. INFERRED is reserved for cross-file
+    resolution in the multi-file `extract()` pass."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    call_edges = _edges_with_relation(r, "calls")
+    assert call_edges
+    assert all(e.get("confidence") == "EXTRACTED" for e in call_edges), \
+        f"single-file call edges should be EXTRACTED, got: {[e.get('confidence') for e in call_edges]}"
+
+
+def test_rescript_sample_no_bare_type_references():
+    """`int`, `string`, `float`, `unit` in the fixture annotations are
+    bare `type_identifier`s, not `type_identifier_path`s, so they emit
+    no `references_type` edges. The only references_type targets should
+    be qualified module paths."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    type_ref_targets = {
+        e["target"] for e in r["edges"]
+        if e["relation"] == "references_type"
+    }
+    for bare in ("int", "string", "float", "unit", "bool"):
+        assert bare not in type_ref_targets, \
+            f"bare local type {bare!r} should not emit references_type edge"
+
+
+def test_rescript_sample_references_type_multiplicity():
+    """`let move = (a: Animal.point, ...): Animal.point => ...` references
+    `Animal.point` twice — once in the parameter annotation, once in the
+    return type annotation. The extractor preserves both emissions
+    (downstream build-step dedup is a separate concern)."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    nb = {n["id"]: n["label"] for n in r["nodes"]}
+    move_to_point = [
+        e for e in r["edges"]
+        if e["relation"] == "references_type"
+        and nb.get(e["source"]) == "move()"
+        and e["target"] == "animal_point"
+    ]
+    assert len(move_to_point) == 2, (
+        f"expected 2 move()→animal_point references_type edges, "
+        f"got {len(move_to_point)}"
+    )
+
+
+def test_rescript_sample_node_labels_complete():
+    """Snapshot test — asserts the EXACT set of node labels emitted by
+    the canonical fixture. A drift (extractor adds or drops a node) will
+    surface here as a test failure, forcing an explicit review of the
+    behaviour change. Pair with `test_rescript_sample_edge_summary_complete`."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    actual = {n["label"] for n in r["nodes"]}
+    expected = {
+        "sample.res",
+        # Type nodes
+        "theme", "direction", "label", "entry",
+        # Externals
+        "alert()", "pi",
+        # Value lets (incl. destructure outputs and annotated value)
+        "allThemes", "origin", "width", "height", "name", "position", "defaultEntry",
+        # Function lets
+        "identity()", "move()", "pair()", "firstTheme()", "counts()",
+        # Module + its members
+        "Internal", "cached", "defaultCache", ".parse()",
+    }
+    assert actual == expected, (
+        f"node-label drift on sample.res\n"
+        f"  missing: {sorted(expected - actual)}\n"
+        f"  extra:   {sorted(actual - expected)}"
+    )
+
+
+def test_rescript_sample_edge_summary_complete():
+    """Snapshot test — asserts the EXACT set of
+    (relation, source_label, target_label_or_phantom_id) edge triples
+    produced by the canonical fixture. Duplicate emissions (e.g. param
+    and return type both naming `Animal.point` on `move()`) collapse
+    here; the multiplicity is checked by
+    `test_rescript_sample_references_type_multiplicity`."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    nb = {n["id"]: n["label"] for n in r["nodes"]}
+    actual = {
+        (e["relation"], nb.get(e["source"], e["source"]),
+         nb.get(e["target"], e["target"]))
+        for e in r["edges"]
+    }
+    expected = {
+        # file → child (`contains`)
+        ("contains", "sample.res", "theme"),
+        ("contains", "sample.res", "direction"),
+        ("contains", "sample.res", "label"),
+        ("contains", "sample.res", "entry"),
+        ("contains", "sample.res", "alert()"),
+        ("contains", "sample.res", "pi"),
+        ("contains", "sample.res", "allThemes"),
+        ("contains", "sample.res", "origin"),
+        ("contains", "sample.res", "width"),
+        ("contains", "sample.res", "height"),
+        ("contains", "sample.res", "name"),
+        ("contains", "sample.res", "position"),
+        ("contains", "sample.res", "defaultEntry"),
+        ("contains", "sample.res", "identity()"),
+        ("contains", "sample.res", "move()"),
+        ("contains", "sample.res", "pair()"),
+        ("contains", "sample.res", "firstTheme()"),
+        ("contains", "sample.res", "counts()"),
+        ("contains", "sample.res", "Internal"),
+        # module → member
+        ("contains", "Internal", "cached"),
+        ("contains", "Internal", "defaultCache"),
+        ("method", "Internal", ".parse()"),
+        # intra-file call
+        ("calls", "pair()", "identity()"),
+        # `references_type` edges keep phantom targets for cross-module
+        # types; the multi-file resolver rewrites them in `extract()`
+        # when both endpoints are in scan (see
+        # `test_rescript_cross_file_type_ref_resolves_to_real_node`).
+        ("references_type", "entry", "animal_point"),
+        ("references_type", "defaultEntry", "animal_point"),
+        ("references_type", "move()", "animal_point"),
+        ("references_type", "cached", "animal_species"),
+    }
+    assert actual == expected, (
+        f"edge drift on sample.res\n"
+        f"  missing: {sorted(expected - actual)}\n"
+        f"  extra:   {sorted(actual - expected)}"
+    )
+
+
+def test_rescript_open_emits_import_edge(tmp_path):
+    """`open Foo` in one file produces an `imports` edge from the caller
+    file to the `Foo` module. Cross-file scenario tested via `tmp_path`
+    (matches the test_cross_file_call_* convention in test_extract.py)."""
+    _rescript_skip_if_unavailable()
+    lib = tmp_path / "lib.res"
+    lib.write_text("let helper = (x) => x + 1\n")
+    caller = tmp_path / "caller.res"
+    caller.write_text("open Lib\nlet wrap = (x) => helper(x)\n")
+    r = extract_rescript(caller)
+    import_edges = _edges_with_relation(r, "imports")
+    assert import_edges
+    assert all(e.get("context") == "import" for e in import_edges)
+    # Target id is _make_id("Lib") = "lib" before the multi-file resolver
+    # rewrites it to the real file id; this single-file extract sees the
+    # unresolved form.
+    assert any(e["target"].lower() == "lib" for e in import_edges)
+
+
+def test_rescript_caller_finds_local_functions(tmp_path):
+    """A caller file with its own let-functions emits those as nodes
+    regardless of whether the imported module is in scope."""
+    _rescript_skip_if_unavailable()
+    caller = tmp_path / "caller.res"
+    caller.write_text(
+        "open Lib\n"
+        "let darkModeOn = (config) => isEnabled(config, #DarkMode)\n"
+        "let betaForUser = (user) => isEnabledForUser(user, #BetaCheckout)\n"
+    )
+    r = extract_rescript(caller)
+    labels = _labels(r)
+    assert "darkModeOn()" in labels
+    assert "betaForUser()" in labels
+
+
+def test_rescript_no_dangling_source_edges():
+    """Every edge's `source` must be a real node id. Targets are allowed
+    to be phantom (unresolved) for relations that survive the per-file
+    cleanup with the expectation that the multi-file resolver will
+    rewrite them later: `imports`, `imports_from`, `re_exports`, and
+    `references_type`."""
+    r = _extract_rescript_or_skip(FIXTURES / "sample.res")
+    node_ids = {n["id"] for n in r["nodes"]}
+    phantom_target_allowed = {
+        "imports", "imports_from", "re_exports", "references_type",
+    }
+    for e in r["edges"]:
+        assert e["source"] in node_ids
+        if e["relation"] not in phantom_target_allowed:
+            assert e["target"] in node_ids, (
+                f"non-phantom-allowed relation has unresolved target: {e}"
+            )
+
+
+# ReScript extraction is opt-in via the `[rescript]` extra (no PyPI release
+# of `tree-sitter-rescript`; the extra installs it from upstream's git).
+# When the extra isn't installed, skip the per-language tests — same
+# pattern as `_extract_sql_or_skip` in test_multilang.py.
+def _rescript_skip_if_unavailable():
+    pytest.importorskip("tree_sitter_rescript")
+
+
+def _extract_rescript_or_skip(path):
+    _rescript_skip_if_unavailable()
+    return extract_rescript(path)
+
+
+# Helper: write a small .res snippet to a tmp file, extract, return result.
+def _extract_rescript_snippet(tmp_path, src):
+    _rescript_skip_if_unavailable()
+    p = tmp_path / "Sample.res"
+    p.write_text(src)
+    return extract_rescript(p)
+
+
+def test_rescript_external_callable_emits_function_node(tmp_path):
+    r = _extract_rescript_snippet(tmp_path,
+        'external alert: string => unit = "alert"\n')
+    assert "alert()" in _labels(r), \
+        "external with function-type annotation should emit a function node"
+
+
+def test_rescript_external_value_emits_variable_node(tmp_path):
+    r = _extract_rescript_snippet(tmp_path,
+        'external pi: float = "Math.PI"\n')
+    labels = _labels(r)
+    assert "pi" in labels, \
+        "external with non-function type should emit a bare-label variable node"
+    assert "pi()" not in labels
+
+
+def test_rescript_function_locals_are_not_nodes(tmp_path):
+    """Nested let-bindings inside function bodies are locals, not module
+    surface. Emitting them inflates the graph with `let url = ...`,
+    `let now = Date.now()`, etc. — same convention as Python and JS,
+    where nested function-scoped definitions aren't graph nodes.
+    """
+    src = (
+        "let getKeys = () => {\n"
+        "  let url = \"/api/keys\"\n"
+        "  let now = Date.now()\n"
+        "  let helper = (x) => x + 1\n"
+        "  Js.fetch(url)\n"
+        "}\n"
+    )
+    r = _extract_rescript_snippet(tmp_path, src)
+    labels = _labels(r)
+    assert "getKeys()" in labels
+    # Nothing inside the function body should leak as a graph node.
+    for local in ("url", "now", "helper", ".helper()", "helper()"):
+        assert local not in labels, f"function-local {local!r} should not be a node"
+
+
+def test_rescript_nested_module_emits_full_hierarchy(tmp_path):
+    src = (
+        "module Outer = {\n"
+        "  module Inner = {\n"
+        "    let foo = 1\n"
+        "    let bar = (x) => x + 1\n"
+        "  }\n"
+        "  let baz = 2\n"
+        "}\n"
+    )
+    r = _extract_rescript_snippet(tmp_path, src)
+    labels = _labels(r)
+    assert "Outer" in labels
+    assert "Inner" in labels
+    # foo and baz are values (no parens), bar is a function (.bar()).
+    assert "foo" in labels
+    assert ".bar()" in labels
+    assert "baz" in labels
+    # Edges should attach Inner to Outer (not to file).
+    nb = {n["id"]: n["label"] for n in r["nodes"]}
+    parent_of_inner = [
+        nb.get(e["source"]) for e in r["edges"]
+        if nb.get(e.get("target")) == "Inner" and e["relation"] == "contains"
+    ]
+    assert "Outer" in parent_of_inner
+
+
+def test_rescript_tuple_destructure_emits_each_name(tmp_path):
+    r = _extract_rescript_snippet(tmp_path, "let (first, second) = pair\n")
+    labels = _labels(r)
+    assert "first" in labels
+    assert "second" in labels
+
+
+def test_rescript_record_destructure_emits_each_name(tmp_path):
+    r = _extract_rescript_snippet(tmp_path, "let {alpha, beta} = record\n")
+    labels = _labels(r)
+    assert "alpha" in labels
+    assert "beta" in labels
+
+
+def test_rescript_resi_signature_function_emits_function_node(tmp_path):
+    # `.resi` interface files have signature-only let bindings (no body, just
+    # a type annotation). Those whose annotated type is a function_type
+    # should emit Function nodes; others should emit Variable nodes.
+    _rescript_skip_if_unavailable()
+    p = tmp_path / "Sample.resi"
+    p.write_text(
+        "let getFoo: (~base: int) => int\n"
+        "let pi: float\n"
+    )
+    r = extract_rescript(p)
+    labels = _labels(r)
+    assert "getFoo()" in labels, "function-typed .resi signature should be a function node"
+    assert "pi" in labels, "plain-typed .resi signature should be a variable node"
+    assert "pi()" not in labels
+
+
+def test_rescript_module_method_with_function_body(tmp_path):
+    """Module-level let-functions with non-trivial bodies still register as
+    methods of the module. The body's locals stay invisible (per the
+    function_locals_are_not_nodes contract); only the method itself is on
+    the graph.
+    """
+    src = (
+        "module M = {\n"
+        "  let f = (x) => {\n"
+        "    let g = (y) => y + 1\n"
+        "    g(x)\n"
+        "  }\n"
+        "}\n"
+    )
+    r = _extract_rescript_snippet(tmp_path, src)
+    labels = _labels(r)
+    assert "M" in labels
+    assert ".f()" in labels       # f is a method of M
+    assert ".g()" not in labels   # g is a function-local, not a graph node
+
+
+# Helpers for type-reference-edge tests.
+
+def _type_refs(r):
+    """Return the set of (source_label, target_id) pairs for references_type edges."""
+    nb = {n["id"]: n["label"] for n in r["nodes"]}
+    return {
+        (nb.get(e["source"], e["source"]), e["target"])
+        for e in r["edges"]
+        if e["relation"] == "references_type"
+    }
+
+
+def test_rescript_record_field_emits_type_ref_edge(tmp_path):
+    src = "type result = {species: Animal.species}\n"
+    r = _extract_rescript_snippet(tmp_path, src)
+    refs = _type_refs(r)
+    assert ("result", "animal_species") in refs
+
+
+def test_rescript_variant_arm_payload_emits_type_ref_edge(tmp_path):
+    src = (
+        "type action =\n"
+        "  | Eat(Animal.food)\n"
+        "  | Move(Animal.location, Animal.speed)\n"
+    )
+    r = _extract_rescript_snippet(tmp_path, src)
+    refs = _type_refs(r)
+    # Both arms should contribute, with two edges from `Move`'s payload.
+    assert ("action", "animal_food") in refs
+    assert ("action", "animal_location") in refs
+    assert ("action", "animal_speed") in refs
+
+
+def test_rescript_polyvar_arm_payload_emits_type_ref_edge(tmp_path):
+    src = "type act = [ #Walk(Animal.speed) | #Sleep(Animal.duration) ]\n"
+    r = _extract_rescript_snippet(tmp_path, src)
+    refs = _type_refs(r)
+    assert ("act", "animal_speed") in refs
+    assert ("act", "animal_duration") in refs
+
+
+def test_rescript_function_signature_emits_type_ref_edges(tmp_path):
+    src = "let feed = (a: Animal.species): Animal.food => Animal.eat(a)\n"
+    r = _extract_rescript_snippet(tmp_path, src)
+    refs = _type_refs(r)
+    assert ("feed()", "animal_species") in refs
+    assert ("feed()", "animal_food") in refs
+
+
+def test_rescript_external_declaration_emits_type_ref_edges(tmp_path):
+    src = 'external make: Animal.config => Animal.t = "default"\n'
+    r = _extract_rescript_snippet(tmp_path, src)
+    refs = _type_refs(r)
+    assert ("make()", "animal_config") in refs
+    assert ("make()", "animal_t") in refs
+
+
+def test_rescript_nested_module_path_uses_leftmost(tmp_path):
+    """`Animal.Habitat.species` should target the leftmost module
+    (`Animal`), not the inner submodule (`Habitat`). Real codebases tend
+    to organise around top-level modules; targeting the leaf would
+    produce a flatter, less useful dependency graph."""
+    src = "type t = Animal.Habitat.species\n"
+    r = _extract_rescript_snippet(tmp_path, src)
+    refs = _type_refs(r)
+    targets = {tgt for _src, tgt in refs}
+    assert "animal_species" in targets
+    # The inner module name must NOT appear in any target id.
+    assert not any("habitat" in t for t in targets), \
+        f"nested-path target should use leftmost module only: {targets}"
+
+
+def test_rescript_bare_local_type_emits_no_edge(tmp_path):
+    """Plain `option`, `int`, `string`, etc. parse as `type_identifier`,
+    not `type_identifier_path`. They have no module-qualifier so they
+    must produce no `references_type` edge."""
+    src = "type result = {value: option<int>, count: int}\n"
+    r = _extract_rescript_snippet(tmp_path, src)
+    refs = _type_refs(r)
+    assert refs == set(), \
+        f"bare local types should not emit references_type edges: {refs}"
+
+
+def test_rescript_self_reference_uses_extracted_confidence(tmp_path):
+    """A type reference whose leftmost module matches the current file's
+    bare stem (e.g. `Animal.species` from inside `Animal.res`) is a
+    self-reference and gets EXTRACTED confidence; cross-file references
+    stay INFERRED until the multi-file extract() resolver runs."""
+    _rescript_skip_if_unavailable()
+    p = tmp_path / "Animal.res"
+    p.write_text("type wrapper = Animal.species\n")
+    r = extract_rescript(p)
+    self_edges = [
+        e for e in r["edges"]
+        if e["relation"] == "references_type" and "animal_species" in e["target"]
+    ]
+    assert self_edges, "expected at least one self-reference edge"
+    assert all(e["confidence"] == "EXTRACTED" for e in self_edges)
+
+
+def test_rescript_cross_file_type_ref_resolves_to_real_node():
+    """End-to-end: a `references_type` edge whose target file is in the
+    same scan should be rewritten by `extract()`'s cross-file resolver
+    so it points at the real node id (not the bare-module phantom)."""
+    _rescript_skip_if_unavailable()
+    import tempfile
+    from graphify.extract import extract
+    with tempfile.TemporaryDirectory() as tmp:
+        animal = Path(tmp) / "Animal.res"
+        animal.write_text("type species = string\n")
+        zoo = Path(tmp) / "Zoo.res"
+        zoo.write_text("type entry = {species: Animal.species}\n")
+        r = extract([animal, zoo])
+    refs = [
+        e for e in r["edges"]
+        if e["relation"] == "references_type"
+    ]
+    assert refs, "expected at least one references_type edge"
+    species_node = next(
+        n for n in r["nodes"]
+        if n["label"] == "species" and "Animal.res" in n.get("source_file", "")
+    )
+    # The cross-file resolver should have rewritten the bare-module
+    # target (`animal_species`) to the real node id of species in
+    # Animal.res.
+    assert any(e["target"] == species_node["id"] for e in refs), \
+        f"expected target {species_node['id']!r} in {[e['target'] for e in refs]!r}"

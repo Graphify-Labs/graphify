@@ -2,6 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: ReScript (`.res`, `.resi`) extraction -- modules (with arbitrarily nested submodules), types, let-bindings as functions or variables, tuple/record destructure patterns, `external` JS bindings (callable when the type annotation is a function_type, value otherwise), `.resi` signature-only lets (function vs variable resolved from the type annotation), `open` / `include` imports with cross-file resolution that maps bare module names to real file ids, intra- and cross-file calls including qualified calls (`Foo.bar`, `Belt.Array.some`) and pipe-style calls (`arr->some(...)`). Function-locals (let-bindings inside another function body) are intentionally not registered as graph nodes, matching the Python and JS conventions — the architecture view stays at module surface. ReScript extraction is opt-in via the `[rescript]` extra (`pip install "graphifyy[rescript]"`) because there's no `tree-sitter-rescript` PyPI release; the extra installs the upstream binding from git, which needs a C toolchain on the user's machine. Without the extra, `.res` / `.resi` files extract to a friendly error message pointing at the install instructions — same soft-optional shape as `[sql]` and other language extras.
+- Feat: ReScript `references_type` edges for module-qualified type references in record fields, variant and polyvariant arm payloads, function signatures (parameter and return types), let-binding annotations, and `external` declarations. Targets the leftmost module of nested paths (`Animal.Habitat.species` → `Animal`); same-file references are EXTRACTED, cross-file are INFERRED until the multi-file resolver rewrites them to real type-node ids. Bare local types (`option`, `int`, etc.) emit no edges. ReScript-only for now; Java/TypeScript/Scala stay call-only and could be follow-ups.
+
 ## 0.8.30 (2026-06-03)
 
 - Fix: `graphify install --project --platform antigravity` now writes Antigravity's always-on layer (`.agents/rules/graphify.md` + `.agents/workflows/graphify.md`), not just the skill. The project-scoped path went through the skill-only branch and skipped them, even though the project uninstall removes them.
@@ -320,7 +325,6 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Feat: `graphify extract` gains `--max-workers`, `--token-budget`, `--max-concurrency`, `--api-timeout` flags; hard 8-worker AST cap removed; explicit HTTP timeout on OpenAI client (default 600s, `GRAPHIFY_API_TIMEOUT`); ollama API key gate skipped for loopback URLs (#792)
 - Feat: Pascal/Delphi extraction now works without `tree-sitter-pascal` -- regex fallback covers unit/program/library headers, uses clauses, class/interface inheritance, method declarations, and intra-file calls (#781)
 - Feat: `/graphify --help` now prints the Usage block and stops without running pipeline steps (all 12 skill files) (#795)
-
 ## 0.7.11 (2026-05-09)
 
 - Fix: context-window-exceeded API errors now trigger automatic retry with bisected file chunks -- exponential bisection up to 6 levels deep; covers `"context_length_exceeded"`, `"maximum context length"`, and `"too_large"` across OpenAI-compat backends (#789)

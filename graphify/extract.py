@@ -106,6 +106,7 @@ _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.j
 
 SEMANTIC_RELATIONS = frozenset({
     "inherits", "implements", "mixes_in", "embeds", "references",
+    "references_type",
     "calls", "imports", "imports_from", "re_exports", "contains", "method",
 })
 
@@ -1807,6 +1808,318 @@ def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
     return False
 
 
+# ── ReScript extra walk for let / module / type / external declarations ─────
+
+def _rescript_pattern_names(pattern, source: bytes) -> list[tuple[str, int]]:
+    """Extract `(name, line)` pairs bound by a let-binding pattern.
+
+    Handles plain identifiers, tuple destructure (`let (a, b) = ...`),
+    and record destructure (`let {foo, bar} = ...`). Anything else
+    (nested patterns, type-annotated patterns, etc.) returns an empty
+    list — the binding is silently skipped, mirroring how `_js_extra_walk`
+    skips non-trivial declarators.
+    """
+    if pattern is None:
+        return []
+    if pattern.type == "value_identifier":
+        return [(_read_text(pattern, source), pattern.start_point[0] + 1)]
+    if pattern.type == "tuple_pattern":
+        out = []
+        for child in pattern.children:
+            if child.type == "tuple_item_pattern":
+                for sub in child.children:
+                    if sub.type == "value_identifier":
+                        out.append((_read_text(sub, source), sub.start_point[0] + 1))
+                        break
+        return out
+    if pattern.type == "record_pattern":
+        return [
+            (_read_text(child, source), child.start_point[0] + 1)
+            for child in pattern.children
+            if child.type == "value_identifier"
+        ]
+    return []
+
+
+def _rescript_type_annotation_is_function(node) -> bool:
+    """True when a node has a `type_annotation` child whose annotated type is
+    `function_type`. Used by both external_declaration handling
+    (`external alert: string => unit = "alert"`) and .resi-style
+    signature-only let bindings (`let getFoo: (...) => bar`)."""
+    for child in node.children:
+        if child.type != "type_annotation":
+            continue
+        for sub in child.children:
+            if sub.type == "function_type":
+                return True
+        return False
+    return False
+
+
+def _rescript_walk_type_refs(node, source: bytes, source_nid: str, stem: str,
+                             str_path: str, edges: list) -> None:
+    """Recursively scan a subtree for `type_identifier_path` nodes and emit
+    one `references_type` edge per match from `source_nid` to the
+    referenced `<module>.<type>`.
+
+    The leftmost `module_identifier` (drilled out of `module_identifier_path`
+    for nested forms like `Animal.Habitat.species`) is the import target.
+    The trailing `type_identifier` is the type name. Target id =
+    `_make_id(module_lower, type_name)` — same shape that
+    `type_declaration` emits when registering the type node, so cross-file
+    edges resolve at build time the same way other graphify cross-file
+    edges do.
+
+    Bare local type identifiers (`option`, `int`, `result`) come through
+    the grammar as plain `type_identifier`, not `type_identifier_path`,
+    so they're skipped by construction — no edge for `let x: int`.
+
+    Confidence:
+      - EXTRACTED when the referenced module matches the current file's
+        bare stem (a self-reference like `Animal.species` from inside
+        `Animal.res`; rare but legal).
+      - INFERRED otherwise — we can't be certain at extraction time
+        that the leftmost module identifier resolves to a `<Name>.res`
+        file in this corpus; build's node-existence filter drops the
+        edge if it doesn't.
+    """
+    file_module = stem.rsplit(".", 1)[-1].lower()
+    for child in node.children:
+        if child.type == "type_identifier_path":
+            module_node = None
+            type_node = None
+            for sub in child.children:
+                if sub.type == "module_identifier":
+                    module_node = sub
+                elif sub.type == "module_identifier_path":
+                    # Nested path: take leftmost module_identifier inside.
+                    for inner in sub.children:
+                        if inner.type == "module_identifier":
+                            module_node = inner
+                            break
+                elif sub.type == "type_identifier":
+                    type_node = sub
+            if module_node is not None and type_node is not None:
+                module_name = _read_text(module_node, source)
+                type_name = _read_text(type_node, source)
+                if module_name and type_name:
+                    same_file = module_name.lower() == file_module
+                    line = child.start_point[0] + 1
+                    edges.append({
+                        "source": source_nid,
+                        "target": _make_id(module_name.lower(), type_name),
+                        "relation": "references_type",
+                        "context": "type_reference",
+                        "confidence": "EXTRACTED" if same_file else "INFERRED",
+                        "confidence_score": 1.0 if same_file else 0.8,
+                        "source_file": str_path,
+                        "source_location": f"L{line}",
+                        "weight": 1.0,
+                    })
+            # type_identifier_path is a leaf for our purposes — its only
+            # children are module_identifier(_path) and type_identifier.
+            continue
+        _rescript_walk_type_refs(child, source, source_nid, stem, str_path, edges)
+
+
+def _rescript_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                         nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                         parent_class_nid: str | None, add_node_fn, add_edge_fn,
+                         walk_fn) -> bool:
+    """Handle every ReScript top-level entity declaration form.
+
+    Owned forms (each emit nodes and may recurse):
+      - let_declaration      → variable / function (with nested let walking)
+      - module_declaration   → module + recurse into definition with nested
+                               parent_class_nid
+      - type_declaration     → type
+      - external_declaration → variable or function (callable iff the type
+                               annotation is a function_type)
+
+    The `walk_fn` parameter is the recursive entity walker — used to descend
+    into module bodies and function bodies so nested entities (modules
+    inside modules, helpers inside functions) get registered with the
+    correct parent_class_nid. Mirrors `_csharp_extra_walk`'s use of
+    walk_fn for namespace bodies.
+    """
+    t = node.type
+
+    if t == "let_declaration":
+        emitted = False
+        for child in node.children:
+            if child.type != "let_binding":
+                continue
+            pattern = child.child_by_field_name("pattern")
+            body = child.child_by_field_name("body")
+            line = child.start_point[0] + 1
+            # A let-binding is a function definition when either:
+            #   1. its body is a `function` node (.res implementation), or
+            #   2. it has no body and the type annotation is a function_type
+            #      (.resi signature: `let foo: (...) => ...`).
+            is_function = (
+                body is not None and body.type == "function"
+            ) or (
+                body is None and _rescript_type_annotation_is_function(child)
+            )
+
+            names = _rescript_pattern_names(pattern, source)
+            if not names:
+                continue
+
+            if is_function and len(names) == 1:
+                # Function let — emit one function node. If the body is a
+                # `function` node (real implementation), push its inner body
+                # for walk_calls and recurse looking for nested entities.
+                # Otherwise (.resi signature), no body to walk.
+                name, name_line = names[0]
+                if parent_class_nid:
+                    nid = _make_id(parent_class_nid, name)
+                    add_node_fn(nid, f".{name}()", name_line)
+                    add_edge_fn(parent_class_nid, nid, "method", name_line)
+                else:
+                    nid = _make_id(stem, name)
+                    add_node_fn(nid, f"{name}()", name_line)
+                    add_edge_fn(file_nid, nid, "contains", name_line)
+
+                if body is not None and body.type == "function":
+                    # `function` is a boundary type; push its inner body so
+                    # walk_calls walks expressions but stops at nested arrows.
+                    # We deliberately do NOT recurse into the body for nested
+                    # entity registration: nested `let url = ...` / `let now
+                    # = ...` value bindings are function-locals, not parts of
+                    # the module's surface, and emitting them as graph nodes
+                    # tanks the signal-to-noise ratio for architecture views.
+                    # Same convention as Python (`function_definition`
+                    # returns at extract.py:1490 without descending) and JS
+                    # (`_js_extra_walk` only handles module-scope
+                    # lexical_declaration). Helper *functions* declared
+                    # inside another function aren't surfaced either —
+                    # consistent with every other language config.
+                    inner = body.child_by_field_name("body")
+                    if inner is not None:
+                        function_bodies.append((nid, inner))
+                # Walk the entire let_binding subtree for type references
+                # (covers `let helper: Animal.eventId = ...`, function
+                # parameter and return-type annotations on
+                # `let feed = (a: Animal.species): Animal.food => ...`,
+                # and signature-only `.resi` lets). The function body
+                # expression contains call_expressions / value_identifiers,
+                # not type_identifier_paths, so walking it is safe.
+                _rescript_walk_type_refs(child, source, nid, stem, str_path, edges)
+                emitted = True
+            else:
+                # Value let or destructure — one variable node per bound name.
+                for name, name_line in names:
+                    if parent_class_nid:
+                        nid = _make_id(parent_class_nid, name)
+                        add_node_fn(nid, name, name_line)
+                        add_edge_fn(parent_class_nid, nid, "contains", name_line)
+                    else:
+                        nid = _make_id(stem, name)
+                        add_node_fn(nid, name, name_line)
+                        add_edge_fn(file_nid, nid, "contains", name_line)
+                    # Type-annotated value let (`let x: Some.t = ...`) →
+                    # references_type edge from the variable node.
+                    _rescript_walk_type_refs(child, source, nid, stem, str_path, edges)
+                    emitted = True
+        return emitted
+
+    if t == "module_declaration":
+        for child in node.children:
+            if child.type != "module_binding":
+                continue
+            name_node = child.child_by_field_name("name")
+            if name_node is None or name_node.type != "module_identifier":
+                return False
+            name = _read_text(name_node, source)
+            if not name:
+                return False
+            line = node.start_point[0] + 1
+
+            if parent_class_nid:
+                nid = _make_id(parent_class_nid, name)
+                add_node_fn(nid, name, line)
+                add_edge_fn(parent_class_nid, nid, "contains", line)
+            else:
+                nid = _make_id(stem, name)
+                add_node_fn(nid, name, line)
+                add_edge_fn(file_nid, nid, "contains", line)
+
+            # Recurse into the module's definition block with the new
+            # module's nid as parent — this is what handles nested modules
+            # and lets inside modules. Without this, the default fallthrough
+            # in walk() would reset parent_class_nid to None.
+            definition = child.child_by_field_name("definition")
+            if definition is not None:
+                for grandchild in definition.children:
+                    walk_fn(grandchild, parent_class_nid=nid)
+            return True
+        return False
+
+    if t == "type_declaration":
+        for child in node.children:
+            if child.type != "type_binding":
+                continue
+            name_node = child.child_by_field_name("name")
+            if name_node is None or name_node.type != "type_identifier":
+                return False
+            name = _read_text(name_node, source)
+            if not name:
+                return False
+            line = node.start_point[0] + 1
+            if parent_class_nid:
+                nid = _make_id(parent_class_nid, name)
+                add_node_fn(nid, name, line)
+                add_edge_fn(parent_class_nid, nid, "contains", line)
+            else:
+                nid = _make_id(stem, name)
+                add_node_fn(nid, name, line)
+                add_edge_fn(file_nid, nid, "contains", line)
+            # Walk the type_binding for type references (record fields,
+            # variant arm payloads, polyvar arms, generic instantiations,
+            # type-alias RHS).
+            _rescript_walk_type_refs(child, source, nid, stem, str_path, edges)
+            return True
+        return False
+
+    if t == "external_declaration":
+        # `external name: type = "js-binding"` — emit a function node when
+        # the type annotation is a function_type, else a variable node.
+        # The string literal on the RHS is a JS binding target, not a
+        # ReScript symbol, so no edge to it.
+        name_node = None
+        for child in node.children:
+            if child.type == "value_identifier":
+                name_node = child
+                break
+        if name_node is None:
+            return False
+        name = _read_text(name_node, source)
+        if not name:
+            return False
+        line = node.start_point[0] + 1
+        is_callable = _rescript_type_annotation_is_function(node)
+
+        if parent_class_nid:
+            nid = _make_id(parent_class_nid, name)
+            label = f".{name}()" if is_callable else name
+            relation = "method" if is_callable else "contains"
+            add_node_fn(nid, label, line)
+            add_edge_fn(parent_class_nid, nid, relation, line)
+        else:
+            nid = _make_id(stem, name)
+            label = f"{name}()" if is_callable else name
+            add_node_fn(nid, label, line)
+            add_edge_fn(file_nid, nid, "contains", line)
+        # Walk the type_annotation for type references (covers each
+        # parameter type and the return type of a function-typed
+        # external, plus the annotated type of a value-typed external).
+        _rescript_walk_type_refs(node, source, nid, stem, str_path, edges)
+        return True
+
+    return False
+
+
 # ── Language configs ──────────────────────────────────────────────────────────
 
 _PYTHON_CONFIG = LanguageConfig(
@@ -2139,6 +2452,55 @@ _SWIFT_CONFIG = LanguageConfig(
     import_handler=_import_swift,
 )
 
+
+def _import_rescript(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+    """Extract `open Foo` and `include Foo` as imports.
+
+    Both statements wrap a `module_identifier` child naming the imported
+    module. ReScript's `external` declarations are not imports of other
+    ReScript files (they bind to JS strings) so they are handled outside
+    this function — left as a no-op import-wise and not registered in
+    `_RESCRIPT_CONFIG.import_types`.
+    """
+    for child in node.children:
+        if child.type == "module_identifier":
+            module_name = _read_text(child, source)
+            if module_name:
+                tgt_nid = _make_id(module_name)
+                edges.append({
+                    "source": file_nid,
+                    "target": tgt_nid,
+                    "relation": "imports",
+                    "context": "import",
+                    "confidence": "EXTRACTED",
+                    "source_file": str_path,
+                    "source_location": f"L{node.start_point[0] + 1}",
+                    "weight": 1.0,
+                })
+            break
+
+
+_RESCRIPT_CONFIG = LanguageConfig(
+    ts_module="tree_sitter_rescript",
+    ts_language_fn="language",
+    # All entity emission for ReScript happens in `_rescript_extra_walk`.
+    # Modules, types, externals, and let-bindings each have grammar shapes
+    # the generic class_types/function_types dispatch can't express
+    # cleanly (let_binding-as-function vs value, parent_class_nid threading
+    # through `module_declaration` -> `module_binding`, type-annotation
+    # inspection on `external_declaration`, tuple/record destructure
+    # patterns), so the extra walk handles all of them.
+    class_types=frozenset(),
+    function_types=frozenset(),
+    import_types=frozenset({"open_statement", "include_statement"}),
+    call_types=frozenset({"call_expression"}),
+    call_function_field="function",
+    call_accessor_node_types=frozenset({"value_identifier_path"}),
+    call_accessor_field="",  # handled by per-language branch in walk_calls
+    function_boundary_types=frozenset({"let_declaration", "function"}),
+    import_handler=_import_rescript,
+)
+
 # ── Generic extractor ─────────────────────────────────────────────────────────
 
 def _extract_generic(path: Path, config: LanguageConfig) -> dict:
@@ -2154,7 +2516,13 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
             return {"nodes": [], "edges": [], "error": f"No language function in {config.ts_module}"}
         language = Language(lang_fn())
     except ImportError:
-        return {"nodes": [], "edges": [], "error": f"{config.ts_module} not installed"}
+        msg = f"{config.ts_module} not installed"
+        if config.ts_module == "tree_sitter_rescript":
+            msg += (
+                ". ReScript is opt-in (no PyPI release). "
+                'Install via: pip install "graphifyy[rescript]"'
+            )
+        return {"nodes": [], "edges": [], "error": msg}
     except TypeError as e:
         # tree-sitter version mismatch: old Language() expects (lib_path),
         # new Language() expects (language_capsule, name). Surface a hint
@@ -3104,6 +3472,12 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                                   parent_class_nid, add_node, add_edge):
                 return
 
+        if config.ts_module == "tree_sitter_rescript":
+            if _rescript_extra_walk(node, source, file_nid, stem, str_path,
+                                     nodes, edges, seen_ids, function_bodies,
+                                     parent_class_nid, add_node, add_edge, walk):
+                return
+
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the
         # inner function_definition in a `decorated_definition` node. The
         # default recurse below clears parent_class_nid, which would cause the
@@ -3257,6 +3631,21 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                         name = func_node.child_by_field_name("field") or func_node.child_by_field_name("name")
                         if name:
                             callee_name = _read_text(name, source)
+            elif config.ts_module == "tree_sitter_rescript":
+                # ReScript: f(x) → function field is `value_identifier`.
+                # Foo.bar(x) / Belt.Array.some(...) → function field is
+                # `value_identifier_path`, whose last `value_identifier` child
+                # is the callee name (preceding identifiers are module path).
+                func_node = node.child_by_field_name("function")
+                if func_node is not None:
+                    if func_node.type == "value_identifier":
+                        callee_name = _read_text(func_node, source)
+                    elif func_node.type == "value_identifier_path":
+                        is_member_call = True
+                        for child in reversed(func_node.children):
+                            if child.type == "value_identifier":
+                                callee_name = _read_text(child, source)
+                                break
             else:
                 # Generic: get callee from call_function_field
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
@@ -3455,9 +3844,17 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
     # ── Clean edges ───────────────────────────────────────────────────────────
     valid_ids = seen_ids
     clean_edges = []
+    # `references_type` is allowed to survive with a phantom target for the
+    # same reason as `imports` / `imports_from`: ReScript's
+    # `_rescript_walk_type_refs` emits cross-module type references whose
+    # target id (`<module>.<type>`) only resolves once `extract()` sees all
+    # files in scope. The corresponding cross-file resolver in `extract()`
+    # rewrites these to real type-node ids; build.py then drops any that
+    # still don't resolve (third-party `Belt.list` etc.).
+    survives_unresolved = ("imports", "imports_from", "re_exports", "references_type")
     for edge in edges:
         src, tgt = edge["source"], edge["target"]
-        if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from", "re_exports")):
+        if src in valid_ids and (tgt in valid_ids or edge["relation"] in survives_unresolved):
             clean_edges.append(edge)
 
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
@@ -4988,6 +5385,11 @@ def extract_lua(path: Path) -> dict:
 def extract_swift(path: Path) -> dict:
     """Extract classes, structs, protocols, functions, imports, and calls from a .swift file."""
     return _extract_generic(path, _SWIFT_CONFIG)
+
+
+def extract_rescript(path: Path) -> dict:
+    """Extract modules, types, let-functions/values, imports, and calls from a .res/.resi file."""
+    return _extract_generic(path, _RESCRIPT_CONFIG)
 
 
 # ── Julia extractor (custom walk) ────────────────────────────────────────────
@@ -10551,6 +10953,8 @@ _DISPATCH: dict[str, Any] = {
     ".scala": extract_scala,
     ".php": extract_php,
     ".swift": extract_swift,
+    ".res": extract_rescript,
+    ".resi": extract_rescript,
     ".lua": extract_lua,
     ".luau": extract_lua,
     ".toc": extract_lua,
@@ -10966,6 +11370,64 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java cross-file import resolution failed, skipping: %s", exc)
+
+    # ReScript cross-file resolution. Two passes:
+    #   1. `open Foo` / `include Foo` import edges target the bare module
+    #      name (e.g. `featureflag`); rewrite to the real file node id.
+    #   2. `references_type` edges (emitted by `_rescript_walk_type_refs`)
+    #      target `<module>.<type>` ids built from the *bare* module name
+    #      (path.stem) which won't match real node ids when files live
+    #      under a parent directory (the real id uses the
+    #      parent-qualified stem from `_file_stem`). Build the same
+    #      module-keyed id → real id index for non-file, non-method
+    #      nodes in ReScript files and rewrite matching targets.
+    if any(p.suffix in (".res", ".resi") for p in paths):
+        rescript_file_ids: set[str] = set()
+        module_to_fileid: dict[str, str] = {}
+        type_ref_target_to_real: dict[str, str] = {}
+        for n in all_nodes:
+            sf = n.get("source_file", "")
+            if not sf:
+                continue
+            sf_path = Path(sf)
+            if sf_path.suffix not in (".res", ".resi"):
+                continue
+            label = n.get("label", "")
+            bare_module = sf_path.stem.lower()
+            if label == sf_path.name:
+                # File-level node: label equals the bare filename.
+                rescript_file_ids.add(n["id"])
+                if bare_module:
+                    module_to_fileid.setdefault(bare_module, n["id"])
+                continue
+            # Symbol-level node — register its `<module>.<symbol>` external
+            # form so cross-file `references_type` edges can be rewritten
+            # to the real node id. Skip method-shaped labels (`".name()"`)
+            # — module-qualified type references target the module's own
+            # symbols, not nested-module methods.
+            if label.startswith("."):
+                continue
+            symbol_name = label.rstrip("()")
+            if not symbol_name or not bare_module:
+                continue
+            external_id = _make_id(bare_module, symbol_name)
+            type_ref_target_to_real.setdefault(external_id, n["id"])
+        if module_to_fileid:
+            for edge in all_edges:
+                if edge.get("relation") != "imports":
+                    continue
+                if edge.get("source") not in rescript_file_ids:
+                    continue
+                fid = module_to_fileid.get(edge.get("target", "").lower())
+                if fid:
+                    edge["target"] = fid
+        if type_ref_target_to_real:
+            for edge in all_edges:
+                if edge.get("relation") != "references_type":
+                    continue
+                real_id = type_ref_target_to_real.get(edge.get("target", ""))
+                if real_id and real_id != edge["target"]:
+                    edge["target"] = real_id
 
     # Cross-file call resolution for all languages
     # Each extractor saved unresolved calls in raw_calls. Now that we have all
