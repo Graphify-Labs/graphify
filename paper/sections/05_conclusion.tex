@@ -19,12 +19,14 @@ PyPI downloads, providing real-world evidence that pre-built knowledge graphs
 are a practical replacement for reactive file-reading in LLM coding assistants.
 
 \smallskip
-\noindent\textbf{Future work} includes cross-repository graph federation under a
-shared schema, a continuous personal knowledge graph extending the model to
-meetings and emails (the Penpax system), and replacing the $p_{99}$ hub
-threshold with a trained classifier.
+\noindent\textbf{Future work} includes: (1) cross-repository graph federation
+under a shared schema; (2) extending the heterogeneous-corpus KG model to
+continuous personal knowledge --- meetings, emails, and browser history pose
+novel challenges around temporal knowledge evolution and privacy-preserving
+graph construction; (3) replacing the $p_{99}$ hub-suppression threshold with a
+degree centrality classifier trained on community cohesion signals.
 
 \section*{Acknowledgments}
-The author thanks the Graphify open-source community for contributions,
-bug reports, and real-world testing across 20+ countries that shaped
-the system's design. This work was supported by Y Combinator S26.
+The author thanks the open-source community for contributions, bug reports,
+and real-world testing across 20+ countries that shaped the system's design.
+The author discloses affiliation with Y Combinator (S26 cohort).

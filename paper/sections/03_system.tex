@@ -22,7 +22,9 @@ through five stages: \emph{detect}, \emph{extract} (two passes), \emph{merge},
 Graphify classifies each file into one of six types: \textsc{Code},
 \textsc{Document}, \textsc{Paper}, \textsc{Image}, \textsc{Video}, or
 \textsc{Office}. Classification is based on file extension against curated
-extension sets: 80+ patterns for code (covering 33 languages), plus PDF,
+extension sets: 80+ file-extension patterns mapped to 33 language grammars
+(e.g., \texttt{.ts}/\texttt{.tsx} $\to$ TypeScript; \texttt{.f}/\texttt{.f90} $\to$ Fortran),
+plus PDF,
 image, video, and office formats. An incremental manifest records file
 modification timestamps; only files whose \texttt{mtime} changed since the
 last extraction are re-processed, enabling sub-second updates on typical commits.
@@ -55,7 +57,7 @@ All AST-derived edges receive confidence \textsc{Extracted} ($c = 1.0$),
 reflecting that the relation is syntactically explicit in the source. A
 language-specific built-in filter suppresses universal identifiers
 (\texttt{print}, \texttt{len}, \texttt{String}, \texttt{Promise}) that would
-otherwise become pathological god nodes. Import resolution is language-aware:
+otherwise become pathological hub nodes. Import resolution is language-aware:
 Python relative imports are resolved against the module hierarchy; TypeScript
 \texttt{tsconfig} path aliases are respected; Go module paths are normalized.
 
@@ -188,7 +190,7 @@ Algorithm~\ref{alg:bfs} formalizes the hub-aware traversal:
 
 Hub nodes (degree $\geq \tau$) are \emph{included} in the subgraph for context
 but are \emph{not expanded}: their neighbors are not added to the frontier. This
-prevents god-node explosion while preserving the hub's contextual relevance.
+prevents hub-node explosion while preserving the hub's contextual relevance.
 
 \subsection{AI Assistant Integration}
 

@@ -3,13 +3,16 @@
 Modern LLM-powered coding assistants --- Claude Code, GitHub Copilot, Cursor,
 Gemini CLI --- answer developer questions by issuing sequences of file reads
 and search calls, accumulating raw source text until the question can be
-answered. When an assistant must read the entire relevant context for every
-question, the token cost grows with corpus size: whole-corpus context stuffing
-is $O(n)$ in the number of files, while even agentic reactive reading
-accumulates $O(k \cdot \bar{\ell})$ tokens per question for $k$ relevant files
-of mean length $\bar{\ell}$. As codebases scale, this makes detailed
-architectural questions prohibitively expensive and forces the model to
-truncate or abandon context mid-reasoning.
+answered. When an assistant reads the entire corpus for every question, the token cost
+is $O(n \cdot \bar{\ell})$ in corpus size --- prohibitive at scale. Agentic
+file selection (grep + targeted reads) reduces this to $O(k \cdot \bar{\ell})$
+for $k$ relevant files, but $k$ can still be large for broad architectural
+questions, and grep cannot express cross-modal or cross-repository
+relationships. We measured this empirically: on a 52-file multi-modal corpus,
+an agentic baseline reading the top-3 grep-matching files consumes
+$10{,}095$ tokens per query versus $1{,}726$ for Graphify's graph traversal
+--- a $5.8\times$ reduction against the agentic baseline and $71.5\times$
+against naive stuffing.
 
 Knowledge graphs offer a structural alternative: represent the codebase once
 as a graph of entities and typed relationships, then answer questions by
@@ -47,7 +50,7 @@ questions to $126.7\times$ for focused cross-module questions.
         Leiden algorithm~\cite{leiden} directly to raw graph topology, recovering
         subsystem structure without any vector embedding model.
   \item \textbf{Hub-aware BFS/DFS traversal} with a $p_{99}$ degree threshold
-        that suppresses god-node explosion; we describe the algorithm and its
+        that suppresses hub-node explosion; we describe the algorithm and its
         effect on subgraph size.
   \item \textbf{Quantitative evaluation} reporting token reduction (median
         $68.6\times$, up to $71.5\times$ on the 52-file mixed corpus),

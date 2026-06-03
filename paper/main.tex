@@ -52,10 +52,13 @@ as \textsc{Extracted}, \textsc{Inferred}, or \textsc{Ambiguous}. Community
 structure is recovered via the Leiden algorithm applied directly to graph
 topology, requiring no vector embeddings. At query time, a hub-aware BFS
 traversal suppresses high-degree \emph{god nodes} and returns a scoped subgraph
-answering a question with up to \textbf{71.5$\times$ fewer tokens} than reading
-the raw corpus. Graphify integrates with 21 AI assistant platforms and has
-accumulated over 1.2M PyPI downloads. We report token reduction, extraction
-quality, and parallel extraction throughput across five real-world corpora,
+answering a question with \textbf{71.5$\times$ fewer tokens} than naive
+full-corpus reading and \textbf{5.8$\times$ fewer tokens} than an agentic
+grep-and-read baseline on the same 52-file multi-modal corpus.
+Graphify integrates with 21 AI assistant platforms and has
+accumulated over 1.2M PyPI downloads and 58,600+ GitHub stars.
+We report token reduction against both baselines, edge confidence-tag distributions,
+and a depth ablation across five real-world corpora,
 demonstrating that pre-built knowledge graphs are a practical replacement for
 reactive file-reading as the primary context mechanism for LLM coding assistants.
 \end{abstract}

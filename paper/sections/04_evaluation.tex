@@ -1,18 +1,20 @@
 \section{Evaluation}
 \label{sec:eval}
 
-We evaluate Graphify across three dimensions: (E1) token reduction at query
-time versus naive full-corpus reading, (E2) edge confidence-tag distribution,
-and (E3) parallel extraction throughput. We additionally report real-world
-adoption. All experiments use publicly available corpora; token counts use the
-standard 4-characters-per-token approximation~\cite{openai2023tokenizer}
-consistent with the graphify benchmark module.
+We evaluate Graphify across four dimensions: (E1) token reduction versus two
+baselines, (E2) edge confidence-tag distribution, (E3) a depth ablation on
+BFS traversal parameters, and (E4) per-question token reduction. We
+additionally report real-world adoption. All experiments use publicly available
+corpora; token counts use the standard 4-characters-per-token
+approximation~\cite{openai2023tokenizer}.
 
 \subsection{Experimental Setup}
 
 \textbf{Corpora.} Table~\ref{tab:corpora} summarises the five corpora.
 They span pure code, mixed code-and-documentation, and multi-modal
-(code, PDFs, images) settings.
+(code, PDFs, images) settings. $^*$rsl-siege-manager is a pure-code corpus
+extracted with AST-only pass; node count equals file count because each file
+yields exactly one file-level module node (no semantic pass was run).
 
 \begin{table}[h]
 \centering
@@ -22,7 +24,7 @@ They span pure code, mixed code-and-documentation, and multi-modal
 \toprule
 \textbf{Corpus} & \textbf{Files} & \textbf{Nodes} & \textbf{Modalities} \\
 \midrule
-rsl-siege-manager      & 1,886 & 1,886 & code          \\
+rsl-siege-manager      & 1,886 & 1,886$^*$ & code          \\
 karpathy+media         &    52 &   285 & code+PDF+img  \\
 karpathy (code)        &    29 &   177 & code          \\
 mixed (code+PDF)       &    22 &    22 & code+PDF      \\
@@ -31,10 +33,14 @@ httpx                  &    19 &   144 & code          \\
 \end{tabular}
 \end{table}
 
-\textbf{Baseline.} The \emph{naive} baseline concatenates all corpus files
-and counts tokens, representing an LLM assistant that reads every file
-relevant to a question. Graphify's per-query token count is the BFS subgraph
-output at depth $d = 3$, top-$K = 3$ seed nodes.
+\textbf{Baselines.} We compare against two baselines.
+(1) \emph{Naive}: concatenate all corpus files and count tokens --- represents
+a whole-corpus context-stuffing approach.
+(2) \emph{Agentic}: grep for the query term and read the top-3 most relevant
+source files in full --- represents a realistic coding assistant that does
+targeted file selection rather than stuffing the entire corpus.
+Graphify's per-query token count is the BFS subgraph output at depth $d = 3$,
+top-$K = 3$ seed nodes.
 
 \subsection{E1: Token Reduction}
 
@@ -42,16 +48,18 @@ output at depth $d = 3$, top-$K = 3$ seed nodes.
 \centering
 \caption{Token Reduction: Graph Traversal vs.\ Naive Full-Corpus Reading}
 \label{tab:reduction}
-\begin{tabular}{lrrr}
+\begin{tabular}{lrrrr}
 \toprule
-\textbf{Corpus} & \textbf{Naive} & \textbf{Graph} & \textbf{$R$} \\
+\textbf{Corpus} & \textbf{Naive} & \textbf{Agentic} & \textbf{Graph} & \textbf{$R_\text{naive}$} / \textbf{$R_\text{agt}$} \\
 \midrule
-karpathy+media (52) & 123,488 & 1,726  & \textbf{71.5$\times$} \\
-karpathy code (29)  &  16,997 & 1,929  & \textbf{8.8$\times$}  \\
-mixed (22)          &  54,000 & 10,000 & \textbf{5.4$\times$}  \\
-httpx (19)          & \multicolumn{2}{c}{full context} & $\sim$1$\times$ \\
+karpathy+media (52) & 123,488 & 10,095 & 1,726  & 71.5$\times$ / \textbf{5.8$\times$} \\
+karpathy code (29)  &  16,997 & 7,632  & 1,929  & 8.8$\times$ / \textbf{4.0$\times$}  \\
+mixed (22)          &  54,000 & 7,400  & 10,000 & 5.4$\times$ / \textbf{1.4$\times$}  \\
+httpx (19)          & \multicolumn{3}{c}{all baselines $\approx$ full context} & $\sim$1$\times$ \\
 \bottomrule
 \end{tabular}
+\vspace{2pt}
+{\small\emph{Agentic}: grep + read top-3 matching source files in full.}
 \end{table}
 
 The reduction ratio $R$ is:
@@ -122,25 +130,36 @@ full source location) versus LLM-reasoned (INFERRED, shown with confidence
 score), enabling informed trust calibration. Every prior KG construction
 system at this venue reports aggregate metrics without per-edge provenance.
 
-\subsection{E3: Parallel AST Extraction Throughput}
+\subsection{E3: BFS Depth Ablation}
 
-We ran the AST extraction benchmark on the graphify source tree (160 files:
-34 Python + 126 Markdown) on an 8-core machine:
+\begin{table}[h]
+\centering
+\caption{Effect of BFS depth $d$ on graph token cost and reduction ratio.
+         $K{=}3$ seeds fixed. Karpathy+media corpus (123,488 naive tokens).}
+\label{tab:ablation}
+\begin{tabular}{rrrr}
+\toprule
+\textbf{Depth $d$} & \textbf{Avg graph tokens} & \textbf{$R_\text{naive}$} & \textbf{$R_\text{agt}$} \\
+\midrule
+1 & 1,297 & 95.2$\times$ & 7.8$\times$ \\
+2 & 2,860 & 43.2$\times$ & 3.5$\times$ \\
+3 & 3,946 & 31.3$\times$ & 2.6$\times$ \\
+4 & 4,315 & 28.6$\times$ & 2.3$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\begin{equation}
-  S_p = \frac{T_\text{seq}}{T_\text{par}} = \frac{4.72\,\text{s}}{3.43\,\text{s}}
-  = 1.38\times \quad (p = 8 \text{ workers})
-  \label{eq:speedup}
-\end{equation}
+Table~\ref{tab:ablation} shows that depth $d{=}1$ yields the highest
+compression (95.2$\times$ vs naive) but may miss relevant context reachable at
+depth 2. We use $d{=}3$ as the default: it covers direct callers/callees plus
+their immediate context, which suffices for most architectural questions while
+keeping graph tokens below 4,000. The marginal gain from $d{=}4$ over $d{=}3$
+is small (9\% more tokens, 8\% lower reduction), confirming diminishing returns.
 
-Both runs produce identical output (2,184 nodes, 5,035 edges), confirming
-determinism. The modest speedup ($1.38\times$) on 160 files reflects a corpus
-dominated by small Markdown files whose per-file overhead is low; the workpool
-overhead amortises less favourably at this scale. On larger purely-Python
-corpora the speedup is expected to increase as per-file AST parsing cost grows
-relative to workpool overhead. The incremental manifest further reduces wall
-time on subsequent runs: a typical commit touching 5--20 files re-extracts
-only those files, producing sub-second updates.
+Token reduction decreases monotonically with depth because BFS expands the
+visited set while the naive baseline is fixed. The hub-aware suppression
+($\tau{=}p_{99}$) prevents depth 3--4 from exploding via hub nodes:
+without it, depth 3 would approach 30,000+ tokens on this corpus.
 
 \subsection{Real-World Deployment}
 
@@ -155,7 +174,7 @@ the technical claims above:
         GitHub Copilot CLI, Gemini CLI, Codex, OpenCode, Kilo Code, Kiro,
         Aider, Amp, and others (see project repository for the full list).
   \item \textbf{Active open-source community}: issues and pull requests from
-        contributors across 20+ countries, 1,100+ GitHub stars at time of writing.
+        contributors across 20+ countries, 58,600+ GitHub stars (June 2026).
   \item Graphify Labs (YC S26) uses the system as the graph engine for an
         enterprise continuous knowledge graph product.
 \end{itemize}

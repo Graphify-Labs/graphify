@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdflatex 2026.6.3)  3 JUN 2026 12:18
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdflatex 2026.6.3)  3 JUN 2026 12:28
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -1001,30 +1001,26 @@ Package microtype Info: Loading generic protrusion settings for font family
 (microtype)             For optimal results, create family-specific settings.
 (microtype)             See the microtype manual for details.
 
-Underfull \hbox (badness 10000) in paragraph at lines 107--114
+Underfull \hbox (badness 10000) in paragraph at lines 109--116
 \OT1/pcr/m/n/10 cites, transcribes, embeds$\OMS/cmsy/m/n/10 g$\OT1/ptm/m/n/10 (
 +20) . This schema is
  []
 
 
-Underfull \hbox (badness 2707) in paragraph at lines 107--114
+Underfull \hbox (badness 2707) in paragraph at lines 109--116
 \OT1/ptm/m/n/10 (+20) modality-agnostic: a Python func-tion and a para-graph
  []
 
 [3]
-Overfull \hbox (1.41832pt too wide) detected at line 159
+Overfull \hbox (1.41832pt too wide) detected at line 161
 [][][]\OML/cmm/m/it/10 s\OT1/cmr/m/n/10 (\OML/cmm/m/it/10 n; q\OT1/cmr/m/n/10 )
  = \OML/cmm/m/it/10 w[] \OMS/cmsy/m/n/10 ^^A []  [] \OT1/cmr/m/n/10 + 0\OML/cmm
 /m/it/10 :\OT1/cmr/m/n/10 5 \OMS/cmsy/m/n/10 ^^A \OT1/cmr/bx/n/10 1[]
  []
 
 Package hyperref Info: bookmark level for unknown algorithm defaults to 0 on in
-put line 170.
-) (./sections/04_evaluation.tex
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-[4] (./figures/reduction_chart.tex
+put line 172.
+) (./sections/04_evaluation.tex [4] (./figures/reduction_chart.tex
 Package pgfplots info on input line 26: Using 'lua backend=false' for axis: x c
 oord trafo unsupported.
 )
@@ -1050,9 +1046,6 @@ LaTeX Font Warning: Font shape `OT1/ptm/m/scit' undefined
 Overfull \hbox (2.6305pt too wide) in paragraph at lines 28--48
  [][] 
  []
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
 
 
 Underfull \hbox (badness 3471) in paragraph at lines 50--59
@@ -1138,14 +1131,14 @@ LaTeX2e <2023-11-01> patch level 1
 L3 programming layer <2024-01-22>
  ***********
 Package rerunfilecheck Info: File `main.out' has not changed.
-(rerunfilecheck)             Checksum: 7124A30B14AF843FCADC61BF4486154C;5973.
+(rerunfilecheck)             Checksum: DD3CC80CE04F003A66109B6C9E984DB8;5890.
  ) 
 Here is how much of TeX's memory you used:
- 35732 strings out of 474222
- 820440 string characters out of 5748734
- 1955975 words of memory out of 5000000
- 56898 multiletter control sequences out of 15000+600000
- 628649 words of font info for 402 fonts, out of 8000000 for 9000
+ 35774 strings out of 474222
+ 820864 string characters out of 5748734
+ 1956975 words of memory out of 5000000
+ 56902 multiletter control sequences out of 15000+600000
+ 632928 words of font info for 426 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
  84i,16n,87p,1001b,2372s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb></us
@@ -1159,20 +1152,21 @@ ublic/amsfonts/cm/cmr5.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/am
 sfonts/cm/cmr7.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/c
 m/cmr8.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmr9.p
 fb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></u
-sr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy7.pfb></usr/shar
-e/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy8.pfb></usr/share/texli
-ve/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy9.pfb></usr/share/texlive/texm
-f-dist/fonts/type1/public/amsfonts/cm/cmtt9.pfb></usr/share/texlive/texmf-dist/
-fonts/type1/public/amsfonts/symbols/msam10.pfb></usr/share/texlive/texmf-dist/f
-onts/type1/public/amsfonts/symbols/msam7.pfb></usr/share/texlive/texmf-dist/fon
-ts/type1/urw/courier/ucrr8a.pfb></usr/share/texlive/texmf-dist/fonts/type1/urw/
-times/utmb8a.pfb></usr/share/texlive/texmf-dist/fonts/type1/urw/times/utmbi8a.p
-fb></usr/share/texlive/texmf-dist/fonts/type1/urw/times/utmr8a.pfb></usr/share/
-texlive/texmf-dist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on main.pdf (8 pages, 315557 bytes).
+sr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy6.pfb></usr/shar
+e/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy7.pfb></usr/share/texli
+ve/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy8.pfb></usr/share/texlive/texm
+f-dist/fonts/type1/public/amsfonts/cm/cmsy9.pfb></usr/share/texlive/texmf-dist/
+fonts/type1/public/amsfonts/cm/cmtt9.pfb></usr/share/texlive/texmf-dist/fonts/t
+ype1/public/amsfonts/symbols/msam10.pfb></usr/share/texlive/texmf-dist/fonts/ty
+pe1/public/amsfonts/symbols/msam7.pfb></usr/share/texlive/texmf-dist/fonts/type
+1/urw/courier/ucrr8a.pfb></usr/share/texlive/texmf-dist/fonts/type1/urw/times/u
+tmb8a.pfb></usr/share/texlive/texmf-dist/fonts/type1/urw/times/utmbi8a.pfb></us
+r/share/texlive/texmf-dist/fonts/type1/urw/times/utmr8a.pfb></usr/share/texlive
+/texmf-dist/fonts/type1/urw/times/utmri8a.pfb>
+Output written on main.pdf (8 pages, 326369 bytes).
 PDF statistics:
- 394 PDF objects out of 1000 (max. 8388607)
- 334 compressed objects within 4 object streams
+ 400 PDF objects out of 1000 (max. 8388607)
+ 338 compressed objects within 4 object streams
  87 named destinations out of 1000 (max. 500000)
- 86269 words of extra memory for PDF output out of 89155 (max. 10000000)
+ 96509 words of extra memory for PDF output out of 106986 (max. 10000000)
 
