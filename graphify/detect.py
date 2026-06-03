@@ -1091,12 +1091,59 @@ def _md5_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def load_manifest(manifest_path: str = _MANIFEST_PATH) -> dict:
-    """Load the manifest from a previous run. Returns {} on any error."""
+def _to_relative_for_storage(key: str, root: Path) -> str:
+    """Return ``key`` as a forward-slash relative path from ``root``.
+
+    Keys outside ``root`` (out-of-tree symlinked sources, external --include
+    paths) and already-relative keys pass through unchanged — mirrors the
+    fallback in :func:`graphify.watch._relativize_source_files` so the
+    on-disk artifact survives the round-trip even when some paths cannot be
+    portably encoded.
+    """
+    p = Path(key)
+    if not p.is_absolute():
+        return key
     try:
-        return json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        return p.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (ValueError, OSError):
+        return key  # outside root or unresolvable
+
+
+def _to_absolute_from_storage(key: str, root: Path) -> str:
+    """Inverse of :func:`_to_relative_for_storage`.
+
+    Re-anchor a stored key against ``root``. Already-absolute keys
+    (legacy manifests, out-of-root entries) pass through unchanged so
+    that newly-loaded manifests from before this change remain readable.
+    Uses ``Path(root).resolve()`` so the produced absolute path matches
+    what :func:`detect` returns (which also resolves the scan root).
+    """
+    p = Path(key)
+    if p.is_absolute():
+        return str(p)
+    return str(Path(root).resolve() / p)
+
+
+def load_manifest(
+    manifest_path: str = _MANIFEST_PATH,
+    *,
+    root: Path | None = None,
+) -> dict:
+    """Load the manifest from a previous run. Returns {} on any error.
+
+    When ``root`` is provided, stored relative keys are re-anchored against
+    it so callers see absolute paths regardless of on-disk format. Legacy
+    manifests with absolute keys pass through unchanged, so a graphify-out/
+    written by an older version (or by a caller that didn't supply ``root``
+    to :func:`save_manifest`) remains readable.
+    """
+    try:
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     except Exception:
         return {}
+    if root is None or not isinstance(raw, dict):
+        return raw
+    return {_to_absolute_from_storage(k, root): v for k, v in raw.items()}
 
 
 def save_manifest(
@@ -1104,6 +1151,7 @@ def save_manifest(
     manifest_path: str = _MANIFEST_PATH,
     *,
     kind: str = "both",
+    root: Path | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1113,8 +1161,14 @@ def save_manifest(
     kind="semantic" — written by `graphify extract` after semantic extraction.
                       Stamps semantic_hash; preserves existing ast_hash.
     kind="both"     — full pipeline: stamps both hashes (default).
+
+    When ``root`` is provided, keys are relativized against it before write
+    (forward-slash, posix-style) so the on-disk manifest is portable across
+    machines and checkout locations (#777). Out-of-root entries are written
+    as absolute so they continue to round-trip on the saving machine.
+    When ``root`` is None the legacy absolute-keyed format is preserved.
     """
-    existing = load_manifest(manifest_path)
+    existing = load_manifest(manifest_path, root=root)
 
     def _normalise_entry(entry):
         if isinstance(entry, (int, float)):
@@ -1160,6 +1214,12 @@ def save_manifest(
                 # Preserve semantic_hash only when content is unchanged
                 entry["semantic_hash"] = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
             manifest[f] = entry
+    if root is not None:
+        # Persist in portable form: forward-slash relative paths. Keys outside
+        # ``root`` (out-of-tree symlinked corpora, --include sources) keep
+        # their absolute form so the manifest round-trips on the saving
+        # machine even when not every entry can be portably encoded.
+        manifest = {_to_relative_for_storage(k, root): v for k, v in manifest.items()}
     Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
     Path(manifest_path).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
@@ -1197,7 +1257,10 @@ def detect_incremental(
     contains at least one direct symlinked child, ``False`` otherwise.
     """
     full = detect(root, follow_symlinks=follow_symlinks, google_workspace=google_workspace, extra_excludes=extra_excludes)
-    manifest = load_manifest(manifest_path)
+    # Pass ``root`` so a manifest written with relative keys (post-#777) is
+    # re-anchored to the absolute form the rest of this function compares
+    # against. Legacy absolute-keyed manifests pass through unchanged.
+    manifest = load_manifest(manifest_path, root=root)
 
     if not manifest:
         # No previous run - treat everything as new
