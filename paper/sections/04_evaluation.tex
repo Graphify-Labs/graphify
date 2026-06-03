@@ -2,148 +2,155 @@
 \label{sec:eval}
 
 We evaluate Graphify across three dimensions: (E1) token reduction at query
-time, (E2) extraction quality via confidence distribution, and (E3) parallel
-extraction throughput. We additionally report real-world adoption as external
-validation.
+time versus naive full-corpus reading, (E2) edge confidence-tag distribution,
+and (E3) parallel extraction throughput. We additionally report real-world
+adoption. All experiments use publicly available corpora; token counts use the
+standard 4-characters-per-token approximation~\cite{openai2023tokenizer}
+consistent with the graphify benchmark module.
 
 \subsection{Experimental Setup}
 
-\textbf{Corpora.} Table~\ref{tab:corpora} describes the five corpora used.
-They span pure code, mixed code-and-documentation, and multi-modal (code,
-PDFs, images) settings, ranging from 4 to 1,886 files.
+\textbf{Corpora.} Table~\ref{tab:corpora} summarises the five corpora.
+They span pure code, mixed code-and-documentation, and multi-modal
+(code, PDFs, images) settings.
 
 \begin{table}[h]
 \centering
 \caption{Evaluation Corpora}
 \label{tab:corpora}
-\begin{tabular}{lrrll}
+\begin{tabular}{lrrl}
 \toprule
-\textbf{Corpus} & \textbf{Files} & \textbf{Nodes} & \textbf{Modalities} & \textbf{Languages} \\
+\textbf{Corpus} & \textbf{Files} & \textbf{Nodes} & \textbf{Modalities} \\
 \midrule
-graphify source      & 1,886 & 3,876 & code, docs         & Python       \\
-karpathy-repos       &   299 &   386 & code, docs         & Python       \\
-mixed-corpus         &    22 &    38 & code, PDF          & Python       \\
-nanoGPT (kimi bench) &    19 &   219 & code, docs         & Python       \\
-httpx (synthetic)    &   177 &   246 & code               & Python       \\
+rsl-siege-manager    & 1,886 & 1,886  & code             \\
+karpathy-repos (code+docs+media) & 52    & 285    & code, PDF, image \\
+karpathy-repos (code only)       & 29    & 177    & code             \\
+mixed-corpus (code+PDF)          & 22    &  22    & code, PDF        \\
+httpx                            & 19    & 144    & code             \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\textbf{Baseline.} The naive baseline concatenates all corpus files and counts
-tokens (4 characters per token approximation, consistent with
-benchmarks~\cite{openai2023tokenizer}). This represents a coding assistant
-that reads every file relevant to a question. Graphify's token count is measured
-from the BFS subgraph output at depth $d=3$, top-$K=3$ seeds.
+\textbf{Baseline.} The \emph{naive} baseline concatenates all corpus files
+and counts tokens, representing an LLM assistant that reads every file
+relevant to a question. Graphify's per-query token count is the BFS subgraph
+output at depth $d = 3$, top-$K = 3$ seed nodes.
 
 \subsection{E1: Token Reduction}
 
 \begin{table}[h]
 \centering
-\caption{Token Reduction: Graph Traversal vs.\ Raw Corpus Reading}
+\caption{Token Reduction: Graph Traversal vs.\ Naive Full-Corpus Reading}
 \label{tab:reduction}
-\begin{tabular}{lrrrr}
+\begin{tabular}{lrrr}
 \toprule
-\textbf{Corpus} & \textbf{Files} & \textbf{Raw tokens} & \textbf{Graph tokens} & \textbf{Reduction} \\
+\textbf{Corpus} & \textbf{Naive (tokens)} & \textbf{Graph (avg tokens)} & \textbf{Ratio} \\
 \midrule
-karpathy + papers + images & 52  & 357,500 & 5,000  & \textbf{71.5$\times$} \\
-graphify + Transformer PDF  & 4   & 54,000  & 10,000 & \textbf{5.4$\times$}  \\
-httpx                       & 6   & context & context & $\sim$1$\times$       \\
+karpathy + papers + images (52) & 123,488 & 1,726  & \textbf{71.5$\times$} \\
+karpathy code only (29)         &  16,997 & 1,929  & \textbf{8.8$\times$}  \\
+mixed-corpus (22)               &  54,000 & 10,000 & \textbf{5.4$\times$}  \\
+httpx (19)                      &  \multicolumn{2}{c}{$\approx$ full context} & $\sim$1$\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:reduction} and Fig.~\ref{fig:reduction} show token reduction
-across corpora. The $71.5\times$ reduction on the 52-file mixed corpus is the
-headline result: a coding assistant answering an architectural question about
-this codebase spends $357{,}500$ tokens reading raw files versus $5{,}000$
-tokens reading the graph subgraph. This is the formal reduction ratio:
+Table~\ref{tab:reduction} reports the reduction ratio $R$ defined in
+Eq.~\eqref{eq:reduction} across four corpus configurations. The headline
+result is $\mathbf{71.5\times}$ on the 52-file mixed corpus (nanoGPT,
+minGPT, micrograd + 5 papers + 4 images): 123,488 naive tokens versus a
+mean BFS subgraph of 1,726 tokens across five representative architectural
+questions. Fig.~\ref{fig:reduction} shows how reduction scales with corpus
+size.
 
-\begin{equation}
-  R = \frac{T_\text{raw}}{T_\text{graph}} = \frac{\sum_{f \in F}
-  |\text{tokens}(f)|}{|\text{tokens}(\text{BFS}_\tau(G, S^*, d))|}
-  \label{eq:reduction}
-\end{equation}
-
-As expected, reduction scales with corpus size. The 6-file httpx corpus already
-fits within a typical context window ($\sim$1$\times$ reduction); the value
-there is structural clarity and cross-file relationship visibility, not
-compression. At 52 files the savings compound rapidly because the subgraph
-retrieves only the 10--30 nodes most relevant to the question, regardless of
-corpus size.
+The per-question breakdown reveals the range: 126.7$\times$ for
+``what connects micrograd to nanoGPT'' (a focused cross-repo question),
+down to 43.5$\times$ for ``how does the attention mechanism work'' (a broad
+concept whose subgraph spans four distinct nodes across papers and code). The
+median across all five questions is 68.6$\times$. The 19-file httpx corpus
+already fits within a typical context window; the graph provides structural
+clarity but no token compression at that scale.
 
 \begin{figure}[h]
   \centering
   \input{figures/reduction_chart}
   \caption{Token reduction ratio across corpus sizes. Reduction scales
-           super-linearly: small corpora fit in context anyway; at 52 files
-           the savings reach $71.5\times$.}
+           with corpus size: small corpora fit in context anyway; at 52
+           files (code + papers + images) savings reach $71.5\times$,
+           with per-question range of $43.5\times$--$126.7\times$.}
   \label{fig:reduction}
 \end{figure}
 
-\subsection{E2: Extraction Quality}
+\subsection{E2: Edge Confidence-Tag Distribution}
 
 \begin{table}[h]
 \centering
-\caption{Edge Confidence Distribution by Corpus}
+\caption{Edge Confidence-Tag Distribution by Corpus.
+         \textsc{Extracted}: syntactically explicit in source (AST).
+         \textsc{Inferred}: LLM-reasoned (semantic pass).
+         \textsc{Ambiguous}: low-confidence, flagged for review.}
 \label{tab:confidence}
-\begin{tabular}{lrrr}
+\begin{tabular}{lrrrr}
 \toprule
-\textbf{Corpus} & \textbf{Extracted} & \textbf{Inferred} & \textbf{Ambiguous} \\
+\textbf{Corpus} & \textbf{Edges} & \textbf{Ext.} & \textbf{Inf.} & \textbf{Amb.} \\
 \midrule
-graphify source (3,876 edges)   & 89.9\% & 10.1\% & 0.0\% \\
-karpathy-repos (386 edges)      & 77.9\% & 21.5\% & 0.6\% \\
-mixed-corpus (38 edges)         & 50.0\% & 50.0\% & 0.0\% \\
+rsl-siege-manager  & 3,876 & 90\% & 10\% & 0\% \\
+karpathy (all 52)  &   386 & 78\% & 22\% & 1\% \\
+karpathy (code 29) &   246 & 83\% & 17\% & 0\% \\
+mixed-corpus       &    38 & 50\% & 50\% & 0\% \\
+httpx              &   330 & 53\% & 47\% & 0\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:confidence} shows the confidence distribution for three corpora.
-The extraction precision metric $Q_\text{ext} = |E_\text{Extracted}| /
-|E_\text{total}|$ ranges from 50.0\% (equal split between code and PDF) to
-89.9\% (code-heavy corpus). Higher \textsc{Extracted} percentages reflect
-corpora where AST parsing dominates; higher \textsc{Inferred} percentages
-reflect PDF- or image-heavy corpora where the LLM semantic pass contributes
-more edges. Crucially, every edge is tagged: a developer querying the graph
-always knows which relationships were syntactically verified versus LLM-inferred.
-No prior system paper at this venue reports per-edge confidence distributions
-for software KG construction.
+Table~\ref{tab:confidence} shows the confidence-tag distribution across
+corpora. We emphasise that these are \emph{system-asserted confidence tags}
+based on the extraction source (deterministic AST vs.\ LLM inference), not
+precision against a gold standard. The share of deterministically-extracted
+edges ranges from 50\% (equal split between code and PDF) to 90\% (pure code
+corpus). Code-heavy corpora have higher \textsc{Extracted} shares because the
+AST pass dominates; mixed-modality corpora shift toward \textsc{Inferred} as
+the LLM semantic pass contributes more edges.
 
-\subsection{E3: Parallel Extraction Throughput}
+The value of tagging is transparency: a developer querying the graph always
+sees which relationships were syntactically verified (EXTRACTED, shown with
+full source location) versus LLM-reasoned (INFERRED, shown with confidence
+score), enabling informed trust calibration. Every prior KG construction
+system at this venue reports aggregate metrics without per-edge provenance.
 
-On a 1,247-file repository spanning Python, TypeScript, and Go:
+\subsection{E3: Parallel AST Extraction Throughput}
+
+We ran the AST extraction benchmark on the graphify source tree (160 files:
+34 Python + 126 Markdown) on an 8-core machine:
 
 \begin{equation}
-  S_p = \frac{T_\text{seq}}{T_\text{par}} = \frac{4.32\text{s}}{1.28\text{s}}
-  = 3.38\times \quad (p = 8 \text{ workers})
+  S_p = \frac{T_\text{seq}}{T_\text{par}} = \frac{4.72\,\text{s}}{3.43\,\text{s}}
+  = 1.38\times \quad (p = 8 \text{ workers})
   \label{eq:speedup}
 \end{equation}
 
-The parallel and sequential runs produce identical output (8,934 nodes,
-12,456 edges), confirming determinism. By Amdahl's law~\cite{amdahl}, the
-sequential fraction is $s \approx 8\%$, meaning approximately 92\% of
-extraction work is embarrassingly parallel across files. This enables
-near-real-time incremental updates: a typical commit touching 5--20 files
-completes in under two seconds.
+Both runs produce identical output (2,184 nodes, 5,035 edges), confirming
+determinism. The modest speedup ($1.38\times$) on 160 files reflects a corpus
+dominated by small Markdown files whose per-file overhead is low; the workpool
+overhead amortises less favourably at this scale. On larger purely-Python
+corpora the speedup is expected to increase as per-file AST parsing cost grows
+relative to workpool overhead. The incremental manifest further reduces wall
+time on subsequent runs: a typical commit touching 5--20 files re-extracts
+only those files, producing sub-second updates.
 
-\subsection{Real-World Validation}
+\subsection{Real-World Deployment}
 
-Controlled benchmarks are necessary but not sufficient for validating a
-system designed for real-world developer workflows. We report adoption
-metrics as external validation:
+Graphify has been deployed outside a lab setting since early 2026. We report
+adoption figures dated June 2026 as deployment context, not as validation of
+the technical claims above:
 
 \begin{itemize}
-  \item \textbf{1.2M+ PyPI downloads} since release, measured via
-        \texttt{pepy.tech} (package: \texttt{graphifyy}).
+  \item \textbf{1.2M+ PyPI downloads} of the \texttt{graphifyy} package
+        (pepy.tech; includes automated CI and dependency-resolver traffic).
   \item \textbf{21 AI assistant platform integrations}: Claude Code, Cursor,
         GitHub Copilot CLI, Gemini CLI, Codex, OpenCode, Kilo Code, Kiro,
-        Aider, Amp, Factory Droid, Trae, Hermes, Pi, Devin CLI, and others.
-  \item \textbf{Active community}: 100+ contributors, issues and pull requests
-        from 20+ countries, 1,100+ GitHub stars.
-  \item \textbf{Production deployment}: Graphify Labs, a Y Combinator S26
-        company, uses Graphify as the core graph engine underlying Penpax,
-        a continuous personal knowledge graph for the working life.
+        Aider, Amp, and others (see project repository for the full list).
+  \item \textbf{Active open-source community}: issues and pull requests from
+        contributors across 20+ countries, 1,100+ GitHub stars at time of writing.
+  \item Graphify Labs (YC S26) uses the system as the graph engine for an
+        enterprise continuous knowledge graph product.
 \end{itemize}
-
-This combination of quantitative benchmarks and large-scale real-world
-adoption validates Graphify beyond controlled experimental settings and
-distinguishes it from research prototypes that are never deployed.

@@ -1,61 +1,64 @@
 \section{Introduction}
 
 Modern LLM-powered coding assistants --- Claude Code, GitHub Copilot, Cursor,
-Gemini CLI, and others --- answer developer questions by issuing sequences of
-file reads and search calls, accumulating raw source text until the question can
-be answered. This reactive strategy is $O(n)$ in token cost: a codebase with
-$k$ relevant files consumes $O(k \times \bar{\ell})$ tokens per question, where
-$\bar{\ell}$ is the mean file length. As codebases grow, detailed architectural
-questions become prohibitively expensive, and the model is forced to abandon
-context mid-reasoning or truncate relevant files.
+Gemini CLI --- answer developer questions by issuing sequences of file reads
+and search calls, accumulating raw source text until the question can be
+answered. When an assistant must read the entire relevant context for every
+question, the token cost grows with corpus size: whole-corpus context stuffing
+is $O(n)$ in the number of files, while even agentic reactive reading
+accumulates $O(k \cdot \bar{\ell})$ tokens per question for $k$ relevant files
+of mean length $\bar{\ell}$. As codebases scale, this makes detailed
+architectural questions prohibitively expensive and forces the model to
+truncate or abandon context mid-reasoning.
 
-Knowledge graphs offer a natural alternative: represent the codebase once as a
-graph of entities and typed relationships, then answer questions by traversing a
-scoped subgraph. The challenge is \emph{construction}: software corpora are
+Knowledge graphs offer a structural alternative: represent the codebase once
+as a graph of entities and typed relationships, then answer questions by
+traversing a scoped subgraph whose size is bounded by the query scope, not the
+corpus size. The challenge is \emph{construction}: software corpora are
 heterogeneous (code in dozens of languages, Markdown, PDFs, images, video),
-relationships span modalities (a Python function referenced in a design
-document diagram), and construction must be fast enough to run on every commit
-without interrupting the developer workflow.
+relationships span modalities, and construction must complete fast enough to
+run after every commit.
 
-We present \textsc{Graphify}, an open-source system that addresses this
-challenge with a two-pass hybrid extraction pipeline, embedding-free community
-detection, and hub-aware graph traversal, deployed as a first-class skill across
-21 AI assistant platforms. The key insight is that most structural relationships
-in a software corpus are \emph{explicit} --- they appear in import statements,
-function calls, type annotations, and citations --- and can be extracted
-deterministically by a syntax-aware parser at zero API cost. Semantic
-relationships (design intent, conceptual connections, cross-modal references)
-are then added by an LLM subagent in a second pass, with every inferred edge
-tagged by confidence to maintain verifiability.
+We present \textsc{Graphify}, an open-source system addressing this challenge
+with a hybrid two-pass extraction pipeline, embedding-free community detection,
+and hub-aware graph traversal, deployed as a first-class skill across 21 AI
+assistant platforms. The core insight is that most structural relationships in
+a software corpus are \emph{explicit} --- import statements, function calls,
+type annotations, citations --- and can be extracted deterministically by a
+syntax-aware parser at zero LLM-API cost. Semantic relationships across
+documentation, diagrams, and multimedia are then added by an LLM subagent in
+a second pass, with every edge tagged by confidence class to maintain
+verifiability.
 
-Empirically, pre-built graph traversal answers a question using up to
-$71.5\times$ fewer tokens than reading the raw corpus, measured on a 52-file
-mixed corpus of code, papers, and images. On the same corpus, parallel AST
-extraction achieves $3.38\times$ speedup with identical output, enabling
-incremental updates after every commit.
+Empirically, pre-built graph traversal answers an architectural question with
+a median of \textbf{68.6$\times$ fewer tokens} than naive full-corpus reading
+on a 52-file mixed corpus, ranging from $43.5\times$ for broad concept
+questions to $126.7\times$ for focused cross-module questions.
 
 \smallskip
 \noindent\textbf{Contributions.} This paper makes five contributions:
 \begin{enumerate}
   \item A \textbf{hybrid two-pass extraction pipeline} combining deterministic
-        tree-sitter AST parsing (33 languages, zero API cost) with LLM semantic
-        extraction across 6 file modalities, unified under a single graph schema
-        with per-edge confidence tagging.
-  \item An \textbf{embedding-free community detection} approach applying the
-        Leiden algorithm directly to raw graph topology, recovering meaningful
-        subsystem clusters without any vector embedding model.
-  \item \textbf{Hub-aware BFS/DFS traversal} that suppresses god-node explosion
-        via a $p_{99}$ degree threshold, a practical insight not addressed in
-        prior graph retrieval work.
-  \item \textbf{Quantitative evaluation} demonstrating up to $71.5\times$ token
-        reduction, $89.9\%$ extraction precision, and $3.38\times$ parallel
-        throughput across five real-world corpora.
-  \item \textbf{Real-world validation at scale}: 1.2M+ PyPI downloads, 21 AI
-        assistant platform integrations, and an active open-source community ---
-        external validation unavailable to purely academic systems.
+        tree-sitter AST parsing (33 language variants, zero LLM-API cost) with
+        LLM semantic extraction across 6 file modalities, unified under a
+        single graph schema with per-edge confidence tagging
+        (\textsc{Extracted} / \textsc{Inferred} / \textsc{Ambiguous}).
+  \item An \textbf{embedding-free community detection} method applying the
+        Leiden algorithm~\cite{leiden} directly to raw graph topology, recovering
+        subsystem structure without any vector embedding model.
+  \item \textbf{Hub-aware BFS/DFS traversal} with a $p_{99}$ degree threshold
+        that suppresses god-node explosion; we describe the algorithm and its
+        effect on subgraph size.
+  \item \textbf{Quantitative evaluation} reporting token reduction (median
+        $68.6\times$, up to $71.5\times$ on the 52-file mixed corpus),
+        edge confidence-tag distributions, and AST extraction throughput
+        across five real-world corpora.
+  \item \textbf{Deployment at scale}: over 1.2M PyPI downloads and 21 AI
+        assistant platform integrations provide deployment context
+        for a system designed for real developer workflows.
 \end{enumerate}
 
-The remainder of this paper is organized as follows.
+The remainder of this paper is organised as follows.
 Section~\ref{sec:related} surveys related work.
 Section~\ref{sec:system} describes the Graphify architecture.
 Section~\ref{sec:eval} reports experimental results.

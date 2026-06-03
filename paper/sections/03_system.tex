@@ -63,7 +63,7 @@ Python relative imports are resolved against the module hierarchy; TypeScript
 
 For non-code files (\textsc{Document}, \textsc{Paper}, \textsc{Image},
 \textsc{Video}, \textsc{Office}), Graphify dispatches an LLM subagent.
-Video and audio files are first transcribed to text via Whisper~\cite{whisper};
+Video and audio files are first transcribed to text via faster-whisper~\cite{whisper};
 PDF files are parsed via \texttt{pypdf}; images are passed directly to a
 vision-capable model. The subagent receives a structured extraction prompt
 specifying the node-ID format, relation taxonomy, confidence rubric, and output
@@ -120,18 +120,20 @@ algorithm~\cite{leiden}, which optimizes modularity:
 \end{equation}
 where $m$ is the number of edges, $A_{ij}$ is the adjacency matrix, $k_i$ is
 the degree of node $i$, and $\delta(c_i, c_j)$ is 1 iff $i$ and $j$ share a
-community. Leiden~\cite{leiden} guarantees well-connected communities, an
-improvement over Louvain~\cite{louvain} which can produce internally disconnected
-partitions. Louvain via NetworkX is used as a fallback when graspologic is
-unavailable.
+community. Leiden~\cite{leiden} guarantees all communities are internally
+connected and refines toward subset-optimal partitions, correcting Louvain's
+known production of internally disconnected communities~\cite{louvain}.
+Louvain via NetworkX is used as a fallback when graspologic is unavailable.
+Note that community detection is applied to an undirected projection of the
+graph, as modularity is defined for undirected graphs.
 
 \medskip
 \noindent\textbf{Hub exclusion.}
 Nodes with degree $k_i \geq \tau$ where $\tau = \max(50,\; p_{99}(\{k_i\}))$
-are excluded from the partition before running Leiden, then re-inserted into
-their highest-modularity community. This prevents high-degree utility nodes
-(e.g., \texttt{logging}, \texttt{json.dumps}) from dominating community
-structure.
+are excluded before running Leiden, then re-inserted into the community
+holding the plurality of their neighbors (majority vote). This prevents
+high-degree utility nodes (e.g., \texttt{logging}, \texttt{json.dumps})
+from dominating community structure.
 
 \medskip
 \noindent\textbf{Determinism.}
@@ -144,16 +146,20 @@ community assignments across runs on the same input.
 \label{subsec:traversal}
 
 At query time, the user's natural language question $q$ is tokenized,
-IDF-weighted, and matched against node labels. Each node $n$ is scored:
+IDF-weighted, and matched against node labels. Each node $n$ is scored using
+a three-tier match with a file-name bonus:
 \begin{equation}
-  s(n, q) = 10^3 \cdot \mathbf{1}_\text{exact} + 10^2 \cdot
-  \mathbf{1}_\text{prefix} + \mathbf{1}_\text{substr} + 0.5 \cdot
-  \mathbf{1}_\text{file}
+  s(n, q) = w_\text{IDF} \cdot \max\!\left(10^3 \cdot \mathbf{1}_\text{exact},\;
+  10^2 \cdot \mathbf{1}_\text{prefix},\; \mathbf{1}_\text{substr}\right)
+  + 0.5 \cdot \mathbf{1}_\text{file}
   \label{eq:score}
 \end{equation}
-where each indicator function is 1 if the query matches the node's label (or
-source filename) at the respective granularity. The top-$K$ seed nodes
-$S^* = \arg\!\max_{|S|=K} \sum_{n \in S} s(n, q)$ initialize BFS expansion.
+where $w_\text{IDF}$ is the query-term IDF weight, and each indicator is 1
+if the query term matches the node's label at the respective granularity
+(exact, prefix, or substring); the max selects the highest-tier match.
+The file bonus $0.5 \cdot \mathbf{1}_\text{file}$ fires when the query
+matches the node's source filename. Top-$K$ seeds:
+$S^* = \arg\!\max_{|S|=K} \sum_{n \in S} s(n, q)$.
 
 Algorithm~\ref{alg:bfs} formalizes the hub-aware traversal:
 

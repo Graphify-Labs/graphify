@@ -4,45 +4,48 @@
 \subsection{Code Intelligence and Program Analysis}
 
 Traditional program analysis tools construct call graphs, program dependence
-graphs (PDGs), and control-flow graphs from source code~\cite{allen1970control}.
-These representations are typically single-language, require compilation, and
-are not queryable by natural language. Recent neural approaches such as
-CodeBERT~\cite{feng2020codebert} and GraphCodeBERT~\cite{guo2021graphcodebert}
-learn embedding-based representations of code, enabling semantic search and
-code completion but not structured graph traversal at runtime.
-Code2Graph~\cite{code2graph} extracts lightweight call graphs for Java but
-does not support multi-lingual or multi-modal corpora.
-Graphify differs by unifying structural (AST-extracted) and semantic
-(LLM-inferred) edges under one schema, supporting 33 languages and 6 file
-modalities, and exposing the graph as a queryable runtime index for AI assistants.
+graphs, and control-flow graphs from source code~\cite{allen1970control}.
+These are typically single-language, require compilation, and are not
+queryable by natural language at runtime. CodeBERT~\cite{feng2020codebert}
+learns code-text embeddings for retrieval and classification;
+GraphCodeBERT~\cite{guo2021graphcodebert} additionally injects data-flow
+graph structure during pretraining, improving code search. Neither exposes a
+queryable graph index at query time.
+Graphify combines deterministic AST-extracted structural edges with
+LLM-inferred semantic edges under a unified schema, supporting 33 language
+variants across 6 file modalities, and provides a live query interface.
 
-\subsection{Knowledge Graph Construction}
+\subsection{Knowledge Graph Construction from Text}
 
-KG construction from text has a rich literature spanning relation extraction,
-entity linking, and ontology population~\cite{weikum2010information}.
-Recent LLM-based approaches treat KG construction as a structured generation
-task~\cite{chen2024multiagent}: Chen and Liu~\cite{chen2024multiagent} propose a
-multi-agent framework for constructing KGs from text corpora using specialized
-LLM agents, achieving competitive extraction quality on general-domain benchmarks.
-Guo et al.~\cite{guo2024slmp} demonstrate LLM-powered scientific literature
-management with structured extraction as a core component.
-These systems operate on homogeneous text corpora and do not handle code
-structure, multi-modal inputs, or incremental updates. Graphify's hybrid
-pipeline extends this line of work to heterogeneous software corpora, combining
-deterministic AST extraction with LLM semantic inference and adding confidence
-tagging throughout.
+KG construction from text spans relation extraction, entity linking, and
+ontology population~\cite{weikum2010information}. Recent LLM-based approaches
+treat construction as a structured generation task: Chen and
+Liu~\cite{chen2024multiagent} propose a multi-agent collaborative framework
+for KG construction from text, using specialized LLM agents for extraction,
+verification, and domain adaptation. Guo et al.~\cite{guo2024slmp} build a
+scientific literature management platform (\textsc{SLMP}) using fine-tuned
+LLMs for structured extraction from PDF corpora, demonstrating the system
+paper approach at ICKG 2024.
+These systems operate on homogeneous text corpora. Graphify extends to
+heterogeneous software corpora by combining deterministic AST parsing for
+code with LLM extraction for non-code modalities, adding incremental update
+support and per-edge confidence provenance.
 
 \subsection{Graph-Augmented Retrieval for LLMs}
 
-Retrieval-Augmented Generation (RAG)~\cite{lewis2020rag} improves LLM responses
-by retrieving relevant documents before generation.
-Microsoft's GraphRAG~\cite{edge2024graphrag} extends this to knowledge graphs,
-using community summaries to answer global questions over large document corpora.
-LlamaIndex~\cite{llamaindex2022} provides a KG abstraction for LLM applications
-but relies on embedding-based retrieval and does not target software corpora.
-Emotional RAG~\cite{huang2024emotional} demonstrates that retrieval augmented
-with structured context (emotional state) improves role-playing agent quality.
-Unlike these systems, Graphify targets \emph{software} corpora specifically,
-uses topology-only community detection (no embeddings required), supports
-incremental updates after code changes, and integrates natively with 21 AI
-assistant platforms via pre-built hooks and skills.
+Retrieval-Augmented Generation (RAG)~\cite{lewis2020rag} improves LLM
+responses by retrieving relevant passages before generation. Microsoft's
+GraphRAG~\cite{edge2024graphrag} extends RAG to KGs: it builds an entity
+graph via LLM extraction from text, applies the Leiden algorithm to detect
+communities on graph topology, and uses community summaries in a map-reduce
+scheme for global codebase questions.
+LlamaIndex~\cite{llamaindex2022} provides graph-index abstractions for LLM
+applications with retrievers ranging from keyword/traversal to embedding-based
+hybrid search, and does not target software corpora specifically.
+Graphify differs from GraphRAG by adding deterministic AST-extracted code
+structure alongside LLM-inferred edges, supporting incremental updates after
+commits, and deploying as an always-on skill across 21 AI assistant
+platforms rather than as a standalone retrieval pipeline. Relative to
+LlamaIndex, Graphify provides a software-corpus-specific schema, a
+single-command install-and-run workflow, and platform hooks that steer the AI
+assistant toward graph queries automatically.
