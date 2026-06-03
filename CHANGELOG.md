@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: Terraform/HCL support (#187). `.tf`, `.tfvars`, and `.hcl` files are now AST-extracted via tree-sitter-hcl into a real infrastructure dependency graph: resources, data sources, modules, variables, outputs, providers, and locals become nodes, and interpolation references (`aws_instance.web -> var.region`, `-> data.aws_ami.ubuntu`, ...) plus explicit `depends_on` become edges. Node IDs are scoped by directory rather than file, so cross-file references (a resource defined in `main.tf` and used in `network.tf`) resolve when per-file extractions are merged.
+
 ## 0.8.30 (2026-06-03)
 
 - Fix: `graphify install --project --platform antigravity` now writes Antigravity's always-on layer (`.agents/rules/graphify.md` + `.agents/workflows/graphify.md`), not just the skill. The project-scoped path went through the skill-only branch and skipped them, even though the project uninstall removes them.
