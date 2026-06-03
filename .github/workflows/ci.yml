@@ -8,6 +8,44 @@ on:
   workflow_dispatch:
 
 jobs:
+  skillgen-check:
+    # Fast lint-style guard: the skill files under graphify/ are generated from
+    # the fragments in tools/skillgen/. This fails if someone hand-edited a
+    # generated file or forgot to re-run the generator and bless expected/, and it
+    # runs the build-time validators that guard per-host coverage, the file_type
+    # enum, the monolith round-trips, and the always-on round-trips.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The audit-coverage, monolith-roundtrip, and always-on-roundtrip
+          # validators read blobs from origin/v8. A shallow checkout omits that
+          # ref, so fetch the full history here and the validators run for real
+          # (rather than skipping). The other jobs stay shallow.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      # --frozen keeps uv from re-resolving and rewriting uv.lock as a side
+      # effect of `uv run`; the lock is committed and must not churn in CI.
+      - name: Check generated skill artifacts are up to date
+        run: uv run --frozen python -m tools.skillgen --check
+
+      - name: Audit per-host v8 coverage
+        run: uv run --frozen python -m tools.skillgen --audit-coverage
+
+      - name: Check the file_type enum is a singleton
+        run: uv run --frozen python -m tools.skillgen --schema-singleton
+
+      - name: Round-trip the monoliths against v8
+        run: uv run --frozen python -m tools.skillgen --monolith-roundtrip
+
+      - name: Round-trip the always-on blocks against v8
+        run: uv run --frozen python -m tools.skillgen --always-on-roundtrip
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -15,23 +53,27 @@ jobs:
         python-version: ["3.10", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          # test_skillgen.py reads pre-split skill bodies from the immutable
+          # baseline commit via `git show`; a shallow checkout omits that history
+          # and the baseline tests fail. Full history mirrors the skillgen-check job.
+          fetch-depth: 0
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
+      # --frozen installs straight from the committed uv.lock without re-resolving
+      # or rewriting it, so CI never churns the lock.
       - name: Install dependencies
-        run: |
-          pip install -e ".[mcp,pdf,watch,sql]"
-          pip install pytest
+        run: uv sync --all-extras --frozen
 
       - name: Run tests
-        run: |
-          python -m pytest tests/ -q --tb=short
+        run: uv run --frozen pytest tests/ -q --tb=short
 
       - name: Verify install works end-to-end
         run: |
-          graphify --help
-          graphify install
+          uv run --frozen graphify --help
+          uv run --frozen graphify install

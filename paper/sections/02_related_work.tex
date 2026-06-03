@@ -1,0 +1,88 @@
+\section{Related Work}
+\label{sec:related}
+
+Table~\ref{tab:comparison} summarises the positioning of Graphify against
+closely related systems across the dimensions most relevant to software
+knowledge graph construction.
+
+\begin{table}[h]
+\centering
+\caption{System comparison across key dimensions.
+         \checkmark = supported; $\circ$ = partial; $\times$ = not supported.}
+\label{tab:comparison}
+\setlength{\tabcolsep}{2pt}
+{\scriptsize
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Feature} & \rotatebox{55}{\textbf{Graphify}} &
+                   \rotatebox{55}{\textbf{GraphRAG}} &
+                   \rotatebox{55}{\textbf{LlamaIndex}} &
+                   \rotatebox{55}{\textbf{Code2Graph}} &
+                   \rotatebox{55}{\textbf{CodeBERT}} \\
+\midrule
+Code structure (AST)     & \checkmark & $\times$ & $\times$ & \checkmark & $\circ$ \\
+Multi-modal (docs/img)   & \checkmark & \checkmark & $\circ$ & $\times$ & $\times$ \\
+Topology-only clustering & \checkmark & \checkmark & $\times$ & $\times$ & $\times$ \\
+Per-edge confidence tag  & \checkmark & $\times$ & $\times$ & $\times$ & $\times$ \\
+Incremental update       & \checkmark & $\times$ & $\times$ & $\times$ & $\times$ \\
+AI assistant integration & \checkmark & $\times$ & $\circ$ & $\times$ & $\times$ \\
+No embeddings required   & \checkmark & $\times$ & $\times$ & \checkmark & $\times$ \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsection{Code Intelligence and Program Analysis}
+
+Traditional program analysis tools construct call graphs, program dependence
+graphs, and control-flow graphs from source code~\cite{allen1970control}.
+These are typically single-language, require a compilable project, and are not
+queryable by natural language at runtime. CodeBERT~\cite{feng2020codebert}
+learns code-text embeddings for retrieval and classification;
+GraphCodeBERT~\cite{guo2021graphcodebert} additionally injects data-flow
+graph structure during pretraining, improving code search. Neither exposes a
+queryable graph index at runtime, and both are limited to a single language
+and modality. Code2Graph~\cite{code2graph} extracts lightweight call graphs for
+Java from source without compilation, but does not generalise to other languages
+or non-code modalities.
+
+The key distinction of Graphify is the combination of deterministic AST-extracted
+structural edges with LLM-inferred semantic edges under a unified schema across
+33 language variants and 6 file modalities. No prior code-analysis tool integrates
+directly with AI assistant platforms or provides a natural-language query interface
+over the extracted graph.
+
+\subsection{Knowledge Graph Construction from Text}
+
+KG construction from text spans relation extraction, entity linking, and
+ontology population~\cite{weikum2010information}. Recent LLM-based approaches
+treat construction as a structured generation task: Chen and
+Liu~\cite{chen2024multiagent} propose a multi-agent collaborative framework
+for KG construction from text, using specialized LLM agents for extraction,
+verification, and domain adaptation. Guo et al.~\cite{guo2024slmp} build a
+scientific literature management platform (\textsc{SLMP}) using fine-tuned
+LLMs for structured extraction from PDF corpora, demonstrating the system
+paper approach at ICKG 2024.
+These systems operate on homogeneous text corpora. Graphify extends to
+heterogeneous software corpora by combining deterministic AST parsing for
+code with LLM extraction for non-code modalities, adding incremental update
+support and per-edge confidence provenance.
+
+\subsection{Graph-Augmented Retrieval for LLMs}
+
+Retrieval-Augmented Generation (RAG)~\cite{lewis2020rag} improves LLM
+responses by retrieving relevant passages before generation. Microsoft's
+GraphRAG~\cite{edge2024graphrag} extends RAG to KGs: it builds an entity
+graph via LLM extraction from text, applies the Leiden algorithm to detect
+communities on graph topology, and uses community summaries in a map-reduce
+scheme for global codebase questions.
+LlamaIndex~\cite{llamaindex2022} provides graph-index abstractions for LLM
+applications with retrievers ranging from keyword/traversal to embedding-based
+hybrid search, and does not target software corpora specifically.
+Graphify differs from GraphRAG by adding deterministic AST-extracted code
+structure alongside LLM-inferred edges, supporting incremental updates after
+commits, and deploying as an always-on skill across 21 AI assistant
+platforms rather than as a standalone retrieval pipeline. Relative to
+LlamaIndex, Graphify provides a software-corpus-specific schema, a
+single-command install-and-run workflow, and platform hooks that steer the AI
+assistant toward graph queries automatically.

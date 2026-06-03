@@ -1,0 +1,93 @@
+% Architecture diagram for Graphify pipeline
+% Full-width (figure*), two-column IEEE layout
+\begin{tikzpicture}[
+  font=\small,
+  node distance=0.55cm and 0.7cm,
+  % Box styles
+  corpus/.style={draw, rounded corners=3pt, fill=blue!8, minimum width=1.6cm,
+                 minimum height=0.55cm, align=center, font=\scriptsize},
+  stage/.style={draw, rounded corners=3pt, fill=orange!12, minimum width=1.7cm,
+                minimum height=0.65cm, align=center, font=\scriptsize\bfseries},
+  pass/.style={draw, rounded corners=3pt, fill=green!10, minimum width=2.0cm,
+               minimum height=0.55cm, align=center, font=\scriptsize},
+  output/.style={draw, rounded corners=3pt, fill=purple!10, minimum width=1.7cm,
+                 minimum height=0.55cm, align=center, font=\scriptsize},
+  platform/.style={draw, rounded corners=3pt, fill=gray!12, minimum width=1.5cm,
+                   minimum height=0.5cm, align=center, font=\scriptsize},
+  arrow/.style={-{Stealth[length=4pt]}, thick},
+  tag/.style={font=\scriptsize\itshape, text=gray},
+]
+
+% ---- CORPUS (left column) ----
+\node[corpus] (code)   at (0, 0)    {Code\\(33 langs)};
+\node[corpus] (docs)   [below=0.2cm of code]   {Docs / MD};
+\node[corpus] (pdfs)   [below=0.2cm of docs]   {Papers / PDF};
+\node[corpus] (images) [below=0.2cm of pdfs]   {Images};
+\node[corpus] (video)  [below=0.2cm of images] {Video / Audio};
+\node[corpus] (office) [below=0.2cm of video]  {Office (.docx)};
+
+% label
+\node[tag, above=0.15cm of code] {Corpus};
+
+% ---- DETECT ----
+\node[stage] (detect) [right=1.1cm of docs, yshift=-0.5cm] {Detect \&\\Classify};
+
+% corpus -> detect arrows
+\foreach \src in {code, docs, pdfs, images, video, office}
+  \draw[arrow, gray!60] (\src.east) -- (detect.west |- \src.east);
+
+% ---- EXTRACT (two passes) ----
+\node[pass] (ast) [right=1.0cm of detect, yshift=0.6cm]
+      {Pass 1:\\AST (tree-sitter)\\{\color{green!60!black}\scriptsize EXTRACTED}};
+\node[pass] (llm) [right=1.0cm of detect, yshift=-0.6cm]
+      {Pass 2:\\LLM Subagent\\{\color{orange!70!black}\scriptsize INFERRED}};
+
+\draw[arrow] (detect.east) -- ++(0.35,0) |- (ast.west);
+\draw[arrow] (detect.east) -- ++(0.35,0) |- (llm.west);
+
+% label
+\node[tag, above=0.15cm of ast] {Extract};
+
+% ---- MERGE ----
+\node[stage] (merge) [right=1.0cm of ast, yshift=-0.6cm] {Merge \&\\Dedup};
+\draw[arrow] (ast.east) -- ++(0.35,0) |- (merge.west);
+\draw[arrow] (llm.east) -- ++(0.35,0) |- (merge.west);
+
+% ---- CLUSTER ----
+\node[stage] (cluster) [right=1.0cm of merge] {Leiden\\Cluster};
+\draw[arrow] (merge) -- (cluster);
+\node[tag, above=0.1cm of cluster] {Cluster};
+
+% ---- GRAPH.JSON ----
+\node[output] (graph) [right=1.0cm of cluster] {\texttt{graph.json}\\{\scriptsize nodes, edges,}\\{\scriptsize communities}};
+\draw[arrow] (cluster) -- (graph);
+
+% ---- QUERY ENGINE ----
+\node[stage] (query) [below=0.8cm of graph] {Hub-Aware\\BFS/DFS};
+\draw[arrow] (graph.south) -- (query.north);
+\node[tag, right=0.05cm of query] {\scriptsize $\tau = p_{99}(\deg)$};
+
+% user query input
+\node[tag] (qin) [left=0.6cm of query] {\textit{query $q$}};
+\draw[arrow, dashed] (qin) -- (query.west);
+
+% subgraph output
+\node[output] (subgraph) [below=0.5cm of query] {Scoped\\Subgraph};
+\draw[arrow] (query) -- (subgraph);
+
+% ---- PLATFORMS ----
+\node[platform] (p1) [right=1.0cm of graph, yshift=0.4cm]  {Claude Code};
+\node[platform] (p2) [right=1.0cm of graph, yshift=-0.2cm] {Cursor};
+\node[platform] (p3) [right=1.0cm of graph, yshift=-0.8cm] {Gemini CLI};
+\node[platform] (p4) [right=1.0cm of graph, yshift=-1.4cm] {+18 more};
+
+\foreach \p in {p1, p2, p3, p4}
+  \draw[arrow, gray!70] (graph.east) -- (\p.west);
+
+\node[tag, above=0.1cm of p1] {21 Platforms};
+
+% ---- HOOKS annotation ----
+\node[tag] (hooks) [below=0.3cm of p4] {\scriptsize PreToolUse hooks};
+\node[tag] [below=0.05cm of hooks] {\scriptsize + Progressive skills};
+
+\end{tikzpicture}

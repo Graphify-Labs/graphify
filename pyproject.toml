@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.8.19"
-description = "AI coding assistant skill (Claude Code, Codex, OpenCode, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
+version = "0.8.30"
+description = "AI coding assistant skill (Claude Code, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = { file = "LICENSE" }
-keywords = ["claude", "claude-code", "codex", "opencode", "cursor", "gemini", "aider", "kiro", "pi", "devin", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
+keywords = ["claude", "claude-code", "codex", "opencode", "kilo", "cursor", "gemini", "aider", "kiro", "pi", "devin", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
 requires-python = ">=3.10"
 dependencies = [
     "networkx",
@@ -56,16 +56,21 @@ svg = ["matplotlib"]
 leiden = ["graspologic; python_version < '3.13'"]
 office = ["python-docx", "openpyxl"]
 google = ["openpyxl"]
-video = ["faster-whisper", "yt-dlp"]
+video = ["faster-whisper; python_version >= '3.11'", "yt-dlp"]
 kimi = ["openai", "tiktoken"]
 ollama = ["openai"]
 bedrock = ["boto3"]
+anthropic = ["anthropic"]
 gemini = ["openai", "tiktoken"]
 openai = ["openai", "tiktoken"]
 chinese = ["jieba"]
 sql = ["tree-sitter-sql"]
 rescript = ["tree-sitter-rescript @ git+https://github.com/rescript-lang/tree-sitter-rescript.git@v6.0.0"]
-all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper", "yt-dlp", "matplotlib", "openai", "tiktoken", "boto3", "tree-sitter-sql", "jieba"]
+# tree-sitter-dm (BYOND DreamMaker) ships only a Windows wheel, so on Linux/Mac it
+# must compile from source (needs a C toolchain + python3-dev). Keeping it optional
+# avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
+dm = ["tree-sitter-dm"]
+all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp", "matplotlib", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
@@ -86,6 +91,7 @@ dev = [
     "safety>=3.7.0",
     "setuptools>=82.0.1",
     "wheel>=0.47.0",
+    "tomli>=2.0 ; python_version < '3.11'",
 ]
 
 [tool.uv]
@@ -98,7 +104,12 @@ packages = ["graphify"]
 include-package-data = false
 
 [tool.setuptools.package-data]
-graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-aider.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md"]
+# The skill bodies ship as graphify/skill*.md (the SKILL.md a host installs is
+# copied from one of these). The progressive-disclosure references sidecar ships
+# under graphify/skills/<host>/references/, and the always-on injection blocks
+# under graphify/always_on/. There is no graphify/skills/<host>/SKILL.md in the
+# repo, so no SKILL.md glob is needed here.
+graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", "command-kilo.md", "skill-aider.md", "skill-amp.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md", "skills/*/references/*.md", "always_on/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

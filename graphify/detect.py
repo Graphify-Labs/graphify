@@ -25,7 +25,7 @@ class FileType(str, Enum):
 
 _MANIFEST_PATH = "graphify-out/manifest.json"
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.rb', '.swift', '.res', '.resi', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.sln', '.csproj', '.fsproj', '.vbproj', '.razor', '.cshtml'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.rb', '.swift', '.res', '.resi', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.csproj', '.fsproj', '.vbproj', '.razor', '.cshtml'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -35,6 +35,61 @@ VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.w
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
 CORPUS_UPPER_THRESHOLD = 500_000  # words - above this, warn about token cost
 FILE_COUNT_UPPER = 500             # files - above this, warn about token cost
+
+# Resource caps for parsing untrusted office/PDF files (F2). A corpus is
+# attacker-controllable (graphify runs on cloned/shared folders), and .docx/.xlsx
+# are zip+XML containers: a few-KB zip-bomb can decompress to gigabytes and
+# OOM-kill the process at load_workbook/Document time. Screen the file before any
+# parser touches it.
+_OFFICE_MAX_RAW_BYTES = 50 * 1024 * 1024            # 50 MiB on-disk
+_OFFICE_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024  # 512 MiB total uncompressed
+_OFFICE_MAX_COMPRESSION_RATIO = 200                 # uncompressed : compressed
+
+
+def _file_within_size_cap(path: Path, cap: int = _OFFICE_MAX_RAW_BYTES) -> bool:
+    """True if *path* exists and its on-disk size is within *cap*."""
+    try:
+        return path.stat().st_size <= cap
+    except OSError:
+        return False
+
+
+def _zip_within_caps(path: Path) -> bool:
+    """Reject a zip-based office file that is a likely zip/XML bomb.
+
+    Two layers, because the zip central-directory sizes are attacker-controlled:
+    1. A cheap pre-filter on the declared sizes (on-disk cap, summed-uncompressed
+       cap, compression ratio) that rejects an honest bomb without decompressing.
+    2. An authoritative pass that stream-decompresses every member with a hard
+       byte ceiling, so a member that under-declares its size in the central
+       directory cannot expand past the cap undetected. Decompression is chunked
+       and bounded, so checking a bomb never materializes more than the ceiling.
+    """
+    import zipfile
+    if not _file_within_size_cap(path):
+        return False
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = zf.infolist()
+            compressed = sum(i.compress_size for i in infos) or 1
+            declared = sum(i.file_size for i in infos)
+            if declared > _OFFICE_MAX_DECOMPRESSED_BYTES:
+                return False
+            if declared / compressed > _OFFICE_MAX_COMPRESSION_RATIO:
+                return False
+            total = 0
+            for info in infos:
+                with zf.open(info) as member:
+                    while True:
+                        chunk = member.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > _OFFICE_MAX_DECOMPRESSED_BYTES:
+                            return False
+    except (zipfile.BadZipFile, OSError, EOFError):
+        return False
+    return True
 
 # Parent directories whose contents are always sensitive.
 # Checked against path.parts[:-1] (parents only) so a root-level file named
@@ -318,6 +373,8 @@ def classify_file(path: Path) -> FileType | None:
 
 def extract_pdf_text(path: Path) -> str:
     """Extract plain text from a PDF file using pypdf."""
+    if not _file_within_size_cap(path):
+        return ""
     try:
         from pypdf import PdfReader
         reader = PdfReader(str(path))
@@ -333,6 +390,8 @@ def extract_pdf_text(path: Path) -> str:
 
 def docx_to_markdown(path: Path) -> str:
     """Convert a .docx file to markdown text using python-docx."""
+    if not _zip_within_caps(path):
+        return ""
     try:
         from docx import Document
         from docx.oxml.ns import qn
@@ -373,6 +432,8 @@ def docx_to_markdown(path: Path) -> str:
 
 def xlsx_to_markdown(path: Path) -> str:
     """Convert an .xlsx file to markdown text using openpyxl."""
+    if not _zip_within_caps(path):
+        return ""
     try:
         import openpyxl
         wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
@@ -671,7 +732,9 @@ def _is_ignored(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> boo
 
     def _eval(target: Path) -> bool:
         """Apply last-match-wins to a single target path."""
-        def _matches(rel: str, p: str) -> bool:
+        def _matches(rel: str, p: str, anchored: bool) -> bool:
+            if anchored:
+                return fnmatch.fnmatch(rel, p)
             parts = rel.split("/")
             if fnmatch.fnmatch(rel, p):
                 return True
@@ -697,19 +760,19 @@ def _is_ignored(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> boo
             if anchored:
                 try:
                     rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
-                    matched = _matches(rel_anchor, p)
+                    matched = _matches(rel_anchor, p, anchored=True)
                 except ValueError:
                     pass
             else:
                 try:
                     rel = str(target.relative_to(root)).replace(os.sep, "/")
-                    matched = _matches(rel, p)
+                    matched = _matches(rel, p, anchored=False)
                 except ValueError:
                     pass
                 if not matched and anchor != root:
                     try:
                         rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
-                        matched = _matches(rel_anchor, p)
+                        matched = _matches(rel_anchor, p, anchored=False)
                     except ValueError:
                         pass
 
@@ -769,7 +832,9 @@ def _is_included(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> bo
     if not patterns:
         return False
 
-    def _matches(rel: str, p: str) -> bool:
+    def _matches(rel: str, p: str, anchored: bool) -> bool:
+        if anchored:
+            return fnmatch.fnmatch(rel, p)
         parts = rel.split("/")
         if fnmatch.fnmatch(rel, p):
             return True
@@ -790,21 +855,21 @@ def _is_included(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> bo
         if anchored:
             try:
                 rel_anchor = str(path.relative_to(anchor)).replace(os.sep, "/")
-                if _matches(rel_anchor, p):
+                if _matches(rel_anchor, p, anchored=True):
                     return True
             except ValueError:
                 pass
         else:
             try:
                 rel = str(path.relative_to(root)).replace(os.sep, "/")
-                if _matches(rel, p):
+                if _matches(rel, p, anchored=False):
                     return True
             except ValueError:
                 pass
             if anchor != root:
                 try:
                     rel_anchor = str(path.relative_to(anchor)).replace(os.sep, "/")
-                    if _matches(rel_anchor, p):
+                    if _matches(rel_anchor, p, anchored=False):
                         return True
                 except ValueError:
                     pass
@@ -926,6 +991,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     seen.add(p)
                     all_files.append(p)
 
+    all_files.sort(key=lambda p: str(p))
+
     converted_dir = root / "graphify-out" / "converted"
 
     for p in all_files:
@@ -935,7 +1002,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
                 continue
-        if _is_ignored(p, root, ignore_patterns):
+        if not in_memory and _is_ignored(p, root, ignore_patterns):
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
@@ -978,6 +1045,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             files[ftype].append(str(p))
             if ftype != FileType.VIDEO:
                 total_words += count_words(p)
+
+    for ftype in files:
+        files[ftype].sort()
 
     total_files = sum(len(v) for v in files.values())
     needs_graph = total_words >= CORPUS_WARN_THRESHOLD

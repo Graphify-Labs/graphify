@@ -1,0 +1,70 @@
+\section{Introduction}
+
+Modern LLM-powered coding assistants --- Claude Code, GitHub Copilot, Cursor,
+Gemini CLI --- answer developer questions by issuing sequences of file reads
+and search calls, accumulating raw source text until the question can be
+answered. When an assistant reads the entire corpus for every question, the token cost
+is $O(n \cdot \bar{\ell})$ in corpus size --- prohibitive at scale. Agentic
+file selection (grep + targeted reads) reduces this to $O(k \cdot \bar{\ell})$
+for $k$ relevant files, but $k$ can still be large for broad architectural
+questions, and grep cannot express cross-modal or cross-repository
+relationships. We measured this empirically: on a 52-file multi-modal corpus,
+an agentic baseline reading the top-3 grep-matching files consumes
+$10{,}095$ tokens per query versus $1{,}726$ for Graphify's graph traversal
+--- a $5.8\times$ reduction against the agentic baseline and $71.5\times$
+against naive stuffing.
+
+Knowledge graphs offer a structural alternative: represent the codebase once
+as a graph of entities and typed relationships, then answer questions by
+traversing a scoped subgraph whose size is bounded by the query scope, not the
+corpus size. The challenge is \emph{construction}: software corpora are
+heterogeneous (code in dozens of languages, Markdown, PDFs, images, video),
+relationships span modalities, and construction must complete fast enough to
+run after every commit.
+
+We present \textsc{Graphify}, an open-source system addressing this challenge
+with a hybrid two-pass extraction pipeline, embedding-free community detection,
+and hub-aware graph traversal, deployed as a first-class skill across 21 AI
+assistant platforms. The core insight is that most structural relationships in
+a software corpus are \emph{explicit} --- import statements, function calls,
+type annotations, citations --- and can be extracted deterministically by a
+syntax-aware parser at zero LLM-API cost. Semantic relationships across
+documentation, diagrams, and multimedia are then added by an LLM subagent in
+a second pass, with every edge tagged by confidence class to maintain
+verifiability.
+
+Empirically, pre-built graph traversal answers an architectural question with
+a median of \textbf{68.6$\times$ fewer tokens} than naive full-corpus reading
+on a 52-file mixed corpus, ranging from $43.5\times$ for broad concept
+questions to $126.7\times$ for focused cross-module questions.
+
+\smallskip
+\noindent\textbf{Contributions.} This paper makes five contributions:
+\begin{enumerate}
+  \item A \textbf{hybrid two-pass extraction pipeline} combining deterministic
+        tree-sitter AST parsing (33 language variants, zero LLM-API cost) with
+        LLM semantic extraction across 6 file modalities, unified under a
+        single graph schema with per-edge confidence tagging
+        (\textsc{Extracted} / \textsc{Inferred} / \textsc{Ambiguous}).
+  \item An \textbf{embedding-free community detection} method applying the
+        Leiden algorithm~\cite{leiden} directly to raw graph topology, recovering
+        subsystem structure without any vector embedding model.
+  \item \textbf{Hub-aware BFS/DFS traversal} with a $p_{99}$ degree threshold
+        that suppresses hub-node explosion; we describe the algorithm and its
+        effect on subgraph size.
+  \item \textbf{Quantitative evaluation} reporting token reduction (median
+        $68.6\times$, up to $71.5\times$ on the 52-file mixed corpus),
+        edge confidence-tag distributions, and AST extraction throughput
+        across five real-world corpora.
+  \item \textbf{Deployment at scale}: over 1.2M PyPI downloads and 21 AI
+        assistant platform integrations provide deployment context
+        for a system designed for real developer workflows.
+\end{enumerate}
+
+The remainder of this paper is organised as follows.
+Section~\ref{sec:related} surveys related work.
+Section~\ref{sec:system} describes the Graphify architecture.
+Section~\ref{sec:eval} reports experimental results.
+Section~\ref{sec:case} presents a multi-modal case study.
+Section~\ref{sec:discussion} discusses implications and threats to validity.
+Section~\ref{sec:conclusion} concludes.

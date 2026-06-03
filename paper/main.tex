@@ -1,0 +1,81 @@
+\documentclass[conference]{IEEEtran}
+
+% ---- Packages ----
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds, calc}
+
+% ---- Metadata ----
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{SS03: Graphify: Context-Efficient Codebase Question Answering\\
+via Multi-Modal Knowledge Graph Construction}
+
+\author{
+  \IEEEauthorblockN{Safi Shamsi}
+  \IEEEauthorblockA{
+    \textit{Graphify Labs}\\
+    Y Combinator S26\\
+    safishamsi98@gmail.com
+  }
+}
+
+\maketitle
+
+\begin{abstract}
+Large language model (LLM) coding assistants answer codebase questions by
+reading source files on demand, incurring $O(n)$ token cost per question
+as codebases grow. We present \textsc{Graphify}, an open-source system that
+pre-computes a queryable knowledge graph from a heterogeneous software corpus
+--- source code (33 languages), technical documentation, research papers,
+images, and video --- enabling scoped graph traversal in place of file-by-file
+reading. Graphify employs a two-pass hybrid extraction pipeline: a deterministic
+tree-sitter AST pass that extracts structural edges (calls, imports, inherits)
+at zero API cost, and an LLM subagent pass that infers semantic relationships
+across documentation, diagrams, and multimedia, with every edge confidence-tagged
+as \textsc{Extracted}, \textsc{Inferred}, or \textsc{Ambiguous}. Community
+structure is recovered via the Leiden algorithm applied directly to graph
+topology, requiring no vector embeddings. At query time, a hub-aware BFS
+traversal suppresses high-degree \emph{god nodes} and returns a scoped subgraph
+answering a question with \textbf{71.5$\times$ fewer tokens} than naive
+full-corpus reading and \textbf{5.8$\times$ fewer tokens} than an agentic
+grep-and-read baseline on the same 52-file multi-modal corpus.
+Graphify integrates with 21 AI assistant platforms and has
+accumulated over 1.2M PyPI downloads and 58,600+ GitHub stars.
+We report token reduction against both baselines, edge confidence-tag distributions,
+and a depth ablation across five real-world corpora,
+demonstrating that pre-built knowledge graphs are a practical replacement for
+reactive file-reading as the primary context mechanism for LLM coding assistants.
+\end{abstract}
+
+\begin{IEEEkeywords}
+knowledge graph construction, large language models, code intelligence,
+multi-modal extraction, graph retrieval, software engineering
+\end{IEEEkeywords}
+
+\input{sections/01_introduction}
+\input{sections/02_related_work}
+\input{sections/03_system}
+\input{sections/04_evaluation}
+\input{sections/06_case_study}
+\input{sections/05_conclusion}
+
+\bibliographystyle{IEEEtran}
+\bibliography{bib/references}
+
+\end{document}

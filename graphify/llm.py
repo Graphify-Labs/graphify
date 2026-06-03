@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -118,6 +119,89 @@ BACKENDS: dict[str, dict] = {
 }
 
 
+def _custom_providers_path(global_: bool = True) -> Path:
+    if global_:
+        return Path.home() / ".graphify" / "providers.json"
+    return Path(".graphify") / "providers.json"
+
+
+def provider_base_url_ok(base_url: str, name: str, *, warn: bool = True) -> bool:
+    """Structural safety check for a custom-provider base_url.
+
+    A custom provider receives the full corpus plus the user's API key, so its
+    base_url is an exfiltration channel. We deliberately do NOT run the ingest
+    SSRF guard here: that blocks private/internal IPs, which would wrongly reject
+    legitimate on-prem corporate LLM gateways. Instead we reject non-http(s)
+    schemes outright and warn loudly when the corpus would leave over plaintext
+    http to a non-loopback host. The primary control against trusting injected
+    config is the GRAPHIFY_ALLOW_LOCAL_PROVIDERS gate on project-local files.
+    """
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        if warn:
+            print(f"[graphify] WARNING: provider {name!r} has an unparseable base_url; ignoring.", file=sys.stderr)
+        return False
+    if parsed.scheme not in ("http", "https"):
+        if warn:
+            print(
+                f"[graphify] WARNING: provider {name!r} base_url scheme {parsed.scheme!r} is not "
+                "http/https; ignoring.",
+                file=sys.stderr,
+            )
+        return False
+    host = (parsed.hostname or "").lower()
+    is_loopback = host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
+    if warn and parsed.scheme == "http" and not is_loopback:
+        print(
+            f"[graphify] WARNING: provider {name!r} sends your corpus to {host!r} over plaintext "
+            "http. Use https unless this is a trusted local endpoint.",
+            file=sys.stderr,
+        )
+    return True
+
+
+def _load_custom_providers() -> dict[str, dict]:
+    # A project-local ./.graphify/providers.json travels with a cloned or shared
+    # repo and defines where the corpus + API key are sent, so loading it
+    # silently is a corpus/key exfiltration vector. Require an explicit opt-in;
+    # the user's own global ~/.graphify/providers.json stays trusted.
+    local_path = _custom_providers_path(global_=False)
+    global_path = _custom_providers_path(global_=True)
+    allow_local = os.environ.get("GRAPHIFY_ALLOW_LOCAL_PROVIDERS", "").strip().lower() in ("1", "true", "yes")
+    if local_path.is_file() and not allow_local:
+        print(
+            f"[graphify] WARNING: ignoring project-local {local_path} (custom providers control "
+            "where your corpus and API key are sent). Set GRAPHIFY_ALLOW_LOCAL_PROVIDERS=1 to load it.",
+            file=sys.stderr,
+        )
+
+    providers: dict[str, dict] = {}
+    paths = [local_path, global_path] if allow_local else [global_path]
+    for path in paths:
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for name, cfg in data.items():
+                        if not (isinstance(name, str) and isinstance(cfg, dict)):
+                            continue
+                        if name in BACKENDS or name in providers:
+                            continue
+                        if not provider_base_url_ok(str(cfg.get("base_url", "")), name):
+                            continue
+                        if "pricing" not in cfg:
+                            cfg = dict(cfg, pricing={"input": 0.0, "output": 0.0})
+                        providers[name] = cfg
+            except Exception:
+                pass
+    return providers
+
+
+BACKENDS.update(_load_custom_providers())
+
+
 def _resolve_max_tokens(default: int) -> int:
     """Honour GRAPHIFY_MAX_OUTPUT_TOKENS env var override, else use backend default."""
     raw = os.environ.get("GRAPHIFY_MAX_OUTPUT_TOKENS", "").strip()
@@ -145,6 +229,21 @@ Format: {stem}_{entity} where stem = filename without extension, entity = symbol
 Output exactly this schema:
 {"nodes":[{"id":"stem_entity","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"relative/path","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":null,"weight":1.0}],"hyperedges":[],"input_tokens":0,"output_tokens":0}
 """
+
+_DEEP_EXTRACTION_SUFFIX = """\
+
+DEEP_MODE: include additional INFERRED edges only for concrete architectural
+signals (shared data contracts, explicit lifecycle coupling, or multi-step flow
+dependencies visible in the sources). Avoid broad conceptual similarity edges.
+Mark uncertain ones AMBIGUOUS instead of omitting.
+"""
+
+
+def _extraction_system(*, deep: bool = False) -> str:
+    """Return the semantic-extraction system prompt, optionally in deep mode."""
+    if not deep:
+        return _EXTRACTION_SYSTEM
+    return _EXTRACTION_SYSTEM + _DEEP_EXTRACTION_SUFFIX
 
 
 def _read_files(paths: list[Path], root: Path) -> str:
@@ -179,16 +278,63 @@ def _parse_llm_json(raw: str) -> dict:
             file=sys.stderr,
         )
         return {"nodes": [], "edges": [], "hyperedges": []}
-    if raw.startswith("```"):
-        raw = raw.split("```", 2)[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.rsplit("```", 1)[0]
+    # Strategy 1: strip whitespace, then handle markdown fences anywhere in the
+    # text (not only at offset 0 — the original code only stripped fences when
+    # `raw.startswith("```")`, missing the common case where Claude prepends a
+    # preamble like "Here's the extracted entities:\n\n```json\n{...}\n```").
+    stripped = raw.strip()
+    fence_start = stripped.find("```")
+    if fence_start != -1:
+        after_fence = stripped[fence_start + 3 :]
+        # Optional language tag (json, JSON, javascript, etc.) up to newline.
+        nl = after_fence.find("\n")
+        if nl != -1 and after_fence[:nl].strip().lower() in {"json", "javascript", "js", ""}:
+            after_fence = after_fence[nl + 1 :]
+        fence_end = after_fence.rfind("```")
+        if fence_end != -1:
+            stripped = after_fence[:fence_end].strip()
+        else:
+            stripped = after_fence.strip()
     try:
-        return json.loads(raw.strip())
-    except json.JSONDecodeError as exc:
-        print(f"[graphify] LLM returned invalid JSON, skipping chunk: {exc}", file=sys.stderr)
-        return {"nodes": [], "edges": [], "hyperedges": []}
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    # Strategy 2: extract the first balanced JSON object found anywhere in
+    # the text. Handles the case where Claude wraps the JSON in prose without
+    # any markdown fence ("The extracted graph is { ... }. Hope this helps!").
+    start = stripped.find("{")
+    if start != -1:
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(stripped)):
+            ch = stripped[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(stripped[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
+    print(
+        f"[graphify] LLM returned invalid JSON, skipping chunk "
+        f"(first 200 chars: {raw[:200]!r})",
+        file=sys.stderr,
+    )
+    return {"nodes": [], "edges": [], "hyperedges": []}
 
 
 def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
@@ -249,6 +395,21 @@ def _default_model_for_backend(backend: str) -> str:
     return cfg["default_model"]
 
 
+def _backend_pkg_hint(pkg: str, extra: str) -> str:
+    """Package-missing message that works for the recommended `uv tool` install.
+
+    `uv tool install graphifyy` puts graphify in an isolated venv, so a plain
+    `pip install <pkg>` never reaches it - the friction a user hits when a
+    backend needs anthropic/openai/boto3 and the only advice was "pip install".
+    Point at the extra and the uv path first, then the pip/venv fallback.
+    """
+    return (
+        f"the '{pkg}' package is required for this backend but is not installed. "
+        f"Install it with:  uv tool install \"graphifyy[{extra}]\" --force  "
+        f"(uv tool), or  pip install {pkg}  (pip/venv install)."
+    )
+
+
 def _call_openai_compat(
     base_url: str,
     api_key: str,
@@ -259,16 +420,14 @@ def _call_openai_compat(
     max_completion_tokens: int = 8192,
     *,
     backend: str = "",
+    deep_mode: bool = False,
 ) -> dict:
     """Call any OpenAI-compatible API (Kimi, OpenAI, etc.) and return parsed JSON."""
     try:
         from openai import OpenAI
     except ImportError as exc:
-        pkg_hint = "graphifyy[kimi]" if backend == "kimi" else "openai"
-        raise ImportError(
-            "Gemini/Kimi/Ollama/OpenAI-compatible extraction requires the openai package. "
-            f"Run: pip install {pkg_hint}"
-        ) from exc
+        extra = backend if backend in ("kimi", "gemini", "openai", "ollama") else "openai"
+        raise ImportError(_backend_pkg_hint("openai", extra)) from exc
 
     # Local backends (ollama, llama.cpp, vLLM) routinely take >60s for a
     # single chunk on a large model — far longer than the openai SDK's
@@ -288,7 +447,7 @@ def _call_openai_compat(
     kwargs: dict = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _EXTRACTION_SYSTEM},
+            {"role": "system", "content": _extraction_system(deep=deep_mode)},
             {"role": "user", "content": user_message},
         ],
         "max_completion_tokens": max_completion_tokens,
@@ -384,21 +543,18 @@ def _call_openai_compat(
     return result
 
 
-def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 8192) -> dict:
+def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False) -> dict:
     """Call Anthropic Claude directly (not via OpenAI compat layer)."""
     try:
         import anthropic
     except ImportError as exc:
-        raise ImportError(
-            "Claude direct extraction requires the anthropic package. "
-            "Run: pip install anthropic"
-        ) from exc
+        raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
 
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        system=_EXTRACTION_SYSTEM,
+        system=_extraction_system(deep=deep_mode),
         messages=[{"role": "user", "content": user_message}],
     )
     raw_content = resp.content[0].text if resp.content else None
@@ -420,29 +576,63 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     return result
 
 
-def _call_claude_cli(user_message: str, max_tokens: int = 8192) -> dict:
+def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False) -> dict:
     """Call Claude via the locally-installed Claude Code CLI (`claude -p`).
 
     Routes through the user's Claude Code subscription auth instead of a separate
     ANTHROPIC_API_KEY. Useful for Pro/Max subscribers who don't want to provision
     a pay-as-you-go API key just to run graphify's semantic pass.
     """
+    import platform
     import shutil
     import subprocess
 
-    if shutil.which("claude") is None:
+    # On Windows, npm installs `claude` as both `claude.ps1` and `claude.cmd`
+    # alongside each other. When PATHEXT lists `.PS1` before `.CMD`,
+    # `shutil.which("claude")` returns `claude.ps1`, which `CreateProcess`
+    # cannot execute directly — it raises `[WinError 2] The system cannot
+    # find the file specified`. `claude.cmd` IS executable by CreateProcess,
+    # so prefer it explicitly on Windows. See issue #1072.
+    claude_cmd = "claude"
+    if platform.system() == "Windows":
+        cmd_path = shutil.which("claude.cmd")
+        if cmd_path:
+            claude_cmd = cmd_path
+        elif shutil.which("claude") is None:
+            raise RuntimeError(
+                "Claude Code CLI not found on $PATH. Install from "
+                "https://claude.ai/code and run `claude` once to authenticate."
+            )
+    elif shutil.which("claude") is None:
         raise RuntimeError(
             "Claude Code CLI not found on $PATH. Install from "
             "https://claude.ai/code and run `claude` once to authenticate."
         )
 
+    # Use --system-prompt (replaces) instead of --append-system-prompt (adds
+    # to Claude Code's default coding-agent prompt). The default prompt
+    # pushes the model towards markdown + prose explanations, which conflict
+    # with the "raw JSON only" extraction instruction and cause ~30-50% of
+    # responses to come back wrapped in ```json fences or prefixed with a
+    # preamble — both of which fail the strict json.loads in _parse_llm_json.
+    # Replacing the default prompt eliminates the conflict at the source.
+    # Side benefit: cache-creation tokens per call drop ~19% in practice.
+    cli_args = [
+        claude_cmd, "-p",
+        "--output-format", "json",
+        "--no-session-persistence",
+        "--system-prompt", _extraction_system(deep=deep_mode),
+    ]
+    # claude-cli defaults to Opus, which is overkill for the structured-JSON
+    # extraction graphify performs. GRAPHIFY_CLAUDE_CLI_MODEL=haiku (or
+    # sonnet, or a full model ID like claude-haiku-4-5-20251001) lets users
+    # opt into a cheaper / faster model. Default behaviour unchanged when
+    # the env var is unset.
+    cli_model = os.environ.get("GRAPHIFY_CLAUDE_CLI_MODEL", "").strip()
+    if cli_model:
+        cli_args.extend(["--model", cli_model])
     proc = subprocess.run(
-        [
-            "claude", "-p",
-            "--output-format", "json",
-            "--no-session-persistence",
-            "--append-system-prompt", _EXTRACTION_SYSTEM,
-        ],
+        cli_args,
         input=user_message,
         capture_output=True,
         text=True,
@@ -486,7 +676,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192) -> dict:
     return result
 
 
-def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192) -> dict:
+def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False) -> dict:
     """Call AWS Bedrock via boto3 Converse API using the standard AWS credential chain."""
     try:
         import boto3
@@ -504,7 +694,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192) -> dict
     try:
         resp = client.converse(
             modelId=model,
-            system=[{"text": _EXTRACTION_SYSTEM}],
+            system=[{"text": _extraction_system(deep=deep_mode)}],
             messages=[{"role": "user", "content": [{"text": user_message}]}],
             inferenceConfig={"maxTokens": max_tokens, "temperature": 0},
         )
@@ -532,16 +722,27 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192) -> dict
 
 def extract_files_direct(
     files: list[Path],
-    backend: str = "kimi",
+    backend: str | None = None,
     api_key: str | None = None,
     model: str | None = None,
     root: Path = Path("."),
+    *,
+    deep_mode: bool = False,
 ) -> dict:
     """Extract semantic nodes/edges from a list of files using the given backend.
 
     Returns dict with nodes, edges, hyperedges, input_tokens, output_tokens.
-    Raises ValueError for unknown backends. Raises ImportError if SDK missing.
+    Raises ValueError for unknown backends or when no API key is configured.
+    Raises ImportError if SDK missing.
     """
+    if backend is None:
+        backend = detect_backend()
+        if backend is None:
+            raise ValueError(
+                "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
+                "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, OLLAMA_BASE_URL, "
+                "or AWS credentials. Pass backend= explicitly to select a provider."
+            )
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}. Available: {sorted(BACKENDS)}")
 
@@ -570,11 +771,11 @@ def extract_files_direct(
     max_out = _resolve_max_tokens(cfg.get("max_tokens", 8192))
 
     if backend == "claude":
-        return _call_claude(key, mdl, user_msg, max_tokens=max_out)
+        return _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode)
     if backend == "claude-cli":
-        return _call_claude_cli(user_msg, max_tokens=max_out)
+        return _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode)
     if backend == "bedrock":
-        return _call_bedrock(mdl, user_msg, max_tokens=max_out)
+        return _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode)
     return _call_openai_compat(
         cfg["base_url"],
         key,
@@ -584,6 +785,7 @@ def extract_files_direct(
         reasoning_effort=cfg.get("reasoning_effort"),
         max_completion_tokens=_resolve_max_tokens(cfg.get("max_completion_tokens", 8192)),
         backend=backend,
+        deep_mode=deep_mode,
     )
 
 
@@ -688,6 +890,8 @@ def _extract_with_adaptive_retry(
     root: Path,
     max_depth: int,
     _depth: int = 0,
+    *,
+    deep_mode: bool = False,
 ) -> dict:
     """Extract a chunk; if the response is truncated (`finish_reason="length"`)
     or the API rejects the prompt as too large for the model's context window,
@@ -722,7 +926,7 @@ def _extract_with_adaptive_retry(
     """
     try:
         result = extract_files_direct(
-            chunk, backend=backend, api_key=api_key, model=model, root=root
+            chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
         )
     except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow
         if not _looks_like_context_exceeded(exc):
@@ -748,10 +952,10 @@ def _extract_with_adaptive_retry(
         )
         mid = len(chunk) // 2
         left = _extract_with_adaptive_retry(
-            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1
+            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
         )
         right = _extract_with_adaptive_retry(
-            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1
+            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
         )
         return {
             "nodes": left.get("nodes", []) + right.get("nodes", []),
@@ -790,10 +994,10 @@ def _extract_with_adaptive_retry(
     )
     mid = len(chunk) // 2
     left = _extract_with_adaptive_retry(
-        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1
+        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
     )
     right = _extract_with_adaptive_retry(
-        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1
+        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
     )
 
     return {
@@ -821,6 +1025,7 @@ def extract_corpus_parallel(
     token_budget: int | None = 60_000,
     max_concurrency: int = 4,
     max_retry_depth: int = 3,
+    deep_mode: bool = False,
 ) -> dict:
     """Extract a corpus in chunks, merging results.
 
@@ -878,6 +1083,7 @@ def extract_corpus_parallel(
                 model=model,
                 root=root,
                 max_depth=max_retry_depth,
+                deep_mode=deep_mode,
             )
             result["elapsed_seconds"] = round(time.time() - t0, 2)
             return idx, result, None
@@ -975,7 +1181,7 @@ def _call_llm(prompt: str, *, backend: str, max_tokens: int = 200) -> str:
         try:
             import anthropic
         except ImportError as exc:
-            raise ImportError("anthropic package required for claude backend") from exc
+            raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
         client = anthropic.Anthropic(api_key=key)
         resp = client.messages.create(
             model=mdl,
@@ -1009,7 +1215,7 @@ def _call_llm(prompt: str, *, backend: str, max_tokens: int = 200) -> str:
         try:
             import boto3
         except ImportError as exc:
-            raise ImportError("boto3 required for bedrock backend") from exc
+            raise ImportError(_backend_pkg_hint("boto3", "bedrock")) from exc
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
         profile = os.environ.get("AWS_PROFILE")
         session = boto3.Session(profile_name=profile, region_name=region)
@@ -1025,7 +1231,7 @@ def _call_llm(prompt: str, *, backend: str, max_tokens: int = 200) -> str:
     try:
         from openai import OpenAI
     except ImportError as exc:
-        raise ImportError("openai package required for this backend") from exc
+        raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
     client = OpenAI(api_key=key, base_url=cfg["base_url"])
     kwargs: dict = {
         "model": mdl,
@@ -1053,32 +1259,71 @@ def estimate_cost(backend: str, input_tokens: int, output_tokens: int) -> float:
     return (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000
 
 
-def _validate_ollama_base_url(url: str) -> None:
-    """Warn (do not raise) if OLLAMA_BASE_URL looks unsafe.
+def _ollama_host_is_link_local_or_metadata(host: str) -> bool:
+    """True if *host* is, or resolves to, a link-local / cloud-metadata address.
+
+    Resolves the name so an alias pointing at 169.254.169.254 is caught too, not
+    just a literal IP. General private/LAN addresses are deliberately NOT treated
+    as metadata: people do run Ollama on trusted LAN boxes, so those only warn.
+    """
+    import ipaddress
+    import socket
+    if host in ("metadata.google.internal", "metadata.google.com", "0.0.0.0", "::", "[::]"):  # nosec B104 - blocklist, not a bind
+        return True
+    if host.startswith("169.254."):  # link-local literal, includes the metadata IP
+        return True
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError, OSError):
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if ip.is_link_local:  # 169.254.0.0/16 and fe80::/10 (includes the metadata IP)
+            return True
+    return False
+
+
+def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
+    """Warn if OLLAMA_BASE_URL looks unsafe; hard-block link-local/metadata (F3).
 
     Sending an entire corpus to a non-loopback http:// endpoint silently leaks
-    proprietary code; we surface a visible stderr warning instead of failing
-    closed (some users genuinely run Ollama on a LAN host they trust).
+    proprietary code, but some users genuinely run Ollama on a LAN host they
+    trust, so a general non-loopback target only warns. A link-local or cloud
+    metadata address (169.254.x, metadata.google.*, or any host that resolves to
+    one) is never a legitimate Ollama host and is a classic SSRF target, so we
+    fail closed with a ValueError there regardless of *warn*. Pass warn=False for
+    an early gate that should hard-block but leave the user-facing warning to the
+    later in-flow call.
     """
     try:
         from urllib.parse import urlparse
         parsed = urlparse(url)
     except Exception:
-        print(
-            f"[graphify] WARNING: OLLAMA_BASE_URL={url!r} is not a parseable URL.",
-            file=sys.stderr,
-        )
+        if warn:
+            print(
+                f"[graphify] WARNING: OLLAMA_BASE_URL={url!r} is not a parseable URL.",
+                file=sys.stderr,
+            )
         return
     if parsed.scheme not in ("http", "https"):
-        print(
-            f"[graphify] WARNING: OLLAMA_BASE_URL has unexpected scheme {parsed.scheme!r}; "
-            "expected http or https.",
-            file=sys.stderr,
-        )
+        if warn:
+            print(
+                f"[graphify] WARNING: OLLAMA_BASE_URL has unexpected scheme {parsed.scheme!r}; "
+                "expected http or https.",
+                file=sys.stderr,
+            )
         return
     host = (parsed.hostname or "").lower()
+    if _ollama_host_is_link_local_or_metadata(host):
+        raise ValueError(
+            f"OLLAMA_BASE_URL points at a link-local/metadata address ({host!r}); refusing to "
+            "send the corpus there. Set it to a real Ollama host."
+        )
     is_loopback = host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
-    if not is_loopback:
+    if warn and not is_loopback:
         scheme_note = " (UNENCRYPTED)" if parsed.scheme == "http" else ""
         print(
             f"[graphify] WARNING: OLLAMA_BASE_URL points to non-loopback host {host!r}{scheme_note}. "
@@ -1108,4 +1353,147 @@ def detect_backend() -> str | None:
     if ollama_url:
         _validate_ollama_base_url(ollama_url)
         return "ollama"
+    for name in BACKENDS:
+        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "bedrock", "ollama", "claude-cli"):
+            if _get_backend_api_key(name):
+                return name
     return None
+
+
+# ── Community labeling ────────────────────────────────────────────────────────
+# When graphify runs inside an orchestrating agent (Claude Code / Gemini CLI),
+# the agent names communities itself per skill.md Step 5 - it reads the analysis
+# file and writes 2-5 word names with its own reasoning, no API call. When
+# graphify is run as a bare CLI (``graphify extract . --backend X``), there is no
+# agent to do that step, so community labels stay ``Community 0/1/2...``. These
+# helpers fill that gap: ask the configured backend to name communities in ONE
+# batched call and return a complete ``{cid: name}`` map (#1097).
+
+_LABEL_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+_LABEL_MAX_COMMUNITIES = 200   # cap LLM-named communities; tail stays placeholder
+_LABEL_TOP_K = 12              # node labels sampled per community for the prompt
+_LABEL_MAXLEN = 60             # truncate individual labels to keep the prompt small
+
+
+def _placeholder_community_labels(communities) -> dict[int, str]:
+    return {int(cid): f"Community {cid}" for cid in communities}
+
+
+def _community_label_lines(G, communities, gods, max_communities, top_k):
+    """One prompt line per community (largest first), sampling up to ``top_k``
+    representative node labels (god nodes first). Returns (lines, labeled_cids);
+    skips communities with no resolvable nodes."""
+    # gods may be node-id strings or god_nodes() dicts ({"id": ..., "label": ...}).
+    god_set = {g["id"] if isinstance(g, dict) else g for g in (gods or [])}
+    ordered = sorted(communities.items(), key=lambda kv: -len(kv[1]))
+    lines: list[str] = []
+    labeled_cids: list[int] = []
+    for cid, members in ordered[:max_communities]:
+        ranked = [m for m in members if m in god_set] + [m for m in members if m not in god_set]
+        names: list[str] = []
+        seen: set[str] = set()
+        for nid in ranked:
+            label = str(G.nodes[nid].get("label", nid)) if nid in G.nodes else str(nid)
+            label = label.strip().strip("()")[:_LABEL_MAXLEN]
+            if label and label.lower() not in seen:
+                seen.add(label.lower())
+                names.append(label)
+            if len(names) >= top_k:
+                break
+        if names:
+            lines.append(f"Community {cid}: {', '.join(names)}")
+            labeled_cids.append(int(cid))
+    return lines, labeled_cids
+
+
+def _parse_label_response(text: str, labeled_cids: list[int]) -> dict[int, str]:
+    """Parse the backend's JSON ``{cid: name}`` reply. Raises on non-JSON or a
+    non-object payload; silently ignores cids it didn't name."""
+    cleaned = _LABEL_FENCE_RE.sub("", text.strip())
+    if not cleaned.startswith("{"):
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start != -1 and end > start:
+            cleaned = cleaned[start:end + 1]
+    data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("label response is not a JSON object")
+    out: dict[int, str] = {}
+    for cid in labeled_cids:
+        name = data.get(str(cid))
+        if name is None:
+            name = data.get(cid)
+        if isinstance(name, str) and name.strip():
+            out[cid] = name.strip()
+    return out
+
+
+def label_communities(
+    G,
+    communities,
+    *,
+    backend: str,
+    gods=None,
+    max_communities: int = _LABEL_MAX_COMMUNITIES,
+    top_k: int = _LABEL_TOP_K,
+) -> dict[int, str]:
+    """Return a complete ``{cid: name}`` map using ``backend`` for naming.
+
+    Placeholders (``Community N``) are used for any community the backend did not
+    name. Raises on backend/parse failure - callers that want graceful
+    degradation should use :func:`generate_community_labels`.
+    """
+    labels = _placeholder_community_labels(communities)
+    lines, labeled_cids = _community_label_lines(G, communities, gods, max_communities, top_k)
+    if not lines:
+        return labels
+
+    prompt = (
+        "You are naming clusters in a knowledge graph. For each community below, "
+        "return a concise 2-5 word plain-language name describing what it is about "
+        "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\"). "
+        "Respond ONLY with a JSON object mapping the community id (as a string) to "
+        "its name - no prose, no markdown fences.\n\n" + "\n".join(lines)
+    )
+
+    max_tokens = min(40 + 16 * len(labeled_cids), 4096)
+    text = _call_llm(prompt, backend=backend, max_tokens=max_tokens)
+    labels.update(_parse_label_response(text, labeled_cids))
+    return labels
+
+
+def generate_community_labels(
+    G,
+    communities,
+    *,
+    backend: str | None = None,
+    gods=None,
+    quiet: bool = False,
+) -> tuple[dict[int, str], str]:
+    """CLI entry point: resolve a backend, name communities, and degrade to
+    ``Community N`` placeholders on any failure (no backend, API error, malformed
+    reply). Returns ``(labels, source)`` where source is ``"llm"`` or
+    ``"placeholder"``. Never raises."""
+    if backend is None:
+        try:
+            backend = detect_backend()
+        except Exception:
+            backend = None
+    if not backend:
+        if not quiet:
+            print(
+                "[graphify label] no LLM backend configured; keeping Community N "
+                "placeholders. Set an API key (e.g. GOOGLE_API_KEY) or pass --backend.",
+                file=sys.stderr,
+            )
+        return _placeholder_community_labels(communities), "placeholder"
+    try:
+        labels = label_communities(G, communities, backend=backend, gods=gods)
+        return labels, "llm"
+    except Exception as exc:
+        if not quiet:
+            print(
+                f"[graphify label] warning: community labeling failed ({exc}); "
+                "using Community N placeholders.",
+                file=sys.stderr,
+            )
+        return _placeholder_community_labels(communities), "placeholder"

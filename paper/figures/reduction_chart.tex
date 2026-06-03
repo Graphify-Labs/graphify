@@ -1,0 +1,39 @@
+% Token reduction bar chart with real measured numbers
+% httpx=~1x (19 files), karpathy code only=8.8x (29 files),
+% mixed-corpus=5.4x (22 files), karpathy full=71.5x (52 files)
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,
+  bar width=0.45cm,
+  width=8.5cm,
+  height=5.5cm,
+  ylabel={Token Reduction ($\times$)},
+  ylabel style={font=\small},
+  symbolic x coords={httpx (19), mixed (22), karpathy code (29), karpathy+media (52)},
+  xtick=data,
+  xticklabel style={font=\scriptsize, rotate=12, anchor=east},
+  ymin=0, ymax=85,
+  ytick={0,10,20,30,40,50,60,71.5,80},
+  yticklabel style={font=\scriptsize},
+  nodes near coords,
+  nodes near coords style={font=\scriptsize\bfseries},
+  every node near coord/.append style={yshift=2pt},
+  axis lines=left,
+  enlarge x limits=0.15,
+  tick style={draw=none},
+  ymajorgrids=true,
+  grid style={dashed, gray!30},
+]
+
+\addplot[
+  fill=blue!40,
+  draw=blue!60,
+] coordinates {
+  (httpx (19),              1.0)
+  (mixed (22),              5.4)
+  (karpathy code (29),      8.8)
+  (karpathy+media (52),    71.5)
+};
+
+\end{axis}
+\end{tikzpicture}

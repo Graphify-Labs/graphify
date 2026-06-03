@@ -13,6 +13,7 @@ import json
 
 from graphify.__main__ import (
     _SETTINGS_HOOK,
+    _READ_SETTINGS_HOOK,
     _CLAUDE_MD_SECTION,
     _AGENTS_MD_SECTION,
     _GEMINI_MD_SECTION,
@@ -31,6 +32,7 @@ from graphify.__main__ import (
 # against the actual payload text the assistant will receive.
 _INSTALL_TEXTS: dict[str, str] = {
     "_SETTINGS_HOOK": json.dumps(_SETTINGS_HOOK),
+    "_READ_SETTINGS_HOOK": json.dumps(_READ_SETTINGS_HOOK),
     "_CLAUDE_MD_SECTION": _CLAUDE_MD_SECTION,
     "_AGENTS_MD_SECTION": _AGENTS_MD_SECTION,
     "_GEMINI_MD_SECTION": _GEMINI_MD_SECTION,

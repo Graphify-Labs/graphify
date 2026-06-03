@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  🇺🇸 <a href="README.md">English</a> | 🇨🇳 <a href="docs/translations/README.zh-CN.md">简体中文</a> | 🇯🇵 <a href="docs/translations/README.ja-JP.md">日本語</a> | 🇰🇷 <a href="docs/translations/README.ko-KR.md">한국어</a> | 🇩🇪 <a href="docs/translations/README.de-DE.md">Deutsch</a> | 🇫🇷 <a href="docs/translations/README.fr-FR.md">Français</a> | 🇪🇸 <a href="docs/translations/README.es-ES.md">Español</a> | 🇮🇳 <a href="docs/translations/README.hi-IN.md">हिन्दी</a> | 🇧🇷 <a href="docs/translations/README.pt-BR.md">Português</a> | 🇷🇺 <a href="docs/translations/README.ru-RU.md">Русский</a> | 🇸🇦 <a href="docs/translations/README.ar-SA.md">العربية</a> | 🇮🇹 <a href="docs/translations/README.it-IT.md">Italiano</a> | 🇵🇱 <a href="docs/translations/README.pl-PL.md">Polski</a> | 🇳🇱 <a href="docs/translations/README.nl-NL.md">Nederlands</a> | 🇹🇷 <a href="docs/translations/README.tr-TR.md">Türkçe</a> | 🇺🇦 <a href="docs/translations/README.uk-UA.md">Українська</a> | 🇻🇳 <a href="docs/translations/README.vi-VN.md">Tiếng Việt</a> | 🇮🇩 <a href="docs/translations/README.id-ID.md">Bahasa Indonesia</a> | 🇸🇪 <a href="docs/translations/README.sv-SE.md">Svenska</a> | 🇬🇷 <a href="docs/translations/README.el-GR.md">Ελληνικά</a> | 🇷🇴 <a href="docs/translations/README.ro-RO.md">Română</a> | 🇨🇿 <a href="docs/translations/README.cs-CZ.md">Čeština</a> | 🇫🇮 <a href="docs/translations/README.fi-FI.md">Suomi</a> | 🇩🇰 <a href="docs/translations/README.da-DK.md">Dansk</a> | 🇳🇴 <a href="docs/translations/README.no-NO.md">Norsk</a> | 🇭🇺 <a href="docs/translations/README.hu-HU.md">Magyar</a> | 🇹🇭 <a href="docs/translations/README.th-TH.md">ภาษาไทย</a> | 🇺🇿 <a href="docs/translations/README.uz-UZ.md">Oʻzbekcha</a> | 🇹🇼 <a href="docs/translations/README.zh-TW.md">繁體中文</a>
+  🇺🇸 <a href="README.md">English</a> | 🇨🇳 <a href="docs/translations/README.zh-CN.md">简体中文</a> | 🇯🇵 <a href="docs/translations/README.ja-JP.md">日本語</a> | 🇰🇷 <a href="docs/translations/README.ko-KR.md">한국어</a> | 🇩🇪 <a href="docs/translations/README.de-DE.md">Deutsch</a> | 🇫🇷 <a href="docs/translations/README.fr-FR.md">Français</a> | 🇪🇸 <a href="docs/translations/README.es-ES.md">Español</a> | 🇮🇳 <a href="docs/translations/README.hi-IN.md">हिन्दी</a> | 🇧🇷 <a href="docs/translations/README.pt-BR.md">Português</a> | 🇷🇺 <a href="docs/translations/README.ru-RU.md">Русский</a> | 🇸🇦 <a href="docs/translations/README.ar-SA.md">العربية</a> | 🇮🇹 <a href="docs/translations/README.it-IT.md">Italiano</a> | 🇵🇱 <a href="docs/translations/README.pl-PL.md">Polski</a> | 🇳🇱 <a href="docs/translations/README.nl-NL.md">Nederlands</a> | 🇹🇷 <a href="docs/translations/README.tr-TR.md">Türkçe</a> | 🇺🇦 <a href="docs/translations/README.uk-UA.md">Українська</a> | 🇻🇳 <a href="docs/translations/README.vi-VN.md">Tiếng Việt</a> | 🇮🇩 <a href="docs/translations/README.id-ID.md">Bahasa Indonesia</a> | 🇸🇪 <a href="docs/translations/README.sv-SE.md">Svenska</a> | 🇬🇷 <a href="docs/translations/README.el-GR.md">Ελληνικά</a> | 🇷🇴 <a href="docs/translations/README.ro-RO.md">Română</a> | 🇨🇿 <a href="docs/translations/README.cs-CZ.md">Čeština</a> | 🇫🇮 <a href="docs/translations/README.fi-FI.md">Suomi</a> | 🇩🇰 <a href="docs/translations/README.da-DK.md">Dansk</a> | 🇳🇴 <a href="docs/translations/README.no-NO.md">Norsk</a> | 🇭🇺 <a href="docs/translations/README.hu-HU.md">Magyar</a> | 🇹🇭 <a href="docs/translations/README.th-TH.md">ภาษาไทย</a> | 🇺🇿 <a href="docs/translations/README.uz-UZ.md">Oʻzbekcha</a> | 🇹🇼 <a href="docs/translations/README.zh-TW.md">繁體中文</a> | 🇵🇭 <a href="docs/translations/README.fil-PH.md">Filipino</a>
 </p>
 
 <p align="center">
@@ -11,7 +11,7 @@
   <a href="https://safishamsi.gumroad.com/l/qetvlo"><img src="https://img.shields.io/badge/Book-The%20Memory%20Layer-2ea44f?style=flat&logo=gitbook&logoColor=white" alt="The Memory Layer"/></a>
   <a href="https://github.com/safishamsi/graphify/actions/workflows/ci.yml"><img src="https://github.com/safishamsi/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
-  <a href="https://clickpy.clickhouse.com/dashboard/graphifyy"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fsql-clickhouse.clickhouse.com%2F%3Fquery%3DSELECT%2520concat%2528toString%2528round%2528sum%2528count%2529%2F1000%2529%2529%2C%2520%2527k%2527%2529%2520AS%2520c%2520FROM%2520pypi.pypi_downloads%2520WHERE%2520project%253D%2527graphifyy%2527%2520FORMAT%2520JSON%26user%3Ddemo&query=%24.data%5B0%5D.c&label=downloads&color=blue" alt="Downloads"/></a>
+  <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
   <a href="https://www.linkedin.com/in/safi-shamsi"><img src="https://img.shields.io/badge/LinkedIn-Safi%20Shamsi-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://x.com/graphifyy"><img src="https://img.shields.io/badge/X-graphifyy-000000?logo=x&logoColor=white" alt="X"/></a>
@@ -25,7 +25,7 @@
 
 Type `/graphify` in your AI coding assistant and it maps your entire project — code, docs, PDFs, images, videos — into a knowledge graph you can query instead of grepping through files.
 
-Works in Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kimi Code, Kiro, Pi, and Google Antigravity.
+Works in Claude Code, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, Amp, OpenClaw, Factory Droid, Trae, Hermes, Kimi Code, Kiro, Pi, Devin CLI, and Google Antigravity.
 
 ```
 /graphify .
@@ -87,7 +87,7 @@ uv tool install graphifyy
 
 # Alternatives:
 pipx install graphifyy
-pip install graphifyy
+pip install graphifyy  # may need PATH setup — see note below
 ```
 
 **Step 2 — register the skill with your AI assistant:**
@@ -107,7 +107,8 @@ graphify install --project --platform codex
 ```
 
 Project-scoped installs write under the current directory, for example
-`.claude/skills/graphify/SKILL.md` or `.agents/skills/graphify/SKILL.md`, and
+`.claude/skills/graphify/SKILL.md` or `.agents/skills/graphify/SKILL.md` (plus a
+`references/` sidecar the skill loads on demand), and
 print a `git add` hint for files that can be committed.
 Per-platform commands that support project-scoped installs accept the same flag,
 for example `graphify claude install --project` or `graphify codex install --project`.
@@ -115,6 +116,8 @@ for example `graphify claude install --project` or `graphify codex install --pro
 > **PowerShell note:** Use `graphify .` not `/graphify .` — the leading slash is a path separator in PowerShell.
 
 > **`graphify: command not found`?** Use `uv tool install graphifyy` or `pipx install graphifyy` — both put the CLI on PATH automatically. With plain `pip`, add `~/.local/bin` (Linux) or `~/Library/Python/3.x/bin` (Mac) to your PATH, or run `python -m graphify`.
+
+> **Avoid `pip install` on Mac/Windows** if possible. The skill resolves Python at runtime from `graphify-out/.graphify_python`; if that points to a different environment than where `pip` installed the package, you'll get `ModuleNotFoundError: No module named 'graphify'`. `uv tool install` and `pipx install` isolate the package in their own env and avoid this entirely.
 
 ### Pick your platform
 
@@ -124,6 +127,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Claude Code (Windows) | `graphify install --platform windows` |
 | Codex | `graphify install --platform codex` |
 | OpenCode | `graphify install --platform opencode` |
+| Kilo Code | `graphify install --platform kilo` |
 | GitHub Copilot CLI | `graphify install --platform copilot` |
 | VS Code Copilot Chat | `graphify vscode install` |
 | Aider | `graphify install --platform aider` |
@@ -134,6 +138,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Gemini CLI | `graphify install --platform gemini` |
 | Hermes | `graphify install --platform hermes` |
 | Kimi Code | `graphify install --platform kimi` |
+| Amp | `graphify amp install` |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify install --platform pi` |
 | Cursor | `graphify cursor install` |
@@ -149,21 +154,23 @@ Install only what you need:
 
 | Extra | What it adds | Install |
 |---|---|---|
-| `pdf` | PDF extraction | `pip install "graphifyy[pdf]"` |
-| `office` | `.docx` and `.xlsx` support | `pip install "graphifyy[office]"` |
-| `google` | Google Sheets rendering | `pip install "graphifyy[google]"` |
-| `video` | Video/audio transcription (faster-whisper + yt-dlp) | `pip install "graphifyy[video]"` |
-| `mcp` | MCP stdio server | `pip install "graphifyy[mcp]"` |
-| `neo4j` | Neo4j push support | `pip install "graphifyy[neo4j]"` |
-| `svg` | SVG graph export | `pip install "graphifyy[svg]"` |
-| `leiden` | Leiden community detection (Python < 3.13 only) | `pip install "graphifyy[leiden]"` |
-| `ollama` | Ollama local inference | `pip install "graphifyy[ollama]"` |
-| `openai` | OpenAI / OpenAI-compatible APIs | `pip install "graphifyy[openai]"` |
-| `gemini` | Google Gemini API | `pip install "graphifyy[gemini]"` |
-| `bedrock` | AWS Bedrock (uses IAM, no API key) | `pip install "graphifyy[bedrock]"` |
-| `sql` | SQL schema extraction | `pip install "graphifyy[sql]"` |
-| `chinese` | Chinese query segmentation (jieba) | `pip install "graphifyy[chinese]"` |
-| `all` | Everything above | `pip install "graphifyy[all]"` |
+| `pdf` | PDF extraction | `uv tool install "graphifyy[pdf]"` |
+| `office` | `.docx` and `.xlsx` support | `uv tool install "graphifyy[office]"` |
+| `google` | Google Sheets rendering | `uv tool install "graphifyy[google]"` |
+| `video` | Video/audio transcription (faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
+| `mcp` | MCP stdio server | `uv tool install "graphifyy[mcp]"` |
+| `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
+| `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
+| `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
+| `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
+| `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
+| `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
+| `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
+| `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
+| `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
+| `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
+| `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
+| `all` | Everything above | `uv tool install "graphifyy[all]"` |
 
 ---
 
@@ -176,6 +183,7 @@ Run this once in your project after building a graph:
 | Claude Code | `graphify claude install` |
 | Codex | `graphify codex install` |
 | OpenCode | `graphify opencode install` |
+| Kilo Code | `graphify kilo install` |
 | GitHub Copilot CLI | `graphify copilot install` |
 | VS Code Copilot Chat | `graphify vscode install` |
 | Aider | `graphify aider install` |
@@ -187,16 +195,21 @@ Run this once in your project after building a graph:
 | Gemini CLI | `graphify gemini install` |
 | Hermes | `graphify hermes install` |
 | Kimi Code | `graphify install --platform kimi` |
+| Amp | `graphify amp install` |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify pi install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
-This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions — preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files. On platforms that support payload-bearing hooks (Claude Code, Gemini CLI), a hook fires automatically before search-style tool calls and nudges your assistant toward the graph path. On the others (Codex, OpenCode, Cursor, etc.), the persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance. `GRAPH_REPORT.md` is still available for broad architecture review.
+This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions — preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files. On platforms that support payload-bearing hooks (Claude Code, Gemini CLI), a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path. On the others (Codex, OpenCode, Cursor, etc.), the persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance. `GRAPH_REPORT.md` is still available for broad architecture review.
 
 To remove graphify from all platforms at once: `graphify uninstall` (add `--purge` to also delete `graphify-out/`). Or use the per-platform command (e.g. `graphify claude uninstall`).
 
 ---
+
+**Kilo Code** installs the Graphify skill to `~/.config/kilo/skills/graphify/SKILL.md` and a native `/graphify` command to `~/.config/kilo/command/graphify.md`. `graphify kilo install` also writes `AGENTS.md` plus a native **`tool.execute.before` plugin** (`.kilo/plugins/graphify.js` + `.kilo/kilo.json` or `.kilo/kilo.jsonc` registration) so Kilo gets the same always-on graph reminder behavior through native `.kilo` config.
+
+**Cursor** writes `.cursor/rules/graphify.mdc` with `alwaysApply: true` — Cursor includes it in every conversation automatically, no hook needed.
 
 ## What's in the report
 
@@ -212,14 +225,15 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 
 | Type | Extensions |
 |------|-----------|
-| Code (33 languages) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .rb .cs .kt .scala .php .swift .res .resi .lua .luau .zig .ps1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .sln .csproj .fsproj .vbproj .razor .cshtml` |
+| Code (34 languages) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .rb .cs .kt .scala .php .swift .res .resi .lua .luau .zig .ps1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .csproj .fsproj .vbproj .razor .cshtml` (`.res`/`.resi` AST extraction requires `uv tool install graphifyy[rescript]`; `.dm`/`.dme` AST extraction requires `uv tool install graphifyy[dm]`) |
+| MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Docs | `.md .mdx .qmd .html .txt .rst .yaml .yml` |
-| Office | `.docx .xlsx` (requires `pip install graphifyy[office]`) |
-| Google Workspace | `.gdoc .gsheet .gslides` (opt-in; requires `gws` auth and `--google-workspace`; Sheets need `pip install graphifyy[google]`) |
+| Office | `.docx .xlsx` (requires `uv tool install graphifyy[office]`) |
+| Google Workspace | `.gdoc .gsheet .gslides` (opt-in; requires `gws` auth and `--google-workspace`; Sheets need `uv tool install graphifyy[google]`) |
 | PDFs | `.pdf` |
 | Images | `.png .jpg .webp .gif` |
-| Video / Audio | `.mp4 .mov .mp3 .wav` and more (requires `pip install graphifyy[video]`) |
-| YouTube / URLs | any video URL (requires `pip install graphifyy[video]`) |
+| Video / Audio | `.mp4 .mov .mp3 .wav` and more (requires `uv tool install graphifyy[video]`) |
+| YouTube / URLs | any video URL (requires `uv tool install graphifyy[video]`) |
 
 Code is extracted locally with no API calls (AST via tree-sitter). Everything else goes through your AI assistant's model API.
 
@@ -229,7 +243,7 @@ in a headless extraction, install and authenticate the
 [`gws` CLI](https://github.com/googleworkspace/cli), then run:
 
 ```bash
-pip install "graphifyy[google]"  # needed for Google Sheets table rendering
+uv tool install "graphifyy[google]"  # needed for Google Sheets table rendering
 gws auth login -s drive
 graphify extract ./docs --google-workspace
 ```
@@ -362,6 +376,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 - **Code files** — processed locally via tree-sitter. Nothing leaves your machine.
 - **Video / audio** — transcribed locally with faster-whisper. Nothing leaves your machine.
 - **Docs, PDFs, images** — sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
+- **Data residency** — `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Bedrock → Ollama). For code with data-residency requirements, use `--backend ollama` (fully local) or pass an explicit `--backend` flag. Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
 - No telemetry, no usage tracking, no analytics.
 
 ---
@@ -456,21 +471,41 @@ graphify hook install              # post-commit + post-checkout hooks
 graphify hook uninstall
 graphify hook status
 
-graphify claude install / uninstall
-graphify codex install / uninstall
-graphify opencode install
-graphify cursor install / uninstall
-graphify gemini install / uninstall
-graphify copilot install / uninstall
-graphify aider install / uninstall
-graphify claw install / uninstall
-graphify droid install / uninstall
-graphify trae install / uninstall
-graphify trae-cn install / uninstall
-graphify hermes install / uninstall
-graphify kiro install / uninstall
-graphify devin install / uninstall
-graphify antigravity install / uninstall
+# always-on assistant instructions - platform-specific
+graphify claude install            # CLAUDE.md + PreToolUse hook (Claude Code)
+graphify claude uninstall
+graphify codex install             # AGENTS.md + PreToolUse hook in .codex/hooks.json (Codex)
+graphify opencode install          # AGENTS.md + tool.execute.before plugin (OpenCode)
+graphify kilo install              # native Kilo skill + /graphify command + AGENTS.md + .kilo plugin
+graphify kilo uninstall
+graphify cursor install            # .cursor/rules/graphify.mdc (Cursor)
+graphify cursor uninstall
+graphify gemini install            # GEMINI.md + BeforeTool hook (Gemini CLI)
+graphify gemini uninstall
+graphify copilot install           # skill file (GitHub Copilot CLI)
+graphify copilot uninstall
+graphify aider install             # AGENTS.md (Aider)
+graphify aider uninstall
+graphify claw install              # AGENTS.md (OpenClaw)
+graphify claw uninstall
+graphify droid install             # AGENTS.md (Factory Droid)
+graphify droid uninstall
+graphify trae install              # AGENTS.md (Trae)
+graphify trae uninstall
+graphify trae-cn install           # AGENTS.md (Trae CN)
+graphify trae-cn uninstall
+graphify hermes install             # AGENTS.md + ~/.hermes/skills/ (Hermes)
+graphify hermes uninstall
+graphify amp install               # skill file (Amp)
+graphify amp uninstall
+graphify kiro install               # .kiro/skills/ + .kiro/steering/graphify.md (Kiro IDE/CLI)
+graphify kiro uninstall
+graphify pi install                # skill file (Pi coding agent)
+graphify pi uninstall
+graphify devin install             # skill file + .windsurf/rules/graphify.md (Devin CLI)
+graphify devin uninstall
+graphify antigravity install       # .agents/rules + .agents/workflows (Google Antigravity)
+graphify antigravity uninstall
 
 graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
 graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, or claude-cli
@@ -485,6 +520,7 @@ graphify extract ./docs --token-budget 30000   # smaller semantic chunks for loc
 graphify extract ./docs --max-concurrency 2    # fewer parallel LLM calls (useful for local inference)
 graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow local models (default 600s)
 graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides via gws before extraction
+graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
 graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
 graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
@@ -522,7 +558,13 @@ graphify cluster-only ./my-project
 graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph location
 graphify cluster-only ./my-project --resolution 1.5            # more, smaller communities
 graphify cluster-only ./my-project --exclude-hubs 99           # exclude p99 degree nodes from partitioning
+graphify cluster-only ./my-project --no-label                  # keep "Community N" placeholders
+graphify cluster-only ./my-project --backend=gemini            # backend for community naming
+graphify label ./my-project                                    # (re)name communities with the configured backend
+graphify label ./my-project --backend=openai                   # force a specific backend
 ```
+
+> **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
 
 ---
 
@@ -549,34 +591,31 @@ Built for people whose work lives across hundreds of conversations and documents
 
 ### Development setup
 
-Clone the repo and install in editable mode:
+The project uses [uv](https://docs.astral.sh/uv/) for dev workflow. Install it once, then:
 
 ```bash
 git clone https://github.com/safishamsi/graphify.git
 cd graphify
 git checkout v8                        # active development branch
 
-# Create a virtual environment (Python 3.10+ required):
-python3 -m venv .venv
-source .venv/bin/activate              # Windows: .venv\Scripts\activate
-
-# Install in editable mode with all optional extras:
-pip install -e ".[all]"
+# Create the project venv and install graphify + all extras + the dev group
+# (pytest). uv installs the dev dependency group by default; pass --no-dev to
+# skip it.
+uv sync --all-extras
 ```
 
 Verify the editable install:
 ```bash
-graphify --version
-python -c "import graphify; print(graphify.__file__)"
+uv run graphify --version
+uv run python -c "import graphify; print(graphify.__file__)"
 ```
 
 ### Running tests
 
 ```bash
-pip install pytest
-pytest tests/ -q                       # run the full suite
-pytest tests/test_extract.py -q        # one module
-pytest tests/ -q -k "python"           # filter by name
+uv run pytest tests/ -q                # run the full suite
+uv run pytest tests/test_extract.py -q # one module
+uv run pytest tests/ -q -k "python"    # filter by name
 ```
 
 > macOS note: the test suite includes both `sample.f90` and `sample.F90` fixtures. These collide on case-insensitive HFS+ / APFS file systems. Run on Linux or in a Docker container if you need to test both Fortran variants simultaneously.
@@ -585,7 +624,7 @@ pytest tests/ -q -k "python"           # filter by name
 
 - Active development happens on the `v8` branch.
 - Commit style: `fix: <description>` / `feat: <description>` / `docs: <description>`
-- Before opening a PR, run `pytest tests/ -q` and confirm it passes.
+- Before opening a PR, run `uv run pytest tests/ -q` and confirm it passes.
 - Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py` for any new language extractor.
 
 ### What to contribute
