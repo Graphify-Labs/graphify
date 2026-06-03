@@ -42,6 +42,10 @@ D.~Guo, S.~Ren, S.~Lu, Z.~Feng, D.~Tang, S.~Liu, L.~Zhou, N.~Duan,
   code representations with data flow,'' in \emph{International Conference on
   Learning Representations (ICLR)}, 2021.
 
+\bibitem{code2graph}
+P.~Haller and A.~Loiko, ``Code2graph: automatic generation of static call
+  graphs for {Java},'' arXiv preprint arXiv:1811.00720, 2018.
+
 \bibitem{weikum2010information}
 G.~Weikum and M.~Theobald, ``Information extraction over the {World Wide
   Web},'' \emph{Proceedings of the VLDB Endowment}, vol.~3, no. 1--2, pp. 1--2,

@@ -159,3 +159,37 @@ the technical claims above:
   \item Graphify Labs (YC S26) uses the system as the graph engine for an
         enterprise continuous knowledge graph product.
 \end{itemize}
+
+\subsection{E4: Per-Question Token Reduction}
+
+Table~\ref{tab:perquestion} shows the per-question breakdown on the 52-file
+karpathy corpus, demonstrating that reduction varies significantly with query
+scope. Focused cross-repo queries (``what connects micrograd to nanoGPT'') yield
+the highest reduction because the relevant subgraph is small and tightly
+connected. Broad concept queries (``how does the attention mechanism work'')
+return larger subgraphs spanning multiple communities, reducing the ratio but
+still delivering a 43.5$\times$ savings.
+
+\begin{table}[h]
+\centering
+\caption{Per-question token reduction on the 52-file karpathy corpus
+         (123,488 naive tokens). BFS depth $d{=}3$, $K{=}3$ seeds.}
+\label{tab:perquestion}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Question} & \textbf{Graph tokens} & \textbf{$R$} \\
+\midrule
+what connects micrograd to nanoGPT  & 975   & \textbf{126.7$\times$} \\
+how does FlashAttention save memory & 1,225 & \textbf{100.8$\times$} \\
+what are the core abstractions      & 1,800 & \textbf{68.6$\times$}  \\
+how are errors handled              & 1,800 & \textbf{68.6$\times$}  \\
+how does the attention mechanism work & 2,836 & \textbf{43.5$\times$}  \\
+\midrule
+\textbf{Mean}                       & 1,727 & \textbf{71.5$\times$}  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The subgraph size variation (975--2,836 tokens) reflects hub-aware traversal
+responding to query scope rather than a fixed cost, which is the desired
+behaviour: broad questions get more context, focused questions get less.

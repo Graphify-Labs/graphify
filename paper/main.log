@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdflatex 2026.6.3)  3 JUN 2026 12:09
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdflatex 2026.6.3)  3 JUN 2026 12:18
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -1011,7 +1011,7 @@ Underfull \hbox (badness 2707) in paragraph at lines 107--114
 \OT1/ptm/m/n/10 (+20) modality-agnostic: a Python func-tion and a para-graph
  []
 
-
+[3]
 Overfull \hbox (1.41832pt too wide) detected at line 159
 [][][]\OML/cmm/m/it/10 s\OT1/cmr/m/n/10 (\OML/cmm/m/it/10 n; q\OT1/cmr/m/n/10 )
  = \OML/cmm/m/it/10 w[] \OMS/cmsy/m/n/10 ^^A []  [] \OT1/cmr/m/n/10 + 0\OML/cmm
@@ -1020,24 +1020,105 @@ Overfull \hbox (1.41832pt too wide) detected at line 159
 
 Package hyperref Info: bookmark level for unknown algorithm defaults to 0 on in
 put line 170.
+) (./sections/04_evaluation.tex
 
 LaTeX Warning: `h' float specifier changed to `ht'.
 
-[3]) (./sections/04_evaluation.tex
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-
-LaTeX Warning: `h' float specifier changed to `ht'.
-
-(./figures/reduction_chart.tex
+[4] (./figures/reduction_chart.tex
 Package pgfplots info on input line 26: Using 'lua backend=false' for axis: x c
 oord trafo unsupported.
 )
 
 LaTeX Warning: `h' float specifier changed to `ht'.
 
-[4]) (./sections/05_conclusion.tex) (./main.bbl [5])
+[5]) (./sections/06_case_study.tex
+Underfull \hbox (badness 10000) in paragraph at lines 16--22
+\OT1/ptm/m/n/10 (+20) (minGPT code), \OT1/pcr/m/n/10 FlashAttention: Fast and
+ []
+
+
+Underfull \hbox (badness 3942) in paragraph at lines 16--22
+\OT1/pcr/m/n/10 Memory-Efficient Exact Attention \OT1/ptm/m/n/10 (+20) (PDF), a
+nd
+ []
+
+
+LaTeX Font Warning: Font shape `OT1/ptm/m/scit' undefined
+(Font)              using `OT1/ptm/m/it' instead on input line 26.
+
+
+Overfull \hbox (2.6305pt too wide) in paragraph at lines 28--48
+ [][] 
+ []
+
+
+LaTeX Warning: `h' float specifier changed to `ht'.
+
+
+Underfull \hbox (badness 3471) in paragraph at lines 50--59
+\OT1/ptm/m/n/10 (+20) in nanoGPT's code is con-nected via an IN-FERRED
+ []
+
+
+Underfull \hbox (badness 2073) in paragraph at lines 67--72
+[]\OT1/pcr/m/n/10 from_pretrained() \OT1/ptm/m/n/10 (+20) in nanoGPT \OT1/pcr/m
+/n/10 --calls-->
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 72--76
+[]\OT1/pcr/m/n/10 CausalSelfAttention \OT1/ptm/m/n/10 (+20) in minGPT
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 72--76
+\OT1/pcr/m/n/10 --conceptually_related_to-->
+ []
+
+
+Underfull \hbox (badness 1484) in paragraph at lines 72--76
+\OT1/pcr/m/n/10 CausalSelfAttention \OT1/ptm/m/n/10 (+20) in nanoGPT (\OT1/ptm/
+m/sc/10 (+20) Inferred\OT1/ptm/m/n/10 (+20) ,
+ []
+
+
+Underfull \hbox (badness 1675) in paragraph at lines 72--76
+\OT1/ptm/m/n/10 (+20) c=0.93): An-drej Karpa-thy reim-ple-mented the same
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 76--79
+[]\OT1/pcr/m/n/10 GPT Language Model (minGPT)
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 76--79
+\OT1/pcr/m/n/10 --conceptually_related_to--> GPT Model
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 76--79
+\OT1/pcr/m/n/10 Class \OT1/ptm/m/n/10 (+20) in nanoGPT (\OT1/ptm/m/sc/10 (+20) 
+Inferred\OT1/ptm/m/n/10 (+20) ): iden-ti-fies the
+ []
+
+[6]) (./sections/05_conclusion.tex
+Underfull \hbox (badness 2326) in paragraph at lines 127--1
+[]\OT1/ptm/m/n/10 (+20) Critically, the FlashAt-ten-tion pa-per (5 PDFs, 4 im-
+ []
+
+
+Underfull \hbox (badness 1975) in paragraph at lines 127--1
+\OT1/ptm/m/n/10 (+20) the nanoGPT code com-mu-nity, yet a cross-community
+ []
+
+
+Underfull \hbox (badness 3168) in paragraph at lines 127--1
+\OT1/ptm/m/n/10 (+20) edge \OT1/pcr/m/n/10 CausalSelfAttention $\OMS/cmsy/m/n/1
+0 !$ \OT1/pcr/m/n/10 FlashAttention
+ []
+
+) (./main.bbl [7])
 
 ** Conference Paper **
 Before submitting the final camera ready copy, remember to:
@@ -1049,7 +1130,7 @@ Before submitting the final camera ready copy, remember to:
  uses only Type 1 fonts and that every step in the generation
  process uses the appropriate paper size.
 
-[6
+[8
 
 ] (./main.aux)
  ***********
@@ -1057,14 +1138,14 @@ LaTeX2e <2023-11-01> patch level 1
 L3 programming layer <2024-01-22>
  ***********
 Package rerunfilecheck Info: File `main.out' has not changed.
-(rerunfilecheck)             Checksum: 7B3E9927BA67AAF7CB946937D056BADB;4283.
+(rerunfilecheck)             Checksum: 7124A30B14AF843FCADC61BF4486154C;5973.
  ) 
 Here is how much of TeX's memory you used:
- 35675 strings out of 474222
- 819676 string characters out of 5748734
- 1958975 words of memory out of 5000000
- 56878 multiletter control sequences out of 15000+600000
- 627653 words of font info for 388 fonts, out of 8000000 for 9000
+ 35732 strings out of 474222
+ 820440 string characters out of 5748734
+ 1955975 words of memory out of 5000000
+ 56898 multiletter control sequences out of 15000+600000
+ 628649 words of font info for 402 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
  84i,16n,87p,1001b,2372s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb></us
@@ -1082,14 +1163,16 @@ sr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy7.pfb></usr/shar
 e/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy8.pfb></usr/share/texli
 ve/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy9.pfb></usr/share/texlive/texm
 f-dist/fonts/type1/public/amsfonts/cm/cmtt9.pfb></usr/share/texlive/texmf-dist/
-fonts/type1/urw/courier/ucrr8a.pfb></usr/share/texlive/texmf-dist/fonts/type1/u
-rw/times/utmb8a.pfb></usr/share/texlive/texmf-dist/fonts/type1/urw/times/utmbi8
-a.pfb></usr/share/texlive/texmf-dist/fonts/type1/urw/times/utmr8a.pfb></usr/sha
-re/texlive/texmf-dist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on main.pdf (6 pages, 281851 bytes).
+fonts/type1/public/amsfonts/symbols/msam10.pfb></usr/share/texlive/texmf-dist/f
+onts/type1/public/amsfonts/symbols/msam7.pfb></usr/share/texlive/texmf-dist/fon
+ts/type1/urw/courier/ucrr8a.pfb></usr/share/texlive/texmf-dist/fonts/type1/urw/
+times/utmb8a.pfb></usr/share/texlive/texmf-dist/fonts/type1/urw/times/utmbi8a.p
+fb></usr/share/texlive/texmf-dist/fonts/type1/urw/times/utmr8a.pfb></usr/share/
+texlive/texmf-dist/fonts/type1/urw/times/utmri8a.pfb>
+Output written on main.pdf (8 pages, 315557 bytes).
 PDF statistics:
- 329 PDF objects out of 1000 (max. 8388607)
- 276 compressed objects within 3 object streams
- 73 named destinations out of 1000 (max. 500000)
- 86213 words of extra memory for PDF output out of 89155 (max. 10000000)
+ 394 PDF objects out of 1000 (max. 8388607)
+ 334 compressed objects within 4 object streams
+ 87 named destinations out of 1000 (max. 500000)
+ 86269 words of extra memory for PDF output out of 89155 (max. 10000000)
 

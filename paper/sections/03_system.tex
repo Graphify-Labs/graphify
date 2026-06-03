@@ -209,3 +209,17 @@ branch fails open, so legitimate reads always proceed.
 reads a reference file only when its routing condition fires, reducing always-loaded
 context by 47\% versus the prior monolithic 1,156-line skill file.
 
+
+\subsection{Implementation and Availability}
+
+Graphify is implemented in Python 3.10+ and published on PyPI as
+\texttt{graphifyy} (MIT license). The system ships with tree-sitter grammars
+for 33 language variants as compiled C extensions, requiring no external
+toolchain. A single command --- \texttt{graphify extract .} --- runs the
+full detection, extraction, clustering, and report generation pipeline.
+The incremental update path (\texttt{graphify update .}) re-extracts only
+modified files and is suitable for git post-commit hooks. The query interface
+(\texttt{graphify query "<question>"}) is available both as a CLI command and
+as an MCP (Model Context Protocol) server for programmatic integration.
+Source code, benchmark data, and worked examples are available at:
+\url{https://github.com/safishamsi/graphify}.

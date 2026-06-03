@@ -1,22 +1,30 @@
 \section{Conclusion}
 \label{sec:conclusion}
 
-We presented \textsc{Graphify}, the first multi-modal knowledge graph system
-designed specifically for AI coding assistant integration. Its hybrid two-pass
+We presented \textsc{Graphify}, an open-source system for multi-modal knowledge
+graph construction from heterogeneous software corpora. Its hybrid two-pass
 extraction pipeline combines deterministic tree-sitter AST parsing across 33
-languages with LLM semantic extraction across 6 file modalities, with per-edge
-confidence tagging throughout. Embedding-free Leiden community detection
-recovers meaningful subsystem structure without any vector model. Hub-aware
-BFS/DFS traversal suppresses god-node explosion and delivers up to $71.5\times$
-token reduction versus naive corpus reading, validated across five real-world
-corpora. Graphify is deployed across 21 AI assistant platforms and has
-accumulated 1.2M+ downloads, demonstrating that pre-built knowledge graphs
-are a viable and practical replacement for reactive file-reading as the primary
-context mechanism for LLM coding assistants.
+language variants with LLM semantic extraction across 6 file modalities, tagging
+every edge with a confidence class for verifiability. Embedding-free Leiden
+community detection recovers subsystem structure without any vector model.
+Hub-aware BFS/DFS traversal delivers a median of 68.6$\times$ fewer tokens per
+query than naive full-corpus reading, with per-question range of
+43.5$\times$--126.7$\times$ on the 52-file multi-modal corpus. The case study in
+Section~\ref{sec:case} demonstrates that the graph surfaces cross-modal and
+cross-repository connections --- such as code nodes linked to the research papers
+describing their algorithms --- that static analysis cannot produce.
+
+Graphify is deployed across 21 AI assistant platforms and has accumulated 1.2M+
+PyPI downloads, providing real-world evidence that pre-built knowledge graphs
+are a practical replacement for reactive file-reading in LLM coding assistants.
 
 \smallskip
-\noindent\textbf{Future work} includes: (1) extending the graph model to
-continuous personal knowledge --- meetings, emails, browser history, calendar
-events (the Penpax system); (2) cross-repository graph federation under a
-shared schema; and (3) replacing the $p_{99}$ hub threshold with a learned
-classifier trained on community cohesion signals.
+\noindent\textbf{Future work} includes cross-repository graph federation under a
+shared schema, a continuous personal knowledge graph extending the model to
+meetings and emails (the Penpax system), and replacing the $p_{99}$ hub
+threshold with a trained classifier.
+
+\section*{Acknowledgments}
+The author thanks the Graphify open-source community for contributions,
+bug reports, and real-world testing across 20+ countries that shaped
+the system's design. This work was supported by Y Combinator S26.
