@@ -172,6 +172,7 @@ Install only what you need:
 | `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
 | `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
+| `embeddings` | Local `semantically_similar_to` edges via EmbeddingGemma (ONNX, CPU-only, no API cost) | `uv tool install "graphifyy[embeddings]"` |
 | `all` | Everything above | `uv tool install "graphifyy[all]"` |
 
 ---
@@ -529,6 +530,8 @@ graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow lo
 graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides via gws before extraction
 graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
 graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
+graphify extract ./docs --embeddings           # add exhaustive semantically_similar_to edges locally (no API cost; needs [embeddings])
+graphify extract ./docs --embeddings --embed-threshold 0.85 --embed-top-k 10  # tune cosine cutoff + per-node fan-out
 graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
 graphify extract ./docs --global --as myrepo   # extract and register into the cross-project global graph
@@ -554,6 +557,10 @@ graphify prs --repo owner/repo            # run against a different GitHub repo
 GRAPHIFY_TRIAGE_BACKEND=kimi graphify prs --triage   # use a specific backend for triage
 
 graphify clone https://github.com/karpathy/nanoGPT
+# Benchmark the local embedding pass: count semantically_similar_to edges before vs after.
+#   graphify extract ./nanoGPT            # LLM-only similarity edges
+#   python -c "import json;d=json.load(open('nanoGPT/graphify-out/graph.json'));print(sum(e['relation']=='semantically_similar_to' for e in d['links']))"
+#   graphify embed ./nanoGPT              # add the local exhaustive edges, then re-count
 graphify merge-graphs a.json b.json --out merged.json
 graphify --version                                    # print installed version
 graphify watch ./src
@@ -561,6 +568,9 @@ graphify check-update ./src
 graphify update ./src
 graphify update ./src --no-cluster  # skip reclustering, write raw AST graph only
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
+graphify embed ./my-project                                   # add local semantically_similar_to edges to an existing graph.json (no re-extract, no API cost)
+graphify embed ./my-project --embed-threshold 0.85            # raise the cosine cutoff (default 0.82)
+graphify embed ./my-project --embed-quant q8 --embed-dim 256  # heavier quant + Matryoshka-truncated vectors
 graphify cluster-only ./my-project
 graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph location
 graphify cluster-only ./my-project --resolution 1.5            # more, smaller communities

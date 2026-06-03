@@ -1915,6 +1915,73 @@ def _clone_repo(
     return dest
 
 
+def _run_embed_pass(
+    G,
+    cache_path: "Path",
+    *,
+    threshold: float | None = None,
+    model: str | None = None,
+    quant: str | None = None,
+    dim: int | None = None,
+    top_k: int | None = None,
+) -> int:
+    """Resolve embed knobs (flag > env > default) and run the local embedding pass.
+
+    Shared by `graphify extract --embeddings` and the standalone `graphify embed`
+    subcommand. Prints a one-line summary and returns the number of edges added.
+    Exits cleanly (code 1) if the [embeddings] extra is not installed.
+    """
+    from graphify.embed import (
+        DEFAULT_MODEL_REPO,
+        DEFAULT_QUANT,
+        DEFAULT_THRESHOLD,
+        VALID_QUANTS,
+        embed_graph,
+    )
+
+    def _env_float(name: str) -> float | None:
+        raw = os.environ.get(name)
+        if not raw:
+            return None
+        try:
+            v = float(raw)
+        except ValueError:
+            return None
+        return v if 0.0 < v <= 1.0 else None
+
+    resolved_threshold = (
+        threshold
+        if threshold is not None
+        else (_env_float("GRAPHIFY_EMBED_THRESHOLD") or DEFAULT_THRESHOLD)
+    )
+    resolved_model = model or os.environ.get("GRAPHIFY_EMBED_MODEL") or DEFAULT_MODEL_REPO
+    resolved_quant = quant or os.environ.get("GRAPHIFY_EMBED_QUANT") or DEFAULT_QUANT
+    if resolved_quant not in VALID_QUANTS:
+        print(
+            f"error: --embed-quant must be one of {', '.join(VALID_QUANTS)} "
+            f"(got {resolved_quant!r})",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    try:
+        added = embed_graph(
+            G,
+            threshold=resolved_threshold,
+            model_repo=resolved_model,
+            quant=resolved_quant,
+            dim=dim,
+            top_k=top_k,
+            cache_path=cache_path,
+            progress=lambda msg: print(f"[graphify embed] {msg}", flush=True),
+        )
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"[graphify embed] embeddings: +{added} semantically_similar_to edges")
+    return added
+
+
 def main() -> None:
     for _stream in (sys.stdout, sys.stderr):
         if _stream is not None and hasattr(_stream, "reconfigure"):
@@ -2017,8 +2084,11 @@ def main() -> None:
         print("    --out DIR               output dir (default: <path>); writes <DIR>/graphify-out/")
         print("    --google-workspace      export .gdoc/.gsheet/.gslides shortcuts via gws before extraction")
         print("    --no-cluster            skip clustering, write raw extraction only")
+        print("    --embeddings            add local semantically_similar_to edges (no API cost; needs [embeddings])")
         print("    --global                also merge the resulting graph into the global graph")
         print("    --as <tag>              repo tag for --global (default: target directory name)")
+        print("  embed [path]             add semantically_similar_to edges to an existing graph.json (local, no API cost)")
+        print("    --embed-threshold F      cosine cutoff (default: 0.82); --embed-quant, --embed-dim, --embed-top-k also apply")
         print("  global add <graph.json>  add/update a project graph in the global graph (~/.graphify/global-graph.json)")
         print("    --as <tag>               repo tag (default: parent directory name)")
         print("  global remove <tag>      remove a repo's nodes from the global graph")
@@ -3210,6 +3280,126 @@ def main() -> None:
         print(f"open with: xdg-open {out}  (or file://{out.resolve()})")
         sys.exit(0)
 
+    elif cmd == "embed":
+        # Local embedding pass on an already-built graph (#7): add exhaustive
+        # semantically_similar_to edges with no API cost, without a full
+        # re-extract. Loads graphify-out/graph.json, runs the embedding pass,
+        # and re-serializes preserving the existing communities.
+        emb_threshold: float | None = None
+        emb_model: str | None = None
+        emb_quant: str | None = None
+        emb_dim: int | None = None
+        emb_top_k: int | None = None
+        graph_override: Path | None = None
+        emb_path: Path | None = None
+
+        def _emb_threshold(raw: str) -> float:
+            try:
+                v = float(raw)
+            except ValueError:
+                print("error: --embed-threshold must be a number in (0, 1]", file=sys.stderr)
+                sys.exit(2)
+            if not (0.0 < v <= 1.0):
+                print(f"error: --embed-threshold must be in (0, 1] (got {v})", file=sys.stderr)
+                sys.exit(2)
+            return v
+
+        def _emb_int(name: str, raw: str) -> int:
+            try:
+                v = int(raw)
+            except ValueError:
+                print(f"error: {name} must be a positive integer", file=sys.stderr)
+                sys.exit(2)
+            if v <= 0:
+                print(f"error: {name} must be > 0 (got {v})", file=sys.stderr)
+                sys.exit(2)
+            return v
+
+        args = sys.argv[2:]
+        i_arg = 0
+        while i_arg < len(args):
+            a = args[i_arg]
+            if a == "--graph" and i_arg + 1 < len(args):
+                graph_override = Path(args[i_arg + 1]); i_arg += 2
+            elif a == "--embed-threshold" and i_arg + 1 < len(args):
+                emb_threshold = _emb_threshold(args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--embed-threshold="):
+                emb_threshold = _emb_threshold(a.split("=", 1)[1]); i_arg += 1
+            elif a == "--embed-model" and i_arg + 1 < len(args):
+                emb_model = args[i_arg + 1]; i_arg += 2
+            elif a.startswith("--embed-model="):
+                emb_model = a.split("=", 1)[1]; i_arg += 1
+            elif a == "--embed-quant" and i_arg + 1 < len(args):
+                emb_quant = args[i_arg + 1]; i_arg += 2
+            elif a.startswith("--embed-quant="):
+                emb_quant = a.split("=", 1)[1]; i_arg += 1
+            elif a == "--embed-dim" and i_arg + 1 < len(args):
+                emb_dim = _emb_int("--embed-dim", args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--embed-dim="):
+                emb_dim = _emb_int("--embed-dim", a.split("=", 1)[1]); i_arg += 1
+            elif a == "--embed-top-k" and i_arg + 1 < len(args):
+                emb_top_k = _emb_int("--embed-top-k", args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--embed-top-k="):
+                emb_top_k = _emb_int("--embed-top-k", a.split("=", 1)[1]); i_arg += 1
+            elif a in ("-h", "--help"):
+                print(
+                    "Usage: graphify embed [path] [--graph PATH] [--embed-threshold F] "
+                    "[--embed-model REPO] [--embed-quant q4|q8|fp16|fp32] "
+                    "[--embed-dim N] [--embed-top-k N]"
+                )
+                print("  Add semantically_similar_to edges to an existing graph.json via")
+                print("  a local CPU embedding model (no API cost). Requires the")
+                print("  [embeddings] extra: pip install graphifyy[embeddings]")
+                return
+            elif a.startswith("--"):
+                i_arg += 1
+            elif emb_path is None:
+                emb_path = Path(a); i_arg += 1
+            else:
+                i_arg += 1
+
+        if emb_path is None:
+            emb_path = Path(".")
+        graphify_out = emb_path / _GRAPHIFY_OUT
+        graph_json = graph_override if graph_override is not None else graphify_out / "graph.json"
+        if not graph_json.is_file():
+            print(
+                f"error: no graph found at {graph_json} — run `graphify extract` first",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _enforce_graph_size_cap_or_exit(graph_json)
+
+        from graphify.build import build_from_json as _build_from_json
+        from graphify.export import to_json as _to_json, backup_if_protected as _backup
+
+        _raw = json.loads(graph_json.read_text(encoding="utf-8"))
+        _directed = bool(_raw.get("directed", False))
+        G = _build_from_json(_raw, directed=_directed)
+        print(f"[graphify embed] graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+        # Recover communities from the serialized node.community fields so we
+        # preserve them on rewrite (do not re-cluster).
+        communities: dict[int, list[str]] = {}
+        for n in _raw.get("nodes", []):
+            cid = n.get("community")
+            nid = n.get("id")
+            if cid is not None and nid is not None:
+                communities.setdefault(int(cid), []).append(nid)
+
+        added = _run_embed_pass(
+            G,
+            graph_json.parent / "cache" / "embeddings.json",
+            threshold=emb_threshold,
+            model=emb_model,
+            quant=emb_quant,
+            dim=emb_dim,
+            top_k=emb_top_k,
+        )
+        _backup(graph_json.parent)
+        _to_json(G, communities, str(graph_json), force=True)
+        print(f"[graphify embed] wrote {graph_json} (+{added} edges)")
+        sys.exit(0)
+
     elif cmd == "merge-driver":
         # git merge driver for graph.json — takes (base, current, other) and writes
         # the union of current+other nodes/edges back to current. Exits 1 on
@@ -3683,7 +3873,9 @@ def main() -> None:
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
-                "[--api-timeout S]",
+                "[--api-timeout S] "
+                "[--embeddings] [--embed-threshold F] [--embed-model REPO] "
+                "[--embed-quant q4|q8|fp16|fp32] [--embed-dim N] [--embed-top-k N]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -3711,6 +3903,13 @@ def main() -> None:
         cli_resolution: float = 1.0
         cli_exclude_hubs: float | None = None
         cli_excludes: list[str] = []
+        # Local embedding pass knobs (#7). None/False means "use embed_graph default".
+        cli_embeddings = False
+        cli_embed_threshold: float | None = None
+        cli_embed_model: str | None = None
+        cli_embed_quant: str | None = None
+        cli_embed_dim: int | None = None
+        cli_embed_top_k: int | None = None
 
         def _parse_int(name: str, raw: str) -> int:
             try:
@@ -3731,6 +3930,17 @@ def main() -> None:
                 sys.exit(2)
             if v <= 0:
                 print(f"error: {name} must be > 0 (got {v})", file=sys.stderr)
+                sys.exit(2)
+            return v
+
+        def _parse_threshold(name: str, raw: str) -> float:
+            try:
+                v = float(raw)
+            except ValueError:
+                print(f"error: {name} must be a number in (0, 1] (got {raw!r})", file=sys.stderr)
+                sys.exit(2)
+            if not (0.0 < v <= 1.0):
+                print(f"error: {name} must be in (0, 1] (got {v})", file=sys.stderr)
                 sys.exit(2)
             return v
 
@@ -3792,6 +4002,28 @@ def main() -> None:
                 cli_excludes.append(args[i + 1]); i += 2
             elif a.startswith("--exclude="):
                 cli_excludes.append(a.split("=", 1)[1]); i += 1
+            elif a == "--embeddings":
+                cli_embeddings = True; i += 1
+            elif a == "--embed-threshold" and i + 1 < len(args):
+                cli_embed_threshold = _parse_threshold("--embed-threshold", args[i + 1]); i += 2
+            elif a.startswith("--embed-threshold="):
+                cli_embed_threshold = _parse_threshold("--embed-threshold", a.split("=", 1)[1]); i += 1
+            elif a == "--embed-model" and i + 1 < len(args):
+                cli_embed_model = args[i + 1]; i += 2
+            elif a.startswith("--embed-model="):
+                cli_embed_model = a.split("=", 1)[1]; i += 1
+            elif a == "--embed-quant" and i + 1 < len(args):
+                cli_embed_quant = args[i + 1]; i += 2
+            elif a.startswith("--embed-quant="):
+                cli_embed_quant = a.split("=", 1)[1]; i += 1
+            elif a == "--embed-dim" and i + 1 < len(args):
+                cli_embed_dim = _parse_int("--embed-dim", args[i + 1]); i += 2
+            elif a.startswith("--embed-dim="):
+                cli_embed_dim = _parse_int("--embed-dim", a.split("=", 1)[1]); i += 1
+            elif a == "--embed-top-k" and i + 1 < len(args):
+                cli_embed_top_k = _parse_int("--embed-top-k", args[i + 1]); i += 2
+            elif a.startswith("--embed-top-k="):
+                cli_embed_top_k = _parse_int("--embed-top-k", a.split("=", 1)[1]); i += 1
             else:
                 i += 1
 
@@ -4101,6 +4333,13 @@ def main() -> None:
         if no_cluster:
             # --no-cluster: dump the raw merged extraction as graph.json.
             # No NetworkX, no community detection, no analysis sidecar.
+            if cli_embeddings:
+                print(
+                    "[graphify extract] warning: --embeddings needs a built graph; "
+                    "skipping the embedding pass under --no-cluster. Run "
+                    "`graphify embed` afterward to add semantically_similar_to edges.",
+                    file=sys.stderr,
+                )
             from graphify.export import backup_if_protected as _backup
             _backup(graphify_out)
             graph_json_path.write_text(
@@ -4179,6 +4418,21 @@ def main() -> None:
             surprises = _surprising(G, communities)
         except Exception:
             surprises = []
+
+        # Optional local embedding pass (#7): add exhaustive
+        # semantically_similar_to edges with no API cost. Runs after build +
+        # cluster so it doesn't perturb community detection — only the serialized
+        # graph.json gains the extra edges.
+        if cli_embeddings:
+            _run_embed_pass(
+                G,
+                graphify_out / "cache" / "embeddings.json",
+                threshold=cli_embed_threshold,
+                model=cli_embed_model,
+                quant=cli_embed_quant,
+                dim=cli_embed_dim,
+                top_k=cli_embed_top_k,
+            )
 
         from graphify.export import backup_if_protected as _backup
         _backup(graphify_out)

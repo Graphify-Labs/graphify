@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: optional local embedding pass — exhaustive `semantically_similar_to` edges with no API cost (#7). `graphify extract --embeddings` (and a standalone `graphify embed [path]` for an already-built graph) embeds each node's text with EmbeddingGemma (`onnx-community/embeddinggemma-300m-ONNX`) via ONNX Runtime + Hugging Face — CPU-only, no torch/transformers — and adds `semantically_similar_to`/`INFERRED` edges whose `confidence_score` is the real cosine similarity. The LLM semantic pass still finds the *interesting* cross-cutting edges during extraction; this pass adds the *exhaustive* ones for free. A content-hash cache (`graphify-out/cache/embeddings.json`) makes re-runs idempotent (an unchanged corpus adds zero vectors and zero edges), block-wise cosine keeps peak memory flat on large graphs, and an existing-edge guard never clobbers a real `calls`/`implements` edge. Tunable via `--embed-threshold` (default 0.82), `--embed-model`, `--embed-quant` (q4/q8/fp16/fp32), `--embed-dim` (Matryoshka truncation; full 768 by default), and `--embed-top-k`, with `GRAPHIFY_EMBED_THRESHOLD`/`GRAPHIFY_EMBED_MODEL`/`GRAPHIFY_EMBED_QUANT` env fallbacks. New optional extra: `pip install graphifyy[embeddings]` (also in `[all]`); the deps are lazy-imported so a normal install/no-flag run is untouched. (The original issue's llama.cpp/ollama backend is superseded by this ONNX decision.)
+
 ## 0.8.31 (2026-06-03)
 
 - Fix: `graphify hook install` now embeds the current interpreter (`sys.executable`) directly into the generated hook scripts. Previously, uv tool and pipx installs silently no-oped on git commit in GUI clients and CI runners where `~/.local/bin` is not on PATH — the hook could not find the graphify launcher, fell through all detection probes, and exited 0 without rebuilding. The embedded path is sanitized through a filesystem-safe allowlist before substitution. If you already have hooks installed, re-run `graphify hook install` to pick up the fix (#1127).

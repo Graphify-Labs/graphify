@@ -65,12 +65,15 @@ gemini = ["openai", "tiktoken"]
 openai = ["openai", "tiktoken"]
 chinese = ["jieba"]
 sql = ["tree-sitter-sql"]
+# Local embedding pass (#7): EmbeddingGemma via ONNX Runtime + Hugging Face.
+# CPU-only, no torch/transformers. Lazy-imported so the base install is untouched.
+embeddings = ["onnxruntime", "huggingface-hub", "tokenizers", "numpy"]
 # tree-sitter-dm (BYOND DreamMaker) ships only a Windows wheel, so on Linux/Mac it
 # must compile from source (needs a C toolchain + python3-dev). Keeping it optional
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp", "matplotlib", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl"]
+all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp", "matplotlib", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "onnxruntime", "huggingface-hub", "tokenizers", "numpy"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
