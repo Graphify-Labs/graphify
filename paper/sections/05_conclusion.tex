@@ -1,0 +1,22 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented \textsc{Graphify}, the first multi-modal knowledge graph system
+designed specifically for AI coding assistant integration. Its hybrid two-pass
+extraction pipeline combines deterministic tree-sitter AST parsing across 33
+languages with LLM semantic extraction across 6 file modalities, with per-edge
+confidence tagging throughout. Embedding-free Leiden community detection
+recovers meaningful subsystem structure without any vector model. Hub-aware
+BFS/DFS traversal suppresses god-node explosion and delivers up to $71.5\times$
+token reduction versus naive corpus reading, validated across five real-world
+corpora. Graphify is deployed across 21 AI assistant platforms and has
+accumulated 1.2M+ downloads, demonstrating that pre-built knowledge graphs
+are a viable and practical replacement for reactive file-reading as the primary
+context mechanism for LLM coding assistants.
+
+\smallskip
+\noindent\textbf{Future work} includes: (1) extending the graph model to
+continuous personal knowledge --- meetings, emails, browser history, calendar
+events (the Penpax system); (2) cross-repository graph federation under a
+shared schema; and (3) replacing the $p_{99}$ hub threshold with a learned
+classifier trained on community cohesion signals.

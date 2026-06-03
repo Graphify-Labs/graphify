@@ -1,0 +1,41 @@
+% Token reduction bar chart (pgfplots, half-column width)
+\begin{tikzpicture}
+\begin{axis}[
+  ybar,
+  bar width=0.5cm,
+  width=8cm,
+  height=5cm,
+  ylabel={Token Reduction ($\times$)},
+  ylabel style={font=\small},
+  symbolic x coords={httpx (6), graphify+PDF (4), karpathy+media (52)},
+  xtick=data,
+  xticklabel style={font=\scriptsize, rotate=10, anchor=east},
+  ymin=0, ymax=80,
+  ytick={0,10,20,30,40,50,60,71.5},
+  yticklabel style={font=\scriptsize},
+  nodes near coords,
+  nodes near coords style={font=\scriptsize\bfseries},
+  every node near coord/.append style={yshift=2pt},
+  axis lines=left,
+  enlarge x limits=0.3,
+  legend style={at={(0.98,0.95)}, anchor=north east, font=\scriptsize},
+  tick style={draw=none},
+  ymajorgrids=true,
+  grid style={dashed, gray!30},
+]
+
+\addplot[
+  fill=blue!40,
+  draw=blue!60,
+] coordinates {
+  (httpx (6),             1.0)
+  (graphify+PDF (4),      5.4)
+  (karpathy+media (52),  71.5)
+};
+
+% annotate the 71.5x bar
+\node[font=\scriptsize\bfseries, text=blue!70!black]
+  at (axis cs:karpathy+media (52), 75) {$\mathbf{71.5\times}$};
+
+\end{axis}
+\end{tikzpicture}
