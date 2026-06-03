@@ -22,11 +22,11 @@ They span pure code, mixed code-and-documentation, and multi-modal
 \toprule
 \textbf{Corpus} & \textbf{Files} & \textbf{Nodes} & \textbf{Modalities} \\
 \midrule
-rsl-siege-manager    & 1,886 & 1,886  & code             \\
-karpathy-repos (code+docs+media) & 52    & 285    & code, PDF, image \\
-karpathy-repos (code only)       & 29    & 177    & code             \\
-mixed-corpus (code+PDF)          & 22    &  22    & code, PDF        \\
-httpx                            & 19    & 144    & code             \\
+rsl-siege-manager      & 1,886 & 1,886 & code          \\
+karpathy+media         &    52 &   285 & code+PDF+img  \\
+karpathy (code)        &    29 &   177 & code          \\
+mixed (code+PDF)       &    22 &    22 & code+PDF      \\
+httpx                  &    19 &   144 & code          \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -44,18 +44,23 @@ output at depth $d = 3$, top-$K = 3$ seed nodes.
 \label{tab:reduction}
 \begin{tabular}{lrrr}
 \toprule
-\textbf{Corpus} & \textbf{Naive (tokens)} & \textbf{Graph (avg tokens)} & \textbf{Ratio} \\
+\textbf{Corpus} & \textbf{Naive} & \textbf{Graph} & \textbf{$R$} \\
 \midrule
-karpathy + papers + images (52) & 123,488 & 1,726  & \textbf{71.5$\times$} \\
-karpathy code only (29)         &  16,997 & 1,929  & \textbf{8.8$\times$}  \\
-mixed-corpus (22)               &  54,000 & 10,000 & \textbf{5.4$\times$}  \\
-httpx (19)                      &  \multicolumn{2}{c}{$\approx$ full context} & $\sim$1$\times$ \\
+karpathy+media (52) & 123,488 & 1,726  & \textbf{71.5$\times$} \\
+karpathy code (29)  &  16,997 & 1,929  & \textbf{8.8$\times$}  \\
+mixed (22)          &  54,000 & 10,000 & \textbf{5.4$\times$}  \\
+httpx (19)          & \multicolumn{2}{c}{full context} & $\sim$1$\times$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:reduction} reports the reduction ratio $R$ defined in
-Eq.~\eqref{eq:reduction} across four corpus configurations. The headline
+The reduction ratio $R$ is:
+\begin{equation}
+  R = \frac{T_\text{raw}}{T_\text{graph}} = \frac{\sum_{f \in F}
+  |\text{tokens}(f)|}{|\text{tokens}(\text{BFS}_\tau(G,S^*,d))|}
+  \label{eq:reduction}
+\end{equation}
+Table~\ref{tab:reduction} reports $R$ across four corpus configurations. The headline
 result is $\mathbf{71.5\times}$ on the 52-file mixed corpus (nanoGPT,
 minGPT, micrograd + 5 papers + 4 images): 123,488 naive tokens versus a
 mean BFS subgraph of 1,726 tokens across five representative architectural

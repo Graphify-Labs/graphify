@@ -1,0 +1,86 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{leiden}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{section.1}\protected@file@percent }
+\citation{allen1970control}
+\citation{feng2020codebert}
+\citation{guo2021graphcodebert}
+\citation{weikum2010information}
+\citation{chen2024multiagent}
+\citation{guo2024slmp}
+\citation{lewis2020rag}
+\citation{edge2024graphrag}
+\citation{llamaindex2022}
+\citation{treesitter}
+\citation{whisper}
+\@writefile{toc}{\contentsline {section}{\numberline {II}Related Work}{2}{section.2}\protected@file@percent }
+\newlabel{sec:related}{{II}{2}{Related Work}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-A}}Code Intelligence and Program Analysis}{2}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-B}}Knowledge Graph Construction from Text}{2}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {II-C}}Graph-Augmented Retrieval for LLMs}{2}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {III}System Architecture}{2}{section.3}\protected@file@percent }
+\newlabel{sec:system}{{III}{2}{System Architecture}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-A}}Multi-Modal Detection and Classification}{2}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-B}}Hybrid Two-Pass Extraction}{2}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {III-B}1}Pass 1: Deterministic AST Extraction}{2}{subsubsection.3.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {III-B}2}Pass 2: LLM Semantic Extraction}{2}{subsubsection.3.2.2}\protected@file@percent }
+\newlabel{eq:confidence}{{1}{2}{Pass 2: LLM Semantic Extraction}{equation.3.1}{}}
+\citation{minhash}
+\citation{jaro}
+\citation{leiden}
+\citation{leiden}
+\citation{louvain}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Graphify pipeline. A heterogeneous corpus (code, docs, PDFs, images, video) flows through multi-modal detection, hybrid two-pass extraction, graph merge and deduplication, topology-only community detection, and hub-aware traversal. Every edge carries a confidence tag. The graph is exposed to 21 AI assistant platforms via always-on hooks and progressive-disclosure skill files.}}{3}{figure.1}\protected@file@percent }
+\newlabel{fig:arch}{{1}{3}{Graphify pipeline. A heterogeneous corpus (code, docs, PDFs, images, video) flows through multi-modal detection, hybrid two-pass extraction, graph merge and deduplication, topology-only community detection, and hub-aware traversal. Every edge carries a confidence tag. The graph is exposed to 21 AI assistant platforms via always-on hooks and progressive-disclosure skill files}{figure.1}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {III-B}3}Graph Merge and Deduplication}{3}{subsubsection.3.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {\mbox  {III-B}4}Graph Schema}{3}{subsubsection.3.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-C}}Embedding-Free Community Detection}{3}{subsection.3.3}\protected@file@percent }
+\newlabel{eq:modularity}{{2}{3}{Embedding-Free Community Detection}{equation.3.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-D}}Hub-Aware Graph Traversal}{3}{subsection.3.4}\protected@file@percent }
+\newlabel{subsec:traversal}{{\mbox  {III-D}}{3}{Hub-Aware Graph Traversal}{subsection.3.4}{}}
+\newlabel{eq:score}{{3}{3}{Hub-Aware Graph Traversal}{equation.3.3}{}}
+\citation{openai2023tokenizer}
+\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces Hub-Aware BFS}}{4}{algorithm.1}\protected@file@percent }
+\newlabel{alg:bfs}{{1}{4}{Hub-Aware Graph Traversal}{algorithm.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {III-E}}AI Assistant Integration}{4}{subsection.3.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {IV}Evaluation}{4}{section.4}\protected@file@percent }
+\newlabel{sec:eval}{{IV}{4}{Evaluation}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-A}}Experimental Setup}{4}{subsection.4.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces Evaluation Corpora}}{4}{table.1}\protected@file@percent }
+\newlabel{tab:corpora}{{I}{4}{Evaluation Corpora}{table.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Token Reduction: Graph Traversal vs.\ Naive Full-Corpus Reading}}{4}{table.2}\protected@file@percent }
+\newlabel{tab:reduction}{{II}{4}{Token Reduction: Graph Traversal vs.\ Naive Full-Corpus Reading}{table.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-B}}E1: Token Reduction}{4}{subsection.4.2}\protected@file@percent }
+\newlabel{eq:reduction}{{4}{4}{E1: Token Reduction}{equation.4.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Token reduction ratio across corpus sizes. Reduction scales with corpus size: small corpora fit in context anyway; at 52 files (code + papers + images) savings reach $71.5\times $, with per-question range of $43.5\times $--$126.7\times $.}}{4}{figure.2}\protected@file@percent }
+\newlabel{fig:reduction}{{2}{4}{Token reduction ratio across corpus sizes. Reduction scales with corpus size: small corpora fit in context anyway; at 52 files (code + papers + images) savings reach $71.5\times $, with per-question range of $43.5\times $--$126.7\times $}{figure.2}{}}
+\bibstyle{IEEEtran}
+\bibdata{bib/references}
+\bibcite{leiden}{1}
+\bibcite{allen1970control}{2}
+\bibcite{feng2020codebert}{3}
+\bibcite{guo2021graphcodebert}{4}
+\bibcite{weikum2010information}{5}
+\bibcite{chen2024multiagent}{6}
+\bibcite{guo2024slmp}{7}
+\bibcite{lewis2020rag}{8}
+\@writefile{lot}{\contentsline {table}{\numberline {III}{\ignorespaces Edge Confidence-Tag Distribution by Corpus. \textsc  {Extracted}: syntactically explicit in source (AST). \textsc  {Inferred}: LLM-reasoned (semantic pass). \textsc  {Ambiguous}: low-confidence, flagged for review.}}{5}{table.3}\protected@file@percent }
+\newlabel{tab:confidence}{{III}{5}{Edge Confidence-Tag Distribution by Corpus. \textsc {Extracted}: syntactically explicit in source (AST). \textsc {Inferred}: LLM-reasoned (semantic pass). \textsc {Ambiguous}: low-confidence, flagged for review}{table.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-C}}E2: Edge Confidence-Tag Distribution}{5}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-D}}E3: Parallel AST Extraction Throughput}{5}{subsection.4.4}\protected@file@percent }
+\newlabel{eq:speedup}{{5}{5}{E3: Parallel AST Extraction Throughput}{equation.4.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {\mbox  {IV-E}}Real-World Deployment}{5}{subsection.4.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {V}Conclusion}{5}{section.5}\protected@file@percent }
+\newlabel{sec:conclusion}{{V}{5}{Conclusion}{section.5}{}}
+\@writefile{toc}{\contentsline {section}{References}{5}{section*.1}\protected@file@percent }
+\bibcite{edge2024graphrag}{9}
+\bibcite{llamaindex2022}{10}
+\bibcite{treesitter}{11}
+\bibcite{whisper}{12}
+\bibcite{minhash}{13}
+\bibcite{jaro}{14}
+\bibcite{louvain}{15}
+\bibcite{openai2023tokenizer}{16}
+\gdef \@abspage@last{6}

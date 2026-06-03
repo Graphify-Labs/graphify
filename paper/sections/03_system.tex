@@ -89,21 +89,24 @@ LLM-inferred metadata. Three deduplication layers are applied: (1) a
 within-file \texttt{seen\_ids} set collapses duplicate definitions; (2) the
 graph's \texttt{add\_node} semantics overwrite stale entries from previous
 incremental runs; (3) an optional LLM tiebreaker resolves near-duplicate nodes
-identified via MinHash LSH~\cite{minhash} blocking and Jaro-Winkler
-similarity~\cite{jaro}.
+identified via MinHash LSH~\cite{minhash} blocking and
+Jaro-Winkler similarity~\cite{jaro}.
 
 \subsubsection{Graph Schema}
 
 The unified schema is:
+{\small
 \begin{align*}
-  \text{Node} &= \langle \mathtt{id},\; \mathtt{label},\; \mathtt{source\_file},\;
+  \text{Node} &= \langle \mathtt{id},\; \mathtt{label},\; \mathtt{src\_file},\;
   \mathtt{loc},\; \mathtt{type},\; \mathtt{community} \rangle \\
   \text{Edge} &= \langle \mathtt{src},\; \mathtt{tgt},\; \mathtt{relation},\;
   c,\; \mathtt{weight} \rangle
 \end{align*}
+}
 
 \noindent where \texttt{relation} $\in \{$\texttt{calls, imports, contains,
-inherits, implements, uses, references, cites, transcribes, embeds}$\}$.
+inherits, implements, uses, references,}\\
+\texttt{cites, transcribes, embeds}$\}$.
 This schema is modality-agnostic: a Python function and a paragraph in a PDF
 design document are both first-class nodes; a \texttt{references} edge connects
 them. The graph is serialized as NetworkX node-link JSON, which is git-merge-safe
