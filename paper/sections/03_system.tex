@@ -1,0 +1,202 @@
+\section{System Architecture}
+\label{sec:system}
+
+Fig.~\ref{fig:arch} shows the Graphify pipeline. A software corpus is ingested
+through five stages: \emph{detect}, \emph{extract} (two passes), \emph{merge},
+\emph{cluster}, and \emph{query}. We describe each stage in turn.
+
+\begin{figure*}[t]
+  \centering
+  \input{figures/architecture}
+  \caption{Graphify pipeline. A heterogeneous corpus (code, docs, PDFs, images,
+           video) flows through multi-modal detection, hybrid two-pass extraction,
+           graph merge and deduplication, topology-only community detection, and
+           hub-aware traversal. Every edge carries a confidence tag.
+           The graph is exposed to 21 AI assistant platforms via always-on hooks
+           and progressive-disclosure skill files.}
+  \label{fig:arch}
+\end{figure*}
+
+\subsection{Multi-Modal Detection and Classification}
+
+Graphify classifies each file into one of six types: \textsc{Code},
+\textsc{Document}, \textsc{Paper}, \textsc{Image}, \textsc{Video}, or
+\textsc{Office}. Classification is based on file extension against curated
+extension sets: 80+ patterns for code (covering 33 languages), plus PDF,
+image, video, and office formats. An incremental manifest records file
+modification timestamps; only files whose \texttt{mtime} changed since the
+last extraction are re-processed, enabling sub-second updates on typical commits.
+
+Security measures are applied before parsing untrusted corpus files. Office
+documents (\texttt{.docx}, \texttt{.xlsx}) are screened via a bounded
+streaming decompression check: if the total decompressed size of ZIP members
+exceeds $D_{\max} = 512\,\text{MiB}$ or the compression ratio exceeds $\rho =
+200$, the file is skipped. PDF files are subject to a raw-size cap of
+$50\,\text{MiB}$. URL ingestion is protected by a SSRF guard that resolves
+hostnames and rejects private, link-local, and cloud-metadata IP ranges.
+
+\subsection{Hybrid Two-Pass Extraction}
+
+\subsubsection{Pass 1: Deterministic AST Extraction}
+
+For each \textsc{Code} file, Graphify invokes the language-specific
+tree-sitter~\cite{treesitter} grammar to parse the source into a concrete
+syntax tree. A language-aware walker then emits nodes and edges:
+
+\begin{itemize}
+  \item \textbf{Nodes}: function definitions, class declarations, variable
+        bindings, and file-level module nodes. Each node carries a
+        \texttt{source\_location} stamp (e.g., \texttt{L42}).
+  \item \textbf{Edges}: \texttt{calls}, \texttt{imports}, \texttt{contains},
+        \texttt{inherits}, \texttt{implements}, \texttt{embeds}.
+\end{itemize}
+
+All AST-derived edges receive confidence \textsc{Extracted} ($c = 1.0$),
+reflecting that the relation is syntactically explicit in the source. A
+language-specific built-in filter suppresses universal identifiers
+(\texttt{print}, \texttt{len}, \texttt{String}, \texttt{Promise}) that would
+otherwise become pathological god nodes. Import resolution is language-aware:
+Python relative imports are resolved against the module hierarchy; TypeScript
+\texttt{tsconfig} path aliases are respected; Go module paths are normalized.
+
+\subsubsection{Pass 2: LLM Semantic Extraction}
+
+For non-code files (\textsc{Document}, \textsc{Paper}, \textsc{Image},
+\textsc{Video}, \textsc{Office}), Graphify dispatches an LLM subagent.
+Video and audio files are first transcribed to text via Whisper~\cite{whisper};
+PDF files are parsed via \texttt{pypdf}; images are passed directly to a
+vision-capable model. The subagent receives a structured extraction prompt
+specifying the node-ID format, relation taxonomy, confidence rubric, and output
+JSON schema. It emits nodes and edges with one of three confidence levels:
+
+\begin{align}
+  c(e) &= \begin{cases}
+    1.0 & \text{\textsc{Extracted}: explicit in source} \\
+    [0.75,\,1.0) & \text{\textsc{Inferred}: LLM-reasoned} \\
+    [0,\,0.75) & \text{\textsc{Ambiguous}: low-confidence, flagged}
+  \end{cases}
+  \label{eq:confidence}
+\end{align}
+
+The semantic pass is backend-agnostic: Claude Code subagents (default), OpenAI,
+Gemini, Ollama, and any OpenAI-compatible endpoint are supported.
+
+\subsubsection{Graph Merge and Deduplication}
+
+Nodes from both passes are merged idempotently into a NetworkX directed graph.
+On ID collision, the semantic node overwrites the AST node, preserving the richer
+LLM-inferred metadata. Three deduplication layers are applied: (1) a
+within-file \texttt{seen\_ids} set collapses duplicate definitions; (2) the
+graph's \texttt{add\_node} semantics overwrite stale entries from previous
+incremental runs; (3) an optional LLM tiebreaker resolves near-duplicate nodes
+identified via MinHash LSH~\cite{minhash} blocking and Jaro-Winkler
+similarity~\cite{jaro}.
+
+\subsubsection{Graph Schema}
+
+The unified schema is:
+\begin{align*}
+  \text{Node} &= \langle \mathtt{id},\; \mathtt{label},\; \mathtt{source\_file},\;
+  \mathtt{loc},\; \mathtt{type},\; \mathtt{community} \rangle \\
+  \text{Edge} &= \langle \mathtt{src},\; \mathtt{tgt},\; \mathtt{relation},\;
+  c,\; \mathtt{weight} \rangle
+\end{align*}
+
+\noindent where \texttt{relation} $\in \{$\texttt{calls, imports, contains,
+inherits, implements, uses, references, cites, transcribes, embeds}$\}$.
+This schema is modality-agnostic: a Python function and a paragraph in a PDF
+design document are both first-class nodes; a \texttt{references} edge connects
+them. The graph is serialized as NetworkX node-link JSON, which is git-merge-safe
+and diffable line-by-line.
+
+\subsection{Embedding-Free Community Detection}
+
+Graphify partitions the graph into communities using the Leiden
+algorithm~\cite{leiden}, which optimizes modularity:
+\begin{equation}
+  Q = \frac{1}{2m} \sum_{ij} \left[ A_{ij} - \frac{k_i k_j}{2m} \right]
+  \delta(c_i, c_j)
+  \label{eq:modularity}
+\end{equation}
+where $m$ is the number of edges, $A_{ij}$ is the adjacency matrix, $k_i$ is
+the degree of node $i$, and $\delta(c_i, c_j)$ is 1 iff $i$ and $j$ share a
+community. Leiden~\cite{leiden} guarantees well-connected communities, an
+improvement over Louvain~\cite{louvain} which can produce internally disconnected
+partitions. Louvain via NetworkX is used as a fallback when graspologic is
+unavailable.
+
+\medskip
+\noindent\textbf{Hub exclusion.}
+Nodes with degree $k_i \geq \tau$ where $\tau = \max(50,\; p_{99}(\{k_i\}))$
+are excluded from the partition before running Leiden, then re-inserted into
+their highest-modularity community. This prevents high-degree utility nodes
+(e.g., \texttt{logging}, \texttt{json.dumps}) from dominating community
+structure.
+
+\medskip
+\noindent\textbf{Determinism.}
+Community IDs are assigned by total order $\langle -|C|, \text{sorted}(C)
+\rangle$: larger communities receive smaller IDs; ties are broken
+lexicographically by sorted node IDs. This ensures bit-for-bit identical
+community assignments across runs on the same input.
+
+\subsection{Hub-Aware Graph Traversal}
+\label{subsec:traversal}
+
+At query time, the user's natural language question $q$ is tokenized,
+IDF-weighted, and matched against node labels. Each node $n$ is scored:
+\begin{equation}
+  s(n, q) = 10^3 \cdot \mathbf{1}_\text{exact} + 10^2 \cdot
+  \mathbf{1}_\text{prefix} + \mathbf{1}_\text{substr} + 0.5 \cdot
+  \mathbf{1}_\text{file}
+  \label{eq:score}
+\end{equation}
+where each indicator function is 1 if the query matches the node's label (or
+source filename) at the respective granularity. The top-$K$ seed nodes
+$S^* = \arg\!\max_{|S|=K} \sum_{n \in S} s(n, q)$ initialize BFS expansion.
+
+Algorithm~\ref{alg:bfs} formalizes the hub-aware traversal:
+
+\begin{algorithm}[h]
+\caption{Hub-Aware BFS}
+\label{alg:bfs}
+\begin{algorithmic}[1]
+\REQUIRE Graph $G=(V,E)$, seeds $S^* \subseteq V$, depth $d$, threshold $\tau$
+\ENSURE Subgraph $H$
+\STATE $\text{visited} \gets S^*$;\; $\text{frontier} \gets S^*$
+\FOR{$i = 1$ \TO $d$}
+  \STATE $\text{next} \gets \emptyset$
+  \FOR{$n \in \text{frontier}$}
+    \IF{$\deg(n) < \tau$}
+      \STATE $\text{next} \gets \text{next} \cup (\mathcal{N}(n) \setminus \text{visited})$
+    \ENDIF
+  \ENDFOR
+  \STATE $\text{visited} \gets \text{visited} \cup \text{next}$;\; $\text{frontier} \gets \text{next}$
+\ENDFOR
+\RETURN $G[\text{visited}]$
+\end{algorithmic}
+\end{algorithm}
+
+Hub nodes (degree $\geq \tau$) are \emph{included} in the subgraph for context
+but are \emph{not expanded}: their neighbors are not added to the frontier. This
+prevents god-node explosion while preserving the hub's contextual relevance.
+
+\subsection{AI Assistant Integration}
+
+Graphify integrates with AI assistant platforms through two mechanisms:
+
+\textbf{Always-on hooks.} On platforms supporting payload-bearing \texttt{PreToolUse}
+hooks (Claude Code, Gemini CLI), two hooks are registered: one fires before
+Bash search commands (\texttt{grep}, \texttt{rg}, \texttt{find}); the other
+before native file-read tool calls (\texttt{Read}, \texttt{Glob}). Both hooks
+check for the presence of \texttt{graphify-out/graph.json} and, when found,
+inject an \texttt{additionalContext} message steering the agent toward
+\texttt{graphify query} instead of raw file reading. Hooks never block: every
+branch fails open, so legitimate reads always proceed.
+
+\textbf{Progressive-disclosure skills.} Each platform receives a lean skill file
+(615 lines) carrying the full default pipeline inline, plus an on-demand
+\texttt{references/} sidecar (8 files, one per non-default workflow). An agent
+reads a reference file only when its routing condition fires, reducing always-loaded
+context by 47\% versus the prior monolithic 1,156-line skill file.
+
