@@ -153,6 +153,11 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
     Mirror of :func:`graphify.watch._relativize_source_files` so cached
     extraction fragments persist in portable form (#777). Already-relative
     fields and out-of-root paths pass through unchanged.
+
+    Only ``root`` is resolved — ``source_file`` itself is relativized
+    symbolically so in-root symlinks keep their original name rather than
+    pointing at the resolved target. Same reasoning as
+    :func:`graphify.detect._to_relative_for_storage`.
     """
     try:
         root_resolved = Path(root).resolve()
@@ -169,9 +174,12 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
             if not sp.is_absolute():
                 continue
             try:
-                item["source_file"] = sp.resolve().relative_to(root_resolved).as_posix()
+                rel = os.path.relpath(sp, root_resolved)
             except (ValueError, OSError):
-                continue
+                continue  # out-of-root (e.g. Windows cross-drive)
+            if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+                continue  # escaped root — keep absolute
+            item["source_file"] = rel.replace(os.sep, "/")
 
 
 def _absolutize_source_files_in(payload: dict, root: Path) -> None:

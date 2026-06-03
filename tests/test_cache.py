@@ -237,3 +237,36 @@ def test_cache_portable_across_roots(tmp_path):
     # Source path re-anchored to the new root, not the old one.
     assert loaded["nodes"][0]["source_file"] == str(src_b.resolve())
     assert not str(repo_a) in loaded["nodes"][0]["source_file"]
+
+
+def test_save_cached_in_root_symlink_keeps_symlink_name(tmp_path):
+    """``source_file`` for an in-root symlink must be stored under the
+    symlink's own name, not the resolved target. Lower-impact than the
+    manifest case (cache lookup is content-hashed, not key-matched), but
+    keeps the on-disk shape consistent with what callers passed in."""
+    import json
+    from graphify.cache import save_cached, file_hash, cache_dir
+
+    (tmp_path / "sub").mkdir()
+    target = tmp_path / "sub" / "target.py"
+    target.write_text("pass\n")
+    alias = tmp_path / "alias.py"
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError):
+        import pytest
+        pytest.skip("filesystem does not support symlinks")
+
+    abs_alias = str(alias)  # caller's view — the symlink path, unresolved
+    save_cached(alias, {
+        "nodes": [{"id": "n1", "source_file": abs_alias}],
+        "edges": [],
+    }, root=tmp_path, kind="ast")
+
+    h = file_hash(alias, tmp_path)
+    entry = cache_dir(tmp_path, "ast") / f"{h}.json"
+    on_disk = json.loads(entry.read_text(encoding="utf-8"))
+    assert on_disk["nodes"][0]["source_file"] == "alias.py", (
+        f"cache must store symlink name, not resolved target; got "
+        f"{on_disk['nodes'][0]['source_file']!r}"
+    )

@@ -1099,14 +1099,26 @@ def _to_relative_for_storage(key: str, root: Path) -> str:
     fallback in :func:`graphify.watch._relativize_source_files` so the
     on-disk artifact survives the round-trip even when some paths cannot be
     portably encoded.
+
+    Only ``root`` is resolved — the key itself is relativized symbolically
+    so an in-root symlink (e.g. ``alias.py -> sub/target.py``) is stored
+    under its own name. Resolving the key would point the stored entry at
+    the symlink target, and the original key would then miss on reload and
+    re-extract on every incremental run.
     """
     p = Path(key)
     if not p.is_absolute():
         return key
     try:
-        return p.resolve().relative_to(Path(root).resolve()).as_posix()
+        rel = os.path.relpath(p, Path(root).resolve())
     except (ValueError, OSError):
-        return key  # outside root or unresolvable
+        return key  # outside root (e.g. Windows cross-drive)
+    # ``os.path.relpath`` happily produces ``../foo`` for paths outside
+    # root; mirror the prior ``relative_to``-raises-ValueError semantics by
+    # keeping out-of-root entries in their absolute form.
+    if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+        return key
+    return rel.replace(os.sep, "/")
 
 
 def _to_absolute_from_storage(key: str, root: Path) -> str:

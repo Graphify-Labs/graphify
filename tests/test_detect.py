@@ -1202,3 +1202,37 @@ def test_detect_incremental_portable_across_paths(tmp_path):
     assert inc["new_total"] == 0, (
         f"manifest must port across absolute paths; got new_total={inc['new_total']}"
     )
+
+
+def test_save_manifest_in_root_symlink_roundtrips(tmp_path):
+    """In-root symlinks must store under the symlink's own name, not the
+    resolved target. Resolving the key when relativizing pointed the stored
+    entry at ``sub/target.py`` instead of ``alias.py``, so the original
+    ``alias.py`` key missed on reload and re-extracted on every incremental
+    run."""
+    import json
+    from graphify.detect import save_manifest, load_manifest
+
+    (tmp_path / "sub").mkdir()
+    target = tmp_path / "sub" / "target.py"
+    target.write_text("pass\n")
+    alias = tmp_path / "alias.py"
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError):
+        import pytest
+        pytest.skip("filesystem does not support symlinks")
+
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"code": [str(alias)]}, manifest_path, root=tmp_path)
+
+    raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert "alias.py" in raw, (
+        f"in-root symlink must be stored under its own name, got {list(raw)}"
+    )
+    assert "sub/target.py" not in raw, (
+        f"symlink must not be stored under resolved target path; got {list(raw)}"
+    )
+
+    loaded = load_manifest(manifest_path, root=tmp_path)
+    assert str(tmp_path.resolve() / "alias.py") in loaded
