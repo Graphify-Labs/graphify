@@ -5248,8 +5248,11 @@ def _cpp_preprocess(path: Path) -> bytes:
     if not shutil.which("cpp"):
         return path.read_bytes()
     try:
+        # Pass an absolute path so a corpus file named like "-I/etc/x.F90" cannot
+        # be parsed by cpp as an option (cpp does not accept a "--" end-of-options
+        # terminator). An absolute path always begins with "/".
         result = subprocess.run(
-            ["cpp", "-w", "-P", "-nostdinc", "-I", "/dev/null", str(path)],
+            ["cpp", "-w", "-P", "-nostdinc", "-I", "/dev/null", str(path.resolve())],
             capture_output=True,
             timeout=30,
         )

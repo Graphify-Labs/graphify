@@ -1057,3 +1057,182 @@ def test_shebang_interpreter_env_vs_assignment_before_interpreter(tmp_path):
     script.write_bytes(b"#!/usr/bin/env -vS DEBUG=1 python3 -u\nprint('x')\n")
     assert _shebang_interpreter(script) == "python3"
     assert classify_file(script) == FileType.CODE
+
+
+# --- #777: portable manifest paths ------------------------------------------
+# When ``root`` is supplied, the on-disk manifest stores forward-slash
+# relative keys so a committed ``graphify-out/`` round-trips across machines
+# and CI runners. In-memory the keys are still absolute, so internal callers
+# (notably :func:`detect_incremental`) remain unchanged.
+
+def test_save_manifest_relativizes_keys_when_root_given(tmp_path):
+    """``save_manifest(root=...)`` writes forward-slash relative keys."""
+    import json
+    from graphify.detect import save_manifest, load_manifest
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("def x(): pass\n")
+    (tmp_path / "doc.md").write_text("hello\n")
+
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    files = {
+        "code": [str(tmp_path / "src" / "foo.py")],
+        "document": [str(tmp_path / "doc.md")],
+    }
+    save_manifest(files, manifest_path, root=tmp_path)
+
+    raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert set(raw) == {"src/foo.py", "doc.md"}, (
+        f"on-disk keys must be relative posix paths, got {set(raw)}"
+    )
+
+    # Same file, loaded with root: callers see absolute keys back.
+    loaded = load_manifest(manifest_path, root=tmp_path)
+    abs_foo = str((tmp_path / "src" / "foo.py").resolve())
+    abs_doc = str((tmp_path / "doc.md").resolve())
+    assert set(loaded) == {abs_foo, abs_doc}
+
+
+def test_save_manifest_without_root_keeps_absolute_keys(tmp_path):
+    """Back-compat: callers that don't pass ``root`` still get the legacy
+    absolute-keyed manifest format. Required so skill-generated scripts that
+    call ``save_manifest(detect['files'])`` keep working unchanged."""
+    import json
+    from graphify.detect import save_manifest
+
+    f = tmp_path / "foo.py"
+    f.write_text("pass\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"code": [str(f)]}, manifest_path)
+
+    raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert list(raw)[0] == str(f.resolve()), (
+        f"without root, keys must remain absolute; got {list(raw)}"
+    )
+
+
+def test_load_manifest_absolutizes_relative_keys(tmp_path):
+    """``load_manifest(root=...)`` re-anchors stored relative keys so the
+    in-memory shape matches what :func:`detect` returns."""
+    import json
+    from graphify.detect import load_manifest
+
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps({
+        "src/foo.py": {"mtime": 0.0, "ast_hash": "h1", "semantic_hash": ""},
+        "doc.md": {"mtime": 0.0, "ast_hash": "h2", "semantic_hash": ""},
+    }))
+
+    loaded = load_manifest(str(manifest_path), root=tmp_path)
+    assert str((tmp_path / "src" / "foo.py").resolve()) in loaded
+    assert str((tmp_path / "doc.md").resolve()) in loaded
+
+
+def test_load_manifest_passes_through_legacy_absolute_keys(tmp_path):
+    """Legacy absolute-keyed manifests still load correctly when ``root``
+    is supplied — the absolutize step is a no-op for already-absolute keys."""
+    import json
+    from graphify.detect import load_manifest
+
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    abs_key = str((tmp_path / "foo.py").resolve())
+    manifest_path.write_text(json.dumps({abs_key: {"mtime": 0.0, "ast_hash": "h", "semantic_hash": ""}}))
+
+    loaded = load_manifest(str(manifest_path), root=tmp_path)
+    assert abs_key in loaded
+
+
+def test_save_manifest_out_of_root_keeps_absolute(tmp_path):
+    """Files outside ``root`` (e.g. symlinked external corpora) are stored
+    absolute so they round-trip on the saving machine even when they can't
+    be portably encoded."""
+    import json
+    from graphify.detect import save_manifest
+
+    outside = tmp_path.parent / f"{tmp_path.name}-sibling.py"
+    outside.write_text("pass\n")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest({"code": [str(outside)]}, manifest_path, root=tmp_path)
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        key = list(raw)[0]
+        assert Path(key).is_absolute(), (
+            f"out-of-root entries must keep absolute keys, got {key!r}"
+        )
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_detect_incremental_portable_across_paths(tmp_path):
+    """End-to-end: a manifest written at one root must be readable from a
+    different absolute prefix (the cross-machine case #777 is about).
+    Simulates two checkouts of the same corpus by hard-linking files into a
+    second tmp dir and comparing detection results."""
+    import json
+    from graphify.detect import save_manifest, detect_incremental
+
+    # First "machine": create corpus, save manifest with root.
+    repo_a = tmp_path / "repo_a"
+    repo_a.mkdir()
+    (repo_a / "src").mkdir()
+    (repo_a / "src" / "foo.py").write_text("pass\n")
+    (repo_a / "doc.md").write_text("hello\n")
+
+    manifest_a = str(repo_a / "graphify-out" / "manifest.json")
+    files = {
+        "code": [str(repo_a / "src" / "foo.py")],
+        "document": [str(repo_a / "doc.md")],
+    }
+    save_manifest(files, manifest_a, root=repo_a)
+
+    # Second "machine": copy the corpus + manifest to a different absolute path.
+    repo_b = tmp_path / "repo_b"
+    (repo_b / "src").mkdir(parents=True)
+    (repo_b / "src" / "foo.py").write_text("pass\n")
+    (repo_b / "doc.md").write_text("hello\n")
+    (repo_b / "graphify-out").mkdir()
+    manifest_b = repo_b / "graphify-out" / "manifest.json"
+    manifest_b.write_text(Path(manifest_a).read_text())
+
+    # Stat the copied files match the originals' content hash so
+    # detect_incremental should see zero new files.
+    inc = detect_incremental(repo_b, str(manifest_b))
+    assert inc["new_total"] == 0, (
+        f"manifest must port across absolute paths; got new_total={inc['new_total']}"
+    )
+
+
+def test_save_manifest_in_root_symlink_roundtrips(tmp_path):
+    """In-root symlinks must store under the symlink's own name, not the
+    resolved target. Resolving the key when relativizing pointed the stored
+    entry at ``sub/target.py`` instead of ``alias.py``, so the original
+    ``alias.py`` key missed on reload and re-extracted on every incremental
+    run."""
+    import json
+    from graphify.detect import save_manifest, load_manifest
+
+    (tmp_path / "sub").mkdir()
+    target = tmp_path / "sub" / "target.py"
+    target.write_text("pass\n")
+    alias = tmp_path / "alias.py"
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError):
+        import pytest
+        pytest.skip("filesystem does not support symlinks")
+
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"code": [str(alias)]}, manifest_path, root=tmp_path)
+
+    raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert "alias.py" in raw, (
+        f"in-root symlink must be stored under its own name, got {list(raw)}"
+    )
+    assert "sub/target.py" not in raw, (
+        f"symlink must not be stored under resolved target path; got {list(raw)}"
+    )
+
+    loaded = load_manifest(manifest_path, root=tmp_path)
+    assert str(tmp_path.resolve() / "alias.py") in loaded

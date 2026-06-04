@@ -211,12 +211,17 @@ def test_codex_skill_contains_spawn_agent():
     assert "spawn_agent" in skill
 
 
-def test_codex_skill_uses_graphify_with_dirty_graph_output():
-    """Codex skill must keep graph-first orientation even when graph output is dirty."""
+def test_codex_skill_uses_graphify_with_existing_graph():
+    """Codex skill must keep graph-first orientation in the lean-core split.
+
+    The progressive-disclosure split drops codex's old monolith-only "dirty
+    graph output" blurb; the graph-first intent now lives in the shared core's
+    fast-path block, which jumps straight to the query flow when a graph exists.
+    """
     import graphify
     skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
-    assert "Dirty `graphify-out/` artifacts are expected" in skill
-    assert "not a reason to skip Graphify" in skill
+    assert "Fast path — existing graph" in skill
+    assert "skip Steps 1–5 entirely and jump straight to `## For /graphify query`" in skill
     assert "graphify query" in skill
     assert "graphify explain" in skill
     assert "graphify path" in skill
@@ -238,18 +243,25 @@ def test_opencode_skill_contains_mention():
 
 
 def test_opencode_skill_uses_opencode_agent_guidance():
-    """OpenCode skill must not reference Codex/Claude agent type names."""
+    """OpenCode's dispatch slot uses @mention, not the Claude Agent-tool example.
+
+    The progressive split consolidates the bespoke v8 opencode prose into the
+    shared core. opencode's distinguishing delta is the @mention dispatch block;
+    its B2 slot must carry that and must NOT carry the Claude Agent-tool example.
+    (The shared Step B3 re-run hint names the general-purpose agent type as the
+    canonical example for every host; that lives in the shared core, not in
+    opencode's dispatch slot.)
+    """
     import graphify
 
     skill = (Path(graphify.__file__).parent / "skill-opencode.md").read_text()
-    assert "general-purpose" not in skill
-    assert 'subagent_type="general-purpose"' not in skill
+    assert "@mention" in skill
     assert "@agent" in skill
-    assert "serial fallback" in skill
-    assert "reduce semantic chunks to 10-12 files each" in skill
-    assert "10-12 files each if the smaller-chunk large-corpus policy was applied" in skill
-    assert "process chunks one at a time" in skill
-    assert "Wait for the user's answer before proceeding" not in skill
+    # Scope the agent-type check to opencode's dispatch slot (B2 -> B3).
+    b2 = skill[skill.index("**Step B2"):skill.index("**Step B3")]
+    assert "general-purpose" not in b2
+    assert "Concrete example for 3 chunks" not in b2
+    assert "OpenCode platform" in b2
 
 
 def test_kilo_skill_mentions_task_tool():
@@ -269,12 +281,18 @@ def test_kilo_skill_avoids_double_quoted_python_c_fstring_dict_keys():
     assert not re.search(r"print\(f'.*\[[\"'][^\"']+[\"']\]", skill)
 
 
-def test_claw_skill_is_sequential():
-    """OpenClaw skill file must describe sequential extraction."""
+def test_claw_skill_uses_agent_tool_dispatch():
+    """OpenClaw rides the shared Agent-tool disk-collect dispatch.
+
+    The consolidated design moves claw off the v8 sequential OpenClaw flow onto
+    the same agent-tool-disk dispatch as claude (per-platform-deltas), so its B2
+    slot uses the Agent tool and must not carry the Codex or OpenCode mechanics.
+    """
     import graphify
 
     skill = (Path(graphify.__file__).parent / "skill-claw.md").read_text()
-    assert "sequential" in skill.lower()
+    b2 = skill[skill.index("**Step B2"):skill.index("**Step B3")]
+    assert 'subagent_type="general-purpose"' in b2
     assert "spawn_agent" not in skill
     assert "@mention" not in skill
 
@@ -784,3 +802,104 @@ def test_gemini_uninstall_noop_if_not_installed(tmp_path):
     from graphify.__main__ import gemini_uninstall
 
     gemini_uninstall(tmp_path)  # should not raise
+
+
+def test_amp_user_install_lands_in_config_agents(tmp_path, monkeypatch):
+    """`graphify amp install` (user scope) must drop the skill into an Amp search
+    root: ~/.config/agents/skills, not the old ~/.amp/skills."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install"])
+    with patch("graphify.__main__.Path.home", return_value=home):
+        main()
+
+    correct = home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
+    old = home / ".amp" / "skills" / "graphify" / "SKILL.md"
+    assert correct.exists(), f"amp skill missing from Amp search root {correct}"
+    assert not old.exists(), f"amp skill must not land at the unsearched {old}"
+    # AGENTS.md still written in the project for the always-on rules.
+    assert (project / "AGENTS.md").exists()
+
+
+def test_amp_install_cleans_legacy_amp_skills_dir(tmp_path, monkeypatch):
+    """A pre-fix ~/.amp/skills/graphify install is removed on the next install."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    legacy = home / ".amp" / "skills" / "graphify"
+    legacy.mkdir(parents=True)
+    (legacy / "SKILL.md").write_text("old amp skill", encoding="utf-8")
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install"])
+    with patch("graphify.__main__.Path.home", return_value=home):
+        main()
+
+    assert not legacy.exists(), "legacy ~/.amp/skills/graphify should be cleaned up"
+    assert (home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md").exists()
+
+
+def test_amp_user_uninstall_removes_skill_and_agents(tmp_path, monkeypatch):
+    """`graphify amp uninstall` removes the user-scope skill and AGENTS.md section."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install"])
+        main()
+        skill = home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
+        assert skill.exists()
+
+        monkeypatch.setattr(sys, "argv", ["graphify", "amp", "uninstall"])
+        main()
+
+    assert not skill.exists()
+    assert not (home / ".config" / "agents" / "skills").exists()
+    assert not (project / "AGENTS.md").exists()
+
+
+def test_amp_project_install_lands_in_dot_agents(tmp_path, monkeypatch):
+    """Project-scope amp install lands in .agents/skills, an Amp project search root."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install", "--project"])
+    with patch("graphify.__main__.Path.home", return_value=home):
+        main()
+
+    assert (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert not (project / ".amp" / "skills" / "graphify" / "SKILL.md").exists()
+    assert (project / "AGENTS.md").exists()
+    # User scope untouched.
+    assert not (home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md").exists()
+
+
+def test_uninstall_all_removes_amp_user_skill(tmp_path, monkeypatch):
+    """The user-scope `graphify uninstall` enumeration removes the amp skill."""
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install"])
+        main()
+        skill = home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
+        assert skill.exists()
+
+        monkeypatch.setattr(sys, "argv", ["graphify", "uninstall"])
+        main()
+
+    assert not skill.exists()

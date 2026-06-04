@@ -30,6 +30,25 @@ wheels = [
 ]
 
 [[package]]
+name = "anthropic"
+version = "0.105.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "docstring-parser" },
+    { name = "httpx" },
+    { name = "jiter" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/46/46/47581b8c689c743ceabf6a0f9ff48472160900ce802d26c0fb50423997b3/anthropic-0.105.2.tar.gz", hash = "sha256:0e26b90841c2dced7cc6e98d21d5517d0be33f1876b8e779f478202e28bcaa07", size = 853789, upload-time = "2026-05-29T00:21:14.104Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/83/75/be0c357e33a5a56c8f9db5b4212f886138d2bf59c0952d858f6b75d710ef/anthropic-0.105.2-py3-none-any.whl", hash = "sha256:e53ed5f6bf36fb1ecb9b25d8634cfd30e02fab9fb3374a0c2d5c585874757230", size = 837507, upload-time = "2026-05-29T00:21:15.528Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -932,6 +951,15 @@ wheels = [
 ]
 
 [[package]]
+name = "docstring-parser"
+version = "0.18.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e0/4d/f332313098c1de1b2d2ff91cf2674415cc7cddab2ca1b01ae29774bd5fdf/docstring_parser-0.18.0.tar.gz", hash = "sha256:292510982205c12b1248696f44959db3cdd1740237a968ea1e2e7a900eeb2015", size = 29341, upload-time = "2026-04-14T04:09:19.867Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a7/5f/ed01f9a3cdffbd5a008556fc7b2a08ddb1cc6ace7effa7340604b1d16699/docstring_parser-0.18.0-py3-none-any.whl", hash = "sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b", size = 22484, upload-time = "2026-04-14T04:09:18.638Z" },
+]
+
+[[package]]
 name = "dparse"
 version = "0.6.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1109,7 +1137,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.8.24"
+version = "0.8.30"
 source = { editable = "." }
 dependencies = [
     { name = "datasketch" },
@@ -1121,7 +1149,6 @@ dependencies = [
     { name = "tree-sitter-c" },
     { name = "tree-sitter-c-sharp" },
     { name = "tree-sitter-cpp" },
-    { name = "tree-sitter-dm" },
     { name = "tree-sitter-elixir" },
     { name = "tree-sitter-fortran" },
     { name = "tree-sitter-go" },
@@ -1147,6 +1174,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "anthropic" },
     { name = "boto3" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11'" },
     { name = "graspologic", marker = "python_full_version < '3.13'" },
@@ -1160,15 +1188,22 @@ all = [
     { name = "pypdf" },
     { name = "python-docx" },
     { name = "tiktoken" },
+    { name = "tree-sitter-dm" },
     { name = "tree-sitter-sql" },
     { name = "watchdog" },
     { name = "yt-dlp" },
+]
+anthropic = [
+    { name = "anthropic" },
 ]
 bedrock = [
     { name = "boto3" },
 ]
 chinese = [
     { name = "jieba" },
+]
+dm = [
+    { name = "tree-sitter-dm" },
 ]
 gemini = [
     { name = "openai" },
@@ -1234,11 +1269,14 @@ dev = [
     { name = "ruff" },
     { name = "safety" },
     { name = "setuptools" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "wheel" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "anthropic", marker = "extra == 'all'" },
+    { name = "anthropic", marker = "extra == 'anthropic'" },
     { name = "boto3", marker = "extra == 'all'" },
     { name = "boto3", marker = "extra == 'bedrock'" },
     { name = "datasketch" },
@@ -1279,7 +1317,8 @@ requires-dist = [
     { name = "tree-sitter-c" },
     { name = "tree-sitter-c-sharp" },
     { name = "tree-sitter-cpp" },
-    { name = "tree-sitter-dm" },
+    { name = "tree-sitter-dm", marker = "extra == 'all'" },
+    { name = "tree-sitter-dm", marker = "extra == 'dm'" },
     { name = "tree-sitter-elixir" },
     { name = "tree-sitter-fortran" },
     { name = "tree-sitter-go" },
@@ -1308,7 +1347,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'" },
     { name = "yt-dlp", marker = "extra == 'video'" },
 ]
-provides-extras = ["mcp", "neo4j", "pdf", "watch", "svg", "leiden", "office", "google", "video", "kimi", "ollama", "bedrock", "gemini", "openai", "chinese", "sql", "all"]
+provides-extras = ["mcp", "neo4j", "pdf", "watch", "svg", "leiden", "office", "google", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "dm", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1325,6 +1364,7 @@ dev = [
     { name = "ruff", specifier = ">=0.15.13" },
     { name = "safety", specifier = ">=3.7.0" },
     { name = "setuptools", specifier = ">=82.0.1" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "wheel", specifier = ">=0.47.0" },
 ]
 

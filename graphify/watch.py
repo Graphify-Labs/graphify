@@ -575,7 +575,12 @@ def _rebuild_code(
 
         _relativize_source_files(result, project_root)
         out.mkdir(exist_ok=True)
-        (out / ".graphify_root").write_text(str(watch_root), encoding="utf-8")
+        # Write the user-supplied path rather than the resolved absolute form
+        # so a committed ``graphify-out/.graphify_root`` is portable across
+        # clones and CI runners (#777). When ``watch_path`` is ``.`` (the
+        # common case for ``graphify update``), this writes ``.`` and the
+        # subsequent re-run resolves it against the caller's CWD.
+        (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
 
         if no_cluster:
             # Normalise to "links" key so schema is consistent with the full clustered path.
@@ -605,7 +610,7 @@ def _rebuild_code(
 
             try:
                 from graphify.detect import save_manifest
-                save_manifest(detected["files"], kind="ast")
+                save_manifest(detected["files"], kind="ast", root=project_root)
             except Exception:
                 pass
 
@@ -643,7 +648,7 @@ def _rebuild_code(
             if same_topology:
                 try:
                     from graphify.detect import save_manifest
-                    save_manifest(detected["files"], kind="ast")
+                    save_manifest(detected["files"], kind="ast", root=project_root)
                 except Exception:
                     pass
                 flag = out / "needs_update"
@@ -714,7 +719,7 @@ def _rebuild_code(
 
         try:
             from graphify.detect import save_manifest
-            save_manifest(detected["files"], kind="ast")
+            save_manifest(detected["files"], kind="ast", root=project_root)
         except Exception:
             pass
 

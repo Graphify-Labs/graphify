@@ -125,18 +125,75 @@ def _custom_providers_path(global_: bool = True) -> Path:
     return Path(".graphify") / "providers.json"
 
 
+def provider_base_url_ok(base_url: str, name: str, *, warn: bool = True) -> bool:
+    """Structural safety check for a custom-provider base_url.
+
+    A custom provider receives the full corpus plus the user's API key, so its
+    base_url is an exfiltration channel. We deliberately do NOT run the ingest
+    SSRF guard here: that blocks private/internal IPs, which would wrongly reject
+    legitimate on-prem corporate LLM gateways. Instead we reject non-http(s)
+    schemes outright and warn loudly when the corpus would leave over plaintext
+    http to a non-loopback host. The primary control against trusting injected
+    config is the GRAPHIFY_ALLOW_LOCAL_PROVIDERS gate on project-local files.
+    """
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        if warn:
+            print(f"[graphify] WARNING: provider {name!r} has an unparseable base_url; ignoring.", file=sys.stderr)
+        return False
+    if parsed.scheme not in ("http", "https"):
+        if warn:
+            print(
+                f"[graphify] WARNING: provider {name!r} base_url scheme {parsed.scheme!r} is not "
+                "http/https; ignoring.",
+                file=sys.stderr,
+            )
+        return False
+    host = (parsed.hostname or "").lower()
+    is_loopback = host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
+    if warn and parsed.scheme == "http" and not is_loopback:
+        print(
+            f"[graphify] WARNING: provider {name!r} sends your corpus to {host!r} over plaintext "
+            "http. Use https unless this is a trusted local endpoint.",
+            file=sys.stderr,
+        )
+    return True
+
+
 def _load_custom_providers() -> dict[str, dict]:
+    # A project-local ./.graphify/providers.json travels with a cloned or shared
+    # repo and defines where the corpus + API key are sent, so loading it
+    # silently is a corpus/key exfiltration vector. Require an explicit opt-in;
+    # the user's own global ~/.graphify/providers.json stays trusted.
+    local_path = _custom_providers_path(global_=False)
+    global_path = _custom_providers_path(global_=True)
+    allow_local = os.environ.get("GRAPHIFY_ALLOW_LOCAL_PROVIDERS", "").strip().lower() in ("1", "true", "yes")
+    if local_path.is_file() and not allow_local:
+        print(
+            f"[graphify] WARNING: ignoring project-local {local_path} (custom providers control "
+            "where your corpus and API key are sent). Set GRAPHIFY_ALLOW_LOCAL_PROVIDERS=1 to load it.",
+            file=sys.stderr,
+        )
+
     providers: dict[str, dict] = {}
-    for path in (_custom_providers_path(global_=False), _custom_providers_path(global_=True)):
+    paths = [local_path, global_path] if allow_local else [global_path]
+    for path in paths:
         if path.is_file():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     for name, cfg in data.items():
-                        if isinstance(name, str) and isinstance(cfg, dict) and name not in BACKENDS:
-                            if "pricing" not in cfg:
-                                cfg = dict(cfg, pricing={"input": 0.0, "output": 0.0})
-                            providers[name] = cfg
+                        if not (isinstance(name, str) and isinstance(cfg, dict)):
+                            continue
+                        if name in BACKENDS or name in providers:
+                            continue
+                        if not provider_base_url_ok(str(cfg.get("base_url", "")), name):
+                            continue
+                        if "pricing" not in cfg:
+                            cfg = dict(cfg, pricing={"input": 0.0, "output": 0.0})
+                        providers[name] = cfg
             except Exception:
                 pass
     return providers
@@ -338,6 +395,21 @@ def _default_model_for_backend(backend: str) -> str:
     return cfg["default_model"]
 
 
+def _backend_pkg_hint(pkg: str, extra: str) -> str:
+    """Package-missing message that works for the recommended `uv tool` install.
+
+    `uv tool install graphifyy` puts graphify in an isolated venv, so a plain
+    `pip install <pkg>` never reaches it - the friction a user hits when a
+    backend needs anthropic/openai/boto3 and the only advice was "pip install".
+    Point at the extra and the uv path first, then the pip/venv fallback.
+    """
+    return (
+        f"the '{pkg}' package is required for this backend but is not installed. "
+        f"Install it with:  uv tool install \"graphifyy[{extra}]\" --force  "
+        f"(uv tool), or  pip install {pkg}  (pip/venv install)."
+    )
+
+
 def _call_openai_compat(
     base_url: str,
     api_key: str,
@@ -354,11 +426,8 @@ def _call_openai_compat(
     try:
         from openai import OpenAI
     except ImportError as exc:
-        pkg_hint = "graphifyy[kimi]" if backend == "kimi" else "openai"
-        raise ImportError(
-            "Gemini/Kimi/Ollama/OpenAI-compatible extraction requires the openai package. "
-            f"Run: pip install {pkg_hint}"
-        ) from exc
+        extra = backend if backend in ("kimi", "gemini", "openai", "ollama") else "openai"
+        raise ImportError(_backend_pkg_hint("openai", extra)) from exc
 
     # Local backends (ollama, llama.cpp, vLLM) routinely take >60s for a
     # single chunk on a large model — far longer than the openai SDK's
@@ -479,10 +548,7 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     try:
         import anthropic
     except ImportError as exc:
-        raise ImportError(
-            "Claude direct extraction requires the anthropic package. "
-            "Run: pip install anthropic"
-        ) from exc
+        raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
 
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
@@ -1115,7 +1181,7 @@ def _call_llm(prompt: str, *, backend: str, max_tokens: int = 200) -> str:
         try:
             import anthropic
         except ImportError as exc:
-            raise ImportError("anthropic package required for claude backend") from exc
+            raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
         client = anthropic.Anthropic(api_key=key)
         resp = client.messages.create(
             model=mdl,
@@ -1149,7 +1215,7 @@ def _call_llm(prompt: str, *, backend: str, max_tokens: int = 200) -> str:
         try:
             import boto3
         except ImportError as exc:
-            raise ImportError("boto3 required for bedrock backend") from exc
+            raise ImportError(_backend_pkg_hint("boto3", "bedrock")) from exc
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
         profile = os.environ.get("AWS_PROFILE")
         session = boto3.Session(profile_name=profile, region_name=region)
@@ -1165,7 +1231,7 @@ def _call_llm(prompt: str, *, backend: str, max_tokens: int = 200) -> str:
     try:
         from openai import OpenAI
     except ImportError as exc:
-        raise ImportError("openai package required for this backend") from exc
+        raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
     client = OpenAI(api_key=key, base_url=cfg["base_url"])
     kwargs: dict = {
         "model": mdl,
@@ -1193,32 +1259,71 @@ def estimate_cost(backend: str, input_tokens: int, output_tokens: int) -> float:
     return (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000
 
 
-def _validate_ollama_base_url(url: str) -> None:
-    """Warn (do not raise) if OLLAMA_BASE_URL looks unsafe.
+def _ollama_host_is_link_local_or_metadata(host: str) -> bool:
+    """True if *host* is, or resolves to, a link-local / cloud-metadata address.
+
+    Resolves the name so an alias pointing at 169.254.169.254 is caught too, not
+    just a literal IP. General private/LAN addresses are deliberately NOT treated
+    as metadata: people do run Ollama on trusted LAN boxes, so those only warn.
+    """
+    import ipaddress
+    import socket
+    if host in ("metadata.google.internal", "metadata.google.com", "0.0.0.0", "::", "[::]"):  # nosec B104 - blocklist, not a bind
+        return True
+    if host.startswith("169.254."):  # link-local literal, includes the metadata IP
+        return True
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError, OSError):
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if ip.is_link_local:  # 169.254.0.0/16 and fe80::/10 (includes the metadata IP)
+            return True
+    return False
+
+
+def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
+    """Warn if OLLAMA_BASE_URL looks unsafe; hard-block link-local/metadata (F3).
 
     Sending an entire corpus to a non-loopback http:// endpoint silently leaks
-    proprietary code; we surface a visible stderr warning instead of failing
-    closed (some users genuinely run Ollama on a LAN host they trust).
+    proprietary code, but some users genuinely run Ollama on a LAN host they
+    trust, so a general non-loopback target only warns. A link-local or cloud
+    metadata address (169.254.x, metadata.google.*, or any host that resolves to
+    one) is never a legitimate Ollama host and is a classic SSRF target, so we
+    fail closed with a ValueError there regardless of *warn*. Pass warn=False for
+    an early gate that should hard-block but leave the user-facing warning to the
+    later in-flow call.
     """
     try:
         from urllib.parse import urlparse
         parsed = urlparse(url)
     except Exception:
-        print(
-            f"[graphify] WARNING: OLLAMA_BASE_URL={url!r} is not a parseable URL.",
-            file=sys.stderr,
-        )
+        if warn:
+            print(
+                f"[graphify] WARNING: OLLAMA_BASE_URL={url!r} is not a parseable URL.",
+                file=sys.stderr,
+            )
         return
     if parsed.scheme not in ("http", "https"):
-        print(
-            f"[graphify] WARNING: OLLAMA_BASE_URL has unexpected scheme {parsed.scheme!r}; "
-            "expected http or https.",
-            file=sys.stderr,
-        )
+        if warn:
+            print(
+                f"[graphify] WARNING: OLLAMA_BASE_URL has unexpected scheme {parsed.scheme!r}; "
+                "expected http or https.",
+                file=sys.stderr,
+            )
         return
     host = (parsed.hostname or "").lower()
+    if _ollama_host_is_link_local_or_metadata(host):
+        raise ValueError(
+            f"OLLAMA_BASE_URL points at a link-local/metadata address ({host!r}); refusing to "
+            "send the corpus there. Set it to a real Ollama host."
+        )
     is_loopback = host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
-    if not is_loopback:
+    if warn and not is_loopback:
         scheme_note = " (UNENCRYPTED)" if parsed.scheme == "http" else ""
         print(
             f"[graphify] WARNING: OLLAMA_BASE_URL points to non-loopback host {host!r}{scheme_note}. "
