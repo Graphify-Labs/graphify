@@ -239,6 +239,65 @@ def test_rebuild_code_evicts_removed_symbol_from_surviving_file(tmp_path):
     assert "AuthConcept" in after, "semantic node on a surviving file must not be evicted"
 
 
+def test_rebuild_code_preupgrade_marker_less_node_one_cycle_lag(tmp_path):
+    """#1118 backward-compat: a graph.json built before #1116 has no `_origin`
+    markers. On the first `graphify update` after upgrading, a symbol removed
+    from a surviving file is NOT pruned that cycle — its old node carries no
+    marker, so the new drop-rule skips it. This is a deliberate one-cycle lag
+    (no data loss); it self-heals once the node has been stamped `_origin="ast"`
+    (which a full re-extraction does for every surviving symbol)."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def bar(): pass\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+
+    def labels(d):
+        return {n["label"] for n in d.get("nodes", [])}
+
+    # Simulate a pre-#1116 graph: strip every `_origin` marker, then inject a
+    # stale AST node for a symbol no longer present in a.py's source — also
+    # marker-less, exactly as a pre-upgrade graph would carry it.
+    for n in data["nodes"]:
+        n.pop("_origin", None)
+    data["nodes"].append({
+        "id": "a_foo",
+        "label": "foo()",
+        "file_type": "function",
+        "source_file": "a.py",
+    })
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # First update after "upgrade" (full rebuild, no changed_paths): the stale
+    # node has no marker, so the drop-rule skips it and it survives this cycle.
+    assert _rebuild_code(corpus, acquire_lock=False, force=True) is True
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert "foo()" in labels(after), (
+        "pre-upgrade marker-less stale node must survive the first update — "
+        "documented one-cycle backward-compat lag (#1118)"
+    )
+
+    # Once stamped (a full re-extraction stamps every surviving symbol), the
+    # drop-rule applies on the next update and the stale node self-heals away.
+    for n in after["nodes"]:
+        if n["label"] == "foo()":
+            n["_origin"] = "ast"
+    graph_path.write_text(json.dumps(after), encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False, force=True) is True
+    healed = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert "foo()" not in labels(healed), (
+        "once carrying _origin=ast, the stale node is pruned on the next "
+        "update (self-heal)"
+    )
+    assert "bar()" in labels(healed), "surviving symbol must be kept throughout"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_non_blocking_does_not_clobber_holder(tmp_path):
     """GH-858: a non-blocking caller that fails to acquire the lock must not
