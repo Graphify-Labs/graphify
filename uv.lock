@@ -1137,7 +1137,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.8.30"
+version = "0.8.31"
 source = { editable = "." }
 dependencies = [
     { name = "datasketch" },
@@ -1279,7 +1279,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'" },
     { name = "boto3", marker = "extra == 'all'" },
     { name = "boto3", marker = "extra == 'bedrock'" },
-    { name = "datasketch" },
+    { name = "datasketch", specifier = ">=1.6" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'all'" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'video'" },
     { name = "graspologic", marker = "python_full_version < '3.13' and extra == 'all'" },
@@ -1294,7 +1294,7 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'mcp'" },
     { name = "neo4j", marker = "extra == 'all'" },
     { name = "neo4j", marker = "extra == 'neo4j'" },
-    { name = "networkx" },
+    { name = "networkx", specifier = ">=3.4" },
     { name = "openai", marker = "extra == 'all'" },
     { name = "openai", marker = "extra == 'gemini'" },
     { name = "openai", marker = "extra == 'kimi'" },
@@ -1307,7 +1307,7 @@ requires-dist = [
     { name = "pypdf", marker = "extra == 'pdf'" },
     { name = "python-docx", marker = "extra == 'all'" },
     { name = "python-docx", marker = "extra == 'office'" },
-    { name = "rapidfuzz" },
+    { name = "rapidfuzz", specifier = ">=3.0" },
     { name = "tiktoken", marker = "extra == 'all'" },
     { name = "tiktoken", marker = "extra == 'gemini'" },
     { name = "tiktoken", marker = "extra == 'kimi'" },
