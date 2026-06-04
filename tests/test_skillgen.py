@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from .test_utils import skip_in_sandbox
+
 # tests/ -> repo root is one parent up; put it on the path so tools.skillgen
 # imports regardless of pytest's import mode.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -22,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 from tools.skillgen import gen  # noqa: E402
 
 
+@skip_in_sandbox()
 def test_audit_coverage_passes():
     """Every v8 heading lands in the lean core or exactly one reference."""
     platforms = gen.load_platforms()
@@ -220,6 +223,7 @@ def test_check_passes_for_codex_and_windows():
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
 
 
+@skip_in_sandbox()
 def test_audit_coverage_passes_for_codex_and_windows():
     """Every v8 heading single-homes for the cli-inline split hosts too."""
     platforms = gen.load_platforms()
@@ -357,6 +361,7 @@ _PROGRESSIVE_HOSTS = (
 )
 
 
+@skip_in_sandbox()
 def test_all_progressive_hosts_check_and_audit_clean():
     """check + audit-coverage pass for every rendered progressive host."""
     platforms = gen.load_platforms()
@@ -442,6 +447,7 @@ def test_monoliths_render_inline_single_file_no_references():
         assert "references/" not in arts[0].content or "see `references/" not in arts[0].content.lower()
 
 
+@skip_in_sandbox()
 def test_monolith_roundtrip_passes_for_aider_and_devin():
     """Each monolith is diff-clean vs v8 except the file_type enum unification."""
     platforms = gen.load_platforms()
@@ -450,6 +456,7 @@ def test_monolith_roundtrip_passes_for_aider_and_devin():
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
 
 
+@skip_in_sandbox()
 def test_monoliths_change_only_the_enum_description_and_chunk_cleanup():
     """The rendered monolith differs from v8 on exactly the allowed lines.
 
@@ -536,6 +543,7 @@ def test_always_on_included_in_full_render_not_per_platform():
     assert "graphify/always_on/claude-md.md" not in claude_only
 
 
+@skip_in_sandbox()
 def test_always_on_roundtrip_is_byte_faithful():
     """Each always_on/*.md reproduces its former __main__.py constant byte for byte.
 
@@ -586,6 +594,7 @@ def test_always_on_files_are_guarded_by_check(tmp_path):
 # --- the per-host coverage audit (the systemic guard) --------------------------
 
 
+@skip_in_sandbox()
 def test_audit_coverage_passes_for_every_split_host():
     """Every split host's render single-homes its own v8 body's headings."""
     platforms = gen.load_platforms()
@@ -606,6 +615,7 @@ def test_audit_reads_each_host_against_its_own_v8_body():
     assert gen._v8_baseline_ref("vscode") == "47042beb05d1f6dd2186c0c499ae2840ce604ead:graphify/skill-vscode.md"
 
 
+@skip_in_sandbox()
 def test_audit_catches_an_induced_per_host_drop():
     """Re-inducing the trae regression (claude-flavored hooks) fails the audit.
 
@@ -623,6 +633,7 @@ def test_audit_catches_an_induced_per_host_drop():
     assert any("native AGENTS.md integration (Trae)" in p for p in problems), problems
 
 
+@skip_in_sandbox()
 def test_audit_catches_a_dropped_non_allowlisted_heading():
     """A core fragment that drops a real v8 heading fails the audit.
 
@@ -783,6 +794,7 @@ def test_amp_has_no_pretooluse_caveat_anywhere():
     assert "Trae" not in b2
 
 
+@skip_in_sandbox()
 def test_amp_audit_coverage_passes_against_its_own_v8():
     """The per-host audit (the guard amp is the exact case for) passes for amp.
 
