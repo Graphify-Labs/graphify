@@ -576,6 +576,14 @@ if [ ! -f graphify-out/.graphify_python ]; then
 fi
 ```
 
+## MCP server diagnostic
+
+If the user reports that `graphify query`, `graphify path`, or `graphify explain` returns empty or generic results (not grounded in the actual graph), the MCP stdio server may not be loaded. Suggest:
+
+1. Check that the MCP server is enabled in your platform's settings (e.g. `.mcp.json` for Claude Code)
+2. Restart your AI assistant to reload MCP servers
+3. Verify with: `graphify --mcp` (should start a stdio server, not error)
+
 ## For --update and --cluster-only
 
 Both are non-default subcommands. `--update` re-extracts only new or changed files; `--cluster-only` reruns clustering on the existing graph. See `references/update.md` for both flows.
