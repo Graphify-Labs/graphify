@@ -121,6 +121,16 @@ for example `graphify claude install --project` or `graphify codex install --pro
 
 > **Git hooks and uv tool / pipx:** `graphify hook install` embeds the current interpreter path directly into the hook scripts at install time, so the post-commit hook fires correctly even in GUI git clients and CI runners where `~/.local/bin` is not on PATH. If you reinstall or upgrade graphify, re-run `graphify hook install` to refresh the embedded path.
 
+### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `ModuleNotFoundError: No module named 'graphify'` | You installed with plain `pip`. Reinstall with `uv tool install graphifyy` or `pipx install graphifyy` |
+| `graphify: command not found` | Add `~/.local/bin` (Linux) or `~/Library/Python/3.x/bin` (Mac) to your PATH, or use `python -m graphify` |
+| PowerShell: `/graphify` gives path error | Use `graphify .` without the leading slash |
+| `PreToolUse hook failed` in Codex | Run `graphify codex install` to regenerate the hook |
+| `graphify update` leaves temp files in project root | These should be inside `graphify-out/` — run `graphify hook install` to refresh |
+
 ### Pick your platform
 
 | Platform | Install command |
