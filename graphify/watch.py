@@ -449,6 +449,16 @@ def _rebuild_code(
 
     watch_root = watch_path.resolve()
     project_root = Path.cwd().resolve() if not watch_path.is_absolute() else watch_root
+
+    # Clean up any leftover temp files from a previous crashed rebuild.
+    # These are created by _rebuild_code (e.g. .graph.tmp.json) and should
+    # be removed on success, but a crash/kill can leave them behind.
+    if out.exists():
+        for stale in out.glob(".graph.tmp.json"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
     report_root = _report_root_label(watch_path)
     try:
         from graphify.extract import extract, _get_extractor
