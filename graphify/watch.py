@@ -449,16 +449,6 @@ def _rebuild_code(
 
     watch_root = watch_path.resolve()
     project_root = Path.cwd().resolve() if not watch_path.is_absolute() else watch_root
-
-    # Clean up any leftover temp files from a previous crashed rebuild.
-    # These are created by _rebuild_code (e.g. .graph.tmp.json) and should
-    # be removed on success, but a crash/kill can leave them behind.
-    if out.exists():
-        for stale in out.glob(".graph.tmp.json"):
-            try:
-                stale.unlink()
-            except OSError:
-                pass
     report_root = _report_root_label(watch_path)
     try:
         from graphify.extract import extract, _get_extractor
@@ -680,6 +670,11 @@ def _rebuild_code(
                           built_at_commit=commit)
         report_path = out / "GRAPH_REPORT.md"
         labels_json = json.dumps({str(k): v for k, v in sorted(labels.items())}, ensure_ascii=False, indent=2) + "\n"
+        # Clean up any leftover temp file from a previous crashed rebuild.
+        try:
+            (out / ".graph.tmp.json").unlink()
+        except OSError:
+            pass
         graph_tmp = out / ".graph.tmp.json"
         json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit)
         if not json_written:
