@@ -8,7 +8,7 @@ from graphify.extract import (
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
     extract_groovy, extract_sln, extract_csproj, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
-    extract_powershell,
+    extract_powershell, extract_apex,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1553,3 +1553,78 @@ def test_razor_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids
+
+
+# ---------------Salesforce Apex (.cls / .trigger)----------------------
+
+def test_apex_class_extraction():
+    r = extract_apex(FIXTURES / "sample.cls")
+    labels = _labels(r)
+    assert "AccountService" in labels
+
+def test_apex_enum_extraction():
+    r = extract_apex(FIXTURES / "sample.cls")
+    labels = _labels(r)
+    assert "AccountStatus" in labels
+
+def test_apex_interface_extraction():
+    r = extract_apex(FIXTURES / "sample.cls")
+    labels = _labels(r)
+    assert "Notifiable" in labels
+
+def test_apex_method_extraction():
+    r = extract_apex(FIXTURES / "sample.cls")
+    labels = _labels(r)
+    assert any("getAccounts" in l for l in labels)
+    assert any("updateAccountsAsync" in l for l in labels)
+    assert any("createAccounts" in l for l in labels)
+    assert any("deleteOldAccounts" in l for l in labels)
+
+def test_apex_contains_and_method_relations():
+    r = extract_apex(FIXTURES / "sample.cls")
+    relations = _relations(r)
+    assert "contains" in relations
+    assert "method" in relations
+
+def test_apex_soql_uses_edge():
+    r = extract_apex(FIXTURES / "sample.cls")
+    relations = _relations(r)
+    assert "uses" in relations
+    labels = _labels(r)
+    assert "Account" in labels
+
+def test_apex_dml_uses_edge():
+    r = extract_apex(FIXTURES / "sample.cls")
+    dml_labels = {n["label"] for n in r["nodes"] if n["label"] in ("insert", "update", "delete", "upsert")}
+    assert len(dml_labels) > 0
+
+def test_apex_file_node_present():
+    r = extract_apex(FIXTURES / "sample.cls")
+    labels = _labels(r)
+    assert "sample.cls" in labels
+
+def test_apex_trigger_extraction():
+    r = extract_apex(FIXTURES / "sample.trigger")
+    labels = _labels(r)
+    assert "sample.trigger" in labels
+    assert "AccountTrigger" in labels
+
+def test_apex_trigger_uses_sobject():
+    r = extract_apex(FIXTURES / "sample.trigger")
+    relations = _relations(r)
+    assert "uses" in relations
+    labels = _labels(r)
+    assert "Account" in labels
+
+def test_apex_missing_file_returns_empty():
+    r = extract_apex(Path("nonexistent.cls"))
+    assert r["nodes"] == []
+    assert r["edges"] == []
+
+def test_apex_no_dangling_edges():
+    for fixture in ("sample.cls", "sample.trigger"):
+        r = extract_apex(FIXTURES / fixture)
+        node_ids = {n["id"] for n in r["nodes"]}
+        for e in r["edges"]:
+            assert e["source"] in node_ids, f"dangling source in {fixture}: {e}"
+            assert e["target"] in node_ids, f"dangling target in {fixture}: {e}"
