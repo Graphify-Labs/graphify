@@ -415,7 +415,7 @@ _PLATFORM_CONFIG: dict[str, dict] = {
     },
     "codex": {
         "skill_file": "skill-codex.md",
-        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "skill_dst": Path(".codex") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "codex",
     },
