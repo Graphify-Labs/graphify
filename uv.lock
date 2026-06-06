@@ -1137,7 +1137,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.8.31"
+version = "0.8.33"
 source = { editable = "." }
 dependencies = [
     { name = "datasketch" },

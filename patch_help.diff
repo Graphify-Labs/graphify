@@ -1,0 +1,10 @@
+--- graphify/__main__.py
++++ graphify/__main__.py
+@@ -2043,6 +2043,7 @@
+         print("    --out DIR               output dir (default: <path>); writes <DIR>/graphify-out/")
+         print("    --google-workspace      export .gdoc/.gsheet/.gslides shortcuts via gws before extraction")
+         print("    --no-cluster            skip clustering, write raw extraction only")
++        print("    --skip-semantic         skip LLM extraction completely, retaining only AST nodes and video transcripts")
+         print("    --global                also merge the resulting graph into the global graph")
+         print("    --as <tag>              repo tag for --global (default: target directory name)")
+         print("  global add <graph.json>  add/update a project graph in the global graph (~/.graphify/global-graph.json)")
