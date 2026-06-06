@@ -341,9 +341,40 @@ python -m graphify.serve graphify-out/graph.json
 
 # register with Kimi Code:
 kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out/graph.json
+
+# or serve it over HTTP so a whole team points at one URL (no local graphify):
+python -m graphify.serve graphify-out/graph.json --transport http --port 8080
+python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
 ```
 
 The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
+
+### Shared HTTP server
+
+`--transport stdio` (the default) spawns one local server per developer. `--transport http`
+serves the same tools over the MCP Streamable HTTP transport, so a single shared process (in CI
+or on a host) can serve the graph for the whole team — clients point their IDE MCP config at
+`http://<host>:8080/mcp` instead of running graphify locally.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--transport {stdio,http}` | `stdio` | Transport to serve on |
+| `--host` | `127.0.0.1` | HTTP bind host (use `0.0.0.0` to expose beyond localhost) |
+| `--port` | `8080` | HTTP bind port |
+| `--api-key` | env `GRAPHIFY_API_KEY` | Require `Authorization: Bearer <key>` (or `X-API-Key`) |
+| `--path` | `/mcp` | HTTP mount path |
+| `--json-response` | off | Return plain JSON instead of SSE streams |
+| `--stateless` | off | No per-session state (for load-balanced / CI deployments) |
+| `--session-timeout` | `3600` | Reap idle stateful sessions after N seconds (`0` disables) |
+
+The default `127.0.0.1` bind keeps the server loopback-only; set `--host 0.0.0.0` **and**
+`--api-key` together when exposing it on a shared host. Run it in a container:
+
+```bash
+docker build -t graphify .
+docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
+  /data/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+```
 
 > **WSL / Linux note:** Ubuntu ships `python3`, not `python`. Use a venv to avoid conflicts:
 > ```bash

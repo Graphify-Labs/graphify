@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: Streamable HTTP transport for the MCP server. `python -m graphify.serve graph.json --transport http` serves the same tools/resources over the MCP Streamable HTTP transport (spec 2025-03-26) alongside the existing stdio path, so a single shared process (CI or a host) can serve the graph for a whole team. New flags: `--host` (default `127.0.0.1`), `--port` (default `8080`), `--api-key` (env `GRAPHIFY_API_KEY`; `Authorization: Bearer` / `X-API-Key`), `--path` (default `/mcp`), `--json-response`, `--stateless`, `--session-timeout` (reaps idle sessions, default 3600s, so a long-running shared server does not leak memory). DNS-rebinding protection is on for specific binds and relaxed when binding a wildcard host. A `Dockerfile` builds the server as a container image. Needs `graphifyy[mcp]` (mcp + starlette + uvicorn). stdio remains the default — no change for existing setups (#1143).
+
 ## 0.8.33 (2026-06-06)
 
 - Feat: install banner — `graphify install` now prints an amber knowledge-graph brain in the terminal (TTY-only, silent in CI/pipes, never raises).
