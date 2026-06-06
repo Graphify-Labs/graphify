@@ -42,7 +42,7 @@ def _stat_index_file(root: Path) -> Path:
 
 
 def _ensure_stat_index(root: Path) -> None:
-    global _stat_index, _stat_index_root, _stat_index_dirty
+    global _stat_index, _stat_index_root
     if _stat_index_root is not None:
         return
     _stat_index_root = Path(root).resolve()
