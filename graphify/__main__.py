@@ -578,7 +578,38 @@ def _replace_or_append_section(content: str, marker: str, new_section: str) -> s
     return out
 
 
+def _print_banner() -> None:
+    """Amber brain banner on graphify install. TTY-only, never raises."""
+    if not sys.stdout.isatty():
+        return
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleMode(
+                ctypes.windll.kernel32.GetStdHandle(-11), 7
+            )
+        A = "\033[38;5;214m"
+        D = "\033[38;5;130m"
+        R = "\033[0m"
+        print(f"""{A}
+  ╭──◉──╮     ╭──◉──╮
+ ╱  ◉   ◉ ╲ ╱ ◉   ◉  ╲
+│   ◉─◉─◉  ◉  ◉─◉─◉   │
+│    ◉   ◉ │ ◉   ◉    │
+│   ◉─◉─◉  ◉  ◉─◉─◉   │
+ ╲  ◉   ◉ ╱ ╲ ◉   ◉  ╱
+  ╰──◉──╯     ╰──◉──╯
+           ◉
+
+  █▀▀ █▀█ ▄▀█ █▀█ █ █ █ █▀▀ █▄█
+  █▄█ █▀▄ █▀█ █▀▀ █▀█ █ █▀   █{D}  {__version__}{R}
+""")
+    except Exception:
+        pass
+
+
 def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
+    _print_banner()
     if platform == "gemini":
         gemini_install(project_dir=project_dir, project=project)
         return
@@ -901,12 +932,11 @@ def _kiro_install(project_dir: Path) -> None:
     """Write graphify skill + steering file for Kiro IDE/CLI."""
     project_dir = project_dir or Path(".")
 
-    # Skill file → .kiro/skills/graphify/SKILL.md
-    skill_src = Path(__file__).parent / "skill-kiro.md"
-    skill_dst = project_dir / ".kiro" / "skills" / "graphify" / "SKILL.md"
-    skill_dst.parent.mkdir(parents=True, exist_ok=True)
-    skill_dst.write_text(skill_src.read_text(encoding="utf-8"), encoding="utf-8")
-    print(f"  {skill_dst.relative_to(project_dir)}  ->  /graphify skill")
+    # Skill file + references/ sidecar + .graphify_version stamp via the shared
+    # progressive-disclosure helper.  Previously this used a bare write_text that
+    # bypassed _copy_skill_file, so the references/ dir and version stamp were
+    # never written even though kiro declares skill_refs: "kiro" (#1142).
+    _copy_skill_file("kiro", project=True, project_dir=project_dir)
 
     # Steering file → .kiro/steering/graphify.md (always-on)
     steering_dir = project_dir / ".kiro" / "steering"
@@ -931,15 +961,10 @@ def _kiro_uninstall(project_dir: Path) -> None:
     project_dir = project_dir or Path(".")
     removed = []
 
-    skill_dst = project_dir / ".kiro" / "skills" / "graphify" / "SKILL.md"
-    if skill_dst.exists():
-        skill_dst.unlink()
+    # Skill + .graphify_version + references/ sidecar + empty-dir walk.
+    skill_dst = _platform_skill_destination("kiro", project=True, project_dir=project_dir)
+    if _remove_skill_file("kiro", project=True, project_dir=project_dir):
         removed.append(str(skill_dst.relative_to(project_dir)))
-        # Remove parent dir if empty
-        try:
-            skill_dst.parent.rmdir()
-        except OSError:
-            pass
 
     steering_dst = project_dir / ".kiro" / "steering" / "graphify.md"
     if steering_dst.exists():
@@ -3814,91 +3839,6 @@ def main() -> None:
         if cli_max_workers is not None:
             os.environ["GRAPHIFY_MAX_WORKERS"] = str(cli_max_workers)
 
-        # Backend resolution. If user did not pass --backend, sniff env.
-        # If backend was explicitly requested, validate its key is present
-        # and surface a clear error early — don't let extract_corpus_parallel
-        # raise mid-run after we've spent time on AST extraction.
-        from graphify.llm import (
-            BACKENDS as _BACKENDS,
-            detect_backend as _detect_backend,
-            estimate_cost as _estimate_cost,
-            extract_corpus_parallel as _extract_corpus_parallel,
-            _format_backend_env_keys,
-            _get_backend_api_key,
-        )
-        if backend is None:
-            backend = _detect_backend()
-            if backend is None:
-                print(
-                    "error: no LLM API key found. Set GEMINI_API_KEY or GOOGLE_API_KEY "
-                    "(gemini), MOONSHOT_API_KEY (kimi), ANTHROPIC_API_KEY (claude), "
-                    "OPENAI_API_KEY (openai), DEEPSEEK_API_KEY (deepseek), "
-                    "or pass --backend.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-        if backend not in _BACKENDS:
-            print(
-                f"error: unknown backend '{backend}'. "
-                f"Available: {', '.join(sorted(_BACKENDS))}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        if backend == "ollama":
-            # Fail closed with a clean message (not a deep traceback) if
-            # OLLAMA_BASE_URL points at a link-local/metadata address. warn=False:
-            # the later in-flow call owns the user-facing warning for LAN hosts.
-            from graphify.llm import _validate_ollama_base_url
-            _oll_url = os.environ.get("OLLAMA_BASE_URL", _BACKENDS["ollama"].get("base_url", ""))
-            try:
-                _validate_ollama_base_url(_oll_url, warn=False)
-            except ValueError as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                sys.exit(2)
-        if not _get_backend_api_key(backend):
-            # Ollama on a loopback URL ignores auth entirely; don't block
-            # the run just because OLLAMA_API_KEY is unset (issue #792).
-            # extract_files_direct already prints a warning and substitutes
-            # a placeholder key in that case.
-            allow_no_key = False
-            if backend == "ollama":
-                from urllib.parse import urlparse
-                ollama_url = os.environ.get(
-                    "OLLAMA_BASE_URL",
-                    _BACKENDS["ollama"].get("base_url", ""),
-                )
-                try:
-                    host = (urlparse(ollama_url).hostname or "").lower()
-                except Exception:
-                    host = ""
-                allow_no_key = (
-                    host in ("localhost", "127.0.0.1", "::1")
-                    or host.startswith("127.")
-                )
-            elif backend == "bedrock":
-                allow_no_key = bool(
-                    os.environ.get("AWS_PROFILE")
-                    or os.environ.get("AWS_REGION")
-                    or os.environ.get("AWS_DEFAULT_REGION")
-                    or os.environ.get("AWS_ACCESS_KEY_ID")
-                )
-            elif backend == "claude-cli":
-                import shutil as _shutil
-                allow_no_key = _shutil.which("claude") is not None
-                if not allow_no_key:
-                    print(
-                        "error: backend 'claude-cli' requires the `claude` CLI on $PATH "
-                        "(install Claude Code and run `claude` once to authenticate).",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-            if not allow_no_key:
-                print(
-                    f"error: backend '{backend}' requires {_format_backend_env_keys(backend)} to be set.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-
         # Resolve output dir. The user-facing contract is "<out>/graphify-out/"
         # so a fresh checkout writes graphify-out/ at the project root, matching
         # the skill.md pipeline.
@@ -3957,6 +3897,93 @@ def main() -> None:
                 f"{len(doc_files)} docs, {len(paper_files)} papers, "
                 f"{len(image_files)} images"
             )
+
+        # Resolve the LLM backend only now that we know whether the corpus
+        # needs one. A code-only corpus is pure local AST and must not require
+        # an API key; the key is enforced below only when there's LLM work.
+        from graphify.llm import (
+            BACKENDS as _BACKENDS,
+            detect_backend as _detect_backend,
+            estimate_cost as _estimate_cost,
+            extract_corpus_parallel as _extract_corpus_parallel,
+            _format_backend_env_keys,
+            _get_backend_api_key,
+        )
+        needs_llm = bool(semantic_files) or dedup_llm
+        if backend is None and needs_llm:
+            backend = _detect_backend()
+        if backend is not None and backend not in _BACKENDS:
+            print(
+                f"error: unknown backend '{backend}'. "
+                f"Available: {', '.join(sorted(_BACKENDS))}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if needs_llm:
+            if backend is None:
+                reasons = []
+                if semantic_files:
+                    reasons.append(
+                        f"{len(semantic_files)} doc/paper/image file(s) need semantic extraction"
+                    )
+                if dedup_llm:
+                    reasons.append("--dedup-llm was passed")
+                print(
+                    "error: no LLM API key found (" + "; ".join(reasons) + "). "
+                    "Set GEMINI_API_KEY or GOOGLE_API_KEY (gemini), MOONSHOT_API_KEY "
+                    "(kimi), ANTHROPIC_API_KEY (claude), OPENAI_API_KEY (openai), "
+                    "DEEPSEEK_API_KEY (deepseek), or pass --backend. A code-only "
+                    "corpus needs no key.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if backend == "ollama":
+                from graphify.llm import _validate_ollama_base_url
+                _oll_url = os.environ.get("OLLAMA_BASE_URL", _BACKENDS["ollama"].get("base_url", ""))
+                try:
+                    _validate_ollama_base_url(_oll_url, warn=False)
+                except ValueError as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+                    sys.exit(2)
+            if not _get_backend_api_key(backend):
+                allow_no_key = False
+                if backend == "ollama":
+                    from urllib.parse import urlparse
+                    ollama_url = os.environ.get(
+                        "OLLAMA_BASE_URL",
+                        _BACKENDS["ollama"].get("base_url", ""),
+                    )
+                    try:
+                        host = (urlparse(ollama_url).hostname or "").lower()
+                    except Exception:
+                        host = ""
+                    allow_no_key = (
+                        host in ("localhost", "127.0.0.1", "::1")
+                        or host.startswith("127.")
+                    )
+                elif backend == "bedrock":
+                    allow_no_key = bool(
+                        os.environ.get("AWS_PROFILE")
+                        or os.environ.get("AWS_REGION")
+                        or os.environ.get("AWS_DEFAULT_REGION")
+                        or os.environ.get("AWS_ACCESS_KEY_ID")
+                    )
+                elif backend == "claude-cli":
+                    import shutil as _shutil
+                    allow_no_key = _shutil.which("claude") is not None
+                    if not allow_no_key:
+                        print(
+                            "error: backend 'claude-cli' requires the `claude` CLI on $PATH "
+                            "(install Claude Code and run `claude` once to authenticate).",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                if not allow_no_key:
+                    print(
+                        f"error: backend '{backend}' requires {_format_backend_env_keys(backend)} to be set.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
 
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().

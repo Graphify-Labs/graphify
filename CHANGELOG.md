@@ -2,6 +2,21 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.8.33 (2026-06-06)
+
+- Feat: install banner — `graphify install` now prints an amber knowledge-graph brain in the terminal (TTY-only, silent in CI/pipes, never raises).
+- Fix: Python `from pkg import submod` package-form imports now resolve to a file-level `imports_from` edge to the submodule file when it exists on disk. Previously these imports produced zero edges, leaving test files as disconnected islands in the graph (up to 66% of test nodes in some corpora). The fix lives in the symbol-resolution post-pass which has filesystem access (#1146).
+- Fix: builtin type-annotation nodes (`str`, `int`, `bool`, `float`, `bytes`, `MagicMock`, `Mock`, `AsyncMock`, etc.) no longer appear as graph nodes or accumulate edges. They were being created via the annotation walker whenever used as parameter or return types, inflating degree counts ~25% and displacing real abstractions from god-node rankings. A new `_PYTHON_ANNOTATION_NOISE` filter suppresses them at extraction time; `god_nodes` also filters them as a defense for pre-existing graphs (#1147).
+- Fix: AST/semantic ghost-duplicate nodes are now auto-merged at build time. When AST and semantic extraction produce different IDs for the same symbol (one with `source_location=L<n>`, one without), `build_from_json` detects the pair by `(source_file basename, label)` and collapses the semantic ghost into the AST node, re-pointing all edges. Graphs built before this release can be cleaned up with `graphify extract . --force` (#1145).
+
+## 0.8.32 (2026-06-05)
+
+- Feat: Terraform/HCL support. `.tf`, `.tfvars`, and `.hcl` files are now AST-extracted via `tree-sitter-hcl` into a structured infrastructure dependency graph. Nodes: resources, data sources, modules, variables, outputs, providers, and locals. Edges: `contains`, `references` (interpolation), and `depends_on`. Node IDs are directory-scoped for cross-file resolution. Requires `uv tool install "graphifyy[terraform]"` (#1129).
+- Fix: `graphify extract` no longer requires an LLM API key for code-only corpora. Backend resolution is now deferred until after file detection — a corpus with only code files (pure tree-sitter AST, zero LLM calls) runs fully offline. The key is only enforced when docs, PDFs, or images are present, or when `--dedup-llm` is passed (#1122).
+- Fix: `graphify kiro install` now correctly installs the `references/` sidecar and `.graphify_version` stamp. The install was using a bare `write_text` that bypassed the shared helper, shipping `SKILL.md` with 8 dead `references/*.md` pointers. Re-run `graphify kiro install` to pick up the fix (#1142).
+- Fix: `GRAPHIFY_API_TIMEOUT` now applies to `claude-cli` subprocess and Anthropic SDK backend, not just the HTTP client. Both subprocess paths previously hardcoded `timeout=600` and ignored the env var and `--api-timeout` flag (#1112).
+- Build: version floors added for `networkx>=3.4`, `datasketch>=1.6`, and `rapidfuzz>=3.0` to prevent silent breakage from old installs resolving incompatible versions.
+
 ## 0.8.31 (2026-06-03)
 
 - Fix: `graphify hook install` now embeds the current interpreter (`sys.executable`) directly into the generated hook scripts. Previously, uv tool and pipx installs silently no-oped on git commit in GUI clients and CI runners where `~/.local/bin` is not on PATH — the hook could not find the graphify launcher, fell through all detection probes, and exited 0 without rebuilding. The embedded path is sanitized through a filesystem-safe allowlist before substitution. If you already have hooks installed, re-run `graphify hook install` to pick up the fix (#1127).
