@@ -121,16 +121,6 @@ for example `graphify claude install --project` or `graphify codex install --pro
 
 > **Git hooks and uv tool / pipx:** `graphify hook install` embeds the current interpreter path directly into the hook scripts at install time, so the post-commit hook fires correctly even in GUI git clients and CI runners where `~/.local/bin` is not on PATH. If you reinstall or upgrade graphify, re-run `graphify hook install` to refresh the embedded path.
 
-### Troubleshooting
-
-| Symptom | Fix |
-|---------|-----|
-| `ModuleNotFoundError: No module named 'graphify'` | You installed with plain `pip`. Reinstall with `uv tool install graphifyy` or `pipx install graphifyy` |
-| `graphify: command not found` | Add `~/.local/bin` (Linux) or `~/Library/Python/3.x/bin` (Mac) to your PATH, or use `python -m graphify` |
-| PowerShell: `/graphify` gives path error | Use `graphify .` without the leading slash |
-| `PreToolUse hook failed` in Codex | Run `graphify codex install` to regenerate the hook |
-| `graphify update` leaves temp files in project root | These should be inside `graphify-out/` — run `graphify hook install` to refresh |
-
 ### Pick your platform
 
 | Platform | Install command |
@@ -411,6 +401,9 @@ Your shell's PATH doesn't include the Python scripts directory. Use `uv` or `pip
 
 **`/graphify .` causes "path not recognized" in PowerShell**
 PowerShell treats a leading `/` as a path separator. Use `graphify .` (no slash) on Windows.
+
+**`PreToolUse hook failed` in Codex**
+Run `graphify codex install` to regenerate the hook. On v0.6.5+ the hook uses a cross-platform `graphify hook-check` command instead of inline Python, so this should not recur.
 
 **Graph has fewer nodes after `--update` or rebuild**
 If a refactor deleted files, the old nodes linger. Pass `--force` (or set `GRAPHIFY_FORCE=1`) to overwrite even when the rebuild has fewer nodes.
