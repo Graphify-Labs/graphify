@@ -380,6 +380,24 @@ def build_merge(
             n for n, d in G.nodes(data=True)
             if d.get("source_file") in prune_set
         ]
+        # Defense-in-depth safety net: the anti-shrink guard further below is
+        # skipped whenever prune_sources is set, so a bogus deleted-file list
+        # (e.g. a scoped --update that mistook out-of-scope files for deletions)
+        # could silently wipe most of the graph. Make a catastrophic prune
+        # LOUD instead of silent. Non-breaking: warns, does not raise, so
+        # legitimate large deletions still go through.
+        _total_before = G.number_of_nodes()
+        if to_remove and _total_before:
+            _ratio = len(to_remove) / _total_before
+            if len(to_remove) >= 25 and _ratio >= 0.30:
+                print(
+                    f"[graphify] WARNING: prune is about to remove {len(to_remove)} of "
+                    f"{_total_before} nodes ({_ratio:.0%}) across {len(prune_sources)} "
+                    f"source file(s). If you ran --update on a SUBFOLDER of a larger "
+                    f"corpus, this is likely a scope mistake — re-run --update on the "
+                    f"full corpus root instead. Proceeding.",
+                    file=sys.stderr,
+                )
         G.remove_nodes_from(to_remove)
         n_files = len(prune_sources)
         n_nodes = len(to_remove)
