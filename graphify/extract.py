@@ -8205,8 +8205,8 @@ def extract_objc(path: Path) -> dict:
     def _read(node) -> str:
         return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
-    def _get_name(node, field: str) -> str | None:
-        n = node.child_by_field_name(field)
+    def _get_name(node, field_name: str) -> str | None:
+        n = node.child_by_field_name(field_name)
         return _read(n) if n else None
 
     def ensure_named_node(name: str, line: int) -> str:
