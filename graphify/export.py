@@ -493,9 +493,12 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 import sys as _sys
                 print(
                     f"[graphify] WARNING: new graph has {new_n} nodes but existing "
-                    f"graph.json has {existing_n}. Refusing to overwrite — you may be "
-                    f"missing chunk files from a previous session. "
-                    f"Pass force=True to override.",
+                    f"graph.json has {existing_n} (net -{existing_n - new_n}). "
+                    f"Refusing to overwrite. Possible causes: missing chunk files from "
+                    f"a previous session, or fuzzy dedup collapsed same-named symbols "
+                    f"across files during an --update on an already-current graph. "
+                    f"Run a full rebuild (/graphify .) to be safe, or pass force=True "
+                    f"only if you have verified the reduction is legitimate.",
                     file=_sys.stderr,
                 )
                 return False
@@ -1274,7 +1277,10 @@ def push_to_neo4j(
 
     with driver.session() as session:
         for node_id, data in G.nodes(data=True):
-            props = {k: v for k, v in data.items() if isinstance(v, (str, int, float, bool))}
+            props = {
+                k: v for k, v in data.items()
+                if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
+            }
             props["id"] = node_id
             cid = node_community.get(node_id)
             if cid is not None:
@@ -1289,7 +1295,10 @@ def push_to_neo4j(
 
         for u, v, data in G.edges(data=True):
             rel = _safe_rel(data.get("relation", "RELATED_TO"))
-            props = {k: v for k, v in data.items() if isinstance(v, (str, int, float, bool))}
+            props = {
+                k: v for k, v in data.items()
+                if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
+            }
             session.run(
                 f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
                 f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
@@ -1317,6 +1326,15 @@ def to_graphml(
     node_community = _node_community_map(communities)
     for node_id in H.nodes():
         H.nodes[node_id]["community"] = node_community.get(node_id, -1)
+    # Drop internal markers (e.g. the AST-provenance "_origin" tag, #1116, and
+    # the "_src"/"_tgt" direction markers) — they are persistence/runtime details,
+    # not graph data, and should not leak into the exported file.
+    for _, attrs in H.nodes(data=True):
+        for k in [k for k in attrs if k.startswith("_")]:
+            del attrs[k]
+    for _, _, attrs in H.edges(data=True):
+        for k in [k for k in attrs if k.startswith("_")]:
+            del attrs[k]
     nx.write_graphml(H, output_path)
 
 

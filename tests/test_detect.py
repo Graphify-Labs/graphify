@@ -298,6 +298,43 @@ def test_detect_incremental_propagates_follow_symlinks(tmp_path, monkeypatch):
     assert second["new_total"] == 0
 
 
+def test_detect_incremental_survives_dict_valued_mtime(tmp_path, monkeypatch):
+    """A schema-drifted manifest whose entry stores mtime as a nested dict
+    (instead of a float) must not crash detect_incremental (#1163). The guard
+    coerces the bad mtime to None so the file is re-verified by content hash and
+    treated as new, rather than blowing up on the int/float comparison.
+    """
+    import json
+
+    monkeypatch.chdir(tmp_path)
+
+    src = tmp_path / "mod.py"
+    src.write_text("def f():\n    return 1\n", encoding="utf-8")
+
+    manifest_dir = tmp_path / "graphify-out"
+    manifest_dir.mkdir()
+    manifest_path = str(manifest_dir / "manifest.json")
+
+    # Drifted entry: a non-empty ast_hash (so the dict branch reaches the mtime
+    # comparison) with mtime stored as a dict rather than a float. Absolute key
+    # so it matches detect's absolute file paths without re-anchoring.
+    drifted = {
+        str(src.resolve()): {
+            "mtime": {"mtime": 123.0},
+            "ast_hash": "deadbeef" * 4,
+            "semantic_hash": "cafebabe" * 4,
+        }
+    }
+    Path(manifest_path).write_text(json.dumps(drifted), encoding="utf-8")
+
+    # Must not raise (pre-fix: TypeError comparing float and dict).
+    result = detect_incremental(tmp_path, manifest_path)
+
+    # The drifted file is re-classified as new rather than silently skipped.
+    assert any("mod.py" in f for f in result["new_files"]["code"])
+    assert not any("mod.py" in f for f in result["unchanged_files"]["code"])
+
+
 def test_classify_video_extensions():
     """Video and audio file extensions should classify as VIDEO."""
     from graphify.detect import FileType
@@ -636,6 +673,33 @@ def test_sensitive_secret_handler_txt():
 def test_sensitive_token_config_yaml():
     # "token_config.yaml": "token" followed by "_" (not alpha) → flagged.
     assert _is_sensitive(Path("token_config.yaml"))
+
+
+# ── Generic keywords must be load-bearing: topic slugs are not secret stores ──
+# A keyword buried mid-phrase in a >=3-word descriptive name is a note ABOUT
+# the topic, not a credential file. It must not be silently dropped.
+
+def test_sensitive_does_not_flag_token_economics_note():
+    assert not _is_sensitive(Path("token-economics-of-recall.md"))
+
+def test_sensitive_does_not_flag_password_policy_discussion():
+    assert not _is_sensitive(Path("password-policy-discussion.md"))
+
+def test_sensitive_flags_keyword_at_end_of_long_name():
+    # Keyword as the final word names the file's contents — still a secret store.
+    assert _is_sensitive(Path("github-personal-access-token.txt"))
+
+def test_sensitive_flags_my_private_key_txt():
+    # Multi-word keyword at end of stem (end-of-stem check runs before word
+    # counting, so splitting private_key on "_" cannot un-flag it).
+    assert _is_sensitive(Path("my_private_key.txt"))
+
+def test_sensitive_flags_dotfile_token():
+    # Leading dot stripped before stem extraction; ".token" keeps its keyword.
+    assert _is_sensitive(Path(".token"))
+
+def test_sensitive_flags_plural_tokens_txt():
+    assert _is_sensitive(Path("tokens.txt"))
 
 
 # ── Issue #933: failed-chunk files must not be frozen in manifest ─────────────

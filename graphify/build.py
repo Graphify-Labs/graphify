@@ -156,10 +156,53 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             node["source_file"] = _norm_source_file(node["source_file"], _root)
         G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
     node_set = set(G.nodes())
+
+    # #1145: merge semantic ghost-duplicate nodes into AST nodes.
+    # When AST and semantic extractors emit different IDs for the same symbol
+    # (one has source_location=L<n>, the other has source_location=None), find
+    # pairs that share (source_file basename, label) and collapse the semantic
+    # copy into the AST copy so edges re-point to a single node.
+    # Two passes: first collect all AST (located) nodes, then find ghosts.
+    _loc_nodes: dict[tuple[str, str], str] = {}   # (basename, label) -> AST node id
+    _noloc_nodes: dict[tuple[str, str], str] = {}  # (basename, label) -> semantic node id
+    for nid in node_set:
+        attrs = G.nodes[nid]
+        label = str(attrs.get("label", "")).strip()
+        sf = str(attrs.get("source_file", ""))
+        basename = Path(sf).name if sf else ""
+        if not label or not basename:
+            continue
+        if attrs.get("source_location"):
+            _loc_nodes[(basename, label)] = nid
+    for nid in node_set:
+        attrs = G.nodes[nid]
+        label = str(attrs.get("label", "")).strip()
+        sf = str(attrs.get("source_file", ""))
+        basename = Path(sf).name if sf else ""
+        if not label or not basename or attrs.get("source_location"):
+            continue
+        key = (basename, label)
+        if key in _loc_nodes and _loc_nodes[key] != nid:
+            _noloc_nodes[key] = nid
+    # For every ghost that has an AST counterpart, record a remap.
+    _ghost_remap: dict[str, str] = {}  # ghost_id -> canonical_id
+    for key, sem_id in _noloc_nodes.items():
+        ast_id = _loc_nodes.get(key)
+        if ast_id is not None:
+            _ghost_remap[sem_id] = ast_id
+    # Remove ghost nodes from the graph; edges will be re-pointed via norm_to_id.
+    for ghost_id in _ghost_remap:
+        G.remove_node(ghost_id)
+        node_set.discard(ghost_id)
+
     # Normalized ID map: lets edges survive when the LLM generates IDs with
     # slightly different casing or punctuation than the AST extractor.
     # e.g. "Session_ValidateToken" maps to "session_validatetoken".
     norm_to_id: dict[str, str] = {_normalize_id(nid): nid for nid in node_set}
+    # Also map ghost IDs to their canonical AST replacements.
+    for ghost_id, canonical_id in _ghost_remap.items():
+        norm_to_id[_normalize_id(ghost_id)] = canonical_id
+        norm_to_id[ghost_id] = canonical_id
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run

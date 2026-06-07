@@ -473,6 +473,18 @@ _PYTHON_TYPE_CONTAINERS = frozenset({
     "None", "Ellipsis",
 })
 
+# Scalar builtins and test-mock names that appear as type annotations but carry
+# no useful semantic meaning as graph nodes (#1147). Suppressed at the annotation
+# walker level so they are never created as nodes or emitted as edges.
+_PYTHON_ANNOTATION_NOISE = frozenset({
+    # scalar builtins
+    "str", "int", "float", "bool", "bytes", "bytearray", "complex", "object",
+    "True", "False",
+    # unittest.mock
+    "MagicMock", "Mock", "AsyncMock", "NonCallableMock",
+    "NonCallableMagicMock", "PropertyMock", "patch", "sentinel",
+})
+
 
 def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a Python type annotation; append (name, role) where role is 'type' or 'generic_arg'.
@@ -490,19 +502,19 @@ def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
         return
     if t == "identifier":
         name = _read_text(node, source)
-        if name and name not in _PYTHON_TYPE_CONTAINERS:
+        if name and name not in _PYTHON_TYPE_CONTAINERS and name not in _PYTHON_ANNOTATION_NOISE:
             out.append((name, "generic_arg" if generic else "type"))
         return
     if t == "attribute":
         tail = _read_text(node, source).rsplit(".", 1)[-1]
-        if tail and tail not in _PYTHON_TYPE_CONTAINERS:
+        if tail and tail not in _PYTHON_TYPE_CONTAINERS and tail not in _PYTHON_ANNOTATION_NOISE:
             out.append((tail, "generic_arg" if generic else "type"))
         return
     if t == "generic_type":
         for c in node.children:
             if c.type == "identifier":
                 container = _read_text(c, source)
-                if container and container not in _PYTHON_TYPE_CONTAINERS:
+                if container and container not in _PYTHON_TYPE_CONTAINERS and container not in _PYTHON_ANNOTATION_NOISE:
                     out.append((container, "generic_arg" if generic else "type"))
             elif c.type == "type_parameter":
                 for sub in c.children:
@@ -4029,6 +4041,205 @@ def extract_csharp(path: Path) -> dict:
     return _extract_generic(path, _CSHARP_CONFIG)
 
 
+def extract_apex(path: Path) -> dict:
+    """Extract classes, interfaces, enums, methods, and Salesforce constructs from
+    Apex .cls and .trigger files using regex (no tree-sitter grammar on PyPI)."""
+    import re as _re
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"nodes": [], "edges": []}
+
+    str_path = str(path)
+    stem = _file_stem(path)
+    file_nid = _make_id(str_path)
+
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+
+    def add_node(nid: str, label: str, line: int) -> None:
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": label,
+                "file_type": "code",
+                "source_file": str_path,
+                "source_location": f"L{line}",
+            })
+
+    def add_edge(src: str, tgt: str, relation: str, line: int,
+                 confidence: str = "EXTRACTED") -> None:
+        edges.append({
+            "source": src,
+            "target": tgt,
+            "relation": relation,
+            "confidence": confidence,
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": 1.0,
+        })
+
+    add_node(file_nid, path.name, 1)
+
+    lines = source.splitlines()
+
+    _ACCESS = r"(?:public|private|protected|global|webService)?"
+    _SHARING = r"(?:\s+(?:with|without|inherited)\s+sharing)?"
+    _MOD = r"(?:\s+(?:abstract|virtual|override|static|final|transient|testMethod))?"
+    _ANNOTATION = r"(?:\s*@\w+(?:\s*\([^)]*\))?\s*)*"
+
+    cls_re = _re.compile(
+        rf"^{_ANNOTATION}\s*{_ACCESS}{_SHARING}{_MOD}\s*class\s+(\w+)"
+        rf"(?:\s+extends\s+(\w+))?(?:\s+implements\s+([\w,\s]+))?\s*\{{?",
+        _re.IGNORECASE,
+    )
+    iface_re = _re.compile(
+        rf"^{_ANNOTATION}\s*{_ACCESS}{_SHARING}{_MOD}\s*interface\s+(\w+)"
+        rf"(?:\s+extends\s+([\w,\s]+))?\s*\{{?",
+        _re.IGNORECASE,
+    )
+    enum_re = _re.compile(
+        rf"^{_ANNOTATION}\s*{_ACCESS}{_SHARING}{_MOD}\s*enum\s+(\w+)\s*\{{?",
+        _re.IGNORECASE,
+    )
+    trigger_re = _re.compile(
+        r"^\s*trigger\s+(\w+)\s+on\s+(\w+)\s*\(",
+        _re.IGNORECASE,
+    )
+    method_re = _re.compile(
+        rf"^{_ANNOTATION}\s*{_ACCESS}{_MOD}\s*(?:static\s+)?[\w<>\[\]]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+\w+\s*)?\{{?",
+        _re.IGNORECASE,
+    )
+    annotation_re = _re.compile(r"@(\w+)", _re.IGNORECASE)
+    soql_re = _re.compile(r"\[\s*SELECT\b[^\]]+FROM\s+(\w+)", _re.IGNORECASE)
+    dml_re = _re.compile(r"\b(insert|update|delete|upsert|merge|undelete)\s+\w", _re.IGNORECASE)
+
+    _CONTROL_FLOW = frozenset({
+        "if", "else", "for", "while", "do", "switch", "try", "catch",
+        "finally", "return", "throw", "new", "void", "null",
+        "true", "false", "this", "super", "class", "interface", "enum",
+        "trigger", "on",
+    })
+
+    current_class_nid: str | None = None
+    pending_annotations: list[str] = []
+
+    for lineno, line_text in enumerate(lines, start=1):
+        stripped = line_text.strip()
+
+        if stripped.startswith("@"):
+            for m in annotation_re.finditer(stripped):
+                pending_annotations.append(m.group(1).lower())
+            continue
+
+        tm = trigger_re.match(stripped)
+        if tm:
+            trig_name, sobject = tm.group(1), tm.group(2)
+            trig_nid = _make_id(stem, trig_name)
+            add_node(trig_nid, trig_name, lineno)
+            add_edge(file_nid, trig_nid, "contains", lineno)
+            sob_nid = _make_id(sobject)
+            if sob_nid not in seen_ids:
+                add_node(sob_nid, sobject, lineno)
+            add_edge(trig_nid, sob_nid, "uses", lineno, confidence="INFERRED")
+            current_class_nid = trig_nid
+            pending_annotations = []
+            continue
+
+        cm = cls_re.match(stripped)
+        if cm:
+            class_name = cm.group(1)
+            if class_name.lower() in _CONTROL_FLOW:
+                pending_annotations = []
+                continue
+            class_nid = _make_id(stem, class_name)
+            add_node(class_nid, class_name, lineno)
+            add_edge(file_nid, class_nid, "contains", lineno)
+            if cm.group(2):
+                base = cm.group(2).strip()
+                base_nid = _make_id(stem, base)
+                if base_nid not in seen_ids:
+                    base_nid = _make_id(base)
+                if base_nid not in seen_ids:
+                    add_node(base_nid, base, lineno)
+                add_edge(class_nid, base_nid, "extends", lineno, confidence="INFERRED")
+            if cm.group(3):
+                for iface in cm.group(3).split(","):
+                    iface = iface.strip()
+                    if iface:
+                        iface_nid = _make_id(stem, iface)
+                        if iface_nid not in seen_ids:
+                            iface_nid = _make_id(iface)
+                        if iface_nid not in seen_ids:
+                            add_node(iface_nid, iface, lineno)
+                        add_edge(class_nid, iface_nid, "implements", lineno, confidence="INFERRED")
+            current_class_nid = class_nid
+            pending_annotations = []
+            continue
+
+        im = iface_re.match(stripped)
+        if im:
+            iface_name = im.group(1)
+            if iface_name.lower() in _CONTROL_FLOW:
+                pending_annotations = []
+                continue
+            iface_nid = _make_id(stem, iface_name)
+            add_node(iface_nid, iface_name, lineno)
+            add_edge(file_nid if current_class_nid is None else current_class_nid,
+                     iface_nid, "contains", lineno)
+            pending_annotations = []
+            continue
+
+        em = enum_re.match(stripped)
+        if em:
+            enum_name = em.group(1)
+            if enum_name.lower() in _CONTROL_FLOW:
+                pending_annotations = []
+                continue
+            enum_nid = _make_id(stem, enum_name)
+            add_node(enum_nid, enum_name, lineno)
+            add_edge(file_nid if current_class_nid is None else current_class_nid,
+                     enum_nid, "contains", lineno)
+            pending_annotations = []
+            continue
+
+        if current_class_nid is not None:
+            mm = method_re.match(stripped)
+            if mm:
+                method_name = mm.group(1)
+                if method_name.lower() not in _CONTROL_FLOW:
+                    method_nid = _make_id(current_class_nid, method_name)
+                    method_label = f".{method_name}()"
+                    add_node(method_nid, method_label, lineno)
+                    add_edge(current_class_nid, method_nid, "method", lineno)
+                    if "auraenabled" in pending_annotations or "invocablemethod" in pending_annotations:
+                        add_edge(file_nid, method_nid, "contains", lineno, confidence="INFERRED")
+                    pending_annotations = []
+                    continue
+
+        pending_annotations = []
+
+        for sm in soql_re.finditer(line_text):
+            sobject = sm.group(1)
+            sob_nid = _make_id(sobject)
+            if sob_nid not in seen_ids:
+                add_node(sob_nid, sobject, lineno)
+            src = current_class_nid or file_nid
+            add_edge(src, sob_nid, "uses", lineno, confidence="INFERRED")
+
+        for dm in dml_re.finditer(line_text):
+            dml_op = dm.group(1).lower()
+            dml_nid = _make_id(f"dml_{dml_op}")
+            if dml_nid not in seen_ids:
+                add_node(dml_nid, dml_op, lineno)
+            src = current_class_nid or file_nid
+            add_edge(src, dml_nid, "uses", lineno, confidence="INFERRED")
+
+    return {"nodes": nodes, "edges": edges}
+
+
 def extract_kotlin(path: Path) -> dict:
     """Extract classes, objects, functions, and imports from a .kt/.kts file."""
     return _extract_generic(path, _KOTLIN_CONFIG)
@@ -4716,7 +4927,7 @@ def extract_verilog(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def extract_sql(path: Path) -> dict:
+def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     """Extract tables, views, functions, and relationships from .sql files via tree-sitter."""
     try:
         import tree_sitter_sql as tssql
@@ -4727,11 +4938,16 @@ def extract_sql(path: Path) -> dict:
     try:
         language = Language(tssql.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = (
+            content.encode("utf-8") if isinstance(content, str)
+            else content if content is not None
+            else path.read_bytes()
+        )
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
+
 
     stem = _file_stem(path)
     str_path = str(path)
@@ -6731,6 +6947,9 @@ class _SymbolResolutionFacts:
     exports: list[_SymbolExportFact] = field(default_factory=list)
     star_exports: list[_StarExportFact] = field(default_factory=list)
     uses: list[_SymbolUseFact] = field(default_factory=list)
+    # File-to-file submodule imports from `from pkg import submod` (#1146).
+    # Each entry is (importing_file, submodule_file, line).
+    module_imports: list[tuple[Path, Path, int]] = field(default_factory=list)
 
 
 def _apply_symbol_resolution_facts(
@@ -6748,6 +6967,7 @@ def _apply_symbol_resolution_facts(
         or facts.exports
         or facts.star_exports
         or facts.uses
+        or facts.module_imports
     ):
         return
 
@@ -6913,6 +7133,17 @@ def _apply_symbol_resolution_facts(
             import_fact.line,
             import_fact.file_path,
         )
+
+    # #1146: emit file-to-file imports_from edges for package-form submodule imports.
+    for from_path, to_path, line in facts.module_imports:
+        try:
+            from_rel = from_path.relative_to(root)
+            to_rel = to_path.relative_to(root)
+        except ValueError:
+            continue
+        source_id = _make_id(_file_stem(from_rel))
+        target_id = _make_id(_file_stem(to_rel))
+        add_edge(source_id, target_id, "imports_from", "submodule_import", line, from_path)
 
     for use_fact in facts.uses:
         file_path = use_fact.file_path.resolve()
@@ -7540,8 +7771,20 @@ def _collect_python_symbol_resolution_facts(
             target_path = _resolve_python_module_path(module_name, path, root, level)
             if target_path is None:
                 continue
+            # #1146: `from pkg import submod` — if the target is a package
+            # (__init__.py) and an imported name matches a submodule file on
+            # disk, emit a file-level import edge to that submodule rather
+            # than only to the package.
+            pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
             for imported_name, local_name in _python_imported_names(node, source):
                 line = node.start_point[0] + 1
+                if pkg_dir is not None:
+                    sub_py = pkg_dir / f"{imported_name}.py"
+                    sub_pkg = pkg_dir / imported_name / "__init__.py"
+                    submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
+                    if submodule is not None:
+                        facts.module_imports.append((path, submodule, line))
+                        continue
                 facts.imports.append(
                     _SymbolImportFact(path, local_name, target_path, imported_name, line)
                 )
@@ -10786,6 +11029,8 @@ _DISPATCH: dict[str, Any] = {
     ".vbproj": extract_csproj,
     ".razor": extract_razor,
     ".cshtml": extract_razor,
+    ".cls": extract_apex,
+    ".trigger": extract_apex,
 }
 
 
@@ -11258,6 +11503,13 @@ def extract(
             item["source_file"] = sf_path.relative_to(root).as_posix()
         except ValueError:
             pass
+
+    # Tag AST provenance so the incremental watch rebuild can distinguish
+    # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction
+    # the watcher drops any AST-marked node missing from the fresh output
+    # even when its source file still exists (#1116).
+    for n in all_nodes:
+        n["_origin"] = "ast"
 
     return {
         "nodes": all_nodes,
