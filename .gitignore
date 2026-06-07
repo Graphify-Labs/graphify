@@ -18,6 +18,7 @@ graphify-out/
 .graphify_python
 .claude/
 skills/
+.hermes/
 # The packaged skill bundles under graphify/skills/ are generated, committed
 # artifacts (rendered by tools/skillgen). Keep them tracked even though the
 # broad skills/ rule above ignores install-target skill dirs elsewhere.
@@ -28,6 +29,7 @@ skills/
 !tools/skillgen/fragments/core/
 !tools/skillgen/fragments/core/**
 docs/superpowers/
+docs/translations/
 .vscode/
 .kilo
 openspec/
