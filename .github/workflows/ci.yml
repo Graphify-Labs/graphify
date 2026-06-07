@@ -24,8 +24,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[mcp,pdf,watch,sql]"
-          pip install pytest
+          pip install -e ".[dev,mcp,pdf,watch,sql]"
 
       - name: Run tests
         run: |

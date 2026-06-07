@@ -46,6 +46,7 @@ Repository = "https://github.com/safishamsi/graphify"
 Issues = "https://github.com/safishamsi/graphify/issues"
 
 [project.optional-dependencies]
+dev = ["pytest", "ruff", "build"]
 mcp = ["mcp"]
 neo4j = ["neo4j"]
 pdf = ["pypdf", "markdownify"]
@@ -80,3 +81,14 @@ graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-aider.md",
 
 [tool.bandit]
 skips = ["B404"]
+
+[tool.ruff]
+exclude = [
+    "build",
+    "worked",
+    "graphify-out",
+]
+
+[tool.ruff.lint]
+# Existing codebase debt to tackle incrementally; keep ruff available for new work.
+ignore = ["E402", "E702", "E713", "E741", "F401", "F541", "F841"]
