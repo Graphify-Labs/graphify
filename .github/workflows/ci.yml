@@ -46,6 +46,25 @@ jobs:
       - name: Round-trip the always-on blocks against v8
         run: uv run --frozen python -m tools.skillgen --always-on-roundtrip
 
+  lint:
+    # Static-analysis gate. Runs in parallel with skillgen-check / test so
+    # a future ruff regression fails the PR quickly without waiting for
+    # the longer test job to finish.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: uv pip install --system ruff
+
+      - name: ruff check
+        run: ruff check .
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -73,7 +92,31 @@ jobs:
       - name: Run tests
         run: uv run --frozen pytest tests/ -q --tb=short
 
+      - name: Build package
+        # Guards against packaging regressions (e.g. broken MANIFEST.in,
+        # missing data files, setuptools deprecation warnings becoming
+        # errors). Fast — wheel build is in the seconds range.
+        run: uv run --frozen python -m build
+
       - name: Verify install works end-to-end
         run: |
           uv run --frozen graphify --help
           uv run --frozen graphify install
+
+      - name: Smoke-test detect
+        # The core file-classification / .graphifyignore pipeline is
+        # non-mutating and is exercised by every real `graphify update`
+        # run, so a regression here breaks every user. We invoke it
+        # directly via the Python API (there is no `graphify detect`
+        # subcommand) and assert the result classifies at least one
+        # code file — i.e. the scan actually found something.
+        run: |
+          uv run --frozen python -c "
+          from pathlib import Path
+          from graphify.detect import detect
+          r = detect(Path('.'))
+          assert r['total_files'] > 0, 'detect found no files'
+          assert 'code' in r['files'], 'no code files detected'
+          assert r['files']['code'], 'code file list is empty'
+          print(f'detect OK: {r[\"total_files\"]} files, {r[\"total_words\"]} words')
+          "
