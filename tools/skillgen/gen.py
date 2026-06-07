@@ -705,6 +705,19 @@ def _is_frontmatter_description_line(line: str) -> bool:
     return line.lstrip().startswith("description:")
 
 
+def _is_chunk_cleanup_line(line: str) -> bool:
+    """Whether a line is the Step 9 chunk-file cleanup ``rm -f`` command.
+
+    The bare glob ``.graphify_chunk_*.json`` in the v8 cleanup line aborts the
+    whole ``rm`` under fish/zsh when no chunk files exist (no-match is a hard
+    error there, unlike bash). The fix (graphify #1172) drops the glob from the
+    ``rm`` and deletes the chunk files with ``find ... -delete`` instead. That
+    rewrite touches the single cleanup line in place (no line added or removed),
+    so it joins the enum and description unifications as an allowed monolith diff.
+    """
+    return line.lstrip().startswith("rm -f") and "find " in line and "-name '.graphify_chunk_" in line
+
+
 def monolith_roundtrip(platform: Platform) -> list[str]:
     """Assert a monolith renders diff-clean vs its v8 blob modulo allowed changes.
 
@@ -736,8 +749,9 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     for i, (r, o) in enumerate(zip(rendered_lines, original_lines), start=1):
         if r == o:
             continue
-        # The permitted diffs are the enum unification and the unified description.
-        if _is_enum_line(r) or _is_frontmatter_description_line(r):
+        # The permitted diffs are the enum unification, the unified description,
+        # and the shell-agnostic chunk-cleanup rewrite (#1172).
+        if _is_enum_line(r) or _is_frontmatter_description_line(r) or _is_chunk_cleanup_line(r):
             continue
         problems.append(
             f"[{platform.key}] line {i} differs and is not an enum or description unification:\n"

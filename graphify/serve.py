@@ -136,11 +136,38 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     scored = []
     norm_terms = [tok for t in terms for tok in _search_tokens(t)]
     idf = _compute_idf(G, norm_terms)
+    # Whole-query string for full-label matching (mirrors _find_node's `term`).
+    joined = " ".join(norm_terms)
+    # Weight the full-query bonus by the rarest constituent term so a specific
+    # multi-word label still outweighs common-token noise; floor at 1.0.
+    joined_w = max((idf.get(t, 1.0) for t in norm_terms), default=1.0)
     for nid, data in G.nodes(data=True):
         norm_label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
         bare_label = norm_label.rstrip("()")
+        # Tokenized form of the label (punctuation stripped, same transform as the
+        # query). norm_label may still carry punctuation like ':' or '-', which a
+        # tokenized query can never equal; comparing token-joined forms on both
+        # sides makes "uoce: dehumidifier driver" match query "uoce dehumidifier
+        # driver".
+        label_tokens = " ".join(_search_tokens(data.get("label") or ""))
         source = (data.get("source_file") or "").lower()
         score = 0.0
+        # Full-query tier: a multi-word query that equals (or prefixes) the whole
+        # label must dominate the per-token bag-of-words sums below, so `path`/
+        # `query` resolve the same node `explain` does (via _find_node). Without
+        # this, no single token equals a multi-word label, the per-token exact
+        # tier never fires, and every node sharing the token set ties -> arbitrary
+        # node-id sort -> wrong/disconnected endpoint -> false "No path found".
+        if joined:
+            nid_lower = nid.lower()
+            if joined in (norm_label, bare_label, label_tokens, nid_lower):
+                score += _EXACT_MATCH_BONUS * 10 * joined_w
+            elif (
+                norm_label.startswith(joined)
+                or bare_label.startswith(joined)
+                or label_tokens.startswith(joined)
+            ):
+                score += _PREFIX_MATCH_BONUS * 10 * joined_w
         for t in norm_terms:
             w = idf.get(t, 1.0)
             # Three-tier precedence: exact > prefix > substring (take the
@@ -155,7 +182,10 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
                 score += _SOURCE_MATCH_BONUS * w
         if score > 0:
             scored.append((score, nid))
-    return sorted(scored, reverse=True)
+    # Sort by score desc; break ties toward the shorter label so a concise exact
+    # match beats a longer superset that happens to share the same score.
+    scored.sort(key=lambda s: (-s[0], len(G.nodes[s[1]].get("label") or s[1]), s[1]))
+    return scored
 
 
 def _pick_seeds(scored: list[tuple[float, str]], max_k: int = 3, gap_ratio: float = 0.2) -> list[str]:
@@ -472,13 +502,18 @@ def _filter_blank_stdin() -> None:
     sys.stdin = open(0, "r", closefd=False)
 
 
-def serve(graph_path: str = "graphify-out/graph.json") -> None:
-    """Start the MCP server. Requires pip install mcp."""
+def _build_server(graph_path: str):
+    """Build the configured low-level MCP Server (shared by every transport).
+
+    All graph query tools and resources are registered here over a single
+    ``mcp.server.Server`` instance; the caller picks the transport (stdio or
+    Streamable HTTP) and runs it. Hot-reload of graph.json works the same way
+    regardless of transport, since reloads happen inside the tool handlers.
+    """
     import threading
 
     try:
         from mcp.server import Server
-        from mcp.server.stdio import stdio_server
         from mcp import types
         from mcp.types import AnyUrl
     except ImportError as e:
@@ -992,7 +1027,18 @@ def serve(graph_path: str = "graphify-out/graph.json") -> None:
         except Exception as exc:
             return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
 
+    return server
+
+
+def serve(graph_path: str = "graphify-out/graph.json") -> None:
+    """Start the MCP server over stdio (the default, per-developer transport)."""
+    try:
+        from mcp.server.stdio import stdio_server
+    except ImportError as e:
+        raise ImportError('mcp not installed. Run: pip install "graphifyy[mcp]"') from e
     import asyncio
+
+    server = _build_server(graph_path)
 
     async def main() -> None:
         async with stdio_server() as streams:
@@ -1002,6 +1048,262 @@ def serve(graph_path: str = "graphify-out/graph.json") -> None:
     asyncio.run(main())
 
 
+class _MCPASGIApp:
+    """Raw-ASGI wrapper around the Streamable HTTP session manager.
+
+    Passed to a Starlette ``Route`` as a class instance (not a function) so
+    Starlette treats it as an ASGI app: it serves the exact mount path for all
+    methods (GET/POST/DELETE) with no request/response wrapping and no
+    trailing-slash redirect — mirroring how FastMCP mounts the same manager.
+    """
+
+    def __init__(self, manager) -> None:
+        self._manager = manager
+
+    async def __call__(self, scope, receive, send) -> None:
+        await self._manager.handle_request(scope, receive, send)
+
+
+class _ApiKeyMiddleware:
+    """Pure-ASGI API-key gate for the HTTP transport.
+
+    Implemented as raw ASGI (not Starlette's BaseHTTPMiddleware) on purpose:
+    BaseHTTPMiddleware buffers responses and breaks the Streamable HTTP SSE
+    stream. This short-circuits with 401 before the request ever reaches the
+    session manager, leaving the streaming path untouched for authorized calls.
+    """
+
+    def __init__(self, app, api_key: str) -> None:
+        self.app = app
+        self._expected = api_key.encode("utf-8")
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        import hmac
+        headers = dict(scope.get("headers") or [])
+        provided = headers.get(b"x-api-key")
+        if provided is None:
+            # RFC 6750: the auth scheme token is case-insensitive.
+            scheme, _, token = headers.get(b"authorization", b"").partition(b" ")
+            if scheme.lower() == b"bearer" and token:
+                provided = token.strip()
+        # Constant-time compare; reject when no key was supplied at all.
+        if provided is None or not hmac.compare_digest(provided, self._expected):
+            body = b'{"error": "unauthorized"}'
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
+
+
+def _build_http_app(
+    graph_path: str,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    api_key: str | None = None,
+    path: str = "/mcp",
+    json_response: bool = False,
+    stateless: bool = False,
+    session_timeout: float | None = 3600.0,
+):
+    """Build the Starlette ASGI app for the Streamable HTTP transport.
+
+    Split out from :func:`serve_http` (which blocks on uvicorn) so the wiring
+    can be exercised with an in-process ASGI test client.
+
+    ``session_timeout`` reaps stateful sessions idle for that many seconds so a
+    long-running shared server does not leak memory when IDE clients disconnect
+    without sending a DELETE. ``None`` (or <= 0) disables reaping; it is forced
+    to ``None`` in stateless mode, which has no sessions to reap.
+    """
+    try:
+        import contextlib
+
+        from starlette.applications import Starlette
+        from starlette.middleware import Middleware
+        from starlette.routing import Route
+
+        from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+        from mcp.server.transport_security import TransportSecuritySettings
+    except ImportError as e:
+        raise ImportError(
+            'HTTP transport needs the mcp extra (mcp + starlette + uvicorn). '
+            'Run: pip install "graphifyy[mcp]"'
+        ) from e
+
+    # A blank key (e.g. --api-key "" or an empty GRAPHIFY_API_KEY) must not be
+    # mistaken for "auth on" — normalize it to None so the gate is unambiguous.
+    api_key = (api_key or "").strip() or None
+
+    server = _build_server(graph_path)
+
+    # DNS-rebinding protection. When the operator binds a wildcard address they
+    # are intentionally exposing the server, so accept any Host header; for a
+    # loopback/specific bind, restrict Host to that address (with and without
+    # the port) plus the localhost aliases.
+    if host in ("0.0.0.0", "::", ""):
+        security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    else:
+        allowed = {host, "localhost", "127.0.0.1"}
+        allowed |= {f"{h}:{port}" for h in list(allowed)}
+        security = TransportSecuritySettings(allowed_hosts=sorted(allowed))
+
+    # The SDK rejects a non-positive timeout and forbids one in stateless mode.
+    idle_timeout = None if (stateless or not session_timeout or session_timeout <= 0) else session_timeout
+
+    manager = StreamableHTTPSessionManager(
+        app=server,
+        json_response=json_response,
+        stateless=stateless,
+        security_settings=security,
+        session_idle_timeout=idle_timeout,
+    )
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        # The session manager owns an anyio task group that must wrap the whole
+        # server lifetime, so enter it here rather than per-request.
+        async with manager.run():
+            yield
+
+    middleware = []
+    if api_key:
+        middleware.append(Middleware(_ApiKeyMiddleware, api_key=api_key))
+
+    return Starlette(
+        routes=[Route(path, endpoint=_MCPASGIApp(manager))],
+        middleware=middleware,
+        lifespan=lifespan,
+    )
+
+
+def serve_http(
+    graph_path: str = "graphify-out/graph.json",
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    api_key: str | None = None,
+    path: str = "/mcp",
+    json_response: bool = False,
+    stateless: bool = False,
+    session_timeout: float | None = 3600.0,
+) -> None:
+    """Start the MCP server over Streamable HTTP (MCP spec 2025-03-26).
+
+    Serves the same tools/resources as the stdio transport, so a single shared
+    process can host the graph for a whole team. Clients point their IDE MCP
+    config at ``http://<host>:<port><path>`` (default ``/mcp``).
+
+    ``api_key`` (or the ``GRAPHIFY_API_KEY`` env var) enables a simple header
+    check (``Authorization: Bearer <key>`` or ``X-API-Key: <key>``). OAuth is a
+    deliberate follow-up. Binding ``0.0.0.0`` exposes the server beyond
+    localhost — set an api_key when you do.
+    """
+    try:
+        import uvicorn
+    except ImportError as e:
+        raise ImportError(
+            'HTTP transport needs the mcp extra (mcp + starlette + uvicorn). '
+            'Run: pip install "graphifyy[mcp]"'
+        ) from e
+
+    api_key = (api_key or "").strip() or None
+
+    app = _build_http_app(
+        graph_path,
+        host=host,
+        port=port,
+        api_key=api_key,
+        path=path,
+        json_response=json_response,
+        stateless=stateless,
+        session_timeout=session_timeout,
+    )
+
+    auth_note = "api-key required" if api_key else "no auth (set --api-key to require one)"
+    print(
+        f"graphify MCP server (streamable-http) on http://{host}:{port}{path} - {auth_note}",
+        file=sys.stderr,
+    )
+    if host in ("0.0.0.0", "::", "") and not api_key:
+        print(
+            f"WARNING: binding {host or '0.0.0.0'} with no api-key exposes the graph "
+            "unauthenticated on the network. Set --api-key (or GRAPHIFY_API_KEY).",
+            file=sys.stderr,
+        )
+    uvicorn.run(app, host=host, port=port)
+
+
+def _main(argv: list[str] | None = None) -> None:
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(
+        prog="python -m graphify.serve",
+        description="Serve a graphify knowledge graph over MCP (stdio or Streamable HTTP).",
+    )
+    parser.add_argument(
+        "graph_path",
+        nargs="?",
+        default="graphify-out/graph.json",
+        help="Path to graph.json (default: graphify-out/graph.json)",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Transport to serve on (default: stdio)",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8080, help="HTTP bind port (default: 8080)")
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("GRAPHIFY_API_KEY"),
+        help="Require this key on the HTTP transport (env: GRAPHIFY_API_KEY)",
+    )
+    parser.add_argument("--path", default="/mcp", help="HTTP mount path (default: /mcp)")
+    parser.add_argument(
+        "--json-response",
+        action="store_true",
+        help="Return plain JSON responses instead of SSE streams",
+    )
+    parser.add_argument(
+        "--stateless",
+        action="store_true",
+        help="Run without per-session state (for load-balanced / CI deployments)",
+    )
+    parser.add_argument(
+        "--session-timeout",
+        type=float,
+        default=3600.0,
+        help="Reap stateful sessions idle this many seconds (default: 3600; 0 disables)",
+    )
+    args = parser.parse_args(argv)
+
+    if args.transport == "http":
+        serve_http(
+            args.graph_path,
+            host=args.host,
+            port=args.port,
+            api_key=args.api_key,
+            path=args.path,
+            json_response=args.json_response,
+            stateless=args.stateless,
+            session_timeout=args.session_timeout,
+        )
+    else:
+        serve(args.graph_path)
+
+
 if __name__ == "__main__":
-    graph_path = sys.argv[1] if len(sys.argv) > 1 else "graphify-out/graph.json"
-    serve(graph_path)
+    _main()

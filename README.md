@@ -169,7 +169,9 @@ Install only what you need:
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
 | `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
+| `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
 | `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
+| `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
 | `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
 | `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST extraction | `uv tool install "graphifyy[terraform]"` |
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
@@ -229,6 +231,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | Type | Extensions |
 |------|-----------|
 | Code (28 tree-sitter grammars) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .rb .cs .kt .scala .php .swift .lua .luau .zig .ps1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .csproj .fsproj .vbproj .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`) |
+| Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Docs | `.md .mdx .qmd .html .txt .rst .yaml .yml` |
@@ -341,9 +344,36 @@ python -m graphify.serve graphify-out/graph.json
 
 # register with Kimi Code:
 kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out/graph.json
+
+# or serve over HTTP so a whole team points at one URL (no local graphify needed):
+python -m graphify.serve graphify-out/graph.json --transport http --port 8080
+python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
 ```
 
 The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
+
+### Shared HTTP server
+
+`--transport stdio` (the default) spawns one local server per developer. `--transport http` serves the same tools over the MCP Streamable HTTP transport, so a single shared process can serve the graph for the whole team — clients point their IDE MCP config at `http://<host>:8080/mcp` instead of running graphify locally.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--transport {stdio,http}` | `stdio` | Transport to serve on |
+| `--host` | `127.0.0.1` | HTTP bind host (use `0.0.0.0` to expose beyond localhost) |
+| `--port` | `8080` | HTTP bind port |
+| `--api-key` | env `GRAPHIFY_API_KEY` | Require `Authorization: Bearer <key>` (or `X-API-Key`) |
+| `--path` | `/mcp` | HTTP mount path |
+| `--json-response` | off | Return plain JSON instead of SSE streams |
+| `--stateless` | off | No per-session state (for load-balanced / CI deployments) |
+| `--session-timeout` | `3600` | Reap idle stateful sessions after N seconds (`0` disables) |
+
+The default `127.0.0.1` bind is loopback-only. Set `--host 0.0.0.0` **and** `--api-key` together when exposing on a shared host. Run it in a container:
+
+```bash
+docker build -t graphify .
+docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
+  /data/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+```
 
 > **WSL / Linux note:** Ubuntu ships `python3`, not `python`. Use a venv to avoid conflicts:
 > ```bash
@@ -367,6 +397,10 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `OLLAMA_MODEL` | Ollama model name | `--backend ollama` (default: auto-detect) |
 | `GRAPHIFY_OLLAMA_NUM_CTX` | Override Ollama KV-cache window size | optional — auto-sized by default |
 | `GRAPHIFY_OLLAMA_KEEP_ALIVE` | Minutes to keep Ollama model loaded | optional — set `0` to unload after each chunk |
+| `AZURE_OPENAI_API_KEY` | Azure OpenAI Service backend | `--backend azure` |
+| `AZURE_OPENAI_ENDPOINT` | Azure resource endpoint URL | `--backend azure` (required alongside API key) |
+| `AZURE_OPENAI_API_VERSION` | Azure API version override | optional — default `2024-12-01-preview` |
+| `AZURE_OPENAI_DEPLOYMENT` or `GRAPHIFY_AZURE_MODEL` | Azure deployment name | optional — default `gpt-4o` |
 | `AWS_*` / `~/.aws/credentials` | AWS Bedrock — standard credential chain | `--backend bedrock` (no API key, uses IAM) |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
@@ -386,7 +420,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 - **Code files** — processed locally via tree-sitter. Nothing leaves your machine. A code-only corpus requires no API key — `graphify extract` runs fully offline.
 - **Video / audio** — transcribed locally with faster-whisper. Nothing leaves your machine.
 - **Docs, PDFs, images** — sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
-- **Data residency** — `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Bedrock → Ollama). For code with data-residency requirements, use `--backend ollama` (fully local) or pass an explicit `--backend` flag. Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
+- **Data residency** — `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). For code with data-residency requirements, use `--backend ollama` (fully local) or pass an explicit `--backend` flag. Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
 - No telemetry, no usage tracking, no analytics.
 - **Query logging** — every `graphify query`, `graphify path`, `graphify explain`, and MCP `query_graph` call is logged to `~/.cache/graphify-queries.log` in JSON Lines format (timestamp, question, corpus, nodes returned, duration). Full subgraph responses are **not** stored by default. Set `GRAPHIFY_QUERY_LOG_DISABLE=1` to opt out, or `GRAPHIFY_QUERY_LOG=/dev/null` to silence without disabling the code path.
 
@@ -526,7 +560,9 @@ GRAPHIFY_OLLAMA_NUM_CTX=32768 graphify extract ./docs --backend ollama   # overr
 GRAPHIFY_OLLAMA_KEEP_ALIVE=0 graphify extract ./docs --backend ollama    # unload model after each chunk (saves VRAM on small GPUs)
 graphify extract ./docs --backend bedrock      # AWS Bedrock via IAM - no API key, uses AWS credential chain
 graphify extract ./docs --backend claude-cli   # route through Claude Code CLI - no API key, uses your Claude subscription
+graphify extract ./docs --backend azure        # Azure OpenAI (set AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)
 graphify extract ./docs --max-workers 16       # AST parallelism (also GRAPHIFY_MAX_WORKERS)
+graphify extract --postgres "postgresql://user:pass@host/db"   # introspect live PostgreSQL schema directly
 graphify extract ./docs --token-budget 30000   # smaller semantic chunks for local/small models
 graphify extract ./docs --max-concurrency 2    # fewer parallel LLM calls (useful for local inference)
 graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow local models (default 600s)

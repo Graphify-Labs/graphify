@@ -216,3 +216,120 @@ def test_hook_check_no_additionalContext(tmp_path):
     assert result.returncode == 0
     assert result.stdout == ""
     assert result.stderr == ""
+
+
+# ── #1161: background rebuild must not rely on nohup (missing on Git for Windows) ──
+
+import ast  # noqa: E402
+import re  # noqa: E402
+
+from graphify.hooks import (  # noqa: E402
+    _HOOK_SCRIPT,
+    _CHECKOUT_SCRIPT,
+    _REBUILD_BODY_COMMIT,
+    _REBUILD_BODY_CHECKOUT,
+    _detached_launch,
+)
+
+_HOOK_SCRIPTS = [("post-commit", _HOOK_SCRIPT), ("post-checkout", _CHECKOUT_SCRIPT)]
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_do_not_use_nohup(name, script):
+    """Git for Windows' bundled shell ships no `nohup`/`setsid`, so the old
+    `nohup ... &` launch died with 'nohup: command not found' and the rebuild
+    silently never ran (#1161). The generated hooks must not reference either."""
+    assert "nohup" not in script, f"{name} still references nohup (#1161)"
+    assert "setsid" not in script, f"{name} still references setsid (#1161)"
+    assert "disown" not in script, f"{name} still uses disown (#1161)"
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_use_cross_platform_detach(name, script):
+    """The replacement detaches via Python: start_new_session on POSIX and
+    DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP on Windows (#1161)."""
+    assert "subprocess.Popen" in script
+    assert "start_new_session=True" in script, f"{name} missing POSIX detach"
+    assert "0x00000008" in script, f"{name} missing Windows DETACHED_PROCESS flag"
+    assert "0x00000200" in script, f"{name} missing CREATE_NEW_PROCESS_GROUP flag"
+
+
+def _launcher_payload(script: str) -> str:
+    """Extract the `python -c "<payload>"` the hook hands to GRAPHIFY_PYTHON.
+
+    The launcher is the only `-c` invocation whose body begins with
+    `import os, subprocess, sys` (the interpreter-detection probes in
+    _PYTHON_DETECT use `-c "import graphify"`)."""
+    m = re.search(r'-c "(import os, subprocess, sys.*?)"\n', script, re.DOTALL)
+    assert m, "launcher payload not found"
+    return m.group(1)
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_launcher_payload_is_shell_quote_safe(name, script):
+    """The launcher is carried inside a shell double-quoted `-c "..."` argument,
+    so it must contain no characters the shell would interpret there: an
+    unescaped double-quote, $, backtick or backslash would corrupt the hook."""
+    payload = _launcher_payload(script)
+    for bad in ('"', "$", "`", "\\"):
+        assert bad not in payload, f"{name} launcher payload contains unsafe {bad!r}"
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_launcher_and_rebuild_body_are_valid_python(name, script):
+    """Both the launcher and the rebuild body it re-executes must parse, so a
+    quoting slip can't ship a hook that crashes the moment git fires it."""
+    payload = _launcher_payload(script)
+    ast.parse(payload)  # launcher itself
+    inner = re.search(r"_src = '''(.*?)'''", payload, re.DOTALL)
+    assert inner, f"{name}: embedded rebuild body not found"
+    ast.parse(inner.group(1))  # the detached child's source
+
+
+def test_rebuild_bodies_are_shell_quote_safe():
+    """The shared rebuild bodies are embedded verbatim into the launcher, so they
+    too must avoid characters unsafe inside a shell double-quoted argument."""
+    for body in (_REBUILD_BODY_COMMIT, _REBUILD_BODY_CHECKOUT):
+        for bad in ('"', "$", "`", "\\"):
+            assert bad not in body
+        assert "'''" not in body  # would terminate the launcher's _src literal
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_read_graphify_root(name, body):
+    """The rebuild must honour the persisted scan root rather than hardcoding the
+    repo top (#1173). Both bodies read graphify-out/.graphify_root and pass the
+    recovered root to _rebuild_code instead of the bare Path('.')."""
+    assert "graphify-out/.graphify_root" in body, f"{name} ignores .graphify_root (#1173)"
+    # The recovered root is what gets rebuilt, not a hardcoded cwd.
+    assert "_rebuild_code(_root" in body, f"{name} does not pass the recovered root"
+    # Quote-safe inside the shell-double-quoted launcher: single quotes only.
+    assert "read_text(encoding='utf-8')" in body, f"{name} root read is not single-quoted"
+
+
+def test_rebuild_bodies_with_graphify_root_are_valid_python():
+    """The .graphify_root snippet must parse so a quoting slip can't ship a hook
+    that crashes the moment git fires it (#1173)."""
+    for body in (_REBUILD_BODY_COMMIT, _REBUILD_BODY_CHECKOUT):
+        ast.parse(body)
+
+
+def test_detached_launch_targets_graphify_python():
+    """The launcher must run via the resolved $GRAPHIFY_PYTHON, not a bare
+    `python`, so it uses the same interpreter the detection block selected."""
+    snippet = _detached_launch(_REBUILD_BODY_COMMIT)
+    assert snippet.startswith('"$GRAPHIFY_PYTHON" -c "')
+    assert "nohup" not in snippet
+
+
+def test_installed_hooks_contain_no_nohup(tmp_path):
+    """End-to-end: the files written to .git/hooks must be nohup-free (#1161)."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    for name in ("post-commit", "post-checkout"):
+        text = (repo / ".git" / "hooks" / name).read_text(encoding="utf-8")
+        assert "nohup" not in text, f"installed {name} still references nohup"
+        assert "start_new_session=True" in text

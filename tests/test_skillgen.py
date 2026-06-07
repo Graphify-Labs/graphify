@@ -455,12 +455,13 @@ def test_monolith_roundtrip_passes_for_aider_and_devin():
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
 
 
-def test_monoliths_change_only_the_enum_and_the_description():
-    """The rendered monolith differs from v8 on exactly the enum + description lines.
+def test_monoliths_change_only_the_enum_description_and_chunk_cleanup():
+    """The rendered monolith differs from v8 on exactly the allowed lines.
 
-    Two changes are now in play for the monoliths: the file_type enum unified to
-    the six-value superset (the prose guidance line + the schema line) and the
-    frontmatter description unified across all platforms. Nothing else may differ.
+    Three changes are now in play for the monoliths: the file_type enum unified to
+    the six-value superset (the prose guidance line + the schema line), the
+    frontmatter description unified across all platforms, and the shell-agnostic
+    chunk-cleanup rewrite (#1172). Nothing else may differ.
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
@@ -468,11 +469,12 @@ def test_monoliths_change_only_the_enum_and_the_description():
         original = gen._normalise(gen._git_show(platforms[key].roundtrip_ref)).splitlines()
         assert len(rendered) == len(original), f"[{key}] line count changed"
         diff_idx = [i for i, (r, o) in enumerate(zip(rendered, original)) if r != o]
-        # Exactly three lines change: the prose enum guidance, the schema line,
-        # and the frontmatter description.
-        assert len(diff_idx) == 3, f"[{key}] expected 3 changed lines, got {len(diff_idx)}"
+        # Exactly four lines change: the prose enum guidance, the schema line,
+        # the frontmatter description, and the chunk-cleanup rewrite.
+        assert len(diff_idx) == 4, f"[{key}] expected 4 changed lines, got {len(diff_idx)}"
         enum_changes = 0
         desc_changes = 0
+        cleanup_changes = 0
         for i in diff_idx:
             line = rendered[i]
             if gen.ENUM_VALUES in line or gen.ENUM_PROSE in line:
@@ -482,12 +484,18 @@ def test_monoliths_change_only_the_enum_and_the_description():
                 assert UNIFIED_DESCRIPTION in line, (
                     f"[{key}] description line is not the unified text: {line!r}"
                 )
+            elif gen._is_chunk_cleanup_line(line):
+                cleanup_changes += 1
+                # The unmatched-glob abort is fixed: the rm no longer carries the
+                # bare chunk glob, and a find ... -delete sweeps the chunks.
+                assert ".graphify_chunk_*.json" not in line.split("find", 1)[0]
             else:
                 raise AssertionError(
-                    f"[{key}] changed line {i} is neither enum nor description: {line!r}"
+                    f"[{key}] changed line {i} is none of enum/description/cleanup: {line!r}"
                 )
         assert enum_changes == 2, f"[{key}] expected 2 enum line changes, got {enum_changes}"
         assert desc_changes == 1, f"[{key}] expected 1 description change, got {desc_changes}"
+        assert cleanup_changes == 1, f"[{key}] expected 1 cleanup change, got {cleanup_changes}"
         # The six-value superset replaced the five-value enum in both files.
         assert any(gen.ENUM_VALUES in line for line in rendered)
 

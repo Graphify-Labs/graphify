@@ -2,6 +2,24 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.8.34 (2026-06-07)
+
+- Feat: Streamable HTTP transport for the MCP server. `python -m graphify.serve graph.json --transport http --port 8080 --api-key $SECRET` serves the graph over the MCP Streamable HTTP transport (spec 2025-03-26) so a single shared process can serve the whole team. Flags: `--host`, `--port`, `--api-key` (env `GRAPHIFY_API_KEY`), `--path`, `--json-response`, `--stateless`, `--session-timeout`. Docker image included. stdio remains the default (#1143).
+- Feat: Salesforce Apex extractor. `.cls` and `.trigger` files are now AST-extracted via regex (no tree-sitter grammar exists for Apex). Extracts classes, interfaces, enums, methods, triggers, and SOQL/DML edges (#1159).
+- Feat: Azure OpenAI Service backend. `--backend azure` reads `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` and auto-detects both. Uses the existing `openai` package — no new dependency (#1107).
+- Feat: live PostgreSQL introspection. `graphify extract --postgres "postgresql://..."` connects directly to a running database and maps tables, views, routines, and FK relations via `information_schema` in a `SERIALIZABLE READ ONLY` transaction. New `graphify[postgres]` extra (psycopg3). Credentials are sanitized from error messages (#1103).
+- Feat: vision and PDF support in headless extract. Images now route through per-backend vision payloads (base64/data-URI for claude/openai, file path for claude-cli, bytes for bedrock) instead of producing garbage binary data. Non-vision backends get a text reference via `_strip_pixels`. PDFs reuse pypdf. 5MB cap, 20-image chunk limit (#1110).
+- Fix: `graphify update` now prunes symbols removed from files that still exist on disk. Previously, deleting a function left a ghost node in the graph until the source file itself was deleted. Every AST node is now stamped with `_origin="ast"`; on a full rebuild any stamped node absent from the fresh output is dropped (#1118).
+- Fix: `graphify path` and `shortest_path` now fire the exact-match bonus for multi-word queries. The per-token comparison never equalled a full multi-word label, so the exact bonus was silently skipped for queries like `"AuthService"` when the label contained punctuation or spaces. The full normalized query is now compared alongside each token (#1165).
+- Fix: `_is_sensitive` no longer flags topic-mentioning filenames as secrets. `token-economics-of-recall.md` and `password-policy-discussion.md` were silently dropped. Generic keywords (token/secret/password) now only fire when the keyword ends the filename stem or the stem is ≤2 words; specific patterns (`.env`, `.pem`, `id_rsa`, etc.) remain unconditional (#1169).
+- Fix: git hooks no longer use `nohup` to background the rebuild. Git for Windows' MSYS shell has no `nohup`, causing the post-commit/post-checkout hook to fail silently and the graph to go stale. Replaced with a cross-platform Python launcher using `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows and `start_new_session=True` on POSIX (#1161 / #1170).
+- Fix: post-commit and post-checkout hooks now respect an existing `.graphify_root`. A scoped build (`graphify src/`) was silently expanded to the full repo on the next commit because the hook hardcoded `Path('.')`. The hook body now reads `graphify-out/.graphify_root` first (#1173).
+- Fix: `graphify affected` now forces a directed graph on load, matching the identical fix already applied in `serve.py` and `__main__.py`. On undirected graphs (`"directed": false` in graph.json) the traversal was direction-blind — missing true callers and reporting callees as affected (#1174).
+- Fix: Step 9 skill cleanup no longer aborts under fish/zsh on pure-code corpora. The `rm -f ... .graphify_chunk_*.json` glob errored with "no matches found" when no chunk files existed, leaving other temp files on disk. Split into `rm -f` for fixed filenames and `find -maxdepth 1 -delete` for the chunk glob (#1172).
+- Fix: `detect_incremental` no longer crashes on schema-drifted manifest files. A dict-valued `mtime` entry (from an older richer schema) is now coerced to `None` and the file is treated as new rather than raising a comparison error (#1163).
+- Fix: numpy pinned to `>=2.0` only on Python 3.13+ in the `svg` and `all` extras. numpy 1.26.4 ships no `cp313` wheel so `uv sync` fell back to a source build requiring a C compiler (#1153 / #1154).
+- Fix: Codex platform skill now installs to `.codex/skills/graphify/` (was `.agents/skills/graphify/`), aligning with where the hook already lives (#1160).
+
 ## 0.8.33 (2026-06-06)
 
 - Feat: install banner — `graphify install` now prints an amber knowledge-graph brain in the terminal (TTY-only, silent in CI/pipes, never raises).

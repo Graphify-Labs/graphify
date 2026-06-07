@@ -415,7 +415,7 @@ _PLATFORM_CONFIG: dict[str, dict] = {
     },
     "codex": {
         "skill_file": "skill-codex.md",
-        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "skill_dst": Path(".codex") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "codex",
     },
@@ -3714,15 +3714,21 @@ def main() -> None:
             )
             sys.exit(1)
 
-        target = Path(sys.argv[2]).resolve()
-        if not target.exists():
-            print(f"error: path not found: {target}", file=sys.stderr)
-            sys.exit(1)
+        has_path = True
+        if sys.argv[2].startswith("-"):
+            has_path = False
+            target = Path(".").resolve()
+        else:
+            target = Path(sys.argv[2]).resolve()
+            if not target.exists():
+                print(f"error: path not found: {target}", file=sys.stderr)
+                sys.exit(1)
 
         backend: str | None = None
         model: str | None = None
         extract_mode: str | None = None
         out_dir: Path | None = None
+        cli_postgres_dsn: str | None = None
         no_cluster = False
         dedup_llm = False
         skip_semantic = False
@@ -3761,7 +3767,7 @@ def main() -> None:
                 sys.exit(2)
             return v
 
-        args = sys.argv[3:]
+        args = sys.argv[3:] if has_path else sys.argv[2:]
         i = 0
         while i < len(args):
             a = args[i]
@@ -3821,8 +3827,16 @@ def main() -> None:
                 cli_excludes.append(args[i + 1]); i += 2
             elif a.startswith("--exclude="):
                 cli_excludes.append(a.split("=", 1)[1]); i += 1
+            elif a == "--postgres" and i + 1 < len(args):
+                cli_postgres_dsn = args[i + 1]; i += 2
+            elif a.startswith("--postgres="):
+                cli_postgres_dsn = a.split("=", 1)[1]; i += 1
             else:
                 i += 1
+
+        if not has_path and cli_postgres_dsn is None:
+            print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)
+            sys.exit(1)
 
         _VALID_MODES = {"deep"}
         if extract_mode is not None and extract_mode not in _VALID_MODES:
@@ -3857,9 +3871,17 @@ def main() -> None:
         )
         manifest_path = graphify_out / "manifest.json"
         existing_graph_path = graphify_out / "graph.json"
-        incremental_mode = manifest_path.exists() and existing_graph_path.exists()
+        incremental_mode = manifest_path.exists() and existing_graph_path.exists() if has_path else False
 
-        if incremental_mode:
+        if not has_path:
+            code_files = []
+            doc_files = []
+            paper_files = []
+            image_files = []
+            deleted_files = []
+            unchanged_total = 0
+            files_by_type = {}
+        elif incremental_mode:
             print(f"[graphify extract] incremental scan of {target}")
             detection = _detect_incremental(
                 target,
@@ -3867,12 +3889,7 @@ def main() -> None:
                 google_workspace=google_workspace or None,
                 extra_excludes=cli_excludes or None,
             )
-        else:
-            print(f"[graphify extract] scanning {target}")
-            detection = _detect(target, google_workspace=google_workspace or None, extra_excludes=cli_excludes or None)
-
-        files_by_type = detection.get("files", {})
-        if incremental_mode:
+            files_by_type = detection.get("files", {})
             new_by_type = detection.get("new_files", {})
             code_files = [Path(p) for p in new_by_type.get("code", [])]
             doc_files = [Path(p) for p in new_by_type.get("document", [])]
@@ -3882,6 +3899,9 @@ def main() -> None:
             deleted_files = list(detection.get("deleted_files", []))
             unchanged_total = sum(len(v) for v in detection.get("unchanged_files", {}).values())
         else:
+            print(f"[graphify extract] scanning {target}")
+            detection = _detect(target, google_workspace=google_workspace or None, extra_excludes=cli_excludes or None)
+            files_by_type = detection.get("files", {})
             code_files = [Path(p) for p in files_by_type.get("code", [])]
             doc_files = [Path(p) for p in files_by_type.get("document", [])]
             paper_files = [Path(p) for p in files_by_type.get("paper", [])]
@@ -4112,13 +4132,25 @@ def main() -> None:
                 sem_result["input_tokens"] += fresh.get("input_tokens", 0)
                 sem_result["output_tokens"] += fresh.get("output_tokens", 0)
 
-        # Merge AST + semantic. Order matters for deduplication: passing AST
+        pg_result: dict = {"nodes": [], "edges": []}
+        if cli_postgres_dsn is not None:
+            from graphify.pg_introspect import introspect_postgres
+            print(f"[graphify extract] introspecting PostgreSQL schema...")
+            try:
+                pg_result = introspect_postgres(cli_postgres_dsn)
+            except (ConnectionError, ImportError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(f"[graphify extract] PostgreSQL: {len(pg_result['nodes'])} nodes, "
+                  f"{len(pg_result['edges'])} edges")
+
+        # Merge AST + semantic + pg_result. Order matters for deduplication: passing AST
         # first means semantic node attributes win on collision (richer labels
         # for symbols also referenced in docs). Hyperedges only come from the
         # semantic side.
         merged: dict = {
-            "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])),
-            "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])),
+            "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])),
+            "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])),
             "hyperedges": list(sem_result.get("hyperedges", [])),
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
