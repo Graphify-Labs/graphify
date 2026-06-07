@@ -11041,13 +11041,13 @@ def extract_commonlisp(path: Path) -> dict:
             normalized.append(''.join(_CL_CHAR_MAP.get(c, c) for c in p))
         return _make_id(*normalized)
 
-    def add_node(nid: str, label: str, line: int) -> None:
+    def add_node(nid: str, label: str, line: int, file_type: str = "code") -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
             nodes.append({
                 "id": nid,
                 "label": label,
-                "file_type": "code",
+                "file_type": file_type,
                 "source_file": str_path,
                 "source_location": f"L{line}",
             })
@@ -11214,7 +11214,7 @@ def extract_commonlisp(path: Path) -> dict:
                 doc_text = _text(child).strip('"')
                 if doc_text:
                     doc_nid = _cl_id(func_nid, "rationale")
-                    add_node(doc_nid, doc_text[:120], child.start_point[0] + 1)
+                    add_node(doc_nid, doc_text[:120], child.start_point[0] + 1, file_type="rationale")
                     add_edge(doc_nid, func_nid, "rationale_for",
                              child.start_point[0] + 1)
                 break
@@ -11304,7 +11304,7 @@ def extract_commonlisp(path: Path) -> dict:
                     doc_text = _text(child).strip('"')
                     if doc_text:
                         doc_nid = _cl_id(nid, "rationale")
-                        add_node(doc_nid, doc_text[:120], child.start_point[0] + 1)
+                        add_node(doc_nid, doc_text[:120], child.start_point[0] + 1, file_type="rationale")
                         add_edge(doc_nid, nid, "rationale_for",
                                  child.start_point[0] + 1)
                     break
