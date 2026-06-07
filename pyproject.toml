@@ -75,6 +75,7 @@ all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_
 
 [project.scripts]
 graphify = "graphify.__main__:main"
+graphify-mcp = "graphify.serve:_main"
 
 [dependency-groups]
 dev = [
