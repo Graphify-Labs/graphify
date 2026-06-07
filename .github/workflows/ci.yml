@@ -65,6 +65,15 @@ jobs:
       - name: ruff check
         run: ruff check .
 
+      - name: bandit (advisory)
+        # TODO(Phase 8 follow-up): bandit currently reports 5 Medium
+        # confidence issues in graphify/ (3× B104 hardcoded_bind_all_interfaces
+        # in serve.py / mcp_ingest.py, 2× B314 xml.etree.ElementTree.fromstring
+        # in docx_to_markdown / xlsx_extract_structure). Once those are
+        # fixed or triaged with ``# nosec`` annotations, drop the ``|| true``
+        # below so bandit becomes a blocking gate.
+        run: bandit -c pyproject.toml -r graphify || true
+
   test:
     runs-on: ubuntu-latest
     strategy:
