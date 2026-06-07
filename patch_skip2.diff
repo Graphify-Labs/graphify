@@ -1,0 +1,16 @@
+--- graphify/__main__.py
++++ graphify/__main__.py
+@@ -3892,6 +3892,13 @@
+             transcript_paths = _transcribe_all([str(p) for p in video_files])
+             doc_files.extend(Path(p) for p in transcript_paths)
+
++        if skip_semantic:
++            doc_files = []
++            paper_files = []
++            image_files = []
++            dedup_llm = False
++            print("[graphify extract] skipping semantic extraction (--skip-semantic)")
++
+         semantic_files = doc_files + paper_files + image_files
+         if incremental_mode:
+             print(

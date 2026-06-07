@@ -198,3 +198,24 @@ def test_extract_without_key_still_errors_when_docs_present(
     assert "no LLM API key found" in err
     assert "code-only corpus needs no key" in err
     assert not (out_dir / "graphify-out" / "graph.json").exists()
+
+def test_extract_skip_semantic_bypasses_llm_key_check(monkeypatch, tmp_path, capsys):
+    """--skip-semantic clears docs so no API key is required, and writes a graph."""
+    corpus = _make_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--out", str(out_dir), "--skip-semantic"],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    graph = out_dir / "graphify-out" / "graph.json"
+    assert graph.exists(), "--skip-semantic must write graph.json without a key"
+    out = capsys.readouterr().out
+    assert "skipping semantic extraction (--skip-semantic)" in out

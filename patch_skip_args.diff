@@ -1,0 +1,28 @@
+--- graphify/__main__.py
++++ graphify/__main__.py
+@@ -3707,7 +3707,7 @@
+             print(
+                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
+                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
+-                "[--max-workers N] [--token-budget N] [--max-concurrency N] "
++                "[--skip-semantic] [--max-workers N] [--token-budget N] [--max-concurrency N] "
+                 "[--api-timeout S]",
+                 file=sys.stderr,
+             )
+@@ -3723,6 +3723,7 @@
+         out_dir: Path | None = None
+         no_cluster = False
+         dedup_llm = False
++        skip_semantic = False
+         google_workspace = False
+         global_merge = False
+         global_repo_tag: str | None = None
+@@ -3769,6 +3770,8 @@
+                 no_cluster = True; i += 1
+             elif a == "--dedup-llm":
+                 dedup_llm = True; i += 1
++            elif a == "--skip-semantic":
++                skip_semantic = True; i += 1
+             elif a == "--google-workspace":
+                 google_workspace = True; i += 1
+             elif a == "--global":
