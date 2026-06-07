@@ -186,7 +186,11 @@ def deduplicate_entities(
         for node in group:
             sf = node.get("source_file") or ""
             by_file[sf].append(node)
-        for file_group in by_file.values():
+        for sf, file_group in by_file.items():
+            if not sf:
+                # No source_file — cannot prove same symbol; skip to avoid
+                # collapsing distinct nodes that happen to share a label (#1178).
+                continue
             if len(file_group) > 1:
                 winner = _pick_winner(file_group)
                 for node in file_group:

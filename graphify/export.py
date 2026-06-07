@@ -493,9 +493,12 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 import sys as _sys
                 print(
                     f"[graphify] WARNING: new graph has {new_n} nodes but existing "
-                    f"graph.json has {existing_n}. Refusing to overwrite — you may be "
-                    f"missing chunk files from a previous session. "
-                    f"Pass force=True to override.",
+                    f"graph.json has {existing_n} (net -{existing_n - new_n}). "
+                    f"Refusing to overwrite. Possible causes: missing chunk files from "
+                    f"a previous session, or fuzzy dedup collapsed same-named symbols "
+                    f"across files during an --update on an already-current graph. "
+                    f"Run a full rebuild (/graphify .) to be safe, or pass force=True "
+                    f"only if you have verified the reduction is legitimate.",
                     file=_sys.stderr,
                 )
                 return False

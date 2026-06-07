@@ -18,7 +18,6 @@
 #   refs_dst      rendered references/ dir, relative to the repo root (split only).
 #   name          frontmatter name (default "graphify"; graphify-windows for windows).
 #   description   frontmatter description, PRESERVED VERBATIM per platform. Required.
-#   trigger       frontmatter trigger (default "/graphify"; omit -> no trigger line).
 #   dispatch      Part-B dispatch fragment basename under fragments/dispatch/.
 #   query_variant cli | cli-inline. Selects both the core query stub and the
 #                 query reference body.
@@ -158,7 +157,6 @@ core = "core"
 skill_dst = "graphify/skill-kiro.md"
 refs_dst = "graphify/skills/kiro/references"
 description = "Use for any question about a codebase, its architecture, file relationships, or project content — especially when graphify-out/ exists, where the question should be treated as a graphify query first. Turns any input (code, docs, papers, images, videos) into a persistent knowledge graph with god nodes, community detection, and query/path/explain tools."
-trigger = ""
 dispatch = "agent-tool-disk"
 query_variant = "cli-inline"
 extraction = "compact"
@@ -169,7 +167,6 @@ core = "core"
 skill_dst = "graphify/skill-pi.md"
 refs_dst = "graphify/skills/pi/references"
 description = "Use for any question about a codebase, its architecture, file relationships, or project content — especially when graphify-out/ exists, where the question should be treated as a graphify query first. Turns any input (code, docs, papers, images, videos) into a persistent knowledge graph with god nodes, community detection, and query/path/explain tools."
-trigger = ""
 dispatch = "agent-tool-disk"
 query_variant = "cli-inline"
 extraction = "compact"

@@ -74,6 +74,122 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
 fi
 """
 
+# The Python that the rebuild runs, shared by both hooks. Embedded verbatim into
+# the launcher below and re-executed in the detached child. Must not contain the
+# double-quote, $, backtick or backslash characters: it is carried inside a
+# shell double-quoted `-c "..."` argument (see _detached_launch).
+_REBUILD_BODY_COMMIT = """\
+import os, signal, sys
+from pathlib import Path
+
+changed_raw = os.environ.get('GRAPHIFY_CHANGED', '')
+changed = [Path(f.strip()) for f in changed_raw.strip().splitlines() if f.strip()]
+
+if not changed:
+    sys.exit(0)
+
+print(f'[graphify hook] {len(changed)} file(s) changed - rebuilding graph...')
+
+try:
+    from graphify.watch import _rebuild_code, _apply_resource_limits
+    _apply_resource_limits()
+    _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
+    if _timeout > 0 and hasattr(signal, 'SIGALRM'):
+        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
+        signal.alarm(_timeout)
+    _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
+    _root = Path('.')
+    _saved = Path('graphify-out/.graphify_root')
+    if _saved.exists():
+        _txt = _saved.read_text(encoding='utf-8').strip()
+        if _txt:
+            _root = Path(_txt)
+    _rebuild_code(_root, changed_paths=changed, force=_force)
+except TimeoutError as exc:
+    print(f'[graphify hook] {exc}')
+    sys.exit(1)
+except Exception as exc:
+    print(f'[graphify hook] Rebuild failed: {exc}')
+    sys.exit(1)
+"""
+
+_REBUILD_BODY_CHECKOUT = """\
+from graphify.watch import _rebuild_code, _apply_resource_limits
+from pathlib import Path
+import os, signal, sys
+try:
+    _apply_resource_limits()
+    _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
+    if _timeout > 0 and hasattr(signal, 'SIGALRM'):
+        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
+        signal.alarm(_timeout)
+    _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
+    # post-checkout: branch switch can touch arbitrary files; full rebuild path
+    # (no changed_paths) is correct here. The flock inside _rebuild_code still
+    # prevents pile-ups when commit + checkout fire back-to-back.
+    _root = Path('.')
+    _saved = Path('graphify-out/.graphify_root')
+    if _saved.exists():
+        _txt = _saved.read_text(encoding='utf-8').strip()
+        if _txt:
+            _root = Path(_txt)
+    _rebuild_code(_root, force=_force)
+except TimeoutError as exc:
+    print(f'[graphify] {exc}')
+    sys.exit(1)
+except Exception as exc:
+    print(f'[graphify] Rebuild failed: {exc}')
+    sys.exit(1)
+"""
+
+# Cross-platform detached-launch shim (#1161). The hooks used to background the
+# rebuild with `nohup "$GRAPHIFY_PYTHON" -c "..." &`, but Git for Windows' bundled
+# MSYS shell ships no nohup (nor setsid), so that line died with
+# 'nohup: command not found' and the rebuild silently never ran — git commit/pull
+# still returned 0, so the graph just went stale with no signal. graphify already
+# requires Python, so we let Python do the detaching: a tiny outer process spawns
+# the real rebuild fully detached and returns immediately, so the hook never
+# blocks. POSIX uses start_new_session (the setsid equivalent); Windows uses
+# DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, breaking away from any job object
+# when allowed. This payload is carried inside a shell double-quoted -c argument,
+# so it deliberately uses only single-quoted Python strings (no ", $, ` or \\).
+_LAUNCHER_TEMPLATE = """\
+import os, subprocess, sys
+_src = '''
+__REBUILD_BODY__
+'''
+_log = os.environ.get('GRAPHIFY_REBUILD_LOG') or os.path.join(os.path.expanduser('~'), '.cache', 'graphify-rebuild.log')
+try:
+    os.makedirs(os.path.dirname(_log), exist_ok=True)
+    _out = open(_log, 'a', buffering=1, encoding='utf-8', errors='replace')
+except OSError:
+    _out = subprocess.DEVNULL
+_kw = dict(stdout=_out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=os.getcwd(), close_fds=True)
+_cmd = [sys.executable, '-c', _src]
+if os.name == 'nt':
+    _flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen(_cmd, creationflags=_flags | 0x01000000, **_kw)  # + CREATE_BREAKAWAY_FROM_JOB
+    except OSError:
+        subprocess.Popen(_cmd, creationflags=_flags, **_kw)
+else:
+    subprocess.Popen(_cmd, start_new_session=True, **_kw)
+"""
+
+
+def _detached_launch(rebuild_body: str) -> str:
+    """Return a POSIX-sh line that runs ``rebuild_body`` as a detached background
+    Python process via ``$GRAPHIFY_PYTHON``.
+
+    Replaces the old ``nohup ... &`` form, which failed on Git for Windows'
+    shell (no nohup/setsid) and let the rebuild silently never run (#1161).
+    The launcher writes the child's output to ``$GRAPHIFY_REBUILD_LOG`` and
+    returns the instant the child is spawned, so the git hook never blocks.
+    """
+    launcher = _LAUNCHER_TEMPLATE.replace("__REBUILD_BODY__", rebuild_body)
+    return '"$GRAPHIFY_PYTHON" -c "' + launcher + '"\n'
+
+
 _HOOK_SCRIPT = """\
 # graphify-hook-start
 # Auto-rebuilds the knowledge graph after each commit (code files only, no LLM needed).
@@ -107,41 +223,15 @@ fi
 """ + _PYTHON_DETECT + """
 export GRAPHIFY_CHANGED="$CHANGED"
 
-# Run rebuild detached so git commit returns immediately.
-# Full repo rebuilds can take hours; blocking the post-commit hook stalls the shell.
+# Run the rebuild detached so git commit returns immediately. Full-repo rebuilds
+# can take hours; blocking the post-commit hook stalls the shell. The Python
+# launcher below detaches the child cross-platform, so it works on Git for
+# Windows' shell too (which lacks the coreutils backgrounding tools) (#1161).
 _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
+export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify hook] launching background rebuild (log: $_GRAPHIFY_LOG)"
-nohup "$GRAPHIFY_PYTHON" -c "
-import os, signal, sys
-from pathlib import Path
-
-changed_raw = os.environ.get('GRAPHIFY_CHANGED', '')
-changed = [Path(f.strip()) for f in changed_raw.strip().splitlines() if f.strip()]
-
-if not changed:
-    sys.exit(0)
-
-print(f'[graphify hook] {len(changed)} file(s) changed - rebuilding graph...')
-
-try:
-    from graphify.watch import _rebuild_code, _apply_resource_limits
-    _apply_resource_limits()
-    _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
-    if _timeout > 0 and hasattr(signal, 'SIGALRM'):
-        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
-        signal.alarm(_timeout)
-    _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
-    _rebuild_code(Path('.'), changed_paths=changed, force=_force)
-except TimeoutError as exc:
-    print(f'[graphify hook] {exc}')
-    sys.exit(1)
-except Exception as exc:
-    print(f'[graphify hook] Rebuild failed: {exc}')
-    sys.exit(1)
-" >> "$_GRAPHIFY_LOG" 2>&1 < /dev/null &
-disown 2>/dev/null || true
-# graphify-hook-end
+""" + _detached_launch(_REBUILD_BODY_COMMIT) + """# graphify-hook-end
 """
 
 
@@ -179,31 +269,9 @@ GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
 """ + _PYTHON_DETECT + """
 _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
+export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify] Branch switched - launching background rebuild (log: $_GRAPHIFY_LOG)"
-nohup "$GRAPHIFY_PYTHON" -c "
-from graphify.watch import _rebuild_code, _apply_resource_limits
-from pathlib import Path
-import os, signal, sys
-try:
-    _apply_resource_limits()
-    _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
-    if _timeout > 0 and hasattr(signal, 'SIGALRM'):
-        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
-        signal.alarm(_timeout)
-    _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
-    # post-checkout: branch switch can touch arbitrary files; full rebuild path
-    # (no changed_paths) is correct here. The flock inside _rebuild_code still
-    # prevents pile-ups when commit + checkout fire back-to-back.
-    _rebuild_code(Path('.'), force=_force)
-except TimeoutError as exc:
-    print(f'[graphify] {exc}')
-    sys.exit(1)
-except Exception as exc:
-    print(f'[graphify] Rebuild failed: {exc}')
-    sys.exit(1)
-" >> "$_GRAPHIFY_LOG" 2>&1 < /dev/null &
-disown 2>/dev/null || true
-# graphify-checkout-hook-end
+""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """# graphify-checkout-hook-end
 """
 
 

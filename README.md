@@ -126,7 +126,8 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Platform | Install command |
 |----------|----------------|
 | Claude Code (Linux/Mac) | `graphify install` |
-| Claude Code (Windows) | `graphify install --platform windows` |
+| Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
+| CodeBuddy | `graphify install --platform codebuddy` |
 | Codex | `graphify install --platform codex` |
 | OpenCode | `graphify install --platform opencode` |
 | Kilo Code | `graphify install --platform kilo` |
@@ -147,7 +148,8 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
-> Codex users: also add `multi_agent = true` under `[features]` in `~/.codex/config.toml`.
+Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support PreToolUse hooks — AGENTS.md is the always-on mechanism.
+
 > Codex uses `$graphify` instead of `/graphify`.
 
 ### Optional extras
@@ -186,6 +188,7 @@ Run this once in your project after building a graph:
 | Platform | Command |
 |----------|---------|
 | Claude Code | `graphify claude install` |
+| CodeBuddy | `graphify codebuddy install` |
 | Codex | `graphify codex install` |
 | OpenCode | `graphify opencode install` |
 | Kilo Code | `graphify kilo install` |
@@ -207,6 +210,10 @@ Run this once in your project after building a graph:
 | Google Antigravity | `graphify antigravity install` |
 
 This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions — preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files. On platforms that support payload-bearing hooks (Claude Code, Gemini CLI), a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path. On the others (Codex, OpenCode, Cursor, etc.), the persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance. `GRAPH_REPORT.md` is still available for broad architecture review.
+
+**CodeBuddy** does the same two things as Claude Code: writes a `CODEBUDDY.md` section telling CodeBuddy to read `graphify-out/GRAPH_REPORT.md` before answering architecture questions, and installs **PreToolUse hooks** (`.codebuddy/settings.json`) that fire before Bash search commands and file reads, nudging toward `graphify query` instead.
+
+**Codex** writes to `AGENTS.md` and also installs a **PreToolUse hook** in `.codex/hooks.json` that fires before every Bash tool call — same always-on mechanism as Claude Code.
 
 To remove graphify from all platforms at once: `graphify uninstall` (add `--purge` to also delete `graphify-out/`). Or use the per-platform command (e.g. `graphify claude uninstall`).
 
@@ -519,6 +526,8 @@ graphify hook status
 # always-on assistant instructions - platform-specific
 graphify claude install            # CLAUDE.md + PreToolUse hook (Claude Code)
 graphify claude uninstall
+graphify codebuddy install         # CODEBUDDY.md + PreToolUse hook (CodeBuddy)
+graphify codebuddy uninstall
 graphify codex install             # AGENTS.md + PreToolUse hook in .codex/hooks.json (Codex)
 graphify opencode install          # AGENTS.md + tool.execute.before plugin (OpenCode)
 graphify kilo install              # native Kilo skill + /graphify command + AGENTS.md + .kilo plugin

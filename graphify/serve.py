@@ -136,11 +136,38 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     scored = []
     norm_terms = [tok for t in terms for tok in _search_tokens(t)]
     idf = _compute_idf(G, norm_terms)
+    # Whole-query string for full-label matching (mirrors _find_node's `term`).
+    joined = " ".join(norm_terms)
+    # Weight the full-query bonus by the rarest constituent term so a specific
+    # multi-word label still outweighs common-token noise; floor at 1.0.
+    joined_w = max((idf.get(t, 1.0) for t in norm_terms), default=1.0)
     for nid, data in G.nodes(data=True):
         norm_label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
         bare_label = norm_label.rstrip("()")
+        # Tokenized form of the label (punctuation stripped, same transform as the
+        # query). norm_label may still carry punctuation like ':' or '-', which a
+        # tokenized query can never equal; comparing token-joined forms on both
+        # sides makes "uoce: dehumidifier driver" match query "uoce dehumidifier
+        # driver".
+        label_tokens = " ".join(_search_tokens(data.get("label") or ""))
         source = (data.get("source_file") or "").lower()
         score = 0.0
+        # Full-query tier: a multi-word query that equals (or prefixes) the whole
+        # label must dominate the per-token bag-of-words sums below, so `path`/
+        # `query` resolve the same node `explain` does (via _find_node). Without
+        # this, no single token equals a multi-word label, the per-token exact
+        # tier never fires, and every node sharing the token set ties -> arbitrary
+        # node-id sort -> wrong/disconnected endpoint -> false "No path found".
+        if joined:
+            nid_lower = nid.lower()
+            if joined in (norm_label, bare_label, label_tokens, nid_lower):
+                score += _EXACT_MATCH_BONUS * 10 * joined_w
+            elif (
+                norm_label.startswith(joined)
+                or bare_label.startswith(joined)
+                or label_tokens.startswith(joined)
+            ):
+                score += _PREFIX_MATCH_BONUS * 10 * joined_w
         for t in norm_terms:
             w = idf.get(t, 1.0)
             # Three-tier precedence: exact > prefix > substring (take the
@@ -155,7 +182,10 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
                 score += _SOURCE_MATCH_BONUS * w
         if score > 0:
             scored.append((score, nid))
-    return sorted(scored, reverse=True)
+    # Sort by score desc; break ties toward the shorter label so a concise exact
+    # match beats a longer superset that happens to share the same score.
+    scored.sort(key=lambda s: (-s[0], len(G.nodes[s[1]].get("label") or s[1]), s[1]))
+    return scored
 
 
 def _pick_seeds(scored: list[tuple[float, str]], max_k: int = 3, gap_ratio: float = 0.2) -> list[str]:

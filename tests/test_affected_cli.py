@@ -58,3 +58,37 @@ def test_affected_cli_relation_filter_limits_reverse_traversal(monkeypatch, tmp_
     assert "Relations: calls" in out
     assert "X()" in out
     assert "__init__.py" not in out
+
+
+def test_affected_cli_forces_directed_on_undirected_graph(monkeypatch, tmp_path, capsys):
+    """A graph persisted with directed=false must still recover caller->callee
+    direction (#1174): affected on the callee returns the caller, not the callee
+    or nothing. Without forcing directed=True, node_link_graph builds an
+    undirected Graph, predecessors() collapses, and the reverse traversal breaks.
+    """
+    graph = nx.DiGraph()
+    graph.add_node("A", label="caller_fn", source_file="a.py", source_location="L1")
+    graph.add_node("B", label="callee_fn", source_file="b.py", source_location="L2")
+    graph.add_edge("A", "B", relation="calls", context="call", confidence="EXTRACTED")
+
+    data = json_graph.node_link_data(graph, edges="links")
+    # Persist as undirected on disk to reproduce the bug condition.
+    data["directed"] = False
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "affected", "B", "--relation", "calls", "--graph", str(graph_path)],
+    )
+
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    # A (the caller) is affected by a change to B (the callee).
+    assert "caller_fn" in out
+    assert "calls" in out
+    # B is the query node, not an affected node, and the result is not empty.
+    assert "No affected nodes found." not in out
