@@ -674,6 +674,17 @@ uv run pytest tests/test_extract.py -q # one module
 uv run pytest tests/ -q -k "python"    # filter by name
 ```
 
+### Lint and packaging
+
+The same gates CI runs are available locally:
+
+```bash
+uv run ruff check .                    # matches the CI `lint` job
+uv run python -m build                 # matches the CI `Build package` step
+```
+
+Run both before opening a PR — they're fast (lint in <1s, build in a few seconds) and catch the most common breakage modes without waiting on the CI round-trip.
+
 > macOS note: the test suite includes both `sample.f90` and `sample.F90` fixtures. These collide on case-insensitive HFS+ / APFS file systems. Run on Linux or in a Docker container if you need to test both Fortran variants simultaneously.
 
 ### Git workflow
