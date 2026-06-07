@@ -54,6 +54,7 @@ _ALWAYS_ON_ALIASES = {
     "_VSCODE_INSTRUCTIONS_SECTION": "vscode-instructions",
     "_ANTIGRAVITY_RULES": "antigravity-rules",
     "_KIRO_STEERING": "kiro-steering",
+    "_AUGMENT_GUIDELINES": "augment-guidelines",
 }
 
 
@@ -149,6 +150,12 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
         if project:
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
+
+    if platform_name == "augment":
+        # Augment Code writes rules into .augment/rules/<name>.md (project-scoped,
+        # checked into the repo). There is no global user-scope skill directory for
+        # Augment; the install is always project-local.
+        return (project_dir or Path(".")) / ".augment" / "rules" / "graphify.md"
 
     if platform_name in ("antigravity", "antigravity-windows"):
         if project:
@@ -521,6 +528,18 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "amp",
+    },
+    "augment": {
+        # Augment Code: skill is written as a Rules file to .augment/rules/graphify.md
+        # (always-on; Augment auto-loads all files in .augment/rules/). The skill
+        # destination is fully handled by _platform_skill_destination; the
+        # "skill_dst" key here is only used as a fallback by _platform_skill_destination
+        # for platforms not listed in the special-cases above, so we set it to the
+        # project-local path. Always-on context is appended to .augment-guidelines.
+        "skill_file": "skill-augment.md",
+        "skill_dst": Path(".augment") / "rules" / "graphify.md",
+        "claude_md": False,
+        "skill_refs": "augment",
     },
     "devin": {
         # Monolith: devin ships the full SKILL.md inline, no references/ sidecar.
@@ -1565,6 +1584,90 @@ def _amp_uninstall(project_dir: Path | None = None) -> None:
     _agents_uninstall(project_dir or Path("."), platform="amp")
 
 
+def _augment_install(project_dir: Path | None = None) -> None:
+    """Install graphify for Augment Code (project-scoped rules file + .augment-guidelines).
+
+    Augment Code reads all Markdown files under .augment/rules/ at the start of
+    every Agent/Chat session (always-on, no trigger needed). The main skill is
+    written there. A short pointer is also appended to .augment-guidelines so
+    that workspace guidelines surface the knowledge-graph instructions for users
+    who have not yet migrated to the Rules file approach.
+    """
+    project_dir = project_dir or Path(".")
+
+    # 1. Write the skill + references/ sidecar to .augment/rules/graphify.md
+    #    _copy_skill_file handles the skill_refs key and installs references/.
+    skill_dst = _copy_skill_file("augment", project=True, project_dir=project_dir)
+    print(f"  skill written   ->  {skill_dst.resolve()}")
+
+    # 2. Append / idempotently update .augment-guidelines
+    guidelines_path = project_dir / ".augment-guidelines"
+    new_section = _always_on("augment-guidelines")
+    marker = "## graphify"
+    if guidelines_path.exists():
+        existing = guidelines_path.read_text(encoding="utf-8")
+        updated = _replace_or_append_section(existing, marker, new_section)
+        if updated.strip() != existing.strip():
+            guidelines_path.write_text(updated, encoding="utf-8")
+            print(f"  .augment-guidelines  ->  updated")
+        else:
+            print(f"  .augment-guidelines  ->  already configured (no change)")
+    else:
+        guidelines_path.write_text(new_section, encoding="utf-8")
+        print(f"  .augment-guidelines  ->  written")
+
+    print()
+    print("Augment Code will now consult the knowledge graph before answering")
+    print("codebase questions. Type /graphify in Augment to build the graph.")
+    print()
+    _print_project_git_add_hint([project_dir / ".augment", project_dir / ".augment-guidelines"])
+
+
+def _augment_uninstall(project_dir: Path | None = None) -> None:
+    """Remove graphify Augment Code rules file and .augment-guidelines section."""
+    project_dir = project_dir or Path(".")
+
+    # 1. Remove .augment/rules/graphify.md (and references/ sidecar if present)
+    skill_dst = _platform_skill_destination("augment", project_dir=project_dir)
+    removed_skill = False
+    if skill_dst.exists():
+        skill_dst.unlink()
+        removed_skill = True
+        print(f"  removed  {skill_dst.resolve()}")
+    refs_dir = skill_dst.parent / "references"
+    if refs_dir.exists():
+        import shutil as _shutil
+        _shutil.rmtree(refs_dir, ignore_errors=True)
+        print(f"  removed  {refs_dir.resolve()}")
+    if not removed_skill:
+        print("  .augment/rules/graphify.md  ->  not found (already removed?)")
+
+    # 2. Remove the ## graphify section from .augment-guidelines using the shared
+    #    _replace_or_append_section mechanism in reverse: find the marker, excise
+    #    the section, and rewrite (or unlink if the file becomes empty).
+    guidelines_path = project_dir / ".augment-guidelines"
+    if guidelines_path.exists():
+        raw = guidelines_path.read_text(encoding="utf-8")
+        marker = "## graphify"
+        if marker in raw:
+            lines = raw.splitlines()
+            start = next((i for i, ln in enumerate(lines) if marker in ln), None)
+            if start is not None:
+                end = len(lines)
+                for j in range(start + 1, len(lines)):
+                    if lines[j].startswith("## ") and j != start:
+                        end = j
+                        break
+                remaining = "\n".join(lines[:start] + lines[end:]).strip()
+                if remaining:
+                    guidelines_path.write_text(remaining + "\n", encoding="utf-8")
+                else:
+                    guidelines_path.unlink()
+                print("  .augment-guidelines  ->  graphify section removed")
+        else:
+            print("  .augment-guidelines  ->  no graphify section found (no change)")
+
+
 def _project_install(platform_name: str, project_dir: Path | None = None) -> None:
     """Install platform skill/config files in the current project."""
     project_dir = project_dir or Path(".")
@@ -1600,6 +1703,8 @@ def _project_install(platform_name: str, project_dir: Path | None = None) -> Non
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
+    elif platform_name == "augment":
+        _augment_install(project_dir)
     elif platform_name in ("copilot", "pi", "kimi"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
@@ -1627,6 +1732,8 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
             _uninstall_codex_hook(project_dir)
     elif platform_name == "antigravity":
         _antigravity_uninstall(project_dir, project=True)
+    elif platform_name == "augment":
+        _augment_uninstall(project_dir)
     elif platform_name == "devin":
         removed = _remove_skill_file("devin", project=True, project_dir=project_dir)
         _devin_rules_uninstall(project_dir)
@@ -1815,6 +1922,8 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     _cursor_uninstall(pd)
     _kiro_uninstall(pd)
     _antigravity_uninstall(pd)
+    # Augment Code: rules file + .augment-guidelines section
+    _augment_uninstall(pd)
     # AGENTS.md covers: codex, aider, opencode, claw, droid, trae, trae-cn, hermes, copilot
     _agents_uninstall(pd)
     # Amp also drops a user-scope skill at ~/.config/agents/skills, which the
@@ -1967,7 +2076,7 @@ def main() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codex|opencode|aider|amp|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codex|opencode|aider|amp|augment|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -2123,6 +2232,10 @@ def main() -> None:
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
+        print(
+            "  augment install         write .augment/rules/graphify.md + .augment-guidelines (Augment Code)"
+        )
+        print("  augment uninstall       remove .augment/rules/graphify.md and .augment-guidelines section")
         print()
         return
 
@@ -2337,6 +2450,15 @@ def main() -> None:
                 _amp_uninstall(Path("."))
         else:
             print("Usage: graphify amp [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "augment":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            _augment_install(Path("."))
+        elif subcmd == "uninstall":
+            _augment_uninstall(Path("."))
+        else:
+            print("Usage: graphify augment [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
