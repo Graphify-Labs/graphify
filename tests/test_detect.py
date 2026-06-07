@@ -1300,3 +1300,30 @@ def test_save_manifest_in_root_symlink_roundtrips(tmp_path):
 
     loaded = load_manifest(manifest_path, root=tmp_path)
     assert str(tmp_path.resolve() / "alias.py") in loaded
+
+
+def test_detect_falls_back_to_gitignore_for_translations(tmp_path):
+    """When no .graphifyignore exists, .gitignore patterns are honored (#945).
+
+    Specifically, the 27 README translations under docs/translations/ duplicate
+    the primary README in graphify's nav and should be ignored to keep god
+    nodes focused on real code abstractions.
+    """
+    (tmp_path / ".gitignore").write_text("docs/translations\n")
+    (tmp_path / "graphify").mkdir()
+    (tmp_path / "graphify" / "core.py").write_text("def main(): pass\n")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "translations").mkdir()
+    for lang in ("en", "pt-BR", "es-ES", "fr-FR", "de-DE"):
+        (tmp_path / "docs" / "translations" / f"README.{lang}.md").write_text(
+            f"# {lang}\nTranslated."
+        )
+    (tmp_path / "docs" / "real.md").write_text("# Real Doc\n")
+
+    result = detect(tmp_path)
+    file_list = [f for files in result["files"].values() for f in files]
+    assert any("core.py" in f for f in file_list)
+    assert any("real.md" in f for f in file_list)
+    leaked = [f for f in file_list if "translations" in f]
+    assert not leaked, f"docs/translations/ should be ignored but found: {leaked}"
+    assert result["graphifyignore_patterns"] >= 1
