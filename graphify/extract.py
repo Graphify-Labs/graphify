@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import warnings
 import textwrap
 from collections import Counter
 from dataclasses import dataclass, field
@@ -4097,7 +4098,17 @@ def extract_commonlisp(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-commonlisp not installed"}
 
     try:
-        language = Language(tscl.language())
+        # tree-sitter-commonlisp 0.4.1 (latest) ships the old binding that returns
+        # an int pointer from language(); tree_sitter.Language only accepts that
+        # int via a deprecated path. Silence that one warning at the call site
+        # until the grammar ships a PyCapsule binding.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="int argument support is deprecated",
+                category=DeprecationWarning,
+            )
+            language = Language(tscl.language())
         parser = Parser(language)
         source = path.read_bytes()
         tree = parser.parse(source)
