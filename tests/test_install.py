@@ -8,7 +8,7 @@ import pytest
 
 PLATFORMS = {
     "claude": (".claude/skills/graphify/SKILL.md",),
-    "codex": (".agents/skills/graphify/SKILL.md",),
+    "codex": (".codex/skills/graphify/SKILL.md",),
     "opencode": (".config/opencode/skills/graphify/SKILL.md",),
     "kilo": (
         ".config/kilo/skills/graphify/SKILL.md",
@@ -41,7 +41,7 @@ def test_install_default_claude(tmp_path):
 
 def test_install_codex(tmp_path):
     _install(tmp_path, "codex")
-    assert (tmp_path / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert (tmp_path / ".codex" / "skills" / "graphify" / "SKILL.md").exists()
 
 
 def test_install_opencode(tmp_path):
@@ -87,10 +87,10 @@ def test_install_project_codex_writes_skill_and_agents(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["graphify", "install", "--project", "--platform", "codex"])
     with patch("graphify.__main__.Path.home", return_value=home):
         main()
-    assert (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert (project / ".codex" / "skills" / "graphify" / "SKILL.md").exists()
     assert (project / "AGENTS.md").exists()
     assert (project / ".codex" / "hooks.json").exists()
-    assert not (home / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert not (home / ".codex" / "skills" / "graphify" / "SKILL.md").exists()
 
 
 def test_claude_subcommand_project_install_and_uninstall_are_project_scoped(tmp_path, monkeypatch):
@@ -124,14 +124,14 @@ def test_codex_subcommand_project_install_and_uninstall_are_project_scoped(tmp_p
     home = tmp_path / "home"
     project = tmp_path / "project"
     project.mkdir()
-    user_skill = home / ".agents" / "skills" / "graphify" / "SKILL.md"
+    user_skill = home / ".codex" / "skills" / "graphify" / "SKILL.md"
     user_skill.parent.mkdir(parents=True)
     user_skill.write_text("user skill")
     monkeypatch.chdir(project)
     with patch("graphify.__main__.Path.home", return_value=home):
         monkeypatch.setattr(sys, "argv", ["graphify", "codex", "install", "--project"])
         main()
-        assert (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+        assert (project / ".codex" / "skills" / "graphify" / "SKILL.md").exists()
         assert (project / "AGENTS.md").exists()
         assert (project / ".codex" / "hooks.json").exists()
         assert user_skill.exists()
@@ -140,7 +140,7 @@ def test_codex_subcommand_project_install_and_uninstall_are_project_scoped(tmp_p
         main()
 
     assert user_skill.exists()
-    assert not (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert not (project / ".codex" / "skills" / "graphify" / "SKILL.md").exists()
     assert not (project / "AGENTS.md").exists()
     hooks_path = project / ".codex" / "hooks.json"
     assert hooks_path.exists()
@@ -339,7 +339,7 @@ def test_uninstall_project_removes_project_skill_only(tmp_path, monkeypatch):
     home = tmp_path / "home"
     project = tmp_path / "project"
     project.mkdir()
-    user_skill = home / ".agents" / "skills" / "graphify" / "SKILL.md"
+    user_skill = home / ".codex" / "skills" / "graphify" / "SKILL.md"
     user_skill.parent.mkdir(parents=True)
     user_skill.write_text("user skill")
     monkeypatch.chdir(project)
@@ -349,7 +349,7 @@ def test_uninstall_project_removes_project_skill_only(tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["graphify", "uninstall", "--project", "--platform", "codex"])
         main()
     assert user_skill.exists()
-    assert not (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert not (project / ".codex" / "skills" / "graphify" / "SKILL.md").exists()
     assert not (project / "AGENTS.md").exists()
 
 
