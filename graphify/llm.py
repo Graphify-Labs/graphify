@@ -953,7 +953,8 @@ def _call_llm(prompt: str, *, backend: str, max_tokens: int = 200) -> str:
         return resp.content[0].text if resp.content else ""
 
     if backend == "claude-cli":
-        import shutil, subprocess
+        import shutil
+        import subprocess
         if shutil.which("claude") is None:
             raise RuntimeError("Claude Code CLI not found on $PATH")
         proc = subprocess.run(
