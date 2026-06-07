@@ -131,9 +131,7 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
     if platform_name == "gemini":
         if project:
             return (project_dir or Path(".")) / ".gemini" / "skills" / "graphify" / "SKILL.md"
-        if platform.system() == "Windows":
-            return Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
-        return Path.home() / ".gemini" / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
 
     if platform_name == "opencode":
         if project:
