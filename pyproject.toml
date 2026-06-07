@@ -52,7 +52,7 @@ mcp = ["mcp"]
 neo4j = ["neo4j"]
 pdf = ["pypdf", "markdownify"]
 watch = ["watchdog"]
-svg = ["matplotlib", "numpy>=2.0"]
+svg = ["matplotlib", "numpy>=2.0; python_version >= '3.13'"]
 leiden = ["graspologic; python_version < '3.13'"]
 office = ["python-docx", "openpyxl"]
 google = ["openpyxl"]
@@ -70,7 +70,7 @@ sql = ["tree-sitter-sql"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp", "matplotlib", "numpy>=2.0", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl"]
+all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
