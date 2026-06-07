@@ -98,22 +98,59 @@ _SENSITIVE_DIRS = frozenset({
     ".ssh", ".gnupg", ".aws", ".gcloud", "secrets", ".secrets", "credentials",
 })
 
-# Files that may contain secrets - skip silently.
+# Files that may contain secrets - skip silently. These patterns are specific
+# (extensions, exact credential-store names) and always apply.
+_SENSITIVE_PATTERNS = [
+    re.compile(r'(^|[\\/])\.(env|envrc)(\.|$)', re.IGNORECASE),
+    re.compile(r'\.(pem|key|p12|pfx|cert|crt|der|p8)$', re.IGNORECASE),
+    re.compile(r'(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$'),
+    re.compile(r'(\.netrc|\.pgpass|\.htpasswd)$', re.IGNORECASE),
+    re.compile(r'(aws_credentials|gcloud_credentials|service.account)', re.IGNORECASE),
+]
+
+# Generic keyword patterns - these only count when the keyword is LOAD-BEARING
+# in the filename (see _generic_keyword_hit), because a keyword buried mid-phrase
+# in a long descriptive slug names a topic, not a credential store:
+# "token-economics-of-recall.md" is a note ABOUT tokens; "api_token.txt" IS one.
 # Uses lookarounds instead of \b so underscore-prefixed names like api_token.txt
 # match. Both patterns use (?![a-zA-Z]) so that the trailing-underscore behavior
 # is consistent: "secret_store.txt" IS flagged, "tokenizer.py" is NOT (because
 # "i" after "token" is alpha and blocks the match).
 # `token` is kept separate because its longer suffix "izer"/"ize" is the only
 # common false-positive; other keywords have no such well-known derivatives.
-_SENSITIVE_PATTERNS = [
-    re.compile(r'(^|[\\/])\.(env|envrc)(\.|$)', re.IGNORECASE),
-    re.compile(r'\.(pem|key|p12|pfx|cert|crt|der|p8)$', re.IGNORECASE),
+_GENERIC_KEYWORD_PATTERNS = [
     re.compile(r'(?<![a-zA-Z0-9])(credential|secret|passwd|password|private_key)s?(?![a-zA-Z])', re.IGNORECASE),
     re.compile(r'(?<![a-zA-Z0-9])tokens?(?![a-zA-Z])', re.IGNORECASE),
-    re.compile(r'(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$'),
-    re.compile(r'(\.netrc|\.pgpass|\.htpasswd)$', re.IGNORECASE),
-    re.compile(r'(aws_credentials|gcloud_credentials|service.account)', re.IGNORECASE),
 ]
+
+# Word separators for the load-bearing check (underscore intentionally included;
+# multi-word keywords like private_key are handled by the end-of-stem check,
+# which runs before word counting).
+_WORD_SPLIT = re.compile(r'[-_\s]+')
+
+
+def _generic_keyword_hit(name: str) -> bool:
+    """True if a generic secret keyword appears load-bearing in the filename.
+
+    Secret-store files name their contents, and in English compounds the
+    content noun is the head, which comes last: "github-personal-access-token",
+    "api_token", "oauth_token". A keyword that is neither at the end of the
+    stem nor in a short (<=2 word) name is a topic word in a descriptive slug
+    ("token-economics-of-recall.md", "password-policy-discussion.md") and must
+    not cause the file to be silently dropped from the graph (#436, #718).
+    """
+    # Stem = name up to the first dot, ignoring leading dots so dotfiles like
+    # ".token" keep their keyword ("" stems would never match).
+    stem = name.lstrip('.').split('.')[0]
+    for pat in _GENERIC_KEYWORD_PATTERNS:
+        hit = False
+        for m in pat.finditer(stem):
+            hit = True
+            if m.end() == len(stem):  # keyword ends the stem -> names the contents
+                return True
+        if hit and len([w for w in _WORD_SPLIT.split(stem) if w]) <= 2:
+            return True  # short name like token_config.yaml / secret_handler.txt
+    return False
 
 # Signals that a .md/.txt file is actually a converted academic paper
 _PAPER_SIGNALS = [
@@ -143,7 +180,10 @@ def _is_sensitive(path: Path) -> bool:
         return True
     # Stage 2: filename pattern match
     name = path.name
-    return any(p.search(name) for p in _SENSITIVE_PATTERNS)
+    if any(p.search(name) for p in _SENSITIVE_PATTERNS):
+        return True
+    # Stage 3: generic keywords, only when load-bearing in the name
+    return _generic_keyword_hit(name)
 
 
 def _looks_like_paper(path: Path) -> bool:

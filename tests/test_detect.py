@@ -638,6 +638,33 @@ def test_sensitive_token_config_yaml():
     assert _is_sensitive(Path("token_config.yaml"))
 
 
+# ── Generic keywords must be load-bearing: topic slugs are not secret stores ──
+# A keyword buried mid-phrase in a >=3-word descriptive name is a note ABOUT
+# the topic, not a credential file. It must not be silently dropped.
+
+def test_sensitive_does_not_flag_token_economics_note():
+    assert not _is_sensitive(Path("token-economics-of-recall.md"))
+
+def test_sensitive_does_not_flag_password_policy_discussion():
+    assert not _is_sensitive(Path("password-policy-discussion.md"))
+
+def test_sensitive_flags_keyword_at_end_of_long_name():
+    # Keyword as the final word names the file's contents — still a secret store.
+    assert _is_sensitive(Path("github-personal-access-token.txt"))
+
+def test_sensitive_flags_my_private_key_txt():
+    # Multi-word keyword at end of stem (end-of-stem check runs before word
+    # counting, so splitting private_key on "_" cannot un-flag it).
+    assert _is_sensitive(Path("my_private_key.txt"))
+
+def test_sensitive_flags_dotfile_token():
+    # Leading dot stripped before stem extraction; ".token" keeps its keyword.
+    assert _is_sensitive(Path(".token"))
+
+def test_sensitive_flags_plural_tokens_txt():
+    assert _is_sensitive(Path("tokens.txt"))
+
+
 # ── Issue #933: failed-chunk files must not be frozen in manifest ─────────────
 
 def test_save_manifest_skips_semantic_hash_for_files_without_cache(tmp_path):
