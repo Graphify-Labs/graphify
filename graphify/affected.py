@@ -145,6 +145,9 @@ def load_graph(path: Path) -> nx.Graph:
     from networkx.readwrite import json_graph
 
     raw = json.loads(path.read_text(encoding="utf-8"))
+    # Force directed so stored caller→callee direction survives the round-trip;
+    # mirrors serve.py and __main__.py (#1174).
+    raw = {**raw, "directed": True}
     try:
         return json_graph.node_link_graph(raw, edges="links")
     except TypeError:

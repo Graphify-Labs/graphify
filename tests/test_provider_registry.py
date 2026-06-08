@@ -69,6 +69,75 @@ def test_custom_provider_cannot_shadow_builtin(tmp_path):
     assert "claude" not in loaded
 
 
+def test_project_local_providers_ignored_without_optin(tmp_path, monkeypatch, capsys):
+    """A project-local ./.graphify/providers.json is NOT loaded by default (F1).
+
+    It travels with a cloned/shared repo and controls where the corpus + API key
+    are sent, so loading it silently is an exfiltration vector.
+    """
+    local = tmp_path / "local.json"
+    local.write_text(json.dumps({
+        "evil": {"base_url": "https://attacker.example/v1", "default_model": "m", "env_key": "K"}
+    }), encoding="utf-8")
+    missing_global = tmp_path / "global.json"  # does not exist
+
+    from graphify import llm
+    monkeypatch.setattr(llm, "_custom_providers_path",
+                        lambda global_=True: missing_global if global_ else local)
+    monkeypatch.delenv("GRAPHIFY_ALLOW_LOCAL_PROVIDERS", raising=False)
+
+    loaded = llm._load_custom_providers()
+    assert "evil" not in loaded
+    assert "ignoring project-local" in capsys.readouterr().err
+
+
+def test_project_local_providers_loaded_with_optin(tmp_path, monkeypatch):
+    """With explicit opt-in the project-local file is honoured (F1)."""
+    local = tmp_path / "local.json"
+    local.write_text(json.dumps({
+        "lab": {"base_url": "https://lab.internal/v1", "default_model": "m", "env_key": "K"}
+    }), encoding="utf-8")
+    missing_global = tmp_path / "global.json"
+
+    from graphify import llm
+    monkeypatch.setattr(llm, "_custom_providers_path",
+                        lambda global_=True: missing_global if global_ else local)
+    monkeypatch.setattr(llm, "BACKENDS", {**llm.BACKENDS})
+    monkeypatch.setenv("GRAPHIFY_ALLOW_LOCAL_PROVIDERS", "1")
+
+    loaded = llm._load_custom_providers()
+    assert "lab" in loaded
+
+
+def test_non_http_provider_base_url_rejected(tmp_path, monkeypatch):
+    """A provider whose base_url uses a non-http(s) scheme is skipped on load (F1)."""
+    providers_file = tmp_path / "providers.json"
+    providers_file.write_text(json.dumps({
+        "sneaky": {"base_url": "file:///etc/passwd", "default_model": "m", "env_key": "K"}
+    }), encoding="utf-8")
+
+    from graphify import llm
+    monkeypatch.setattr(llm, "_custom_providers_path",
+                        lambda global_=True: providers_file if global_ else tmp_path / "local.json")
+    monkeypatch.setattr(llm, "BACKENDS", {**llm.BACKENDS})
+
+    loaded = llm._load_custom_providers()
+    assert "sneaky" not in loaded
+
+
+def test_provider_base_url_ok_scheme_and_warnings(capsys):
+    """provider_base_url_ok rejects bad schemes and warns on plaintext-http egress (F1)."""
+    from graphify import llm
+    assert llm.provider_base_url_ok("https://api.example/v1", "ok") is True
+    assert llm.provider_base_url_ok("http://localhost:11434/v1", "local") is True
+    assert llm.provider_base_url_ok("file:///etc/passwd", "bad") is False
+    assert llm.provider_base_url_ok("gopher://x/", "bad2") is False
+    capsys.readouterr()
+    # plaintext http to a non-loopback host loads but warns
+    assert llm.provider_base_url_ok("http://example.com/v1", "plain") is True
+    assert "plaintext" in capsys.readouterr().err
+
+
 def test_detect_backend_custom_provider_after_builtins(monkeypatch):
     """Custom providers appear after all built-ins in detect_backend() priority."""
     from graphify import llm

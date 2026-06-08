@@ -5,6 +5,16 @@ import networkx as nx
 
 from graphify.build import edge_data
 
+# Builtin/mock names that can appear as annotation-derived nodes in pre-existing
+# graphs. Excluded from god-node ranking so they don't displace real abstractions
+# even if they weren't filtered at extraction time (#1147).
+_BUILTIN_NOISE_LABELS = frozenset({
+    "str", "int", "float", "bool", "bytes", "bytearray", "complex", "object",
+    "True", "False",
+    "MagicMock", "Mock", "AsyncMock", "NonCallableMock",
+    "NonCallableMagicMock", "PropertyMock", "patch", "sentinel",
+})
+
 # Language families — extensions sharing a runtime can legitimately call each other
 _LANG_FAMILY: dict[str, str] = {
     **{e: "python" for e in (".py", ".pyw")},
@@ -93,6 +103,8 @@ def god_nodes(G: nx.Graph, top_n: int = 10) -> list[dict]:
     result = []
     for node_id, deg in sorted_nodes:
         if _is_file_node(G, node_id) or _is_concept_node(G, node_id) or _is_json_key_node(G, node_id):
+            continue
+        if G.nodes[node_id].get("label", "") in _BUILTIN_NOISE_LABELS:
             continue
         result.append({
             "id": node_id,

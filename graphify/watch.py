@@ -543,9 +543,19 @@ def _rebuild_code(
                             evict_sources.add(sf)
                             evict_sources.add(norm)
                             deleted_paths.add(norm)
+                # On a full re-extraction every code file is re-extracted, so
+                # new_ast_ids is the complete current AST set. Any AST-marked node
+                # missing from it is stale and must be dropped even if its source
+                # file still exists (a symbol removed from a surviving file, #1116).
+                # Gate on full_rebuild: in incremental mode an AST node from an
+                # unchanged file is legitimately absent from new_ast_ids. Semantic
+                # nodes lack the "_origin" marker, so they are never dropped here —
+                # only by the deleted-file eviction in evict_sources above.
+                full_rebuild = changed_paths is None
                 preserved_nodes = [
                     n for n in existing.get("nodes", [])
                     if n["id"] not in new_ast_ids
+                    and not (full_rebuild and n.get("_origin") == "ast")
                     and (not evict_sources or n.get("source_file") not in evict_sources)
                 ]
                 all_ids = new_ast_ids | {n["id"] for n in preserved_nodes}
@@ -565,7 +575,12 @@ def _rebuild_code(
 
         _relativize_source_files(result, project_root)
         out.mkdir(exist_ok=True)
-        (out / ".graphify_root").write_text(str(watch_root), encoding="utf-8")
+        # Write the user-supplied path rather than the resolved absolute form
+        # so a committed ``graphify-out/.graphify_root`` is portable across
+        # clones and CI runners (#777). When ``watch_path`` is ``.`` (the
+        # common case for ``graphify update``), this writes ``.`` and the
+        # subsequent re-run resolves it against the caller's CWD.
+        (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
 
         if no_cluster:
             # Normalise to "links" key so schema is consistent with the full clustered path.
@@ -595,7 +610,7 @@ def _rebuild_code(
 
             try:
                 from graphify.detect import save_manifest
-                save_manifest(detected["files"], kind="ast")
+                save_manifest(detected["files"], kind="ast", root=project_root)
             except Exception:
                 pass
 
@@ -633,7 +648,7 @@ def _rebuild_code(
             if same_topology:
                 try:
                     from graphify.detect import save_manifest
-                    save_manifest(detected["files"], kind="ast")
+                    save_manifest(detected["files"], kind="ast", root=project_root)
                 except Exception:
                     pass
                 flag = out / "needs_update"
@@ -704,7 +719,7 @@ def _rebuild_code(
 
         try:
             from graphify.detect import save_manifest
-            save_manifest(detected["files"], kind="ast")
+            save_manifest(detected["files"], kind="ast", root=project_root)
         except Exception:
             pass
 

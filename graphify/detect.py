@@ -25,7 +25,7 @@ class FileType(str, Enum):
 
 _MANIFEST_PATH = "graphify-out/manifest.json"
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.csproj', '.fsproj', '.vbproj', '.razor', '.cshtml'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.csproj', '.fsproj', '.vbproj', '.razor', '.cshtml', '.cls', '.trigger'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -36,6 +36,61 @@ CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a
 CORPUS_UPPER_THRESHOLD = 500_000  # words - above this, warn about token cost
 FILE_COUNT_UPPER = 500             # files - above this, warn about token cost
 
+# Resource caps for parsing untrusted office/PDF files (F2). A corpus is
+# attacker-controllable (graphify runs on cloned/shared folders), and .docx/.xlsx
+# are zip+XML containers: a few-KB zip-bomb can decompress to gigabytes and
+# OOM-kill the process at load_workbook/Document time. Screen the file before any
+# parser touches it.
+_OFFICE_MAX_RAW_BYTES = 50 * 1024 * 1024            # 50 MiB on-disk
+_OFFICE_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024  # 512 MiB total uncompressed
+_OFFICE_MAX_COMPRESSION_RATIO = 200                 # uncompressed : compressed
+
+
+def _file_within_size_cap(path: Path, cap: int = _OFFICE_MAX_RAW_BYTES) -> bool:
+    """True if *path* exists and its on-disk size is within *cap*."""
+    try:
+        return path.stat().st_size <= cap
+    except OSError:
+        return False
+
+
+def _zip_within_caps(path: Path) -> bool:
+    """Reject a zip-based office file that is a likely zip/XML bomb.
+
+    Two layers, because the zip central-directory sizes are attacker-controlled:
+    1. A cheap pre-filter on the declared sizes (on-disk cap, summed-uncompressed
+       cap, compression ratio) that rejects an honest bomb without decompressing.
+    2. An authoritative pass that stream-decompresses every member with a hard
+       byte ceiling, so a member that under-declares its size in the central
+       directory cannot expand past the cap undetected. Decompression is chunked
+       and bounded, so checking a bomb never materializes more than the ceiling.
+    """
+    import zipfile
+    if not _file_within_size_cap(path):
+        return False
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = zf.infolist()
+            compressed = sum(i.compress_size for i in infos) or 1
+            declared = sum(i.file_size for i in infos)
+            if declared > _OFFICE_MAX_DECOMPRESSED_BYTES:
+                return False
+            if declared / compressed > _OFFICE_MAX_COMPRESSION_RATIO:
+                return False
+            total = 0
+            for info in infos:
+                with zf.open(info) as member:
+                    while True:
+                        chunk = member.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > _OFFICE_MAX_DECOMPRESSED_BYTES:
+                            return False
+    except (zipfile.BadZipFile, OSError, EOFError):
+        return False
+    return True
+
 # Parent directories whose contents are always sensitive.
 # Checked against path.parts[:-1] (parents only) so a root-level file named
 # "credentials" or "secrets" is not falsely flagged by this stage.
@@ -43,22 +98,59 @@ _SENSITIVE_DIRS = frozenset({
     ".ssh", ".gnupg", ".aws", ".gcloud", "secrets", ".secrets", "credentials",
 })
 
-# Files that may contain secrets - skip silently.
+# Files that may contain secrets - skip silently. These patterns are specific
+# (extensions, exact credential-store names) and always apply.
+_SENSITIVE_PATTERNS = [
+    re.compile(r'(^|[\\/])\.(env|envrc)(\.|$)', re.IGNORECASE),
+    re.compile(r'\.(pem|key|p12|pfx|cert|crt|der|p8)$', re.IGNORECASE),
+    re.compile(r'(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$'),
+    re.compile(r'(\.netrc|\.pgpass|\.htpasswd)$', re.IGNORECASE),
+    re.compile(r'(aws_credentials|gcloud_credentials|service.account)', re.IGNORECASE),
+]
+
+# Generic keyword patterns - these only count when the keyword is LOAD-BEARING
+# in the filename (see _generic_keyword_hit), because a keyword buried mid-phrase
+# in a long descriptive slug names a topic, not a credential store:
+# "token-economics-of-recall.md" is a note ABOUT tokens; "api_token.txt" IS one.
 # Uses lookarounds instead of \b so underscore-prefixed names like api_token.txt
 # match. Both patterns use (?![a-zA-Z]) so that the trailing-underscore behavior
 # is consistent: "secret_store.txt" IS flagged, "tokenizer.py" is NOT (because
 # "i" after "token" is alpha and blocks the match).
 # `token` is kept separate because its longer suffix "izer"/"ize" is the only
 # common false-positive; other keywords have no such well-known derivatives.
-_SENSITIVE_PATTERNS = [
-    re.compile(r'(^|[\\/])\.(env|envrc)(\.|$)', re.IGNORECASE),
-    re.compile(r'\.(pem|key|p12|pfx|cert|crt|der|p8)$', re.IGNORECASE),
+_GENERIC_KEYWORD_PATTERNS = [
     re.compile(r'(?<![a-zA-Z0-9])(credential|secret|passwd|password|private_key)s?(?![a-zA-Z])', re.IGNORECASE),
     re.compile(r'(?<![a-zA-Z0-9])tokens?(?![a-zA-Z])', re.IGNORECASE),
-    re.compile(r'(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$'),
-    re.compile(r'(\.netrc|\.pgpass|\.htpasswd)$', re.IGNORECASE),
-    re.compile(r'(aws_credentials|gcloud_credentials|service.account)', re.IGNORECASE),
 ]
+
+# Word separators for the load-bearing check (underscore intentionally included;
+# multi-word keywords like private_key are handled by the end-of-stem check,
+# which runs before word counting).
+_WORD_SPLIT = re.compile(r'[-_\s]+')
+
+
+def _generic_keyword_hit(name: str) -> bool:
+    """True if a generic secret keyword appears load-bearing in the filename.
+
+    Secret-store files name their contents, and in English compounds the
+    content noun is the head, which comes last: "github-personal-access-token",
+    "api_token", "oauth_token". A keyword that is neither at the end of the
+    stem nor in a short (<=2 word) name is a topic word in a descriptive slug
+    ("token-economics-of-recall.md", "password-policy-discussion.md") and must
+    not cause the file to be silently dropped from the graph (#436, #718).
+    """
+    # Stem = name up to the first dot, ignoring leading dots so dotfiles like
+    # ".token" keep their keyword ("" stems would never match).
+    stem = name.lstrip('.').split('.')[0]
+    for pat in _GENERIC_KEYWORD_PATTERNS:
+        hit = False
+        for m in pat.finditer(stem):
+            hit = True
+            if m.end() == len(stem):  # keyword ends the stem -> names the contents
+                return True
+        if hit and len([w for w in _WORD_SPLIT.split(stem) if w]) <= 2:
+            return True  # short name like token_config.yaml / secret_handler.txt
+    return False
 
 # Signals that a .md/.txt file is actually a converted academic paper
 _PAPER_SIGNALS = [
@@ -88,7 +180,10 @@ def _is_sensitive(path: Path) -> bool:
         return True
     # Stage 2: filename pattern match
     name = path.name
-    return any(p.search(name) for p in _SENSITIVE_PATTERNS)
+    if any(p.search(name) for p in _SENSITIVE_PATTERNS):
+        return True
+    # Stage 3: generic keywords, only when load-bearing in the name
+    return _generic_keyword_hit(name)
 
 
 def _looks_like_paper(path: Path) -> bool:
@@ -318,6 +413,8 @@ def classify_file(path: Path) -> FileType | None:
 
 def extract_pdf_text(path: Path) -> str:
     """Extract plain text from a PDF file using pypdf."""
+    if not _file_within_size_cap(path):
+        return ""
     try:
         from pypdf import PdfReader
         reader = PdfReader(str(path))
@@ -333,6 +430,8 @@ def extract_pdf_text(path: Path) -> str:
 
 def docx_to_markdown(path: Path) -> str:
     """Convert a .docx file to markdown text using python-docx."""
+    if not _zip_within_caps(path):
+        return ""
     try:
         from docx import Document
         from docx.oxml.ns import qn
@@ -373,6 +472,8 @@ def docx_to_markdown(path: Path) -> str:
 
 def xlsx_to_markdown(path: Path) -> str:
     """Convert an .xlsx file to markdown text using openpyxl."""
+    if not _zip_within_caps(path):
+        return ""
     try:
         import openpyxl
         wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
@@ -1030,12 +1131,71 @@ def _md5_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def load_manifest(manifest_path: str = _MANIFEST_PATH) -> dict:
-    """Load the manifest from a previous run. Returns {} on any error."""
+def _to_relative_for_storage(key: str, root: Path) -> str:
+    """Return ``key`` as a forward-slash relative path from ``root``.
+
+    Keys outside ``root`` (out-of-tree symlinked sources, external --include
+    paths) and already-relative keys pass through unchanged — mirrors the
+    fallback in :func:`graphify.watch._relativize_source_files` so the
+    on-disk artifact survives the round-trip even when some paths cannot be
+    portably encoded.
+
+    Only ``root`` is resolved — the key itself is relativized symbolically
+    so an in-root symlink (e.g. ``alias.py -> sub/target.py``) is stored
+    under its own name. Resolving the key would point the stored entry at
+    the symlink target, and the original key would then miss on reload and
+    re-extract on every incremental run.
+    """
+    p = Path(key)
+    if not p.is_absolute():
+        return key
     try:
-        return json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        rel = os.path.relpath(p, Path(root).resolve())
+    except (ValueError, OSError):
+        return key  # outside root (e.g. Windows cross-drive)
+    # ``os.path.relpath`` happily produces ``../foo`` for paths outside
+    # root; mirror the prior ``relative_to``-raises-ValueError semantics by
+    # keeping out-of-root entries in their absolute form.
+    if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+        return key
+    return rel.replace(os.sep, "/")
+
+
+def _to_absolute_from_storage(key: str, root: Path) -> str:
+    """Inverse of :func:`_to_relative_for_storage`.
+
+    Re-anchor a stored key against ``root``. Already-absolute keys
+    (legacy manifests, out-of-root entries) pass through unchanged so
+    that newly-loaded manifests from before this change remain readable.
+    Uses ``Path(root).resolve()`` so the produced absolute path matches
+    what :func:`detect` returns (which also resolves the scan root).
+    """
+    p = Path(key)
+    if p.is_absolute():
+        return str(p)
+    return str(Path(root).resolve() / p)
+
+
+def load_manifest(
+    manifest_path: str = _MANIFEST_PATH,
+    *,
+    root: Path | None = None,
+) -> dict:
+    """Load the manifest from a previous run. Returns {} on any error.
+
+    When ``root`` is provided, stored relative keys are re-anchored against
+    it so callers see absolute paths regardless of on-disk format. Legacy
+    manifests with absolute keys pass through unchanged, so a graphify-out/
+    written by an older version (or by a caller that didn't supply ``root``
+    to :func:`save_manifest`) remains readable.
+    """
+    try:
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     except Exception:
         return {}
+    if root is None or not isinstance(raw, dict):
+        return raw
+    return {_to_absolute_from_storage(k, root): v for k, v in raw.items()}
 
 
 def save_manifest(
@@ -1043,6 +1203,7 @@ def save_manifest(
     manifest_path: str = _MANIFEST_PATH,
     *,
     kind: str = "both",
+    root: Path | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1052,8 +1213,14 @@ def save_manifest(
     kind="semantic" — written by `graphify extract` after semantic extraction.
                       Stamps semantic_hash; preserves existing ast_hash.
     kind="both"     — full pipeline: stamps both hashes (default).
+
+    When ``root`` is provided, keys are relativized against it before write
+    (forward-slash, posix-style) so the on-disk manifest is portable across
+    machines and checkout locations (#777). Out-of-root entries are written
+    as absolute so they continue to round-trip on the saving machine.
+    When ``root`` is None the legacy absolute-keyed format is preserved.
     """
-    existing = load_manifest(manifest_path)
+    existing = load_manifest(manifest_path, root=root)
 
     def _normalise_entry(entry):
         if isinstance(entry, (int, float)):
@@ -1099,6 +1266,12 @@ def save_manifest(
                 # Preserve semantic_hash only when content is unchanged
                 entry["semantic_hash"] = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
             manifest[f] = entry
+    if root is not None:
+        # Persist in portable form: forward-slash relative paths. Keys outside
+        # ``root`` (out-of-tree symlinked corpora, --include sources) keep
+        # their absolute form so the manifest round-trips on the saving
+        # machine even when not every entry can be portably encoded.
+        manifest = {_to_relative_for_storage(k, root): v for k, v in manifest.items()}
     Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
     Path(manifest_path).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
@@ -1136,7 +1309,10 @@ def detect_incremental(
     contains at least one direct symlinked child, ``False`` otherwise.
     """
     full = detect(root, follow_symlinks=follow_symlinks, google_workspace=google_workspace, extra_excludes=extra_excludes)
-    manifest = load_manifest(manifest_path)
+    # Pass ``root`` so a manifest written with relative keys (post-#777) is
+    # re-anchored to the absolute form the rest of this function compares
+    # against. Legacy absolute-keyed manifests pass through unchanged.
+    manifest = load_manifest(manifest_path, root=root)
 
     if not manifest:
         # No previous run - treat everything as new
@@ -1171,6 +1347,12 @@ def detect_incremental(
                     changed = True
                 else:
                     stored_mtime = stored.get("mtime")
+                    # Schema-drift guard (#1163): tolerate a nested {mtime: ...}
+                    # dict or any non-numeric value without crashing.
+                    if isinstance(stored_mtime, dict):
+                        stored_mtime = stored_mtime.get("mtime")
+                    if not isinstance(stored_mtime, (int, float)):
+                        stored_mtime = None
                     if stored_mtime is None or current_mtime != stored_mtime:
                         # mtime bumped — verify with content hash before re-extracting
                         changed = _md5_file(Path(f)) != stored_hash

@@ -87,6 +87,37 @@ def test_score_nodes_ignores_trailing_punctuation():
     assert scored[0][1] == "n1"
 
 
+def test_score_nodes_multiword_exact_label_outranks_superset():
+    """A multi-word query equal to a whole label must resolve uniquely.
+
+    Regression for the `graphify path` "No path found" bug: every node sharing
+    the query's token set scored identically (no single token equals a
+    multi-word label, so the per-token exact tier never fired), the tie broke by
+    arbitrary node-id sort, and a wrong/disconnected endpoint was chosen. The
+    full-query tier in _score_nodes must make the exact label win strictly.
+    """
+    G = nx.Graph()
+    # Reproduce the real graph: norm_label keeps punctuation (strip_diacritics +
+    # lower, NOT tokenized), so the ':' survives. A tokenized query can never
+    # equal that, which is exactly why the first-cut fix was a no-op for
+    # punctuated labels. The exact node must still win via the label's tokenized
+    # form.
+    def _add(nid, label, src):
+        G.add_node(nid, label=label, norm_label=label.lower(),
+                   source_file=src, community=0)
+
+    _add("exact", "UOCE: Dehumidifier Driver", "uoce_dehumidifier.yaml")
+    _add("super", "UOCE: Dehumidifier Driver State Machine", "uoce_dehumidifier.yaml")
+    _add("decoy", "Dehumidifier Driver Helper", "uoce_dehumidifier.yaml")
+
+    # CLI resolves endpoints as [t.lower() for t in label.split()].
+    scored = _score_nodes(G, [t.lower() for t in "UOCE: Dehumidifier Driver".split()])
+
+    # Resolves uniquely to the exact label, strictly ahead of the superset.
+    assert scored[0][1] == "exact"
+    assert scored[0][0] > scored[1][0], "exact label must strictly outrank superset/token-bag matches"
+
+
 def test_find_node_ignores_trailing_punctuation():
     G = _make_graph()
     assert _find_node(G, "extract?") == ["n1"]

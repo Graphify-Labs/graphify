@@ -146,6 +146,70 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
     return digest
 
 
+def _relativize_source_files_in(payload: dict, root: Path) -> None:
+    """Mutate ``payload`` to rewrite absolute ``source_file`` fields as
+    forward-slash relative paths from ``root``.
+
+    Mirror of :func:`graphify.watch._relativize_source_files` so cached
+    extraction fragments persist in portable form (#777). Already-relative
+    fields and out-of-root paths pass through unchanged.
+
+    Only ``root`` is resolved — ``source_file`` itself is relativized
+    symbolically so in-root symlinks keep their original name rather than
+    pointing at the resolved target. Same reasoning as
+    :func:`graphify.detect._to_relative_for_storage`.
+    """
+    try:
+        root_resolved = Path(root).resolve()
+    except OSError:
+        return
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in payload.get(bucket, []):
+            if not isinstance(item, dict):
+                continue
+            source = item.get("source_file")
+            if not source:
+                continue
+            sp = Path(source)
+            if not sp.is_absolute():
+                continue
+            try:
+                rel = os.path.relpath(sp, root_resolved)
+            except (ValueError, OSError):
+                continue  # out-of-root (e.g. Windows cross-drive)
+            if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+                continue  # escaped root — keep absolute
+            item["source_file"] = rel.replace(os.sep, "/")
+
+
+def _absolutize_source_files_in(payload: dict, root: Path) -> None:
+    """Inverse of :func:`_relativize_source_files_in`.
+
+    Re-anchor relative ``source_file`` fields against ``root`` so callers
+    that load a cached fragment see the same absolute-path shape that a
+    fresh in-process extraction would produce. Legacy cache entries with
+    absolute ``source_file`` values pass through unchanged.
+    """
+    try:
+        root_resolved = Path(root).resolve()
+    except OSError:
+        return
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in payload.get(bucket, []):
+            if not isinstance(item, dict):
+                continue
+            source = item.get("source_file")
+            if not source:
+                continue
+            sp = Path(source)
+            if sp.is_absolute():
+                continue
+            try:
+                item["source_file"] = str(root_resolved / sp)
+            except (TypeError, OSError):
+                continue
+
+
 def cache_dir(root: Path = Path("."), kind: str = "ast") -> Path:
     """Returns graphify-out/cache/{kind}/ - creates it if needed.
 
@@ -176,17 +240,26 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast") -> dict |
     entry = cache_dir(root, kind) / f"{h}.json"
     if entry.exists():
         try:
-            return json.loads(entry.read_text(encoding="utf-8"))
+            result = json.loads(entry.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
+        # Re-anchor relative source_file fields so callers see the same
+        # absolute-path shape that a fresh in-process extraction produces
+        # (#777). Legacy entries with absolute source_file pass through.
+        if isinstance(result, dict):
+            _absolutize_source_files_in(result, root)
+        return result
     # Migration fallback: check legacy flat cache/ dir for AST entries
     if kind == "ast":
         legacy = Path(root).resolve() / _GRAPHIFY_OUT / "cache" / f"{h}.json"
         if legacy.exists():
             try:
-                return json.loads(legacy.read_text(encoding="utf-8"))
+                result = json.loads(legacy.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 return None
+            if isinstance(result, dict):
+                _absolutize_source_files_in(result, root)
+            return result
     return None
 
 
@@ -203,12 +276,27 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     p = Path(path)
     if not p.is_file():
         return
+    # Relativize source_file fields against ``root`` before write so the
+    # cache file on disk is portable across machines and checkout
+    # directories (#777). The cache key is content-hashed so lookup is
+    # already path-independent; this fixes the embedded path leak.
+    #
+    # Serialize a relativized copy rather than mutating the caller's dict —
+    # downstream pipeline steps (notably extract.py's AST prefix remap, which
+    # looks up Path(source_file).resolve() in a prefix table) depend on the
+    # source_file field's original absolute form. Mutating the input here would
+    # silently break those remaps on the first extraction pass.
+    on_disk = result
+    if isinstance(result, dict) and any(result.get(k) for k in ("nodes", "edges", "hyperedges")):
+        import copy as _copy
+        on_disk = _copy.deepcopy(result)
+        _relativize_source_files_in(on_disk, root)
     h = file_hash(p, root)
     target_dir = cache_dir(root, kind)
     entry = target_dir / f"{h}.json"
     fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
     try:
-        os.write(fd, json.dumps(result).encode())
+        os.write(fd, json.dumps(on_disk).encode())
         os.close(fd)
         try:
             os.replace(tmp_path, entry)
