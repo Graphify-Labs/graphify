@@ -689,6 +689,7 @@ def _call_openai_compat(
     backend: str = "",
     deep_mode: bool = False,
     images: list[_ImageRef] | None = None,
+    extra_body: dict | None = None,
 ) -> dict:
     """Call any OpenAI-compatible API (Kimi, OpenAI, etc.) and return parsed JSON."""
     try:
@@ -715,8 +716,14 @@ def _call_openai_compat(
         kwargs["temperature"] = temperature
     if reasoning_effort is not None:
         kwargs["reasoning_effort"] = reasoning_effort
+    # A custom provider in providers.json can pass its own extra_body (e.g.
+    # `chat_template_kwargs.enable_thinking=false` for self-hosted Qwen3 served
+    # by vLLM). When supplied, it wins over the moonshot default — the user has
+    # explicitly chosen the request shape for their endpoint.
+    if extra_body is not None:
+        kwargs["extra_body"] = extra_body
     # Kimi-k2.6 is a reasoning model — disable thinking so content isn't empty
-    if "moonshot" in base_url:
+    elif "moonshot" in base_url:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     # Ollama defaults num_ctx to 2048 and silently truncates prompts larger
     # than that — the symptom is hollow 200 OK responses after the first few
@@ -726,7 +733,9 @@ def _call_openai_compat(
     # hollow-200 symptom — just from a different direction (#798 follow-up).
     # Formula: actual input tokens + output cap + system prompt headroom.
     # Capped at 131072 (enough for the default 60k token_budget); env var wins.
-    if backend == "ollama":
+    # The ollama num_ctx auto-derive is a default. A custom provider that
+    # explicitly sets extra_body has opted out — respect their request shape.
+    if backend == "ollama" and extra_body is None:
         num_ctx_raw = os.environ.get("GRAPHIFY_OLLAMA_NUM_CTX", "").strip()
         # Auto-derive num_ctx from actual chunk size regardless — used as the
         # fallback and for the mismatch check below.
@@ -1153,6 +1162,7 @@ def extract_files_direct(
         backend=backend,
         deep_mode=deep_mode,
         images=image_refs,
+        extra_body=cfg.get("extra_body"),
     )
 
 
@@ -1638,7 +1648,11 @@ def _call_llm(prompt: str, *, backend: str, max_tokens: int = 200) -> str:
         kwargs["temperature"] = temperature
     if cfg.get("reasoning_effort"):
         kwargs["reasoning_effort"] = cfg["reasoning_effort"]
-    if "moonshot" in cfg["base_url"]:
+    # Custom providers can override via providers.json `extra_body`; falls back
+    # to the moonshot default to preserve existing behavior.
+    if cfg.get("extra_body") is not None:
+        kwargs["extra_body"] = cfg["extra_body"]
+    elif "moonshot" in cfg["base_url"]:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
@@ -1767,9 +1781,10 @@ def detect_backend() -> str | None:
 # batched call and return a complete ``{cid: name}`` map (#1097).
 
 _LABEL_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
-_LABEL_MAX_COMMUNITIES = 200   # cap LLM-named communities; tail stays placeholder
+_LABEL_MAX_COMMUNITIES = 200   # legacy soft-cap; kept for callers that pin it.
 _LABEL_TOP_K = 12              # node labels sampled per community for the prompt
 _LABEL_MAXLEN = 60             # truncate individual labels to keep the prompt small
+_LABEL_BATCH_SIZE = 100        # communities per LLM call; sized for ~16k context windows
 
 
 def _placeholder_community_labels(communities) -> dict[int, str]:
@@ -1830,31 +1845,70 @@ def label_communities(
     *,
     backend: str,
     gods=None,
-    max_communities: int = _LABEL_MAX_COMMUNITIES,
+    max_communities: int | None = None,
     top_k: int = _LABEL_TOP_K,
+    batch_size: int = _LABEL_BATCH_SIZE,
 ) -> dict[int, str]:
     """Return a complete ``{cid: name}`` map using ``backend`` for naming.
 
-    Placeholders (``Community N``) are used for any community the backend did not
-    name. Raises on backend/parse failure - callers that want graceful
-    degradation should use :func:`generate_community_labels`.
+    Communities are labeled in batches of ``batch_size`` so the prompt fits in a
+    16k-token context window (which is enough for one batch of ~100 communities
+    × ``top_k`` node labels). With the previous hard cap of 200 communities in a
+    single call, self-hosted 16k models (Qwen3, Llama 3.1 8B-Instruct, etc.)
+    routinely overflowed context and dropped the entire labeling pass to
+    placeholders.
+
+    ``max_communities=None`` (the default) labels every community. Pass an
+    integer to cap the total (the legacy 200 default preserved this behavior;
+    explicit callers can still pin it). Placeholders (``Community N``) are used
+    for any community the backend did not name. Per-batch failures are logged
+    to stderr and skipped — the surviving batches still contribute labels.
+
+    Raises on the first batch's backend/parse failure if it leaves *no* labels
+    written. Callers that want graceful degradation should use
+    :func:`generate_community_labels`.
     """
     labels = _placeholder_community_labels(communities)
-    lines, labeled_cids = _community_label_lines(G, communities, gods, max_communities, top_k)
+    cap = len(communities) if max_communities is None else max_communities
+    lines, labeled_cids = _community_label_lines(G, communities, gods, cap, top_k)
     if not lines:
         return labels
 
-    prompt = (
-        "You are naming clusters in a knowledge graph. For each community below, "
-        "return a concise 2-5 word plain-language name describing what it is about "
-        "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\"). "
-        "Respond ONLY with a JSON object mapping the community id (as a string) to "
-        "its name - no prose, no markdown fences.\n\n" + "\n".join(lines)
-    )
+    n_batches = (len(labeled_cids) + batch_size - 1) // batch_size
+    written = 0
+    first_error: Exception | None = None
+    for batch_idx in range(n_batches):
+        start = batch_idx * batch_size
+        end = min(start + batch_size, len(labeled_cids))
+        batch_lines = lines[start:end]
+        batch_cids = labeled_cids[start:end]
 
-    max_tokens = min(40 + 16 * len(labeled_cids), 4096)
-    text = _call_llm(prompt, backend=backend, max_tokens=max_tokens)
-    labels.update(_parse_label_response(text, labeled_cids))
+        prompt = (
+            "You are naming clusters in a knowledge graph. For each community below, "
+            "return a concise 2-5 word plain-language name describing what it is about "
+            "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\"). "
+            "Respond ONLY with a JSON object mapping the community id (as a string) to "
+            "its name - no prose, no markdown fences.\n\n" + "\n".join(batch_lines)
+        )
+        max_tokens = min(40 + 16 * len(batch_cids), 4096)
+        try:
+            text = _call_llm(prompt, backend=backend, max_tokens=max_tokens)
+            parsed = _parse_label_response(text, batch_cids)
+            labels.update(parsed)
+            written += len(parsed)
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+            print(
+                f"[graphify label] batch {batch_idx + 1}/{n_batches} "
+                f"({len(batch_cids)} communities) failed: {exc}",
+                file=sys.stderr,
+            )
+            continue
+
+    if written == 0 and first_error is not None:
+        # Every batch failed; propagate so generate_community_labels degrades cleanly.
+        raise first_error
     return labels
 
 

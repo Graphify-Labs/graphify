@@ -117,3 +117,96 @@ def test_empty_communities_returns_placeholders(monkeypatch):
     labels = label_communities(G, {0: []}, backend="gemini")
     assert labels == {0: "Community 0"}
     assert called is False
+
+
+# ---------------------------------------------------------------------------
+# Multi-batch labeling: a single prompt with >100 communities overflows the
+# 16k context window of self-hosted reasoning models (Qwen3, Llama-3.1 8B).
+# label_communities now splits into batches so coverage stays complete.
+# ---------------------------------------------------------------------------
+
+
+def _wide_graph(n_communities: int):
+    G = nx.Graph()
+    communities: dict[int, list[str]] = {}
+    for cid in range(n_communities):
+        a, b = f"c{cid}_a", f"c{cid}_b"
+        G.add_node(a, label=f"node_{cid}_a")
+        G.add_node(b, label=f"node_{cid}_b")
+        communities[cid] = [a, b]
+    return G, communities
+
+
+def test_label_communities_batches_when_over_batch_size(monkeypatch):
+    G, communities = _wide_graph(250)
+    calls = []
+
+    def fake_call(prompt, *, backend, max_tokens=200):
+        # The fake reads which cids the prompt asks about and answers all of them.
+        cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
+                for line in prompt.splitlines() if line.startswith("Community ")]
+        calls.append(len(cids))
+        return "{" + ", ".join(f'"{c}": "Cluster {c}"' for c in cids) + "}"
+
+    monkeypatch.setattr("graphify.llm._call_llm", fake_call)
+    labels = label_communities(G, communities, backend="gemini", batch_size=100)
+
+    # 250 communities / 100 per batch -> 3 batches (100, 100, 50)
+    assert calls == [100, 100, 50]
+    # And every community got a real name, none left as a placeholder.
+    assert all(name.startswith("Cluster ") for name in labels.values()), \
+        f"some communities still have placeholders: {[k for k, v in labels.items() if not v.startswith('Cluster ')][:5]}"
+    assert len(labels) == 250
+
+
+def test_label_communities_partial_batch_failure_keeps_successful_batches(monkeypatch):
+    G, communities = _wide_graph(150)
+    n_calls = [0]
+
+    def fake_call(prompt, *, backend, max_tokens=200):
+        n_calls[0] += 1
+        cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
+                for line in prompt.splitlines() if line.startswith("Community ")]
+        if n_calls[0] == 2:
+            raise RuntimeError("simulated transient backend failure")
+        return "{" + ", ".join(f'"{c}": "Named {c}"' for c in cids) + "}"
+
+    monkeypatch.setattr("graphify.llm._call_llm", fake_call)
+    labels = label_communities(G, communities, backend="gemini", batch_size=50)
+
+    # 3 batches; second one fails. First and third produce real labels;
+    # the failed batch's cids stay as placeholders.
+    real = [cid for cid, name in labels.items() if name.startswith("Named ")]
+    placeholder = [cid for cid, name in labels.items() if name.startswith("Community ")]
+    assert len(real) == 100, f"expected 100 real labels from 2 successful batches, got {len(real)}"
+    assert len(placeholder) == 50, f"expected 50 placeholders from the failed batch, got {len(placeholder)}"
+
+
+def test_label_communities_all_batches_fail_raises(monkeypatch):
+    G, communities = _wide_graph(150)
+
+    def always_fail(prompt, *, backend, max_tokens=200):
+        raise RuntimeError("backend down")
+
+    monkeypatch.setattr("graphify.llm._call_llm", always_fail)
+    # Every batch fails -> propagate so generate_community_labels can degrade.
+    with pytest.raises(RuntimeError, match="backend down"):
+        label_communities(G, communities, backend="gemini", batch_size=50)
+
+
+def test_label_communities_max_communities_caps_total(monkeypatch):
+    # Backwards compat: explicit max_communities still caps the total labeled,
+    # so callers that pinned the legacy 200-default keep their behavior.
+    G, communities = _wide_graph(150)
+    captured_cids = []
+
+    def fake_call(prompt, *, backend, max_tokens=200):
+        cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
+                for line in prompt.splitlines() if line.startswith("Community ")]
+        captured_cids.extend(cids)
+        return "{" + ", ".join(f'"{c}": "X{c}"' for c in cids) + "}"
+
+    monkeypatch.setattr("graphify.llm._call_llm", fake_call)
+    label_communities(G, communities, backend="gemini", max_communities=40, batch_size=100)
+    # Only 40 communities should have been sent to the backend.
+    assert len(captured_cids) == 40

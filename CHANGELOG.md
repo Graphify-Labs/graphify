@@ -2,6 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: `extra_body` field in `providers.json` is now sent to the OpenAI-compatible client at both the extraction and labeling code paths. Lets self-hosted OpenAI-compatible endpoints (vLLM serving Qwen3, Llama-3.1, etc.) pass model-specific request shapes — most importantly `{"chat_template_kwargs": {"enable_thinking": false}}` for Qwen3, which otherwise emits chain-of-thought instead of the JSON the parser expects. An explicit `extra_body` from a custom provider also bypasses the Ollama `num_ctx` auto-derive, so a provider that points at Ollama can opt out of that default if it knows better.
+- Feat: `label_communities` now batches communities in chunks of 100 (configurable via `batch_size=`) instead of a single call capped at 200. This was the only obstacle to running community labeling against any backend with a 16k token context window (Qwen3.6-27B served by vLLM, Llama-3.1 8B-Instruct, etc.): 200 communities × 12 sampled node labels routinely overflowed the prompt. The default `max_communities` is now `None` (label them all); explicit integer caps still work for back-compat. Partial batch failures no longer drop the whole pass — successful batches still contribute labels, only the failed batch's communities stay as placeholders.
+
 ## 0.8.35 (2026-06-07)
 
 - Feat: CodeBuddy platform support. `graphify codebuddy install` installs the graphify skill to `~/.codebuddy/skills/graphify/SKILL.md`, writes a `CODEBUDDY.md` always-on section, and registers Bash + Read|Glob PreToolUse hooks in `.codebuddy/settings.json` that nudge the agent toward `graphify query` instead of grepping raw files when a graph exists. `graphify install --platform codebuddy` and `graphify codebuddy uninstall` also supported. Thanks to @studyzy (#1136).
