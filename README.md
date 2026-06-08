@@ -299,6 +299,43 @@ See the [full command reference](#full-command-reference) below.
 
 ---
 
+## AST-first graphs (code-only, no LLM)
+
+For AI coding agents, the **structural code graph** (imports, calls, inheritance, type references) is usually enough. You do not need an LLM to build it.
+
+**Three ways to stay offline:**
+
+| Approach | When to use |
+|----------|-------------|
+| **`graphify extract . --code-only`** | Docs exist in the repo but you only want code intelligence now |
+| **`.graphifyignore`** | Permanently exclude docs, generated markdown, RAG corpora (`kb/`, etc.) |
+| **Scoped scan** | `graphify extract ./src` — only index a subdirectory |
+
+Typical workflow:
+
+```bash
+graphify extract . --code-only --no-label   # AST graph, no API key
+graphify cluster-only . --no-label          # GRAPH_REPORT.md + graph.html
+graphify update .                           # incremental AST refresh after edits
+graphify hook install                       # auto-rebuild on git commit
+graphify query "what calls UserService?"
+```
+
+**Optional semantic overlay** (docs, community labels, inferred prose↔code links) — run on demand:
+
+```bash
+graphify extract ./docs --backend gemini --out ./doc-overlay
+graphify merge-graphs graphify-out/graph.json \
+  doc-overlay/graphify-out/graph.json --out graphify-out/graph.json
+graphify label .                            # human-readable community names (one LLM call)
+```
+
+With `--code-only`, Markdown files still get **structural** extraction (headings/sections) when they have a local AST extractor (`.md`, `.mdx`, `.qmd`) — same as `graphify update` / watch mode. PDFs, images, and prose semantics are skipped until you run a separate semantic extract.
+
+This repo dogfoods the pattern: see `.graphifyignore` and `AGENTS.md`.
+
+---
+
 ## Ignoring files
 
 Create a `.graphifyignore` in your project root — same syntax as `.gitignore`, including `!` negation.
@@ -578,6 +615,7 @@ graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow lo
 graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides via gws before extraction
 graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
 graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
+graphify extract . --code-only                 # AST only — skip LLM even when docs are present
 graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
 graphify extract ./docs --global --as myrepo   # extract and register into the cross-project global graph
