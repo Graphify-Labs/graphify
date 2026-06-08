@@ -77,3 +77,45 @@ jobs:
         run: |
           uv run --frozen graphify --help
           uv run --frozen graphify install
+
+  ast-graph:
+    # Guard the AST-first policy: .graphifyignore must keep docs out of
+    # detection so `graphify extract` runs offline with no API key (#1122).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --frozen
+
+      - name: Verify AST-only graph extraction
+        env:
+          GEMINI_API_KEY: ""
+          GOOGLE_API_KEY: ""
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+        run: |
+          set -euo pipefail
+          uv run --frozen graphify extract . --code-only --no-label --no-viz 2>&1 | tee /tmp/graphify-extract.log
+          if grep -E '0 docs, 0 papers, 0 images' /tmp/graphify-extract.log; then
+            echo "AST-only corpus: no docs detected"
+          elif grep -q '--code-only: skipping LLM' /tmp/graphify-extract.log; then
+            echo "AST-only corpus: --code-only skipped semantic extraction"
+          else
+            echo "expected --code-only offline extract (check .graphifyignore)" >&2
+            exit 1
+          fi
+          test -f graphify-out/graph.json
+          uv run --frozen python -c "
+          import json
+          from pathlib import Path
+          data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
+          nodes = data.get('nodes', [])
+          assert nodes, 'graph.json must contain nodes'
+          print(f'AST graph OK: {len(nodes)} nodes')
+          "

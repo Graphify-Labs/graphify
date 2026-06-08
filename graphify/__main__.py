@@ -2159,6 +2159,7 @@ def main() -> None:
         print("    --top-k-edges N         per-symbol outbound edges in inspector (default 12)")
         print("    --label NAME            project label in header")
         print("  extract <path>          headless full extraction (AST + semantic LLM) for CI/scripts")
+        print("    --code-only             AST only — skip LLM semantic extraction even when docs are present")
         print("    --backend B             gemini|kimi|claude|openai|deepseek|ollama (default: whichever API key is set)")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
@@ -3842,7 +3843,8 @@ def main() -> None:
         # has an API key set.
         if len(sys.argv) < 3:
             print(
-                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
+                "Usage: graphify extract <path> [--code-only] "
+                "[--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN]",
@@ -3867,6 +3869,7 @@ def main() -> None:
         cli_postgres_dsn: str | None = None
         no_cluster = False
         dedup_llm = False
+        code_only = False
         google_workspace = False
         global_merge = False
         global_repo_tag: str | None = None
@@ -3924,6 +3927,8 @@ def main() -> None:
                 out_dir = Path(a.split("=", 1)[1]); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
+            elif a == "--code-only":
+                code_only = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--google-workspace":
@@ -4042,6 +4047,28 @@ def main() -> None:
             unchanged_total = 0
 
         semantic_files = doc_files + paper_files + image_files
+        if code_only:
+            if dedup_llm:
+                print(
+                    "[graphify extract] warning: --dedup-llm ignored with --code-only "
+                    "(no LLM calls)",
+                    file=sys.stderr,
+                )
+                dedup_llm = False
+            skipped = len(semantic_files)
+            if skipped:
+                from graphify.extract import _get_extractor as _get_ast_extractor
+                seen_ast = {str(p) for p in code_files}
+                for doc_path in doc_files:
+                    p = Path(doc_path)
+                    if _get_ast_extractor(p) is not None and str(p) not in seen_ast:
+                        code_files.append(p)
+                        seen_ast.add(str(p))
+                print(
+                    f"[graphify extract] --code-only: skipping LLM semantic extraction "
+                    f"for {skipped} doc/paper/image file(s)"
+                )
+            semantic_files = []
         if incremental_mode:
             print(
                 f"[graphify extract] {len(code_files)} code, {len(doc_files)} docs, "

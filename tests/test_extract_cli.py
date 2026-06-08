@@ -198,3 +198,30 @@ def test_extract_without_key_still_errors_when_docs_present(
     assert "no LLM API key found" in err
     assert "code-only corpus needs no key" in err
     assert not (out_dir / "graphify-out" / "graph.json").exists()
+
+
+def test_extract_code_only_flag_skips_semantic_without_api_key(
+    monkeypatch, tmp_path, capsys,
+):
+    """--code-only must skip LLM semantic work even when Markdown docs are present."""
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr("graphify.llm.detect_backend", lambda: None)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--out", str(out_dir), "--code-only"],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    out = capsys.readouterr().out
+    assert "--code-only" in out
+    graph = out_dir / "graphify-out" / "graph.json"
+    assert graph.exists(), "--code-only must write graph.json without an API key"
+    import json
+    assert len(json.loads(graph.read_text()).get("nodes", [])) > 0

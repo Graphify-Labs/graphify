@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.8.36 (2026-06-08)
+
+- Feat: `graphify extract --code-only` skips LLM semantic extraction even when docs, papers, or images are present. Runs AST on code plus structural Markdown extractors (`.md`/`.mdx`/`.qmd`) with no API key — mirrors `graphify update` / watch behavior for headless CI and agent-focused workflows.
+- Docs: README adds an **AST-first graphs** section (`.graphifyignore`, `--code-only`, semantic overlay, hook/update workflow).
+- Chore: This repo adopts an AST-first graph policy — `.graphifyignore` excludes generated skills and prose, `AGENTS.md` documents the workflow, and CI runs an `ast-graph` job that verifies code-only extract needs no API key.
+
 ## 0.8.35 (2026-06-07)
 
 - Feat: CodeBuddy platform support. `graphify codebuddy install` installs the graphify skill to `~/.codebuddy/skills/graphify/SKILL.md`, writes a `CODEBUDDY.md` always-on section, and registers Bash + Read|Glob PreToolUse hooks in `.codebuddy/settings.json` that nudge the agent toward `graphify query` instead of grepping raw files when a graph exists. `graphify install --platform codebuddy` and `graphify codebuddy uninstall` also supported. Thanks to @studyzy (#1136).

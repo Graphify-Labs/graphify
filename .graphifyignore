@@ -1,0 +1,43 @@
+# AST-first graph policy for this repo.
+#
+# Default extraction indexes Python source and test/fixture code only.
+# Documentation, generated skill bundles, and prose are excluded so
+# `graphify extract` runs offline with no LLM API key.
+#
+# Optional semantic overlay (when prose↔code links matter):
+#   graphify extract ./docs --backend gemini --out ./doc-overlay
+#   graphify merge-graphs graphify-out/graph.json \
+#     doc-overlay/graphify-out/graph.json --out graphify-out/graph.json
+
+# Generated platform skill bundles
+graphify/skills/
+
+# Generated monolith skill files
+graphify/skill-*.md
+graphify/command-*.md
+
+# Skill generator (markdown fragments + golden expected files)
+tools/skillgen/
+
+# Docs, translations, and worked examples
+docs/
+worked/
+
+# CI and tooling config (classified as document, not code)
+.github/
+.pre-commit-config.yaml
+
+# Prose (README, CHANGELOG, ARCHITECTURE, etc.)
+*.md
+*.mdx
+*.txt
+*.rst
+*.html
+
+# Test fixtures still need sample .md for pipeline/integration tests
+!tests/fixtures/
+!tests/fixtures/**
+
+# Query feedback loop — keep agent Q&A memory in the graph when present
+!graphify-out/memory/
+!graphify-out/memory/**
