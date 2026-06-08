@@ -102,8 +102,10 @@ def _obsidian_tag(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-/]", "", name.replace(" ", "_"))
 
 
-def _strip_diacritics(text: str) -> str:
+def _strip_diacritics(text: str | None) -> str:
     import unicodedata
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 

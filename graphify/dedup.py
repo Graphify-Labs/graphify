@@ -15,8 +15,10 @@ from rapidfuzz.distance import JaroWinkler
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _norm(label: str) -> str:
+def _norm(label: str | None) -> str:
     """Lowercase + collapse non-alphanumeric runs to space (Unicode-aware)."""
+    if not isinstance(label, str):
+        label = "" if label is None else str(label)
     label = unicodedata.normalize("NFKC", label)
     return re.sub(r"[\W_]+", " ", label.casefold(), flags=re.UNICODE).strip()
 
