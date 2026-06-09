@@ -5187,6 +5187,77 @@ def extract_tcl(path: Path, content: str | bytes | None = None) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+_SBY_TOP_RE = re.compile(r"\bprep\b.*?-top\s+(\w+)")
+
+
+def extract_sby(path: Path, content: str | bytes | None = None) -> dict:
+    """Extract SymbiYosys (.sby) formal-verification configs: the proof links to the
+    RTL it verifies. The `[files]` section lists the source files, and `prep -top X`
+    names the verified top module. Targets are keyed by file STEM so they resolve to
+    the same node as the corresponding RTL module — connecting proofs to the design."""
+    try:
+        text = (content.decode("utf-8", "replace") if isinstance(content, bytes)
+                else content if content is not None
+                else path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    str_path = str(path)
+    file_nid = _make_id(str_path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    def add_node(nid, label, line):
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str_path, "source_location": f"L{line}",
+                          "confidence_score": 1.0})
+
+    def add_edge(src, tgt, relation, line):
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append({"source": src, "target": tgt, "relation": relation,
+                      "confidence": "EXTRACTED", "confidence_score": 1.0,
+                      "source_file": str_path, "source_location": f"L{line}", "weight": 1.0})
+
+    add_node(file_nid, path.name, 1)
+
+    section = ""
+    top: str | None = None
+    for i, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            continue
+        if section == "files":
+            # a [files] entry is `path` or `dest_name path` (alias form); the source
+            # path is the last whitespace token.
+            src_path = line.split()[-1]
+            stem = Path(src_path).name.rsplit(".", 1)[0]
+            if stem:
+                tgt = _make_id(stem)
+                add_node(tgt, stem, i)
+                add_edge(file_nid, tgt, "reads", i)
+        elif section == "script":
+            m = _SBY_TOP_RE.search(line)
+            if m:
+                top = m.group(1)
+
+    if top:
+        tgt = _make_id(top)
+        add_node(tgt, top, 1)
+        add_edge(file_nid, tgt, "verifies", 1)
+
+    return {"nodes": nodes, "edges": edges}
+
+
 def extract_ipxact(path: Path, content: str | bytes | None = None) -> dict:
     """Extract IP-XACT (IEEE-1685) component descriptors from .xml: the component, its
     bus interfaces, and the bus protocol each exposes. Non-IP-XACT XML yields nothing.
@@ -11431,6 +11502,7 @@ _DISPATCH: dict[str, Any] = {
     ".mk": extract_make,
     ".make": extract_make,
     ".tcl": extract_tcl,
+    ".sby": extract_sby,
     ".xml": extract_ipxact,
     ".sql": extract_sql,
     ".md": extract_markdown,

@@ -1,0 +1,19 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+depth 20
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal -sv top.sv helper.sv fv_top.sv
+prep -top fv_top
+
+[files]
+rtl/top.sv
+rtl/helper.sv
+formal/fv_top.sv

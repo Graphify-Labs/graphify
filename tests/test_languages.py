@@ -9,7 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_verilog,
-    extract_make, extract_tcl, extract_ipxact,
+    extract_make, extract_tcl, extract_ipxact, extract_sby,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1799,3 +1799,22 @@ def test_ipxact_ignores_non_ipxact_xml(tmp_path):
     p.write_text("<config><a>1</a></config>")
     r = extract_ipxact(p)
     assert r["nodes"] == [] and r["edges"] == []
+
+
+def test_sby_links_proof_to_rtl():
+    from graphify.extract import _make_id
+    r = extract_sby(FIXTURES / "sample.sby")
+    reads = {_n(r).get(e["target"]) for e in r["edges"] if e["relation"] == "reads"}
+    assert {"top", "helper", "fv_top"} <= reads
+    verifies = {e["target"] for e in r["edges"] if e["relation"] == "verifies"}
+    assert _make_id("fv_top") in verifies            # prep -top fv_top
+    # [files] targets are keyed by stem -> resolve to the same node as the RTL module
+    reads_ids = {e["target"] for e in r["edges"] if e["relation"] == "reads"}
+    assert _make_id("helper") in reads_ids
+
+
+def test_sby_no_dangling_edges():
+    r = extract_sby(FIXTURES / "sample.sby")
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in ids and e["target"] in ids
