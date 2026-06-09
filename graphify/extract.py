@@ -42,6 +42,33 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
     "callable", "getattr", "setattr", "hasattr", "delattr", "vars", "dir",
 })
 
+# JS/Node runtime globals and Node core module names that appear as bare
+# identifier references but are never project-defined symbols. Module-level
+# `const fs = require('fs')` bindings otherwise become a per-file node
+# (`app_fs`, `app_path`, `app_os`, ...) in every file that requires the module,
+# and unresolved bare calls to runtime globals (setTimeout, fetch, require)
+# produce spurious cross-file INFERRED edges whenever a project symbol shares
+# the name. Counterpart to _PY_STDLIB_BLOCKLIST; same pattern as
+# _RUST_TRAIT_METHOD_BLOCKLIST (#908). Extracted function labels carry a "()"
+# suffix and the node-suppression sites below match raw identifiers, so this
+# never shadows extracted project functions.
+_JS_GLOBAL_BLOCKLIST: frozenset[str] = frozenset({
+    # runtime globals not already filtered as call targets by
+    # _LANGUAGE_BUILTIN_GLOBALS
+    "JSON", "Promise", "Math", "console", "process", "require", "module",
+    "exports", "global", "globalThis", "window", "document", "navigator",
+    "Buffer", "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+    "setImmediate", "clearImmediate", "queueMicrotask", "structuredClone",
+    "fetch", "atob", "btoa", "localStorage", "sessionStorage",
+    "performance", "__dirname", "__filename",
+    # Node core modules (`const fs = require('fs')` / `require('node:fs')`)
+    "fs", "path", "os", "http", "https", "net", "url", "util", "events",
+    "stream", "crypto", "zlib", "child_process", "cluster", "dns", "buffer",
+    "querystring", "readline", "assert", "tls", "dgram", "v8", "vm",
+    "worker_threads", "perf_hooks", "async_hooks", "string_decoder",
+    "timers", "tty", "repl", "punycode",
+})
+
 
 def _raise_recursion_limit() -> None:
     if sys.getrecursionlimit() < _RECURSION_LIMIT:
@@ -485,6 +512,86 @@ _PYTHON_ANNOTATION_NOISE = frozenset({
     "NonCallableMagicMock", "PropertyMock", "patch", "sentinel",
 })
 
+# Python stdlib/typing names that appear as bare identifier references —
+# annotations like `def f(p: Path) -> Any` and constructor calls like
+# `Path(x)` — but are never project-defined symbols. Without this filter
+# every referencing file grows a free-floating `Path`/`Any`/`datetime` node
+# (the colliding bare ids are split into per-file ids by
+# _disambiguate_colliding_node_ids), _resolve_cross_file_imports then treats
+# those nodes as importing classes and emits spurious INFERRED `uses` edges
+# (Path --uses--> ProjectClass), and the noise dominates god-node rankings.
+# Applied at the annotation walker (same layer as _PYTHON_ANNOTATION_NOISE,
+# #1147) and at the unresolved-call queue (same pattern as
+# _RUST_TRAIT_METHOD_BLOCKLIST, #908). Matching is on the raw identifier and
+# extracted function labels carry a "()" suffix, so project functions are
+# never shadowed. Tradeoff: a project class that reuses one of these exact
+# names loses its annotation-reference edges — acceptable, same as the Rust
+# blocklist skipping project methods named `new` or `get`.
+_PY_STDLIB_BLOCKLIST: frozenset[str] = frozenset({
+    # typing names not already covered by _PYTHON_TYPE_CONTAINERS
+    "Any", "AnyStr", "NoReturn", "Never", "Self", "TypeAlias", "TypedDict",
+    "NamedTuple", "Protocol", "Generic", "Hashable", "Sized",
+    "IO", "TextIO", "BinaryIO", "Pattern", "Match", "Text",
+    "DefaultDict", "OrderedDict", "Deque", "ChainMap", "Counter",
+    # stdlib modules commonly referenced bare (import os; os.path.join(...))
+    "os", "sys", "re", "io", "json", "csv", "abc", "ast", "math", "time",
+    "enum", "uuid", "copy", "glob", "stat", "errno", "shlex", "shutil",
+    "base64", "bisect", "codecs", "ctypes", "typing", "decimal", "difflib",
+    "fnmatch", "getpass", "hashlib", "heapq", "hmac", "inspect", "logging",
+    "pathlib", "pickle", "platform", "pprint", "queue", "random", "secrets",
+    "select", "signal", "socket", "sqlite3", "string", "struct", "asyncio",
+    "subprocess", "tarfile", "tempfile", "textwrap", "threading",
+    "traceback", "types", "unittest", "urllib", "warnings", "weakref",
+    "zipfile", "zlib", "functools", "itertools", "collections",
+    "contextlib", "dataclasses", "datetime", "argparse", "configparser",
+    "multiprocessing", "importlib", "operator", "statistics", "mimetypes",
+    "calendar", "gzip", "http", "email", "xml", "html",
+    # stdlib classes/callables that show up in annotations and constructor calls
+    "Path", "PurePath", "PosixPath", "WindowsPath", "PathLike",
+    "Enum", "IntEnum", "StrEnum", "Flag", "IntFlag", "auto",
+    "ABC", "ABCMeta", "date", "timedelta", "timezone", "tzinfo",
+    "Decimal", "Fraction", "UUID", "StringIO", "BytesIO",
+    "defaultdict", "deque", "namedtuple", "partial", "dataclass",
+    # builtins / common exceptions
+    "Exception", "BaseException", "ValueError", "TypeError", "KeyError",
+    "IndexError", "AttributeError", "RuntimeError", "NotImplementedError",
+    "FileNotFoundError", "FileExistsError", "OSError", "IOError",
+    "ImportError", "ModuleNotFoundError", "NameError", "ZeroDivisionError",
+    "ArithmeticError", "OverflowError", "PermissionError", "TimeoutError",
+    "ConnectionError", "InterruptedError", "KeyboardInterrupt", "SystemExit",
+    "GeneratorExit", "StopIteration", "StopAsyncIteration", "LookupError",
+    "AssertionError", "RecursionError", "MemoryError", "EOFError",
+    "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeError",
+    "Warning", "DeprecationWarning", "UserWarning", "RuntimeWarning",
+    "FutureWarning", "NotImplemented", "memoryview", "slice", "property",
+    "staticmethod", "classmethod", "frozenset",
+})
+
+# Per-language blocklists for the unresolved-call queue in _extract_generic.
+# Mirrors the Rust blocklist (#908): same-file EXTRACTED matches still
+# resolve, but stdlib/global callee names never enter cross-file resolution,
+# where a unique same-named project symbol would attract spurious INFERRED
+# `calls` edges from every file that touches the stdlib name.
+_UNRESOLVED_CALL_BLOCKLISTS: dict[str, frozenset[str]] = {
+    "tree_sitter_python": _PY_STDLIB_BLOCKLIST,
+    "tree_sitter_javascript": _JS_GLOBAL_BLOCKLIST,
+    "tree_sitter_typescript": _JS_GLOBAL_BLOCKLIST,
+}
+
+
+def _python_type_ref_ok(name: str) -> bool:
+    """True if an annotation identifier should become a reference (node + edge).
+
+    Filters typing containers, scalar-builtin/mock noise (#1147), and bare
+    stdlib/typing names (Path, Any, os, datetime, ...) that would otherwise
+    become free-floating per-file nodes.
+    """
+    return bool(name) and (
+        name not in _PYTHON_TYPE_CONTAINERS
+        and name not in _PYTHON_ANNOTATION_NOISE
+        and name not in _PY_STDLIB_BLOCKLIST
+    )
+
 
 def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a Python type annotation; append (name, role) where role is 'type' or 'generic_arg'.
@@ -502,19 +609,19 @@ def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
         return
     if t == "identifier":
         name = _read_text(node, source)
-        if name and name not in _PYTHON_TYPE_CONTAINERS and name not in _PYTHON_ANNOTATION_NOISE:
+        if _python_type_ref_ok(name):
             out.append((name, "generic_arg" if generic else "type"))
         return
     if t == "attribute":
         tail = _read_text(node, source).rsplit(".", 1)[-1]
-        if tail and tail not in _PYTHON_TYPE_CONTAINERS and tail not in _PYTHON_ANNOTATION_NOISE:
+        if _python_type_ref_ok(tail):
             out.append((tail, "generic_arg" if generic else "type"))
         return
     if t == "generic_type":
         for c in node.children:
             if c.type == "identifier":
                 container = _read_text(c, source)
-                if container and container not in _PYTHON_TYPE_CONTAINERS and container not in _PYTHON_ANNOTATION_NOISE:
+                if _python_type_ref_ok(container):
                     out.append((container, "generic_arg" if generic else "type"))
             elif c.type == "type_parameter":
                 for sub in c.children:
@@ -1764,6 +1871,13 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                         name_node = child.child_by_field_name("name")
                         if name_node:
                             const_name = _read_text(name_node, source)
+                            # `const fs = require('fs')` and friends: the
+                            # imports_from edge from _require_imports_js already
+                            # records the dependency; a per-file `fs`/`path`/`os`
+                            # binding node would only clutter god-node rankings
+                            # (same noise class as _PY_STDLIB_BLOCKLIST).
+                            if const_name in _JS_GLOBAL_BLOCKLIST:
+                                continue
                             line = child.start_point[0] + 1
                             const_nid = _make_id(stem, const_name)
                             add_node_fn(const_nid, const_name, line)
@@ -3303,14 +3417,22 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                             "weight": 1.0,
                         })
                 elif callee_name and not tgt_nid:
-                    # Callee not in this file — save for cross-file resolution in extract()
-                    raw_calls.append({
-                        "caller_nid": caller_nid,
-                        "callee": callee_name,
-                        "is_member_call": is_member_call,
-                        "source_file": str_path,
-                        "source_location": f"L{node.start_point[0] + 1}",
-                    })
+                    # Callee not in this file — save for cross-file resolution
+                    # in extract(). Skip per-language stdlib/global names
+                    # (Path(...), datetime(...), setTimeout(...)) from the
+                    # unresolved-call queue entirely: resolving them cross-file
+                    # attaches spurious INFERRED edges to whatever project
+                    # symbol happens to share the name, the same failure mode
+                    # _RUST_TRAIT_METHOD_BLOCKLIST guards against (#908).
+                    lang_blocklist = _UNRESOLVED_CALL_BLOCKLISTS.get(config.ts_module)
+                    if lang_blocklist is None or callee_name not in lang_blocklist:
+                        raw_calls.append({
+                            "caller_nid": caller_nid,
+                            "callee": callee_name,
+                            "is_member_call": is_member_call,
+                            "source_file": str_path,
+                            "source_location": f"L{node.start_point[0] + 1}",
+                        })
 
             # Helper function calls: config('foo.bar') → uses_config edge to "foo"
             if (callee_name and callee_name in config.helper_fn_names):
