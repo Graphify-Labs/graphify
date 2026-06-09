@@ -757,7 +757,13 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
     return patterns
 
 
-def _is_ignored(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> bool:
+def _is_ignored(
+    path: Path,
+    root: Path,
+    patterns: list[tuple[Path, str]],
+    *,
+    _cache: dict[Path, bool] | None = None,
+) -> bool:
     """Return True if the path should be ignored per .graphifyignore patterns.
 
     Uses gitignore last-match-wins semantics: all patterns are evaluated in
@@ -766,12 +772,18 @@ def _is_ignored(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> boo
 
     Enforces gitignore's parent-exclusion rule: a ! pattern cannot re-include
     a file whose ancestor directory is already excluded.
+
+    _cache: optional dict shared across calls within the same scan. Ancestor
+    directory results are memoised so files under the same subtree don't
+    re-evaluate the same patterns repeatedly.
     """
     if not patterns:
         return False
 
     def _eval(target: Path) -> bool:
         """Apply last-match-wins to a single target path."""
+        if _cache is not None and target in _cache:
+            return _cache[target]
         def _matches(rel: str, p: str, anchored: bool) -> bool:
             if anchored:
                 return fnmatch.fnmatch(rel, p)
@@ -818,6 +830,8 @@ def _is_ignored(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> boo
 
             if matched:
                 result = not negated  # last match wins; ! flips to un-ignore
+        if _cache is not None:
+            _cache[target] = result
         return result
 
     # Gitignore parent-exclusion rule: a ! re-include cannot rescue a file
@@ -983,6 +997,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
 
     skipped_sensitive: list[str] = []
     ignore_patterns = _load_graphifyignore(root)
+    ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
     # CLI --exclude patterns are anchored at the scan root and appended last
     # so they win over any .graphifyignore/.gitignore rules (#947).
     if extra_excludes:
@@ -1021,7 +1036,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 dirnames[:] = [
                     d for d in dirnames
                     if not _is_noise_dir(d, dp)
-                    and (has_negation or not _is_ignored(dp / d, root, ignore_patterns))
+                    and (has_negation or not _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache))
                 ]
             for fname in filenames:
                 if fname in _SKIP_FILES:
@@ -1042,7 +1057,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
                 continue
-        if not in_memory and _is_ignored(p, root, ignore_patterns):
+        if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
@@ -1063,7 +1078,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     skipped_sensitive.append(str(p) + f" [Google Workspace export failed: {exc}]")
                     continue
                 if md_path:
-                    if _is_ignored(md_path, root, ignore_patterns):
+                    if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += count_words(md_path)
@@ -1074,7 +1089,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             if p.suffix.lower() in OFFICE_EXTENSIONS:
                 md_path = convert_office_file(p, converted_dir)
                 if md_path:
-                    if _is_ignored(md_path, root, ignore_patterns):
+                    if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += count_words(md_path)
