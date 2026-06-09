@@ -60,6 +60,43 @@ def test_affected_cli_relation_filter_limits_reverse_traversal(monkeypatch, tmp_
     assert "__init__.py" not in out
 
 
+def test_affected_cli_loads_native_edges_key_graph(monkeypatch, tmp_path, capsys):
+    """The extractor writes graph.json with edges under the "edges" key (not the
+    node_link_data "links" key). load_graph attempts edges="links" first, which
+    raises KeyError on a native graph; that must be caught so the load falls back
+    to the networkx default. Regression for affected/benchmark crashing with
+    "could not load graph: 'links'" on every real graphify-out/graph.json.
+    """
+    # Hand-rolled native format — NOT node_link_data — to mirror real output.
+    data = {
+        "directed": True,
+        "nodes": [
+            {"id": "target", "label": "Foo", "source_file": "pkg/foo.py", "source_location": "L1"},
+            {"id": "caller", "label": "X()", "source_file": "app.py", "source_location": "L4"},
+        ],
+        "edges": [
+            {"source": "caller", "target": "target", "relation": "calls",
+             "context": "call", "confidence": "EXTRACTED"},
+        ],
+    }
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "affected", "Foo", "--graph", str(graph_path)],
+    )
+
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    assert "Affected nodes for Foo" in out
+    assert "X()" in out
+    assert "calls" in out
+
+
 def test_affected_cli_forces_directed_on_undirected_graph(monkeypatch, tmp_path, capsys):
     """A graph persisted with directed=false must still recover caller->callee
     direction (#1174): affected on the callee returns the caller, not the callee

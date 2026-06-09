@@ -148,7 +148,11 @@ def load_graph(path: Path) -> nx.Graph:
     # Force directed so stored caller→callee direction survives the round-trip;
     # mirrors serve.py and __main__.py (#1174).
     raw = {**raw, "directed": True}
+    # Merged/cross-repo graphs serialise edges under "links" (node_link_data
+    # default); native extractor graphs use "edges". Try "links" first and fall
+    # back to the networkx default ("edges") — the KeyError raised on a native
+    # graph must be caught here, otherwise load fails on every real graph.json.
     try:
         return json_graph.node_link_graph(raw, edges="links")
-    except TypeError:
+    except (TypeError, KeyError):
         return json_graph.node_link_graph(raw)
