@@ -1060,3 +1060,174 @@ def test_dart_child_node_ids_are_stem_based(tmp_path):
         )
 
 
+
+# ── Python stdlib / JS global noise blocklists ────────────────────────────────
+
+
+def test_python_stdlib_annotation_names_produce_no_nodes(tmp_path):
+    """Stdlib/typing names referenced in annotations (Path, Any, datetime,
+    os.PathLike) must not become free-floating per-file nodes that
+    _resolve_cross_file_imports then promotes into `uses` god-nodes —
+    same failure mode as the Rust trait-method blocklist (#908)."""
+    models = tmp_path / "models.py"
+    consumer = tmp_path / "consumer.py"
+    models.write_text(
+        "from pathlib import Path\n"
+        "from typing import Any\n"
+        "import datetime\n"
+        "import os\n"
+        "class MemoryIndex:\n"
+        "    def load(self, p: Path, when: datetime.datetime) -> Any:\n"
+        "        return os.path.exists(p)\n"
+    )
+    consumer.write_text(
+        "from pathlib import Path\n"
+        "from typing import Any\n"
+        "from .models import MemoryIndex\n"
+        "class Consumer:\n"
+        "    def run(self, p: Path) -> Any:\n"
+        "        idx = MemoryIndex()\n"
+        "        return idx.load(p, None)\n"
+    )
+
+    result = extract([models, consumer], cache_root=tmp_path)
+    noise_labels = {"Path", "Any", "datetime", "PathLike", "os"}
+    noise_nodes = [n for n in result["nodes"] if n["label"] in noise_labels]
+    assert noise_nodes == [], f"Stdlib names became nodes: {noise_nodes}"
+
+    # No INFERRED `uses` edge may originate from a stdlib-named node.
+    nodes = {n["id"]: n for n in result["nodes"]}
+    bad_uses = [
+        e for e in result["edges"]
+        if e["relation"] == "uses" and nodes.get(e["source"], {}).get("label") in noise_labels
+    ]
+    assert bad_uses == [], f"Stdlib node got a uses edge: {bad_uses}"
+
+
+def test_python_project_import_edges_survive_stdlib_blocklist(tmp_path):
+    """The blocklist must not touch legitimate import edges: file → project
+    module (imports_from), file → imported symbol (imports), and the
+    class-level INFERRED `uses` edge from the importing class."""
+    models = tmp_path / "models.py"
+    consumer = tmp_path / "consumer.py"
+    models.write_text(
+        "from pathlib import Path\n"
+        "class MemoryIndex:\n"
+        "    def load(self, p: Path) -> None:\n"
+        "        return None\n"
+    )
+    consumer.write_text(
+        "from typing import Any\n"
+        "from .models import MemoryIndex\n"
+        "class Consumer:\n"
+        "    def run(self) -> Any:\n"
+        "        return MemoryIndex()\n"
+    )
+
+    result = extract([models, consumer], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    labels = {n["label"] for n in result["nodes"]}
+    assert "MemoryIndex" in labels and "Consumer" in labels
+
+    edge_views = [
+        (nodes.get(e["source"], {}).get("label", e["source"]),
+         e["relation"],
+         nodes.get(e["target"], {}).get("label", e["target"]))
+        for e in result["edges"]
+    ]
+    # file-level import of the project module survives
+    assert ("consumer.py", "imports_from", "models.py") in edge_views, edge_views
+    # symbol-level import edge survives
+    assert ("consumer.py", "imports", "MemoryIndex") in edge_views, edge_views
+    # class-level INFERRED uses edge from the real importing class survives
+    assert ("Consumer", "uses", "MemoryIndex") in edge_views, edge_views
+    # stdlib module import edges remain as (dangling, external) file edges
+    stdlib_imports = [
+        e["target"] for e in result["edges"]
+        if e["relation"] in ("imports", "imports_from")
+        and nodes.get(e["source"], {}).get("label") == "consumer.py"
+    ]
+    assert "typing" in stdlib_imports, stdlib_imports
+
+
+def test_python_stdlib_constructor_calls_skip_unresolved_queue():
+    """`Path(...)` / `datetime(...)` bare calls must be skipped from the
+    unresolved-call queue (mirrors _RUST_TRAIT_METHOD_BLOCKLIST, #908),
+    while project-name callees still enqueue."""
+    from graphify.extract import extract_python
+    fixture = FIXTURES / "_stdlib_calls.py"
+    fixture.write_text(
+        "from pathlib import Path\n"
+        "def helper(base):\n"
+        "    p = Path(base)\n"
+        "    return resolve_widget(p)\n"
+    )
+    try:
+        result = extract_python(fixture)
+        callees = [rc["callee"] for rc in result.get("raw_calls", [])]
+        assert "Path" not in callees, callees
+        assert "resolve_widget" in callees, callees
+    finally:
+        fixture.unlink()
+
+
+def test_extract_js_core_module_require_binding_produces_no_node(tmp_path):
+    """`const fs = require('fs')` must keep its imports_from edge but not
+    create a per-file `fs`/`path` binding node; project-named module-level
+    consts are unaffected."""
+    app = tmp_path / "app.js"
+    app.write_text(
+        "const fs = require('fs');\n"
+        "const path = require('path');\n"
+        "const registry = buildRegistry();\n"
+        "function load(p) { return fs.readFileSync(path.join(p)); }\n"
+    )
+    result = extract([app], cache_root=tmp_path)
+    labels = [n["label"] for n in result["nodes"]]
+    assert "fs" not in labels and "path" not in labels, labels
+    assert "registry" in labels, labels
+    assert "load()" in labels, labels
+    import_targets = [
+        e["target"] for e in result["edges"] if e["relation"] == "imports_from"
+    ]
+    assert "fs" in import_targets and "path" in import_targets, import_targets
+
+
+def test_js_global_calls_skip_unresolved_queue():
+    """Bare calls to JS runtime globals (setTimeout, fetch) must not enter the
+    unresolved-call queue where they would attract spurious cross-file
+    INFERRED edges onto same-named project symbols."""
+    from graphify.extract import extract_js
+    fixture = FIXTURES / "_js_global_calls.js"
+    fixture.write_text(
+        "function poll() {\n"
+        "  setTimeout(() => fetch('/x'), 100);\n"
+        "  return renderWidget();\n"
+        "}\n"
+    )
+    try:
+        result = extract_js(fixture)
+        callees = [rc["callee"] for rc in result.get("raw_calls", [])]
+        assert "setTimeout" not in callees, callees
+        assert "fetch" not in callees, callees
+        assert "renderWidget" in callees, callees
+    finally:
+        fixture.unlink()
+
+
+def test_god_nodes_exclude_stdlib_noise_labels():
+    """Defense-in-depth (#1147 pattern): pre-existing graphs with stdlib noise
+    nodes must not rank Path/Any/os in god_nodes."""
+    import networkx as nx
+    from graphify.analyze import god_nodes
+
+    G = nx.DiGraph()
+    G.add_node("util_path", label="Path", source_file="util.py")
+    G.add_node("util_memoryindex", label="MemoryIndex", source_file="util.py")
+    for i in range(5):
+        G.add_node(f"c{i}", label=f"C{i}", source_file=f"c{i}.py")
+        G.add_edge(f"c{i}", "util_path", relation="uses")
+        G.add_edge(f"c{i}", "util_memoryindex", relation="uses")
+    top = [g["label"] for g in god_nodes(G, top_n=5)]
+    assert "Path" not in top, top
+    assert "MemoryIndex" in top, top

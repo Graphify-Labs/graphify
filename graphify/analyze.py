@@ -4,16 +4,20 @@ from pathlib import Path
 import networkx as nx
 
 from graphify.build import edge_data
+from graphify.extract import _JS_GLOBAL_BLOCKLIST, _PY_STDLIB_BLOCKLIST
 
 # Builtin/mock names that can appear as annotation-derived nodes in pre-existing
 # graphs. Excluded from god-node ranking so they don't displace real abstractions
-# even if they weren't filtered at extraction time (#1147).
+# even if they weren't filtered at extraction time (#1147). Extended with the
+# Python stdlib and JS global blocklists so stale per-file cache entries
+# (cache keys are content hashes, so old extractions survive upgrades) can't
+# push `Path`/`Any`/`os` reference nodes back into the ranking.
 _BUILTIN_NOISE_LABELS = frozenset({
     "str", "int", "float", "bool", "bytes", "bytearray", "complex", "object",
     "True", "False",
     "MagicMock", "Mock", "AsyncMock", "NonCallableMock",
     "NonCallableMagicMock", "PropertyMock", "patch", "sentinel",
-})
+}) | _PY_STDLIB_BLOCKLIST | _JS_GLOBAL_BLOCKLIST
 
 # Language families — extensions sharing a runtime can legitimately call each other
 _LANG_FAMILY: dict[str, str] = {
