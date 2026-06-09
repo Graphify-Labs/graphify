@@ -11,7 +11,10 @@ interpolated as identifiers.
 """
 from __future__ import annotations
 
+import csv
+import os
 import re
+import tempfile
 from pathlib import Path
 
 from .build import _FILE_TYPE_SYNONYMS, _normalize_id, _norm_source_file
@@ -41,6 +44,18 @@ _NODE_TABLES = {
         id STRING PRIMARY KEY, label STRING,
         source_file STRING, community INT64)""",
 }
+
+_NODE_COLUMNS = {
+    "code": ["id", "label", "source_file", "source_location", "community"],
+    "document": ["id", "label", "source_file", "community"],
+    "paper": ["id", "label", "source_file", "community"],
+    "image": ["id", "label", "source_file", "community"],
+    "concept": ["id", "label", "source_file", "community"],
+    "rationale": ["id", "label", "source_file", "community"],
+}
+
+_EDGE_COLUMNS = ["from_id", "to_id", "relation", "confidence",
+                 "confidence_score", "source_file", "weight"]
 
 # ---------------------------------------------------------------------------
 # Edge tables — split by (src_type, tgt_type, relation).
@@ -72,6 +87,43 @@ def _sanitize_rel_name(relation: str) -> str:
 
 def _edge_table_name(src_type: str, tgt_type: str, relation: str) -> str:
     return f"edge_{src_type}_{tgt_type}_{_sanitize_rel_name(relation)}"
+
+
+# ---------------------------------------------------------------------------
+# CSV helpers for bulk COPY FROM
+# ---------------------------------------------------------------------------
+
+def _sanitize_csv_value(v: object) -> str:
+    if isinstance(v, str):
+        return v.replace("\n", "\\n").replace("\r", "")
+    return str(v)
+
+
+def _write_csv(path: str, rows: list[dict], columns: list[str]) -> int:
+    if not rows:
+        return 0
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore",
+                           quoting=csv.QUOTE_ALL)
+        w.writeheader()
+        for row in rows:
+            w.writerow({k: _sanitize_csv_value(row.get(k, "")) for k in columns})
+    return len(rows)
+
+
+def _copy_node_csv(conn: object, csv_path: str, table: str) -> None:
+    conn.execute(
+        f'COPY {table} FROM "{csv_path}" (header=true, delim=",", escaping=false)'
+    )
+
+
+def _copy_rel_csv(conn: object, csv_path: str, tbl: str,
+                  src_table: str, tgt_table: str) -> None:
+    conn.execute(
+        f'COPY {tbl} FROM "{csv_path}" '
+        f'(from="{src_table}", to="{tgt_table}", '
+        f'header=true, delim=",", escaping=false)'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -135,100 +187,154 @@ def _fix_file_type(ft: str | None) -> str:
     return ft
 
 
-def ingest_extraction(
+def _bulk_ingest(
     conn: object,
     extraction: dict,
     *,
-    incremental: bool = False,
-    prune_sources: list[str] | None = None,
-    root: str | Path | None = None,
+    root: str | None = None,
     known_tables: set[str] | None = None,
 ) -> dict[str, str]:
-    """Write an extraction dict into NeuG.
+    """Full build via COPY FROM — much faster than per-row Cypher CREATE."""
+    _known = known_tables if known_tables is not None else set()
+    nodes = extraction.get("nodes") or []
+    edges = extraction.get("edges") or []
 
-    incremental=False: first build — uses CREATE (faster).
-    incremental=True:  update — uses MERGE (upsert).
+    # --- collect node rows grouped by file_type ---
+    node_types: dict[str, str] = {}
+    node_buckets: dict[str, list[dict]] = {ft: [] for ft in _NODE_TABLES}
+    written_ids: set[str] = set()
 
-    Returns node_types dict (id -> file_type) for use by ingest_communities.
-    """
-    _root = str(Path(root).resolve()) if root else None
+    for node in nodes:
+        nid = _normalize_id(node.get("id", ""))
+        if not nid or nid in written_ids:
+            continue
+        written_ids.add(nid)
+        ft = _fix_file_type(node.get("file_type"))
+        node_types[nid] = ft
+        row: dict = {
+            "id": nid,
+            "label": node.get("label", ""),
+            "source_file": _norm_source_file(node.get("source_file"), root) or "",
+            "community": 0,
+        }
+        if ft == "code":
+            row["source_location"] = node.get("source_location") or ""
+        node_buckets.setdefault(ft, []).append(row)
+
+    # --- collect edge rows grouped by rel table ---
+    edge_buckets: dict[str, list[dict]] = {}
+    edge_table_types: dict[str, tuple[str, str]] = {}
+
+    for edge in edges:
+        src_id = _normalize_id(edge.get("source") or edge.get("from", ""))
+        tgt_id = _normalize_id(edge.get("target") or edge.get("to", ""))
+        if not src_id or not tgt_id:
+            continue
+        src_ft = node_types.get(src_id)
+        tgt_ft = node_types.get(tgt_id)
+        if not src_ft or not tgt_ft:
+            continue
+
+        rel_raw = edge.get("relation", "")
+        tbl = _ensure_rel_table(conn, src_ft, tgt_ft, rel_raw, _known)
+        edge_table_types[tbl] = (src_ft, tgt_ft)
+        edge_buckets.setdefault(tbl, []).append({
+            "from_id": src_id,
+            "to_id": tgt_id,
+            "relation": rel_raw,
+            "confidence": edge.get("confidence", ""),
+            "confidence_score": float(edge.get("confidence_score", 0.0)),
+            "source_file": _norm_source_file(edge.get("source_file"), root) or "",
+            "weight": float(edge.get("weight", 1.0)),
+        })
+
+    # --- write CSV + COPY FROM in a temp dir ---
+    tmp_dir = tempfile.mkdtemp(prefix="graphify_bulk_")
+    try:
+        for ft, rows in node_buckets.items():
+            if not rows:
+                continue
+            csv_path = os.path.join(tmp_dir, f"node_{ft}.csv")
+            _write_csv(csv_path, rows, _NODE_COLUMNS[ft])
+            _copy_node_csv(conn, csv_path, ft)
+
+        for tbl, rows in edge_buckets.items():
+            if not rows:
+                continue
+            csv_path = os.path.join(tmp_dir, f"edge_{tbl}.csv")
+            _write_csv(csv_path, rows, _EDGE_COLUMNS)
+            src_ft, tgt_ft = edge_table_types[tbl]
+            _copy_rel_csv(conn, csv_path, tbl, src_ft, tgt_ft)
+    finally:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return node_types
+
+
+def _incremental_ingest(
+    conn: object,
+    extraction: dict,
+    *,
+    prune_sources: list[str] | None = None,
+    root: str | None = None,
+    known_tables: set[str] | None = None,
+) -> dict[str, str]:
+    """Incremental update via per-row Cypher MERGE."""
     _known = known_tables if known_tables is not None else set()
 
-    # --- prune deleted/changed files first ---
     if prune_sources:
         for sf in prune_sources:
-            sf_norm = _norm_source_file(sf, _root) or sf
+            sf_norm = _norm_source_file(sf, root) or sf
             for tbl in _NODE_TABLES:
                 conn.execute(
                     f"MATCH (n:{tbl}) WHERE n.source_file = $sf DETACH DELETE n",
                     parameters={"sf": sf_norm},
                 )
 
-    # --- build node lookup: id -> file_type ---
     node_types: dict[str, str] = {}
     nodes = extraction.get("nodes") or []
     edges = extraction.get("edges") or []
 
-    # --- write nodes ---
-    _written_ids: set[str] = set()
+    written_ids: set[str] = set()
     _n_errors = 0
     for node in nodes:
         nid = _normalize_id(node.get("id", ""))
-        if not nid:
+        if not nid or nid in written_ids:
             continue
+        written_ids.add(nid)
         ft = _fix_file_type(node.get("file_type"))
         label = node.get("label", "")
-        sf = _norm_source_file(node.get("source_file"), _root) or ""
+        sf = _norm_source_file(node.get("source_file"), root) or ""
         sl = node.get("source_location") or ""
         node_types[nid] = ft
-        if nid in _written_ids:
-            continue
-        _written_ids.add(nid)
 
         try:
-            if incremental:
-                if ft == "code":
-                    conn.execute(
-                        f"MERGE (n:code {{id: $nid}}) "
-                        f"ON CREATE SET n.label = $label, "
-                        f"n.source_file = $sf, n.source_location = $sl "
-                        f"ON MATCH SET n.label = $label, "
-                        f"n.source_file = $sf, n.source_location = $sl",
-                        parameters={"nid": nid, "label": label, "sf": sf, "sl": sl},
-                    )
-                else:
-                    conn.execute(
-                        f"MERGE (n:{ft} {{id: $nid}}) "
-                        f"ON CREATE SET n.label = $label, n.source_file = $sf "
-                        f"ON MATCH SET n.label = $label, n.source_file = $sf",
-                        parameters={"nid": nid, "label": label, "sf": sf},
-                    )
+            if ft == "code":
+                conn.execute(
+                    f"MERGE (n:code {{id: $nid}}) "
+                    f"ON CREATE SET n.label = $label, "
+                    f"n.source_file = $sf, n.source_location = $sl "
+                    f"ON MATCH SET n.label = $label, "
+                    f"n.source_file = $sf, n.source_location = $sl",
+                    parameters={"nid": nid, "label": label, "sf": sf, "sl": sl},
+                )
             else:
-                if ft == "code":
-                    conn.execute(
-                        f"CREATE (n:code {{id: $nid, label: $label, "
-                        f"source_file: $sf, source_location: $sl}})",
-                        parameters={"nid": nid, "label": label, "sf": sf, "sl": sl},
-                    )
-                else:
-                    conn.execute(
-                        f"CREATE (n:{ft} {{id: $nid, label: $label, "
-                        f"source_file: $sf}})",
-                        parameters={"nid": nid, "label": label, "sf": sf},
-                    )
+                conn.execute(
+                    f"MERGE (n:{ft} {{id: $nid}}) "
+                    f"ON CREATE SET n.label = $label, n.source_file = $sf "
+                    f"ON MATCH SET n.label = $label, n.source_file = $sf",
+                    parameters={"nid": nid, "label": label, "sf": sf},
+                )
         except RuntimeError:
             _n_errors += 1
 
-    # --- write edges ---
     _e_errors = 0
     for edge in edges:
-        src_key = edge.get("source") or edge.get("from", "")
-        tgt_key = edge.get("target") or edge.get("to", "")
-        src_id = _normalize_id(src_key)
-        tgt_id = _normalize_id(tgt_key)
+        src_id = _normalize_id(edge.get("source") or edge.get("from", ""))
+        tgt_id = _normalize_id(edge.get("target") or edge.get("to", ""))
         if not src_id or not tgt_id:
             continue
-
         src_ft = node_types.get(src_id)
         tgt_ft = node_types.get(tgt_id)
         if not src_ft or not tgt_ft:
@@ -238,7 +344,7 @@ def ingest_extraction(
         conf_raw = edge.get("confidence", "")
         tbl = _ensure_rel_table(conn, src_ft, tgt_ft, rel_raw, _known)
         conf_score = float(edge.get("confidence_score", 0.0))
-        e_sf = _norm_source_file(edge.get("source_file"), _root) or ""
+        e_sf = _norm_source_file(edge.get("source_file"), root) or ""
         weight = float(edge.get("weight", 1.0))
 
         try:
@@ -266,6 +372,37 @@ def ingest_extraction(
         )
 
     return node_types
+
+
+def ingest_extraction(
+    conn: object,
+    extraction: dict,
+    *,
+    incremental: bool = False,
+    prune_sources: list[str] | None = None,
+    root: str | Path | None = None,
+    known_tables: set[str] | None = None,
+) -> dict[str, str]:
+    """Write an extraction dict into NeuG.
+
+    incremental=False: first build — uses COPY FROM bulk loading.
+    incremental=True:  update — uses MERGE (upsert) per row.
+
+    Returns node_types dict (id -> file_type) for use by ingest_communities.
+    """
+    _root = str(Path(root).resolve()) if root else None
+
+    if incremental:
+        return _incremental_ingest(
+            conn, extraction,
+            prune_sources=prune_sources, root=_root,
+            known_tables=known_tables,
+        )
+    else:
+        return _bulk_ingest(
+            conn, extraction,
+            root=_root, known_tables=known_tables,
+        )
 
 
 def ingest_communities(
