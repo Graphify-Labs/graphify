@@ -9,7 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_verilog,
-    extract_make, extract_tcl,
+    extract_make, extract_tcl, extract_ipxact,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1750,3 +1750,52 @@ def test_tcl_no_dangling_edges():
     ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in ids and e["target"] in ids
+
+
+@_needs_verilog
+def test_verilog_member_level_package_reference():
+    # `pkg::fn` -> references edge to the package's function node (same id scheme),
+    # resolving cross-file to the function definition.
+    r = extract_verilog(FIXTURES / "sample.sv")
+    refs = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+            for e in r["edges"] if e["relation"] == "references"}
+    assert ("adder", "add8()") in refs
+
+
+@_needs_verilog
+def test_verilog_interface_and_modports():
+    r = extract_verilog(FIXTURES / "sample_iface.sv")
+    labels = _labels(r)
+    assert "apb_if" in labels
+    assert "master" in labels and "slave" in labels
+    contains = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+                for e in r["edges"] if e["relation"] == "contains"}
+    assert ("apb_if", "master") in contains
+
+
+def test_ipxact_component_buses_and_protocol():
+    r = extract_ipxact(FIXTURES / "sample_ipxact.xml")
+    labels = _labels(r)
+    assert "widget" in labels and "cfg" in labels and "APB4" in labels
+    exposes = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+               for e in r["edges"] if e["relation"] == "exposes"}
+    assert ("widget", "cfg") in exposes
+    bt = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+          for e in r["edges"] if e["relation"] == "bus_type"}
+    assert ("cfg", "APB4") in bt
+
+
+def test_ipxact_component_node_keyed_by_name_for_rtl_merge():
+    # component node id must equal the bare-name id an RTL module of the same name
+    # gets, so IP-XACT metadata attaches to the design.
+    from graphify.extract import _make_id
+    r = extract_ipxact(FIXTURES / "sample_ipxact.xml")
+    comp_id = next(e["target"] for e in r["edges"] if e["relation"] == "defines")
+    assert comp_id == _make_id("widget")
+
+
+def test_ipxact_ignores_non_ipxact_xml(tmp_path):
+    p = tmp_path / "other.xml"
+    p.write_text("<config><a>1</a></config>")
+    r = extract_ipxact(p)
+    assert r["nodes"] == [] and r["edges"] == []

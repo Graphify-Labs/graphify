@@ -4921,6 +4921,31 @@ def extract_verilog(path: Path) -> dict:
                     walk(child, nid, pkg_name)
                 return
 
+        elif t == "interface_declaration":
+            hdr = (_first_child(node, "interface_ansi_header")
+                   or _first_child(node, "interface_header"))
+            name_node = _first_descendant(hdr, "simple_identifier") if hdr else None
+            if name_node is not None:
+                if_name = _read_text(name_node, source).strip()
+                line = node.start_point[0] + 1
+                nid = _make_id(if_name)
+                add_node(nid, if_name, line)
+                add_edge(file_nid, nid, "defines", line)
+                for child in node.children:
+                    walk(child, nid, if_name)
+                return
+
+        elif t == "modport_declaration":
+            mi = _first_child(node, "modport_item")
+            name_node = (_first_child(mi, "simple_identifier")
+                         or _first_descendant(mi, "simple_identifier")) if mi else None
+            if name_node is not None and scope_nid is not None:
+                mp_name = _read_text(name_node, source).strip()
+                line = node.start_point[0] + 1
+                nid = _make_id(scope_key or stem, "modport:" + mp_name)
+                add_node(nid, mp_name, line)
+                add_edge(scope_nid, nid, "contains", line)
+
         elif t in ("function_declaration", "function_prototype"):
             fid = _first_descendant(node, "function_identifier")
             name_node = _first_descendant(fid, "simple_identifier") if fid else None
@@ -4957,7 +4982,10 @@ def extract_verilog(path: Path) -> dict:
                     add_edge(scope_nid, tgt_nid, "instantiates", line)
 
         elif t == "package_scope":
-            # a fully-qualified `pkg::member` reference -> enclosing scope uses pkg.
+            # a fully-qualified `pkg::member` reference -> enclosing scope uses pkg,
+            # and (member-level) references that member. The grammar fails on
+            # `pkg::fn(args)` (wraps the call in an ERROR node), so read the member
+            # name with a regex over the parent text rather than the broken subtree.
             name_node = _first_child(node, "package_identifier")
             if name_node is not None and scope_nid is not None:
                 pkg_name = _read_text(name_node, source).strip()
@@ -4966,6 +4994,17 @@ def extract_verilog(path: Path) -> dict:
                     tgt_nid = _make_id(pkg_name)
                     add_node(tgt_nid, pkg_name, line)
                     add_edge(scope_nid, tgt_nid, "uses_package", line)
+                    parent = node.parent
+                    if parent is not None:
+                        m = re.search(re.escape(pkg_name) + r"::(\w+)",
+                                      _read_text(parent, source))
+                        if m:
+                            member = m.group(1)
+                            # same id scheme as a function defined in the package, so
+                            # `ecc_sram` --references--> `ecc_pkg.ecc_enc` resolves.
+                            mem_nid = _make_id(pkg_name, member)
+                            add_node(mem_nid, f"{member}()", line)
+                            add_edge(scope_nid, mem_nid, "references", line)
 
         elif t == "package_import_declaration":
             for child in node.children:
@@ -5144,6 +5183,89 @@ def extract_tcl(path: Path, content: str | bytes | None = None) -> dict:
             nid = _make_id(stem, "ns:" + name)
             add_node(nid, name, i)
             add_edge(file_nid, nid, "contains", i)
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def extract_ipxact(path: Path, content: str | bytes | None = None) -> dict:
+    """Extract IP-XACT (IEEE-1685) component descriptors from .xml: the component, its
+    bus interfaces, and the bus protocol each exposes. Non-IP-XACT XML yields nothing.
+    The component node is keyed by its bare name so it merges with the same-named RTL
+    module — attaching the packaging metadata to the design in the graph."""
+    import xml.etree.ElementTree as ET
+
+    def _local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+    try:
+        data = (content if isinstance(content, (bytes, str))
+                else None)
+        if data is None:
+            data = path.read_bytes()
+        root = ET.fromstring(data.encode("utf-8") if isinstance(data, str) else data)
+    except (OSError, ET.ParseError) as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    if _local(root.tag) != "component":
+        return {"nodes": [], "edges": []}   # not an IP-XACT component
+
+    def _child(elem, name):
+        for c in elem:
+            if _local(c.tag) == name:
+                return c
+        return None
+
+    name_el = _child(root, "name")
+    comp_name = (name_el.text or "").strip() if name_el is not None else ""
+    if not comp_name:
+        return {"nodes": [], "edges": []}
+
+    str_path = str(path)
+    file_nid = _make_id(str_path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    def add_node(nid, label):
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str_path, "source_location": None,
+                          "confidence_score": 1.0})
+
+    def add_edge(src, tgt, relation):
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append({"source": src, "target": tgt, "relation": relation,
+                      "confidence": "EXTRACTED", "confidence_score": 1.0,
+                      "source_file": str_path, "source_location": None, "weight": 1.0})
+
+    add_node(file_nid, path.name)
+    comp_nid = _make_id(comp_name)            # merges with the RTL module of the same name
+    add_node(comp_nid, comp_name)
+    add_edge(file_nid, comp_nid, "defines")
+
+    bus_ifaces = _child(root, "busInterfaces")
+    if bus_ifaces is not None:
+        for bi in bus_ifaces:
+            if _local(bi.tag) != "busInterface":
+                continue
+            bn_el = _child(bi, "name")
+            bus_name = (bn_el.text or "").strip() if bn_el is not None else ""
+            if not bus_name:
+                continue
+            bus_nid = _make_id(comp_name, "bus:" + bus_name)
+            add_node(bus_nid, bus_name)
+            add_edge(comp_nid, bus_nid, "exposes")
+            bt = _child(bi, "busType")
+            if bt is not None and bt.get("name"):
+                proto = bt.get("name")
+                proto_nid = _make_id("bus:" + proto)
+                add_node(proto_nid, proto)          # shared hub: APB4, AHBLite, AXI4 ...
+                add_edge(bus_nid, proto_nid, "bus_type")
 
     return {"nodes": nodes, "edges": edges}
 
@@ -11309,6 +11431,7 @@ _DISPATCH: dict[str, Any] = {
     ".mk": extract_make,
     ".make": extract_make,
     ".tcl": extract_tcl,
+    ".xml": extract_ipxact,
     ".sql": extract_sql,
     ".md": extract_markdown,
     ".mdx": extract_markdown,
