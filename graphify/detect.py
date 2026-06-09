@@ -787,6 +787,16 @@ def _is_ignored(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> boo
                     return True
             return False
 
+        # target and root are fixed for this call — hoist relative_to out of
+        # the pattern loop so it isn't recomputed once per pattern per file.
+        try:
+            rel_root: str | None = str(target.relative_to(root)).replace(os.sep, "/")
+        except ValueError:
+            rel_root = None
+        # Multiple patterns can share an anchor (same .graphifyignore file),
+        # so cache anchor-relative strings within this call too.
+        rel_anchor_cache: dict[Path, str | None] = {}
+
         result = False
         for anchor, pattern in patterns:
             negated = pattern.startswith("!")
@@ -798,23 +808,26 @@ def _is_ignored(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> boo
 
             matched = False
             if anchored:
-                try:
-                    rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
-                    matched = _matches(rel_anchor, p, anchored=True)
-                except ValueError:
-                    pass
-            else:
-                try:
-                    rel = str(target.relative_to(root)).replace(os.sep, "/")
-                    matched = _matches(rel, p, anchored=False)
-                except ValueError:
-                    pass
-                if not matched and anchor != root:
+                if anchor not in rel_anchor_cache:
                     try:
-                        rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
-                        matched = _matches(rel_anchor, p, anchored=False)
+                        rel_anchor_cache[anchor] = str(target.relative_to(anchor)).replace(os.sep, "/")
                     except ValueError:
-                        pass
+                        rel_anchor_cache[anchor] = None
+                rel_anchor = rel_anchor_cache[anchor]
+                if rel_anchor is not None:
+                    matched = _matches(rel_anchor, p, anchored=True)
+            else:
+                if rel_root is not None:
+                    matched = _matches(rel_root, p, anchored=False)
+                if not matched and anchor != root:
+                    if anchor not in rel_anchor_cache:
+                        try:
+                            rel_anchor_cache[anchor] = str(target.relative_to(anchor)).replace(os.sep, "/")
+                        except ValueError:
+                            rel_anchor_cache[anchor] = None
+                    rel_anchor = rel_anchor_cache[anchor]
+                    if rel_anchor is not None:
+                        matched = _matches(rel_anchor, p, anchored=False)
 
             if matched:
                 result = not negated  # last match wins; ! flips to un-ignore

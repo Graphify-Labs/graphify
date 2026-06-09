@@ -1,6 +1,7 @@
 """Deterministic structural extraction from source code using tree-sitter. Outputs nodes+edges dicts."""
 from __future__ import annotations
 
+import functools
 import importlib
 import json
 import os
@@ -6744,6 +6745,7 @@ def extract_powershell(path: Path) -> dict:
 
 # ── Cross-file import resolution ──────────────────────────────────────────────
 
+@functools.lru_cache(maxsize=None)
 def _source_key(source_file: str, root: Path) -> str:
     if not source_file:
         return ""
@@ -6876,6 +6878,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
     nodes[:] = [node for node in nodes if node.get("id") not in drop_ids]
 
 
+@functools.lru_cache(maxsize=None)
 def _js_source_path(source_file: str, root: Path) -> Path | None:
     if not source_file:
         return None
@@ -11516,17 +11519,21 @@ def extract(
     # Map each node back to its containing file_id so we can ask
     # "did the caller's file import the callee's file?"
     # Use relativized paths to match how file node IDs were remapped above (#502).
+    # Many nodes share the same source_file — cache relative_to per unique path.
+    _sf_to_file_nid: dict[str, str] = {}
     nid_to_file_nid: dict[str, str] = {}
     for n in all_nodes:
         sf = n.get("source_file")
         if not sf:
             continue
-        sf_path = Path(sf)
-        try:
-            sf_rel = sf_path.relative_to(root) if sf_path.is_absolute() else sf_path
-        except ValueError:
-            sf_rel = sf_path
-        nid_to_file_nid[n["id"]] = _file_node_id(sf_rel)
+        if sf not in _sf_to_file_nid:
+            sf_path = Path(sf)
+            try:
+                sf_rel = sf_path.relative_to(root) if sf_path.is_absolute() else sf_path
+            except ValueError:
+                sf_rel = sf_path
+            _sf_to_file_nid[sf] = _file_node_id(sf_rel)
+        nid_to_file_nid[n["id"]] = _sf_to_file_nid[sf]
 
     existing_pairs = {(e["source"], e["target"]) for e in all_edges}
     for rc in all_raw_calls:
@@ -11579,17 +11586,22 @@ def extract(
             })
 
     # Relativize source_file fields so paths are portable across machines (#555)
+    # Many nodes and edges share the same source_file — cache per unique path.
+    _sf_to_posix: dict[str, str] = {}
     for item in all_nodes + all_edges:
         sf = item.get("source_file")
         if not sf:
             continue
-        sf_path = Path(sf)
-        if not sf_path.is_absolute():
-            continue
-        try:
-            item["source_file"] = sf_path.relative_to(root).as_posix()
-        except ValueError:
-            pass
+        if sf not in _sf_to_posix:
+            sf_path = Path(sf)
+            if not sf_path.is_absolute():
+                _sf_to_posix[sf] = sf
+            else:
+                try:
+                    _sf_to_posix[sf] = sf_path.relative_to(root).as_posix()
+                except ValueError:
+                    _sf_to_posix[sf] = sf
+        item["source_file"] = _sf_to_posix[sf]
 
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction
