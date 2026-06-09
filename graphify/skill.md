@@ -113,17 +113,24 @@ from pathlib import Path
 import json
 
 code_files = []
+markdown_files = []
 detect = json.loads(Path('.graphify_detect.json').read_text())
 for f in detect.get('files', {}).get('code', []):
     code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
+for f in detect.get('files', {}).get('docs', []):
+    p = Path(f)
+    if p.suffix in {'.md', '.mdx', '.qmd'}:
+        # Docs are individual files (not code dirs) - skip collect_files globs
+        markdown_files.append(p)
 
-if code_files:
-    result = extract(code_files)
+all_files = code_files + markdown_files
+if all_files:
+    result = extract(all_files)
     Path('.graphify_ast.json').write_text(json.dumps(result, indent=2))
     print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 else:
     Path('.graphify_ast.json').write_text(json.dumps({'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}))
-    print('No code files - skipping AST extraction')
+    print('No code or markdown files - skipping AST extraction')
 "
 ```
 
