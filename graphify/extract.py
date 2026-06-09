@@ -4845,6 +4845,7 @@ def extract_verilog(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -4855,6 +4856,11 @@ def extract_verilog(path: Path) -> dict:
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", score: float = 1.0) -> None:
+        # collapse repeated references (e.g. many `pkg::fn` uses) to one edge
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
         edges.append({"source": src, "target": tgt, "relation": relation,
                       "confidence": confidence, "confidence_score": score,
                       "source_file": str_path, "source_location": f"L{line}", "weight": 1.0})
@@ -4862,66 +4868,117 @@ def extract_verilog(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
-    def walk(node, module_nid: str | None = None) -> None:
+    # The tree-sitter-verilog grammar does NOT expose field names like "name" or
+    # "module_type" (child_by_field_name returns None), so navigate by node type.
+    def _first_child(n, typ):
+        if n is None:
+            return None
+        for c in n.children:
+            if c.type == typ:
+                return c
+        return None
+
+    def _first_descendant(n, typ, max_depth: int = 8):
+        if n is None:
+            return None
+        queue = [(n, 0)]
+        while queue:
+            cur, depth = queue.pop(0)
+            if cur is not n and cur.type == typ:
+                return cur
+            if depth < max_depth:
+                queue.extend((c, depth + 1) for c in cur.children)
+        return None
+
+    # module/package nodes are keyed by their bare (globally-unique) name so an
+    # instantiation or `pkg::` reference in another file resolves to the same node
+    # — that cross-file edge is the whole point of the RTL dependency graph.
+    def walk(node, scope_nid: str | None = None, scope_key: str | None = None) -> None:
         t = node.type
 
         if t == "module_declaration":
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                mod_name = _read_text(name_node, source)
+            hdr = _first_child(node, "module_header")
+            name_node = _first_descendant(hdr, "simple_identifier") if hdr else None
+            if name_node is not None:
+                mod_name = _read_text(name_node, source).strip()
                 line = node.start_point[0] + 1
-                nid = _make_id(stem, mod_name)
+                nid = _make_id(mod_name)
                 add_node(nid, mod_name, line)
                 add_edge(file_nid, nid, "defines", line)
                 for child in node.children:
-                    walk(child, nid)
+                    walk(child, nid, mod_name)
+                return
+
+        elif t == "package_declaration":
+            name_node = _first_child(node, "package_identifier")
+            if name_node is not None:
+                pkg_name = _read_text(name_node, source).strip()
+                line = node.start_point[0] + 1
+                nid = _make_id(pkg_name)
+                add_node(nid, pkg_name, line)
+                add_edge(file_nid, nid, "defines", line)
+                for child in node.children:
+                    walk(child, nid, pkg_name)
                 return
 
         elif t in ("function_declaration", "function_prototype"):
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                func_name = _read_text(name_node, source)
+            fid = _first_descendant(node, "function_identifier")
+            name_node = _first_descendant(fid, "simple_identifier") if fid else None
+            if name_node is not None:
+                func_name = _read_text(name_node, source).strip()
                 line = node.start_point[0] + 1
-                parent = module_nid or file_nid
-                nid = _make_id(parent, func_name)
+                parent = scope_nid or file_nid
+                # key by enclosing scope NAME so a `pkg::func` use can resolve here
+                nid = _make_id(scope_key or stem, func_name)
                 add_node(nid, f"{func_name}()", line)
                 add_edge(parent, nid, "contains", line)
 
         elif t == "task_declaration":
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                task_name = _read_text(name_node, source)
+            tid = _first_descendant(node, "task_identifier")
+            name_node = _first_descendant(tid, "simple_identifier") if tid else None
+            if name_node is not None:
+                task_name = _read_text(name_node, source).strip()
                 line = node.start_point[0] + 1
-                parent = module_nid or file_nid
-                nid = _make_id(parent, task_name)
-                add_node(nid, task_name, line)
+                parent = scope_nid or file_nid
+                nid = _make_id(scope_key or stem, task_name)
+                add_node(nid, f"{task_name}()", line)
                 add_edge(parent, nid, "contains", line)
 
-        elif t == "package_import_declaration":
-            for child in node.children:
-                if child.type == "package_import_item":
-                    pkg_text = _read_text(child, source)
-                    pkg_name = pkg_text.split("::")[0].strip()
-                    if pkg_name:
-                        line = node.start_point[0] + 1
-                        tgt_nid = _make_id(pkg_name)
-                        add_node(tgt_nid, pkg_name, line)
-                        src = module_nid or file_nid
-                        add_edge(src, tgt_nid, "imports_from", line)
-
         elif t == "module_instantiation":
-            # module_type instantiates another module
-            type_node = node.child_by_field_name("module_type")
-            if type_node and module_nid:
+            # instance type is the leading simple_identifier child; the target id is
+            # the bare module name -> resolves to that module's definition node.
+            type_node = _first_child(node, "simple_identifier")
+            if type_node is not None and scope_nid is not None:
                 inst_type = _read_text(type_node, source).strip()
                 if inst_type:
                     line = node.start_point[0] + 1
                     tgt_nid = _make_id(inst_type)
                     add_node(tgt_nid, inst_type, line)
-                    add_edge(module_nid, tgt_nid, "instantiates", line)
+                    add_edge(scope_nid, tgt_nid, "instantiates", line)
+
+        elif t == "package_scope":
+            # a fully-qualified `pkg::member` reference -> enclosing scope uses pkg.
+            name_node = _first_child(node, "package_identifier")
+            if name_node is not None and scope_nid is not None:
+                pkg_name = _read_text(name_node, source).strip()
+                if pkg_name:
+                    line = node.start_point[0] + 1
+                    tgt_nid = _make_id(pkg_name)
+                    add_node(tgt_nid, pkg_name, line)
+                    add_edge(scope_nid, tgt_nid, "uses_package", line)
+
+        elif t == "package_import_declaration":
+            for child in node.children:
+                if child.type == "package_import_item":
+                    pkg_name = _read_text(child, source).split("::")[0].strip()
+                    if pkg_name:
+                        line = node.start_point[0] + 1
+                        tgt_nid = _make_id(pkg_name)
+                        add_node(tgt_nid, pkg_name, line)
+                        add_edge(scope_nid or file_nid, tgt_nid, "imports_from", line)
 
         for child in node.children:
-            walk(child, module_nid)
+            walk(child, scope_nid, scope_key)
 
     walk(root)
     return {"nodes": nodes, "edges": edges}

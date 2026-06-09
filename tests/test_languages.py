@@ -8,7 +8,7 @@ from graphify.extract import (
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
     extract_groovy, extract_sln, extract_csproj, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
-    extract_powershell, extract_apex,
+    extract_powershell, extract_apex, extract_verilog,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -20,6 +20,11 @@ import importlib.util as _ilu
 _needs_dm = pytest.mark.skipif(
     _ilu.find_spec("tree_sitter_dm") is None,
     reason="tree-sitter-dm not installed (optional [dm] extra)",
+)
+
+_needs_verilog = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_verilog") is None,
+    reason="tree-sitter-verilog not installed",
 )
 
 
@@ -1628,3 +1633,58 @@ def test_apex_no_dangling_edges():
         for e in r["edges"]:
             assert e["source"] in node_ids, f"dangling source in {fixture}: {e}"
             assert e["target"] in node_ids, f"dangling target in {fixture}: {e}"
+
+
+# ── SystemVerilog / Verilog ──────────────────────────────────────────────────
+# Regression for the extract_verilog harvester: the tree-sitter-verilog grammar
+# exposes no field names (child_by_field_name("name") is None), so navigation must
+# be by node type. Before the fix every .sv file collapsed to a bare file node.
+
+@_needs_verilog
+def test_verilog_defines_modules_and_package():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    labels = _labels(r)
+    assert "adder" in labels
+    assert "top" in labels
+    assert "math_pkg" in labels
+
+
+@_needs_verilog
+def test_verilog_module_instantiation_edge():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    inst = {(node_by_id.get(e["source"]), node_by_id.get(e["target"]))
+            for e in r["edges"] if e["relation"] == "instantiates"}
+    assert ("top", "adder") in inst
+
+
+@_needs_verilog
+def test_verilog_instance_target_is_globally_keyed():
+    # The instantiated 'adder' node and the defined 'adder' module node must share
+    # an id so cross-file edges resolve (Verilog module names are a global namespace).
+    r = extract_verilog(FIXTURES / "sample.sv")
+    def_id = next(e["target"] for e in r["edges"]
+                  if e["relation"] == "defines"
+                  and {n["id"]: n["label"] for n in r["nodes"]}[e["target"]] == "adder")
+    inst_id = next(e["target"] for e in r["edges"]
+                   if e["relation"] == "instantiates")
+    assert def_id == inst_id
+
+
+@_needs_verilog
+def test_verilog_package_function_and_usage():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert "add8()" in _labels(r)
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    uses = {(node_by_id.get(e["source"]), node_by_id.get(e["target"]))
+            for e in r["edges"] if e["relation"] == "uses_package"}
+    assert ("adder", "math_pkg") in uses
+
+
+@_needs_verilog
+def test_verilog_no_dangling_edges():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e}"
+        assert e["target"] in node_ids, f"dangling target: {e}"
