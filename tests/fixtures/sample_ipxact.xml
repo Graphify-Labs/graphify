@@ -11,4 +11,22 @@
       <ipxact:slave/>
     </ipxact:busInterface>
   </ipxact:busInterfaces>
+  <ipxact:memoryMaps>
+    <ipxact:memoryMap>
+      <ipxact:name>regs</ipxact:name>
+      <ipxact:addressBlock>
+        <ipxact:name>blk</ipxact:name>
+        <ipxact:register>
+          <ipxact:name>CTRL</ipxact:name>
+          <ipxact:addressOffset>0x00</ipxact:addressOffset>
+          <ipxact:size>32</ipxact:size>
+        </ipxact:register>
+        <ipxact:register>
+          <ipxact:name>STATUS</ipxact:name>
+          <ipxact:addressOffset>0x04</ipxact:addressOffset>
+          <ipxact:size>32</ipxact:size>
+        </ipxact:register>
+      </ipxact:addressBlock>
+    </ipxact:memoryMap>
+  </ipxact:memoryMaps>
 </ipxact:component>

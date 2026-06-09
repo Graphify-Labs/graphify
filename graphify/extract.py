@@ -1456,6 +1456,23 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
             # Quoted includes: try to resolve to a real file so the target ID
             # matches the node ID _extract_generic creates for that file.
             if child.type != "system_lib_string":
+                # Verilator harness convention: `#include "V<dut>.h"` is the generated
+                # model header for RTL module <dut>. Link the C++ testbench to that
+                # module (keyed by bare name) so simulation TBs connect to the design.
+                # Quoted (not <>) `V*.h` includes are Verilated headers in practice.
+                _base = raw.split("/")[-1]
+                if _base.startswith("V") and _base.endswith(".h") and len(_base) > 3 \
+                        and _base[1].isalpha():
+                    edges.append({
+                        "source": file_nid,
+                        "target": _make_id(_base[1:-2]),
+                        "relation": "tests",
+                        "context": "verilated dut",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "weight": 1.0,
+                    })
                 resolved = _resolve_c_include_path(raw, str_path)
                 if resolved is not None:
                     tgt_nid = _make_id(str(resolved))
@@ -3469,7 +3486,7 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
     clean_edges = []
     for edge in edges:
         src, tgt = edge["source"], edge["target"]
-        if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from", "re_exports")):
+        if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from", "re_exports", "tests")):
             clean_edges.append(edge)
 
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
@@ -4981,6 +4998,26 @@ def extract_verilog(path: Path) -> dict:
                     add_node(tgt_nid, inst_type, line)
                     add_edge(scope_nid, tgt_nid, "instantiates", line)
 
+        elif t == "bind_directive":
+            # `bind <target> <checker/module> u (...)` attaches a monitor/checker to
+            # another module without editing it. Edge: bound unit -> target module
+            # (both keyed by bare name so they resolve to the module nodes).
+            scope_n = _first_child(node, "bind_target_scope")
+            tgt_node = _first_descendant(scope_n, "simple_identifier") if scope_n else None
+            inst = (_first_child(node, "checker_instantiation")
+                    or _first_child(node, "module_instantiation"))
+            bound_node = _first_descendant(inst, "simple_identifier") if inst else None
+            if tgt_node is not None and bound_node is not None:
+                target = _read_text(tgt_node, source).strip()
+                bound = _read_text(bound_node, source).strip()
+                if target and bound:
+                    line = node.start_point[0] + 1
+                    t_nid = _make_id(target)
+                    b_nid = _make_id(bound)
+                    add_node(t_nid, target, line)
+                    add_node(b_nid, bound, line)
+                    add_edge(b_nid, t_nid, "binds", line)
+
         elif t == "package_scope":
             # a fully-qualified `pkg::member` reference -> enclosing scope uses pkg,
             # and (member-level) references that member. The grammar fails on
@@ -5337,6 +5374,23 @@ def extract_ipxact(path: Path, content: str | bytes | None = None) -> dict:
                 proto_nid = _make_id("bus:" + proto)
                 add_node(proto_nid, proto)          # shared hub: APB4, AHBLite, AXI4 ...
                 add_edge(bus_nid, proto_nid, "bus_type")
+
+    # Register map: component -> register nodes (name @ offset, width). Feeds a
+    # datasheet-style register table straight from the IP-XACT. `register` elements
+    # live under memoryMaps/memoryMap/addressBlock; find them at any depth.
+    for reg in root.iter():
+        if _local(reg.tag) != "register":
+            continue
+        rn_el = _child(reg, "name")
+        reg_name = (rn_el.text or "").strip() if rn_el is not None else ""
+        if not reg_name:
+            continue
+        off_el = _child(reg, "addressOffset")
+        offset = (off_el.text or "").strip() if off_el is not None else ""
+        label = f"{reg_name} @{offset}" if offset else reg_name
+        reg_nid = _make_id(comp_name, "reg:" + reg_name)
+        add_node(reg_nid, label)
+        add_edge(comp_nid, reg_nid, "has_register")
 
     return {"nodes": nodes, "edges": edges}
 

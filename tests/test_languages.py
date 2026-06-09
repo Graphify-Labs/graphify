@@ -1818,3 +1818,31 @@ def test_sby_no_dangling_edges():
     ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in ids and e["target"] in ids
+
+
+def test_cpp_verilator_tb_links_dut():
+    # `#include "V<dut>.h"` in a C++ testbench -> tests edge to the RTL module <dut>
+    from graphify.extract import _make_id
+    r = extract_cpp(FIXTURES / "sample_tb.cpp")
+    tests = {e["target"] for e in r["edges"] if e["relation"] == "tests"}
+    assert _make_id("widget") in tests
+
+
+@_needs_verilog
+def test_verilog_bind_directive():
+    import tempfile
+    src = "module top; bind cpu_core mon_mod u_mon (.clk(clk)); endmodule\n"
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "b.sv"
+        p.write_text(src)
+        r = extract_verilog(p)
+    binds = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+             for e in r["edges"] if e["relation"] == "binds"}
+    assert ("mon_mod", "cpu_core") in binds
+
+
+def test_ipxact_register_map():
+    r = extract_ipxact(FIXTURES / "sample_ipxact.xml")
+    regs = {_n(r).get(e["target"]) for e in r["edges"] if e["relation"] == "has_register"}
+    assert any(lbl and lbl.startswith("CTRL") for lbl in regs)
+    assert any(lbl and lbl.startswith("STATUS") for lbl in regs)
