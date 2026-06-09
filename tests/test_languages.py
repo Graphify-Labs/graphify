@@ -9,6 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_verilog,
+    extract_make, extract_tcl,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1688,3 +1689,64 @@ def test_verilog_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e}"
         assert e["target"] in node_ids, f"dangling target: {e}"
+
+
+@_needs_verilog
+def test_verilog_include_edge():
+    # `include "foo.svh" -> file includes the header (keyed by basename)
+    src = ("`include \"safety_attrs.svh\"\n"
+           "module m; endmodule\n")
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "m.sv"
+        p.write_text(src)
+        r = extract_verilog(p)
+    inc = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+           for e in r["edges"] if e["relation"] == "includes"}
+    assert (p.name, "safety_attrs.svh") in inc
+
+
+# ── Make / Tcl (regex extractors, no tree-sitter) ────────────────────────────
+def _n(r):
+    return {n["id"]: n["label"] for n in r["nodes"]}
+
+
+def test_make_targets_and_prereqs():
+    r = extract_make(FIXTURES / "sample.mk")
+    labels = _labels(r)
+    assert "all" in labels and "build" in labels and "test" in labels
+    deps = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+            for e in r["edges"] if e["relation"] == "depends_on"}
+    assert ("all", "build") in deps
+    assert ("test", "build") in deps
+
+
+def test_make_include_and_runs_edges():
+    r = extract_make(FIXTURES / "sample.mk")
+    rels = _relations(r)
+    assert "includes" in rels  # include common.mk
+    runs = {_n(r).get(e["target"]) for e in r["edges"] if e["relation"] == "runs"}
+    assert "run.sh" in runs and "run_tests.py" in runs
+
+
+def test_make_no_dangling_edges():
+    r = extract_make(FIXTURES / "sample.mk")
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in ids and e["target"] in ids
+
+
+def test_tcl_procs_source_namespace():
+    r = extract_tcl(FIXTURES / "sample.tcl")
+    labels = _labels(r)
+    assert "greet()" in labels and "main()" in labels
+    assert "myns" in labels                      # namespace
+    inc = {_n(r).get(e["target"]) for e in r["edges"] if e["relation"] == "includes"}
+    assert "helpers.tcl" in inc                  # source ./lib/helpers.tcl
+
+
+def test_tcl_no_dangling_edges():
+    r = extract_tcl(FIXTURES / "sample.tcl")
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in ids and e["target"] in ids

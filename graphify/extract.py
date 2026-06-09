@@ -4977,10 +4977,174 @@ def extract_verilog(path: Path) -> dict:
                         add_node(tgt_nid, pkg_name, line)
                         add_edge(scope_nid or file_nid, tgt_nid, "imports_from", line)
 
+        elif t == "include_compiler_directive":
+            # `include "foo.svh" -> file depends on the included header (keyed by
+            # basename so it resolves to a shared node across all includers).
+            m = re.search(r'"([^"]+)"', _read_text(node, source))
+            if m:
+                inc_base = m.group(1).strip().replace("\\", "/").split("/")[-1]
+                if inc_base:
+                    line = node.start_point[0] + 1
+                    tgt_nid = _make_id(inc_base)
+                    add_node(tgt_nid, inc_base, line)
+                    add_edge(file_nid, tgt_nid, "includes", line)
+
         for child in node.children:
             walk(child, scope_nid, scope_key)
 
     walk(root)
+    return {"nodes": nodes, "edges": edges}
+
+
+# Recipe tokens worth linking to as build steps (scripts the target runs).
+_MAKE_SCRIPT_RE = re.compile(r"([\w./\-]+\.(?:sh|bash|py|tcl|sby|pl))\b")
+_MAKE_RULE_RE = re.compile(r"^([^\t#=:][^:=]*?):(?!=)\s*(.*)$")
+_MAKE_INCLUDE_RE = re.compile(r"^[-\s]*include\s+(.+)$")
+
+
+def extract_make(path: Path, content: str | bytes | None = None) -> dict:
+    """Extract Makefile targets, their prerequisites, `include`d makefiles, and the
+    scripts each recipe runs — i.e. the build DAG. Regex-based (no tree-sitter)."""
+    try:
+        text = (content.decode("utf-8", "replace") if isinstance(content, bytes)
+                else content if content is not None
+                else path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = _file_stem(path)
+    str_path = str(path)
+    file_nid = _make_id(str_path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    def add_node(nid, label, line):
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str_path, "source_location": f"L{line}",
+                          "confidence_score": 1.0})
+
+    def add_edge(src, tgt, relation, line):
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append({"source": src, "target": tgt, "relation": relation,
+                      "confidence": "EXTRACTED", "confidence_score": 1.0,
+                      "source_file": str_path, "source_location": f"L{line}", "weight": 1.0})
+
+    add_node(file_nid, path.name, 1)
+
+    cur_target_nid: str | None = None
+    for i, raw in enumerate(text.splitlines(), start=1):
+        if raw.startswith("\t"):  # recipe line -> scripts this target runs
+            if cur_target_nid:
+                for m in _MAKE_SCRIPT_RE.finditer(raw):
+                    script = m.group(1).split("/")[-1]
+                    tgt = _make_id(script)
+                    add_node(tgt, script, i)
+                    add_edge(cur_target_nid, tgt, "runs", i)
+            continue
+        line = raw.split("#", 1)[0].rstrip()
+        if not line:
+            continue
+        inc = _MAKE_INCLUDE_RE.match(line)
+        if inc:
+            for tok in inc.group(1).split():
+                base = tok.split("/")[-1]
+                if base and "$" not in base:
+                    tgt = _make_id(base)
+                    add_node(tgt, base, i)
+                    add_edge(file_nid, tgt, "includes", i)
+            continue
+        rule = _MAKE_RULE_RE.match(line)
+        if rule:
+            targets, prereqs = rule.group(1), rule.group(2)
+            for target in targets.split():
+                if "$" in target or not target.strip():
+                    continue
+                t_nid = _make_id(stem, target)
+                add_node(t_nid, target, i)
+                add_edge(file_nid, t_nid, "defines", i)
+                cur_target_nid = t_nid
+                for pre in prereqs.split():
+                    if "$" in pre or not pre.strip():
+                        continue
+                    p_nid = _make_id(stem, pre)
+                    add_node(p_nid, pre, i)
+                    add_edge(t_nid, p_nid, "depends_on", i)
+
+    return {"nodes": nodes, "edges": edges}
+
+
+_TCL_PROC_RE = re.compile(r"^\s*proc\s+([:\w]+)\s")
+_TCL_SOURCE_RE = re.compile(r"^\s*source\s+(?:-\w+\s+)*([^\s;]+)")
+_TCL_NS_RE = re.compile(r"^\s*namespace\s+eval\s+([:\w]+)")
+
+
+def extract_tcl(path: Path, content: str | bytes | None = None) -> dict:
+    """Extract Tcl `proc` definitions, `source`d files, and namespaces. Regex-based
+    (the tree-sitter-tcl grammar is not a graphify dependency)."""
+    try:
+        text = (content.decode("utf-8", "replace") if isinstance(content, bytes)
+                else content if content is not None
+                else path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = _file_stem(path)
+    str_path = str(path)
+    file_nid = _make_id(str_path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    def add_node(nid, label, line):
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str_path, "source_location": f"L{line}",
+                          "confidence_score": 1.0})
+
+    def add_edge(src, tgt, relation, line):
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append({"source": src, "target": tgt, "relation": relation,
+                      "confidence": "EXTRACTED", "confidence_score": 1.0,
+                      "source_file": str_path, "source_location": f"L{line}", "weight": 1.0})
+
+    add_node(file_nid, path.name, 1)
+    proc_ids: dict[str, str] = {}
+    for i, raw in enumerate(text.splitlines(), start=1):
+        m = _TCL_PROC_RE.match(raw)
+        if m:
+            name = m.group(1).lstrip(":")
+            nid = _make_id(stem, name)
+            add_node(nid, f"{name}()", i)
+            add_edge(file_nid, nid, "contains", i)
+            proc_ids[name] = nid
+            continue
+        m = _TCL_SOURCE_RE.match(raw)
+        if m:
+            base = m.group(1).strip("\"'{}").replace("\\", "/").split("/")[-1]
+            if base and "$" not in base:
+                nid = _make_id(base)
+                add_node(nid, base, i)
+                add_edge(file_nid, nid, "includes", i)
+            continue
+        m = _TCL_NS_RE.match(raw)
+        if m:
+            name = m.group(1).lstrip(":")
+            nid = _make_id(stem, "ns:" + name)
+            add_node(nid, name, i)
+            add_edge(file_nid, nid, "contains", i)
+
     return {"nodes": nodes, "edges": edges}
 
 
@@ -11142,6 +11306,9 @@ _DISPATCH: dict[str, Any] = {
     ".v": extract_verilog,
     ".sv": extract_verilog,
     ".svh": extract_verilog,
+    ".mk": extract_make,
+    ".make": extract_make,
+    ".tcl": extract_tcl,
     ".sql": extract_sql,
     ".md": extract_markdown,
     ".mdx": extract_markdown,
@@ -11187,6 +11354,9 @@ def _get_extractor(path: Path) -> Any | None:
     # (servers, commands, packages, env vars) instead of opaque JSON keys.
     if is_mcp_config_path(path):
         return extract_mcp_config
+    # extension-less GNU Makefiles
+    if path.name in ("Makefile", "makefile", "GNUmakefile"):
+        return extract_make
     return _DISPATCH.get(path.suffix)
 
 
