@@ -12,7 +12,7 @@ keywords = ["claude", "claude-code", "codex", "opencode", "kilo", "cursor", "gem
 requires-python = ">=3.10"
 dependencies = [
     "networkx>=3.4",
-    "datasketch>=1.6",
+    "numpy>=1.21",
     "rapidfuzz>=3.0",
     "tree-sitter>=0.23.0",
     "tree-sitter-python",

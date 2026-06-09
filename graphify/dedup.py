@@ -9,7 +9,7 @@ import re
 import unicodedata
 from collections import defaultdict
 
-from datasketch import MinHash, MinHashLSH
+from graphify._minhash import MinHash, MinHashLSH
 from rapidfuzz.distance import JaroWinkler
 
 
