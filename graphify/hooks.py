@@ -284,61 +284,120 @@ def _git_root(path: Path) -> Path | None:
     return None
 
 
+def _clean_git_stdout(raw: str) -> str:
+    """Return a single safe git path line, or an empty string."""
+    raw = raw.strip()
+    if not raw or any(c in raw for c in ("\n", "\r", "\x00")):
+        return ""
+    return raw
+
+
+def _path_from_git_output(root: Path, raw: str) -> Path | None:
+    value = _clean_git_stdout(raw)
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
+
+
+def _repo_local_hooks_path(root: Path, custom: str) -> Path | None:
+    custom = _clean_git_stdout(custom)
+    if not custom:
+        return None
+    path = Path(custom).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return None
+    return path
+
+
+def _common_git_dir_from_dotgit(root: Path) -> Path | None:
+    dotgit = root / ".git"
+    if dotgit.is_dir():
+        return dotgit.resolve()
+    if not dotgit.is_file():
+        return None
+    try:
+        first_line = dotgit.read_text(encoding="utf-8").splitlines()[0].strip()
+    except (OSError, IndexError):
+        return None
+    prefix = "gitdir:"
+    if not first_line.lower().startswith(prefix):
+        return None
+    git_dir = Path(first_line[len(prefix):].strip()).expanduser()
+    if not git_dir.is_absolute():
+        git_dir = root / git_dir
+    git_dir = git_dir.resolve()
+    if git_dir.parent.name == "worktrees":
+        return git_dir.parent.parent
+    return git_dir
+
+
 def _hooks_dir(root: Path) -> Path:
     """Return the git hooks directory, respecting core.hooksPath if set (e.g. Husky)."""
-    try:
-        cfg = configparser.RawConfigParser()
-        cfg.read(root / ".git" / "config", encoding="utf-8")
-        # configparser lowercases option names; git's hooksPath becomes hookspath
-        custom = cfg.get("core", "hookspath", fallback="").strip()
-        if custom:
-            p = Path(custom).expanduser()
-            if not p.is_absolute():
-                p = root / p
-            # Validate the resolved path stays within the repository root
-            # to prevent supply-chain attacks via malicious core.hooksPath values
-            try:
-                p.resolve().relative_to(root.resolve())
-            except ValueError:
-                pass  # Path escapes repo root; fall through to default .git/hooks
-            else:
-                p.mkdir(parents=True, exist_ok=True)
-                return p
-    except (configparser.Error, OSError) as exc:
-        # Narrow the exception (PR747-NEW-2): a bare `except Exception: pass`
-        # was hiding tampering signals (corrupt .git/config, permission flips
-        # by another tool). Surface them on stderr instead of silently
-        # falling through to the default hooks directory.
-        print(
-            f"[graphify hooks] could not read core.hooksPath from "
-            f"{root / '.git' / 'config'}: {exc}",
-            file=sys.stderr,
-        )
-    # In a linked worktree .git is a file not a directory, so constructing
-    # root/.git/hooks directly fails. Ask git for the real hooks path instead.
-    # NOTE: do NOT pass --path-format=absolute — added in git 2.31; older git
-    # echoes it back as a literal argument, contaminating stdout and causing a
-    # phantom directory to be created (#907). git -C <root> already returns an
-    # absolute path for worktree/external-gitdir cases, and a path relative to
-    # <root> for normal repos — anchoring on root covers both.
     import subprocess as _sp
+
     try:
         res = _sp.run(
-            ["git", "-C", str(root), "rev-parse", "--git-path", "hooks"],
+            ["git", "-C", str(root), "config", "--get", "core.hooksPath"],
             capture_output=True, text=True,
         )
-        raw = res.stdout.strip()
-        # A valid hooks path can never contain newlines or NUL. Their presence
-        # means git echoed an unrecognised flag back (old git behaviour).
-        if res.returncode == 0 and raw and not any(c in raw for c in ("\n", "\r", "\x00")):
-            d = (root / raw).resolve()
-            d.mkdir(parents=True, exist_ok=True)
-            return d
+        if res.returncode == 0:
+            custom = _repo_local_hooks_path(root, res.stdout)
+            if custom is not None:
+                custom.mkdir(parents=True, exist_ok=True)
+                return custom
+    except (OSError, FileNotFoundError):
+        try:
+            cfg = configparser.RawConfigParser()
+            common = _common_git_dir_from_dotgit(root)
+            if common is not None:
+                cfg.read(common / "config", encoding="utf-8")
+                # configparser lowercases option names; git's hooksPath becomes hookspath
+                custom = _repo_local_hooks_path(root, cfg.get("core", "hookspath", fallback=""))
+                if custom is not None:
+                    custom.mkdir(parents=True, exist_ok=True)
+                    return custom
+        except (configparser.Error, OSError) as exc:
+            print(
+                f"[graphify hooks] could not read core.hooksPath from git config: {exc}",
+                file=sys.stderr,
+            )
+
+    try:
+        res = _sp.run(
+            ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True,
+        )
+        if res.returncode == 0:
+            common = _path_from_git_output(root, res.stdout)
+            if common is not None:
+                d = common / "hooks"
+                d.mkdir(parents=True, exist_ok=True)
+                return d
     except (OSError, FileNotFoundError):
         pass
+
+    common = _common_git_dir_from_dotgit(root)
+    if common is not None:
+        d = common / "hooks"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except OSError as exc:
+            raise RuntimeError(f"Could not create git hooks directory at {d}: {exc}") from exc
+
     d = root / ".git" / "hooks"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except OSError as exc:
+        raise RuntimeError(f"Could not create git hooks directory at {d}: {exc}") from exc
 
 
 def _install_hook(hooks_dir: Path, name: str, script: str, marker: str) -> str:

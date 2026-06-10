@@ -12,6 +12,16 @@ def _make_git_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _make_git_repo_with_commit(path: Path) -> Path:
+    repo = _make_git_repo(path)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True)
+    (repo / "README.md").write_text("test\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "initial"], check=True, capture_output=True)
+    return repo
+
+
 def test_install_creates_hook(tmp_path):
     repo = _make_git_repo(tmp_path)
     result = install(repo)
@@ -85,6 +95,22 @@ def test_no_git_repo_raises(tmp_path):
         install(tmp_path / "not_a_repo")
 
 
+@pytest.mark.parametrize("subcmd", ["install", "uninstall"])
+def test_hook_cli_non_git_errors_without_traceback(tmp_path, subcmd):
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "graphify", "hook", subcmd],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "No git repository" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_install_creates_post_checkout_hook(tmp_path):
     repo = _make_git_repo(tmp_path)
     install(repo)
@@ -120,12 +146,70 @@ def test_status_shows_both_hooks(tmp_path):
     assert result.count("installed") >= 2
 
 
+def test_hooks_dir_regular_repo_uses_git_hooks_dir(tmp_path):
+    repo = _make_git_repo(tmp_path)
+
+    assert _hooks_dir(repo) == (repo / ".git" / "hooks").resolve()
+
+
+def test_hooks_dir_linked_worktree_uses_common_git_hooks_dir(tmp_path):
+    main = _make_git_repo_with_commit(tmp_path / "main")
+    worktree = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", str(worktree), "-b", "linked-test"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert (worktree / ".git").is_file()
+    assert _hooks_dir(worktree) == (main / ".git" / "hooks").resolve()
+
+    result = status(worktree)
+    assert "post-commit: not installed" in result
+    assert "post-checkout: not installed" in result
+
+
+def test_hooks_dir_linked_worktree_falls_back_to_gitdir_pointer(tmp_path, monkeypatch):
+    main = _make_git_repo_with_commit(tmp_path / "main")
+    worktree = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", str(worktree), "-b", "linked-fallback"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    def git_unavailable(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("subprocess.run", git_unavailable)
+
+    assert _hooks_dir(worktree) == (main / ".git" / "hooks").resolve()
+
+
+def test_hooks_dir_respects_core_hooks_path(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    custom_hooks = repo / ".husky"
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.hooksPath", ".husky"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert _hooks_dir(repo) == custom_hooks.resolve()
+    assert custom_hooks.is_dir()
+
+
 
 def test_hooks_dir_resolves_relative_git_hooks_path(tmp_path, monkeypatch):
     repo = _make_git_repo(tmp_path)
 
-    def fake_run(*args, **kwargs):
-        return SimpleNamespace(returncode=0, stdout=".git/hooks\n")
+    def fake_run(args, **kwargs):
+        if args[-2:] == ["--get", "core.hooksPath"]:
+            return SimpleNamespace(returncode=1, stdout="")
+        return SimpleNamespace(returncode=0, stdout=".git\n")
 
     monkeypatch.setattr("subprocess.run", fake_run)
 
@@ -135,8 +219,10 @@ def test_hooks_dir_resolves_relative_git_hooks_path(tmp_path, monkeypatch):
 def test_hooks_dir_rejects_multiline_git_output(tmp_path, monkeypatch):
     repo = _make_git_repo(tmp_path)
 
-    def fake_run(*args, **kwargs):
-        return SimpleNamespace(returncode=0, stdout="--path-format=absolute\n.git/hooks\n")
+    def fake_run(args, **kwargs):
+        if args[-2:] == ["--get", "core.hooksPath"]:
+            return SimpleNamespace(returncode=1, stdout="")
+        return SimpleNamespace(returncode=0, stdout="--path-format=absolute\n.git\n")
 
     monkeypatch.setattr("subprocess.run", fake_run)
 
@@ -146,14 +232,16 @@ def test_hooks_dir_rejects_multiline_git_output(tmp_path, monkeypatch):
 
 def test_hooks_dir_accepts_absolute_git_hooks_path(tmp_path, monkeypatch):
     repo = _make_git_repo(tmp_path)
-    hooks = tmp_path / "actual-hooks"
+    git_dir = tmp_path / "actual-git-dir"
 
-    def fake_run(*args, **kwargs):
-        return SimpleNamespace(returncode=0, stdout=f"{hooks}\n")
+    def fake_run(args, **kwargs):
+        if args[-2:] == ["--get", "core.hooksPath"]:
+            return SimpleNamespace(returncode=1, stdout="")
+        return SimpleNamespace(returncode=0, stdout=f"{git_dir}\n")
 
     monkeypatch.setattr("subprocess.run", fake_run)
 
-    assert _hooks_dir(repo) == hooks.resolve()
+    assert _hooks_dir(repo) == (git_dir / "hooks").resolve()
 
 def test_hook_skips_head_on_exe():
     """Hook script must skip shebang extraction for .exe binaries (Windows)."""
