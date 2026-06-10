@@ -94,9 +94,16 @@ def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
 def _check_skill_version(skill_dst: Path) -> None:
     """Warn if the installed skill is from an older graphify version."""
     version_file = skill_dst.parent / ".graphify_version"
-    if not version_file.exists():
+    try:
+        if not version_file.exists():
+            return
+    except OSError:
         return
-    if not skill_dst.exists():
+    try:
+        skill_exists = skill_dst.exists()
+    except OSError:
+        return
+    if not skill_exists:
         print("  warning: skill dir exists but SKILL.md is missing. Run 'graphify install' to repair.")
         return
     # A progressive SKILL.md links to its references/ sidecar. If the body points
@@ -108,7 +115,10 @@ def _check_skill_version(skill_dst: Path) -> None:
         body = ""
     if "references/" in body and not (skill_dst.parent / "references").exists():
         print("  warning: skill references/ sidecar is missing. Run 'graphify install' to repair.", file=sys.stderr)
-    installed = version_file.read_text(encoding="utf-8").strip()
+    try:
+        installed = version_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
     if installed != __version__:
         print(f"  warning: skill is from graphify {installed}, package is {__version__}. Run 'graphify install' to update.", file=sys.stderr)
 
