@@ -1579,10 +1579,13 @@ def _call_llm(prompt: str, *, backend: str, max_tokens: int = 200) -> str:
 
     if backend == "claude-cli":
         import shutil, subprocess
-        if shutil.which("claude") is None:
+        # Prefer claude.cmd on Windows: CreateProcess cannot execute the bare
+        # name when shutil.which resolves to claude.ps1 (same as issue #1072).
+        _claude = shutil.which("claude.cmd") or shutil.which("claude")
+        if _claude is None:
             raise RuntimeError("Claude Code CLI not found on $PATH")
         proc = subprocess.run(
-            ["claude", "-p", "--output-format", "json", "--no-session-persistence"],
+            [_claude, "-p", "--output-format", "json", "--no-session-persistence"],
             input=prompt,
             capture_output=True,
             text=True,
