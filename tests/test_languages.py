@@ -1628,3 +1628,168 @@ def test_apex_no_dangling_edges():
         for e in r["edges"]:
             assert e["source"] in node_ids, f"dangling source in {fixture}: {e}"
             assert e["target"] in node_ids, f"dangling target in {fixture}: {e}"
+
+
+# ---------------------------------------------------------------------------
+# GDScript (optional [gdscript] extra: tree-sitter-language-pack)
+# ---------------------------------------------------------------------------
+
+from graphify.extract import extract_gdscript, extract_html
+
+_needs_gdscript = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_language_pack") is None,
+    reason="tree-sitter-language-pack not installed (optional [gdscript] extra)",
+)
+
+
+@_needs_gdscript
+def test_gdscript_finds_class_name():
+    r = extract_gdscript(FIXTURES / "sample.gd")
+    assert "Player" in _labels(r)
+
+
+@_needs_gdscript
+def test_gdscript_finds_extends():
+    r = extract_gdscript(FIXTURES / "sample.gd")
+    assert ("Player", "CharacterBody2D") in _edge_labels(r, "inherits")
+
+
+@_needs_gdscript
+def test_gdscript_finds_signals():
+    r = extract_gdscript(FIXTURES / "sample.gd")
+    labels = _labels(r)
+    assert "died" in labels
+    assert "health_changed" in labels
+    sig_edges = _edges_with_relation(r, "defines")
+    assert any(e.get("context") == "signal" for e in sig_edges)
+
+
+@_needs_gdscript
+def test_gdscript_finds_functions():
+    r = extract_gdscript(FIXTURES / "sample.gd")
+    labels = _labels(r)
+    assert "take_damage()" in labels
+    assert "heal()" in labels
+    assert "_die()" in labels
+    assert "create()" in labels  # static func
+
+
+@_needs_gdscript
+def test_gdscript_finds_inner_class():
+    r = extract_gdscript(FIXTURES / "sample.gd")
+    labels = _labels(r)
+    assert "Inventory" in labels
+    assert "add_item()" in labels
+
+
+@_needs_gdscript
+def test_gdscript_finds_preload_import():
+    r = extract_gdscript(FIXTURES / "sample.gd")
+    import_edges = _edges_with_relation(r, "imports")
+    assert import_edges
+    assert all(e["confidence"] == "EXTRACTED" for e in import_edges)
+    assert all(e.get("context") == "import" for e in import_edges)
+
+
+@_needs_gdscript
+def test_gdscript_finds_calls():
+    r = extract_gdscript(FIXTURES / "sample.gd")
+    # take_damage() -> _die() is a same-file call: EXTRACTED
+    assert ("take_damage", "_die") in _edge_labels(r, "calls")
+    extracted = [e for e in _edges_with_relation(r, "calls")
+                 if e["confidence"] == "EXTRACTED"]
+    assert extracted
+    assert all(e.get("context") == "call" for e in _edges_with_relation(r, "calls"))
+
+
+@_needs_gdscript
+def test_gdscript_unknown_calls_are_inferred():
+    r = extract_gdscript(FIXTURES / "sample.gd")
+    # queue_free() is an engine method not defined in this file
+    inferred = [e for e in _edges_with_relation(r, "calls")
+                if e["confidence"] == "INFERRED"]
+    assert inferred
+
+
+@_needs_gdscript
+def test_gdscript_no_dangling_sources():
+    r = extract_gdscript(FIXTURES / "sample.gd")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"Dangling source: {e}"
+
+
+# ---------------------------------------------------------------------------
+# HTML
+# ---------------------------------------------------------------------------
+
+def test_html_file_node_present():
+    r = extract_html(FIXTURES / "sample.html")
+    assert "error" not in r
+    assert "sample.html" in _labels(r)
+
+
+def test_html_finds_id_elements():
+    r = extract_html(FIXTURES / "sample.html")
+    labels = _labels(r)
+    assert "div#root" in labels
+    assert "span#counter" in labels
+    assert "button#increment-btn" in labels
+    contains = _edge_labels(r, "contains")
+    assert ("sample.html", "div#root") in contains
+
+
+def test_html_finds_script_and_link_imports():
+    r = extract_html(FIXTURES / "sample.html")
+    import_edges = _edges_with_relation(r, "imports")
+    targets = {e["target"] for e in import_edges}
+    # js/app.js and styles/main.css are local -> imported
+    node_labels = {n["id"]: n["label"] for n in r["nodes"]}
+    imported_labels = {node_labels.get(t, t) for t in targets}
+    assert "js/app.js" in imported_labels
+    assert "styles/main.css" in imported_labels
+    assert all(e["confidence"] == "EXTRACTED" for e in import_edges)
+
+
+def test_html_skips_external_script_urls():
+    r = extract_html(FIXTURES / "sample.html")
+    for n in r["nodes"]:
+        assert "cdn.example.com" not in n["label"]
+
+
+def test_html_inline_script_functions_are_nodes():
+    r = extract_html(FIXTURES / "sample.html")
+    labels = _labels(r)
+    assert "readCount()" in labels
+    assert "render()" in labels
+    assert "increment()" in labels
+    assert "init()" in labels
+
+
+def test_html_inline_script_calls():
+    r = extract_html(FIXTURES / "sample.html")
+    calls = _edge_labels(r, "calls")
+    assert ("increment", "render") in calls
+    assert ("increment", "readCount") in calls
+    call_edges = _edges_with_relation(r, "calls")
+    assert all(e["confidence"] == "EXTRACTED" for e in call_edges)
+
+
+def test_html_dom_id_refs_are_inferred_uses():
+    r = extract_html(FIXTURES / "sample.html")
+    uses = _edges_with_relation(r, "uses")
+    assert uses
+    assert all(e["confidence"] == "INFERRED" for e in uses)
+    assert ("sample.html", "span#counter") in _edge_labels(r, "uses")
+
+
+def test_html_classified_as_code():
+    from graphify.detect import classify_file, FileType
+    assert classify_file(FIXTURES / "sample.html") is FileType.CODE
+
+
+def test_html_no_dangling_sources():
+    r = extract_html(FIXTURES / "sample.html")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"Dangling source: {e}"

@@ -11097,6 +11097,526 @@ def extract_terraform(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+# ── GDScript extractor (custom walk) ─────────────────────────────────────────
+
+def _resolve_godot_path(raw: str, str_path: str) -> str:
+    """Resolve a Godot resource path to a node id.
+
+    ``res://`` paths are project-root relative, where the project root is the
+    directory containing ``project.godot``. Walk upward from the importing file
+    looking for that marker; if found and the target file exists, return the id
+    `_make_id(str(target))` so the edge lands on the target file's real node
+    (mirrors `_resolve_lua_import_target`). Plain relative paths are resolved
+    against the importing file's directory. Falls back to `_make_id(raw)`.
+    """
+    if not raw:
+        return ""
+    try:
+        start_dir = Path(str_path).parent
+    except Exception:
+        return _make_id(raw)
+    if raw.startswith("res://"):
+        rel = raw[len("res://"):]
+        probe = start_dir
+        for _ in range(10):
+            if (probe / "project.godot").is_file():
+                cand = probe / rel
+                if cand.is_file():
+                    return _make_id(str(cand))
+                break
+            if probe.parent == probe:
+                break
+            probe = probe.parent
+        # No project.godot found (e.g. isolated fixture): probe upward for the
+        # relative path directly so same-tree targets still resolve.
+        probe = start_dir
+        for _ in range(6):
+            cand = probe / rel
+            if cand.is_file():
+                return _make_id(str(cand))
+            if probe.parent == probe:
+                break
+            probe = probe.parent
+    else:
+        cand = Path(os.path.normpath(start_dir / raw))
+        if cand.is_file():
+            return _make_id(str(cand))
+    return _make_id(raw)
+
+
+def extract_gdscript(path: Path) -> dict:
+    """Extract class_name, extends, signals, funcs, inner classes, preload()/load()
+    imports, and a call-graph pass from a Godot .gd file.
+
+    The GDScript grammar is not packaged standalone on PyPI; it ships inside
+    tree-sitter-language-pack (optional extra ``gdscript``).
+    """
+    try:
+        from tree_sitter_language_pack import get_language
+        from tree_sitter import Parser
+    except ImportError:
+        return {"nodes": [], "edges": [], "error": "tree-sitter-language-pack not installed"}
+
+    try:
+        language = get_language("gdscript")
+        parser = Parser(language)
+        source = path.read_bytes()
+        tree = parser.parse(source)
+        root = tree.root_node
+    except Exception as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = _file_stem(path)
+    str_path = str(path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    function_bodies: list[tuple[str, object]] = []
+    defined_funcs: dict[str, str] = {}  # func name -> node id (same-file resolution)
+
+    def add_node(nid: str, label: str, line: int) -> None:
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": label,
+                "file_type": "code",
+                "source_file": str_path,
+                "source_location": f"L{line}",
+            })
+
+    def add_edge(src: str, tgt: str, relation: str, line: int,
+                 confidence: str = "EXTRACTED", weight: float = 1.0,
+                 context: str | None = None) -> None:
+        edge = {
+            "source": src,
+            "target": tgt,
+            "relation": relation,
+            "confidence": confidence,
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": weight,
+        }
+        if context:
+            edge["context"] = context
+        edges.append(edge)
+
+    file_nid = _make_id(str(path))
+    add_node(file_nid, path.name, 1)
+
+    # The script's primary node: the class_name node when declared, else the file.
+    script_nid = file_nid
+
+    def _name_child(node):
+        nm = node.child_by_field_name("name")
+        if nm is not None:
+            return nm
+        for c in node.children:
+            if c.type == "name":
+                return c
+        return None
+
+    def _string_text(node) -> str:
+        # Strip surrounding quotes from a gdscript string node.
+        return _read_text(node, source).strip("\"'")
+
+    def _handle_preload(node, line: int) -> None:
+        """Emit an imports edge for preload("res://...gd") / load(...)."""
+        callee = node.children[0] if node.children else None
+        if callee is None or callee.type != "identifier":
+            return
+        fn = _read_text(callee, source)
+        if fn not in ("preload", "load"):
+            return
+        args = next((c for c in node.children if c.type == "arguments"), None)
+        if args is None:
+            return
+        s = next((c for c in args.children if c.type == "string"), None)
+        if s is None:
+            return
+        raw = _string_text(s)
+        if not raw.endswith(".gd"):
+            return
+        tgt_nid = _resolve_godot_path(raw, str_path)
+        if tgt_nid:
+            add_edge(file_nid, tgt_nid, "imports", line, context="import")
+
+    def _scan_preloads(node) -> None:
+        if node.type == "call":
+            _handle_preload(node, node.start_point[0] + 1)
+        for child in node.children:
+            _scan_preloads(child)
+
+    def walk(node, owner_nid: str) -> None:
+        t = node.type
+
+        if t == "class_name_statement":
+            nm = _name_child(node)
+            if nm is not None:
+                cls_name = _read_text(nm, source)
+                line = node.start_point[0] + 1
+                nid = _make_id(stem, cls_name)
+                add_node(nid, cls_name, line)
+                add_edge(file_nid, nid, "defines", line)
+                nonlocal script_nid
+                script_nid = nid
+            return
+
+        if t == "extends_statement":
+            line = node.start_point[0] + 1
+            for c in node.children:
+                if c.type == "string":
+                    raw = _string_text(c)
+                    tgt_nid = _resolve_godot_path(raw, str_path)
+                    if tgt_nid:
+                        add_edge(owner_nid, tgt_nid, "inherits", line, context="extends")
+                elif c.type in ("type", "identifier"):
+                    base = _read_text(c, source)
+                    if base:
+                        base_nid = _make_id(stem, base)
+                        if base_nid not in seen_ids:
+                            base_nid = _make_id(base)
+                            if base_nid not in seen_ids:
+                                nodes.append({
+                                    "id": base_nid,
+                                    "label": base,
+                                    "file_type": "code",
+                                    "source_file": "",
+                                    "source_location": "",
+                                })
+                                seen_ids.add(base_nid)
+                        add_edge(owner_nid, base_nid, "inherits", line, context="extends")
+            return
+
+        if t == "signal_statement":
+            nm = _name_child(node)
+            if nm is not None:
+                sig_name = _read_text(nm, source)
+                line = node.start_point[0] + 1
+                nid = _make_id(owner_nid, sig_name)
+                add_node(nid, sig_name, line)
+                add_edge(owner_nid, nid, "defines", line, context="signal")
+            return
+
+        if t == "function_definition":
+            nm = _name_child(node)
+            if nm is not None:
+                func_name = _read_text(nm, source)
+                line = node.start_point[0] + 1
+                nid = _make_id(owner_nid, func_name)
+                add_node(nid, f"{func_name}()", line)
+                add_edge(owner_nid, nid, "contains", line)
+                defined_funcs.setdefault(func_name, nid)
+                body = node.child_by_field_name("body")
+                if body is None:
+                    body = next((c for c in node.children if c.type == "body"), None)
+                if body is not None:
+                    function_bodies.append((nid, body))
+                    _scan_preloads(body)
+            return
+
+        if t == "class_definition":
+            nm = _name_child(node)
+            if nm is not None:
+                cls_name = _read_text(nm, source)
+                line = node.start_point[0] + 1
+                nid = _make_id(stem, cls_name)
+                add_node(nid, cls_name, line)
+                add_edge(owner_nid, nid, "contains", line)
+                body = next((c for c in node.children if c.type == "class_body"), None)
+                if body is not None:
+                    for child in body.children:
+                        walk(child, nid)
+            return
+
+        if t in ("const_statement", "variable_statement"):
+            # Only preload()/load() imports; plain var/const decls are noise.
+            _scan_preloads(node)
+            return
+
+        for child in node.children:
+            walk(child, owner_nid)
+
+    # First pass collects class_name before extends only when class_name comes
+    # first (the conventional order); walk twice over top-level statements so
+    # extends sees the script node regardless of declaration order.
+    top = list(root.children)
+    for stmt in top:
+        if stmt.type == "class_name_statement":
+            walk(stmt, file_nid)
+    for stmt in top:
+        if stmt.type != "class_name_statement":
+            walk(stmt, script_nid)
+
+    # Call-graph second pass.
+    def walk_calls(body_node, func_nid: str) -> None:
+        t = body_node.type
+        if t == "function_definition":
+            return
+        if t == "call" and body_node.children:
+            callee = body_node.children[0]
+            if callee.type == "identifier":
+                callee_name = _read_text(callee, source)
+                if callee_name not in ("preload", "load"):
+                    line = body_node.start_point[0] + 1
+                    if callee_name in defined_funcs:
+                        add_edge(func_nid, defined_funcs[callee_name], "calls",
+                                 line, confidence="EXTRACTED", context="call")
+                    else:
+                        add_edge(func_nid, _make_id(stem, callee_name), "calls",
+                                 line, confidence="INFERRED", context="call")
+        elif t == "attribute" and len(body_node.children) >= 2:
+            # obj.method(...) — last attribute_call holds the method name.
+            last = body_node.children[-1]
+            if last.type == "attribute_call" and last.children:
+                m = last.children[0]
+                if m.type == "identifier":
+                    method_name = _read_text(m, source)
+                    line = body_node.start_point[0] + 1
+                    if method_name in defined_funcs:
+                        add_edge(func_nid, defined_funcs[method_name], "calls",
+                                 line, confidence="EXTRACTED", context="call")
+                    else:
+                        add_edge(func_nid, _make_id(stem, method_name), "calls",
+                                 line, confidence="INFERRED", context="call")
+        for child in body_node.children:
+            walk_calls(child, func_nid)
+
+    for func_nid, body in function_bodies:
+        walk_calls(body, func_nid)
+
+    return {"nodes": nodes, "edges": edges}
+
+
+# ── HTML extractor (custom walk) ─────────────────────────────────────────────
+
+def extract_html(path: Path) -> dict:
+    """Extract id-anchored elements, <script src>/<link href> imports, and
+    inline-<script> functions/calls from a .html/.htm file.
+
+    Inline <script> bodies are parsed with the JavaScript tree-sitter grammar so
+    functions defined there become real nodes with `calls` edges (the same idea
+    as extract_svelte's script handling, but offset-corrected to HTML lines).
+    External http(s):// script/link URLs are skipped, matching how other
+    extractors drop stdlib/external imports.
+    """
+    try:
+        import tree_sitter_html as tshtml
+        from tree_sitter import Language, Parser
+    except ImportError:
+        return {"nodes": [], "edges": [], "error": "tree-sitter-html not installed"}
+
+    try:
+        language = Language(tshtml.language())
+        parser = Parser(language)
+        source = path.read_bytes()
+        tree = parser.parse(source)
+        root = tree.root_node
+    except Exception as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = _file_stem(path)
+    str_path = str(path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    id_element_nids: dict[str, str] = {}  # html id attr value -> node id
+    inline_scripts: list[tuple[str, int]] = []  # (script text, 0-based start row)
+
+    def add_node(nid: str, label: str, line: int) -> None:
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": label,
+                "file_type": "code",
+                "source_file": str_path,
+                "source_location": f"L{line}",
+            })
+
+    def add_edge(src: str, tgt: str, relation: str, line: int,
+                 confidence: str = "EXTRACTED", weight: float = 1.0,
+                 context: str | None = None) -> None:
+        edge = {
+            "source": src,
+            "target": tgt,
+            "relation": relation,
+            "confidence": confidence,
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": weight,
+        }
+        if context:
+            edge["context"] = context
+        edges.append(edge)
+
+    file_nid = _make_id(str(path))
+    add_node(file_nid, path.name, 1)
+
+    def _attrs(start_tag) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for c in start_tag.children:
+            if c.type != "attribute":
+                continue
+            name = None
+            value = ""
+            for a in c.children:
+                if a.type == "attribute_name":
+                    name = _read_text(a, source).lower()
+                elif a.type == "quoted_attribute_value":
+                    inner = next((v for v in a.children if v.type == "attribute_value"), None)
+                    value = _read_text(inner, source) if inner is not None else ""
+                elif a.type == "attribute_value":
+                    value = _read_text(a, source)
+            if name:
+                out[name] = value
+        return out
+
+    def _is_external(ref: str) -> bool:
+        low = ref.lower()
+        return (low.startswith("http://") or low.startswith("https://")
+                or low.startswith("//") or low.startswith("data:")
+                or low.startswith("mailto:") or low.startswith("javascript:"))
+
+    def _import_edge(ref: str, line: int) -> None:
+        if not ref or _is_external(ref) or ref.startswith("#"):
+            return
+        resolved = Path(os.path.normpath(path.parent / ref.split("?")[0].split("#")[0]))
+        tgt_nid = _make_id(str(resolved))
+        if tgt_nid not in seen_ids:
+            nodes.append({
+                "id": tgt_nid, "label": ref,
+                "file_type": "code", "source_file": str(resolved),
+            })
+            seen_ids.add(tgt_nid)
+        add_edge(file_nid, tgt_nid, "imports", line, context="import")
+
+    def walk(node) -> None:
+        t = node.type
+
+        if t == "script_element":
+            start_tag = next((c for c in node.children if c.type == "start_tag"), None)
+            if start_tag is not None:
+                attrs = _attrs(start_tag)
+                src_ref = attrs.get("src")
+                if src_ref:
+                    _import_edge(src_ref, start_tag.start_point[0] + 1)
+            raw = next((c for c in node.children if c.type == "raw_text"), None)
+            if raw is not None:
+                text = _read_text(raw, source)
+                if text.strip():
+                    inline_scripts.append((text, raw.start_point[0]))
+            return
+
+        if t == "style_element":
+            return  # <style> is deliberately skipped
+
+        if t == "element":
+            start_tag = next((c for c in node.children if c.type == "start_tag"), None)
+            if start_tag is not None:
+                tag_node = next((c for c in start_tag.children if c.type == "tag_name"), None)
+                tag = _read_text(tag_node, source).lower() if tag_node is not None else ""
+                attrs = _attrs(start_tag)
+                line = start_tag.start_point[0] + 1
+                if tag == "link":
+                    href = attrs.get("href")
+                    # Only structural references (scripts/stylesheets/modules);
+                    # skip icons and such? Keep all local hrefs - they are real deps.
+                    if href:
+                        _import_edge(href, line)
+                el_id = attrs.get("id")
+                if el_id:
+                    nid = _make_id(stem, f"#{el_id}")
+                    add_node(nid, f"{tag}#{el_id}", line)
+                    add_edge(file_nid, nid, "contains", line)
+                    id_element_nids[el_id] = nid
+
+        for child in node.children:
+            walk(child)
+
+    walk(root)
+
+    # Inline <script> pass: parse with the JS grammar so functions become real
+    # nodes and intra-script calls become edges.
+    if inline_scripts:
+        try:
+            import tree_sitter_javascript as tsjs
+            from tree_sitter import Language as _JSLanguage, Parser as _JSParser
+            js_parser = _JSParser(_JSLanguage(tsjs.language()))
+        except Exception:
+            js_parser = None
+        if js_parser is not None:
+            defined_funcs: dict[str, str] = {}
+            script_bodies: list[tuple[str, object, bytes, int]] = []
+            _ID_REF_RE = re.compile(
+                r"""(?:getElementById\(\s*['"]([\w-]+)['"]\s*\)"""
+                r"""|querySelector(?:All)?\(\s*['"]#([\w-]+)['"]\s*\))"""
+            )
+
+            for text, row_offset in inline_scripts:
+                js_source = text.encode("utf-8")
+                try:
+                    js_root = js_parser.parse(js_source).root_node
+                except Exception:
+                    continue
+
+                def collect_funcs(node) -> None:
+                    if node.type in ("function_declaration", "generator_function_declaration"):
+                        nm = node.child_by_field_name("name")
+                        if nm is not None:
+                            fname = js_source[nm.start_byte:nm.end_byte].decode(
+                                "utf-8", errors="replace")
+                            line = node.start_point[0] + 1 + row_offset
+                            nid = _make_id(stem, fname)
+                            add_node(nid, f"{fname}()", line)
+                            add_edge(file_nid, nid, "contains", line)
+                            defined_funcs.setdefault(fname, nid)
+                            body = node.child_by_field_name("body")
+                            if body is not None:
+                                script_bodies.append((nid, body, js_source, row_offset))
+                            return
+                    for child in node.children:
+                        collect_funcs(child)
+
+                collect_funcs(js_root)
+
+                # id-anchored element references from inline JS -> INFERRED uses
+                for m in _ID_REF_RE.finditer(text):
+                    ref_id = m.group(1) or m.group(2)
+                    tgt = id_element_nids.get(ref_id)
+                    if tgt:
+                        line = text[: m.start()].count("\n") + 1 + row_offset
+                        add_edge(file_nid, tgt, "uses", line,
+                                 confidence="INFERRED", context="dom_ref")
+
+            def walk_js_calls(node, func_nid: str, js_source: bytes, row_offset: int) -> None:
+                if node.type in ("function_declaration", "generator_function_declaration"):
+                    return
+                if node.type == "call_expression":
+                    fn = node.child_by_field_name("function")
+                    name = None
+                    if fn is not None and fn.type == "identifier":
+                        name = js_source[fn.start_byte:fn.end_byte].decode(
+                            "utf-8", errors="replace")
+                    elif fn is not None and fn.type == "member_expression":
+                        prop = fn.child_by_field_name("property")
+                        if prop is not None:
+                            name = js_source[prop.start_byte:prop.end_byte].decode(
+                                "utf-8", errors="replace")
+                    if name:
+                        line = node.start_point[0] + 1 + row_offset
+                        if name in defined_funcs:
+                            add_edge(func_nid, defined_funcs[name], "calls", line,
+                                     confidence="EXTRACTED", context="call")
+                for child in node.children:
+                    walk_js_calls(child, func_nid, js_source, row_offset)
+
+            for func_nid, body, js_source, row_offset in script_bodies:
+                walk_js_calls(body, func_nid, js_source, row_offset)
+
+    return {"nodes": nodes, "edges": edges}
+
+
 _DISPATCH: dict[str, Any] = {
     ".py": extract_python,
     ".js": extract_js,
@@ -11182,6 +11702,9 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".gd": extract_gdscript,
+    ".html": extract_html,
+    ".htm": extract_html,
 }
 
 
