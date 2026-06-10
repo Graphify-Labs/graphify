@@ -2,6 +2,18 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.8.36 (2026-06-08)
+
+- Feat: `extra_body` field in `providers.json` forwarded to OpenAI-compat calls at extraction and labeling. Lets vLLM/Qwen3/Llama endpoints pass model-specific request shapes (e.g. `{"chat_template_kwargs": {"enable_thinking": false}}`). Explicit `extra_body` also bypasses Ollama `num_ctx` auto-derive. Thanks to @EirikWolf (#1197).
+- Feat: `label_communities` multi-batch for 16k-context models. Chunks of 100 communities per call (configurable `batch_size=`); `max_communities` defaults to `None` (label all); partial batch failures no longer drop the whole pass. Thanks to @EirikWolf (#1197).
+- Feat: `.slnx` Visual Studio solution file support. Extracts `contains` (project references) and `imports` (build dependencies) edges from the modern XML solution format (VS 2022 17.13+). Thanks to @bakgaard (#1189).
+- Feat: `graphify-mcp` console script. MCP stdio server now directly invocable as `graphify-mcp` from `uv tool install` / `pipx`. Thanks to @jr2804 (#1190).
+- Fix: `label_communities` token budget raised and `GRAPHIFY_MAX_OUTPUT_TOKENS` now honoured. Hardcoded `min(40+16n, 4096)` undershooted (~16 tok/community); raised to `min(64+24n, 8192)` and wrapped in `_resolve_max_tokens()` (#1200).
+- Fix: `find_import_cycles` no longer hangs on large graphs. `nx.simple_cycles()` now receives `length_bound=max_cycle_length`, pruning during enumeration rather than post-filtering — drops from never-returns to ~0.1s on dense graphs (#1196).
+- Fix: fuzzy dedup no longer merges prefix-extension symbol pairs. `getActiveSession`/`getActiveSessions`, `parseConfig`/`parseConfigFile` etc. scored ~98-99 JW and were auto-merged. A prefix-extension guard now prevents merge when one normalised label is a strict prefix of the other, in both Pass 2 and the LLM tiebreaker (#1201).
+- Fix: `_norm`, `_norm_label`, `_strip_diacritics` guard against `None` node labels, preventing `TypeError` crash on corpora with explicit `null` label fields (#1194). Thanks to @freiit (#1195).
+- Fix: skill frontmatter `trigger:` field removed from all 14 skill variants — not part of Agent Skills spec, flagged by `agentskills validate` CI (#1180).
+
 ## 0.8.35 (2026-06-07)
 
 - Feat: CodeBuddy platform support. `graphify codebuddy install` installs the graphify skill to `~/.codebuddy/skills/graphify/SKILL.md`, writes a `CODEBUDDY.md` always-on section, and registers Bash + Read|Glob PreToolUse hooks in `.codebuddy/settings.json` that nudge the agent toward `graphify query` instead of grepping raw files when a graph exists. `graphify install --platform codebuddy` and `graphify codebuddy uninstall` also supported. Thanks to @studyzy (#1136).

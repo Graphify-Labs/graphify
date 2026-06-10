@@ -686,8 +686,11 @@ def find_import_cycles(
         return []
 
     # Step 2: Find simple cycles, bounded by length.
+    # Pass length_bound so networkx prunes during enumeration rather than
+    # enumerating all elementary cycles and post-filtering — avoids exponential
+    # blowup on dense graphs with many long cycles (#1196).
     cycles: list[list[str]] = []
-    for cycle in nx.simple_cycles(file_graph):
+    for cycle in nx.simple_cycles(file_graph, length_bound=max_cycle_length):
         if len(cycle) <= max_cycle_length:
             cycles.append(cycle)
         if len(cycles) >= top_n * 10:

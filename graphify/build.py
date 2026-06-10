@@ -311,8 +311,10 @@ def build(
     return build_from_json(combined, directed=directed, root=root)
 
 
-def _norm_label(label: str) -> str:
+def _norm_label(label: str | None) -> str:
     """Canonical dedup key — Unicode-aware, preserves CJK/word characters."""
+    if not isinstance(label, str):
+        label = "" if label is None else str(label)
     label = unicodedata.normalize("NFKC", label)
     return re.sub(r"[\W_ ]+", " ", label.casefold(), flags=re.UNICODE).strip()
 

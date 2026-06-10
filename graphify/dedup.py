@@ -15,8 +15,10 @@ from rapidfuzz.distance import JaroWinkler
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _norm(label: str) -> str:
+def _norm(label: str | None) -> str:
     """Lowercase + collapse non-alphanumeric runs to space (Unicode-aware)."""
+    if not isinstance(label, str):
+        label = "" if label is None else str(label)
     label = unicodedata.normalize("NFKC", label)
     return re.sub(r"[\W_]+", " ", label.casefold(), flags=re.UNICODE).strip()
 
@@ -243,6 +245,13 @@ def deduplicate_entities(
                     continue
                 if _short_label_blocked(norm_label, neighbor_norm, score):
                     continue
+                # Prefix-extension pairs (getActiveSession / getActiveSessions,
+                # parseConfig / parseConfigFile) are almost never duplicates —
+                # one is a strict suffix-extension of the other. Block the merge
+                # regardless of JW score (#1201).
+                _lo, _hi = sorted((norm_label, neighbor_norm), key=len)
+                if _hi.startswith(_lo) and _hi != _lo:
+                    continue
 
                 c1 = communities.get(node_id)
                 c2 = communities.get(neighbor_id)
@@ -369,6 +378,9 @@ def _llm_tiebreak(
             if _is_variant_pair(norm_i, norm_j):
                 continue
             if _short_label_blocked(norm_i, norm_j, score):
+                continue
+            _lo, _hi = sorted((norm_i, norm_j), key=len)
+            if _hi.startswith(_lo) and _hi != _lo:
                 continue
             c1 = communities.get(node["id"])
             c2 = communities.get(neighbor["id"])
