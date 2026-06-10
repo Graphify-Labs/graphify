@@ -280,56 +280,130 @@ def _incremental_ingest(
     root: str | None = None,
     known_tables: set[str] | None = None,
 ) -> dict[str, str]:
-    """Incremental update via per-row Cypher MERGE."""
+    """Incremental update via DELETE affected source_files + COPY FROM.
+
+    Much faster than per-row MERGE: deletes nodes whose source_file appears
+    in the incoming extraction (or in prune_sources), then bulk-inserts the
+    new data via COPY FROM.  Incoming cross-file edges (from unchanged files
+    into affected nodes) are saved before deletion and restored afterwards.
+    """
     _known = known_tables if known_tables is not None else set()
-
-    if prune_sources:
-        for sf in prune_sources:
-            sf_norm = _norm_source_file(sf, root) or sf
-            for tbl in _NODE_TABLES:
-                conn.execute(
-                    f"MATCH (n:{tbl}) WHERE n.source_file = $sf DETACH DELETE n",
-                    parameters={"sf": sf_norm},
-                )
-
-    node_types: dict[str, str] = {}
     nodes = extraction.get("nodes") or []
     edges = extraction.get("edges") or []
 
+    # --- collect affected source_files from the incoming data ---
+    affected_sfs: set[str] = set()
+    if prune_sources:
+        for sf in prune_sources:
+            sf_norm = _norm_source_file(sf, root) or sf
+            affected_sfs.add(sf_norm)
+
+    node_types: dict[str, str] = {}
+    node_buckets: dict[str, list[dict]] = {ft: [] for ft in _NODE_TABLES}
     written_ids: set[str] = set()
-    _n_errors = 0
+
     for node in nodes:
         nid = _normalize_id(node.get("id", ""))
         if not nid or nid in written_ids:
             continue
         written_ids.add(nid)
         ft = _fix_file_type(node.get("file_type"))
-        label = node.get("label", "")
-        sf = _norm_source_file(node.get("source_file"), root) or ""
-        sl = node.get("source_location") or ""
         node_types[nid] = ft
+        sf = _norm_source_file(node.get("source_file"), root) or ""
+        if sf:
+            affected_sfs.add(sf)
+        row: dict = {
+            "id": nid,
+            "label": node.get("label", ""),
+            "source_file": sf,
+            "community": 0,
+        }
+        if ft == "code":
+            row["source_location"] = node.get("source_location") or ""
+        node_buckets.setdefault(ft, []).append(row)
 
-        try:
-            if ft == "code":
-                conn.execute(
-                    f"MERGE (n:code {{id: $nid}}) "
-                    f"ON CREATE SET n.label = $label, "
-                    f"n.source_file = $sf, n.source_location = $sl "
-                    f"ON MATCH SET n.label = $label, "
-                    f"n.source_file = $sf, n.source_location = $sl",
-                    parameters={"nid": nid, "label": label, "sf": sf, "sl": sl},
-                )
-            else:
-                conn.execute(
-                    f"MERGE (n:{ft} {{id: $nid}}) "
-                    f"ON CREATE SET n.label = $label, n.source_file = $sf "
-                    f"ON MATCH SET n.label = $label, n.source_file = $sf",
-                    parameters={"nid": nid, "label": label, "sf": sf},
-                )
-        except RuntimeError:
-            _n_errors += 1
+    # --- resolve types for non-delta edge endpoints (before DELETE) ---
+    unknown_ids: set[str] = set()
+    for edge in edges:
+        for key in ("source", "from", "target", "to"):
+            eid = _normalize_id(edge.get(key, ""))
+            if eid and eid not in node_types:
+                unknown_ids.add(eid)
+    for nid in unknown_ids:
+        for tbl in _NODE_TABLES:
+            try:
+                rows = list(conn.execute(
+                    f"MATCH (n:{tbl} {{id: $nid}}) RETURN 1",
+                    parameters={"nid": nid},
+                ))
+                if rows:
+                    node_types[nid] = tbl
+                    break
+            except RuntimeError:
+                pass
 
-    _e_errors = 0
+    # --- save incoming cross-file edges before DELETE ---
+    # Collect IDs of nodes that will be deleted.
+    affected_node_ids: set[str] = set()
+    for sf in affected_sfs:
+        for tbl in _NODE_TABLES:
+            try:
+                for row in conn.execute(
+                    f"MATCH (n:{tbl}) WHERE n.source_file = $sf RETURN n.id",
+                    parameters={"sf": sf},
+                ):
+                    affected_node_ids.add(row[0])
+            except RuntimeError:
+                pass
+
+    # For each known edge table, find edges where the target is in an affected
+    # source_file but the source is NOT (incoming from unchanged files).
+    saved_edge_buckets: dict[str, list[dict]] = {}
+    saved_edge_types: dict[str, tuple[str, str]] = {}
+
+    for tbl in list(_known):
+        parts = tbl.split("_", 3)
+        if len(parts) < 4 or parts[0] != "edge":
+            continue
+        src_type, tgt_type = parts[1], parts[2]
+
+        for sf in affected_sfs:
+            try:
+                rows = list(conn.execute(
+                    f"MATCH (a:{src_type})-[e:{tbl}]->(b:{tgt_type}) "
+                    f"WHERE b.source_file = $sf "
+                    f"RETURN a.id, b.id, e.relation, e.confidence, "
+                    f"e.confidence_score, e.source_file, e.weight",
+                    parameters={"sf": sf},
+                ))
+            except RuntimeError:
+                continue
+
+            for row in rows:
+                if row[0] in affected_node_ids:
+                    continue
+                saved_edge_types[tbl] = (src_type, tgt_type)
+                saved_edge_buckets.setdefault(tbl, []).append({
+                    "from_id": row[0], "to_id": row[1],
+                    "relation": row[2] or "",
+                    "confidence": row[3] or "",
+                    "confidence_score": float(row[4] or 0.0),
+                    "source_file": row[5] or "",
+                    "weight": float(row[6] or 1.0),
+                })
+
+    # --- DELETE nodes from affected source_files ---
+    for sf in affected_sfs:
+        for tbl in _NODE_TABLES:
+            conn.execute(
+                f"MATCH (n:{tbl}) WHERE n.source_file = $sf DETACH DELETE n",
+                parameters={"sf": sf},
+            )
+
+    # --- collect delta edge rows ---
+    edge_buckets: dict[str, list[dict]] = {}
+    edge_table_types: dict[str, tuple[str, str]] = {}
+
     for edge in edges:
         src_id = _normalize_id(edge.get("source") or edge.get("from", ""))
         tgt_id = _normalize_id(edge.get("target") or edge.get("to", ""))
@@ -341,35 +415,44 @@ def _incremental_ingest(
             continue
 
         rel_raw = edge.get("relation", "")
-        conf_raw = edge.get("confidence", "")
         tbl = _ensure_rel_table(conn, src_ft, tgt_ft, rel_raw, _known)
-        conf_score = float(edge.get("confidence_score", 0.0))
-        e_sf = _norm_source_file(edge.get("source_file"), root) or ""
-        weight = float(edge.get("weight", 1.0))
+        edge_table_types[tbl] = (src_ft, tgt_ft)
+        edge_buckets.setdefault(tbl, []).append({
+            "from_id": src_id,
+            "to_id": tgt_id,
+            "relation": rel_raw,
+            "confidence": edge.get("confidence", ""),
+            "confidence_score": float(edge.get("confidence_score", 0.0)),
+            "source_file": _norm_source_file(edge.get("source_file"), root) or "",
+            "weight": float(edge.get("weight", 1.0)),
+        })
 
-        try:
-            conn.execute(
-                f"MATCH (a:{src_ft} {{id: $src_id}}), "
-                f"(b:{tgt_ft} {{id: $tgt_id}}) "
-                f"CREATE (a)-[:{tbl} {{relation: $rel, confidence: $conf, "
-                f"confidence_score: $conf_score, source_file: $e_sf, "
-                f"weight: $weight}}]->(b)",
-                parameters={
-                    "src_id": src_id, "tgt_id": tgt_id,
-                    "rel": rel_raw, "conf": conf_raw,
-                    "conf_score": conf_score, "e_sf": e_sf,
-                    "weight": weight,
-                },
-            )
-        except RuntimeError:
-            _e_errors += 1
+    # --- merge saved incoming edges back ---
+    for tbl, rows in saved_edge_buckets.items():
+        edge_buckets.setdefault(tbl, []).extend(rows)
+        if tbl not in edge_table_types:
+            edge_table_types[tbl] = saved_edge_types[tbl]
 
-    if _n_errors or _e_errors:
-        import logging
-        logging.getLogger(__name__).warning(
-            "NeuG ingest: %d node(s) and %d edge(s) skipped due to errors",
-            _n_errors, _e_errors,
-        )
+    # --- COPY FROM bulk insert ---
+    tmp_dir = tempfile.mkdtemp(prefix="graphify_inc_")
+    try:
+        for ft, rows in node_buckets.items():
+            if not rows:
+                continue
+            csv_path = os.path.join(tmp_dir, f"node_{ft}.csv")
+            _write_csv(csv_path, rows, _NODE_COLUMNS[ft])
+            _copy_node_csv(conn, csv_path, ft)
+
+        for tbl, rows in edge_buckets.items():
+            if not rows:
+                continue
+            csv_path = os.path.join(tmp_dir, f"edge_{tbl}.csv")
+            _write_csv(csv_path, rows, _EDGE_COLUMNS)
+            src_ft, tgt_ft = edge_table_types[tbl]
+            _copy_rel_csv(conn, csv_path, tbl, src_ft, tgt_ft)
+    finally:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return node_types
 
