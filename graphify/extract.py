@@ -7849,6 +7849,42 @@ def _collect_python_symbol_resolution_facts(
                             tail = raw.rsplit(".", 1)[-1]
                             facts.uses.append(_SymbolUseFact(path, class_nid, tail, "inherits", "type", s.start_point[0] + 1))
 
+            # Collect annotation type references for both classes and functions, which are handled the same way for import resolution purposes. Walk function definitions and class-level variable declarations; for any annotation node, collect identifier and attribute references as _SymbolUseFact entries with relation "references" and context "annotation".
+            if node.type == "function_definition":
+                fn_name_node = node.child_by_field_name("name")
+                if fn_name_node is None:
+                    continue
+                fn_name = source[fn_name_node.start_byte:fn_name_node.end_byte].decode("utf-8", errors = "replace")
+                fn_nid = _make_id(stem, fn_name)
+                # Parameters
+                params = node.child_by_field_name("parameters")
+                if params is not None:
+                    for p in params.children:
+                        if p.type in ("typed_parameter", "default_parameter"):
+                            type_node = p.child_by_field_name("type")
+                            if type_node is not None:
+                                # Collect simple identifiers and qualified attribute references (e.g. `mod.Type`) appearing in annotations as separate facts; the post-pass will attempt to resolve both against imports/exports.
+                                for c in type_node.children:
+                                    if c.type == "identifier":
+                                        tname = source[c.start_byte:c.end_byte].decode("utf-8", errors="replace")
+                                        facts.uses.append(_SymbolUseFact(path, fn_nid, tname, "references", "annotation", c.start_point[0] + 1))
+                                    elif c.type == "attribute":
+                                        raw = source[c.start_byte:c.end_byte].decode("utf-8", errors="replace")
+                                        tail = raw.rsplit(".", 1)[-1]
+                                        facts.uses.append(_SymbolUseFact(path, fn_nid, tail, "references", "annotation", c.start_point[0] + 1))
+
+            #return type
+            ret = node.child_by_field_name("return_type")
+            if ret is not None:
+                for c in ret.children:
+                    if c.type == "identifier":
+                        tname = source[c.start_byte:c.end_byte].decode("utf-8", errors="replace") 
+                        facts.uses.append(_SymbolUseFact(path, fn_nid, tname, "references", "annotation", c.start_point[0] + 1))
+                    elif c.type == "attribute":
+                        raw = source[c.start_byte:c.end_byte].decode("utf-8", errors="replace")
+                        tail = raw.rsplit(".", 1)[-1]
+                        facts.uses.append(_SymbolUseFact(path, fn_nid, tail, "references", "annotation", c.start_point[0] + 1))
+
 
 def _augment_symbol_resolution_edges(
     paths: list[Path],
