@@ -7820,6 +7820,35 @@ def _collect_python_symbol_resolution_facts(
                     )
                 )
 
+        # NEW: Collect heritage and annotation uses for classes/functions so
+        # they can be resolved via import/export facts in the post-pass.
+        # Walk top-level class definitions and collect base names and any
+        # annotation type names as _SymbolUseFact entries.
+        stem = _file_stem(path)
+        for node in _walk_python_tree(root_node):
+            if node.type == "class_definition":
+                # class name -> nid (file-scoped)
+
+                name_node = node.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                class_name = source[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
+                class_nid = _make_id(stem, class_name)
+                # Collect superclass references so they can be resolved
+                # against import/export facts during the symbol-resolution post-pass.
+
+                supers = node.child_by_field_name("superclasses")
+                if supers is not None:
+                    for s in supers.children:
+                        if s.type == "identifier":
+                            base_name = source[s.start_byte:s.end_byte].decode("utf-8", errors="replace")
+                            facts.uses.append(_SymbolUseFact(path, class_nid, base_name, "inherits", "type", s.start_point[0] + 1))
+                        elif s.type == "attribute":
+                            #qualified name like mod.Base -> tail
+                            raw = source[s.start_byte:s.end_byte].decode("utf-8", errors="replace") 
+                            tail = raw.rsplit(".", 1)[-1]
+                            facts.uses.append(_SymbolUseFact(path, class_nid, tail, "inherits", "type", s.start_point[0] + 1))
+
 
 def _augment_symbol_resolution_edges(
     paths: list[Path],
