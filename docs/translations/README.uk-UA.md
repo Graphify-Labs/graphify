@@ -330,7 +330,7 @@ MCP-сервер надає асистенту структурований до
 | `OPENAI_API_KEY` | OpenAI або OpenAI-сумісні API | `--backend openai` |
 | `DEEPSEEK_API_KEY` | Backend DeepSeek | `--backend deepseek` |
 | `MOONSHOT_API_KEY` | Backend Kimi Code | `--backend kimi` |
-| `OLLAMA_BASE_URL` | URL локального виводу Ollama | `--backend ollama` (типово: `http://localhost:11434`) |
+| `OLLAMA_BASE_URL` | URL локального виводу Ollama | `--backend ollama` (типово: `http://localhost:11434/v1`) |
 | `OLLAMA_MODEL` | Назва моделі Ollama | `--backend ollama` (типово: автовизначення) |
 | `GRAPHIFY_OLLAMA_NUM_CTX` | Перевизначити розмір KV-кеш вікна Ollama | опціонально — автоматично за замовчуванням |
 | `GRAPHIFY_OLLAMA_KEEP_ALIVE` | Хвилини утримання моделі Ollama завантаженою | опціонально — встановіть `0` для вивантаження після кожного шматка |
