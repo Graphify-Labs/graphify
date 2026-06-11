@@ -57,7 +57,7 @@ def test_report_shows_token_cost():
 
 def test_report_shows_raw_cohesion_scores():
     G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
-    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1)
     assert "Cohesion:" in report
     assert "✓" not in report
     assert "⚠" not in report

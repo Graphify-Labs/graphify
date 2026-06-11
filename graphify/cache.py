@@ -1,10 +1,17 @@
 # per-file extraction cache - skip unchanged files on re-run
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
+
+# Output directory name — override with GRAPHIFY_OUT env var for worktrees or
+# shared-output setups. Accepts a relative name ("graphify-out-feature") or an
+# absolute path ("/shared/graphify-out").
+_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
 
 
 def _body_content(content: bytes) -> bytes:
@@ -17,8 +24,82 @@ def _body_content(content: bytes) -> bytes:
     return content
 
 
+# Stat-based index: maps absolute path → {size, mtime_ns, hash}.
+# Loaded once per process, flushed via atexit. Skips full file reads when
+# size+mtime_ns are unchanged — same trade-off as make(1).
+# Correctness risks: `touch` causes a harmless extra re-hash; same-size edits
+# within NFS second-resolution mtime have a 1-second window (same as make).
+# Use `graphify extract --force` to bypass when needed.
+_stat_index: dict[str, dict] = {}
+_stat_index_root: Path | None = None
+_stat_index_dirty: bool = False
+
+
+def _stat_index_file(root: Path) -> Path:
+    _out = Path(_GRAPHIFY_OUT)
+    base = _out if _out.is_absolute() else Path(root).resolve() / _out
+    return base / "cache" / "stat-index.json"
+
+
+def _ensure_stat_index(root: Path) -> None:
+    global _stat_index, _stat_index_root, _stat_index_dirty
+    if _stat_index_root is not None:
+        return
+    _stat_index_root = Path(root).resolve()
+    p = _stat_index_file(_stat_index_root)
+    if p.exists():
+        try:
+            _stat_index = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            _stat_index = {}
+    else:
+        _stat_index = {}
+    atexit.register(_flush_stat_index)
+
+
+def _flush_stat_index() -> None:
+    global _stat_index_dirty, _stat_index_root
+    if not _stat_index_dirty or _stat_index_root is None:
+        return
+    p = _stat_index_file(_stat_index_root)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=p.parent, prefix="stat-index.", suffix=".tmp")
+        try:
+            os.write(fd, json.dumps(_stat_index, separators=(",", ":")).encode())
+            os.close(fd)
+            os.replace(tmp, p)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    _stat_index_dirty = False
+
+
+def _normalize_path(path: Path) -> Path:
+    """Normalize path for consistent cache keys across Windows path spellings."""
+    import sys
+    if sys.platform != "win32":
+        return path
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        s = s[4:]  # strip extended-length prefix \\?\
+    return Path(os.path.normcase(s))
+
+
 def file_hash(path: Path, root: Path = Path(".")) -> str:
     """SHA256 of file contents + path relative to root.
+
+    Uses a stat-based fastpath (size + mtime_ns) to skip full reads when the
+    file hasn't changed. Falls through to full SHA256 on first encounter or
+    when stat changes. Index is flushed atomically at process exit.
 
     Using a relative path (not absolute) makes cache entries portable across
     machines and checkout directories, so shared caches and CI work correctly.
@@ -27,9 +108,25 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
     For Markdown files (.md), only the body below the YAML frontmatter is hashed,
     so metadata-only changes (e.g. reviewed, status, tags) do not invalidate the cache.
     """
-    p = Path(path)
+    global _stat_index_dirty
+    p = _normalize_path(Path(path))
+    root = _normalize_path(Path(root))
     if not p.is_file():
         raise IsADirectoryError(f"file_hash requires a file, got: {p}")
+
+    _ensure_stat_index(root)
+    abs_key = str(p.resolve())
+    st: "os.stat_result | None" = None
+    try:
+        st = p.stat()
+        entry = _stat_index.get(abs_key)
+        if (entry
+                and entry.get("size") == st.st_size
+                and entry.get("mtime_ns") == st.st_mtime_ns):
+            return entry["hash"]
+    except OSError:
+        pass
+
     raw = p.read_bytes()
     content = _body_content(raw) if p.suffix.lower() == ".md" else raw
     h = hashlib.sha256()
@@ -37,43 +134,139 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
     h.update(b"\x00")
     try:
         rel = p.resolve().relative_to(Path(root).resolve())
-        h.update(str(rel).encode())
+        h.update(rel.as_posix().lower().encode())
     except ValueError:
-        h.update(str(p.resolve()).encode())
-    return h.hexdigest()
+        h.update(p.resolve().as_posix().lower().encode())
+    digest = h.hexdigest()
+
+    if st is not None:
+        _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "hash": digest}
+        _stat_index_dirty = True
+
+    return digest
 
 
-def cache_dir(root: Path = Path(".")) -> Path:
-    """Returns graphify-out/cache/ - creates it if needed."""
-    d = Path(root).resolve() / "graphify-out" / "cache"
+def _relativize_source_files_in(payload: dict, root: Path) -> None:
+    """Mutate ``payload`` to rewrite absolute ``source_file`` fields as
+    forward-slash relative paths from ``root``.
+
+    Mirror of :func:`graphify.watch._relativize_source_files` so cached
+    extraction fragments persist in portable form (#777). Already-relative
+    fields and out-of-root paths pass through unchanged.
+
+    Only ``root`` is resolved — ``source_file`` itself is relativized
+    symbolically so in-root symlinks keep their original name rather than
+    pointing at the resolved target. Same reasoning as
+    :func:`graphify.detect._to_relative_for_storage`.
+    """
+    try:
+        root_resolved = Path(root).resolve()
+    except OSError:
+        return
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in payload.get(bucket, []):
+            if not isinstance(item, dict):
+                continue
+            source = item.get("source_file")
+            if not source:
+                continue
+            sp = Path(source)
+            if not sp.is_absolute():
+                continue
+            try:
+                rel = os.path.relpath(sp, root_resolved)
+            except (ValueError, OSError):
+                continue  # out-of-root (e.g. Windows cross-drive)
+            if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+                continue  # escaped root — keep absolute
+            item["source_file"] = rel.replace(os.sep, "/")
+
+
+def _absolutize_source_files_in(payload: dict, root: Path) -> None:
+    """Inverse of :func:`_relativize_source_files_in`.
+
+    Re-anchor relative ``source_file`` fields against ``root`` so callers
+    that load a cached fragment see the same absolute-path shape that a
+    fresh in-process extraction would produce. Legacy cache entries with
+    absolute ``source_file`` values pass through unchanged.
+    """
+    try:
+        root_resolved = Path(root).resolve()
+    except OSError:
+        return
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in payload.get(bucket, []):
+            if not isinstance(item, dict):
+                continue
+            source = item.get("source_file")
+            if not source:
+                continue
+            sp = Path(source)
+            if sp.is_absolute():
+                continue
+            try:
+                item["source_file"] = str(root_resolved / sp)
+            except (TypeError, OSError):
+                continue
+
+
+def cache_dir(root: Path = Path("."), kind: str = "ast") -> Path:
+    """Returns graphify-out/cache/{kind}/ - creates it if needed.
+
+    kind is "ast" or "semantic". Separate subdirectories prevent semantic cache
+    entries from overwriting AST cache entries for the same source_file (#582).
+    """
+    _out = Path(_GRAPHIFY_OUT)
+    base = _out if _out.is_absolute() else Path(root).resolve() / _out
+    d = base / "cache" / kind
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def load_cached(path: Path, root: Path = Path(".")) -> dict | None:
+def load_cached(path: Path, root: Path = Path("."), kind: str = "ast") -> dict | None:
     """Return cached extraction for this file if hash matches, else None.
 
     Cache key: SHA256 of file contents.
-    Cache value: stored as graphify-out/cache/{hash}.json
+    Cache value: stored as graphify-out/cache/{kind}/{hash}.json
+
+    For kind="ast", also checks the legacy flat cache/  directory so users
+    upgrading from pre-0.5.3 don't lose their existing AST cache entries.
     Returns None if no cache entry or file has changed.
     """
     try:
         h = file_hash(path, root)
     except OSError:
         return None
-    entry = cache_dir(root) / f"{h}.json"
-    if not entry.exists():
-        return None
-    try:
-        return json.loads(entry.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    entry = cache_dir(root, kind) / f"{h}.json"
+    if entry.exists():
+        try:
+            result = json.loads(entry.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        # Re-anchor relative source_file fields so callers see the same
+        # absolute-path shape that a fresh in-process extraction produces
+        # (#777). Legacy entries with absolute source_file pass through.
+        if isinstance(result, dict):
+            _absolutize_source_files_in(result, root)
+        return result
+    # Migration fallback: check legacy flat cache/ dir for AST entries
+    if kind == "ast":
+        legacy = Path(root).resolve() / _GRAPHIFY_OUT / "cache" / f"{h}.json"
+        if legacy.exists():
+            try:
+                result = json.loads(legacy.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return None
+            if isinstance(result, dict):
+                _absolutize_source_files_in(result, root)
+            return result
+    return None
 
 
-def save_cached(path: Path, result: dict, root: Path = Path(".")) -> None:
+def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast") -> None:
     """Save extraction result for this file.
 
-    Stores as graphify-out/cache/{hash}.json where hash = SHA256 of current file contents.
+    Stores as graphify-out/cache/{kind}/{hash}.json where hash = SHA256 of current file contents.
     result should be a dict with 'nodes' and 'edges' lists.
 
     No-ops if `path` is not a regular file. Subagent-produced semantic fragments
@@ -83,35 +276,76 @@ def save_cached(path: Path, result: dict, root: Path = Path(".")) -> None:
     p = Path(path)
     if not p.is_file():
         return
+    # Relativize source_file fields against ``root`` before write so the
+    # cache file on disk is portable across machines and checkout
+    # directories (#777). The cache key is content-hashed so lookup is
+    # already path-independent; this fixes the embedded path leak.
+    #
+    # Serialize a relativized copy rather than mutating the caller's dict —
+    # downstream pipeline steps (notably extract.py's AST prefix remap, which
+    # looks up Path(source_file).resolve() in a prefix table) depend on the
+    # source_file field's original absolute form. Mutating the input here would
+    # silently break those remaps on the first extraction pass.
+    on_disk = result
+    if isinstance(result, dict) and any(result.get(k) for k in ("nodes", "edges", "hyperedges")):
+        import copy as _copy
+        on_disk = _copy.deepcopy(result)
+        _relativize_source_files_in(on_disk, root)
     h = file_hash(p, root)
-    entry = cache_dir(root) / f"{h}.json"
-    tmp = entry.with_suffix(".tmp")
+    target_dir = cache_dir(root, kind)
+    entry = target_dir / f"{h}.json"
+    fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
     try:
-        tmp.write_text(json.dumps(result), encoding="utf-8")
+        os.write(fd, json.dumps(on_disk).encode())
+        os.close(fd)
         try:
-            os.replace(tmp, entry)
+            os.replace(tmp_path, entry)
         except PermissionError:
             # Windows: os.replace can fail with WinError 5 if the target is
             # briefly locked. Fall back to copy-then-delete.
             import shutil
-            shutil.copy2(tmp, entry)
-            tmp.unlink(missing_ok=True)
+            shutil.copy2(tmp_path, entry)
+            os.unlink(tmp_path)
     except Exception:
-        tmp.unlink(missing_ok=True)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
         raise
 
 
 def cached_files(root: Path = Path(".")) -> set[str]:
-    """Return set of file paths that have a valid cache entry (hash still matches)."""
-    d = cache_dir(root)
-    return {p.stem for p in d.glob("*.json")}
+    """Return set of file hashes that have a valid cache entry (any kind)."""
+    base = Path(root).resolve() / _GRAPHIFY_OUT / "cache"
+    hashes: set[str] = set()
+    # Legacy flat entries
+    if base.is_dir():
+        hashes.update(p.stem for p in base.glob("*.json"))
+    # Namespaced entries
+    for kind in ("ast", "semantic"):
+        d = base / kind
+        if d.is_dir():
+            hashes.update(p.stem for p in d.glob("*.json"))
+    return hashes
 
 
 def clear_cache(root: Path = Path(".")) -> None:
-    """Delete all graphify-out/cache/*.json files."""
-    d = cache_dir(root)
-    for f in d.glob("*.json"):
-        f.unlink()
+    """Delete all cache entries (ast/, semantic/, and legacy flat entries)."""
+    base = Path(root).resolve() / _GRAPHIFY_OUT / "cache"
+    # Legacy flat entries
+    if base.is_dir():
+        for f in base.glob("*.json"):
+            f.unlink()
+    # Namespaced entries
+    for kind in ("ast", "semantic"):
+        d = base / kind
+        if d.is_dir():
+            for f in d.glob("*.json"):
+                f.unlink()
 
 
 def check_semantic_cache(
@@ -129,7 +363,10 @@ def check_semantic_cache(
     uncached: list[str] = []
 
     for fpath in files:
-        result = load_cached(Path(fpath), root)
+        p = Path(fpath)
+        if not p.is_absolute():
+            p = Path(root) / p
+        result = load_cached(p, root, kind="semantic")
         if result is not None:
             cached_nodes.extend(result.get("nodes", []))
             cached_edges.extend(result.get("edges", []))
@@ -148,7 +385,9 @@ def save_semantic_cache(
 ) -> int:
     """Save semantic extraction results to cache, keyed by source_file.
 
-    Groups nodes and edges by source_file, then saves one cache entry per file.
+    Groups nodes and edges by source_file, then saves one cache entry per file
+    under cache/semantic/ (separate from AST entries in cache/ast/) to prevent
+    hash-key collisions (#582).
     Returns the number of files cached.
     """
     from collections import defaultdict
@@ -173,6 +412,6 @@ def save_semantic_cache(
         if not p.is_absolute():
             p = Path(root) / p
         if p.is_file():
-            save_cached(p, result, root)
+            save_cached(p, result, root, kind="semantic")
             saved += 1
     return saved

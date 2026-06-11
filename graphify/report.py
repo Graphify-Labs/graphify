@@ -23,8 +23,14 @@ def generate(
     token_cost: dict,
     root: str,
     suggested_questions: list[dict] | None = None,
+    min_community_size: int = 3,
+    built_at_commit: str | None = None,
 ) -> str:
     today = date.today().isoformat()
+
+    # JSON deserialization produces string keys; normalize to int so .get(cid) works.
+    if community_labels:
+        community_labels = {int(k) if isinstance(k, str) else k: v for k, v in community_labels.items()}
 
     confidences = [d.get("confidence", "EXTRACTED") for _, _, d in G.edges(data=True)]
     total = len(confidences) or 1
@@ -52,15 +58,30 @@ def generate(
     from .analyze import _is_file_node as _ifn
     non_empty = {cid: nodes for cid, nodes in communities.items()
                  if any(not _ifn(G, n) for n in nodes)}
+    thin_count_summary = sum(
+        1 for nodes in communities.values()
+        if 0 < sum(1 for n in nodes if not _ifn(G, n)) < min_community_size
+    )
+    shown_count = len(communities) - thin_count_summary
 
     lines += [
         "",
         "## Summary",
-        f"- {G.number_of_nodes()} nodes · {G.number_of_edges()} edges · {len(non_empty)} communities detected",
+        f"- {G.number_of_nodes()} nodes · {G.number_of_edges()} edges · {len(communities)} communities"
+        + (f" ({shown_count} shown, {thin_count_summary} thin omitted)" if thin_count_summary else ""),
         f"- Extraction: {ext_pct}% EXTRACTED · {inf_pct}% INFERRED · {amb_pct}% AMBIGUOUS"
         + (f" · INFERRED: {len(inf_edges)} edges (avg confidence: {inf_avg})" if inf_avg is not None else ""),
         f"- Token cost: {token_cost.get('input', 0):,} input · {token_cost.get('output', 0):,} output",
     ]
+
+    if built_at_commit:
+        lines += [
+            "",
+            "## Graph Freshness",
+            f"- Built from commit: `{built_at_commit[:8]}`",
+            "- Run `git rev-parse HEAD` and compare to check if the graph is stale.",
+            "- Run `graphify update .` after code changes (no API cost).",
+        ]
 
     # Community hub navigation - links to _COMMUNITY_*.md files in the Obsidian vault.
     # Without these, GRAPH_REPORT.md is a dead-end and the vault splits into disconnected components.
@@ -98,6 +119,21 @@ def generate(
     else:
         lines.append("- None detected - all connections are within the same source files.")
 
+    # Circular imports surfaced from file-level dependency graph.
+    from .analyze import find_import_cycles
+    cycles = find_import_cycles(G)
+    lines += ["", "## Import Cycles"]
+    if cycles:
+        for c in cycles:
+            cycle = c.get("cycle", [])
+            length = c.get("length", len(cycle))
+            if not cycle:
+                continue
+            cycle_path = " -> ".join(cycle + [cycle[0]])
+            lines.append(f"- {length}-file cycle: `{cycle_path}`")
+    else:
+        lines.append("- None detected.")
+
     hyperedges = G.graph.get("hyperedges", [])
     if hyperedges:
         lines += ["", "## Hyperedges (group relationships)"]
@@ -108,7 +144,7 @@ def generate(
             conf_tag = f"{conf} {cscore:.2f}" if cscore is not None else conf
             lines.append(f"- **{h.get('label', h.get('id', ''))}** — {node_labels} [{conf_tag}]")
 
-    lines += ["", "## Communities"]
+    lines += ["", f"## Communities ({len(communities)} total, {thin_count_summary} thin omitted)"]
     for cid, nodes in communities.items():
         label = community_labels.get(cid, f"Community {cid}")
         score = cohesion_scores.get(cid, 0.0)
@@ -116,12 +152,14 @@ def generate(
         real_nodes = [n for n in nodes if not _ifn(G, n)]
         if not real_nodes:
             continue
+        if len(real_nodes) < min_community_size:
+            continue
         display = [G.nodes[n].get("label", n) for n in real_nodes[:8]]
         suffix = f" (+{len(real_nodes)-8} more)" if len(real_nodes) > 8 else ""
         lines += [
             "",
             f"### Community {cid} - \"{label}\"",
-            f"Cohesion: {score}",
+            f"Cohesion: {score:.2f}",
             f"Nodes ({len(real_nodes)}): {', '.join(display)}{suffix}",
         ]
 
@@ -141,7 +179,10 @@ def generate(
 
     isolated = [
         n for n in G.nodes()
-        if G.degree(n) <= 1 and not _is_file_node(G, n) and not _is_concept_node(G, n)
+        if G.degree(n) <= 1
+        and not _is_file_node(G, n)
+        and not _is_concept_node(G, n)
+        and G.nodes[n].get("file_type") != "rationale"
     ]
     thin_communities = {
         cid: nodes for cid, nodes in communities.items()
@@ -157,11 +198,7 @@ def generate(
             lines.append(f"- **{len(isolated)} isolated node(s):** {', '.join(f'`{l}`' for l in isolated_labels)}{suffix}")
             lines.append("  These have ≤1 connection - possible missing edges or undocumented components.")
         if thin_communities:
-            for cid, nodes in thin_communities.items():
-                label = community_labels.get(cid, f"Community {cid}")
-                node_labels = [G.nodes[n].get("label", n) for n in nodes]
-                lines.append(f"- **Thin community `{label}`** ({len(nodes)} nodes): {', '.join(f'`{l}`' for l in node_labels)}")
-                lines.append("  Too small to be a meaningful cluster - may be noise or needs more connections extracted.")
+            lines.append(f"- **{len(thin_communities)} thin communities (<{min_community_size} nodes) omitted from report** — run `graphify query` to explore isolated nodes.")
         if amb_pct > 20:
             lines.append(f"- **High ambiguity: {amb_pct}% of edges are AMBIGUOUS.** Review the Ambiguous Edges section above.")
 

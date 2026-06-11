@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import io
+import json
 import sys
 import networkx as nx
 
@@ -18,24 +19,48 @@ def _suppress_output():
     return contextlib.redirect_stdout(io.StringIO())
 
 
-def _partition(G: nx.Graph) -> dict[str, int]:
+def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
     """Run community detection. Returns {node_id: community_id}.
 
     Tries Leiden (graspologic) first — best quality.
     Falls back to Louvain (built into networkx) if graspologic is not installed.
 
+    resolution > 1.0 → more, smaller communities.
+    resolution < 1.0 → fewer, larger communities.
+
     Output from graspologic is suppressed to prevent ANSI escape codes
     from corrupting terminal scroll buffers on Windows PowerShell 5.1.
     """
+    stable = nx.Graph()
+    stable.add_nodes_from(sorted(G.nodes(), key=str))
+    edge_rows = sorted(
+        G.edges(data=True),
+        key=lambda row: (
+            str(row[0]),
+            str(row[1]),
+            json.dumps(row[2], sort_keys=True, ensure_ascii=False, default=str),
+        ),
+    )
+    for src, tgt, attrs in edge_rows:
+        stable.add_edge(src, tgt, **attrs)
+
     try:
         from graspologic.partition import leiden
+        lsig = inspect.signature(leiden).parameters
+        kwargs: dict = {}
+        if "random_seed" in lsig:
+            kwargs["random_seed"] = 42
+        if "trials" in lsig:
+            kwargs["trials"] = 1
+        if "resolution" in lsig:
+            kwargs["resolution"] = resolution
         # Suppress graspologic output to prevent ANSI escape codes from
         # corrupting PowerShell 5.1 scroll buffer (issue #19)
         old_stderr = sys.stderr
         try:
             sys.stderr = io.StringIO()
             with _suppress_output():
-                result = leiden(G)
+                result = leiden(stable, **kwargs)
         finally:
             sys.stderr = old_stderr
         return result
@@ -45,18 +70,24 @@ def _partition(G: nx.Graph) -> dict[str, int]:
     # Fallback: networkx louvain (available since networkx 2.7).
     # Inspect kwargs to stay compatible across NetworkX versions — max_level
     # was added in a later release and prevents hangs on large sparse graphs.
-    kwargs: dict = {"seed": 42, "threshold": 1e-4}
+    kwargs: dict = {"seed": 42, "threshold": 1e-4, "resolution": resolution}
     if "max_level" in inspect.signature(nx.community.louvain_communities).parameters:
         kwargs["max_level"] = 10
-    communities = nx.community.louvain_communities(G, **kwargs)
+    communities = nx.community.louvain_communities(stable, **kwargs)
     return {node: cid for cid, nodes in enumerate(communities) for node in nodes}
 
 
 _MAX_COMMUNITY_FRACTION = 0.25   # communities larger than 25% of graph get split
 _MIN_SPLIT_SIZE = 10             # only split if community has at least this many nodes
+_COHESION_SPLIT_THRESHOLD = 0.05 # re-split communities with cohesion below this
+_COHESION_SPLIT_MIN_SIZE = 50    # only cohesion-split if community has at least this many nodes
 
 
-def cluster(G: nx.Graph) -> dict[int, list[str]]:
+def cluster(
+    G: nx.Graph,
+    resolution: float = 1.0,
+    exclude_hubs_percentile: float | None = None,
+) -> dict[int, list[str]]:
     """Run Leiden community detection. Returns {community_id: [node_ids]}.
 
     Community IDs are stable across runs: 0 = largest community after splitting.
@@ -65,6 +96,13 @@ def cluster(G: nx.Graph) -> dict[int, list[str]]:
 
     Accepts directed or undirected graphs. DiGraphs are converted to undirected
     internally since Louvain/Leiden require undirected input.
+
+    resolution: passed to Leiden/Louvain. >1.0 = more smaller communities,
+        <1.0 = fewer larger communities. Default 1.0.
+    exclude_hubs_percentile: if set (0-100), nodes whose degree exceeds this
+        percentile are excluded from partitioning and reattached to their
+        majority-vote neighbour community afterwards. Useful for staging/utility
+        super-hubs that inflate god-node rankings (#919).
     """
     if G.number_of_nodes() == 0:
         return {}
@@ -73,14 +111,26 @@ def cluster(G: nx.Graph) -> dict[int, list[str]]:
     if G.number_of_edges() == 0:
         return {i: [n] for i, n in enumerate(sorted(G.nodes))}
 
+    # Compute hub exclusion set before removing anything so degree is based on full graph
+    hub_nodes: set[str] = set()
+    if exclude_hubs_percentile is not None:
+        degrees = sorted(d for _, d in G.degree())
+        if degrees:
+            idx = max(0, int(len(degrees) * exclude_hubs_percentile / 100) - 1)
+            threshold = degrees[idx]
+            hub_nodes = {n for n, d in G.degree() if d > threshold}
+
     # Leiden warns and drops isolates - handle them separately
-    isolates = [n for n in G.nodes() if G.degree(n) == 0]
-    connected_nodes = [n for n in G.nodes() if G.degree(n) > 0]
+    # Also exclude hub nodes from partitioning so they don't pull unrelated
+    # subsystems into the same community
+    excluded = hub_nodes
+    isolates = [n for n in G.nodes() if G.degree(n) == 0 and n not in excluded]
+    connected_nodes = [n for n in G.nodes() if G.degree(n) > 0 and n not in excluded]
     connected = G.subgraph(connected_nodes)
 
     raw: dict[int, list[str]] = {}
     if connected.number_of_nodes() > 0:
-        partition = _partition(connected)
+        partition = _partition(connected, resolution=resolution)
         for node, cid in partition.items():
             raw.setdefault(cid, []).append(node)
 
@@ -89,6 +139,24 @@ def cluster(G: nx.Graph) -> dict[int, list[str]]:
     for node in isolates:
         raw[next_cid] = [node]
         next_cid += 1
+
+    # Reattach excluded hubs by majority-vote neighbour community
+    if hub_nodes:
+        node_community: dict[str, int] = {n: cid for cid, nodes in raw.items() for n in nodes}
+        for hub in sorted(hub_nodes):
+            votes: dict[int, int] = {}
+            for nb in G.neighbors(hub):
+                cid = node_community.get(nb)
+                if cid is not None:
+                    votes[cid] = votes.get(cid, 0) + 1
+            if votes:
+                best = min(votes, key=lambda c: (-votes[c], c))
+                raw.setdefault(best, []).append(hub)
+                node_community[hub] = best
+            else:
+                raw[next_cid] = [hub]
+                node_community[hub] = next_cid
+                next_cid += 1
 
     # Split oversized communities
     max_size = max(_MIN_SPLIT_SIZE, int(G.number_of_nodes() * _MAX_COMMUNITY_FRACTION))
@@ -99,8 +167,24 @@ def cluster(G: nx.Graph) -> dict[int, list[str]]:
         else:
             final_communities.append(nodes)
 
-    # Re-index by size descending for deterministic ordering
-    final_communities.sort(key=len, reverse=True)
+    # Second pass: re-split low-cohesion communities caused by doc-hub nodes
+    # that bridge otherwise-unrelated subsystems (e.g. CLAUDE.md connected to everything).
+    second_pass: list[list[str]] = []
+    for nodes in final_communities:
+        if len(nodes) >= _COHESION_SPLIT_MIN_SIZE and cohesion_score(G, nodes) < _COHESION_SPLIT_THRESHOLD:
+            splits = _split_community(G, nodes)
+            second_pass.extend(splits if len(splits) > 1 else [nodes])
+        else:
+            second_pass.append(nodes)
+    final_communities = second_pass
+
+    # Re-index by size descending. The tuple(sorted(nodes)) tiebreak makes this a
+    # TOTAL order, so an identical grouping always gets identical community IDs.
+    # Without it, the hundreds of equal-sized small communities are ordered by the
+    # partitioner's (not seed-stable) enumeration order, so their integer IDs
+    # permute run-to-run - which reads as massive "community churn" in a per-node
+    # cid diff even though the actual grouping is reproducible (#1090 follow-up).
+    final_communities.sort(key=lambda nodes: (-len(nodes), tuple(sorted(map(str, nodes)))))
     return {i: sorted(nodes) for i, nodes in enumerate(final_communities)}
 
 
@@ -130,8 +214,59 @@ def cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
     subgraph = G.subgraph(community_nodes)
     actual = subgraph.number_of_edges()
     possible = n * (n - 1) / 2
-    return round(actual / possible, 2) if possible > 0 else 0.0
+    return actual / possible if possible > 0 else 0.0
 
 
 def score_all(G: nx.Graph, communities: dict[int, list[str]]) -> dict[int, float]:
     return {cid: cohesion_score(G, nodes) for cid, nodes in communities.items()}
+
+
+def remap_communities_to_previous(
+    communities: dict[int, list[str]],
+    previous_node_community: dict[str, int],
+) -> dict[int, list[str]]:
+    """Remap community IDs to maximize overlap with a previous assignment.
+
+    Uses greedy one-to-one matching by intersection size, then assigns fresh IDs
+    to unmatched communities in deterministic order (size desc, lexical tie-break).
+    """
+    if not communities:
+        return {}
+
+    new_sets = {cid: set(nodes) for cid, nodes in communities.items()}
+    old_sets: dict[int, set[str]] = {}
+    for node, old_cid in previous_node_community.items():
+        old_sets.setdefault(old_cid, set()).add(node)
+
+    overlaps: list[tuple[int, int, int]] = []
+    for old_cid, old_nodes in old_sets.items():
+        for new_cid, new_nodes in new_sets.items():
+            overlap = len(old_nodes & new_nodes)
+            if overlap > 0:
+                overlaps.append((overlap, old_cid, new_cid))
+    overlaps.sort(key=lambda x: (-x[0], x[1], x[2]))
+
+    new_to_final: dict[int, int] = {}
+    used_old_ids: set[int] = set()
+    matched_new_ids: set[int] = set()
+    for _overlap, old_cid, new_cid in overlaps:
+        if old_cid in used_old_ids or new_cid in matched_new_ids:
+            continue
+        new_to_final[new_cid] = old_cid
+        used_old_ids.add(old_cid)
+        matched_new_ids.add(new_cid)
+
+    unmatched = [cid for cid in communities if cid not in matched_new_ids]
+    unmatched.sort(key=lambda cid: (-len(communities[cid]), tuple(sorted(communities[cid]))))
+    next_id = 0
+    for new_cid in unmatched:
+        while next_id in used_old_ids:
+            next_id += 1
+        new_to_final[new_cid] = next_id
+        used_old_ids.add(next_id)
+        next_id += 1
+
+    remapped: dict[int, list[str]] = {}
+    for new_cid, nodes in communities.items():
+        remapped[new_to_final[new_cid]] = sorted(nodes)
+    return dict(sorted(remapped.items(), key=lambda kv: kv[0]))

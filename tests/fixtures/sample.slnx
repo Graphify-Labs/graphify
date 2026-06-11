@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/Domain/Domain.csproj" />
+  <Project Path="src/WebApi/WebApi.csproj">
+    <BuildDependency Project="src/Domain/Domain.csproj" />
+  </Project>
+  <Project Path="tests/Tests/Tests.csproj" />
+</Solution>

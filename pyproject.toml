@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.4.31"
-description = "AI coding assistant skill (Claude Code, Codex, OpenCode, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
+version = "0.8.37"
+description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = { file = "LICENSE" }
-keywords = ["claude", "claude-code", "codex", "opencode", "cursor", "gemini", "aider", "kiro", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
-requires-python = ">=3.10,<3.14"
+keywords = ["claude", "claude-code", "codex", "opencode", "kilo", "cursor", "gemini", "aider", "kiro", "pi", "devin", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
+requires-python = ">=3.10"
 dependencies = [
-    "networkx",
+    "networkx>=3.4",
+    "numpy>=1.21",
+    "rapidfuzz>=3.0",
     "tree-sitter>=0.23.0",
     "tree-sitter-python",
     "tree-sitter-javascript",
@@ -19,6 +21,7 @@ dependencies = [
     "tree-sitter-go",
     "tree-sitter-rust",
     "tree-sitter-java",
+    "tree-sitter-groovy",
     "tree-sitter-c",
     "tree-sitter-cpp",
     "tree-sitter-ruby",
@@ -34,6 +37,9 @@ dependencies = [
     "tree-sitter-objc",
     "tree-sitter-julia",
     "tree-sitter-verilog",
+    "tree-sitter-fortran",
+    "tree-sitter-bash",
+    "tree-sitter-json",
 ]
 
 [project.urls]
@@ -44,25 +50,90 @@ Issues = "https://github.com/safishamsi/graphify/issues"
 [project.optional-dependencies]
 mcp = ["mcp"]
 neo4j = ["neo4j"]
-pdf = ["pypdf", "html2text"]
+pdf = ["pypdf", "markdownify"]
 watch = ["watchdog"]
-svg = ["matplotlib"]
+svg = ["matplotlib", "numpy>=2.0; python_version >= '3.13'"]
 leiden = ["graspologic; python_version < '3.13'"]
 office = ["python-docx", "openpyxl"]
-video = ["faster-whisper", "yt-dlp"]
-all = ["mcp", "neo4j", "pypdf", "html2text", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper", "yt-dlp", "matplotlib"]
+google = ["openpyxl"]
+postgres = ["psycopg[binary]"]
+video = ["faster-whisper; python_version >= '3.11'", "yt-dlp"]
+kimi = ["openai", "tiktoken"]
+ollama = ["openai"]
+bedrock = ["boto3"]
+anthropic = ["anthropic"]
+gemini = ["openai", "tiktoken"]
+openai = ["openai", "tiktoken"]
+chinese = ["jieba"]
+sql = ["tree-sitter-sql"]
+# tree-sitter-dm (BYOND DreamMaker) ships only a Windows wheel, so on Linux/Mac it
+# must compile from source (needs a C toolchain + python3-dev). Keeping it optional
+# avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
+dm = ["tree-sitter-dm"]
+terraform = ["tree-sitter-hcl"]
+all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
+graphify-mcp = "graphify.serve:_main"
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+    "build>=1.5.0",
+    "hypothesis>=6.152.7",
+    "nuitka>=4.1",
+    "patchelf>=0.17.2.4 ; sys_platform != 'win32'",
+    "pip-audit>=2.10.0",
+    "pre-commit>=4.6.0",
+    "pyright>=1.1.409",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.13",
+    "safety>=3.7.0",
+    "setuptools>=82.0.1",
+    "wheel>=0.47.0",
+    "tomli>=2.0 ; python_version < '3.11'",
+    "tree-sitter-hcl>=1.2.0",
+]
 
 [tool.uv]
 # Install via: uv tool install graphifyy
 # Run without installing: uvx graphifyy install
 package = true
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["graphify*"]
+[tool.setuptools]
+packages = ["graphify"]
+include-package-data = false
 
 [tool.setuptools.package-data]
-graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-aider.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md"]
+# The skill bodies ship as graphify/skill*.md (the SKILL.md a host installs is
+# copied from one of these). The progressive-disclosure references sidecar ships
+# under graphify/skills/<host>/references/, and the always-on injection blocks
+# under graphify/always_on/. There is no graphify/skills/<host>/SKILL.md in the
+# repo, so no SKILL.md glob is needed here.
+graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", "command-kilo.md", "skill-aider.md", "skill-amp.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md", "skills/*/references/*.md", "always_on/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    "graphify-benchmark", "graphify_eval", "graphify_test",
+    "worked", "llm-stack-corpus", "llm-stack-demo", "product-site",
+    "scripts", "ebook", ".github", "dist", "build",
+]
+
+[tool.bandit]
+skips = ["B404"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Keep the committed baseline conservative until upstream adopts a broader lint policy.
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.pyright]
+include = ["graphify", "tests"]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"

@@ -1,0 +1,64 @@
+name: Release graph asset
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-graph:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to upload release assets
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install graphify
+        run: uv sync --frozen
+
+      - name: Build graph of graphify source (AST-only, no API cost)
+        # graphify/skills/ contains 126+ .md files that trigger the LLM pass.
+        # Temporarily ignore all .md files so extraction stays pure AST (no API key needed).
+        run: |
+          echo "*.md" >> .graphifyignore
+          echo "*.txt" >> .graphifyignore
+          uv run --frozen graphify extract graphify/ --out .
+          git checkout .graphifyignore 2>/dev/null || rm -f .graphifyignore
+
+      - name: Cluster, label communities and generate GRAPH_REPORT.md
+        # cluster-only writes GRAPH_REPORT.md and names communities (no LLM needed
+        # for basic numeric labels; --no-label skips LLM labeling entirely).
+        run: uv run --frozen graphify cluster-only . --no-label
+
+      - name: Generate HTML viewer
+        run: uv run --frozen graphify export html --graph graphify-out/graph.json
+
+      - name: Bundle release asset
+        run: |
+          mkdir -p dist-graph
+          cp graphify-out/graph.json dist-graph/
+          cp graphify-out/graph.html dist-graph/
+          [ -f graphify-out/GRAPH_REPORT.md ] && cp graphify-out/GRAPH_REPORT.md dist-graph/ || true
+          tar -czf graphify-self-graph.tar.gz -C dist-graph .
+          echo "Asset contents:"
+          tar -tzf graphify-self-graph.tar.gz
+
+      - name: Upload to GitHub release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: graphify-self-graph.tar.gz
+
+      - name: Upload as workflow artifact (for workflow_dispatch runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphify-self-graph
+          path: graphify-self-graph.tar.gz
+          retention-days: 7

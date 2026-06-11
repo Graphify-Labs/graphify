@@ -109,7 +109,7 @@ def test_install_creates_settings_json(tmp_path):
     assert settings_path.exists()
     settings = json.loads(settings_path.read_text())
     hooks = settings.get("hooks", {}).get("PreToolUse", [])
-    assert any("Glob|Grep" in h.get("matcher", "") for h in hooks)
+    assert any(h.get("matcher") == "Bash" for h in hooks)
 
 
 def test_install_settings_json_idempotent(tmp_path):
@@ -120,8 +120,8 @@ def test_install_settings_json_idempotent(tmp_path):
     settings_path = tmp_path / ".claude" / "settings.json"
     settings = json.loads(settings_path.read_text())
     hooks = settings.get("hooks", {}).get("PreToolUse", [])
-    glob_grep_hooks = [h for h in hooks if "Glob|Grep" in h.get("matcher", "")]
-    assert len(glob_grep_hooks) == 1
+    bash_hooks = [h for h in hooks if h.get("matcher") == "Bash" and "graphify" in str(h)]
+    assert len(bash_hooks) == 1
 
 
 def test_uninstall_removes_settings_hook(tmp_path):
@@ -133,4 +133,4 @@ def test_uninstall_removes_settings_hook(tmp_path):
     if settings_path.exists():
         settings = json.loads(settings_path.read_text())
         hooks = settings.get("hooks", {}).get("PreToolUse", [])
-        assert not any("Glob|Grep" in h.get("matcher", "") for h in hooks)
+        assert not any(h.get("matcher") == "Bash" and "graphify" in str(h) for h in hooks)
