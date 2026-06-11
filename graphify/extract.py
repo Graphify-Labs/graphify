@@ -7275,6 +7275,43 @@ def _js_exported_declaration_names(node, source: bytes) -> list[str]:
     return names
 
 
+def _js_default_import_name(node, source: bytes) -> str | None:
+    """Local binding of a default import: the `Foo` in `import Foo from './x'`.
+
+    The default binding is a bare identifier child of the import_clause (named
+    imports live in a `named_imports` node, namespace imports in a
+    `namespace_import` node), so it is also picked up from the mixed form
+    `import Foo, { Bar } from './x'`.
+    """
+    for child in node.children:
+        if child.type == "import_clause":
+            for sub in child.children:
+                if sub.type == "identifier":
+                    return _read_text(sub, source)
+    return None
+
+
+def _js_default_export_name(node, source: bytes) -> str | None:
+    """Local name of a default export, or None for anonymous defaults.
+
+    Handles `export default class Foo {}`, `export default function foo() {}`,
+    `export default abstract class Foo {}` (name on the `declaration` field) and
+    `export default Foo` (an identifier on the `value` field). Anonymous defaults
+    (`export default class {}`, `export default {...}`) have no resolvable symbol
+    and return None.
+    """
+    if not any(child.type == "default" for child in node.children):
+        return None
+    declaration = node.child_by_field_name("declaration")
+    if declaration is not None:
+        name_node = declaration.child_by_field_name("name")
+        return _read_text(name_node, source) if name_node is not None else None
+    value = node.child_by_field_name("value")
+    if value is not None and value.type == "identifier":
+        return _read_text(value, source)
+    return None
+
+
 def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
     bodies: list[tuple[str, object]] = []
     stem = _file_stem(path)
@@ -7525,6 +7562,17 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                         node.start_point[0] + 1,
                     )
                 )
+            default_local = _js_default_import_name(node, source)
+            if default_local is not None:
+                facts.imports.append(
+                    _SymbolImportFact(
+                        path,
+                        default_local,
+                        target_path,
+                        "default",
+                        node.start_point[0] + 1,
+                    )
+                )
 
         for node in _walk_js_tree(root_node):
             for alias, target in _js_lexical_aliases(node, source):
@@ -7590,6 +7638,21 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                         exported_name,
                         node.start_point[0] + 1,
                         local_name=exported_name,
+                    )
+                )
+
+            # `export default class Foo {}` / `export default foo` exposes the
+            # symbol under the name "default"; record that so a default import
+            # (imported_name="default") resolves to it. `export { X as default }`
+            # is already handled via the export_clause path above.
+            default_name = _js_default_export_name(node, source)
+            if default_name is not None:
+                facts.exports.append(
+                    _SymbolExportFact(
+                        path,
+                        "default",
+                        node.start_point[0] + 1,
+                        local_name=default_name,
                     )
                 )
 

@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: default imports/exports now produce symbol-level edges. JS/TS symbol resolution only handled named imports, so a `export default class Foo` imported as `import Foo from './foo'` got just a file→file `imports_from` edge — the class node received no incoming symbol edge. On codebases that default-export most classes (NestJS services/helpers/models, etc.) this left those symbols looking like isolated leaf nodes and made `graphify affected "<Class>"` / `explain` report no callers. Default imports are now recorded with `imported_name="default"`, `export default <class|function|identifier>` registers a `"default"` export, and the existing resolver wires the `imports` edge (and resolves calls through the local binding, even when renamed). Anonymous defaults (`export default class {}`) remain file-level only.
+
 ## 0.8.37 (2026-06-10)
 
 - Security: SSRF guard rewritten to eliminate thread-safety race. The global `socket.getaddrinfo` monkey-patch is replaced with per-connection `_SSRFGuardedHTTPConnection`/`_SSRFGuardedHTTPSConnection` subclasses that resolve DNS once, validate the IP, and connect to that exact address — closing both the concurrent-thread race window and the underlying TOCTOU gap. No global state is mutated, so sibling threads (MCP server, PR triage pool) are unaffected.
