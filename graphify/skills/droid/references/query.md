@@ -46,7 +46,7 @@ G = json_graph.node_link_graph(data, edges='links')
 
 question = 'QUESTION'
 mode = 'MODE'  # 'bfs' or 'dfs'
-terms = [t.lower() for t in question.split() if len(t) > 3]
+terms = [t.lower() for t in question.split() if len(t) >= 3]
 
 # Find best-matching start nodes
 scored = []
