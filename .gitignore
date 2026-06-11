@@ -37,3 +37,9 @@ scripts/llm.py
 scripts/benchmark_kimi*.json
 scripts/benchmark_kimi*.py
 paper/
+
+# refactor crew
+sonarqube-issues-raw.json
+sonarqube-issues.md
+.aider.tags.cache.v4/*
+.aider*

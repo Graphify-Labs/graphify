@@ -1,0 +1,6 @@
+projectKey=Graphify
+serverUrl=http://localhost:9000
+serverVersion=26.3.0.120487
+dashboardUrl=http://localhost:9000/dashboard?id=Graphify
+ceTaskId=3a9f3c8c-a1f0-4ea6-a9c9-1190f9b81bb7
+ceTaskUrl=http://localhost:9000/api/ce/task?id=3a9f3c8c-a1f0-4ea6-a9c9-1190f9b81bb7
