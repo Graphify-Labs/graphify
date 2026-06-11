@@ -163,7 +163,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # pairs that share (source_file basename, label) and collapse the semantic
     # copy into the AST copy so edges re-point to a single node.
     # Two passes: first collect all AST (located) nodes, then find ghosts.
+    # When 2+ located nodes share a key (same-named symbols in same-named
+    # files across directories, e.g. render in two index.ts), the key is
+    # ambiguous: merging the ghost would pick an arbitrary winner. Skip those
+    # keys entirely (same conservatism as _rewire_unique_stub_nodes).
     _loc_nodes: dict[tuple[str, str], str] = {}   # (basename, label) -> AST node id
+    _loc_collisions: set[tuple[str, str]] = set()  # keys shared by 2+ AST nodes
     _noloc_nodes: dict[tuple[str, str], str] = {}  # (basename, label) -> semantic node id
     for nid in node_set:
         attrs = G.nodes[nid]
@@ -173,7 +178,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if not label or not basename:
             continue
         if attrs.get("source_location"):
-            _loc_nodes[(basename, label)] = nid
+            key = (basename, label)
+            if key in _loc_nodes:
+                _loc_collisions.add(key)
+            else:
+                _loc_nodes[key] = nid
     for nid in node_set:
         attrs = G.nodes[nid]
         label = str(attrs.get("label", "")).strip()
@@ -182,6 +191,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if not label or not basename or attrs.get("source_location"):
             continue
         key = (basename, label)
+        if key in _loc_collisions:
+            continue
         if key in _loc_nodes and _loc_nodes[key] != nid:
             _noloc_nodes[key] = nid
     # For every ghost that has an AST counterpart, record a remap.
