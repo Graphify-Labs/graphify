@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sample App</title>
+  <link rel="stylesheet" href="styles/main.css">
+  <script src="js/app.js"></script>
+  <script src="https://cdn.example.com/external-lib.js"></script>
+  <style>
+    body { margin: 0; }
+  </style>
+</head>
+<body>
+  <div id="root" class="container">
+    <h1 id="title">Counter</h1>
+    <span id="counter">0</span>
+    <button id="increment-btn">+1</button>
+  </div>
+  <script>
+    function readCount() {
+      return parseInt(document.getElementById('counter').textContent, 10);
+    }
+
+    function render(value) {
+      document.querySelector('#counter').textContent = String(value);
+    }
+
+    function increment() {
+      render(readCount() + 1);
+    }
+
+    function init() {
+      document.getElementById('increment-btn').addEventListener('click', increment);
+    }
+
+    init();
+  </script>
+</body>
+</html>

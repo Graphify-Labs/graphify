@@ -40,6 +40,7 @@ dependencies = [
     "tree-sitter-fortran",
     "tree-sitter-bash",
     "tree-sitter-json",
+    "tree-sitter-html",
 ]
 
 [project.urls]
@@ -71,7 +72,10 @@ sql = ["tree-sitter-sql"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl"]
+# GDScript has no standalone PyPI grammar; tree-sitter-language-pack bundles it.
+# Kept optional because the pack ships dozens of grammars (large install).
+gdscript = ["tree-sitter-language-pack"]
+all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-language-pack"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
