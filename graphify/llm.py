@@ -90,8 +90,12 @@ BACKENDS: dict[str, dict] = {
         "vision": True,
     },
     "openai": {
-        "base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4.1-mini",
+        # OPENAI_BASE_URL points the backend at any OpenAI-compatible server
+        # (llama.cpp, vLLM, LM Studio, ...); OPENAI_MODEL overrides the default
+        # model. GRAPHIFY_OPENAI_MODEL still wins over OPENAI_MODEL when both
+        # are set (via model_env_key).
+        "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "default_model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
         "env_key": "OPENAI_API_KEY",
         "model_env_key": "GRAPHIFY_OPENAI_MODEL",
         "pricing": {"input": 0.40, "output": 1.60},  # USD per 1M tokens
