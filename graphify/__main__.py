@@ -2173,6 +2173,8 @@ def main() -> None:
         print("                            openai also reaches self-hosted OpenAI-compatible servers (llama.cpp,")
         print("                            vLLM, LM Studio): set OPENAI_BASE_URL (e.g. http://localhost:8080/v1)")
         print("                            and OPENAI_MODEL to the model name your server serves")
+        print("                            claude also reaches custom Anthropic-compatible endpoints (LiteLLM")
+        print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
         print("    --max-workers N         AST extraction subprocess count (default: cpu_count)")
