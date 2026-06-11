@@ -51,8 +51,11 @@ _TOKENIZER = _get_tokenizer()
 
 BACKENDS: dict[str, dict] = {
     "claude": {
-        "base_url": "https://api.anthropic.com",
-        "default_model": "claude-sonnet-4-6",
+        # ANTHROPIC_BASE_URL points the backend at any Anthropic-compatible
+        # server (LiteLLM proxy, gateways, ...); ANTHROPIC_MODEL overrides the
+        # default model. Mirrors the OPENAI_BASE_URL / OPENAI_MODEL pattern.
+        "base_url": os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+        "default_model": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
         "env_key": "ANTHROPIC_API_KEY",
         "pricing": {"input": 3.0, "output": 15.0},  # USD per 1M tokens
         "temperature": 0,
@@ -90,8 +93,12 @@ BACKENDS: dict[str, dict] = {
         "vision": True,
     },
     "openai": {
-        "base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4.1-mini",
+        # OPENAI_BASE_URL points the backend at any OpenAI-compatible server
+        # (llama.cpp, vLLM, LM Studio, ...); OPENAI_MODEL overrides the default
+        # model. GRAPHIFY_OPENAI_MODEL still wins over OPENAI_MODEL when both
+        # are set (via model_env_key).
+        "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "default_model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
         "env_key": "OPENAI_API_KEY",
         "model_env_key": "GRAPHIFY_OPENAI_MODEL",
         "pricing": {"input": 0.40, "output": 1.60},  # USD per 1M tokens
@@ -958,7 +965,11 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
 
-    client = anthropic.Anthropic(api_key=api_key, timeout=_resolve_api_timeout())
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        base_url=BACKENDS["claude"]["base_url"],
+        timeout=_resolve_api_timeout(),
+    )
     resp = client.messages.create(
         model=model,
         max_tokens=max_tokens,
@@ -1709,7 +1720,7 @@ def _call_llm(prompt: str, *, backend: str, max_tokens: int = 200) -> str:
             import anthropic
         except ImportError as exc:
             raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
-        client = anthropic.Anthropic(api_key=key)
+        client = anthropic.Anthropic(api_key=key, base_url=cfg["base_url"])
         resp = client.messages.create(
             model=mdl,
             max_tokens=max_tokens,
