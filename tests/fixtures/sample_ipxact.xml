@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ipxact:component xmlns:ipxact="http://www.accellera.org/XMLSchema/IPXACT/1685-2014-03-12">
+  <ipxact:vendor>example.com</ipxact:vendor>
+  <ipxact:library>demo</ipxact:library>
+  <ipxact:name>widget</ipxact:name>
+  <ipxact:version>1.0.0</ipxact:version>
+  <ipxact:busInterfaces>
+    <ipxact:busInterface>
+      <ipxact:name>cfg</ipxact:name>
+      <ipxact:busType vendor="amba.com" library="AMBA4" name="APB4" version="r0p0_0"/>
+      <ipxact:slave/>
+    </ipxact:busInterface>
+  </ipxact:busInterfaces>
+  <ipxact:memoryMaps>
+    <ipxact:memoryMap>
+      <ipxact:name>regs</ipxact:name>
+      <ipxact:addressBlock>
+        <ipxact:name>blk</ipxact:name>
+        <ipxact:register>
+          <ipxact:name>CTRL</ipxact:name>
+          <ipxact:addressOffset>0x00</ipxact:addressOffset>
+          <ipxact:size>32</ipxact:size>
+        </ipxact:register>
+        <ipxact:register>
+          <ipxact:name>STATUS</ipxact:name>
+          <ipxact:addressOffset>0x04</ipxact:addressOffset>
+          <ipxact:size>32</ipxact:size>
+        </ipxact:register>
+      </ipxact:addressBlock>
+    </ipxact:memoryMap>
+  </ipxact:memoryMaps>
+</ipxact:component>

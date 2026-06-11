@@ -8,7 +8,8 @@ from graphify.extract import (
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
     extract_groovy, extract_sln, extract_csproj, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
-    extract_powershell, extract_apex,
+    extract_powershell, extract_apex, extract_verilog,
+    extract_make, extract_tcl, extract_ipxact, extract_sby,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -20,6 +21,11 @@ import importlib.util as _ilu
 _needs_dm = pytest.mark.skipif(
     _ilu.find_spec("tree_sitter_dm") is None,
     reason="tree-sitter-dm not installed (optional [dm] extra)",
+)
+
+_needs_verilog = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_verilog") is None,
+    reason="tree-sitter-verilog not installed",
 )
 
 
@@ -1628,3 +1634,215 @@ def test_apex_no_dangling_edges():
         for e in r["edges"]:
             assert e["source"] in node_ids, f"dangling source in {fixture}: {e}"
             assert e["target"] in node_ids, f"dangling target in {fixture}: {e}"
+
+
+# ── SystemVerilog / Verilog ──────────────────────────────────────────────────
+# Regression for the extract_verilog harvester: the tree-sitter-verilog grammar
+# exposes no field names (child_by_field_name("name") is None), so navigation must
+# be by node type. Before the fix every .sv file collapsed to a bare file node.
+
+@_needs_verilog
+def test_verilog_defines_modules_and_package():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    labels = _labels(r)
+    assert "adder" in labels
+    assert "top" in labels
+    assert "math_pkg" in labels
+
+
+@_needs_verilog
+def test_verilog_module_instantiation_edge():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    inst = {(node_by_id.get(e["source"]), node_by_id.get(e["target"]))
+            for e in r["edges"] if e["relation"] == "instantiates"}
+    assert ("top", "adder") in inst
+
+
+@_needs_verilog
+def test_verilog_instance_target_is_globally_keyed():
+    # The instantiated 'adder' node and the defined 'adder' module node must share
+    # an id so cross-file edges resolve (Verilog module names are a global namespace).
+    r = extract_verilog(FIXTURES / "sample.sv")
+    def_id = next(e["target"] for e in r["edges"]
+                  if e["relation"] == "defines"
+                  and {n["id"]: n["label"] for n in r["nodes"]}[e["target"]] == "adder")
+    inst_id = next(e["target"] for e in r["edges"]
+                   if e["relation"] == "instantiates")
+    assert def_id == inst_id
+
+
+@_needs_verilog
+def test_verilog_package_function_and_usage():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert "add8()" in _labels(r)
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    uses = {(node_by_id.get(e["source"]), node_by_id.get(e["target"]))
+            for e in r["edges"] if e["relation"] == "uses_package"}
+    assert ("adder", "math_pkg") in uses
+
+
+@_needs_verilog
+def test_verilog_no_dangling_edges():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e}"
+        assert e["target"] in node_ids, f"dangling target: {e}"
+
+
+@_needs_verilog
+def test_verilog_include_edge():
+    # `include "foo.svh" -> file includes the header (keyed by basename)
+    src = ("`include \"safety_attrs.svh\"\n"
+           "module m; endmodule\n")
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "m.sv"
+        p.write_text(src)
+        r = extract_verilog(p)
+    inc = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+           for e in r["edges"] if e["relation"] == "includes"}
+    assert (p.name, "safety_attrs.svh") in inc
+
+
+# ── Make / Tcl (regex extractors, no tree-sitter) ────────────────────────────
+def _n(r):
+    return {n["id"]: n["label"] for n in r["nodes"]}
+
+
+def test_make_targets_and_prereqs():
+    r = extract_make(FIXTURES / "sample.mk")
+    labels = _labels(r)
+    assert "all" in labels and "build" in labels and "test" in labels
+    deps = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+            for e in r["edges"] if e["relation"] == "depends_on"}
+    assert ("all", "build") in deps
+    assert ("test", "build") in deps
+
+
+def test_make_include_and_runs_edges():
+    r = extract_make(FIXTURES / "sample.mk")
+    rels = _relations(r)
+    assert "includes" in rels  # include common.mk
+    runs = {_n(r).get(e["target"]) for e in r["edges"] if e["relation"] == "runs"}
+    assert "run.sh" in runs and "run_tests.py" in runs
+
+
+def test_make_no_dangling_edges():
+    r = extract_make(FIXTURES / "sample.mk")
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in ids and e["target"] in ids
+
+
+def test_tcl_procs_source_namespace():
+    r = extract_tcl(FIXTURES / "sample.tcl")
+    labels = _labels(r)
+    assert "greet()" in labels and "main()" in labels
+    assert "myns" in labels                      # namespace
+    inc = {_n(r).get(e["target"]) for e in r["edges"] if e["relation"] == "includes"}
+    assert "helpers.tcl" in inc                  # source ./lib/helpers.tcl
+
+
+def test_tcl_no_dangling_edges():
+    r = extract_tcl(FIXTURES / "sample.tcl")
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in ids and e["target"] in ids
+
+
+@_needs_verilog
+def test_verilog_member_level_package_reference():
+    # `pkg::fn` -> references edge to the package's function node (same id scheme),
+    # resolving cross-file to the function definition.
+    r = extract_verilog(FIXTURES / "sample.sv")
+    refs = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+            for e in r["edges"] if e["relation"] == "references"}
+    assert ("adder", "add8()") in refs
+
+
+@_needs_verilog
+def test_verilog_interface_and_modports():
+    r = extract_verilog(FIXTURES / "sample_iface.sv")
+    labels = _labels(r)
+    assert "apb_if" in labels
+    assert "master" in labels and "slave" in labels
+    contains = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+                for e in r["edges"] if e["relation"] == "contains"}
+    assert ("apb_if", "master") in contains
+
+
+def test_ipxact_component_buses_and_protocol():
+    r = extract_ipxact(FIXTURES / "sample_ipxact.xml")
+    labels = _labels(r)
+    assert "widget" in labels and "cfg" in labels and "APB4" in labels
+    exposes = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+               for e in r["edges"] if e["relation"] == "exposes"}
+    assert ("widget", "cfg") in exposes
+    bt = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+          for e in r["edges"] if e["relation"] == "bus_type"}
+    assert ("cfg", "APB4") in bt
+
+
+def test_ipxact_component_node_keyed_by_name_for_rtl_merge():
+    # component node id must equal the bare-name id an RTL module of the same name
+    # gets, so IP-XACT metadata attaches to the design.
+    from graphify.extract import _make_id
+    r = extract_ipxact(FIXTURES / "sample_ipxact.xml")
+    comp_id = next(e["target"] for e in r["edges"] if e["relation"] == "defines")
+    assert comp_id == _make_id("widget")
+
+
+def test_ipxact_ignores_non_ipxact_xml(tmp_path):
+    p = tmp_path / "other.xml"
+    p.write_text("<config><a>1</a></config>")
+    r = extract_ipxact(p)
+    assert r["nodes"] == [] and r["edges"] == []
+
+
+def test_sby_links_proof_to_rtl():
+    from graphify.extract import _make_id
+    r = extract_sby(FIXTURES / "sample.sby")
+    reads = {_n(r).get(e["target"]) for e in r["edges"] if e["relation"] == "reads"}
+    assert {"top", "helper", "fv_top"} <= reads
+    verifies = {e["target"] for e in r["edges"] if e["relation"] == "verifies"}
+    assert _make_id("fv_top") in verifies            # prep -top fv_top
+    # [files] targets are keyed by stem -> resolve to the same node as the RTL module
+    reads_ids = {e["target"] for e in r["edges"] if e["relation"] == "reads"}
+    assert _make_id("helper") in reads_ids
+
+
+def test_sby_no_dangling_edges():
+    r = extract_sby(FIXTURES / "sample.sby")
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in ids and e["target"] in ids
+
+
+def test_cpp_verilator_tb_links_dut():
+    # `#include "V<dut>.h"` in a C++ testbench -> tests edge to the RTL module <dut>
+    from graphify.extract import _make_id
+    r = extract_cpp(FIXTURES / "sample_tb.cpp")
+    tests = {e["target"] for e in r["edges"] if e["relation"] == "tests"}
+    assert _make_id("widget") in tests
+
+
+@_needs_verilog
+def test_verilog_bind_directive():
+    import tempfile
+    src = "module top; bind cpu_core mon_mod u_mon (.clk(clk)); endmodule\n"
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "b.sv"
+        p.write_text(src)
+        r = extract_verilog(p)
+    binds = {(_n(r).get(e["source"]), _n(r).get(e["target"]))
+             for e in r["edges"] if e["relation"] == "binds"}
+    assert ("mon_mod", "cpu_core") in binds
+
+
+def test_ipxact_register_map():
+    r = extract_ipxact(FIXTURES / "sample_ipxact.xml")
+    regs = {_n(r).get(e["target"]) for e in r["edges"] if e["relation"] == "has_register"}
+    assert any(lbl and lbl.startswith("CTRL") for lbl in regs)
+    assert any(lbl and lbl.startswith("STATUS") for lbl in regs)

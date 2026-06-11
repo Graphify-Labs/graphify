@@ -1456,6 +1456,23 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
             # Quoted includes: try to resolve to a real file so the target ID
             # matches the node ID _extract_generic creates for that file.
             if child.type != "system_lib_string":
+                # Verilator harness convention: `#include "V<dut>.h"` is the generated
+                # model header for RTL module <dut>. Link the C++ testbench to that
+                # module (keyed by bare name) so simulation TBs connect to the design.
+                # Quoted (not <>) `V*.h` includes are Verilated headers in practice.
+                _base = raw.split("/")[-1]
+                if _base.startswith("V") and _base.endswith(".h") and len(_base) > 3 \
+                        and _base[1].isalpha():
+                    edges.append({
+                        "source": file_nid,
+                        "target": _make_id(_base[1:-2]),
+                        "relation": "tests",
+                        "context": "verilated dut",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "weight": 1.0,
+                    })
                 resolved = _resolve_c_include_path(raw, str_path)
                 if resolved is not None:
                     tgt_nid = _make_id(str(resolved))
@@ -3469,7 +3486,7 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
     clean_edges = []
     for edge in edges:
         src, tgt = edge["source"], edge["target"]
-        if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from", "re_exports")):
+        if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from", "re_exports", "tests")):
             clean_edges.append(edge)
 
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
@@ -4845,6 +4862,7 @@ def extract_verilog(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -4855,6 +4873,11 @@ def extract_verilog(path: Path) -> dict:
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", score: float = 1.0) -> None:
+        # collapse repeated references (e.g. many `pkg::fn` uses) to one edge
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
         edges.append({"source": src, "target": tgt, "relation": relation,
                       "confidence": confidence, "confidence_score": score,
                       "source_file": str_path, "source_location": f"L{line}", "weight": 1.0})
@@ -4862,68 +4885,513 @@ def extract_verilog(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
-    def walk(node, module_nid: str | None = None) -> None:
+    # The tree-sitter-verilog grammar does NOT expose field names like "name" or
+    # "module_type" (child_by_field_name returns None), so navigate by node type.
+    def _first_child(n, typ):
+        if n is None:
+            return None
+        for c in n.children:
+            if c.type == typ:
+                return c
+        return None
+
+    def _first_descendant(n, typ, max_depth: int = 8):
+        if n is None:
+            return None
+        queue = [(n, 0)]
+        while queue:
+            cur, depth = queue.pop(0)
+            if cur is not n and cur.type == typ:
+                return cur
+            if depth < max_depth:
+                queue.extend((c, depth + 1) for c in cur.children)
+        return None
+
+    # module/package nodes are keyed by their bare (globally-unique) name so an
+    # instantiation or `pkg::` reference in another file resolves to the same node
+    # — that cross-file edge is the whole point of the RTL dependency graph.
+    def walk(node, scope_nid: str | None = None, scope_key: str | None = None) -> None:
         t = node.type
 
         if t == "module_declaration":
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                mod_name = _read_text(name_node, source)
+            hdr = _first_child(node, "module_header")
+            name_node = _first_descendant(hdr, "simple_identifier") if hdr else None
+            if name_node is not None:
+                mod_name = _read_text(name_node, source).strip()
                 line = node.start_point[0] + 1
-                nid = _make_id(stem, mod_name)
+                nid = _make_id(mod_name)
                 add_node(nid, mod_name, line)
                 add_edge(file_nid, nid, "defines", line)
                 for child in node.children:
-                    walk(child, nid)
+                    walk(child, nid, mod_name)
                 return
 
-        elif t in ("function_declaration", "function_prototype"):
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                func_name = _read_text(name_node, source)
+        elif t == "package_declaration":
+            name_node = _first_child(node, "package_identifier")
+            if name_node is not None:
+                pkg_name = _read_text(name_node, source).strip()
                 line = node.start_point[0] + 1
-                parent = module_nid or file_nid
-                nid = _make_id(parent, func_name)
+                nid = _make_id(pkg_name)
+                add_node(nid, pkg_name, line)
+                add_edge(file_nid, nid, "defines", line)
+                for child in node.children:
+                    walk(child, nid, pkg_name)
+                return
+
+        elif t == "interface_declaration":
+            hdr = (_first_child(node, "interface_ansi_header")
+                   or _first_child(node, "interface_header"))
+            name_node = _first_descendant(hdr, "simple_identifier") if hdr else None
+            if name_node is not None:
+                if_name = _read_text(name_node, source).strip()
+                line = node.start_point[0] + 1
+                nid = _make_id(if_name)
+                add_node(nid, if_name, line)
+                add_edge(file_nid, nid, "defines", line)
+                for child in node.children:
+                    walk(child, nid, if_name)
+                return
+
+        elif t == "modport_declaration":
+            mi = _first_child(node, "modport_item")
+            name_node = (_first_child(mi, "simple_identifier")
+                         or _first_descendant(mi, "simple_identifier")) if mi else None
+            if name_node is not None and scope_nid is not None:
+                mp_name = _read_text(name_node, source).strip()
+                line = node.start_point[0] + 1
+                nid = _make_id(scope_key or stem, "modport:" + mp_name)
+                add_node(nid, mp_name, line)
+                add_edge(scope_nid, nid, "contains", line)
+
+        elif t in ("function_declaration", "function_prototype"):
+            fid = _first_descendant(node, "function_identifier")
+            name_node = _first_descendant(fid, "simple_identifier") if fid else None
+            if name_node is not None:
+                func_name = _read_text(name_node, source).strip()
+                line = node.start_point[0] + 1
+                parent = scope_nid or file_nid
+                # key by enclosing scope NAME so a `pkg::func` use can resolve here
+                nid = _make_id(scope_key or stem, func_name)
                 add_node(nid, f"{func_name}()", line)
                 add_edge(parent, nid, "contains", line)
 
         elif t == "task_declaration":
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                task_name = _read_text(name_node, source)
+            tid = _first_descendant(node, "task_identifier")
+            name_node = _first_descendant(tid, "simple_identifier") if tid else None
+            if name_node is not None:
+                task_name = _read_text(name_node, source).strip()
                 line = node.start_point[0] + 1
-                parent = module_nid or file_nid
-                nid = _make_id(parent, task_name)
-                add_node(nid, task_name, line)
+                parent = scope_nid or file_nid
+                nid = _make_id(scope_key or stem, task_name)
+                add_node(nid, f"{task_name}()", line)
                 add_edge(parent, nid, "contains", line)
 
-        elif t == "package_import_declaration":
-            for child in node.children:
-                if child.type == "package_import_item":
-                    pkg_text = _read_text(child, source)
-                    pkg_name = pkg_text.split("::")[0].strip()
-                    if pkg_name:
-                        line = node.start_point[0] + 1
-                        tgt_nid = _make_id(pkg_name)
-                        add_node(tgt_nid, pkg_name, line)
-                        src = module_nid or file_nid
-                        add_edge(src, tgt_nid, "imports_from", line)
-
         elif t == "module_instantiation":
-            # module_type instantiates another module
-            type_node = node.child_by_field_name("module_type")
-            if type_node and module_nid:
+            # instance type is the leading simple_identifier child; the target id is
+            # the bare module name -> resolves to that module's definition node.
+            type_node = _first_child(node, "simple_identifier")
+            if type_node is not None and scope_nid is not None:
                 inst_type = _read_text(type_node, source).strip()
                 if inst_type:
                     line = node.start_point[0] + 1
                     tgt_nid = _make_id(inst_type)
                     add_node(tgt_nid, inst_type, line)
-                    add_edge(module_nid, tgt_nid, "instantiates", line)
+                    add_edge(scope_nid, tgt_nid, "instantiates", line)
+
+        elif t == "bind_directive":
+            # `bind <target> <checker/module> u (...)` attaches a monitor/checker to
+            # another module without editing it. Edge: bound unit -> target module
+            # (both keyed by bare name so they resolve to the module nodes).
+            scope_n = _first_child(node, "bind_target_scope")
+            tgt_node = _first_descendant(scope_n, "simple_identifier") if scope_n else None
+            inst = (_first_child(node, "checker_instantiation")
+                    or _first_child(node, "module_instantiation"))
+            bound_node = _first_descendant(inst, "simple_identifier") if inst else None
+            if tgt_node is not None and bound_node is not None:
+                target = _read_text(tgt_node, source).strip()
+                bound = _read_text(bound_node, source).strip()
+                if target and bound:
+                    line = node.start_point[0] + 1
+                    t_nid = _make_id(target)
+                    b_nid = _make_id(bound)
+                    add_node(t_nid, target, line)
+                    add_node(b_nid, bound, line)
+                    add_edge(b_nid, t_nid, "binds", line)
+
+        elif t == "package_scope":
+            # a fully-qualified `pkg::member` reference -> enclosing scope uses pkg,
+            # and (member-level) references that member. The grammar fails on
+            # `pkg::fn(args)` (wraps the call in an ERROR node), so read the member
+            # name with a regex over the parent text rather than the broken subtree.
+            name_node = _first_child(node, "package_identifier")
+            if name_node is not None and scope_nid is not None:
+                pkg_name = _read_text(name_node, source).strip()
+                if pkg_name:
+                    line = node.start_point[0] + 1
+                    tgt_nid = _make_id(pkg_name)
+                    add_node(tgt_nid, pkg_name, line)
+                    add_edge(scope_nid, tgt_nid, "uses_package", line)
+                    parent = node.parent
+                    if parent is not None:
+                        m = re.search(re.escape(pkg_name) + r"::(\w+)",
+                                      _read_text(parent, source))
+                        if m:
+                            member = m.group(1)
+                            # same id scheme as a function defined in the package, so
+                            # `ecc_sram` --references--> `ecc_pkg.ecc_enc` resolves.
+                            mem_nid = _make_id(pkg_name, member)
+                            add_node(mem_nid, f"{member}()", line)
+                            add_edge(scope_nid, mem_nid, "references", line)
+
+        elif t == "package_import_declaration":
+            for child in node.children:
+                if child.type == "package_import_item":
+                    pkg_name = _read_text(child, source).split("::")[0].strip()
+                    if pkg_name:
+                        line = node.start_point[0] + 1
+                        tgt_nid = _make_id(pkg_name)
+                        add_node(tgt_nid, pkg_name, line)
+                        add_edge(scope_nid or file_nid, tgt_nid, "imports_from", line)
+
+        elif t == "include_compiler_directive":
+            # `include "foo.svh" -> file depends on the included header (keyed by
+            # basename so it resolves to a shared node across all includers).
+            m = re.search(r'"([^"]+)"', _read_text(node, source))
+            if m:
+                inc_base = m.group(1).strip().replace("\\", "/").split("/")[-1]
+                if inc_base:
+                    line = node.start_point[0] + 1
+                    tgt_nid = _make_id(inc_base)
+                    add_node(tgt_nid, inc_base, line)
+                    add_edge(file_nid, tgt_nid, "includes", line)
 
         for child in node.children:
-            walk(child, module_nid)
+            walk(child, scope_nid, scope_key)
 
     walk(root)
+    return {"nodes": nodes, "edges": edges}
+
+
+# Recipe tokens worth linking to as build steps (scripts the target runs).
+_MAKE_SCRIPT_RE = re.compile(r"([\w./\-]+\.(?:sh|bash|py|tcl|sby|pl))\b")
+_MAKE_RULE_RE = re.compile(r"^([^\t#=:][^:=]*?):(?!=)\s*(.*)$")
+_MAKE_INCLUDE_RE = re.compile(r"^[-\s]*include\s+(.+)$")
+
+
+def extract_make(path: Path, content: str | bytes | None = None) -> dict:
+    """Extract Makefile targets, their prerequisites, `include`d makefiles, and the
+    scripts each recipe runs — i.e. the build DAG. Regex-based (no tree-sitter)."""
+    try:
+        text = (content.decode("utf-8", "replace") if isinstance(content, bytes)
+                else content if content is not None
+                else path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = _file_stem(path)
+    str_path = str(path)
+    file_nid = _make_id(str_path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    def add_node(nid, label, line):
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str_path, "source_location": f"L{line}",
+                          "confidence_score": 1.0})
+
+    def add_edge(src, tgt, relation, line):
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append({"source": src, "target": tgt, "relation": relation,
+                      "confidence": "EXTRACTED", "confidence_score": 1.0,
+                      "source_file": str_path, "source_location": f"L{line}", "weight": 1.0})
+
+    add_node(file_nid, path.name, 1)
+
+    cur_target_nid: str | None = None
+    for i, raw in enumerate(text.splitlines(), start=1):
+        if raw.startswith("\t"):  # recipe line -> scripts this target runs
+            if cur_target_nid:
+                for m in _MAKE_SCRIPT_RE.finditer(raw):
+                    script = m.group(1).split("/")[-1]
+                    tgt = _make_id(script)
+                    add_node(tgt, script, i)
+                    add_edge(cur_target_nid, tgt, "runs", i)
+            continue
+        line = raw.split("#", 1)[0].rstrip()
+        if not line:
+            continue
+        inc = _MAKE_INCLUDE_RE.match(line)
+        if inc:
+            for tok in inc.group(1).split():
+                base = tok.split("/")[-1]
+                if base and "$" not in base:
+                    tgt = _make_id(base)
+                    add_node(tgt, base, i)
+                    add_edge(file_nid, tgt, "includes", i)
+            continue
+        rule = _MAKE_RULE_RE.match(line)
+        if rule:
+            targets, prereqs = rule.group(1), rule.group(2)
+            for target in targets.split():
+                if "$" in target or not target.strip():
+                    continue
+                t_nid = _make_id(stem, target)
+                add_node(t_nid, target, i)
+                add_edge(file_nid, t_nid, "defines", i)
+                cur_target_nid = t_nid
+                for pre in prereqs.split():
+                    if "$" in pre or not pre.strip():
+                        continue
+                    p_nid = _make_id(stem, pre)
+                    add_node(p_nid, pre, i)
+                    add_edge(t_nid, p_nid, "depends_on", i)
+
+    return {"nodes": nodes, "edges": edges}
+
+
+_TCL_PROC_RE = re.compile(r"^\s*proc\s+([:\w]+)\s")
+_TCL_SOURCE_RE = re.compile(r"^\s*source\s+(?:-\w+\s+)*([^\s;]+)")
+_TCL_NS_RE = re.compile(r"^\s*namespace\s+eval\s+([:\w]+)")
+
+
+def extract_tcl(path: Path, content: str | bytes | None = None) -> dict:
+    """Extract Tcl `proc` definitions, `source`d files, and namespaces. Regex-based
+    (the tree-sitter-tcl grammar is not a graphify dependency)."""
+    try:
+        text = (content.decode("utf-8", "replace") if isinstance(content, bytes)
+                else content if content is not None
+                else path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = _file_stem(path)
+    str_path = str(path)
+    file_nid = _make_id(str_path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    def add_node(nid, label, line):
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str_path, "source_location": f"L{line}",
+                          "confidence_score": 1.0})
+
+    def add_edge(src, tgt, relation, line):
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append({"source": src, "target": tgt, "relation": relation,
+                      "confidence": "EXTRACTED", "confidence_score": 1.0,
+                      "source_file": str_path, "source_location": f"L{line}", "weight": 1.0})
+
+    add_node(file_nid, path.name, 1)
+    proc_ids: dict[str, str] = {}
+    for i, raw in enumerate(text.splitlines(), start=1):
+        m = _TCL_PROC_RE.match(raw)
+        if m:
+            name = m.group(1).lstrip(":")
+            nid = _make_id(stem, name)
+            add_node(nid, f"{name}()", i)
+            add_edge(file_nid, nid, "contains", i)
+            proc_ids[name] = nid
+            continue
+        m = _TCL_SOURCE_RE.match(raw)
+        if m:
+            base = m.group(1).strip("\"'{}").replace("\\", "/").split("/")[-1]
+            if base and "$" not in base:
+                nid = _make_id(base)
+                add_node(nid, base, i)
+                add_edge(file_nid, nid, "includes", i)
+            continue
+        m = _TCL_NS_RE.match(raw)
+        if m:
+            name = m.group(1).lstrip(":")
+            nid = _make_id(stem, "ns:" + name)
+            add_node(nid, name, i)
+            add_edge(file_nid, nid, "contains", i)
+
+    return {"nodes": nodes, "edges": edges}
+
+
+_SBY_TOP_RE = re.compile(r"\bprep\b.*?-top\s+(\w+)")
+
+
+def extract_sby(path: Path, content: str | bytes | None = None) -> dict:
+    """Extract SymbiYosys (.sby) formal-verification configs: the proof links to the
+    RTL it verifies. The `[files]` section lists the source files, and `prep -top X`
+    names the verified top module. Targets are keyed by file STEM so they resolve to
+    the same node as the corresponding RTL module — connecting proofs to the design."""
+    try:
+        text = (content.decode("utf-8", "replace") if isinstance(content, bytes)
+                else content if content is not None
+                else path.read_text(encoding="utf-8", errors="replace"))
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    str_path = str(path)
+    file_nid = _make_id(str_path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    def add_node(nid, label, line):
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str_path, "source_location": f"L{line}",
+                          "confidence_score": 1.0})
+
+    def add_edge(src, tgt, relation, line):
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append({"source": src, "target": tgt, "relation": relation,
+                      "confidence": "EXTRACTED", "confidence_score": 1.0,
+                      "source_file": str_path, "source_location": f"L{line}", "weight": 1.0})
+
+    add_node(file_nid, path.name, 1)
+
+    section = ""
+    top: str | None = None
+    for i, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            continue
+        if section == "files":
+            # a [files] entry is `path` or `dest_name path` (alias form); the source
+            # path is the last whitespace token.
+            src_path = line.split()[-1]
+            stem = Path(src_path).name.rsplit(".", 1)[0]
+            if stem:
+                tgt = _make_id(stem)
+                add_node(tgt, stem, i)
+                add_edge(file_nid, tgt, "reads", i)
+        elif section == "script":
+            m = _SBY_TOP_RE.search(line)
+            if m:
+                top = m.group(1)
+
+    if top:
+        tgt = _make_id(top)
+        add_node(tgt, top, 1)
+        add_edge(file_nid, tgt, "verifies", 1)
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def extract_ipxact(path: Path, content: str | bytes | None = None) -> dict:
+    """Extract IP-XACT (IEEE-1685) component descriptors from .xml: the component, its
+    bus interfaces, and the bus protocol each exposes. Non-IP-XACT XML yields nothing.
+    The component node is keyed by its bare name so it merges with the same-named RTL
+    module — attaching the packaging metadata to the design in the graph."""
+    import xml.etree.ElementTree as ET
+
+    def _local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+    try:
+        data = (content if isinstance(content, (bytes, str))
+                else None)
+        if data is None:
+            data = path.read_bytes()
+        root = ET.fromstring(data.encode("utf-8") if isinstance(data, str) else data)
+    except (OSError, ET.ParseError) as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    if _local(root.tag) != "component":
+        return {"nodes": [], "edges": []}   # not an IP-XACT component
+
+    def _child(elem, name):
+        for c in elem:
+            if _local(c.tag) == name:
+                return c
+        return None
+
+    name_el = _child(root, "name")
+    comp_name = (name_el.text or "").strip() if name_el is not None else ""
+    if not comp_name:
+        return {"nodes": [], "edges": []}
+
+    str_path = str(path)
+    file_nid = _make_id(str_path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str]] = set()
+
+    def add_node(nid, label):
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str_path, "source_location": None,
+                          "confidence_score": 1.0})
+
+    def add_edge(src, tgt, relation):
+        key = (src, tgt, relation)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append({"source": src, "target": tgt, "relation": relation,
+                      "confidence": "EXTRACTED", "confidence_score": 1.0,
+                      "source_file": str_path, "source_location": None, "weight": 1.0})
+
+    add_node(file_nid, path.name)
+    comp_nid = _make_id(comp_name)            # merges with the RTL module of the same name
+    add_node(comp_nid, comp_name)
+    add_edge(file_nid, comp_nid, "defines")
+
+    bus_ifaces = _child(root, "busInterfaces")
+    if bus_ifaces is not None:
+        for bi in bus_ifaces:
+            if _local(bi.tag) != "busInterface":
+                continue
+            bn_el = _child(bi, "name")
+            bus_name = (bn_el.text or "").strip() if bn_el is not None else ""
+            if not bus_name:
+                continue
+            bus_nid = _make_id(comp_name, "bus:" + bus_name)
+            add_node(bus_nid, bus_name)
+            add_edge(comp_nid, bus_nid, "exposes")
+            bt = _child(bi, "busType")
+            if bt is not None and bt.get("name"):
+                proto = bt.get("name")
+                proto_nid = _make_id("bus:" + proto)
+                add_node(proto_nid, proto)          # shared hub: APB4, AHBLite, AXI4 ...
+                add_edge(bus_nid, proto_nid, "bus_type")
+
+    # Register map: component -> register nodes (name @ offset, width). Feeds a
+    # datasheet-style register table straight from the IP-XACT. `register` elements
+    # live under memoryMaps/memoryMap/addressBlock; find them at any depth.
+    for reg in root.iter():
+        if _local(reg.tag) != "register":
+            continue
+        rn_el = _child(reg, "name")
+        reg_name = (rn_el.text or "").strip() if rn_el is not None else ""
+        if not reg_name:
+            continue
+        off_el = _child(reg, "addressOffset")
+        offset = (off_el.text or "").strip() if off_el is not None else ""
+        label = f"{reg_name} @{offset}" if offset else reg_name
+        reg_nid = _make_id(comp_name, "reg:" + reg_name)
+        add_node(reg_nid, label)
+        add_edge(comp_nid, reg_nid, "has_register")
+
     return {"nodes": nodes, "edges": edges}
 
 
@@ -11149,6 +11617,11 @@ _DISPATCH: dict[str, Any] = {
     ".v": extract_verilog,
     ".sv": extract_verilog,
     ".svh": extract_verilog,
+    ".mk": extract_make,
+    ".make": extract_make,
+    ".tcl": extract_tcl,
+    ".sby": extract_sby,
+    ".xml": extract_ipxact,
     ".sql": extract_sql,
     ".md": extract_markdown,
     ".mdx": extract_markdown,
@@ -11194,6 +11667,9 @@ def _get_extractor(path: Path) -> Any | None:
     # (servers, commands, packages, env vars) instead of opaque JSON keys.
     if is_mcp_config_path(path):
         return extract_mcp_config
+    # extension-less GNU Makefiles
+    if path.name in ("Makefile", "makefile", "GNUmakefile"):
+        return extract_make
     return _DISPATCH.get(path.suffix)
 
 
