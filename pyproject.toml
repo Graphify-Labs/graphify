@@ -75,6 +75,11 @@ sql = ["tree-sitter-sql"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
+# tree-sitter-haxe is not yet published on PyPI (upstream vantreeseba/tree-sitter-haxe
+# hasn't cut a release); pull our patched fork straight from git in the meantime.
+# Excluded from `all` — an unresolvable PyPI name would break `uv sync`/CI for
+# everyone, not just fail to build (#1307).
+haxe = ["tree-sitter-haxe @ git+https://github.com/masquepublishing/tree-sitter-haxe.git"]
 all = ["mcp", "starlette>=1.3.1", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl"]
 
 [project.scripts]
