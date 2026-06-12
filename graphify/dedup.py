@@ -45,8 +45,7 @@ def _shingles(text: str, k: int = 3) -> set[str]:
 def _make_minhash(text: str, num_perm: int = 128) -> MinHash:
     # Strip spaces so "graph extractor" and "graphextractor" share shingles
     m = MinHash(num_perm=num_perm)
-    for shingle in _shingles(text.replace(" ", "")):
-        m.update(shingle.encode("utf-8"))
+    m.bulk_update([s.encode("utf-8") for s in _shingles(text.replace(" ", ""))])
     return m
 
 
@@ -284,10 +283,11 @@ def deduplicate_entities(
     components = uf.components()
     remap: dict[str, str] = {}
 
+    id_to_node: dict[str, dict] = {n["id"]: n for n in unique_nodes}
     for root, members in components.items():
         if len(members) == 1:
             continue
-        group_nodes = [n for n in unique_nodes if n["id"] in members]
+        group_nodes = [id_to_node[mid] for mid in members if mid in id_to_node]
         winner = _pick_winner(group_nodes) if group_nodes else {"id": root}
         winner_id = winner["id"]
         for member in members:
@@ -332,13 +332,13 @@ def deduplicate_entities(
 
 
 def _pick_winner(nodes: list[dict]) -> dict:
-    """Pick the canonical survivor: prefer no chunk suffix, then shorter ID."""
+    """Pick the canonical survivor: prefer no chunk suffix, then shorter ID, then lexically first ID."""
     if not nodes:
         raise ValueError("Cannot pick winner from empty list")
 
-    def _score(n: dict) -> tuple[int, int]:
+    def _score(n: dict) -> tuple[int, int, str]:
         has_suffix = bool(_CHUNK_SUFFIX.search(n["id"]))
-        return (1 if has_suffix else 0, len(n["id"]))
+        return (1 if has_suffix else 0, len(n["id"]), n["id"])
 
     return min(nodes, key=_score)
 
