@@ -4,6 +4,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
+- Fix: `build_merge(prune_sources=...)` now prunes the base graph **before** merging new chunks. Pruning previously ran on the merged graph, so an `--update` that passed *modified* (re-extracted) files in `prune_sources` deleted their freshly extracted nodes too — the changed file ended up with zero nodes. With base-first pruning, passing changed files atomically replaces their nodes (stale copies dropped, fresh chunk kept), which also eliminates the stale-symbol ghosts of #1152; genuinely deleted files behave exactly as before. (#1283)
+
 ## 0.8.38 (2026-06-11)
 
 - Fix: LLM-generated `calls` edges now have correct direction. The extraction prompt previously never stated that `source` = caller and `target` = callee; the LLM systematically emitted callee→caller edges. An explicit direction rule was added to the prompt. Separately, ghost-node merge was extended to collapse LLM duplicate nodes (bare-stem IDs) onto AST canonical nodes (parent-qualified IDs) even when the LLM node carries a `source_location` — the old check only caught `source_location=None` ghosts. Post-fix annotation: `calls` precision 100% (n=6), overall INFERRED precision 94% (n=16).

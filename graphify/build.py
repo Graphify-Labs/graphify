@@ -390,6 +390,12 @@ def build_merge(
     Never replaces - only grows (or prunes deleted-file nodes via prune_sources).
     Safe to call repeatedly: existing nodes and edges are preserved.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
+
+    prune_sources is applied to the BASE graph before the merge, so it is safe
+    to pass *modified* files together with their fresh re-extraction in
+    new_chunks: the stale copies are dropped and the fresh nodes survive
+    (atomic per-file replace). Genuinely deleted files (no chunk) are simply
+    removed, as before.
     """
     graph_path = Path(graph_path)
     if graph_path.exists():
@@ -406,15 +412,18 @@ def build_merge(
         links_key = "links" if "links" in data else "edges"
         existing_nodes = list(data.get("nodes", []))
         existing_edges = list(data.get(links_key, []))
-        base = [{"nodes": existing_nodes, "edges": existing_edges}]
     else:
         existing_nodes = []
-        base = []
+        existing_edges = []
 
-    all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
-
-    # Prune nodes and edges from deleted source files
+    # Prune nodes and edges of deleted/re-extracted source files from the
+    # BASE graph BEFORE merging new chunks. Pruning used to run on the merged
+    # graph, which also deleted the freshly re-extracted nodes of any
+    # *modified* file passed in prune_sources — an --update could only choose
+    # between ghost nodes (don't pass changed files: stale symbols survive,
+    # #1152) and data loss (pass them: the fresh extraction is wiped too).
+    # Pruning the base removes only the stale copies; chunk nodes always win.
+    # (#1283)
     if prune_sources:
         # Build a set containing both the raw form (matches nodes that kept
         # absolute source_file) and the normalised relative form (matches nodes
@@ -431,36 +440,57 @@ def build_merge(
             norm = _norm_source_file(p, _root_str)
             if norm:
                 prune_set.add(norm)
-        to_remove = [
-            n for n, d in G.nodes(data=True)
-            if d.get("source_file") in prune_set
+
+        def _pruned(sf: str | None) -> bool:
+            # Match the stored form and its normalised form, so legacy
+            # absolute source_file entries are caught when prune paths arrive
+            # relative (the merged graph used to be normalised at build time;
+            # the base JSON is checked as-stored).
+            if not sf:
+                return False
+            return sf in prune_set or _norm_source_file(sf, _root_str) in prune_set
+
+        n_before = len(existing_nodes)
+        # Nodes fall back to the legacy "source" key, which build_from_json
+        # migrates to "source_file" — the old post-build prune saw the
+        # migrated key, so the pre-build filter must match it too. Edges get
+        # no such fallback: their "source" is an endpoint node id, not a path.
+        existing_nodes = [
+            n for n in existing_nodes
+            if not _pruned(n.get("source_file") or n.get("source"))
         ]
-        G.remove_nodes_from(to_remove)
+        n_nodes = n_before - len(existing_nodes)
+        e_before = len(existing_edges)
+        existing_edges = [e for e in existing_edges if not _pruned(e.get("source_file"))]
+        n_edges = e_before - len(existing_edges)
+        # Base edges from unchanged files that pointed at a pruned node become
+        # dangling and are dropped by build() below — same outcome as the old
+        # G.remove_nodes_from(), which removed incident edges implicitly.
+
         n_files = len(prune_sources)
-        n_nodes = len(to_remove)
         if n_nodes:
             print(
                 f"[graphify] Pruned {n_nodes} node(s) from {n_files} deleted source file(s).",
                 file=sys.stderr,
             )
-
-        edges_to_remove = [
-            (u, v) for u, v, d in G.edges(data=True)
-            if d.get("source_file") in prune_set
-        ]
-        if edges_to_remove:
-            G.remove_edges_from(edges_to_remove)
+        if n_edges:
             print(
-                f"[graphify] Pruned {len(edges_to_remove)} edge(s) from deleted source file(s).",
+                f"[graphify] Pruned {n_edges} edge(s) from deleted source file(s).",
                 file=sys.stderr,
             )
-
-        if not n_nodes and not edges_to_remove:
+        if not n_nodes and not n_edges:
             print(
                 f"[graphify] {n_files} source file(s) deleted since last run — "
                 f"no matching nodes or edges in graph, already clean.",
                 file=sys.stderr,
             )
+
+    base = (
+        [{"nodes": existing_nodes, "edges": existing_edges}]
+        if graph_path.exists() else []
+    )
+    all_chunks = base + list(new_chunks)
+    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
 
     # Safety check: refuse to shrink the graph silently (#479)
     # Skip when dedup or prune_sources is active — shrinkage is intentional there.

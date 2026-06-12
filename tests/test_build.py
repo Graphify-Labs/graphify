@@ -458,6 +458,110 @@ def test_build_merge_prune_windows_backslash_paths(tmp_path):
     assert "parse_date" not in node_labels, "node should be pruned even with backslash path"
 
 
+def test_build_merge_prune_changed_file_keeps_reextracted_nodes(tmp_path):
+    """prune_sources must prune the BASE graph before merging, so a modified
+    (re-extracted) file passed in prune_sources keeps its fresh chunk nodes.
+    Previously the prune ran on the merged graph and deleted the fresh nodes
+    too — the changed file ended up with zero nodes."""
+    import networkx as nx
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    stale = {"nodes": [
+        {"id": "auth_login_v1", "label": "login_v1", "file_type": "code",
+         "source_file": "module_a/auth.py"},
+        {"id": "utils_helper", "label": "helper", "file_type": "code",
+         "source_file": "module_b/utils.py"},
+    ], "edges": [
+        {"source": "auth_login_v1", "target": "utils_helper", "relation": "calls",
+         "confidence": "EXTRACTED", "source_file": "module_a/auth.py", "weight": 1.0},
+    ]}
+    G0 = build([stale], dedup=False)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # auth.py was MODIFIED: re-extracted chunk carries its current symbols
+    fresh = {"nodes": [
+        {"id": "auth_login_v2", "label": "login_v2", "file_type": "code",
+         "source_file": "module_a/auth.py"},
+    ], "edges": [
+        {"source": "auth_login_v2", "target": "utils_helper", "relation": "calls",
+         "confidence": "EXTRACTED", "source_file": "module_a/auth.py", "weight": 1.0},
+    ]}
+    changed_abs = [str(root / "module_a" / "auth.py")]
+    G1 = build_merge([fresh], graph_path, prune_sources=changed_abs, dedup=False, root=root)
+
+    node_labels = {d["label"] for _, d in G1.nodes(data=True)}
+    assert "login_v2" in node_labels, \
+        "fresh node from the re-extracted file must survive the prune"
+    assert "login_v1" not in node_labels, \
+        "stale node from the modified file must be pruned (#1152 ghost)"
+    assert "helper" in node_labels, "unrelated node must survive"
+    assert G1.number_of_edges() == 1, \
+        "fresh edge must survive; stale edge from the changed file must be gone"
+
+
+def test_build_merge_prune_changed_file_drops_removed_symbols(tmp_path):
+    """#1152: a symbol deleted from a modified file disappears when the file
+    is passed in prune_sources together with its fresh chunk (atomic per-file
+    replace: prune stale copies, keep only what the new extraction emits)."""
+    import networkx as nx
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    stale = {"nodes": [
+        {"id": "auth_login", "label": "login", "file_type": "code",
+         "source_file": "module_a/auth.py"},
+        {"id": "auth_legacy_token", "label": "legacy_token", "file_type": "code",
+         "source_file": "module_a/auth.py"},
+    ], "edges": []}
+    G0 = build([stale], dedup=False)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # legacy_token was removed from auth.py; the fresh chunk only has login
+    fresh = {"nodes": [
+        {"id": "auth_login", "label": "login", "file_type": "code",
+         "source_file": "module_a/auth.py"},
+    ], "edges": []}
+    changed_abs = [str(root / "module_a" / "auth.py")]
+    G1 = build_merge([fresh], graph_path, prune_sources=changed_abs, dedup=False, root=root)
+
+    node_labels = {d["label"] for _, d in G1.nodes(data=True)}
+    assert "login" in node_labels
+    assert "legacy_token" not in node_labels, \
+        "symbol removed from the file must not survive as a ghost node"
+
+
+def test_build_merge_prune_matches_legacy_source_keyed_nodes(tmp_path):
+    """Legacy graph.json nodes store their path under "source" instead of
+    "source_file" (build_from_json migrates the key at build time). The old
+    prune ran after that migration; the pre-build prune must fall back to the
+    legacy key so those nodes are still removed."""
+    graph_path = tmp_path / "graph.json"
+
+    legacy = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "n1", "label": "old_fn", "file_type": "code",
+             "source": "module_a/legacy.py"},   # legacy key, no source_file
+            {"id": "n2", "label": "kept_fn", "file_type": "code",
+             "source_file": "module_b/utils.py"},
+        ],
+        "edges": [],
+    }
+    graph_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    G1 = build_merge([], graph_path, prune_sources=["module_a/legacy.py"], dedup=False)
+
+    node_labels = {d["label"] for _, d in G1.nodes(data=True)}
+    assert "old_fn" not in node_labels, \
+        "legacy 'source'-keyed node must still be pruned"
+    assert "kept_fn" in node_labels
+
+
 def test_build_merge_rejects_oversized_existing_graph(monkeypatch, tmp_path):
     """#F4: build_merge must refuse to read an existing graph.json that
     exceeds the size cap, rather than json.loads-ing it into memory."""
