@@ -103,7 +103,7 @@ dev = [
 package = true
 
 [tool.setuptools]
-packages = ["graphify"]
+packages = ["graphify", "graphify.extractors"]
 include-package-data = false
 
 [tool.setuptools.package-data]
