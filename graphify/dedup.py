@@ -89,6 +89,43 @@ def _short_label_blocked(a: str, b: str, jw_score: float) -> bool:
     return True
 
 
+_DIGIT_RUN = re.compile(r"\d+")
+
+
+def _numeric_tokens_differ(a: str, b: str) -> bool:
+    """True when two labels carry different embedded numbers (#1284).
+
+    Long labels that differ only in their digit runs ("ADR 0011 §D5" vs
+    "ADR 0013 D4", "3.1 Product Goals" vs "1.1 Product Goals", "block3" vs
+    "block13", "40%+ retention" vs "<20% retention") are numbered/versioned
+    siblings, not duplicates — but the long shared boilerplate keeps
+    Jaro-Winkler above _MERGE_THRESHOLD, and _is_variant_pair only covers
+    short trailing suffixes. Digit runs are compared as multisets with
+    leading zeros stripped, so zero-padding ("09" vs "9") does not count as
+    a difference. (String comparison, not int(): a pathological label with a
+    >4300-digit run would crash int() on Python's conversion limit.) Labels
+    with identical numbers, or none at all, are unaffected.
+    """
+    if a == b:
+        return False
+    return sorted(t.lstrip("0") or "0" for t in _DIGIT_RUN.findall(a)) != \
+        sorted(t.lstrip("0") or "0" for t in _DIGIT_RUN.findall(b))
+
+
+def _crossfile_rationale_blocked(node: dict, neighbor: dict) -> bool:
+    """Block label-based merging of rationale nodes across files (#1284).
+
+    Rationale nodes are docstring-derived and as file-anchored as the code
+    they describe (#1205's reasoning, one layer up): parallel modules carry
+    near-identical boilerplate ("Django app config for apps.<name>. No
+    business logic here…") that differs by one word and sails past the JW
+    threshold. Same-file rationale duplicates may still merge.
+    """
+    if node.get("file_type") != "rationale" and neighbor.get("file_type") != "rationale":
+        return False
+    return (node.get("source_file") or "") != (neighbor.get("source_file") or "")
+
+
 # ── union-find ────────────────────────────────────────────────────────────────
 
 class _UF:
@@ -276,6 +313,12 @@ def deduplicate_entities(
                 _lo, _hi = sorted((norm_label, neighbor_norm), key=len)
                 if _hi.startswith(_lo) and _hi != _lo:
                     continue
+                # Numbered/versioned siblings and cross-file rationale
+                # boilerplate are decisively distinct regardless of JW (#1284).
+                if _numeric_tokens_differ(norm_label, neighbor_norm):
+                    continue
+                if _crossfile_rationale_blocked(node, neighbor):
+                    continue
 
                 c1 = communities.get(node_id)
                 c2 = communities.get(neighbor_id)
@@ -407,6 +450,11 @@ def _llm_tiebreak(
                 continue
             _lo, _hi = sorted((norm_i, norm_j), key=len)
             if _hi.startswith(_lo) and _hi != _lo:
+                continue
+            # Mirror pass 2: decisively-distinct pairs never reach the LLM (#1284).
+            if _numeric_tokens_differ(norm_i, norm_j):
+                continue
+            if _crossfile_rationale_blocked(node, neighbor):
                 continue
             c1 = communities.get(node["id"])
             c2 = communities.get(neighbor["id"])

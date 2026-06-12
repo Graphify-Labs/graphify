@@ -268,3 +268,60 @@ def test_prefix_guard_fires_for_extension_pairs():
         assert hi.startswith(lo) and hi != lo, (
             f"Prefix guard should fire for ({a!r}, {b!r}) but did not"
         )
+
+
+# ── #1284: numbered siblings + cross-file rationale ──────────────────────────
+
+def test_numeric_tokens_differ_helper():
+    """_numeric_tokens_differ compares digit runs as integer multisets (#1284)."""
+    from graphify.dedup import _numeric_tokens_differ
+    assert _numeric_tokens_differ("adr 0011 d5 pipeline placement", "adr 0013 d4 pipeline placement")
+    assert _numeric_tokens_differ("3 1 product goals", "1 1 product goals")
+    assert _numeric_tokens_differ("code block3", "code block13")
+    # zero-padding is not a difference
+    assert not _numeric_tokens_differ("phase 09 overview", "phase 9 overview")
+    # identical numbers, different words — not this guard's business
+    assert not _numeric_tokens_differ("module layout wave 3", "module layouts wave 3")
+    # digitless labels are unaffected
+    assert not _numeric_tokens_differ("graph extractor", "graph extractar")
+
+
+def test_dedup_does_not_merge_numbered_siblings():
+    """Long labels differing only in embedded numbers (ADR/section/issue ids)
+    must not merge — they are numbered siblings, not duplicates (#1284)."""
+    nodes = [
+        {"id": "n1", "label": "Pipeline placement — 4 call sites (ADR 0013 D4)",
+         "file_type": "document", "source_file": "docs/index-activity.md"},
+        {"id": "n2", "label": "Pipeline placement — 4 call sites (ADR 0011 §D5)",
+         "file_type": "document", "source_file": "docs/schema-matcher.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2, "ADR 0013 and ADR 0011 notes are distinct documents"
+
+
+def test_dedup_does_not_merge_crossfile_rationale_boilerplate():
+    """Rationale nodes are file-anchored like code (#1205): parallel modules'
+    boilerplate docstrings differing by one word must not merge (#1284)."""
+    boiler = ("Django app config for {}. No business logic here. "
+              "Domain services live in services.py and adapters in providers.")
+    nodes = [
+        {"id": "r1", "label": boiler.format("apps.platform.cards"),
+         "file_type": "rationale", "source_file": "apps/platform/cards/apps.py"},
+        {"id": "r2", "label": boiler.format("apps.platform.cores"),
+         "file_type": "rationale", "source_file": "apps/platform/cores/apps.py"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 2, "AppConfig docstrings from different apps are distinct"
+
+
+def test_dedup_still_merges_samefile_rationale_duplicates():
+    """The rationale guard only blocks cross-file pairs — near-identical
+    rationale duplicates within one file still merge (#1284 non-regression)."""
+    nodes = [
+        {"id": "r1", "label": "Counts-only metrics export, a read-only aggregation service.",
+         "file_type": "rationale", "source_file": "apps/schemas/metrics.py"},
+        {"id": "r2", "label": "Counts-only metrics export, the read-only aggregation service.",
+         "file_type": "rationale", "source_file": "apps/schemas/metrics.py"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1, "same-file rationale near-duplicates should still merge"

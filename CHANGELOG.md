@@ -4,6 +4,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
+- Fix: fuzzy dedup no longer merges numbered siblings or cross-file rationale boilerplate. Two new pass-2 guards (also mirrored in the `--dedup-llm` ambiguous-pair collection): (1) labels whose embedded digit runs differ as zero-padding-insensitive multisets (`ADR 0011` vs `ADR 0013`, `3.1 Product Goals` vs `1.1 Product Goals`, `block3` vs `block13`, `40%+ …` vs `<20% …`) are numbered/versioned siblings and never merge — zero-padding (`09` vs `9`) does not count as a difference; (2) `rationale` nodes are file-anchored like code (#1205's reasoning): parallel modules' near-identical docstring boilerplate ("Django app config for `apps.<name>`. No business logic…") no longer collapses across files, while same-file rationale duplicates still merge. On a real 11.7k-node graph these guards eliminated 30 of 49 destructive different-label merge groups, including a 15-node AppConfig collapse and antonym metric labels. (#1284)
+
 ## 0.8.38 (2026-06-11)
 
 - Fix: LLM-generated `calls` edges now have correct direction. The extraction prompt previously never stated that `source` = caller and `target` = callee; the LLM systematically emitted callee→caller edges. An explicit direction rule was added to the prompt. Separately, ghost-node merge was extended to collapse LLM duplicate nodes (bare-stem IDs) onto AST canonical nodes (parent-qualified IDs) even when the LLM node carries a `source_location` — the old check only caught `source_location=None` ghosts. Post-fix annotation: `calls` precision 100% (n=6), overall INFERRED precision 94% (n=16).
