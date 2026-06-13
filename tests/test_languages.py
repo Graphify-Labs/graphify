@@ -1,4 +1,4 @@
-"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML."""
+"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Haxe."""
 from __future__ import annotations
 from pathlib import Path
 import pytest
@@ -9,7 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_verilog,
-    extract_powershell_manifest,
+    extract_powershell_manifest, extract_haxe,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -2909,3 +2909,74 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
     r = _corpus("cpp_samedir/Alpha.h", "cpp_samedir/Beta.h")
     dups = _nodes_with_label(r, "Dup")
     assert len(dups) == 2, f"same-dir distinct Dups must stay distinct, got {[n['id'] for n in dups]}"
+
+
+# ── Haxe ──────────────────────────────────────────────────────────────────────
+
+_needs_haxe = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_haxe") is None,
+    reason="tree-sitter-haxe not installed (optional [haxe] extra)",
+)
+
+@_needs_haxe
+def test_haxe_no_error():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    assert "error" not in r
+
+@_needs_haxe
+def test_haxe_finds_class():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    assert any("HttpClient" in l for l in _labels(r))
+
+@_needs_haxe
+def test_haxe_finds_interface():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    assert any("ILoggable" in l for l in _labels(r))
+
+@_needs_haxe
+def test_haxe_finds_enum():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    assert any("CardSuit" in l for l in _labels(r))
+
+@_needs_haxe
+def test_haxe_finds_enum_abstract():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    assert any("Rank" in l for l in _labels(r))
+
+@_needs_haxe
+def test_haxe_finds_typedef():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    assert any("Config" in l for l in _labels(r))
+
+@_needs_haxe
+def test_haxe_finds_methods():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    labels = _labels(r)
+    assert any("get()" in l for l in labels)
+    assert any("post()" in l for l in labels)
+
+@_needs_haxe
+def test_haxe_finds_top_level_function():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    assert any("createClient()" in l for l in _labels(r))
+
+@_needs_haxe
+def test_haxe_splits_inherits_and_implements():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    assert ("HttpClient", "BaseClient") in _edge_labels(r, "inherits")
+    assert ("HttpClient", "ILoggable") in _edge_labels(r, "implements")
+
+@_needs_haxe
+def test_haxe_finds_imports():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    imports = _edge_labels(r, "imports")
+    assert ("sample.hx", "com_masque_core_mapp") in imports
+    assert ("sample.hx", "com_masque_net_netmsg") in imports
+
+@_needs_haxe
+def test_haxe_finds_calls():
+    r = extract_haxe(FIXTURES / "sample.hx")
+    calls = _edge_labels(r, "calls")
+    assert ("get", "buildrequest") in calls
+    assert ("post", "buildrequest") in calls
+    assert ("createClient", "HttpClient") in calls

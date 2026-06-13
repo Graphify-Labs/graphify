@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: Haxe (`.hx`) language support via `tree-sitter-haxe`. Extracts classes, interfaces, enums, enum abstracts, typedefs, and functions. Includes a fallback pass for files where the grammar emits scattered tokens instead of declaration nodes. Install with `pip install "graphifyy[haxe]"`.
+
 ## 0.9.5 (2026-07-02)
 
 - Feat: the MCP server can serve many projects from one process via an optional `project_path` on every tool (#1594, thanks @joanfgarcia). Omit it and nothing changes — the server answers against the graph it was started with. Pass an absolute `project_path` and that call is routed to `<project_path>/<GRAPHIFY_OUT>/graph.json` instead, with its own mtime+size hot-reload, so one stdio/HTTP server backs a whole workspace of repos. Graphs load lazily and cache per resolved path; a missing/corrupt project graph is a tool error, not a process exit, and the server starts even when its default graph is absent. Backward-compatible and additive.
