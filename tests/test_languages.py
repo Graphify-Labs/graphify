@@ -8,7 +8,7 @@ from graphify.extract import (
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
     extract_groovy, extract_sln, extract_csproj, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
-    extract_powershell, extract_apex,
+    extract_powershell, extract_apex, extract_verilog,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1628,3 +1628,52 @@ def test_apex_no_dangling_edges():
         for e in r["edges"]:
             assert e["source"] in node_ids, f"dangling source in {fixture}: {e}"
             assert e["target"] in node_ids, f"dangling target in {fixture}: {e}"
+
+
+# -- SystemVerilog -------------------------------------------------------------
+
+def test_systemverilog_no_error():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert "error" not in r
+
+
+def test_systemverilog_splits_inherits_and_implements():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "BaseProcessor") in _edge_labels(r, "inherits")
+    assert ("DataProcessor", "Processor") in _edge_labels(r, "implements")
+
+
+def test_systemverilog_field_parameter_return_and_generic_contexts():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
+    assert ("DataProcessor", "Payload") in _edge_labels(r, "references", "generic_arg")
+    assert ("build", "Payload") in _edge_labels(r, "references", "parameter_type")
+    assert ("build", "Result") in _edge_labels(r, "references", "return_type")
+    assert ("build", "Payload") in _edge_labels(r, "references", "generic_arg")
+
+
+def test_systemverilog_does_not_emit_type_parameter_refs():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("Result", "T") not in _edge_labels(r, "references", "field")
+
+
+def test_systemverilog_preserves_existing_module_extraction():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    labels = set(_labels(r))
+    assert {"top", "leaf", "add()", "tick"}.issubset(labels)
+    assert "imports_from" in _relations(r)
+    assert "instantiates" in _relations(r)
+
+
+def test_systemverilog_missing_file_returns_empty():
+    r = extract_verilog(Path("nonexistent.sv"))
+    assert r["nodes"] == []
+    assert r["edges"] == []
+
+
+def test_systemverilog_no_dangling_edges():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e}"
+        assert e["target"] in node_ids, f"dangling target: {e}"

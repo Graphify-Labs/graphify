@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.8.35"
+version = "0.8.39"
 description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -12,34 +12,34 @@ keywords = ["claude", "claude-code", "codex", "opencode", "kilo", "cursor", "gem
 requires-python = ">=3.10"
 dependencies = [
     "networkx>=3.4",
-    "datasketch>=1.6",
+    "numpy>=1.21",
     "rapidfuzz>=3.0",
-    "tree-sitter>=0.23.0",
-    "tree-sitter-python",
-    "tree-sitter-javascript",
-    "tree-sitter-typescript",
-    "tree-sitter-go",
-    "tree-sitter-rust",
-    "tree-sitter-java",
-    "tree-sitter-groovy",
-    "tree-sitter-c",
-    "tree-sitter-cpp",
-    "tree-sitter-ruby",
-    "tree-sitter-c-sharp",
-    "tree-sitter-kotlin",
-    "tree-sitter-scala",
-    "tree-sitter-php",
-    "tree-sitter-swift",
-    "tree-sitter-lua",
-    "tree-sitter-zig",
-    "tree-sitter-powershell",
-    "tree-sitter-elixir",
-    "tree-sitter-objc",
-    "tree-sitter-julia",
-    "tree-sitter-verilog",
-    "tree-sitter-fortran",
-    "tree-sitter-bash",
-    "tree-sitter-json",
+    "tree-sitter>=0.23.0,<0.26",
+    "tree-sitter-python>=0.23,<0.26",
+    "tree-sitter-javascript>=0.23,<0.26",
+    "tree-sitter-typescript>=0.23,<0.25",
+    "tree-sitter-go>=0.23,<0.26",
+    "tree-sitter-rust>=0.23,<0.25",
+    "tree-sitter-java>=0.23,<0.25",
+    "tree-sitter-groovy>=0.1,<0.3",
+    "tree-sitter-c>=0.23,<0.25",
+    "tree-sitter-cpp>=0.23,<0.25",
+    "tree-sitter-ruby>=0.23,<0.25",
+    "tree-sitter-c-sharp>=0.23,<0.25",
+    "tree-sitter-kotlin>=1.0,<2.0",
+    "tree-sitter-scala>=0.23,<0.27",
+    "tree-sitter-php>=0.23,<0.25",
+    "tree-sitter-swift>=0.7,<0.9",
+    "tree-sitter-lua>=0.2,<0.6",
+    "tree-sitter-zig>=1.0,<2.0",
+    "tree-sitter-powershell>=0.26,<0.28",
+    "tree-sitter-elixir>=0.3,<0.5",
+    "tree-sitter-objc>=3.0,<4.0",
+    "tree-sitter-julia>=0.23,<0.25",
+    "tree-sitter-verilog>=1.0,<2.0",
+    "tree-sitter-fortran>=0.6,<0.8",
+    "tree-sitter-bash>=0.23,<0.27",
+    "tree-sitter-json>=0.23,<0.26",
 ]
 
 [project.urls]
@@ -50,6 +50,7 @@ Issues = "https://github.com/safishamsi/graphify/issues"
 [project.optional-dependencies]
 mcp = ["mcp"]
 neo4j = ["neo4j"]
+falkordb = ["falkordb"]
 pdf = ["pypdf", "markdownify"]
 watch = ["watchdog"]
 svg = ["matplotlib", "numpy>=2.0; python_version >= '3.13'"]
@@ -71,10 +72,11 @@ sql = ["tree-sitter-sql"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl"]
+all = ["mcp", "neo4j", "falkordb", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
+graphify-mcp = "graphify.serve:_main"
 
 [dependency-groups]
 dev = [

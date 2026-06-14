@@ -154,6 +154,19 @@ def test_export_neo4j_creates_cypher(tmp_path):
     assert "MERGE" in content or "CREATE" in content
 
 
+# ── graphify export falkordb (cypher) ────────────────────────────────────────
+
+def test_export_falkordb_creates_cypher(tmp_path):
+    _make_graph(tmp_path)
+    r = _run(["export", "falkordb"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    cypher = tmp_path / "graphify-out" / "cypher.txt"
+    assert cypher.exists()
+    assert cypher.stat().st_size > 0
+    content = cypher.read_text()
+    assert "MERGE" in content or "CREATE" in content
+
+
 # ── graphify query ───────────────────────────────────────────────────────────
 
 def test_query_returns_output(tmp_path):

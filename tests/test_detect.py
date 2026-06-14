@@ -1,5 +1,7 @@
+import unicodedata
 from pathlib import Path
 from graphify.detect import classify_file, count_words, detect, detect_incremental, save_manifest, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore, _is_sensitive
+from graphify import detect as detect_mod
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -540,6 +542,51 @@ def test_negation_ancestor_itself_reincluded(tmp_path):
     assert not _is_ignored(f, tmp_path, patterns)
 
 
+def test_negation_does_not_disable_directory_pruning(tmp_path, monkeypatch):
+    """A single `!` re-include must not switch off pruning of *unrelated* ignored dirs.
+
+    Regression: a blanket ``has_negation`` flag used to disable directory-level pruning
+    for EVERY ignored dir whenever any ``!`` pattern existed, so a single ``!docs/**``
+    made os.walk descend bin/, obj/, wwwroot/, generated/, … — a pathological slowdown
+    on large repos. Output stayed correct (the per-file ``_is_ignored`` filter still
+    excluded those files), so this guards the *walk* itself: the ignored dir must never
+    be descended, while the negation must still re-include its target.
+    """
+    import os
+    import graphify.detect as det
+
+    (tmp_path / ".graphifyignore").write_text("myignored/\n*.md\n!docs/**\n")
+    deep = tmp_path / "myignored" / "deep" / "deeper"
+    deep.mkdir(parents=True)
+    (deep / "junk.py").write_text("x = 1")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "guide.md").write_text("# guide")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("y = 2")
+
+    visited: list[str] = []
+    real_walk = os.walk
+
+    def tracking_walk(top, *args, **kwargs):
+        for dirpath, dirnames, filenames in real_walk(top, *args, **kwargs):
+            visited.append(dirpath)
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(det.os, "walk", tracking_walk)
+    result = det.detect(tmp_path)
+
+    # The ignored (non-noise) dir must never be descended, despite the !docs/** negation.
+    assert not any("myignored" in Path(v).parts for v in visited), (
+        "ignored 'myignored/' was walked despite being ignored — the has_negation bypass regressed"
+    )
+    # Detection itself is unaffected: negation still re-includes docs/*.md, real source is
+    # found, and nothing leaks out of the ignored dir.
+    all_files = [p for cat in result["files"].values() for p in cat]
+    assert any(p.endswith("app.py") for p in all_files)
+    assert any(p.endswith("guide.md") for p in all_files)
+    assert not any("junk.py" in p for p in all_files)
+
+
 # Regression tests for #1087 - anchored patterns must not match basename deep in tree
 
 def test_anchored_dir_not_matched_at_depth(tmp_path):
@@ -619,6 +666,101 @@ def test_anchored_multi_segment_pattern(tmp_path):
     assert not _is_ignored(target_bad, tmp_path, patterns), (
         "x/src/inbox/b.py must NOT be ignored by /src/inbox/"
     )
+
+
+# Tests for #1235 - memoise _is_ignored/_eval results via a per-detect() cache
+
+def test_is_ignored_cache_matches_uncached_results(tmp_path):
+    """A shared _cache must not change _is_ignored results, including negation.
+
+    Builds a tree with a normal ignore pattern and a negation pattern, then
+    asserts that evaluating every path with a cache yields identical results
+    to evaluating without one (#1235).
+    """
+    from graphify.detect import _is_ignored, _load_graphifyignore
+
+    # Normal pattern: ignore everything under build/.
+    # Negation pattern: re-include logs/keep.log even though *.log is ignored.
+    (tmp_path / "build" / "sub").mkdir(parents=True)
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "src").mkdir()
+    paths = [
+        tmp_path / "build",
+        tmp_path / "build" / "out.o",
+        tmp_path / "build" / "sub",
+        tmp_path / "build" / "sub" / "deep.o",
+        tmp_path / "logs",
+        tmp_path / "logs" / "drop.log",
+        tmp_path / "logs" / "keep.log",
+        tmp_path / "src" / "main.py",
+    ]
+    for p in paths:
+        if p.suffix:
+            p.write_text("x")
+    (tmp_path / ".graphifyignore").write_text(
+        "build/\n*.log\n!logs/keep.log\n"
+    )
+    patterns = _load_graphifyignore(tmp_path)
+
+    cache: dict = {}
+    for p in paths:
+        uncached = _is_ignored(p, tmp_path, patterns)
+        cached = _is_ignored(p, tmp_path, patterns, _cache=cache)
+        assert cached == uncached, (
+            f"cached result for {p} ({cached}) differs from uncached ({uncached})"
+        )
+
+    # Sanity: the negation actually fired so the test exercises a non-trivial case.
+    assert not _is_ignored(tmp_path / "logs" / "keep.log", tmp_path, patterns)
+    assert _is_ignored(tmp_path / "logs" / "drop.log", tmp_path, patterns)
+
+
+def test_is_ignored_cache_evaluates_each_dir_once():
+    """Siblings under the same subtree must share the cached parent result (#1235).
+
+    Counts how many times each unique target path is evaluated through the
+    cache: every directory (ancestor) should be evaluated exactly once across
+    a multi-file subtree rather than once per descendant file.
+    """
+    from graphify.detect import _is_ignored
+
+    root = Path("/repo")
+    patterns = [(root, "*.tmp")]  # non-empty so _eval runs
+
+    # A subtree where many files share the same ancestor directories.
+    files = [
+        root / "a" / "b" / "f1.py",
+        root / "a" / "b" / "f2.py",
+        root / "a" / "b" / "f3.py",
+        root / "a" / "c" / "f4.py",
+        root / "a" / "c" / "f5.py",
+    ]
+
+    eval_counts: dict[Path, int] = {}
+
+    # A dict subclass records every cache write. Since _eval writes to the
+    # cache exactly once per computed target (and reads short-circuit before
+    # any write), one write == one evaluation of that path.
+    class CountingCache(dict):
+        def __setitem__(self, key, value):
+            eval_counts[key] = eval_counts.get(key, 0) + 1
+            super().__setitem__(key, value)
+
+    cache = CountingCache()
+    for f in files:
+        _is_ignored(f, root, patterns, _cache=cache)
+
+    # Each unique path (files + ancestor dirs) must be computed exactly once.
+    for target, count in eval_counts.items():
+        assert count == 1, f"{target} evaluated {count} times, expected 1 (cache miss)"
+
+    # Shared ancestors must be present and counted only once each.
+    assert eval_counts[root / "a"] == 1
+    assert eval_counts[root / "a" / "b"] == 1
+    assert eval_counts[root / "a" / "c"] == 1
+    # All five distinct files are computed once each.
+    for f in files:
+        assert eval_counts[f] == 1
 
 
 # Regression tests for #920 - sensitive pattern misses underscore-prefixed names
@@ -1300,3 +1442,49 @@ def test_save_manifest_in_root_symlink_roundtrips(tmp_path):
 
     loaded = load_manifest(manifest_path, root=tmp_path)
     assert str(tmp_path.resolve() / "alias.py") in loaded
+
+
+def test_convert_office_file_hash_stable_across_nfc_nfd(tmp_path, monkeypatch):
+    """The sidecar name must be identical whether the source path arrives in
+    NFC or NFD form. On macOS os.walk/rglob yield NFD paths while directly
+    constructed Paths are NFC; without NFC-normalizing before hashing the same
+    .docx would get a different sidecar name (and manifest key) on every run,
+    forcing a full re-extraction under --update (#1226).
+    """
+    monkeypatch.setattr(detect_mod, "docx_to_markdown", lambda p: "hello world")
+
+    out_dir = tmp_path / "converted"
+    # "한글" / "ä" style filename with a precomposed (NFC) and decomposed (NFD)
+    # representation that are distinct byte strings but the same logical name.
+    base = tmp_path / "report"
+    nfc_name = unicodedata.normalize("NFC", "café.docx")
+    nfd_name = unicodedata.normalize("NFD", "café.docx")
+    assert nfc_name != nfd_name  # sanity: the two forms differ byte-wise
+
+    nfc_path = base / nfc_name
+    nfd_path = base / nfd_name
+
+    out_nfc = detect_mod.convert_office_file(nfc_path, out_dir)
+    out_nfd = detect_mod.convert_office_file(nfd_path, out_dir)
+
+    assert out_nfc is not None and out_nfd is not None
+    # The hash suffix (and therefore the whole sidecar filename) must match.
+    assert out_nfc.name.split("_")[-1] == out_nfd.name.split("_")[-1]
+
+
+def test_convert_office_file_does_not_rewrite_existing_sidecar(tmp_path, monkeypatch):
+    """A second conversion of an unchanged source must not rewrite the sidecar,
+    so its mtime stays put and detect_incremental keeps treating it as
+    unchanged (#1226)."""
+    monkeypatch.setattr(detect_mod, "docx_to_markdown", lambda p: "hello world")
+
+    out_dir = tmp_path / "converted"
+    src = tmp_path / "doc.docx"
+
+    first = detect_mod.convert_office_file(src, out_dir)
+    assert first is not None
+    mtime_before = first.stat().st_mtime_ns
+
+    second = detect_mod.convert_office_file(src, out_dir)
+    assert second == first
+    assert second.stat().st_mtime_ns == mtime_before

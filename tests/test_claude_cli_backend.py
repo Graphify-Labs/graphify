@@ -228,3 +228,30 @@ def test_call_llm_claude_cli_branch_honours_timeout(monkeypatch, fake_claude):
     monkeypatch.setenv("GRAPHIFY_API_TIMEOUT", "30")
     llm._call_llm(prompt="x", backend="claude-cli", max_tokens=10)
     assert fake_claude.call_args.kwargs["timeout"] == 30.0
+
+
+def test_simple_completion_resolves_cmd_shim_on_windows(monkeypatch):
+    """The label/_simple_completion path must spawn the resolved claude.cmd on
+    Windows; a bare "claude" fails CreateProcess (WinError 2) under npm installs."""
+    import json as _json
+    from unittest.mock import patch, MagicMock
+
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["argv0"] = args[0]
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = _json.dumps({"result": "ok"})
+        return proc
+
+    def fake_which(name):
+        return r"C:\npm\claude.cmd" if name == "claude.cmd" else r"C:\npm\claude"
+
+    with patch("platform.system", return_value="Windows"), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("subprocess.run", side_effect=fake_run):
+        out = llm._call_llm("hi", backend="claude-cli")
+
+    assert out == "ok"
+    assert captured["argv0"] == r"C:\npm\claude.cmd"

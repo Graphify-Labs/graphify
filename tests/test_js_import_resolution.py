@@ -334,6 +334,27 @@ def test_tsconfig_alias_import_resolves_existing_ts_file(tmp_path: Path):
     assert _has_edge(result, "src/routes/page.ts", "src/lib/types/type-helpers.ts")
 
 
+def test_tsconfig_alias_with_subdirectory_baseurl_resolves_existing_ts_file(tmp_path: Path):
+    # `paths` are resolved relative to `baseUrl`, which is commonly a
+    # subdirectory in monorepo / NestJS layouts (baseUrl "./src").
+    # Regression: baseUrl was ignored, so "@services/*": ["services/*"] with
+    # baseUrl "./src" resolved to <root>/services instead of <root>/src/services,
+    # and every aliased import edge was silently dropped.
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": "./src", "paths": {"@services/*": ["services/*"]}}}),
+    )
+    target = _write(tmp_path / "src/services/foo/index.ts", "export class Foo { id = '' }\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { Foo } from '@services/foo'\nnew Foo()\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "src/services/foo/index.ts")
+
+
 def test_tsconfig_array_extends_alias_resolves_existing_ts_file(tmp_path: Path):
     # TypeScript 5.0 allows `extends` as an array; later entries override
     # earlier ones. The `paths` alias is inherited from the second parent.
@@ -358,6 +379,61 @@ def test_tsconfig_array_extends_alias_resolves_existing_ts_file(tmp_path: Path):
     result = _extract_for([target, importer], tmp_path)
 
     assert _has_edge(result, "src/routes/page.ts", "src/lib/types/type-helpers.ts")
+
+
+def test_default_import_resolves_to_default_exported_class(tmp_path: Path):
+    target = _write(tmp_path / "src/lib/foo.ts", "export default class Foo { id = '' }\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import Foo from '../lib/foo'\nnew Foo()\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
+
+
+def test_default_import_with_renamed_binding_resolves_to_origin(tmp_path: Path):
+    # The local binding may differ from the exported symbol name; the edge must
+    # still target the origin symbol, not the local binding.
+    target = _write(tmp_path / "src/lib/foo.ts", "export default class Foo { id = '' }\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import Renamed from '../lib/foo'\nnew Renamed()\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
+
+
+def test_export_default_identifier_resolves_default_import(tmp_path: Path):
+    target = _write(tmp_path / "src/lib/foo.ts", "class Foo { id = '' }\nexport default Foo\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import Foo from '../lib/foo'\nnew Foo()\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
+
+
+def test_default_import_call_resolves_to_default_exported_function(tmp_path: Path):
+    # Binding a default import also lets calls through it resolve to the origin.
+    # The local binding (`mk`) deliberately differs from the exported name so the
+    # edge can only come from the default-import alias, not global-label matching.
+    target = _write(tmp_path / "src/lib/foo.ts", "export default function makeFoo() { return 1 }\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import mk from '../lib/foo'\nconst X = () => mk()\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_symbol_to_symbol_edge(
+        result, "src/routes/page.ts", "X", "src/lib/foo.ts", "makeFoo", "calls"
+    )
 
 
 def test_pnpm_workspace_package_import_resolves_package_entry(tmp_path: Path):

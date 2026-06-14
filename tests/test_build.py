@@ -149,6 +149,56 @@ def test_file_type_synonym_mapping():
     assert G.nodes["n3"]["file_type"] == "concept"
 
 
+def test_ghost_merge_unique_located_node_still_merges():
+    """#1145 ghost-merge: a semantic ghost collapses into the single AST node
+    sharing its (basename, label), and edges re-point to the AST node."""
+    ext = {
+        "nodes": [
+            {"id": "ast_render", "label": "render", "file_type": "code",
+             "source_file": "src/app/index.ts", "source_location": "L10", "_origin": "ast"},
+            {"id": "ghost_render", "label": "render", "file_type": "code",
+             "source_file": "src/app/index.ts"},
+            {"id": "caller", "label": "main", "file_type": "code",
+             "source_file": "src/main.ts", "source_location": "L1", "_origin": "ast"},
+        ],
+        "edges": [{"source": "caller", "target": "ghost_render", "relation": "calls",
+                   "confidence": "EXTRACTED", "source_file": "src/main.ts", "weight": 1.0}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(ext)
+    assert "ghost_render" not in G.nodes()
+    assert G.has_edge("caller", "ast_render")
+
+
+def test_ghost_merge_skipped_on_basename_collision():
+    """#1257: when two files with the same basename both define a symbol with the
+    same label, the (basename, label) key is ambiguous and the semantic ghost
+    must not be merged into an arbitrary one of them."""
+    ext = {
+        "nodes": [
+            {"id": "a_render", "label": "render", "file_type": "code",
+             "source_file": "src/a/index.ts", "source_location": "L10", "_origin": "ast"},
+            {"id": "b_render", "label": "render", "file_type": "code",
+             "source_file": "src/b/index.ts", "source_location": "L20", "_origin": "ast"},
+            {"id": "ghost_render", "label": "render", "file_type": "code",
+             "source_file": "src/a/index.ts"},
+            {"id": "caller", "label": "main", "file_type": "code",
+             "source_file": "src/main.ts", "source_location": "L1", "_origin": "ast"},
+        ],
+        "edges": [{"source": "caller", "target": "ghost_render", "relation": "calls",
+                   "confidence": "EXTRACTED", "source_file": "src/main.ts", "weight": 1.0}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(ext)
+    # The ghost survives: merging it into either a_render or b_render would
+    # pick an arbitrary winner (set iteration order over node_set).
+    assert "ghost_render" in G.nodes()
+    assert G.number_of_nodes() == 4
+    assert G.has_edge("caller", "ghost_render")
+    assert not G.has_edge("caller", "a_render")
+    assert not G.has_edge("caller", "b_render")
+
+
 def test_build_merge_preserves_call_edge_direction(tmp_path):
     """Regression for #760.
 

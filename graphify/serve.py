@@ -51,8 +51,10 @@ def _communities_from_graph(G: nx.Graph) -> dict[int, list[str]]:
     return communities
 
 
-def _strip_diacritics(text: str) -> str:
+def _strip_diacritics(text: str | None) -> str:
     import unicodedata
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
@@ -388,7 +390,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
-            f"community={sanitize_label(str(d.get('community', '')))}]"
+            f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}]"
         )
         lines.append(line)
     for u, v in edges:
@@ -725,7 +727,7 @@ def _build_server(graph_path: str):
             f"  ID: {sanitize_label(nid)}",
             f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
-            f"  Community: {sanitize_label(str(d.get('community', '')))}",
+            f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
         ])
 
@@ -1255,8 +1257,15 @@ def _main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "graph_path",
         nargs="?",
-        default="graphify-out/graph.json",
+        default=None,
         help="Path to graph.json (default: graphify-out/graph.json)",
+    )
+    parser.add_argument(
+        "--graph",
+        dest="graph_flag",
+        default=None,
+        metavar="PATH",
+        help="Path to graph.json — alias for the positional argument",
     )
     parser.add_argument(
         "--transport",
@@ -1289,10 +1298,11 @@ def _main(argv: list[str] | None = None) -> None:
         help="Reap stateful sessions idle this many seconds (default: 3600; 0 disables)",
     )
     args = parser.parse_args(argv)
+    graph_path = args.graph_flag or args.graph_path or "graphify-out/graph.json"
 
     if args.transport == "http":
         serve_http(
-            args.graph_path,
+            graph_path,
             host=args.host,
             port=args.port,
             api_key=args.api_key,
@@ -1302,7 +1312,7 @@ def _main(argv: list[str] | None = None) -> None:
             session_timeout=args.session_timeout,
         )
     else:
-        serve(args.graph_path)
+        serve(graph_path)
 
 
 if __name__ == "__main__":

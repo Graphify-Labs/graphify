@@ -838,7 +838,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             nonlocal last_trigger, pending
             if event.is_directory:
                 return
-            path = Path(event.src_path)
+            path = Path(os.fsdecode(event.src_path))
             # Check .graphifyignore BEFORE the extension/dotfile/out filters so
             # the cheapest short-circuit for users with broad ignore patterns
             # (node_modules/, .venv/, build/, …) fires first. _is_ignored
@@ -848,9 +848,13 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             if path.suffix.lower() not in _WATCHED_EXTENSIONS:
                 return
-            if any(part.startswith(".") for part in path.parts):
+            try:
+                filter_parts = path.relative_to(watch_root_for_ignore).parts
+            except ValueError:
+                filter_parts = path.parts
+            if any(part.startswith(".") for part in filter_parts):
                 return
-            if _GRAPHIFY_OUT in path.parts:
+            if _GRAPHIFY_OUT in filter_parts:
                 return
             last_trigger = time.monotonic()
             pending = True

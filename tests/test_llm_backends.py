@@ -66,12 +66,17 @@ def test_extract_files_direct_routes_gemini_through_openai_compat(tmp_path, monk
     with patch("graphify.llm._call_openai_compat", return_value=result) as call:
         assert llm.extract_files_direct([source], backend="gemini", root=tmp_path) is result
 
-    assert call.call_args.args[:4] == (
+    assert call.call_args.args[:3] == (
         "https://generativelanguage.googleapis.com/v1beta/openai/",
         "google-key",
         "gemini-3-flash-preview",
-        "=== note.md ===\n# Architecture\n\nThe runner emits a snapshot.\n",
     )
+    # Source content is wrapped in an untrusted_source delimiter block (#1210)
+    # rather than the old `=== path ===` separator.
+    user_msg = call.call_args.args[3]
+    assert '<untrusted_source path="note.md" sha256=' in user_msg
+    assert "# Architecture\n\nThe runner emits a snapshot." in user_msg
+    assert user_msg.rstrip().endswith("</untrusted_source>")
     assert call.call_args.kwargs["temperature"] == 0
     assert call.call_args.kwargs["reasoning_effort"] == "low"
     assert call.call_args.kwargs["max_completion_tokens"] == 16384
@@ -429,6 +434,58 @@ def test_non_ollama_backend_gets_no_num_ctx_extra_body(monkeypatch):
     assert eb is None or "options" not in eb, "non-ollama backends must not get num_ctx injection"
 
 
+# ---------------------------------------------------------------------------
+# Custom-provider extra_body: lets providers.json route around the moonshot-only
+# default. Self-hosted Qwen3 served by vLLM needs
+# `chat_template_kwargs.enable_thinking=false` or the model emits chain-of-thought
+# instead of the JSON the extraction parser expects.
+# ---------------------------------------------------------------------------
+
+
+def test_call_openai_compat_uses_explicit_extra_body(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://kitor.example/vllm/v1", "tk", "Qwen3.6-27B",
+        "u", temperature=0, max_completion_tokens=8192, backend="kitor-vllm",
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+
+    assert captured["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_call_openai_compat_extra_body_wins_over_moonshot_default(monkeypatch):
+    # A user could legitimately set up a moonshot-compatible custom provider
+    # and want a different extra_body — explicit kwarg must override the default.
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.moonshot.ai/v1", "tk", "kimi-k2-thinking",
+        "u", temperature=0, max_completion_tokens=8192, backend="kimi",
+        extra_body={"thinking": {"type": "enabled"}},
+    )
+
+    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
+def test_call_openai_compat_explicit_extra_body_skips_ollama_auto_derive(monkeypatch):
+    # An explicit extra_body means "I own this request shape" — Ollama's
+    # num_ctx auto-derive (a default) must step aside or we'd clobber it.
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_NUM_CTX", raising=False)
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_KEEP_ALIVE", raising=False)
+
+    llm._call_openai_compat(
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "u", temperature=0, max_completion_tokens=8192, backend="ollama",
+        extra_body={"options": {"num_ctx": 4096}},
+    )
+
+    assert captured["extra_body"] == {"options": {"num_ctx": 4096}}, (
+        "explicit extra_body must replace the ollama auto-derived num_ctx"
+    )
+
+
 def test_extract_corpus_parallel_ollama_runs_serially(tmp_path, monkeypatch):
     # With 3 chunks and backend=ollama, ThreadPoolExecutor must NOT be used
     # (workers=1 takes the sequential path). We verify by ensuring all chunks
@@ -593,3 +650,99 @@ def test_detect_backend_azure_requires_endpoint_not_just_key(monkeypatch):
 def test_estimate_cost_azure_no_keyerror():
     cost = llm.estimate_cost("azure", 1_000_000, 500_000)
     assert cost == pytest.approx(2.50 + 5.00)  # 1M in * $2.50/M + 0.5M out * $10.00/M
+
+
+# ---------------------------------------------------------------------------
+# Temperature resolution (#1191): omit temperature for reasoning models
+# (o1/o3/o4/gpt-5) and honour GRAPHIFY_LLM_TEMPERATURE.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["o1", "o1-preview", "o1-mini", "o3", "o3-mini", "o4-mini", "gpt-5", "gpt-5-mini", "openai/o3-mini"],
+)
+def test_model_requires_default_temperature_true_for_reasoning_models(model):
+    assert llm._model_requires_default_temperature(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-4.1-mini", "gpt-4o", "gpt-4.1", "kimi-k2.6", "deepseek-v4-flash", "", "o1x", "go3"],
+)
+def test_model_requires_default_temperature_false_for_normal_models(model):
+    assert llm._model_requires_default_temperature(model) is False
+
+
+def test_resolve_temperature_default_for_normal_model(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_LLM_TEMPERATURE", raising=False)
+    assert llm._resolve_temperature(0, "gpt-4.1-mini") == 0
+
+
+def test_resolve_temperature_omitted_for_reasoning_model(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_LLM_TEMPERATURE", raising=False)
+    assert llm._resolve_temperature(0, "o3-mini") is None
+    assert llm._resolve_temperature(0, "gpt-5") is None
+
+
+def test_resolve_temperature_env_var_numeric_overrides(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_LLM_TEMPERATURE", "0.7")
+    assert llm._resolve_temperature(0, "gpt-4.1-mini") == 0.7
+    # env var wins even for a reasoning model (explicit user choice)
+    assert llm._resolve_temperature(0, "o3-mini") == 0.7
+
+
+def test_resolve_temperature_env_var_none_omits(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_LLM_TEMPERATURE", "none")
+    assert llm._resolve_temperature(0, "gpt-4.1-mini") is None
+
+
+def test_resolve_temperature_env_var_invalid_falls_back(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_LLM_TEMPERATURE", "hot")
+    # bad value -> backend default for a normal model, still omitted for reasoning
+    assert llm._resolve_temperature(0, "gpt-4.1-mini") == 0
+    assert llm._resolve_temperature(0, "o3-mini") is None
+
+
+def test_openai_compat_omits_temperature_for_o3_model(tmp_path, monkeypatch):
+    # Regression for #1191: with a reasoning model the request must not carry a
+    # `temperature` key at all, or the API returns HTTP 400.
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_LLM_TEMPERATURE", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("GRAPHIFY_OPENAI_MODEL", "o3-mini")
+    captured = _install_capturing_openai(monkeypatch)
+    (tmp_path / "f.py").write_text("x = 1\n")
+
+    llm.extract_files_direct([tmp_path / "f.py"], backend="openai", root=tmp_path)
+
+    assert "temperature" not in captured, (
+        "reasoning models (o3) reject an explicit temperature; it must be omitted (#1191)"
+    )
+    assert captured["model"] == "o3-mini"
+
+
+def test_openai_compat_sends_temperature_for_normal_model(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_LLM_TEMPERATURE", raising=False)
+    monkeypatch.delenv("GRAPHIFY_OPENAI_MODEL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    captured = _install_capturing_openai(monkeypatch)
+    (tmp_path / "f.py").write_text("x = 1\n")
+
+    llm.extract_files_direct([tmp_path / "f.py"], backend="openai", root=tmp_path)
+
+    assert captured.get("temperature") == 0, "normal models keep the deterministic default"
+
+
+def test_openai_compat_env_var_temperature_applied(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_LLM_TEMPERATURE", "0.3")
+    monkeypatch.delenv("GRAPHIFY_OPENAI_MODEL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    captured = _install_capturing_openai(monkeypatch)
+    (tmp_path / "f.py").write_text("x = 1\n")
+
+    llm.extract_files_direct([tmp_path / "f.py"], backend="openai", root=tmp_path)
+
+    assert captured.get("temperature") == 0.3

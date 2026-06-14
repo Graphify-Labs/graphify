@@ -2,6 +2,9 @@ import sys
 from unittest.mock import MagicMock, patch
 import pytest
 from pathlib import Path
+
+pytest.importorskip("tree_sitter_sql", reason="tree-sitter-sql not installed; skip pg_introspect tests")
+
 from graphify.pg_introspect import introspect_postgres
 from graphify.validate import validate_extraction
 
