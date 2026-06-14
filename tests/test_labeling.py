@@ -255,19 +255,46 @@ def test_label_communities_partial_batch_failure_keeps_successful_batches(monkey
         n_calls[0] += 1
         cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
                 for line in prompt.splitlines() if line.startswith("Community ")]
-        if n_calls[0] == 2:
-            raise RuntimeError("simulated transient backend failure")
+        # Fail the second batch for all 3 attempts (calls 2, 3, 4)
+        if n_calls[0] in (2, 3, 4):
+            raise RuntimeError("simulated persistent backend failure")
         return "{" + ", ".join(f'"{c}": "Named {c}"' for c in cids) + "}"
 
+    # Patch time.sleep so the test runs instantly instead of waiting 2s+4s
+    import time
+    monkeypatch.setattr(time, "sleep", lambda x: None)
     monkeypatch.setattr("graphify.llm._call_llm", fake_call)
     labels = label_communities(G, communities, backend="gemini", batch_size=50)
 
-    # 3 batches; second one fails. First and third produce real labels;
+    # 3 batches; second one fails all 3 retries. First and third produce real labels;
     # the failed batch's cids stay as placeholders.
     real = [cid for cid, name in labels.items() if name.startswith("Named ")]
     placeholder = [cid for cid, name in labels.items() if name.startswith("Community ")]
     assert len(real) == 100, f"expected 100 real labels from 2 successful batches, got {len(real)}"
     assert len(placeholder) == 50, f"expected 50 placeholders from the failed batch, got {len(placeholder)}"
+
+
+def test_label_communities_recovers_from_transient_failure(monkeypatch):
+    G, communities = _wide_graph(150)
+    n_calls = [0]
+
+    def fake_call(prompt, *, backend, max_tokens=200):
+        n_calls[0] += 1
+        cids = [int(line.split(":", 1)[0].removeprefix("Community ").strip())
+                for line in prompt.splitlines() if line.startswith("Community ")]
+        # Fail only the first attempt of the second batch (call 2)
+        if n_calls[0] == 2:
+            raise RuntimeError("simulated transient backend failure")
+        return "{" + ", ".join(f'"{c}": "Recovered {c}"' for c in cids) + "}"
+
+    import time
+    monkeypatch.setattr(time, "sleep", lambda x: None)
+    monkeypatch.setattr("graphify.llm._call_llm", fake_call)
+    labels = label_communities(G, communities, backend="gemini", batch_size=50)
+
+    # All 150 should be recovered because the retry succeeded
+    assert all(name.startswith("Recovered ") for name in labels.values())
+    assert len(labels) == 150
 
 
 def test_label_communities_all_batches_fail_raises(monkeypatch):

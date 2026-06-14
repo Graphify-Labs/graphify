@@ -2104,23 +2104,35 @@ def label_communities(
         # and punctuation. Cap at 8192 for 16k-context models. Wrapped in
         # _resolve_max_tokens so GRAPHIFY_MAX_OUTPUT_TOKENS applies here too (#1200).
         max_tokens = _resolve_max_tokens(min(64 + 24 * len(batch_cids), 8192))
-        try:
-            call_kwargs = {"backend": backend, "max_tokens": max_tokens}
-            if model is not None:
-                call_kwargs["model"] = model
-            text = _call_llm(prompt, **call_kwargs)
-            parsed = _parse_label_response(text, batch_cids)
-            labels.update(parsed)
-            written += len(parsed)
-        except Exception as exc:
-            if first_error is None:
-                first_error = exc
-            print(
-                f"[graphify label] batch {batch_idx + 1}/{n_batches} "
-                f"({len(batch_cids)} communities) failed: {exc}",
-                file=sys.stderr,
-            )
-            continue
+        import time
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                call_kwargs = {"backend": backend, "max_tokens": max_tokens}
+                if model is not None:
+                    call_kwargs["model"] = model
+                text = _call_llm(prompt, **call_kwargs)
+                parsed = _parse_label_response(text, batch_cids)
+                labels.update(parsed)
+                written += len(parsed)
+                break
+            except Exception as exc:
+                if attempt < max_retries:
+                    sleep_time = 2 ** attempt
+                    print(
+                        f"[graphify label] batch {batch_idx + 1}/{n_batches} "
+                        f"attempt {attempt} failed: {exc}. Retrying in {sleep_time}s...",
+                        file=sys.stderr,
+                    )
+                    time.sleep(sleep_time)
+                else:
+                    if first_error is None:
+                        first_error = exc
+                    print(
+                        f"[graphify label] batch {batch_idx + 1}/{n_batches} "
+                        f"({len(batch_cids)} communities) failed after {max_retries} attempts: {exc}",
+                        file=sys.stderr,
+                    )
 
     if written == 0 and first_error is not None:
         # Every batch failed; propagate so generate_community_labels degrades cleanly.
