@@ -270,6 +270,39 @@ def test_uninstall_all_removes_codebuddy_hook(tmp_path, monkeypatch):
         assert not any("graphify" in str(h) for h in hooks)
 
 
+def test_user_uninstall_removes_home_registration(tmp_path, monkeypatch):
+    """Global `graphify install --platform codebuddy` writes a `# graphify` block
+    to ~/.codebuddy/CODEBUDDY.md; the global uninstall must strip it, not orphan
+    it pointing at a deleted skill (#1121)."""
+    from graphify.__main__ import install, codebuddy_uninstall
+    monkeypatch.chdir(tmp_path)
+    home_md = tmp_path / ".codebuddy" / "CODEBUDDY.md"
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        install(platform="codebuddy")  # global scope (project=False)
+        assert home_md.exists()
+        assert "# graphify" in home_md.read_text()
+
+        codebuddy_uninstall(tmp_path)  # global scope
+    # block was the only content → file removed; either way it's gone
+    assert not home_md.exists() or "# graphify" not in home_md.read_text()
+
+
+def test_user_uninstall_preserves_other_home_content(tmp_path, monkeypatch):
+    """Global codebuddy uninstall keeps non-graphify content in the home file."""
+    from graphify.__main__ import install, codebuddy_uninstall
+    monkeypatch.chdir(tmp_path)
+    home_md = tmp_path / ".codebuddy" / "CODEBUDDY.md"
+    home_md.parent.mkdir(parents=True, exist_ok=True)
+    home_md.write_text("# My global notes\n\nKeep me.\n")
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        install(platform="codebuddy")  # appends # graphify block
+        codebuddy_uninstall(tmp_path)
+    content = home_md.read_text()
+    assert "My global notes" in content
+    assert "Keep me." in content
+    assert "# graphify" not in content
+
+
 # ---------------------------------------------------------------------------
 # Platform config sanity
 # ---------------------------------------------------------------------------

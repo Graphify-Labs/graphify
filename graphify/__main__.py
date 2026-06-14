@@ -326,19 +326,7 @@ def _project_scope_root(path: Path, project_dir: Path) -> Path:
 
 def _remove_claude_skill_registration(project_dir: Path) -> None:
     """Remove the project-scoped Claude skill registration file/section."""
-    claude_md = project_dir / ".claude" / "CLAUDE.md"
-    if not claude_md.exists():
-        return
-    content = claude_md.read_text(encoding="utf-8")
-    if "# graphify" not in content:
-        return
-    cleaned = re.sub(r"\n*# graphify\n.*?(?=\n# |\Z)", "", content, flags=re.DOTALL).rstrip()
-    if cleaned:
-        claude_md.write_text(cleaned + "\n", encoding="utf-8")
-        print(f"  CLAUDE.md        ->  graphify skill registration removed from {claude_md}")
-    else:
-        claude_md.unlink()
-        print(f"  CLAUDE.md        ->  deleted {claude_md}")
+    _strip_skill_registration(project_dir / ".claude" / "CLAUDE.md")
 
 
 def _print_project_git_add_hint(paths: list[Path]) -> None:
@@ -414,6 +402,66 @@ def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") 
         "When the user types `/graphify`, invoke the Skill tool "
         "with `skill: \"graphify\"` before doing anything else.\n"
     )
+
+
+def _backup_config_file(path: Path) -> "Path | None":
+    """Snapshot a user-editable config file before graphify modifies or deletes it.
+
+    Copies <path> into ~/.graphify/backups/<date>/ under a name derived from its
+    absolute path, so an install or uninstall can be undone by hand. No-op when
+    the file is absent. Honors GRAPHIFY_NO_BACKUP=1. Never raises — a backup
+    failure warns but never blocks the operation (mirrors
+    export.backup_if_protected, issue #834).
+    """
+    if os.environ.get("GRAPHIFY_NO_BACKUP"):
+        return None
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        from datetime import date
+
+        backups = Path.home() / ".graphify" / "backups" / date.today().isoformat()
+        backups.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(path.resolve()).lstrip("/\\"))
+        dst = backups / safe
+        shutil.copy2(path, dst)
+        print(f"  backup           ->  {dst}")
+        return dst
+    except Exception as exc:  # never block install/uninstall on a backup failure
+        print(f"  backup           ->  warning: could not back up {path} ({exc})")
+        return None
+
+
+def _write_config(path: Path, content: str) -> None:
+    """Back up an existing user-editable config file, then write new content."""
+    _backup_config_file(path)
+    path.write_text(content, encoding="utf-8")
+
+
+def _unlink_config(path: Path) -> None:
+    """Back up a user-editable config file, then delete it."""
+    _backup_config_file(path)
+    path.unlink()
+
+
+def _strip_skill_registration(md_path: Path) -> bool:
+    """Remove the `# graphify` skill-registration block (the form written by the
+    global `install()` path via _skill_registration) from md_path, backing the
+    file up first. Returns True if a change was made. No-op if the file is absent
+    or holds no graphify block."""
+    if not md_path.exists():
+        return False
+    content = md_path.read_text(encoding="utf-8")
+    if "# graphify" not in content:
+        return False
+    cleaned = re.sub(r"\n*# graphify\n.*?(?=\n# |\Z)", "", content, flags=re.DOTALL).rstrip()
+    if cleaned:
+        _write_config(md_path, cleaned + "\n")
+        print(f"  registration     ->  graphify block removed from {md_path}")
+    else:
+        _unlink_config(md_path)
+        print(f"  registration     ->  deleted {md_path}")
+    return True
 
 
 _PLATFORM_CONFIG: dict[str, dict] = {
@@ -670,7 +718,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
             if "graphify" in content:
                 print(f"  CLAUDE.md        ->  already registered (no change)")
             else:
-                claude_md.write_text(content.rstrip() + registration, encoding="utf-8")
+                _write_config(claude_md, content.rstrip() + registration)
                 print(f"  CLAUDE.md        ->  skill registered in {claude_md}")
         else:
             claude_md.parent.mkdir(parents=True, exist_ok=True)
@@ -686,7 +734,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
             if "graphify" in content:
                 print(f"  CODEBUDDY.md     ->  already registered (no change)")
             else:
-                codebuddy_md.write_text(content.rstrip() + registration, encoding="utf-8")
+                _write_config(codebuddy_md, content.rstrip() + registration)
                 print(f"  CODEBUDDY.md     ->  skill registered in {codebuddy_md}")
         else:
             codebuddy_md.parent.mkdir(parents=True, exist_ok=True)
@@ -770,7 +818,7 @@ def gemini_install(project_dir: Path | None = None, *, project: bool = False) ->
     if target.exists() and new_content == target.read_text(encoding="utf-8"):
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8")
+        _write_config(target, new_content)
         print(f"graphify section written to {target.resolve()}")
 
     # Always re-install the Gemini hook so an older payload (e.g. pre-issue-#580
@@ -837,10 +885,10 @@ def gemini_uninstall(project_dir: Path | None = None, *, project: bool = False) 
         r"\n*## graphify\n.*?(?=\n## |\Z)", "", content, flags=re.DOTALL
     ).rstrip()
     if cleaned:
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_config(target, cleaned + "\n")
         print(f"graphify section removed from {target.resolve()}")
     else:
-        target.unlink()
+        _unlink_config(target)
         print(f"GEMINI.md was empty after removal - deleted {target.resolve()}")
     _uninstall_gemini_hook(project_dir)
 
@@ -889,7 +937,7 @@ def vscode_install(project_dir: Path | None = None) -> None:
         if new_content == content:
             print(f"  {instructions}  ->  already configured (no change)")
         else:
-            instructions.write_text(new_content, encoding="utf-8")
+            _write_config(instructions, new_content)
             print(f"  {instructions}  ->  graphify section {'updated' if _VSCODE_INSTRUCTIONS_MARKER in content else 'added'}")
     else:
         instructions.write_text(_always_on("vscode-instructions"), encoding="utf-8")
@@ -934,10 +982,10 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
         r"\n*## graphify\n.*?(?=\n## |\Z)", "", content, flags=re.DOTALL
     ).rstrip()
     if cleaned:
-        instructions.write_text(cleaned + "\n", encoding="utf-8")
+        _write_config(instructions, cleaned + "\n")
         print(f"  graphify section removed from {instructions}")
     else:
-        instructions.unlink()
+        _unlink_config(instructions)
         print(f"  {instructions}  ->  deleted (was empty after removal)")
 
 
@@ -1558,7 +1606,7 @@ def _agents_install(project_dir: Path, platform: str) -> None:
     if target.exists() and new_content == target.read_text(encoding="utf-8"):
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8")
+        _write_config(target, new_content)
         print(f"graphify section written to {target.resolve()}")
 
     if platform == "codex":
@@ -1726,10 +1774,10 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
         flags=re.DOTALL,
     ).rstrip()
     if cleaned:
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_config(target, cleaned + "\n")
         print(f"graphify section removed from {target.resolve()}")
     else:
-        target.unlink()
+        _unlink_config(target)
         print(f"AGENTS.md was empty after removal - deleted {target.resolve()}")
 
     if platform == "opencode":
@@ -1797,7 +1845,7 @@ def claude_install(project_dir: Path | None = None) -> None:
     if target.exists() and new_content == target.read_text(encoding="utf-8"):
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8")
+        _write_config(target, new_content)
         print(f"graphify section written to {target.resolve()}")
 
     # Always re-install the Claude Code PreToolUse hook so an old hook
@@ -1901,6 +1949,13 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False) 
     """
     project_dir = project_dir or Path(".")
     _remove_skill_file("claude", project=project, project_dir=project_dir)
+    # Global `graphify install` registers the skill as a `# graphify` block in
+    # ~/.claude/CLAUDE.md (see install(), the non-project branch). The project
+    # path strips its .claude/CLAUDE.md via _remove_claude_skill_registration in
+    # _project_uninstall; mirror that for the home scope here so a global
+    # uninstall doesn't orphan the registration pointing at a deleted skill (#1121).
+    if not project:
+        _remove_claude_skill_registration(Path.home())
     target = project_dir / "CLAUDE.md"
 
     if not target.exists():
@@ -1920,10 +1975,10 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False) 
         flags=re.DOTALL,
     ).rstrip()
     if cleaned:
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_config(target, cleaned + "\n")
         print(f"graphify section removed from {target.resolve()}")
     else:
-        target.unlink()
+        _unlink_config(target)
         print(f"CLAUDE.md was empty after removal - deleted {target.resolve()}")
 
     _uninstall_claude_hook(project_dir or Path("."))
@@ -1945,7 +2000,7 @@ def codebuddy_install(project_dir: Path | None = None) -> None:
     if target.exists() and new_content == target.read_text(encoding="utf-8"):
         print(f"graphify already configured in {target.resolve()} (no change)")
     else:
-        target.write_text(new_content, encoding="utf-8")
+        _write_config(target, new_content)
         print(f"graphify section written to {target.resolve()}")
 
     # Also write CodeBuddy PreToolUse hook to .codebuddy/settings.json
@@ -2001,6 +2056,12 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
     """Remove the graphify skill tree (SKILL.md + references/) and the CODEBUDDY.md section."""
     project_dir = project_dir or Path(".")
     _remove_skill_file("codebuddy", project=project, project_dir=project_dir)
+    # Global `graphify install --platform codebuddy` registers a `# graphify`
+    # block in ~/.codebuddy/CODEBUDDY.md (see install(), the codebuddy branch).
+    # Strip it on a global uninstall so it is not orphaned pointing at a deleted
+    # skill — same class of fix as claude (#1121).
+    if not project:
+        _strip_skill_registration(Path.home() / ".codebuddy" / "CODEBUDDY.md")
     target = project_dir / "CODEBUDDY.md"
 
     if not target.exists():
@@ -2020,10 +2081,10 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
         flags=re.DOTALL,
     ).rstrip()
     if cleaned:
-        target.write_text(cleaned + "\n", encoding="utf-8")
+        _write_config(target, cleaned + "\n")
         print(f"graphify section removed from {target.resolve()}")
     else:
-        target.unlink()
+        _unlink_config(target)
         print(f"CODEBUDDY.md was empty after removal - deleted {target.resolve()}")
 
     _uninstall_codebuddy_hook(project_dir or Path("."))
