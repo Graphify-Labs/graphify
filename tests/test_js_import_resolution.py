@@ -507,12 +507,12 @@ def test_yarn_workspace_package_import_resolves_package_entry(tmp_path: Path):
 
 def test_pnpm_workspace_takes_precedence_over_package_json_workspaces(tmp_path: Path):
     _write(
-        tmp_path / "pnpm-workspace.yaml",
-        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
-    )
-    _write(
         tmp_path / "package.json",
         json.dumps({"workspaces": ["other/*"]}),
+    )
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
     )
     _write(
         tmp_path / "packages/types/package.json",
@@ -530,6 +530,107 @@ def test_pnpm_workspace_takes_precedence_over_package_json_workspaces(tmp_path: 
     result = _extract_for([target, importer], tmp_path)
 
     assert _has_edge(result, "apps/web/src/page.ts", "packages/types/src/index.ts")
+
+
+def test_pnpm_workspace_package_subpath_import_resolves_export_source_condition(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/kit/package.json",
+        json.dumps(
+            {
+                "name": "@workspace/kit",
+                "exports": {
+                    "./browser": {
+                        "source": "./src/browser.ts",
+                        "import": "./dist/browser.js",
+                        "types": "./dist/browser.d.ts",
+                    }
+                },
+            }
+        ),
+    )
+    target = _write(
+        tmp_path / "packages/kit/src/browser.ts",
+        "export interface BrowserDto { id: string }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/page.ts",
+        "import type { BrowserDto } from '@workspace/kit/browser'\nconst dto: BrowserDto = { id: '1' }\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/page.ts", "packages/kit/src/browser.ts")
+
+
+def test_pnpm_workspace_package_subpath_import_resolves_export_array_form_targets(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/kit/package.json",
+        json.dumps(
+            {
+                "name": "@workspace/kit",
+                "exports": {
+                    "./browser": [
+                        "./src/browser.ts",
+                        "./dist/browser.js",
+                    ]
+                },
+            }
+        ),
+    )
+    target = _write(
+        tmp_path / "packages/kit/src/browser.ts",
+        "export interface BrowserDto { id: string }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/page.ts",
+        "import type { BrowserDto } from '@workspace/kit/browser'\nconst dto: BrowserDto = { id: '1' }\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/page.ts", "packages/kit/src/browser.ts")
+
+
+def test_pnpm_workspace_package_subpath_import_resolves_wildcard_export(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/db/package.json",
+        json.dumps(
+            {
+                "name": "@workspace/db",
+                "exports": {
+                    "./server/queries/*": {
+                        "source": "./server/queries/*.ts",
+                        "import": "./dist/server/queries/*.js",
+                        "types": "./dist/server/queries/*.d.ts",
+                    }
+                },
+            }
+        ),
+    )
+    target = _write(
+        tmp_path / "packages/db/server/queries/wallets.ts",
+        "export interface WalletQuery { id: string }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/api/src/route.ts",
+        "import type { WalletQuery } from '@workspace/db/server/queries/wallets'\nconst query: WalletQuery = { id: '1' }\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/api/src/route.ts", "packages/db/server/queries/wallets.ts")
 
 
 def test_js_import_resolution_ignores_stale_importer_cache_when_target_appears(tmp_path: Path):
