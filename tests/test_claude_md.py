@@ -1,7 +1,24 @@
 """Tests for graphify claude install / uninstall commands."""
 from pathlib import Path
 import pytest
-from graphify.__main__ import claude_install, claude_uninstall, _CLAUDE_MD_MARKER, _CLAUDE_MD_SECTION
+from graphify.__main__ import (
+    claude_install,
+    claude_uninstall,
+    install,
+    _skill_registration,
+    _CLAUDE_MD_MARKER,
+    _CLAUDE_MD_SECTION,
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path, monkeypatch):
+    """Redirect Path.home() to a sandbox so global-scope writes/removals never
+    touch the developer's real ~/.claude/CLAUDE.md."""
+    home = tmp_path / "_home"
+    home.mkdir()
+    monkeypatch.setattr("graphify.__main__.Path.home", lambda: home)
+    return home
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +112,45 @@ def test_uninstall_no_op_when_no_file(tmp_path, capsys):
     claude_uninstall(tmp_path)
     out = capsys.readouterr().out
     assert "No CLAUDE.md" in out or "nothing to do" in out
+
+
+def test_global_uninstall_removes_home_registration(tmp_path, monkeypatch, _isolated_home):
+    """Global `graphify install` writes a `# graphify` block to ~/.claude/CLAUDE.md;
+    `graphify uninstall` (global scope) must strip it, not orphan it (#1121)."""
+    monkeypatch.chdir(tmp_path)
+    install(platform="claude")  # global scope (project=False)
+
+    home_md = _isolated_home / ".claude" / "CLAUDE.md"
+    assert home_md.exists()
+    assert "# graphify" in home_md.read_text()
+
+    claude_uninstall(tmp_path)  # global scope
+    # The block was the only content, so the file is removed entirely;
+    # either way the registration must be gone.
+    assert not home_md.exists() or "# graphify" not in home_md.read_text()
+
+
+def test_global_uninstall_preserves_other_home_content(tmp_path, monkeypatch, _isolated_home):
+    """Global uninstall keeps non-graphify content in ~/.claude/CLAUDE.md."""
+    home_md = _isolated_home / ".claude" / "CLAUDE.md"
+    home_md.parent.mkdir(parents=True, exist_ok=True)
+    home_md.write_text("# My global rules\n\nKeep me.\n" + _skill_registration())
+
+    claude_uninstall(tmp_path)  # global scope
+    content = home_md.read_text()
+    assert "My global rules" in content
+    assert "Keep me." in content
+    assert "# graphify" not in content
+
+
+def test_project_uninstall_does_not_touch_home(tmp_path, monkeypatch, _isolated_home):
+    """Project-scoped uninstall must not strip the home registration."""
+    home_md = _isolated_home / ".claude" / "CLAUDE.md"
+    home_md.parent.mkdir(parents=True, exist_ok=True)
+    home_md.write_text(_skill_registration())
+
+    claude_uninstall(tmp_path, project=True)  # project scope
+    assert "# graphify" in home_md.read_text()
 
 
 # ---------------------------------------------------------------------------

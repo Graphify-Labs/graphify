@@ -4,6 +4,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
+- Fix: global `graphify uninstall` now strips the `# graphify` skill registration from `~/.claude/CLAUDE.md` (and `graphify install --platform codebuddy`'s registration from `~/.codebuddy/CODEBUDDY.md`). Previously a global install wrote the registration to the home-scope file but uninstall only looked at `./CLAUDE.md` in the cwd — and matched the wrong heading level — leaving an orphaned reference pointing at a now-deleted skill (#1121).
+- Feat: install and uninstall now back up any user-editable config file (CLAUDE.md, CODEBUDDY.md, GEMINI.md, AGENTS.md, VS Code instructions) before modifying or deleting it. Backups are timestamped under `~/.graphify/backups/<date>/`. Set `GRAPHIFY_NO_BACKUP=1` to disable. graphify-owned files (skill trees, Cursor/Devin rule files) are not backed up — they contain no user content.
 - Fix: `graphify query`, `graphify explain`, and MCP `query_graph`/`get_node` now show the human-readable community name (e.g. "FlashAttention Paper") instead of a blank or numeric ID after running `cluster-only`. `to_json` now accepts `community_labels` and embeds `community_name` on each node; read paths fall back to the numeric `community` field for backward compatibility with old graphs (#1305).
 - Fix: `graphify-mcp` and `python -m graphify.serve` now accept `--graph <path>` as an alias for the positional argument, consistent with every other graphify subcommand. Previously `--graph` raised "unrecognized arguments" (#1304).
 
