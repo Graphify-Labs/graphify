@@ -2024,7 +2024,18 @@ def _parse_label_response(text: str, labeled_cids: list[int]) -> dict[int, str]:
         start, end = cleaned.find("{"), cleaned.rfind("}")
         if start != -1 and end > start:
             cleaned = cleaned[start:end + 1]
-    data = json.loads(cleaned)
+    data = None
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Fallback for unterminated strings or unescaped quotes inside community names
+        import re
+        matches = re.findall(r'"(\d+)"\s*:\s*"([^"]+)', cleaned)
+        if matches:
+            data = {k: v for k, v in matches}
+        else:
+            raise ValueError("label response could not be parsed as JSON or via regex fallback")
+
     if not isinstance(data, dict):
         raise ValueError("label response is not a JSON object")
     out: dict[int, str] = {}

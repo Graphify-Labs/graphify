@@ -135,6 +135,26 @@ def test_label_communities_malformed_raises(monkeypatch):
         label_communities(G, communities, backend="gemini")
 
 
+def test_label_communities_unterminated_string_fallback(monkeypatch):
+    G, communities = _graph()
+    # Simulate truncated JSON that fails json.loads() but contains valid pairs
+    monkeypatch.setattr("graphify.llm._call_llm",
+                        lambda p, *, backend, max_tokens=200: '{"0": "Order Management", "1": "Payment')
+    labels = label_communities(G, communities, backend="gemini")
+    assert labels[0] == "Order Management"
+    assert labels[1] == "Payment"  # Saved by the regex fallback!
+
+
+def test_label_communities_unescaped_quotes_fallback(monkeypatch):
+    G, communities = _graph()
+    # Simulate invalid JSON with an unescaped quote inside the value
+    monkeypatch.setattr("graphify.llm._call_llm",
+                        lambda p, *, backend, max_tokens=200: '{"0": "Order "Management"", "1": "Payment Flow"}')
+    labels = label_communities(G, communities, backend="gemini")
+    assert labels[0] == "Order"  # regex stops at the first unescaped quote (and strip removes the space)
+    assert labels[1] == "Payment Flow"  # Second item is salvaged properly
+
+
 def test_generate_community_labels_degrades_on_error(monkeypatch):
     G, communities = _graph()
     monkeypatch.setattr("graphify.llm._call_llm",
