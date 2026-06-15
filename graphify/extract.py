@@ -1726,10 +1726,117 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
     return found
 
 
+# Node types whose value is a callable, for the JS/TS assignment / class-field
+# / function-expression forms below. Older tree-sitter-javascript grammars
+# label a function expression `function`; current ones use `function_expression`.
+_JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function"})
+
+
+def _js_member_assignment_target(left, source: bytes):
+    """Classify the symbol an `assignment_expression` LHS defines when its RHS
+    is a function. Returns (kind, owner_name, member_name) or None.
+
+      this.foo = fn            → ("this",      None,  "foo")
+      exports.foo = fn         → ("exports",   None,  "foo")
+      module.exports.foo = fn  → ("exports",   None,  "foo")
+      Foo.prototype.bar = fn   → ("prototype", "Foo", "bar")
+
+    Any other shape (an arbitrary `obj.x = fn`) returns None and is skipped —
+    capturing those would reintroduce the bare-named / phantom-god-node class
+    of bug the module-level scope guard (#1077) exists to prevent.
+    """
+    if left is None or left.type != "member_expression":
+        return None
+    prop = left.child_by_field_name("property")
+    if prop is None:
+        return None
+    member_name = _read_text(prop, source)
+    if not member_name:
+        return None
+    obj = left.child_by_field_name("object")
+    if obj is None:
+        return None
+    if obj.type == "this":
+        return ("this", None, member_name)
+    if obj.type == "identifier":
+        if _read_text(obj, source) == "exports":
+            return ("exports", None, member_name)
+        return None
+    if obj.type == "member_expression":
+        # module.exports.X  or  Foo.prototype.X
+        inner_obj = obj.child_by_field_name("object")
+        inner_prop = obj.child_by_field_name("property")
+        if inner_obj is None or inner_prop is None:
+            return None
+        inner_prop_name = _read_text(inner_prop, source)
+        if inner_obj.type == "identifier":
+            inner_obj_name = _read_text(inner_obj, source)
+            if inner_obj_name == "module" and inner_prop_name == "exports":
+                return ("exports", None, member_name)
+            if inner_prop_name == "prototype":
+                return ("prototype", inner_obj_name, member_name)
+    return None
+
+
 def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
+    # CommonJS / prototype member assignments whose value is a function:
+    #   exports.X = () => {}     → file-contained function  X()
+    #   module.exports.X = fn    → file-contained function  X()
+    #   Foo.prototype.bar = fn   → method bar() owned by Foo
+    # (`this.X = fn` lives inside a function body, which is not recursed here;
+    #  it is captured at the enclosing function — see the function branch.)
+    if node.type == "expression_statement":
+        assign = next((c for c in node.children
+                       if c.type == "assignment_expression"), None)
+        if assign is not None:
+            value = assign.child_by_field_name("right")
+            if value is not None and value.type in _JS_FUNCTION_VALUE_TYPES:
+                target = _js_member_assignment_target(
+                    assign.child_by_field_name("left"), source)
+                if target is not None:
+                    kind, owner_name, member_name = target
+                    line = node.start_point[0] + 1
+                    handled = False
+                    if kind == "exports":
+                        nid = _make_id(stem, member_name)
+                        add_node_fn(nid, f"{member_name}()", line)
+                        add_edge_fn(file_nid, nid, "contains", line)
+                        handled = True
+                    elif kind == "prototype":
+                        owner_nid = _make_id(stem, owner_name)
+                        nid = _make_id(owner_nid, member_name)
+                        add_node_fn(nid, f".{member_name}()", line)
+                        add_edge_fn(owner_nid, nid, "method", line)
+                        handled = True
+                    if handled:
+                        body = value.child_by_field_name("body")
+                        if body:
+                            function_bodies.append((nid, body))
+                        return True
+
+    # Class fields whose value is a function:
+    #   class C { handler = () => {} }   → method handler() owned by C
+    # Reaches here with parent_class_nid set because class bodies are recursed
+    # with the class nid as parent.
+    if parent_class_nid and node.type in ("field_definition", "public_field_definition"):
+        prop = node.child_by_field_name("property") or node.child_by_field_name("name")
+        value = node.child_by_field_name("value")
+        if (prop is not None and value is not None
+                and value.type in _JS_FUNCTION_VALUE_TYPES):
+            field_name = _read_text(prop, source)
+            if field_name:
+                line = node.start_point[0] + 1
+                nid = _make_id(parent_class_nid, field_name)
+                add_node_fn(nid, f".{field_name}()", line)
+                add_edge_fn(parent_class_nid, nid, "method", line)
+                body = value.child_by_field_name("body")
+                if body:
+                    function_bodies.append((nid, body))
+                return True
+
     if node.type in ("lexical_declaration", "variable_declaration"):
         # CJS require imports — emit edges, do not block other lexical_declaration handling
         require_found = _require_imports_js(node, source, file_nid, stem, edges, str_path)
@@ -1755,7 +1862,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
             for child in node.children:
                 if child.type == "variable_declarator":
                     value = child.child_by_field_name("value")
-                    if value and value.type == "arrow_function":
+                    if value and value.type in _JS_FUNCTION_VALUE_TYPES:
+                        # `const f = () => {}` and `const f = function(){}`
                         name_node = child.child_by_field_name("name")
                         if name_node:
                             func_name = _read_text(name_node, source)
@@ -3103,6 +3211,39 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                                      line, context=ctx)
 
             body = _find_body(node, config)
+            # JS/TS: capture `this.X = () => {}` / `this.X = function(){}`
+            # assigned directly in this function/constructor body. They live
+            # inside the body (otherwise only walked for calls), so without this
+            # they are never emitted — the dominant miss on constructor-style
+            # ("function Foo(){ this.bar = () => {} }") and many CommonJS repos.
+            # Owner is the enclosing class when present (a constructor's methods
+            # belong to the class), else the function itself.
+            if body is not None and config.ts_module in (
+                "tree_sitter_javascript", "tree_sitter_typescript"
+            ):
+                this_owner_nid = parent_class_nid if parent_class_nid else func_nid
+                for stmt in body.children:
+                    if stmt.type != "expression_statement":
+                        continue
+                    assign = next((c for c in stmt.children
+                                   if c.type == "assignment_expression"), None)
+                    if assign is None:
+                        continue
+                    val = assign.child_by_field_name("right")
+                    if val is None or val.type not in _JS_FUNCTION_VALUE_TYPES:
+                        continue
+                    tgt = _js_member_assignment_target(
+                        assign.child_by_field_name("left"), source)
+                    if tgt is None or tgt[0] != "this":
+                        continue
+                    m_name = tgt[2]
+                    m_line = stmt.start_point[0] + 1
+                    m_nid = _make_id(this_owner_nid, m_name)
+                    add_node(m_nid, f".{m_name}()", m_line)
+                    add_edge(this_owner_nid, m_nid, "method", m_line)
+                    m_body = val.child_by_field_name("body")
+                    if m_body:
+                        function_bodies.append((m_nid, m_body))
             if body:
                 function_bodies.append((func_nid, body))
             return

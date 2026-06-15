@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
+- Feat: JS/TS AST now extracts function symbols defined via `this.X = () => {}` / `this.X = function(){}` (constructor-assigned methods), `exports.X = fn` / `module.exports.X = fn`, `Foo.prototype.X = fn`, class arrow/function fields (`class C { onClick = (e) => {} }`), and `const f = function(){}` function expressions. Previously only top-level `function` declarations, top-level `const x = () =>` arrows, classes, and method shorthand were captured, so the majority of callable symbols in constructor-style and CommonJS codebases (DAOs, route handlers, services) never became nodes and could not be call-edge endpoints. Arbitrary `obj.x = fn` is deliberately not captured, preserving the #1077 phantom-god-node guard (#1322).
 - Fix: `graphify query`, `graphify explain`, and MCP `query_graph`/`get_node` now show the human-readable community name (e.g. "FlashAttention Paper") instead of a blank or numeric ID after running `cluster-only`. `to_json` now accepts `community_labels` and embeds `community_name` on each node; read paths fall back to the numeric `community` field for backward compatibility with old graphs (#1305).
 - Fix: `graphify-mcp` and `python -m graphify.serve` now accept `--graph <path>` as an alias for the positional argument, consistent with every other graphify subcommand. Previously `--graph` raised "unrecognized arguments" (#1304).
 
