@@ -4253,6 +4253,7 @@ def main() -> None:
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
+        _stitch_new_ids: set[str] = set()
         if code_files:
             from graphify.extract import extract as _ast_extract
             # Anchor the cache at the output root, not the scanned project:
@@ -4267,6 +4268,9 @@ def main() -> None:
             except Exception as exc:
                 print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
+            for _n in ast_result.get("nodes", []):
+                if _n.get("id"):
+                    _stitch_new_ids.add(str(_n["id"]))
 
         # Semantic extraction on docs/papers/images. Check cache first.
         from graphify.cache import (
@@ -4279,6 +4283,7 @@ def main() -> None:
         }
         sem_cache_hits = 0
         sem_cache_misses = 0
+        fresh: dict = {"nodes": [], "edges": [], "hyperedges": []}
         if semantic_files:
             sem_paths_str = [str(p) for p in semantic_files]
             cached_nodes, cached_edges, cached_hyperedges, uncached_paths = (
@@ -4347,6 +4352,32 @@ def main() -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
+                # Incremental: never prune/replace changed files unless re-extraction
+                # actually produced nodes/edges. Invalid JSON and connection failures
+                # that yield empty chunks must abort before merge (#incremental-safe).
+                if incremental_mode and uncached_paths:
+                    from graphify.build import paths_missing_from_extraction as _paths_missing
+
+                    _missing = _paths_missing(fresh, uncached_paths, target)
+                    if fresh.get("failed_chunks", 0) > 0 or _missing:
+                        if fresh.get("failed_chunks", 0) > 0:
+                            print(
+                                f"[graphify extract] error: {fresh['failed_chunks']} semantic "
+                                f"chunk(s) failed during incremental re-extraction.",
+                                file=sys.stderr,
+                            )
+                        for _path in _missing:
+                            print(
+                                f"[graphify extract] error: re-extraction produced no "
+                                f"nodes/edges for {_path}",
+                                file=sys.stderr,
+                            )
+                        print(
+                            "[graphify extract] incremental update aborted — existing "
+                            "graph.json and manifest unchanged.",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
                 try:
                     _save_semantic_cache(
                         fresh.get("nodes", []),
@@ -4361,6 +4392,9 @@ def main() -> None:
                 sem_result["hyperedges"].extend(fresh.get("hyperedges", []))
                 sem_result["input_tokens"] += fresh.get("input_tokens", 0)
                 sem_result["output_tokens"] += fresh.get("output_tokens", 0)
+                for _n in fresh.get("nodes", []):
+                    if _n.get("id"):
+                        _stitch_new_ids.add(str(_n["id"]))
 
         pg_result: dict = {"nodes": [], "edges": []}
         if cli_postgres_dsn is not None:
@@ -4417,20 +4451,75 @@ def main() -> None:
             for ftype, flist in files_by_type.items()
         }
 
+        _incremental_prune: list[str] | None = None
+        _changed_for_stitch: list[str] = []
+        if incremental_mode:
+            from graphify.build import path_covered_by_extraction as _path_covered
+
+            _changed_code = [str(p) for p in code_files]
+            _changed_sem = [
+                str(p) for p in semantic_files
+                if _path_covered(str(p), sem_result, target)
+            ]
+            _changed_for_stitch = list(dict.fromkeys(_changed_code + [str(p) for p in semantic_files]))
+            _incremental_prune = (
+                list(dict.fromkeys(deleted_files + _changed_code + _changed_sem)) or None
+            )
+
         if no_cluster:
             # --no-cluster: dump the raw merged extraction as graph.json.
             # No NetworkX, no community detection, no analysis sidecar.
             from graphify.export import backup_if_protected as _backup
+            from graphify.build import build_merge as _build_merge
             _backup(graphify_out)
-            graph_json_path.write_text(
-                json.dumps(merged, indent=2), encoding="utf-8"
-            )
+            if incremental_mode:
+                G = _build_merge(
+                    [merged],
+                    graph_path=existing_graph_path,
+                    prune_sources=_incremental_prune,
+                    dedup=True,
+                    dedup_llm_backend=backend if dedup_llm else None,
+                    root=target,
+                )
+                if _changed_for_stitch:
+                    from graphify.stitch import stitch_incremental_links as _stitch_links
+                    _stitch_links(
+                        G,
+                        _changed_for_stitch,
+                        root=target,
+                        new_node_ids=_stitch_new_ids,
+                    )
+                out_graph = {
+                    "nodes": [{"id": n, **d} for n, d in G.nodes(data=True)],
+                    "edges": [
+                        {
+                            **{k: val for k, val in d.items() if k not in ("_src", "_tgt", "source", "target")},
+                            "source": d.get("_src", u),
+                            "target": d.get("_tgt", v),
+                        }
+                        for u, v, d in G.edges(data=True)
+                    ],
+                    "hyperedges": list(G.graph.get("hyperedges", [])),
+                    "input_tokens": merged["input_tokens"],
+                    "output_tokens": merged["output_tokens"],
+                }
+                graph_json_path.write_text(
+                    json.dumps(out_graph, indent=2), encoding="utf-8"
+                )
+                node_count = len(out_graph["nodes"])
+                edge_count = len(out_graph["edges"])
+            else:
+                graph_json_path.write_text(
+                    json.dumps(merged, indent=2), encoding="utf-8"
+                )
+                node_count = len(merged["nodes"])
+                edge_count = len(merged["edges"])
             cost = _estimate_cost(
                 backend, merged["input_tokens"], merged["output_tokens"]
             )
             print(
                 f"[graphify extract] wrote {graph_json_path} — "
-                f"{len(merged['nodes'])} nodes, {len(merged['edges'])} edges "
+                f"{node_count} nodes, {edge_count} edges "
                 f"(no clustering)"
             )
             if merged["input_tokens"] or merged["output_tokens"]:
@@ -4472,11 +4561,19 @@ def main() -> None:
             G = _build_merge(
                 [merged],
                 graph_path=existing_graph_path,
-                prune_sources=deleted_files or None,
+                prune_sources=_incremental_prune,
                 dedup=True,
                 dedup_llm_backend=dedup_backend,
                 root=target,
             )
+            if _changed_for_stitch:
+                from graphify.stitch import stitch_incremental_links as _stitch_links
+                _stitch_links(
+                    G,
+                    _changed_for_stitch,
+                    root=target,
+                    new_node_ids=_stitch_new_ids,
+                )
         else:
             G = _build([merged], dedup=True, dedup_llm_backend=dedup_backend, root=target)
         if G.number_of_nodes() == 0:

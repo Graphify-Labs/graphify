@@ -16,6 +16,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from graphify.file_slice import (
+    FileSlice,
+    SemanticUnit,
+    expand_oversized_files,
+    estimate_unit_tokens,
+    is_file_slice,
+    read_unit_text,
+    split_chunk_for_retry,
+    unit_label,
+    unit_path,
+)
+
 # `_read_files` truncates each file at this many characters before joining into
 # the user message. Token estimates use the same cap so packing matches reality.
 _FILE_CHAR_CAP = 20_000
@@ -80,7 +92,7 @@ BACKENDS: dict[str, dict] = {
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "default_model": "gemini-3-flash-preview",
-        "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_BYOK"],
         "model_env_key": "GRAPHIFY_GEMINI_MODEL",
         "pricing": {"input": 0.50, "output": 3.00},  # USD per 1M tokens
         "temperature": 0,
@@ -89,9 +101,9 @@ BACKENDS: dict[str, dict] = {
         "vision": True,
     },
     "openai": {
-        "base_url": "https://api.openai.com/v1",
+        "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "default_model": "gpt-4.1-mini",
-        "env_key": "OPENAI_API_KEY",
+        "env_keys": ["OPENAI_API_KEY", "OPENROUTER_API_KEY"],
         "model_env_key": "GRAPHIFY_OPENAI_MODEL",
         "pricing": {"input": 0.40, "output": 1.60},  # USD per 1M tokens
         # Default (gpt-4.1-mini) accepts temperature=0. Reasoning models
@@ -446,7 +458,7 @@ def _wrap_untrusted(rel: str, content: str) -> str:
     )
 
 
-def _read_files(paths: list[Path], root: Path) -> str:
+def _read_files(units: list[SemanticUnit], root: Path) -> str:
     """Return file contents formatted for the extraction prompt.
 
     Each file is wrapped in an <untrusted_source> delimiter block and known
@@ -454,16 +466,26 @@ def _read_files(paths: list[Path], root: Path) -> str:
     be confused with the trusted system instructions (see issue #1210).
     """
     parts: list[str] = []
-    for p in paths:
+    for unit in units:
+        p = unit_path(unit)
         try:
             rel = str(p.relative_to(root))
         except ValueError:
             rel = str(p)
         try:
-            content = _file_to_text(p)
+            if is_file_slice(unit):
+                content = read_unit_text(unit)
+                sl = unit.source_location()
+                content = (
+                    f"[graphify slice {unit.slice_index + 1}/{unit.slice_count}, {sl}]\n"
+                    + content
+                )
+            else:
+                content = _file_to_text(p)
+                content = content[:_FILE_CHAR_CAP]
         except OSError:
             continue
-        parts.append(_wrap_untrusted(rel, content[:_FILE_CHAR_CAP]))
+        parts.append(_wrap_untrusted(rel, content))
     return "\n\n".join(parts)
 
 
@@ -531,11 +553,19 @@ def _is_vision_image(path: Path) -> bool:
     return path.suffix.lower() in _VISION_IMAGE_EXTENSIONS
 
 
-def _partition_semantic_files(files: list[Path]) -> tuple[list[Path], list[Path]]:
-    """Split a chunk into (text-like files, raster-image files)."""
-    text_files = [f for f in files if not _is_vision_image(f)]
-    image_files = [f for f in files if _is_vision_image(f)]
-    return text_files, image_files
+def _partition_semantic_files(
+    units: list[SemanticUnit],
+) -> tuple[list[SemanticUnit], list[Path]]:
+    """Split a chunk into (text-like units, raster-image files)."""
+    text_units: list[SemanticUnit] = []
+    image_files: list[Path] = []
+    for unit in units:
+        p = unit_path(unit)
+        if _is_vision_image(p):
+            image_files.append(p)
+        else:
+            text_units.append(unit)
+    return text_units, image_files
 
 
 def _build_image_refs(image_files: list[Path], root: Path, *, read_bytes: bool = True) -> list[_ImageRef]:
@@ -826,6 +856,12 @@ def _backend_pkg_hint(pkg: str, extra: str) -> str:
         f"Install it with:  uv tool install \"graphifyy[{extra}]\" --force  "
         f"(uv tool), or  pip install {pkg}  (pip/venv install)."
     )
+
+
+def _supports_reasoning_effort(model: str) -> bool:
+    """True when the model accepts OpenAI-style reasoning_effort / thinking level."""
+    m = (model or "").lower().rsplit("/", 1)[-1]
+    return not m.startswith("gemma")
 
 
 def _call_openai_compat(
@@ -1246,7 +1282,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
 
 
 def extract_files_direct(
-    files: list[Path],
+    files: list[SemanticUnit],
     backend: str | None = None,
     api_key: str | None = None,
     model: str | None = None,
@@ -1335,7 +1371,7 @@ def extract_files_direct(
         mdl,
         user_msg,
         temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
-        reasoning_effort=cfg.get("reasoning_effort"),
+        reasoning_effort=cfg.get("reasoning_effort") if _supports_reasoning_effort(mdl) else None,
         max_completion_tokens=_resolve_max_tokens(cfg.get("max_completion_tokens", 8192)),
         backend=backend,
         deep_mode=deep_mode,
@@ -1345,63 +1381,45 @@ def extract_files_direct(
 
 
 def _estimate_file_tokens(path: Path) -> int:
-    """Estimate the prompt-token cost of a single file under `_read_files` rules.
+    """Estimate the prompt-token cost of a single file under `_read_files` rules."""
+    return estimate_unit_tokens(path, tokenizer=_TOKENIZER, char_cap=_FILE_CHAR_CAP)
 
-    Uses tiktoken (`cl100k_base`) when available for accurate counts. Falls back
-    to the chars/4 heuristic if tiktoken is not installed. Both paths cap at
-    `_FILE_CHAR_CAP` to match `_read_files`'s truncation, plus a constant for
-    the `=== rel ===` separator. Returns 0 for unreadable paths so they don't
-    blow up packing.
-    """
-    # Raster images are not read as text; a vision model bills them at a roughly
-    # fixed token cost, so estimate by image count rather than (binary) byte size.
-    if _is_vision_image(path):
+
+def _estimate_unit_tokens(unit: SemanticUnit) -> int:
+    if _is_vision_image(unit_path(unit)):
         return _IMAGE_TOKEN_ESTIMATE
-    if _TOKENIZER is None:
-        try:
-            size = path.stat().st_size
-        except OSError:
-            return 0
-        chars = min(size, _FILE_CHAR_CAP) + _PER_FILE_OVERHEAD_CHARS
-        return chars // _CHARS_PER_TOKEN
-
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
-    except OSError:
-        return 0
-    return len(_TOKENIZER.encode(content)) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
+    return estimate_unit_tokens(unit, tokenizer=_TOKENIZER, char_cap=_FILE_CHAR_CAP)
 
 
 def _pack_chunks_by_tokens(
-    files: list[Path],
+    units: list[SemanticUnit],
     token_budget: int,
-) -> list[list[Path]]:
+) -> list[list[SemanticUnit]]:
     """Greedily pack files into chunks that fit a token budget.
 
     Files are first grouped by parent directory so related artifacts share a
     chunk (cross-file edges are more likely to be extracted within a chunk
     than across chunks). Within each directory, files are added one at a
     time; a chunk is closed when adding the next file would exceed the
-    budget. A single file larger than the budget gets its own chunk and the
-    caller is expected to handle the API error if it actually overflows the
-    model's context window — packing can't shrink one big file.
+    budget. Oversized splittable text files should already be expanded into
+    :class:`~graphify.file_slice.FileSlice` units before packing.
     """
     if token_budget <= 0:
         raise ValueError(f"token_budget must be positive, got {token_budget}")
 
-    by_dir: dict[Path, list[Path]] = {}
-    for f in files:
-        by_dir.setdefault(f.parent, []).append(f)
+    by_dir: dict[Path, list[SemanticUnit]] = {}
+    for unit in units:
+        by_dir.setdefault(unit_path(unit).parent, []).append(unit)
 
-    chunks: list[list[Path]] = []
-    current: list[Path] = []
+    chunks: list[list[SemanticUnit]] = []
+    current: list[SemanticUnit] = []
     current_tokens = 0
     current_images = 0
 
     for directory in sorted(by_dir):
-        for path in by_dir[directory]:
-            cost = _estimate_file_tokens(path)
-            is_image = _is_vision_image(path)
+        for unit in by_dir[directory]:
+            cost = _estimate_unit_tokens(unit)
+            is_image = _is_vision_image(unit_path(unit))
             over_budget = current_tokens + cost > token_budget
             over_images = is_image and current_images >= _MAX_IMAGES_PER_CHUNK
             if current and (over_budget or over_images):
@@ -1409,7 +1427,7 @@ def _pack_chunks_by_tokens(
                 current = []
                 current_tokens = 0
                 current_images = 0
-            current.append(path)
+            current.append(unit)
             current_tokens += cost
             current_images += is_image
 
@@ -1447,8 +1465,25 @@ def _looks_like_context_exceeded(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CONTEXT_EXCEEDED_MARKERS)
 
 
+def _merge_extraction_results(
+    left: dict,
+    right: dict,
+    *,
+    model: str | None = None,
+) -> dict:
+    return {
+        "nodes": left.get("nodes", []) + right.get("nodes", []),
+        "edges": left.get("edges", []) + right.get("edges", []),
+        "hyperedges": left.get("hyperedges", []) + right.get("hyperedges", []),
+        "input_tokens": left.get("input_tokens", 0) + right.get("input_tokens", 0),
+        "output_tokens": left.get("output_tokens", 0) + right.get("output_tokens", 0),
+        "model": model or right.get("model") or left.get("model"),
+        "finish_reason": "stop",
+    }
+
+
 def _extract_with_adaptive_retry(
-    chunk: list[Path],
+    chunk: list[SemanticUnit],
     backend: str,
     api_key: str | None,
     model: str | None,
@@ -1457,6 +1492,7 @@ def _extract_with_adaptive_retry(
     _depth: int = 0,
     *,
     deep_mode: bool = False,
+    token_budget: int | None = None,
 ) -> dict:
     """Extract a chunk; if the response is truncated (`finish_reason="length"`)
     or the API rejects the prompt as too large for the model's context window,
@@ -1486,9 +1522,34 @@ def _extract_with_adaptive_retry(
     still failing at the cap, we surface the (likely empty) result with a
     warning rather than infinite-loop.
 
-    A single-file chunk that overflows is unrecoverable here — we can't make
-    one file smaller than itself, so we return what we got and warn.
+    A single-file chunk that overflows may still be recoverable when the unit
+    is splittable text (``.md``, ``.txt``, etc.) — we bisect the file or slice
+    and recurse. Non-splittable single files (e.g. one huge ``.py``) cannot be
+    shrunk further; we return what we got and warn.
     """
+    def _retry_halves() -> dict:
+        sub_chunks = split_chunk_for_retry(chunk, token_budget, tokenizer=_TOKENIZER)
+        if sub_chunks is None:
+            return {}
+        results = [
+            _extract_with_adaptive_retry(
+                sub,
+                backend,
+                api_key,
+                model,
+                root,
+                max_depth,
+                _depth + 1,
+                deep_mode=deep_mode,
+                token_budget=token_budget,
+            )
+            for sub in sub_chunks
+        ]
+        merged = results[0]
+        for part in results[1:]:
+            merged = _merge_extraction_results(merged, part, model=model)
+        return merged
+
     try:
         result = extract_files_direct(
             chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
@@ -1496,13 +1557,6 @@ def _extract_with_adaptive_retry(
     except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow
         if not _looks_like_context_exceeded(exc):
             raise
-        if len(chunk) <= 1:
-            print(
-                f"[graphify] single-file chunk {chunk[0]} exceeds model context "
-                f"and cannot be split further: {exc}",
-                file=sys.stderr,
-            )
-            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
         if _depth >= max_depth:
             print(
                 f"[graphify] chunk of {len(chunk)} still overflows context at "
@@ -1510,37 +1564,22 @@ def _extract_with_adaptive_retry(
                 file=sys.stderr,
             )
             return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
+        sub = split_chunk_for_retry(chunk, token_budget, tokenizer=_TOKENIZER)
+        if sub is None:
+            print(
+                f"[graphify] single-file chunk {unit_label(chunk[0])} exceeds model context "
+                f"and cannot be split further: {exc}",
+                file=sys.stderr,
+            )
+            return {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0, "model": model, "finish_reason": "stop"}
         print(
             f"[graphify] chunk of {len(chunk)} exceeded context at depth "
-            f"{_depth} ({type(exc).__name__}); splitting in half and retrying",
+            f"{_depth} ({type(exc).__name__}); splitting and retrying",
             file=sys.stderr,
         )
-        mid = len(chunk) // 2
-        left = _extract_with_adaptive_retry(
-            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
-        )
-        right = _extract_with_adaptive_retry(
-            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
-        )
-        return {
-            "nodes": left.get("nodes", []) + right.get("nodes", []),
-            "edges": left.get("edges", []) + right.get("edges", []),
-            "hyperedges": left.get("hyperedges", []) + right.get("hyperedges", []),
-            "input_tokens": left.get("input_tokens", 0) + right.get("input_tokens", 0),
-            "output_tokens": left.get("output_tokens", 0) + right.get("output_tokens", 0),
-            "model": model,
-            "finish_reason": "stop",
-        }
+        return _retry_halves()
 
     if result.get("finish_reason") != "length":
-        return result
-
-    if len(chunk) <= 1:
-        print(
-            f"[graphify] single-file chunk {chunk[0]} truncated at "
-            f"max_completion_tokens — partial result kept",
-            file=sys.stderr,
-        )
         return result
 
     if _depth >= max_depth:
@@ -1551,32 +1590,24 @@ def _extract_with_adaptive_retry(
         )
         return result
 
+    sub = split_chunk_for_retry(chunk, token_budget, tokenizer=_TOKENIZER)
+    if sub is None:
+        print(
+            f"[graphify] single-file chunk {unit_label(chunk[0])} truncated at "
+            f"max_completion_tokens — partial result kept",
+            file=sys.stderr,
+        )
+        return result
+
     print(
         f"[graphify] chunk of {len(chunk)} truncated at depth {_depth}, "
-        f"splitting into halves of {len(chunk) // 2} and "
-        f"{len(chunk) - len(chunk) // 2}",
+        f"splitting into {len(sub)} sub-chunk(s) and retrying",
         file=sys.stderr,
     )
-    mid = len(chunk) // 2
-    left = _extract_with_adaptive_retry(
-        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
-    )
-    right = _extract_with_adaptive_retry(
-        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
-    )
-
-    return {
-        "nodes": left.get("nodes", []) + right.get("nodes", []),
-        "edges": left.get("edges", []) + right.get("edges", []),
-        "hyperedges": left.get("hyperedges", []) + right.get("hyperedges", []),
-        "input_tokens": left.get("input_tokens", 0) + right.get("input_tokens", 0),
-        "output_tokens": left.get("output_tokens", 0) + right.get("output_tokens", 0),
-        "model": result.get("model"),
-        # Both halves either succeeded or have already surfaced their own
-        # truncation warning; the merged result is no longer truncated as a
-        # logical unit.
-        "finish_reason": "stop",
-    }
+    retried = _retry_halves()
+    if retried:
+        return retried
+    return result
 
 
 def extract_corpus_parallel(
@@ -1627,7 +1658,13 @@ def extract_corpus_parallel(
     chunk does not abort the run.
     """
     if token_budget is not None:
-        chunks = _pack_chunks_by_tokens(files, token_budget=token_budget)
+        units = expand_oversized_files(
+            files,
+            token_budget,
+            tokenizer=_TOKENIZER,
+            char_cap=_FILE_CHAR_CAP,
+        )
+        chunks = _pack_chunks_by_tokens(units, token_budget=token_budget)
     else:
         chunks = [files[i:i + chunk_size] for i in range(0, len(files), chunk_size)]
 
@@ -1638,7 +1675,7 @@ def extract_corpus_parallel(
     }
     total = len(chunks)
 
-    def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
+    def _run_one(idx: int, chunk: list[SemanticUnit]) -> tuple[int, dict | None, Exception | None]:
         t0 = time.time()
         try:
             result = _extract_with_adaptive_retry(
@@ -1649,6 +1686,7 @@ def extract_corpus_parallel(
                 root=root,
                 max_depth=max_retry_depth,
                 deep_mode=deep_mode,
+                token_budget=token_budget,
             )
             result["elapsed_seconds"] = round(time.time() - t0, 2)
             return idx, result, None
@@ -1844,7 +1882,7 @@ def _call_llm(
     temperature = _resolve_temperature(cfg.get("temperature", 0), mdl)
     if temperature is not None:
         kwargs["temperature"] = temperature
-    if cfg.get("reasoning_effort"):
+    if cfg.get("reasoning_effort") and _supports_reasoning_effort(mdl):
         kwargs["reasoning_effort"] = cfg["reasoning_effort"]
     # Custom providers can override via providers.json `extra_body`; falls back
     # to the moonshot default to preserve existing behavior.

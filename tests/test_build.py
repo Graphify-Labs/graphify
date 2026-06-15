@@ -2,7 +2,15 @@ import json
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.build import build_from_json, build, build_merge, edge_data, edge_datas
+from graphify.build import (
+    build_from_json,
+    build,
+    build_merge,
+    edge_data,
+    edge_datas,
+    path_covered_by_extraction,
+    paths_missing_from_extraction,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -506,6 +514,29 @@ def test_build_merge_prune_windows_backslash_paths(tmp_path):
 
     node_labels = {d["label"] for _, d in G1.nodes(data=True)}
     assert "parse_date" not in node_labels, "node should be pruned even with backslash path"
+
+
+def test_paths_missing_from_extraction_flags_empty_reextract(tmp_path):
+    """Incremental update must detect a file whose chunk returned no nodes."""
+    root = tmp_path / "corpus"
+    root.mkdir()
+    doc_a = root / "docs" / "a.md"
+    doc_b = root / "docs" / "b.md"
+    doc_a.parent.mkdir(parents=True)
+    doc_a.write_text("# A")
+    doc_b.write_text("# B")
+
+    empty = {"nodes": [], "edges": [], "hyperedges": []}
+    partial = {
+        "nodes": [{"id": "n1", "label": "A", "file_type": "document", "source_file": "docs/a.md"}],
+        "edges": [],
+        "hyperedges": [],
+    }
+    assert paths_missing_from_extraction(empty, [str(doc_a)], root) == [str(doc_a)]
+    assert paths_missing_from_extraction(partial, [str(doc_a)], root) == []
+    assert paths_missing_from_extraction(partial, [str(doc_b)], root) == [str(doc_b)]
+    assert path_covered_by_extraction(str(doc_a), partial, root)
+    assert not path_covered_by_extraction(str(doc_b), partial, root)
 
 
 def test_build_merge_rejects_oversized_existing_graph(monkeypatch, tmp_path):
