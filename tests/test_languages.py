@@ -597,6 +597,35 @@ def test_swift_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids
 
+
+def test_swift_import_targets_resolve_to_nodes():
+    # #1327: every Swift `imports` edge must point at a node that exists, or
+    # build_from_json prunes it as a dangling/external reference.
+    r = extract_swift(FIXTURES / "sample.swift")
+    node_ids = {n["id"] for n in r["nodes"]}
+    import_edges = _edges_with_relation(r, "imports")
+    assert import_edges
+    for e in import_edges:
+        assert e["target"] in node_ids
+
+
+def test_swift_imports_create_module_nodes():
+    # #1327: each imported module gets a `type=module` anchor node.
+    r = extract_swift(FIXTURES / "sample.swift")
+    module_labels = {n["label"] for n in r["nodes"] if n.get("type") == "module"}
+    assert {"Foundation", "UIKit"} <= module_labels
+
+
+def test_swift_import_edges_survive_build():
+    # #1327: import edges must remain after graph assembly, not just extraction.
+    from graphify.build import build_from_json
+    r = extract_swift(FIXTURES / "sample.swift")
+    G = build_from_json(r, directed=True)
+    import_edges = [
+        (u, v) for u, v, d in G.edges(data=True) if d.get("relation") == "imports"
+    ]
+    assert import_edges
+
 def test_swift_finds_actor():
     r = extract_swift(FIXTURES / "sample.swift")
     assert any("CacheManager" in l for l in _labels(r))
