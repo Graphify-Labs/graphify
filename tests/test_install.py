@@ -162,8 +162,8 @@ def test_antigravity_install_project_writes_project_skill(tmp_path, monkeypatch)
     monkeypatch.setattr(sys, "argv", ["graphify", "antigravity", "install", "--project"])
     with patch("graphify.__main__.Path.home", return_value=home):
         main()
-    assert (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
-    assert not (home / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert (project / ".gemini/agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert not (home / ".gemini/agents" / "skills" / "graphify" / "SKILL.md").exists()
 
 
 def test_install_help_does_not_install_default(tmp_path, monkeypatch, capsys):
@@ -455,7 +455,7 @@ def test_antigravity_uninstall_project_removes_project_skill_only(tmp_path, monk
         monkeypatch.setattr(sys, "argv", ["graphify", "antigravity", "uninstall", "--project"])
         main()
     assert global_skill.exists(), "project uninstall must not touch global skill"
-    assert not (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert not (project / ".gemini/agents" / "skills" / "graphify" / "SKILL.md").exists()
 
 
 def test_antigravity_global_install_writes_gemini_config_skills(tmp_path, monkeypatch):
@@ -469,12 +469,12 @@ def test_antigravity_global_install_writes_gemini_config_skills(tmp_path, monkey
         monkeypatch.setattr(sys, "argv", ["graphify", "antigravity", "install"])
         main()
     global_skill = home / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
-    wrong_skill = home / ".agents" / "skills" / "graphify" / "SKILL.md"
+    wrong_skill = home / ".gemini/agents" / "skills" / "graphify" / "SKILL.md"
     assert global_skill.exists(), f"skill missing from correct global path {global_skill}"
     assert not wrong_skill.exists(), f"skill incorrectly written to {wrong_skill}"
     # rules + workflow go workspace-local, not in home
-    assert (project / ".agents" / "rules" / "graphify.md").exists()
-    assert (project / ".agents" / "workflows" / "graphify.md").exists()
+    assert (project / ".gemini/agents" / "rules" / "graphify.md").exists()
+    assert (project / ".gemini/agents" / "workflows" / "graphify.md").exists()
 
 
 def test_antigravity_global_uninstall_removes_gemini_config_skill(tmp_path, monkeypatch):
@@ -493,8 +493,8 @@ def test_antigravity_global_uninstall_removes_gemini_config_skill(tmp_path, monk
         main()
     assert not global_skill.exists(), f"skill not removed from {global_skill} after uninstall"
     # workspace files also cleaned up
-    assert not (project / ".agents" / "rules" / "graphify.md").exists()
-    assert not (project / ".agents" / "workflows" / "graphify.md").exists()
+    assert not (project / ".gemini/agents" / "rules" / "graphify.md").exists()
+    assert not (project / ".gemini/agents" / "workflows" / "graphify.md").exists()
 
 
 # --- always-on AGENTS.md install/uninstall tests ---

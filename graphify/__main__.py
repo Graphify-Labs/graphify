@@ -162,7 +162,7 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
 
     if platform_name in ("antigravity", "antigravity-windows"):
         if project:
-            return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
+            return (project_dir or Path(".")) / ".gemini" / "agents" / "skills" / "graphify" / "SKILL.md"
         # Global Antigravity skill dir (all workspaces): ~/.gemini/config/skills/
         return Path.home() / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
 
@@ -507,14 +507,14 @@ _PLATFORM_CONFIG: dict[str, dict] = {
     "antigravity": {
         # Rides claude's split bundle (shares skill.md).
         "skill_file": "skill.md",
-        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "skill_dst": Path(".gemini") / "agents" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "claude",
     },
     "antigravity-windows": {
         # Rides windows' split bundle.
         "skill_file": "skill-windows.md",
-        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "skill_dst": Path(".gemini") / "agents" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "windows",
     },
@@ -941,8 +941,8 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
         print(f"  {instructions}  ->  deleted (was empty after removal)")
 
 
-_ANTIGRAVITY_RULES_PATH = Path(".agents") / "rules" / "graphify.md"
-_ANTIGRAVITY_WORKFLOW_PATH = Path(".agents") / "workflows" / "graphify.md"
+_ANTIGRAVITY_RULES_PATH = Path(".gemini") / "agents" / "rules" / "graphify.md"
+_ANTIGRAVITY_WORKFLOW_PATH = Path(".gemini") / "agents" / "workflows" / "graphify.md"
 
 
 _ANTIGRAVITY_WORKFLOW = """\
@@ -1013,7 +1013,7 @@ def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
     """Write Antigravity's always-on layer next to an installed skill.
 
     Injects the native tool-discovery YAML frontmatter into *skill_dst*, then
-    writes ``.agents/rules/graphify.md`` and ``.agents/workflows/graphify.md``
+    writes ``.gemini/agents/rules/graphify.md`` and ``.gemini/agents/workflows/graphify.md``
     under *project_dir*. Shared by the global ``antigravity install`` and the
     project-scoped ``install --project --platform antigravity`` paths, so both lay
     down the rules/workflows that the uninstall path already expects to remove.
@@ -1025,7 +1025,7 @@ def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
             frontmatter = "---\nname: graphify-manager\ndescription: Rebuild the code graph or perform manual CLI queries when MCP server is offline.\n---\n\n"
             skill_dst.write_text(frontmatter + content, encoding="utf-8")
 
-    # .agents/rules/graphify.md
+    # .gemini/agents/rules/graphify.md
     rules_path = project_dir / _ANTIGRAVITY_RULES_PATH
     rules_path.parent.mkdir(parents=True, exist_ok=True)
     if rules_path.exists():
@@ -1039,7 +1039,7 @@ def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
         rules_path.write_text(_always_on("antigravity-rules"), encoding="utf-8")
         print(f"graphify rule written to {rules_path.resolve()}")
 
-    # .agents/workflows/graphify.md
+    # .gemini/agents/workflows/graphify.md
     wf_path = project_dir / _ANTIGRAVITY_WORKFLOW_PATH
     wf_path.parent.mkdir(parents=True, exist_ok=True)
     if wf_path.exists():
@@ -1055,7 +1055,7 @@ def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
 
 
 def _antigravity_install(project_dir: Path) -> None:
-    """Install graphify for Google Antigravity (global skill + .agents/rules + .agents/workflows)."""
+    """Install graphify for Google Antigravity (global skill + .gemini/agents/rules + .gemini/agents/workflows)."""
     # Copy the skill to ~/.gemini/config/skills/graphify/SKILL.md (global), then
     # lay down the always-on rules/workflows under the project dir.
     install(platform="antigravity")
@@ -1639,12 +1639,12 @@ def _project_install(platform_name: str, project_dir: Path | None = None) -> Non
         _devin_rules_install(project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".windsurf"])
     elif platform_name == "antigravity":
-        # Project-scoped: skill in .agents/skills/ PLUS the .agents/rules +
-        # .agents/workflows always-on layer (previously this path wrote only the
+        # Project-scoped: skill in .gemini/agents/skills/ PLUS the .gemini/agents/rules +
+        # .gemini/agents/workflows always-on layer (previously this path wrote only the
         # skill, leaving the rules/workflows the uninstall path removes unset).
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
-        _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
+        _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".gemini" / "agents"])
     elif platform_name in ("copilot", "pi", "kimi"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
@@ -2254,10 +2254,10 @@ def main() -> None:
         print("  trae-cn install         write graphify section to AGENTS.md (Trae CN)")
         print("  trae-cn uninstall      remove graphify section from AGENTS.md")
         print(
-            "  antigravity install     write .agents/rules + .agents/workflows + skill (Google Antigravity)"
+            "  antigravity install     write .gemini/agents/rules + .gemini/agents/workflows + skill (Google Antigravity)"
         )
         print(
-            "  antigravity uninstall   remove .agents/rules, .agents/workflows, and skill"
+            "  antigravity uninstall   remove .gemini/agents/rules, .gemini/agents/workflows, and skill"
         )
         print(
             "  hermes install          write skill to ~/.hermes/skills/graphify/ (Hermes)"
