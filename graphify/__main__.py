@@ -4248,6 +4248,14 @@ def main() -> None:
                             file=sys.stderr,
                         )
                         sys.exit(1)
+                elif backend == "azure":
+                    allow_no_key = bool(os.environ.get("AZURE_OPENAI_ENDPOINT"))
+                    if not allow_no_key:
+                        print(
+                            "error: backend 'azure' requires AZURE_OPENAI_ENDPOINT to be set.",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
                 if not allow_no_key:
                     print(
                         f"error: backend '{backend}' requires {_format_backend_env_keys(backend)} to be set.",

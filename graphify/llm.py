@@ -122,7 +122,10 @@ BACKENDS: dict[str, dict] = {
     "azure": {
         # Azure OpenAI Service — uses AzureOpenAI SDK client, not the standard
         # OpenAI client, so it has its own call path (_call_azure).
-        # Required env vars: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT.
+        # Required env vars: AZURE_OPENAI_ENDPOINT.
+        # Auth: AZURE_OPENAI_API_KEY if set, otherwise falls back to
+        #       DefaultAzureCredential (managed identity / az login / workload
+        #       identity) — no secret needed, like Bedrock's IAM chain.
         # Optional: AZURE_OPENAI_API_VERSION (defaults to 2024-12-01-preview),
         #           AZURE_OPENAI_DEPLOYMENT or GRAPHIFY_AZURE_MODEL (deployment name).
         # base_url is intentionally absent — prevents accidental routing through
@@ -1151,7 +1154,12 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
 
 
 def _azure_client(api_key: str, endpoint: str):
-    """Construct an AzureOpenAI client with env-driven api_version and timeout."""
+    """Construct an AzureOpenAI client with env-driven api_version and timeout.
+
+    If *api_key* is non-empty it is used directly.  Otherwise falls back to
+    ``DefaultAzureCredential`` (managed identity / az login / workload identity),
+    mirroring how Bedrock uses the AWS credential chain without an explicit key.
+    """
     try:
         from openai import AzureOpenAI
     except ImportError as exc:
@@ -1168,7 +1176,26 @@ def _azure_client(api_key: str, endpoint: str):
                 timeout_s = v
         except ValueError:
             pass
-    return AzureOpenAI(api_key=api_key, azure_endpoint=endpoint, api_version=api_version, timeout=timeout_s)
+    if api_key:
+        return AzureOpenAI(api_key=api_key, azure_endpoint=endpoint, api_version=api_version, timeout=timeout_s)
+    # No API key — use DefaultAzureCredential (managed identity / az login).
+    try:
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+    except ImportError as exc:
+        raise ImportError(
+            "Azure OpenAI without an API key requires the azure-identity package. "
+            "Run: pip install azure-identity"
+        ) from exc
+    credential = DefaultAzureCredential()
+    token_provider = get_bearer_token_provider(
+        credential, "https://cognitiveservices.azure.com/.default"
+    )
+    return AzureOpenAI(
+        azure_ad_token_provider=token_provider,
+        azure_endpoint=endpoint,
+        api_version=api_version,
+        timeout=timeout_s,
+    )
 
 
 def _call_azure(
@@ -1277,7 +1304,8 @@ def extract_files_direct(
             raise ValueError(
                 "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
                 "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, "
-                "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
+                "AZURE_OPENAI_ENDPOINT (with API key or managed identity), "
+                "OLLAMA_BASE_URL, "
                 "or AWS credentials. Pass backend= explicitly to select a provider."
             )
     if backend not in BACKENDS:
@@ -1298,7 +1326,7 @@ def extract_files_direct(
             file=sys.stderr,
         )
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "azure"):
         raise ValueError(
             f"No API key for backend '{backend}'. "
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
@@ -1753,7 +1781,7 @@ def _call_llm(
         ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "azure"):
         raise ValueError(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
@@ -1965,7 +1993,7 @@ def detect_backend() -> str | None:
     for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
             return backend
-    if _get_backend_api_key("azure") and os.environ.get("AZURE_OPENAI_ENDPOINT"):
+    if os.environ.get("AZURE_OPENAI_ENDPOINT"):
         return "azure"
     if os.environ.get("AWS_PROFILE") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
         return "bedrock"
