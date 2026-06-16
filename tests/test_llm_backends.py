@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from graphify import llm
+from graphify.llm import _core as llm
 
 
 def _clear_backend_env(monkeypatch):

@@ -12,7 +12,7 @@ def no_tokenizer():
     of whether tiktoken is installed in the test environment. tiktoken's BPE
     compresses repeated/synthetic content heavily, which would make pack-size
     assertions tied to specific input sizes flaky."""
-    from graphify import llm
+    from graphify.llm import _core as llm
     with patch.object(llm, "_TOKENIZER", None):
         yield
 
@@ -110,7 +110,7 @@ def test_pack_chunks_rejects_non_positive_budget(tmp_path):
 def test_estimate_file_tokens_uses_tiktoken_when_available(tmp_path):
     """When tiktoken is installed, the estimator should call into it for
     accurate counts rather than the chars/4 heuristic."""
-    from graphify import llm
+    from graphify.llm import _core as llm
 
     f = tmp_path / "sample.py"
     text = "def hello():\n    return 'world'\n" * 50  # ~1500 chars
@@ -126,7 +126,7 @@ def test_estimate_file_tokens_uses_tiktoken_when_available(tmp_path):
 
 def test_estimate_file_tokens_falls_back_to_chars_when_no_tokenizer(tmp_path):
     """Without tiktoken installed, the estimator falls back to chars/4."""
-    from graphify import llm
+    from graphify.llm import _core as llm
 
     f = tmp_path / "sample.py"
     f.write_text("x" * 1_000)  # 1000 bytes

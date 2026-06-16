@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from graphify import llm
+from graphify.llm import _core as llm
 
 # A 1x1 PNG is unnecessary — the renderers never decode pixels, they only base64
 # the bytes — so any non-empty byte string stands in for image content.

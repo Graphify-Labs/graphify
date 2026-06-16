@@ -28,7 +28,7 @@ def test_ollama_loopback_and_lan_do_not_raise(capsys):
 
 def test_ollama_alias_resolving_to_link_local_blocked(monkeypatch):
     """A hostname that RESOLVES to a link-local IP is blocked, not just literals (F3)."""
-    from graphify import llm
+    from graphify.llm import _core as llm
 
     def fake_getaddrinfo(host, *a, **k):
         return [(2, 1, 6, "", ("169.254.169.254", 0))]  # alias -> metadata IP

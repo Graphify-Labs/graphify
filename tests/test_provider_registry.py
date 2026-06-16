@@ -8,7 +8,7 @@ def test_custom_provider_add_list_show_remove(tmp_path, monkeypatch):
     providers_file = tmp_path / "providers.json"
     providers_file.write_text("{}", encoding="utf-8")
 
-    from graphify import llm
+    from graphify.llm import _core as llm
     monkeypatch.setattr(llm, "_custom_providers_path", lambda global_=True: providers_file if global_ else tmp_path / "local.json")
     monkeypatch.setattr(llm, "BACKENDS", {**llm.BACKENDS})
 
@@ -38,7 +38,7 @@ def test_custom_provider_pricing_defaults_to_zero(tmp_path):
         }
     }), encoding="utf-8")
 
-    from graphify import llm
+    from graphify.llm import _core as llm
     import importlib
     from unittest.mock import patch
 
@@ -60,7 +60,7 @@ def test_custom_provider_cannot_shadow_builtin(tmp_path):
         }
     }), encoding="utf-8")
 
-    from graphify import llm
+    from graphify.llm import _core as llm
     from unittest.mock import patch
 
     with patch.object(llm, "_custom_providers_path", side_effect=lambda global_=True: providers_file if global_ else tmp_path / "local.json"):
@@ -81,7 +81,7 @@ def test_project_local_providers_ignored_without_optin(tmp_path, monkeypatch, ca
     }), encoding="utf-8")
     missing_global = tmp_path / "global.json"  # does not exist
 
-    from graphify import llm
+    from graphify.llm import _core as llm
     monkeypatch.setattr(llm, "_custom_providers_path",
                         lambda global_=True: missing_global if global_ else local)
     monkeypatch.delenv("GRAPHIFY_ALLOW_LOCAL_PROVIDERS", raising=False)
@@ -99,7 +99,7 @@ def test_project_local_providers_loaded_with_optin(tmp_path, monkeypatch):
     }), encoding="utf-8")
     missing_global = tmp_path / "global.json"
 
-    from graphify import llm
+    from graphify.llm import _core as llm
     monkeypatch.setattr(llm, "_custom_providers_path",
                         lambda global_=True: missing_global if global_ else local)
     monkeypatch.setattr(llm, "BACKENDS", {**llm.BACKENDS})
@@ -116,7 +116,7 @@ def test_non_http_provider_base_url_rejected(tmp_path, monkeypatch):
         "sneaky": {"base_url": "file:///etc/passwd", "default_model": "m", "env_key": "K"}
     }), encoding="utf-8")
 
-    from graphify import llm
+    from graphify.llm import _core as llm
     monkeypatch.setattr(llm, "_custom_providers_path",
                         lambda global_=True: providers_file if global_ else tmp_path / "local.json")
     monkeypatch.setattr(llm, "BACKENDS", {**llm.BACKENDS})
@@ -127,7 +127,7 @@ def test_non_http_provider_base_url_rejected(tmp_path, monkeypatch):
 
 def test_provider_base_url_ok_scheme_and_warnings(capsys):
     """provider_base_url_ok rejects bad schemes and warns on plaintext-http egress (F1)."""
-    from graphify import llm
+    from graphify.llm import _core as llm
     assert llm.provider_base_url_ok("https://api.example/v1", "ok") is True
     assert llm.provider_base_url_ok("http://localhost:11434/v1", "local") is True
     assert llm.provider_base_url_ok("file:///etc/passwd", "bad") is False
@@ -140,7 +140,7 @@ def test_provider_base_url_ok_scheme_and_warnings(capsys):
 
 def test_detect_backend_custom_provider_after_builtins(monkeypatch):
     """Custom providers appear after all built-ins in detect_backend() priority."""
-    from graphify import llm
+    from graphify.llm import _core as llm
 
     monkeypatch.setattr(llm, "BACKENDS", {
         **llm.BACKENDS,

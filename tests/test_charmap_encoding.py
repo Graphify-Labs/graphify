@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from graphify import llm
+from graphify.llm import _core as llm
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
