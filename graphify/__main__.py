@@ -626,6 +626,8 @@ def _print_banner() -> None:
 
 
 def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
+    from graphify_ext.policy import enforce  # fork gate: Claude-only build
+    platform = enforce(platform)
     _print_banner()
     if platform == "gemini":
         gemini_install(project_dir=project_dir, project=project)

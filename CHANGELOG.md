@@ -8,6 +8,21 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: cross-file Java `implements`/`inherits`/`imports` edges no longer orphan onto bare "shadow" nodes when two packages define a same-named type. The referencing file's `import` statement now disambiguates by exact package (FQN) and re-points the edge to the real definition, dropping the orphan stub. Previously `_rewire_unique_stub_nodes` could only repair the globally-unique case, so same-named interfaces (common in large Java codebases — `Handler`, `Service`, interface+impl pairs) left the real definition isolated in its own community (#1318).
 - Fix: Swift imports of the same module from multiple files now collapse to a single shared `type=module` node instead of N path-qualified duplicates. The import target is tagged `type=module` and exempted from id-disambiguation, so reverse traversal ("what imports CoreKit?") works; the `--no-cluster` writer also now dedupes nodes by id (and edges) to match the clustered `build_from_json` path. Builds on the v0.8.40 Swift-import fix (#1327, #1330; thanks @duncan-daydream).
 
+## 0.8.40+claude.1 (2026-06-16) — Claude Code-only fork
+
+First release of the BiomedicalEvidencePlatform Claude-only fork of graphify. Synced to
+upstream `safishamsi/graphify` v8 @ 0.8.40 (plus its then-unreleased fixes above). Fork
+revisions are versioned `<upstream-version>+claude.N`; see `FORK.md`.
+
+- Fork: restricted to **Claude Code only**. New `graphify_ext` package gates `install()`
+  to the `claude` platform via an allowlist; all non-Claude skill bundles, `always_on`
+  blocks, and `command-kilo.md` are removed. Upstream's `_PLATFORM_CONFIG`, the `install()`
+  body, and packaging globs are left byte-identical so `git merge upstream/v8` stays
+  conflict-free (the gate makes the now-dangling references unreachable).
+- Docs: translations trimmed to English + Polish; both language bars updated to match.
+- Tooling: `scripts/resync-upstream.sh` merges upstream and re-applies the fork deletions
+  in one idempotent step. `FORK.md` documents the full strategy.
+
 ## 0.8.40 (2026-06-16)
 
 - Feat: custom OpenAI- and Anthropic-compatible endpoints via `OPENAI_BASE_URL`/`OPENAI_MODEL` and `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`. Point either backend at a self-hosted or proxy server (vLLM, llama.cpp, LM Studio, LiteLLM, gateways); defaults still resolve to `api.openai.com` / `api.anthropic.com`, and `GRAPHIFY_OPENAI_MODEL` keeps precedence over `OPENAI_MODEL`. Wired through both the extraction path (`_call_claude`) and community labeling (#1273).
