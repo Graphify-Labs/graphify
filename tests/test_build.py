@@ -14,6 +14,47 @@ from graphify.build import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+
+def test_dedupe_edges_collapses_exact_parallels():
+    # #1317: --no-cluster / incremental update concatenate edge lists raw.
+    edges = [
+        {"source": "a", "target": "b", "relation": "calls", "source_location": "L1"},
+        {"source": "a", "target": "b", "relation": "calls", "source_location": "L9"},  # dup
+        {"source": "a", "target": "b", "relation": "imports"},  # different relation: kept
+        {"source": "b", "target": "c", "relation": "calls"},
+    ]
+    out = dedupe_edges(edges)
+    keys = [(e["source"], e["target"], e["relation"]) for e in out]
+    assert keys == [("a", "b", "calls"), ("a", "b", "imports"), ("b", "c", "calls")]
+    # first occurrence wins (keeps L1, not L9)
+    assert out[0]["source_location"] == "L1"
+
+
+def test_dedupe_edges_is_idempotent():
+    edges = [
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "a", "target": "b", "relation": "calls"},
+    ]
+    once = dedupe_edges(edges)
+    twice = dedupe_edges(once + edges)  # simulate a second `update` re-concatenating
+    assert len(once) == 1
+    assert len(twice) == 1
+
+
+def test_dedupe_nodes_collapses_by_id_last_wins():
+    # #1327: a shared module anchor is emitted once per importing file; the
+    # --no-cluster raw writer must collapse same-id node dicts (#1317).
+    nodes = [
+        {"id": "foundation", "label": "Foundation", "type": "module", "source_file": "A.swift"},
+        {"id": "akit", "label": "AKit", "file_type": "code"},
+        {"id": "foundation", "label": "Foundation", "type": "module", "source_file": "B.swift"},
+    ]
+    out = dedupe_nodes(nodes)
+    ids = [n["id"] for n in out]
+    assert ids == ["foundation", "akit"]  # first-appearance order
+    # last writer wins on attributes
+    assert next(n for n in out if n["id"] == "foundation")["source_file"] == "B.swift"
+
 def load_extraction():
     return json.loads((FIXTURES / "extraction.json").read_text())
 

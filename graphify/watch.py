@@ -584,9 +584,14 @@ def _rebuild_code(
 
         if no_cluster:
             # Normalise to "links" key so schema is consistent with the full clustered path.
+            # Dedupe parallel edges (the clustered path's DiGraph collapses them implicitly);
+            # without it, --no-cluster + repeated `update` accumulate duplicates and edge
+            # counts diverge across build modes (#1317).
+            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
             candidate_graph_data = {
-                **{k: v for k, v in result.items() if k != "edges"},
-                "links": result.get("edges", []),
+                **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
+                "nodes": _dedupe_nodes(result.get("nodes", [])),
+                "links": _dedupe_edges(result.get("edges", [])),
             }
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
@@ -624,7 +629,8 @@ def _rebuild_code(
             else:
                 print(
                     "[graphify watch] Rebuilt (no clustering): "
-                    f"{len(result.get('nodes', []))} nodes, {len(result.get('edges', []))} edges"
+                    f"{len(candidate_graph_data.get('nodes', []))} nodes, "
+                    f"{len(candidate_graph_data.get('links', []))} edges"
                 )
                 print(f"[graphify watch] graph.json updated in {out}")
             return True

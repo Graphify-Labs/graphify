@@ -596,6 +596,31 @@ def test_swift_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids
+        # #1327: targets must resolve to a node too, else build.py prunes the edge.
+        assert e["target"] in node_ids, f"dangling target {e['target']} ({e['relation']})"
+
+
+def test_swift_imports_survive_build():
+    # #1327: `import Foundation` / `import UIKit` previously emitted edges to bare
+    # module ids with no backing node, so build.py dropped 100% of Swift imports.
+    from graphify.build import build_from_json
+    r = extract_swift(FIXTURES / "sample.swift")
+    import_edges = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert import_edges, "extractor should emit Swift import edges"
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in import_edges:
+        assert e["target"] in node_ids  # synthesized module node exists
+    # Imported modules are tagged type=module (anchor nodes, #1327/#1330).
+    module_labels = {n["label"] for n in r["nodes"] if n.get("type") == "module"}
+    assert {"Foundation", "UIKit"} <= module_labels
+    # No private bookkeeping key should leak into output edges.
+    assert all("_import_label" not in e for e in r["edges"])
+    # Edges must survive the build (which prunes edges with unknown endpoints).
+    G = build_from_json(r)
+    surviving = [
+        (u, v) for u, v, d in G.edges(data=True) if d.get("relation") == "imports"
+    ]
+    assert surviving, "Swift import edges must survive build_from_json (#1327)"
 
 def test_swift_finds_actor():
     r = extract_swift(FIXTURES / "sample.swift")
@@ -1003,6 +1028,20 @@ def test_fortran_capital_F_parses_preprocessed():
 def test_powershell_no_error():
     r = extract_powershell(FIXTURES / "sample.ps1")
     assert "error" not in r
+
+
+def test_powershell_psm1_dispatched_and_extracted(tmp_path):
+    # #1315: .psm1 modules were never indexed — no dispatch entry, no CODE_EXTENSIONS.
+    from graphify.extract import _get_extractor
+    mod = tmp_path / "Utils.psm1"
+    mod.write_text(
+        "function Get-Greeting { param([string]$Name) return \"Hi $Name\" }\n",
+        encoding="utf-8",
+    )
+    assert _get_extractor(mod) is extract_powershell
+    r = extract_powershell(mod)
+    assert "error" not in r
+    assert any("Get-Greeting" in n["label"] for n in r["nodes"])
 
 
 def test_powershell_finds_class_and_method():

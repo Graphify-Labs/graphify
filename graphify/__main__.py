@@ -2182,6 +2182,11 @@ def main() -> None:
         print("    --label NAME            project label in header")
         print("  extract <path>          headless full extraction (AST + semantic LLM) for CI/scripts")
         print("    --backend B             gemini|kimi|claude|openai|deepseek|ollama (default: whichever API key is set)")
+        print("                            openai also reaches self-hosted OpenAI-compatible servers (llama.cpp,")
+        print("                            vLLM, LM Studio): set OPENAI_BASE_URL (e.g. http://localhost:8080/v1)")
+        print("                            and OPENAI_MODEL to the model name your server serves")
+        print("                            claude also reaches custom Anthropic-compatible endpoints (LiteLLM")
+        print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
         print("    --max-workers N         AST extraction subprocess count (default: cpu_count)")
@@ -4469,6 +4474,11 @@ def main() -> None:
         if no_cluster:
             # --no-cluster: dump the raw merged extraction as graph.json.
             # No NetworkX, no community detection, no analysis sidecar.
+            # Dedupe nodes (by id) and parallel edges so the raw output matches the
+            # clustered path (whose DiGraph collapses both) and stays deterministic
+            # across modes (#1317; node dedup also collapses shared Swift module
+            # anchors emitted per importing file, #1327).
+            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
             from graphify.export import backup_if_protected as _backup
             from graphify.build import build_merge as _build_merge
             _backup(graphify_out)

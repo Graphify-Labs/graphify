@@ -1726,10 +1726,117 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
     return found
 
 
+# Node types whose value is a callable, for the JS/TS assignment / class-field
+# / function-expression forms below. Older tree-sitter-javascript grammars
+# label a function expression `function`; current ones use `function_expression`.
+_JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function"})
+
+
+def _js_member_assignment_target(left, source: bytes):
+    """Classify the symbol an `assignment_expression` LHS defines when its RHS
+    is a function. Returns (kind, owner_name, member_name) or None.
+
+      this.foo = fn            → ("this",      None,  "foo")
+      exports.foo = fn         → ("exports",   None,  "foo")
+      module.exports.foo = fn  → ("exports",   None,  "foo")
+      Foo.prototype.bar = fn   → ("prototype", "Foo", "bar")
+
+    Any other shape (an arbitrary `obj.x = fn`) returns None and is skipped —
+    capturing those would reintroduce the bare-named / phantom-god-node class
+    of bug the module-level scope guard (#1077) exists to prevent.
+    """
+    if left is None or left.type != "member_expression":
+        return None
+    prop = left.child_by_field_name("property")
+    if prop is None:
+        return None
+    member_name = _read_text(prop, source)
+    if not member_name:
+        return None
+    obj = left.child_by_field_name("object")
+    if obj is None:
+        return None
+    if obj.type == "this":
+        return ("this", None, member_name)
+    if obj.type == "identifier":
+        if _read_text(obj, source) == "exports":
+            return ("exports", None, member_name)
+        return None
+    if obj.type == "member_expression":
+        # module.exports.X  or  Foo.prototype.X
+        inner_obj = obj.child_by_field_name("object")
+        inner_prop = obj.child_by_field_name("property")
+        if inner_obj is None or inner_prop is None:
+            return None
+        inner_prop_name = _read_text(inner_prop, source)
+        if inner_obj.type == "identifier":
+            inner_obj_name = _read_text(inner_obj, source)
+            if inner_obj_name == "module" and inner_prop_name == "exports":
+                return ("exports", None, member_name)
+            if inner_prop_name == "prototype":
+                return ("prototype", inner_obj_name, member_name)
+    return None
+
+
 def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
+    # CommonJS / prototype member assignments whose value is a function:
+    #   exports.X = () => {}     → file-contained function  X()
+    #   module.exports.X = fn    → file-contained function  X()
+    #   Foo.prototype.bar = fn   → method bar() owned by Foo
+    # (`this.X = fn` lives inside a function body, which is not recursed here;
+    #  it is captured at the enclosing function — see the function branch.)
+    if node.type == "expression_statement":
+        assign = next((c for c in node.children
+                       if c.type == "assignment_expression"), None)
+        if assign is not None:
+            value = assign.child_by_field_name("right")
+            if value is not None and value.type in _JS_FUNCTION_VALUE_TYPES:
+                target = _js_member_assignment_target(
+                    assign.child_by_field_name("left"), source)
+                if target is not None:
+                    kind, owner_name, member_name = target
+                    line = node.start_point[0] + 1
+                    handled = False
+                    if kind == "exports":
+                        nid = _make_id(stem, member_name)
+                        add_node_fn(nid, f"{member_name}()", line)
+                        add_edge_fn(file_nid, nid, "contains", line)
+                        handled = True
+                    elif kind == "prototype":
+                        owner_nid = _make_id(stem, owner_name)
+                        nid = _make_id(owner_nid, member_name)
+                        add_node_fn(nid, f".{member_name}()", line)
+                        add_edge_fn(owner_nid, nid, "method", line)
+                        handled = True
+                    if handled:
+                        body = value.child_by_field_name("body")
+                        if body:
+                            function_bodies.append((nid, body))
+                        return True
+
+    # Class fields whose value is a function:
+    #   class C { handler = () => {} }   → method handler() owned by C
+    # Reaches here with parent_class_nid set because class bodies are recursed
+    # with the class nid as parent.
+    if parent_class_nid and node.type in ("field_definition", "public_field_definition"):
+        prop = node.child_by_field_name("property") or node.child_by_field_name("name")
+        value = node.child_by_field_name("value")
+        if (prop is not None and value is not None
+                and value.type in _JS_FUNCTION_VALUE_TYPES):
+            field_name = _read_text(prop, source)
+            if field_name:
+                line = node.start_point[0] + 1
+                nid = _make_id(parent_class_nid, field_name)
+                add_node_fn(nid, f".{field_name}()", line)
+                add_edge_fn(parent_class_nid, nid, "method", line)
+                body = value.child_by_field_name("body")
+                if body:
+                    function_bodies.append((nid, body))
+                return True
+
     if node.type in ("lexical_declaration", "variable_declaration"):
         # CJS require imports — emit edges, do not block other lexical_declaration handling
         require_found = _require_imports_js(node, source, file_nid, stem, edges, str_path)
@@ -1755,7 +1862,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
             for child in node.children:
                 if child.type == "variable_declarator":
                     value = child.child_by_field_name("value")
-                    if value and value.type == "arrow_function":
+                    if value and value.type in _JS_FUNCTION_VALUE_TYPES:
+                        # `const f = () => {}` and `const f = function(){}`
                         name_node = child.child_by_field_name("name")
                         if name_node:
                             func_name = _read_text(name_node, source)
@@ -2107,7 +2215,16 @@ _LUA_CONFIG = LanguageConfig(
 )
 
 
-def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> list[tuple[str, str]]:
+    """Emit module-level ``imports`` edges and report the imported modules.
+
+    A Swift ``import CoreKit`` names a module, not a file path, so — unlike the
+    file-resolving JS/TS handlers — there is no existing node for the edge to
+    point at. The returned ``(id, label)`` pairs let the extractor materialize a
+    ``type=module`` anchor node so the edge survives; without it ``build_from_json``
+    prunes every Swift import edge as a dangling/external reference (#1327).
+    """
+    modules: list[tuple[str, str]] = []
     for child in node.children:
         if child.type == "identifier":
             raw = _read_text(child, source)
@@ -2122,7 +2239,9 @@ def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, st
                 "source_location": f"L{node.start_point[0] + 1}",
                 "weight": 1.0,
             })
+            modules.append((tgt_nid, raw))
             break
+    return modules
 
 
 def _read_csharp_type_name(node, source: bytes) -> str | None:
@@ -2264,7 +2383,28 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
         # Import types
         if t in config.import_types:
             if config.import_handler:
-                config.import_handler(node, source, file_nid, stem, edges, str_path)
+                imported_modules = config.import_handler(node, source, file_nid, stem, edges, str_path)
+                # Module-level import handlers (Swift) name a module, not a file
+                # path, so there is no pre-existing node to anchor the edge to.
+                # They return (id, label) pairs for which we materialize a
+                # `type=module` node; otherwise build_from_json prunes every such
+                # import edge as a dangling/external reference. The same module
+                # imported from N files shares one id (file_type=code keeps
+                # build.py validation happy; `type=module` exempts it from
+                # id-disambiguation) so it collapses to one shared node (#1327).
+                if imported_modules:
+                    line = node.start_point[0] + 1
+                    for mod_nid, mod_label in imported_modules:
+                        if mod_nid not in seen_ids:
+                            seen_ids.add(mod_nid)
+                            nodes.append({
+                                "id": mod_nid,
+                                "label": mod_label,
+                                "file_type": "code",
+                                "type": "module",
+                                "source_file": str_path,
+                                "source_location": f"L{line}",
+                            })
             # For export_statement: only return (skip children) if it's a re-export
             # (has a `from` source). Otherwise fall through to walk children which may
             # contain function_declaration, class_declaration, etc.
@@ -3103,6 +3243,39 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                                      line, context=ctx)
 
             body = _find_body(node, config)
+            # JS/TS: capture `this.X = () => {}` / `this.X = function(){}`
+            # assigned directly in this function/constructor body. They live
+            # inside the body (otherwise only walked for calls), so without this
+            # they are never emitted — the dominant miss on constructor-style
+            # ("function Foo(){ this.bar = () => {} }") and many CommonJS repos.
+            # Owner is the enclosing class when present (a constructor's methods
+            # belong to the class), else the function itself.
+            if body is not None and config.ts_module in (
+                "tree_sitter_javascript", "tree_sitter_typescript"
+            ):
+                this_owner_nid = parent_class_nid if parent_class_nid else func_nid
+                for stmt in body.children:
+                    if stmt.type != "expression_statement":
+                        continue
+                    assign = next((c for c in stmt.children
+                                   if c.type == "assignment_expression"), None)
+                    if assign is None:
+                        continue
+                    val = assign.child_by_field_name("right")
+                    if val is None or val.type not in _JS_FUNCTION_VALUE_TYPES:
+                        continue
+                    tgt = _js_member_assignment_target(
+                        assign.child_by_field_name("left"), source)
+                    if tgt is None or tgt[0] != "this":
+                        continue
+                    m_name = tgt[2]
+                    m_line = stmt.start_point[0] + 1
+                    m_nid = _make_id(this_owner_nid, m_name)
+                    add_node(m_nid, f".{m_name}()", m_line)
+                    add_edge(this_owner_nid, m_nid, "method", m_line)
+                    m_body = val.child_by_field_name("body")
+                    if m_body:
+                        function_bodies.append((m_nid, m_body))
             if body:
                 function_bodies.append((func_nid, body))
             return
@@ -6992,9 +7165,18 @@ def _disambiguate_colliding_node_ids(
     raw_calls: list[dict],
     root: Path,
 ) -> None:
-    """Rewrite only colliding node IDs, using source path as the disambiguator."""
+    """Rewrite only colliding node IDs, using source path as the disambiguator.
+
+    Module anchor nodes (#1327) are exempt: ``import CoreKit`` from three files
+    yields three ``type=module`` nodes with the same id but different
+    source_files. Those are the *same* module, not distinct same-named symbols,
+    so they must collapse to one shared node — disambiguating them by path would
+    scatter a single module across N file-qualified duplicates.
+    """
     by_id: dict[str, list[dict]] = {}
     for node in nodes:
+        if node.get("type") == "module":
+            continue
         nid = node.get("id")
         if isinstance(nid, str) and nid:
             by_id.setdefault(nid, []).append(node)
@@ -8457,6 +8639,134 @@ def _resolve_cross_file_java_imports(
         walk(tree.root_node)
 
     return new_edges
+
+
+def _resolve_java_type_references(
+    per_file: list[dict],
+    paths: list[Path],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Re-point dangling Java ``implements``/``inherits`` edges to the real
+    definition, using the referencing file's ``import`` statements (+ package)
+    for exact disambiguation.
+
+    Cross-file type references resolve by bare name and fall back to a no-source
+    "shadow" stub. ``_rewire_unique_stub_nodes`` repairs that only when the name
+    is globally unique; when two packages define a same-named type it bails, so
+    the ``implements`` edge stays stuck on the shadow node and the real interface
+    is wrongly isolated (#1318). An ``import com.a.handler.AIResponseHandler``
+    names the exact package, so it disambiguates where bare-name matching cannot.
+
+    Mutates ``all_nodes``/``all_edges`` in place. Runs after id-disambiguation so
+    target ids are final, and after ``_rewire_unique_stub_nodes`` so it only has
+    to handle the ambiguous remainder.
+    """
+    try:
+        import tree_sitter_java as tsjava
+        from tree_sitter import Language, Parser
+    except ImportError:
+        return
+
+    language = Language(tsjava.language())
+    parser = Parser(language)
+
+    # package + simple-name->FQN imports, keyed by the source_file string the
+    # file's own nodes use (so it matches edge/node source_file exactly).
+    pkg_by_file: dict[str, str] = {}
+    imports_by_file: dict[str, dict[str, str]] = {}
+    for path, result in zip(paths, per_file):
+        srcs = {n.get("source_file") for n in result.get("nodes", []) if n.get("source_file")}
+        if not srcs:
+            continue
+        try:
+            source = path.read_bytes()
+            tree = parser.parse(source)
+        except Exception:
+            continue
+        pkg = ""
+        imps: dict[str, str] = {}
+
+        def walk(n) -> None:
+            nonlocal pkg
+            if n.type == "package_declaration":
+                pkg = _read_text(n, source).strip()[len("package"):].strip().rstrip(";").strip()
+            elif n.type == "import_declaration":
+                body = _read_text(n, source).strip()[len("import"):].strip().rstrip(";").strip()
+                if body.startswith("static "):
+                    body = body[len("static "):].strip()
+                if body.endswith(".*") or "." not in body:
+                    return
+                simple = body.split(".")[-1]
+                if simple and simple[0].isupper():
+                    imps[simple] = body
+            for child in n.children:
+                walk(child)
+
+        walk(tree.root_node)
+        for s in srcs:
+            pkg_by_file[s] = pkg
+            imports_by_file[s] = imps
+
+    # FQN (package.Class) -> definition node id, for type-like defs with a source.
+    fqn_to_id: dict[str, str] = {}
+    for node in all_nodes:
+        label = node.get("label", "")
+        src = node.get("source_file", "")
+        nid = node.get("id", "")
+        if not (label and src and nid) or src not in pkg_by_file:
+            continue
+        if not label[:1].isupper() or label.endswith(")") or label.endswith(".java"):
+            continue
+        pkg = pkg_by_file[src]
+        fqn_to_id.setdefault(f"{pkg}.{label}" if pkg else label, nid)
+
+    # Bare shadow stubs: no source_file, type-like label.
+    stub_label: dict[str, str] = {
+        node["id"]: node.get("label", "")
+        for node in all_nodes
+        if node.get("id") and not node.get("source_file") and node.get("label", "")[:1].isupper()
+    }
+    if not stub_label:
+        return
+
+    # `imports` is included so the file-level import edge that also lands on the
+    # shadow stub gets re-pointed too, leaving the stub unreferenced (and dropped).
+    # External/stdlib imports never resolve (no internal def / same-package match),
+    # so their edges correctly stay on their stub.
+    REPOINT_RELATIONS = {"implements", "inherits", "extends", "imports"}
+    repointed_from: set[str] = set()
+    for edge in all_edges:
+        if edge.get("relation") not in REPOINT_RELATIONS:
+            continue
+        tgt = edge.get("target")
+        label = stub_label.get(tgt)
+        if not label:
+            continue
+        ref_file = edge.get("source_file", "")
+        resolved = None
+        fqn = imports_by_file.get(ref_file, {}).get(label)
+        if fqn:
+            resolved = fqn_to_id.get(fqn)
+        if resolved is None:  # same-package reference (no explicit import)
+            pkg = pkg_by_file.get(ref_file, "")
+            resolved = fqn_to_id.get(f"{pkg}.{label}" if pkg else label)
+        if resolved and resolved != tgt:
+            edge["target"] = resolved
+            repointed_from.add(tgt)
+
+    if not repointed_from:
+        return
+
+    # Drop shadow stubs that no edge references anymore.
+    still_referenced: set[str] = set()
+    for edge in all_edges:
+        still_referenced.add(edge.get("source"))
+        still_referenced.add(edge.get("target"))
+    all_nodes[:] = [
+        node for node in all_nodes
+        if node.get("id") not in repointed_from or node.get("id") in still_referenced
+    ]
 
 
 def extract_objc(path: Path) -> dict:
@@ -11427,6 +11737,7 @@ _DISPATCH: dict[str, Any] = {
     ".toc": extract_lua,
     ".zig": extract_zig,
     ".ps1": extract_powershell,
+    ".psm1": extract_powershell,
     ".ex": extract_elixir,
     ".exs": extract_elixir,
     ".m": extract_objc,
@@ -11851,6 +12162,13 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java cross-file import resolution failed, skipping: %s", exc)
+        # Re-point dangling implements/inherits edges that bare-name resolution
+        # left on shadow stubs, using imports for exact-package disambiguation (#1318).
+        try:
+            _resolve_java_type_references(java_results, java_paths, all_nodes, all_edges)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
 
     # Cross-file call resolution for all languages
     # Each extractor saved unresolved calls in raw_calls. Now that we have all
