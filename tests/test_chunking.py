@@ -164,7 +164,7 @@ def test_corpus_parallel_runs_chunks_concurrently(tmp_path):
         time.sleep(0.3)
         return _stub_chunk_result(len(chunk), 0)
 
-    with patch("graphify.llm.extract_files_direct", side_effect=slow_extract):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=slow_extract):
         t0 = time.time()
         # Force 4 chunks of 2 files each by setting a tight token budget.
         result = extract_corpus_parallel(
@@ -192,7 +192,7 @@ def test_corpus_parallel_sequential_when_max_concurrency_is_one(tmp_path):
         call_order.append(tuple(p.name for p in chunk))
         return _stub_chunk_result(len(chunk), len(call_order))
 
-    with patch("graphify.llm.extract_files_direct", side_effect=record):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=record):
         extract_corpus_parallel(
             files, backend="kimi", token_budget=None, chunk_size=1, max_concurrency=1
         )
@@ -219,7 +219,7 @@ def test_corpus_parallel_continues_after_chunk_failure(tmp_path, capsys):
             raise RuntimeError("simulated API error")
         return _stub_chunk_result(len(chunk), call_count["n"])
 
-    with patch("graphify.llm.extract_files_direct", side_effect=maybe_fail):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=maybe_fail):
         result = extract_corpus_parallel(
             files, backend="kimi", token_budget=None, chunk_size=1, max_concurrency=1
         )
@@ -245,7 +245,7 @@ def test_corpus_parallel_legacy_mode_when_token_budget_is_none(tmp_path):
         chunks_seen.append(len(chunk))
         return _stub_chunk_result(len(chunk), len(chunks_seen))
 
-    with patch("graphify.llm.extract_files_direct", side_effect=record):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=record):
         extract_corpus_parallel(
             files, backend="kimi", token_budget=None, chunk_size=20, max_concurrency=1
         )
@@ -269,7 +269,7 @@ def test_corpus_parallel_token_budget_default_packs_files(tmp_path):
         chunks_seen.append(len(chunk))
         return _stub_chunk_result(len(chunk), len(chunks_seen))
 
-    with patch("graphify.llm.extract_files_direct", side_effect=record):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=record):
         extract_corpus_parallel(files, backend="kimi", max_concurrency=1)
 
     # 50 tiny files at default 60k token budget should pack into 1 chunk
@@ -305,7 +305,7 @@ def test_adaptive_retry_returns_directly_when_not_truncated(tmp_path):
         calls.append(len(chunk))
         return _stub_with_finish(len(chunk), finish_reason="stop")
 
-    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=stub):
         result = _extract_with_adaptive_retry(
             files, backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=3
         )
@@ -330,7 +330,7 @@ def test_adaptive_retry_splits_when_finish_reason_length(tmp_path):
         finish = "length" if len(chunk) == 4 else "stop"
         return _stub_with_finish(len(chunk), finish_reason=finish)
 
-    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=stub):
         result = _extract_with_adaptive_retry(
             files, backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=3
         )
@@ -356,7 +356,7 @@ def test_adaptive_retry_recurses_for_persistent_truncation(tmp_path):
         finish = "length" if len(chunk) > 2 else "stop"
         return _stub_with_finish(len(chunk), finish_reason=finish)
 
-    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=stub):
         result = _extract_with_adaptive_retry(
             files, backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=3
         )
@@ -382,7 +382,7 @@ def test_adaptive_retry_caps_at_max_depth(tmp_path, capsys):
         calls.append(len(chunk))
         return _stub_with_finish(len(chunk), finish_reason="length")
 
-    with patch("graphify.llm.extract_files_direct", side_effect=always_truncate):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=always_truncate):
         _extract_with_adaptive_retry(
             files, backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=2
         )
@@ -406,7 +406,7 @@ def test_adaptive_retry_single_file_truncation_does_not_recurse(tmp_path, capsys
         calls.append(len(chunk))
         return _stub_with_finish(len(chunk), finish_reason="length")
 
-    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=stub):
         _extract_with_adaptive_retry(
             [f], backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=3
         )
@@ -434,7 +434,7 @@ def test_corpus_parallel_uses_adaptive_retry(tmp_path):
         return _stub_with_finish(len(chunk), finish_reason=finish)
 
     chunk_done_args = []
-    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+    with patch("graphify.llm._core.extract_files_direct", side_effect=stub):
         result = extract_corpus_parallel(
             files,
             backend="kimi",

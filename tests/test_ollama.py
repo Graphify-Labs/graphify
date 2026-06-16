@@ -102,7 +102,7 @@ def test_ollama_api_key_sentinel(monkeypatch):
         "output_tokens": 10,
         "finish_reason": "stop",
     }
-    with patch("graphify.llm._call_openai_compat", return_value=fake_result) as mock_call:
+    with patch("graphify.llm._core._call_openai_compat", return_value=fake_result) as mock_call:
         from graphify.llm import extract_files_direct
         with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
             f.write("x = 1\n")
