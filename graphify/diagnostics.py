@@ -388,3 +388,196 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
         "note: normal graph.json is post-build; raw producer loss must be measured earlier."
     )
     return "\n".join(lines)
+
+
+_QUALITY_GENERIC_SYMBOLS = {
+    "str",
+    "Any",
+    "int",
+    "bool",
+    "float",
+    "Path",
+    "Connection",
+    "Namespace",
+    "main()",
+    "Check",
+    "Report",
+    "HealthReport",
+}
+_QUALITY_RELATIONS = {
+    "calls",
+    "uses",
+    "references",
+    "depends_on",
+    "imports",
+    "implements",
+}
+
+
+def _quality_score(edge: dict[str, Any]) -> float:
+    try:
+        return float(edge.get("confidence_score", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _quality_label(node: dict[str, Any]) -> str:
+    return str(node.get("label") or node.get("id") or "")
+
+
+def diagnose_quality(
+    data: dict[str, Any],
+    *,
+    low_confidence_threshold: float = 0.5,
+    generic_degree_threshold: int = 10,
+    generic_source_threshold: int = 3,
+    max_examples: int = 10,
+) -> dict[str, Any]:
+    """Read-only quality diagnostics for graph navigation safety."""
+    raw_nodes = data.get("nodes", [])
+    nodes = [
+        node
+        for node in raw_nodes
+        if isinstance(node, dict) and node.get("id") is not None
+    ] if isinstance(raw_nodes, list) else []
+    by_id = {str(node["id"]): node for node in nodes}
+    labels = {node_id: _quality_label(node) for node_id, node in by_id.items()}
+    edges = _edge_list(data)
+
+    dangling_examples: list[dict[str, Any]] = []
+    low_conf_examples: list[dict[str, Any]] = []
+    low_conf_generic_examples: list[dict[str, Any]] = []
+    degree: Counter[str] = Counter()
+    source_files_by_node: dict[str, set[str]] = defaultdict(set)
+    dangling_count = 0
+    low_conf_count = 0
+    low_conf_generic_count = 0
+
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("source", edge.get("from", "")))
+        target = str(edge.get("target", edge.get("to", "")))
+        if source not in by_id or target not in by_id:
+            dangling_count += 1
+            if len(dangling_examples) < max_examples:
+                dangling_examples.append({"source": source, "target": target})
+            continue
+
+        degree[source] += 1
+        degree[target] += 1
+        source_file = str(edge.get("source_file") or "")
+        if source_file:
+            source_files_by_node[source].add(source_file)
+            source_files_by_node[target].add(source_file)
+
+        is_low = (
+            str(edge.get("confidence", "")).upper() == "INFERRED"
+            and _quality_score(edge) <= low_confidence_threshold
+        )
+        if not is_low:
+            continue
+
+        low_conf_count += 1
+        example = {
+            "source": source,
+            "target": target,
+            "source_label": labels[source],
+            "target_label": labels[target],
+            "relation": edge.get("relation"),
+            "confidence_score": edge.get("confidence_score"),
+            "source_file": edge.get("source_file"),
+        }
+        if len(low_conf_examples) < max_examples:
+            low_conf_examples.append(example)
+
+        source_generic = labels[source] in _QUALITY_GENERIC_SYMBOLS
+        target_generic = labels[target] in _QUALITY_GENERIC_SYMBOLS
+        if (source_generic or target_generic) and str(edge.get("relation", "")) in _QUALITY_RELATIONS:
+            low_conf_generic_count += 1
+            if len(low_conf_generic_examples) < max_examples:
+                low_conf_generic_examples.append(example)
+
+    generic_bridges = []
+    for node_id, label in labels.items():
+        if label not in _QUALITY_GENERIC_SYMBOLS:
+            continue
+        if (
+            degree[node_id] >= generic_degree_threshold
+            and len(source_files_by_node[node_id]) >= generic_source_threshold
+        ):
+            generic_bridges.append({
+                "id": node_id,
+                "label": label,
+                "degree": degree[node_id],
+                "source_file_count": len(source_files_by_node[node_id]),
+            })
+    generic_bridges.sort(key=lambda item: (-item["degree"], item["label"]))
+
+    passed = not dangling_count and not low_conf_count and not low_conf_generic_count and not generic_bridges
+    return {
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "dangling_edge_count": dangling_count,
+        "low_confidence_inferred_count": low_conf_count,
+        "low_confidence_generic_edge_count": low_conf_generic_count,
+        "generic_bridge_count": len(generic_bridges),
+        "pass": passed,
+        "examples": {
+            "dangling_edges": dangling_examples,
+            "low_confidence_inferred_edges": low_conf_examples,
+            "low_confidence_generic_edges": low_conf_generic_examples,
+            "generic_bridges": generic_bridges[:max_examples],
+        },
+    }
+
+
+def diagnose_quality_file(
+    path: str | Path,
+    *,
+    low_confidence_threshold: float = 0.5,
+    generic_degree_threshold: int = 10,
+    generic_source_threshold: int = 3,
+    max_examples: int = 10,
+) -> dict[str, Any]:
+    data = _read_json_file(path)
+    summary = diagnose_quality(
+        data,
+        low_confidence_threshold=low_confidence_threshold,
+        generic_degree_threshold=generic_degree_threshold,
+        generic_source_threshold=generic_source_threshold,
+        max_examples=max_examples,
+    )
+    graph_path = Path(path)
+    report_path = graph_path.parent / "GRAPH_REPORT.md"
+    html_path = graph_path.parent / "graph.html"
+    graph_mtime = graph_path.stat().st_mtime
+    summary["input_path"] = str(path)
+    summary["report_stale"] = report_path.exists() and report_path.stat().st_mtime < graph_mtime
+    summary["html_stale"] = html_path.exists() and html_path.stat().st_mtime < graph_mtime
+    summary["pass"] = summary["pass"] and not summary["report_stale"] and not summary["html_stale"]
+    return summary
+
+
+def format_quality_report(summary: dict[str, Any]) -> str:
+    status = "PASS" if summary.get("pass") else "FAIL"
+    lines = [
+        f"[graphify] Quality diagnostic: {status}",
+        f"input: {summary.get('input_path', '<in-memory>')}",
+        f"nodes: {summary['node_count']}",
+        f"edges: {summary['edge_count']}",
+        f"dangling_edges: {summary['dangling_edge_count']}",
+        f"low_confidence_inferred_edges: {summary['low_confidence_inferred_count']}",
+        f"low_confidence_generic_edges: {summary['low_confidence_generic_edge_count']}",
+        f"generic_bridges: {summary['generic_bridge_count']}",
+        f"report_stale: {summary.get('report_stale', False)}",
+        f"html_stale: {summary.get('html_stale', False)}",
+    ]
+    examples = summary.get("examples", {})
+    for key, rows in examples.items():
+        if not rows:
+            continue
+        lines.append(f"{key}:")
+        for row in rows:
+            lines.append(f"  - {json.dumps(row, ensure_ascii=False, sort_keys=True)}")
+    return "\n".join(lines)

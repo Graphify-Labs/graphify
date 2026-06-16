@@ -307,6 +307,136 @@ def test_build_merge_preserves_call_edge_direction(tmp_path):
     )
 
 
+def test_build_merge_replace_sources_removes_old_same_source_content(tmp_path):
+    graph_path = tmp_path / "graph.json"
+    streampark = "scripts_cluster_health_py_streamparkclient"
+    check = "scripts_cluster_health_py_check"
+    factory = "scripts_factory_py_factory"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "nodes": [
+                    {
+                        "id": streampark,
+                        "label": "StreamParkClient",
+                        "file_type": "code",
+                        "source_file": "scripts/cluster_health.py",
+                    },
+                    {
+                        "id": check,
+                        "label": "Check",
+                        "file_type": "code",
+                        "source_file": "scripts/cluster_health.py",
+                    },
+                    {
+                        "id": factory,
+                        "label": "factory()",
+                        "file_type": "code",
+                        "source_file": "scripts/factory.py",
+                    },
+                ],
+                "links": [
+                    {
+                        "source": check,
+                        "target": streampark,
+                        "relation": "references",
+                        "confidence": "EXTRACTED",
+                        "confidence_score": 1.0,
+                        "source_file": "scripts/cluster_health.py",
+                    },
+                    {
+                        "source": factory,
+                        "target": streampark,
+                        "relation": "calls",
+                        "confidence": "EXTRACTED",
+                        "confidence_score": 1.0,
+                        "source_file": "scripts/factory.py",
+                    },
+                ],
+                "hyperedges": [
+                    {
+                        "id": "old_cluster_health_hyperedge",
+                        "nodes": [check, streampark],
+                        "relation": "stale",
+                        "source_file": "scripts/cluster_health.py",
+                    },
+                    {
+                        "id": "factory_hyperedge",
+                        "nodes": [factory, streampark],
+                        "relation": "kept",
+                        "source_file": "scripts/factory.py",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fresh = {
+        "nodes": [
+            {
+                "id": streampark,
+                "label": "StreamParkClient",
+                "file_type": "code",
+                "source_file": "scripts/cluster_health.py",
+            },
+            {
+                "id": check,
+                "label": "Check",
+                "file_type": "code",
+                "source_file": "scripts/cluster_health.py",
+            },
+        ],
+        "edges": [],
+        "hyperedges": [],
+    }
+    graph = build_merge(
+        [fresh],
+        graph_path=graph_path,
+        replace_sources=["scripts/cluster_health.py"],
+    )
+
+    directed_edges = {
+        (data.get("_src", source), data.get("_tgt", target), data.get("source_file"))
+        for source, target, data in graph.edges(data=True)
+    }
+    assert (check, streampark, "scripts/cluster_health.py") not in directed_edges
+    assert (factory, streampark, "scripts/factory.py") in directed_edges
+    hyperedge_ids = {item["id"] for item in graph.graph.get("hyperedges", [])}
+    assert "old_cluster_health_hyperedge" not in hyperedge_ids
+    assert "factory_hyperedge" in hyperedge_ids
+
+
+def test_build_from_json_suppresses_low_confidence_generic_dependency():
+    nodes = [
+        {"id": "check", "label": "Check", "file_type": "code", "source_file": "x.py"},
+        {
+            "id": "streampark",
+            "label": "StreamParkClient",
+            "file_type": "code",
+            "source_file": "x.py",
+        },
+    ]
+    low_conf = {
+        "nodes": nodes,
+        "edges": [
+            {
+                "source": "check",
+                "target": "streampark",
+                "relation": "uses",
+                "confidence": "INFERRED",
+                "confidence_score": 0.5,
+                "source_file": "x.py",
+            }
+        ],
+    }
+    assert build_from_json(low_conf).number_of_edges() == 0
+
+    stronger = dict(low_conf)
+    stronger["edges"] = [dict(low_conf["edges"][0], confidence_score=0.75)]
+    assert build_from_json(stronger).number_of_edges() == 1
+
+
 def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_path):
     """Regression for #1061.
 

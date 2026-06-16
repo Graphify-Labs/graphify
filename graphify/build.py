@@ -83,6 +83,80 @@ def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
     return p
 
 
+_GENERIC_SYMBOL_LABELS = {
+    "str",
+    "Any",
+    "int",
+    "bool",
+    "float",
+    "Path",
+    "Connection",
+    "Namespace",
+    "main()",
+    "Check",
+    "Report",
+    "HealthReport",
+}
+_LOW_CONF_GENERIC_RELATIONS = {
+    "calls",
+    "uses",
+    "references",
+    "depends_on",
+    "imports",
+    "implements",
+}
+
+
+def _source_match_set(sources: list[str] | None, root: str | Path | None = None) -> set[str]:
+    """Return raw and normalized source_file values for source-scoped pruning."""
+    if not sources:
+        return set()
+    root_str = str(Path(root).resolve()) if root is not None else None
+    out: set[str] = set()
+    for source in sources:
+        if not source:
+            continue
+        out.add(str(source).replace("\\", "/"))
+        norm = _norm_source_file(str(source), root_str)
+        if norm:
+            out.add(norm)
+    return out
+
+
+def _edge_confidence_score(attrs: dict) -> float:
+    try:
+        return float(attrs.get("confidence_score", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _is_generic_label(label: str) -> bool:
+    stripped = label.strip()
+    return stripped in _GENERIC_SYMBOL_LABELS or stripped.removesuffix("()") in _GENERIC_SYMBOL_LABELS
+
+
+def _is_low_confidence_generic_dependency(
+    attrs: dict,
+    source_node: dict,
+    target_node: dict,
+) -> bool:
+    """Suppress speculative dependency edges from generic symbols to code nodes."""
+    if str(attrs.get("confidence", "")).upper() != "INFERRED":
+        return False
+    if _edge_confidence_score(attrs) > 0.5:
+        return False
+    if str(attrs.get("relation", "")) not in _LOW_CONF_GENERIC_RELATIONS:
+        return False
+    source_label = str(source_node.get("label", ""))
+    target_label = str(target_node.get("label", ""))
+    source_generic = _is_generic_label(source_label)
+    target_generic = _is_generic_label(target_label)
+    if not (source_generic or target_generic):
+        return False
+    other = target_node if source_generic else source_node
+    return other.get("file_type") == "code"
+
+
 def edge_data(G: nx.Graph, u: str, v: str) -> dict:
     """Return one edge attribute dict for (u, v), tolerating MultiGraph.
 
@@ -315,6 +389,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
             if src_ext and tgt_ext and _LANG_FAMILY.get(src_ext) != _LANG_FAMILY.get(tgt_ext):
                 continue
+        if _is_low_confidence_generic_dependency(attrs, G.nodes[src], G.nodes[tgt]):
+            continue
         # Preserve original edge direction - undirected graphs lose it otherwise,
         # causing display functions to show edges backwards.
         attrs["_src"] = src
@@ -435,6 +511,7 @@ def build_merge(
     new_chunks: list[dict],
     graph_path: str | Path = "graphify-out/graph.json",
     prune_sources: list[str] | None = None,
+    replace_sources: list[str] | None = None,
     *,
     directed: bool = False,
     dedup: bool = True,
@@ -443,8 +520,9 @@ def build_merge(
 ) -> nx.Graph:
     """Load existing graph.json, merge new chunks into it, and save back.
 
-    Never replaces - only grows (or prunes deleted-file nodes via prune_sources).
-    Safe to call repeatedly: existing nodes and edges are preserved.
+    By default this only grows the graph. prune_sources removes deleted-file
+    content, while replace_sources first removes old content for changed files
+    before merging their fresh extraction.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
     """
     graph_path = Path(graph_path)
@@ -462,7 +540,32 @@ def build_merge(
         links_key = "links" if "links" in data else "edges"
         existing_nodes = list(data.get("nodes", []))
         existing_edges = list(data.get(links_key, []))
-        base = [{"nodes": existing_nodes, "edges": existing_edges}]
+        existing_hyperedges = list(data.get("hyperedges", []))
+        remove_sources = _source_match_set(prune_sources, root) | _source_match_set(replace_sources, root)
+        if remove_sources:
+            before = (len(existing_nodes), len(existing_edges), len(existing_hyperedges))
+            existing_nodes = [
+                node for node in existing_nodes
+                if node.get("source_file") not in remove_sources
+            ]
+            existing_edges = [
+                edge for edge in existing_edges
+                if edge.get("source_file") not in remove_sources
+            ]
+            existing_hyperedges = [
+                hyperedge for hyperedge in existing_hyperedges
+                if hyperedge.get("source_file") not in remove_sources
+            ]
+            after = (len(existing_nodes), len(existing_edges), len(existing_hyperedges))
+            removed = tuple(a - b for a, b in zip(before, after))
+            if any(removed):
+                print(
+                    "[graphify] Removed old graph content for "
+                    f"{len(remove_sources)} source key(s): "
+                    f"{removed[0]} node(s), {removed[1]} edge(s), {removed[2]} hyperedge(s).",
+                    file=sys.stderr,
+                )
+        base = [{"nodes": existing_nodes, "edges": existing_edges, "hyperedges": existing_hyperedges}]
     else:
         existing_nodes = []
         base = []
@@ -520,7 +623,7 @@ def build_merge(
 
     # Safety check: refuse to shrink the graph silently (#479)
     # Skip when dedup or prune_sources is active — shrinkage is intentional there.
-    if graph_path.exists() and not dedup and not prune_sources:
+    if graph_path.exists() and not dedup and not prune_sources and not replace_sources:
         existing_n = len(existing_nodes)
         new_n = G.number_of_nodes()
         if new_n < existing_n:

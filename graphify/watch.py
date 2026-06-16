@@ -562,11 +562,16 @@ def _rebuild_code(
                 preserved_edges = [
                     e for e in existing.get("links", existing.get("edges", []))
                     if e.get("source") in all_ids and e.get("target") in all_ids
+                    and (not evict_sources or e.get("source_file") not in evict_sources)
+                ]
+                preserved_hyperedges = [
+                    h for h in existing.get("hyperedges", [])
+                    if not evict_sources or h.get("source_file") not in evict_sources
                 ]
                 result = {
                     "nodes": result["nodes"] + preserved_nodes,
                     "edges": result["edges"] + preserved_edges,
-                    "hyperedges": existing.get("hyperedges", []),
+                    "hyperedges": preserved_hyperedges,
                     "input_tokens": 0,
                     "output_tokens": 0,
                 }

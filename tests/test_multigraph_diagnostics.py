@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -10,8 +11,11 @@ import graphify.__main__ as mainmod
 from graphify.diagnostics import (
     diagnose_extraction,
     diagnose_file,
+    diagnose_quality,
+    diagnose_quality_file,
     format_diagnostic_json,
     format_diagnostic_report,
+    format_quality_report,
     scan_producer_suppression_sites,
 )
 
@@ -245,6 +249,63 @@ def test_diagnostic_json_report_is_serializable(tmp_path: Path) -> None:
     json.dumps(payload)
 
 
+def test_diagnose_quality_reports_dirty_graph() -> None:
+    dirty = {
+        "nodes": [
+            {"id": "check", "label": "Check", "file_type": "code"},
+            {"id": "streampark", "label": "StreamParkClient", "file_type": "code"},
+        ],
+        "links": [
+            {
+                "source": "check",
+                "target": "streampark",
+                "relation": "uses",
+                "confidence": "INFERRED",
+                "confidence_score": 0.5,
+                "source_file": "scripts/cluster_health.py",
+            },
+            {
+                "source": "missing",
+                "target": "streampark",
+                "relation": "references",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+            },
+        ],
+    }
+
+    summary = diagnose_quality(dirty)
+
+    assert summary["pass"] is False
+    assert summary["dangling_edge_count"] == 1
+    assert summary["low_confidence_inferred_count"] == 1
+    assert summary["low_confidence_generic_edge_count"] == 1
+
+
+def test_diagnose_quality_file_detects_stale_outputs(tmp_path: Path) -> None:
+    graph_path = tmp_path / "graph.json"
+    report_path = tmp_path / "GRAPH_REPORT.md"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "nodes": [{"id": "a", "label": "A", "file_type": "code"}],
+                "links": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text("# old\n", encoding="utf-8")
+    os.utime(report_path, (1_700_000_000, 1_700_000_000))
+    os.utime(graph_path, (1_700_000_100, 1_700_000_100))
+
+    summary = diagnose_quality_file(graph_path)
+    report = format_quality_report(summary)
+
+    assert summary["report_stale"] is True
+    assert summary["pass"] is False
+    assert "[graphify] Quality diagnostic: FAIL" in report
+
+
 def test_scan_producer_suppression_sites_finds_seen_sets(tmp_path: Path) -> None:
     source = tmp_path / "extract.py"
     source.write_text(
@@ -403,16 +464,82 @@ def test_diagnose_multigraph_cli_json_output(monkeypatch, tmp_path: Path, capsys
     assert payload["summary"]["directed_same_endpoint_collapsed_edges"] == 3
 
 
+def test_diagnose_quality_cli_human_output(monkeypatch, tmp_path: Path, capsys) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "nodes": [
+                    {"id": "check", "label": "Check", "file_type": "code"},
+                    {"id": "streampark", "label": "StreamParkClient", "file_type": "code"},
+                ],
+                "links": [
+                    {
+                        "source": "check",
+                        "target": "streampark",
+                        "relation": "uses",
+                        "confidence": "INFERRED",
+                        "confidence_score": 0.5,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "diagnose", "quality", "--graph", str(graph_path)],
+    )
+
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    assert "[graphify] Quality diagnostic: FAIL" in out
+    assert "low_confidence_generic_edges: 1" in out
+
+
+def test_diagnose_quality_cli_json_output(monkeypatch, tmp_path: Path, capsys) -> None:
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps({"nodes": [], "links": []}), encoding="utf-8")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "diagnose", "quality", "--graph", str(graph_path), "--json"],
+    )
+
+    mainmod.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pass"] is True
+    assert payload["node_count"] == 0
+
+
 @pytest.mark.parametrize(
     ("argv_tail", "expected"),
     [
-        ([], "Usage: graphify diagnose multigraph"),
-        (["wrong"], "Usage: graphify diagnose multigraph"),
+        ([], "Usage: graphify diagnose [multigraph|quality]"),
+        (["wrong"], "Usage: graphify diagnose [multigraph|quality]"),
         (["multigraph", "--graph"], "error: --graph requires a path"),
         (["multigraph", "--max-examples"], "error: --max-examples requires an integer"),
         (["multigraph", "--max-examples", "many"], "error: --max-examples requires an integer"),
         (["multigraph", "--max-examples", "-1"], "error: --max-examples must be >= 0"),
         (["multigraph", "--unknown"], "error: unknown diagnose option --unknown"),
+        (["quality", "--graph"], "error: --graph requires a path"),
+        (["quality", "--max-examples"], "error: --max-examples requires an integer"),
+        (["quality", "--max-examples", "many"], "error: --max-examples requires an integer"),
+        (["quality", "--max-examples", "-1"], "error: --max-examples must be >= 0"),
+        (
+            ["quality", "--low-confidence-threshold"],
+            "error: --low-confidence-threshold requires a number",
+        ),
+        (
+            ["quality", "--low-confidence-threshold", "many"],
+            "error: --low-confidence-threshold requires a number",
+        ),
+        (["quality", "--unknown"], "error: unknown diagnose quality option --unknown"),
     ],
 )
 def test_diagnose_multigraph_cli_usage_errors(

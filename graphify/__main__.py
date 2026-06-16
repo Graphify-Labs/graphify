@@ -2131,6 +2131,8 @@ def main() -> None:
         print("                            (default follows JSON directed flag;")
         print("                             raw extraction with no flag defaults directed)")
         print("    --extract-path PATH     extractor source for suppression scan")
+        print("  diagnose quality       report low-confidence, dangling, and stale-output risks")
+        print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  clone <github-url>      clone a GitHub repo locally and print its path for /graphify")
         print("  merge-driver <base> <current> <other>  git merge driver: union-merge two graph.json files (set up via hook install)")
         print("  merge-graphs <g1> <g2>  merge two or more graph.json files into one cross-repo graph")
@@ -2998,11 +3000,73 @@ def main() -> None:
 
     elif cmd == "diagnose":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "quality":
+            graph_path = Path(_default_graph_path())
+            json_output = False
+            max_examples = 10
+            low_confidence_threshold = 0.5
+
+            i = 3
+            while i < len(sys.argv):
+                arg = sys.argv[i]
+                if arg == "--graph":
+                    i += 1
+                    if i >= len(sys.argv):
+                        print("error: --graph requires a path", file=sys.stderr)
+                        sys.exit(1)
+                    graph_path = Path(sys.argv[i])
+                elif arg == "--json":
+                    json_output = True
+                elif arg == "--max-examples":
+                    i += 1
+                    if i >= len(sys.argv):
+                        print("error: --max-examples requires an integer", file=sys.stderr)
+                        sys.exit(1)
+                    try:
+                        max_examples = int(sys.argv[i])
+                    except ValueError:
+                        print("error: --max-examples requires an integer", file=sys.stderr)
+                        sys.exit(1)
+                    if max_examples < 0:
+                        print("error: --max-examples must be >= 0", file=sys.stderr)
+                        sys.exit(1)
+                elif arg == "--low-confidence-threshold":
+                    i += 1
+                    if i >= len(sys.argv):
+                        print("error: --low-confidence-threshold requires a number", file=sys.stderr)
+                        sys.exit(1)
+                    try:
+                        low_confidence_threshold = float(sys.argv[i])
+                    except ValueError:
+                        print("error: --low-confidence-threshold requires a number", file=sys.stderr)
+                        sys.exit(1)
+                else:
+                    print(f"error: unknown diagnose quality option {arg}", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+
+            from graphify.diagnostics import diagnose_quality_file, format_quality_report
+
+            try:
+                summary = diagnose_quality_file(
+                    graph_path,
+                    low_confidence_threshold=low_confidence_threshold,
+                    max_examples=max_examples,
+                )
+            except Exception as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+            if json_output:
+                print(json.dumps(summary, indent=2, ensure_ascii=False))
+            else:
+                print(format_quality_report(summary))
+            return
+
         if subcmd != "multigraph":
             print(
-                "Usage: graphify diagnose multigraph "
-                "[--graph path] [--json] [--max-examples N] "
-                "[--directed] [--undirected] [--extract-path path]",
+                "Usage: graphify diagnose [multigraph|quality] "
+                "[--graph path] [--json] [--max-examples N]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -4481,10 +4545,12 @@ def main() -> None:
         from graphify.analyze import god_nodes as _god_nodes, surprising_connections as _surprising
         dedup_backend = backend if dedup_llm else None
         if incremental_mode:
+            changed_files = [str(p) for p in code_files + semantic_files]
             G = _build_merge(
                 [merged],
                 graph_path=existing_graph_path,
                 prune_sources=deleted_files or None,
+                replace_sources=changed_files or None,
                 dedup=True,
                 dedup_llm_backend=dedup_backend,
                 root=target,
