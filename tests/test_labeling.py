@@ -87,7 +87,7 @@ def test_label_cli_passes_model_override(tmp_path, monkeypatch):
         return {0: "Orders"}, "llm"
 
     monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
-    monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
+    monkeypatch.setattr("graphify.export._core.to_html", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         sys,
         "argv",
