@@ -13,7 +13,7 @@ _TSX_EXTENSIONS = {".tsx"}
 @register(_TS_EXTENSIONS)
 def extract_ts(path: Path) -> dict:
     """Extract classes, interfaces, enums, functions, arrow functions, and imports from a .ts file."""
-    from graphify.extract import _TS_CONFIG, _extract_generic
+    from ._core import _TS_CONFIG, _extract_generic
 
     return _extract_generic(path, _TS_CONFIG)
 
@@ -21,6 +21,6 @@ def extract_ts(path: Path) -> dict:
 @register(_TSX_EXTENSIONS)
 def extract_tsx(path: Path) -> dict:
     """Extract classes, interfaces, enums, functions, arrow functions, and imports from a .tsx file."""
-    from graphify.extract import _TSX_CONFIG, _extract_generic
+    from ._core import _TSX_CONFIG, _extract_generic
 
     return _extract_generic(path, _TSX_CONFIG)

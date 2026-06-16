@@ -16,6 +16,6 @@ def extract_vue(path: Path) -> dict:
     Vue single-file components contain <script>, <template>, and <style> blocks.
     The script block is processed by the JavaScript/TypeScript extractor.
     """
-    from ..extract import extract_js
+    from ._core import extract_js
 
     return extract_js(path)

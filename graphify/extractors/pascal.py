@@ -12,6 +12,6 @@ _EXTENSIONS = {".pas", ".pp", ".dpr", ".dpk", ".lpr", ".inc"}
 @register(_EXTENSIONS)
 def extract_pascal(path: Path) -> dict:
     """Extract units, classes, procedures, uses-imports, and calls from Pascal/Delphi files."""
-    from graphify.extract import extract_pascal as _extract_pascal
+    from ._core import extract_pascal as _extract_pascal
 
     return _extract_pascal(path)

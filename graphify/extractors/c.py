@@ -12,6 +12,6 @@ _EXTENSIONS = {".c", ".h"}
 @register(_EXTENSIONS)
 def extract_c(path: Path) -> dict:
     """Extract functions and includes from a .c/.h file."""
-    from graphify.extract import _C_CONFIG, _extract_generic
+    from ._core import _C_CONFIG, _extract_generic
 
     return _extract_generic(path, _C_CONFIG)

@@ -14,7 +14,7 @@ _PROJ_EXTENSIONS = {".csproj", ".fsproj", ".vbproj"}
 @register(_SLN_EXTENSIONS)
 def extract_sln(path: Path) -> dict:
     """Extract projects and inter-project dependencies from a .sln file."""
-    from graphify.extract import extract_sln as _extract_sln
+    from ._core import extract_sln as _extract_sln
 
     return _extract_sln(path)
 
@@ -22,7 +22,7 @@ def extract_sln(path: Path) -> dict:
 @register(_SLNX_EXTENSIONS)
 def extract_slnx(path: Path) -> dict:
     """Extract projects and inter-project dependencies from a .slnx file."""
-    from graphify.extract import extract_slnx as _extract_slnx
+    from ._core import extract_slnx as _extract_slnx
 
     return _extract_slnx(path)
 
@@ -30,6 +30,6 @@ def extract_slnx(path: Path) -> dict:
 @register(_PROJ_EXTENSIONS)
 def extract_csproj(path: Path) -> dict:
     """Extract packages, project refs, and target framework from a .csproj/.fsproj/.vbproj."""
-    from graphify.extract import extract_csproj as _extract_csproj
+    from ._core import extract_csproj as _extract_csproj
 
     return _extract_csproj(path)

@@ -720,7 +720,7 @@ def test_extract_tsx_uses_tsx_grammar():
 
 def test_extract_falls_back_to_sequential_when_parallel_returns_false(tmp_path, monkeypatch):
     """extract() must run sequential when _extract_parallel signals failure (returns False)."""
-    from graphify import extract as extract_mod
+    from graphify.extractors import _core as extract_mod
 
     files = [FIXTURES / "sample.py"] * 25  # >= _PARALLEL_THRESHOLD triggers parallel branch
     cache_root = tmp_path / "cache"
@@ -750,7 +750,7 @@ def test_extract_parallel_returns_false_on_broken_pool(tmp_path, monkeypatch, ca
     """_extract_parallel must catch BrokenProcessPool internally and return False."""
     from concurrent.futures.process import BrokenProcessPool
     import concurrent.futures
-    from graphify import extract as extract_mod
+    from graphify.extractors import _core as extract_mod
 
     class FakePool:
         def __init__(self, *a, **kw): pass

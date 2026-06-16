@@ -15,7 +15,7 @@ def extract_verilog(path: Path) -> dict:
     """Extract modules, functions, tasks, package imports, instantiations, and
     SystemVerilog class semantics (inherits/implements edges, field/parameter/
     return-type references) from .v/.sv files."""
-    from graphify.extract import (
+    from ._core import (
         _augment_systemverilog_semantics,
         _sv_first_identifier,
         _sv_child,

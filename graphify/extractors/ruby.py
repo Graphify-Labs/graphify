@@ -12,6 +12,6 @@ _EXTENSIONS = {".rb"}
 @register(_EXTENSIONS)
 def extract_ruby(path: Path) -> dict:
     """Extract classes, methods, singleton methods, and calls from a .rb file."""
-    from graphify.extract import _RUBY_CONFIG, _extract_generic
+    from ._core import _RUBY_CONFIG, _extract_generic
 
     return _extract_generic(path, _RUBY_CONFIG)

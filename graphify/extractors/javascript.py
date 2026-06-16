@@ -12,6 +12,6 @@ _EXTENSIONS = {".js", ".mjs"}
 @register(_EXTENSIONS)
 def extract_js(path: Path) -> dict:
     """Extract classes, functions, arrow functions, and imports from a .js file."""
-    from graphify.extract import _JS_CONFIG, _extract_generic
+    from ._core import _JS_CONFIG, _extract_generic
 
     return _extract_generic(path, _JS_CONFIG)

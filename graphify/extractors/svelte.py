@@ -20,7 +20,7 @@ def extract_svelte(path: Path) -> dict:
     {#await import('./X.svelte')} lives in the markup layer and is invisible
     to the JS parser, so a regex pass covers those dynamic imports.
     """
-    from ..extract import (
+    from ._core import (
         _extract_generic,
         _JS_CONFIG,
         _load_tsconfig_aliases,

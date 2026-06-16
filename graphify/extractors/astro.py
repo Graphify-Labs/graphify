@@ -26,7 +26,7 @@ def extract_astro(path: Path) -> dict:
     approach, scanning the frontmatter block and any client-side ``<script>`` blocks
     for static and dynamic imports.
     """
-    from ..extract import (
+    from ._core import (
         _extract_generic,
         _JS_CONFIG,
         _load_tsconfig_aliases,

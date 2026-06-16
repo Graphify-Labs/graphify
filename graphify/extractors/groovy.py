@@ -16,7 +16,7 @@ def extract_groovy(path: Path) -> dict:
     Falls back to a regex-based Spock extractor when tree-sitter-groovy cannot parse
     ``def "feature name"()`` methods (common in Spock specification classes).
     """
-    from graphify.extract import (
+    from ._core import (
         _GROOVY_CONFIG,
         _extract_generic,
         _is_spock_file,
