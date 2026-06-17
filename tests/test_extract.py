@@ -3089,9 +3089,6 @@ def test_dart_child_node_ids_are_stem_based(tmp_path):
             "This suggests an absolute path is still leaking into the ID."
         )
 
-
-
-
 def test_separator_collision_paths_get_distinct_ids(tmp_path):
     """#1522: two distinct paths whose only difference is a separator-vs-punctuation
     swap (foo/bar_baz.py vs foo_bar/baz.py) normalize to the same stem; the
@@ -3147,7 +3144,6 @@ def test_case_insensitive_suffix_filtering(tmp_path):
     assert "MyPythonClass" in labels
     assert "myJSFunction()" in labels
     assert "MyTSClass" in labels
-
 
 
 def test_extract_warns_on_code_files_with_no_ast_extractor(tmp_path, capsys):
@@ -3292,7 +3288,6 @@ def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsy
     assert "100/100 uncached files (100%)" in out
     assert "105/105 files" not in out, "final line must not switch to total_files (#1693)"
 
-
 def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
     # #1702: .m is shared by Objective-C and MATLAB. A real ObjC .m still routes to
     # extract_objc, but a MATLAB .m must NOT be force-parsed by the ObjC grammar
@@ -3434,3 +3429,396 @@ def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
     assert {sf for _, sf in carriers} == {
         "src/lib/content.ts", "src/pages/index.astro",
     }
+
+
+def _extract_dart_source(tmp_path, source: str, filename: str = "sample.dart"):
+    from graphify.extract import extract_dart
+
+    src_file = tmp_path / filename
+    src_file.parent.mkdir(parents=True, exist_ok=True)
+    src_file.write_text(source, encoding="utf-8")
+    return extract_dart(src_file)
+
+
+def _dart_labels(result):
+    return {node["label"] for node in result["nodes"]}
+
+
+def _dart_edges(result, relation: str):
+    return [edge for edge in result["edges"] if edge["relation"] == relation]
+
+
+def test_dart_package_part_of_resolves_parent_from_package_lib(tmp_path):
+    from graphify.extract import _file_stem, _make_id
+
+    package_root = tmp_path / "app"
+    (package_root / "lib" / "src").mkdir(parents=True)
+    (package_root / "pubspec.yaml").write_text("name: app\n", encoding="utf-8")
+    parent = package_root / "lib" / "src" / "parent.dart"
+    parent.write_text("library parent;\npart 'child.dart';\n", encoding="utf-8")
+    child = package_root / "lib" / "src" / "child.dart"
+    child.write_text("part of 'package:app/src/parent.dart';\nclass Child {}\n", encoding="utf-8")
+
+    result = _extract_dart_source(tmp_path, child.read_text(encoding="utf-8"), str(child.relative_to(tmp_path)))
+    labels = _dart_labels(result)
+    define_edges = _dart_edges(result, "defines")
+
+    parent_file_nid = _make_id(str(parent.resolve()))
+    child_nid = _make_id(_file_stem(parent), "Child")
+    assert "child.dart" not in labels
+    assert child_nid in {node["id"] for node in result["nodes"]}
+    assert any(edge["source"] == parent_file_nid and edge["target"] == child_nid for edge in define_edges)
+
+
+def test_dart_generated_dollar_prefixed_class_does_not_create_bare_underscore_node(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "abstract mixin class _$NativeTargetCopyWith<$Res> {}\n",
+    )
+
+    assert "_" not in _dart_labels(result)
+    assert "_" not in {node["id"] for node in result["nodes"]}
+
+
+def test_dart_private_named_constructor_does_not_create_bare_underscore_node(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "class AppInfo {\n"
+        "  const AppInfo._();\n"
+        "}\n",
+    )
+
+    assert "_" not in _dart_labels(result)
+    assert "_" not in {node["id"] for node in result["nodes"]}
+
+
+def test_dart_function_type_commas_do_not_split_interface_targets(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "class X implements A<void Function(int, String)>, B {}\n",
+    )
+
+    implements_targets = {edge["target"] for edge in _dart_edges(result, "implements")}
+    assert implements_targets == {"a", "b"}
+    assert "void Function(int" not in _dart_labels(result)
+    assert "String)" not in _dart_labels(result)
+
+
+def test_dart_getters_and_static_modifiers_do_not_create_type_nodes(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "String get title => 'x';\n"
+        "bool get ok => true;\n"
+        "static const foo = 1;\n"
+        "static final bar = 2;\n",
+    )
+
+    labels = _dart_labels(result)
+    ids = {node["id"] for node in result["nodes"]}
+    assert {"String get", "bool get", "static const", "static final"}.isdisjoint(labels)
+    assert {"string_get", "bool_get", "static_const", "static_final"}.isdisjoint(ids)
+
+
+def test_dart_class_header_is_not_treated_as_variable_declaration(tmp_path):
+    from graphify.extract import _file_stem, _make_id
+
+    result = _extract_dart_source(
+        tmp_path,
+        "class MockWebViewPlatform extends Mock with MockMixin implements Platform {}\n",
+        "mocks/mock_webview_platform.dart",
+    )
+
+    file_scoped_mock_id = _make_id(_file_stem(tmp_path / "mocks" / "mock_webview_platform.dart"), "Mock")
+    assert file_scoped_mock_id not in {node["id"] for node in result["nodes"]}
+    assert ("MockWebViewPlatform", "Mock") in {
+        (
+            next(node["label"] for node in result["nodes"] if node["id"] == edge["source"]),
+            next(node["label"] for node in result["nodes"] if node["id"] == edge["target"]),
+        )
+        for edge in _dart_edges(result, "inherits")
+    }
+
+
+def test_dart_multiline_class_header_is_not_treated_as_variable_declaration(tmp_path):
+    from graphify.extract import _file_stem, _make_id
+
+    result = _extract_dart_source(
+        tmp_path,
+        "class MockPlatformInAppWebViewController extends Mock\n"
+        "    implements PlatformInAppWebViewController {}\n",
+        "mocks/mock_webview_platform.dart",
+    )
+
+    file_scoped_mock_id = _make_id(_file_stem(tmp_path / "mocks" / "mock_webview_platform.dart"), "Mock")
+    assert file_scoped_mock_id not in {node["id"] for node in result["nodes"]}
+
+
+def test_dart_constructor_parameters_do_not_create_comma_joined_type_nodes(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "class C {\n"
+        "  const C({String? label, int? count});\n"
+        "}\n",
+    )
+
+    labels = _dart_labels(result)
+    assert not any("," in label for label in labels)
+    assert "String? label, int?" not in labels
+
+
+def test_dart_freezed_factory_parameters_do_not_create_comma_joined_type_nodes(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "const factory BucketPatchRequestDto({String? sku, int? amount}) = _BucketPatchRequestDto;\n",
+    )
+
+    labels = _dart_labels(result)
+    assert not any("," in label for label in labels)
+    assert "String? sku, int?" not in labels
+
+
+def test_dart_three_class_modifiers_define_real_declarations_only(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "base class BaseThing {}\n"
+        "interface class InterfaceThing {}\n"
+        "abstract interface class AbstractInterfaceThing {}\n"
+        "final class FinalThing {}\n"
+        "sealed class SealedThing {}\n"
+        "base mixin BaseMixin {}\n"
+        "mixin class MixinClassThing {}\n",
+    )
+
+    labels = _dart_labels(result)
+    assert {
+        "BaseThing",
+        "InterfaceThing",
+        "AbstractInterfaceThing",
+        "FinalThing",
+        "SealedThing",
+        "BaseMixin",
+        "MixinClassThing",
+    }.issubset(labels)
+    assert {"base", "interface", "sealed", "final", "abstract", "mixin"}.isdisjoint(labels)
+
+
+def test_dart_sdk_noise_types_do_not_create_reference_nodes(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "import 'dart:async';\n"
+        "FutureOr<void> a;\n"
+        "Iterable<String> b;\n"
+        "Never fail() => throw Exception();\n"
+        "Symbol? s;\n"
+        "Runes r;\n"
+        "Record? rec;\n"
+        "StackTrace? st;\n"
+        "BigInt? big;\n"
+        "RegExp? regex;\n"
+        "Pattern? pattern;\n"
+        "Match? match;\n"
+        "MapEntry<String, int> entry;\n"
+        "Iterator<String>? iterator;\n"
+        "Comparable<int>? comparable;\n"
+        "Error? error;\n"
+        "Exception? exception;\n",
+    )
+
+    labels = _dart_labels(result)
+    assert {
+        "FutureOr",
+        "Iterable",
+        "Never",
+        "Symbol",
+        "Runes",
+        "Record",
+        "StackTrace",
+        "BigInt",
+        "RegExp",
+        "Pattern",
+        "Match",
+        "MapEntry",
+        "Iterator",
+        "Comparable",
+        "Error",
+        "Exception",
+    }.isdisjoint(labels)
+
+
+def test_dart_never_bottom_type_does_not_create_reference_node(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "Never fail() => throw Exception();\n"
+        "Future<Never> load() async => throw Exception();\n"
+        "Never? value;\n",
+    )
+
+    labels = _dart_labels(result)
+    ids = {node["id"] for node in result["nodes"]}
+    assert "Never" not in labels
+    assert "never" not in ids
+    assert {"fail", "load", "value"}.issubset(labels)
+
+
+def test_dart_records_do_not_create_comma_label_noise(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "(String, int) tuple;\n"
+        "({String name, int age}) named;\n"
+        "final (name, age) = ('a', 1);\n"
+        "final (:name, :age) = (name: 'a', age: 1);\n",
+    )
+
+    labels = _dart_labels(result)
+    assert not any("," in label for label in labels)
+    assert {"String, int", "String name, int age", "name, age"}.isdisjoint(labels)
+
+
+def test_dart_patterns_do_not_create_fake_declarations(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "if (value case User(:final id, :final name)) {}\n"
+        "switch (state) {\n"
+        "  case Loaded(:final data):\n"
+        "    break;\n"
+        "  case ErrorState(:final error):\n"
+        "    break;\n"
+        "}\n"
+        "for (final MapEntry(:key, :value) in entries) {}\n",
+    )
+
+    labels = _dart_labels(result)
+    assert {
+        "final id",
+        "final name",
+        "key,",
+        "value",
+        "Loaded(:final data)",
+        "ErrorState(:final error)",
+    }.isdisjoint(labels)
+
+
+def test_dart_switch_expressions_and_if_case_do_not_create_fake_nodes(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "final label = switch (status) {\n"
+        "  OrderStatus.created => 'created',\n"
+        "  OrderStatus.done => 'done',\n"
+        "};\n"
+        "if (status case OrderStatus.created) {}\n",
+    )
+
+    labels = _dart_labels(result)
+    assert {"case", "created", "done", "OrderStatus.created"}.isdisjoint(labels)
+
+
+def test_dart_three_class_modifiers_include_mixin_class_form(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "base class A {}\n"
+        "interface class B {}\n"
+        "abstract interface class C {}\n"
+        "final class D {}\n"
+        "sealed class E {}\n"
+        "mixin class F {}\n"
+        "base mixin class G {}\n",
+    )
+
+    labels = _dart_labels(result)
+    assert {"A", "B", "C", "D", "E", "F", "G"}.issubset(labels)
+    assert {"base", "interface", "sealed", "final", "abstract", "mixin"}.isdisjoint(labels)
+
+
+def test_dart_extension_types_do_not_create_representation_noise(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "extension type UserId(int value) {}\n"
+        "extension type const ProductId._(String value) implements Object {}\n"
+        "extension type Sequence<T>(List<T> _) implements Iterable<T> {}\n",
+    )
+
+    labels = _dart_labels(result)
+    assert {"UserId", "ProductId", "Sequence"}.issubset(labels)
+    assert {"value", "_", "Iterable", "Object", "const"}.isdisjoint(labels)
+
+
+def test_dart_extensions_on_sdk_types_do_not_create_sdk_nodes(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "extension StringExt on String {}\n"
+        "extension ListExt<T> on List<T> {}\n"
+        "extension MapExt<K, V> on Map<K, V> {}\n"
+        "extension SetExt<T> on Set<T> {}\n"
+        "extension IterableExt<T> on Iterable<T> {}\n"
+        "extension FutureExt<T> on Future<T> {}\n"
+        "extension StreamExt<T> on Stream<T> {}\n"
+        "extension UserExt on User {}\n"
+        "class User {}\n",
+    )
+
+    labels = _dart_labels(result)
+    extends_targets = {edge["target"] for edge in _dart_edges(result, "extends")}
+    assert {
+        "StringExt",
+        "ListExt",
+        "MapExt",
+        "SetExt",
+        "IterableExt",
+        "FutureExt",
+        "StreamExt",
+        "UserExt",
+        "User",
+    }.issubset(labels)
+    assert {"String", "List", "Map", "Set", "Iterable", "Future", "Stream"}.isdisjoint(labels)
+    assert {"string", "list", "map", "set", "iterable", "future", "stream"}.isdisjoint(extends_targets)
+    assert "user" in extends_targets
+
+
+def test_dart_typedefs_to_sdk_types_do_not_create_sdk_nodes(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "typedef JsonMap = Map<String, dynamic>;\n"
+        "typedef UserAlias = User;\n"
+        "class User {}\n",
+    )
+
+    labels = _dart_labels(result)
+    reference_targets = {edge["target"] for edge in _dart_edges(result, "references")}
+    assert {"JsonMap", "UserAlias", "User"}.issubset(labels)
+    assert "Map" not in labels
+    assert "map" not in reference_targets
+    assert "user" in reference_targets
+
+
+def test_dart_enhanced_enum_header_relations_without_value_noise(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "enum OrderStatus implements JsonSerializable {\n"
+        "  created('created'),\n"
+        "  done('done');\n"
+        "\n"
+        "  const OrderStatus(this.code);\n"
+        "  final String code;\n"
+        "}\n",
+    )
+
+    labels = _dart_labels(result)
+    implements_targets = {edge["target"] for edge in _dart_edges(result, "implements")}
+    assert "OrderStatus" in labels
+    assert "jsonserializable" in implements_targets
+    assert {"String code", "created", "done"}.isdisjoint(labels)
+
+
+def test_dart_wildcard_patterns_never_create_underscore_node(tmp_path):
+    result = _extract_dart_source(
+        tmp_path,
+        "final (_, value) = tuple;\n"
+        "list.map((_) => 1);\n"
+        "switch (x) {\n"
+        "  case (_, final y):\n"
+        "    break;\n"
+        "}\n",
+    )
+
+    assert "_" not in _dart_labels(result)
+    assert "_" not in {node["id"] for node in result["nodes"]}

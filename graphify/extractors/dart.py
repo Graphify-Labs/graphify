@@ -30,6 +30,94 @@ def extract_dart(path: Path) -> dict:
         return token
     src_clean = comment_string_pattern.sub(_comment_replace, src)
 
+    # Dart part files can point to their parent library through package: URIs.
+    # Resolve those through the nearest pubspec.yaml so part declarations use
+    # the parent library stem instead of a machine-local part-file path.
+    def _find_package_root(start: Path) -> tuple[Path, str] | None:
+        for parent in [start, *start.parents]:
+            pubspec = parent / "pubspec.yaml"
+            if not pubspec.exists():
+                continue
+            try:
+                for line in pubspec.read_text(encoding="utf-8", errors="replace").splitlines():
+                    m = re.match(r"\s*name\s*:\s*([A-Za-z0-9_]+)\s*$", line)
+                    if m:
+                        return parent, m.group(1)
+            except OSError:
+                return None
+        return None
+
+    def _resolve_part_parent(parent_ref: str) -> Path:
+        if parent_ref.startswith("package:"):
+            # Dart part files can name their parent via package:pkg/lib-relative path.
+            package_ref = parent_ref[len("package:"):]
+            package_name, _, package_path = package_ref.partition("/")
+            package_root = _find_package_root(path.parent)
+            if package_root and package_root[1] == package_name and package_path:
+                return (package_root[0] / "lib" / package_path).resolve()
+            return (path.parent / Path(package_path or package_name).name).resolve()
+        return (path.parent / parent_ref).resolve()
+
+    # These SDK/common Dart types usually do not describe project relationships.
+    # Keep them out of reference nodes unless a legacy extraction path explicitly
+    # opts in for compatibility.
+    dart_sdk_noise_types = {
+        "String", "int", "double", "bool", "num", "dynamic", "Object",
+        "List", "Map", "Set", "Iterable", "MapEntry", "Iterator",
+        "Comparable", "Future", "FutureOr", "Stream",
+        "void", "Function", "Never", "Null", "Type", "Enum", "Record",
+        "DateTime", "Duration", "Uri", "Runes", "Symbol", "BigInt",
+        "RegExp", "Pattern", "Match", "StackTrace", "Error", "Exception",
+    }
+    # Defensive cleanup for regex matches that accidentally include declaration
+    # keywords in type-like strings.
+    declaration_modifiers = {
+        "static", "late", "final", "const", "var", "external", "abstract",
+        "factory", "async", "base", "interface", "sealed", "mixin",
+    }
+
+    def _strip_balanced_generics(text: str) -> str:
+        current: list[str] = []
+        depth = 0
+        for char in text:
+            if char == "<":
+                depth += 1
+            elif char == ">":
+                depth = max(0, depth - 1)
+            elif depth == 0:
+                current.append(char)
+        return "".join(current)
+
+    def _clean_type_name(
+        text: str | None,
+        *,
+        allow_sdk_noise: bool | set[str] = False,
+    ) -> str | None:
+        """Normalize a type-ish Dart fragment before creating a graph node."""
+        if not text:
+            return None
+        clean = text.strip().rstrip("?")
+        clean = clean.split(".")[-1].strip()
+        clean = _strip_balanced_generics(clean).strip().rstrip("?")
+        if "," in clean or "(" in clean or ")" in clean:
+            return None
+        parts = [part for part in clean.split() if part not in declaration_modifiers]
+        clean = " ".join(parts).strip()
+        if not clean or clean in {"get", "set", "_"}:
+            return None
+        if clean.endswith(" get") or clean.endswith(" set"):
+            return None
+        if not re.match(r"^[A-Za-z_]\w*$", clean):
+            return None
+        if clean in dart_sdk_noise_types:
+            if allow_sdk_noise is True:
+                return clean
+            if isinstance(allow_sdk_noise, set) and clean in allow_sdk_noise:
+                return clean
+            return None
+        return clean
+
+    # Use stem (not str(path)) for child IDs to keep them machine-independent.
     stem = _file_stem(path)
     file_nid = _make_id(str(path))
 
@@ -40,7 +128,7 @@ def extract_dart(path: Path) -> dict:
         parent_ref = part_of_match.group(1)
         if parent_ref.endswith(".dart"):
             try:
-                parent_path = (path.parent / parent_ref).resolve()
+                parent_path = _resolve_part_parent(parent_ref)
                 if parent_path.exists():
                     stem = _file_stem(parent_path)
                     file_nid = _make_id(str(parent_path))
@@ -138,14 +226,17 @@ def extract_dart(path: Path) -> dict:
 
     # 1. Classes, mixins, and enums declarations (with inheritance, mixins, interfaces, and generics)
     # Supports multiple combined modifiers (e.g., abstract base class, mixin class) without capturing "class" as a name
-    class_pattern = r"^\s*(?:(?:abstract|sealed|base|interface|final|mixin)\s+)*(?:class|mixin|enum|extension\s+type)\s+(\w+)"
+    class_pattern = r"^\s*(?:(?:abstract|sealed|base|interface|final|mixin)\s+)*(?:class|mixin|enum|extension\s+type(?:\s+const)?)\s+(\w+)"
     for m in re.finditer(class_pattern, src_clean, re.MULTILINE):
         class_name = m.group(1)
+        if class_name == "_":
+            continue
         class_nid = _make_id(stem, class_name)
         add_node(class_nid, class_name)
         add_edge(file_nid, class_nid, "defines")
 
-        # Manually parse extends/on, with, and implements in header to handle nested generics brackets balanced
+        # Manually parse extends/on, with, and implements so nested generic
+        # brackets do not split relation targets incorrectly.
         start_idx = m.end()
         rest = src_clean[start_idx : start_idx + 500]
 
@@ -227,33 +318,36 @@ def extract_dart(path: Path) -> dict:
             interfaces_list = _split_types(header[impl_m.end():])
 
         # Map extends inheritance relation
-        if base_class:
-            base_nid = _make_id(base_class)
-            add_node(base_nid, base_class, source_file=None)
+        clean_base = _clean_type_name(base_class)
+        if clean_base:
+            base_nid = _make_id(clean_base)
+            add_node(base_nid, clean_base, source_file=None)
             add_edge(class_nid, base_nid, "inherits")
 
             # Map generic type arguments (e.g. MyBloc extends Bloc<MyEvent, MyState>)
             if generics:
                 for gen in _split_types(generics):
-                    gen_clean = gen.split("<")[0].strip()
-                    if gen_clean not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "void"}:
+                    gen_clean = _clean_type_name(gen)
+                    if gen_clean:
                         gen_nid = _make_id(gen_clean)
                         add_node(gen_nid, gen_clean, source_file=None)
                         add_edge(class_nid, gen_nid, "references")
 
-        # Map mixins
+        # Dart `with` clauses are mixins, not interfaces.
         for mixin in mixins_list:
-            mixin_clean = mixin.split("<")[0].strip()
-            mixin_nid = _make_id(mixin_clean)
-            add_node(mixin_nid, mixin_clean, source_file=None)
-            add_edge(class_nid, mixin_nid, "mixes_in")
+            mixin_clean = _clean_type_name(mixin)
+            if mixin_clean:
+                mixin_nid = _make_id(mixin_clean)
+                add_node(mixin_nid, mixin_clean, source_file=None)
+                add_edge(class_nid, mixin_nid, "mixes_in")
 
         # Map interfaces
         for interface in interfaces_list:
-            interface_clean = interface.split("<")[0].strip()
-            interface_nid = _make_id(interface_clean)
-            add_node(interface_nid, interface_clean, source_file=None)
-            add_edge(class_nid, interface_nid, "implements")
+            interface_clean = _clean_type_name(interface, allow_sdk_noise={"Object"})
+            if interface_clean:
+                interface_nid = _make_id(interface_clean)
+                add_node(interface_nid, interface_clean, source_file=None)
+                add_edge(class_nid, interface_nid, "implements")
 
         # Extract class body for precise framework dependencies and event handling
         start_idx = m.start()
@@ -371,11 +465,11 @@ def extract_dart(path: Path) -> dict:
     typedef_pattern = r"^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([a-zA-Z0-9_<>,.?\s]+);"
     for m in re.finditer(typedef_pattern, src_clean, re.MULTILINE):
         typedef_name = m.group(1)
-        target_type = m.group(2).split("<")[0].split(".")[-1].strip()
-        if target_type not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void", "Function"}:
-            typedef_nid = _make_id(stem, typedef_name)
-            add_node(typedef_nid, typedef_name)
-            add_edge(file_nid, typedef_nid, "defines")
+        typedef_nid = _make_id(stem, typedef_name)
+        add_node(typedef_nid, typedef_name)
+        add_edge(file_nid, typedef_nid, "defines")
+        target_type = _clean_type_name(m.group(2))
+        if target_type:
             target_nid = _make_id(target_type)
             add_node(target_nid, target_type, source_file=None)
             add_edge(typedef_nid, target_nid, "references", context="typedef")
@@ -391,14 +485,22 @@ def extract_dart(path: Path) -> dict:
         add_node(ext_nid, label)
         add_edge(file_nid, ext_nid, "defines")
 
-        target_nid = _make_id(target_class)
-        add_node(target_nid, target_class, source_file=None)
-        add_edge(ext_nid, target_nid, "extends")
+        clean_target = _clean_type_name(target_class)
+        if clean_target:
+            target_nid = _make_id(clean_target)
+            add_node(target_nid, clean_target, source_file=None)
+            add_edge(ext_nid, target_nid, "extends")
 
     # 4. Top-level and class-level variable declarations (generic variables, records, late, and destructuring)
     # Restrict indentation to 0-2 spaces to avoid matching local variables inside functions or switch expressions
     var_pattern = r"^\s{0,2}(?:late\s+)?(?:(?:final|const|var)\s+)?(?:\([^)]+\)\s+|([a-zA-Z0-9_<>,.?]+(?:\s+[a-zA-Z0-9_<>,.?]+){0,3})\s+)?(?:(\w+)|(?:\w+\s*)?\(([^)]+)\))\s*(?:=|$|;)"
     for m in re.finditer(var_pattern, src_clean, re.MULTILINE):
+        if re.match(
+            r"^\s*(?:class|mixin|enum|extension|import|export|part|library|typedef)\b",
+            m.group(0),
+        ):
+            continue
+
         var_type = m.group(1)
         single_name = m.group(2)
         destructured_names = m.group(3)
@@ -412,8 +514,8 @@ def extract_dart(path: Path) -> dict:
                 add_node(var_nid, single_name)
                 add_edge(file_nid, var_nid, "defines")
 
-                if var_type and var_type not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void"}:
-                    clean_type = var_type.split("<")[0].split(".")[-1].strip()
+                clean_type = _clean_type_name(var_type)
+                if clean_type:
                     type_nid = _make_id(clean_type)
                     add_node(type_nid, clean_type, source_file=None)
                     add_edge(file_nid, type_nid, "references", context="variable_type")
@@ -422,6 +524,8 @@ def extract_dart(path: Path) -> dict:
                 if ":" in name:
                     name = name.split(":")[-1].strip()
                 if re.match(r"^[a-zA-Z_]\w*$", name) and not re.match(r"^[A-Z]", name):
+                    if name == "_":
+                        continue
                     if name not in {"if", "for", "while", "switch", "catch", "return"}:
                         var_nid = _make_id(stem, name)
                         add_node(var_nid, name)
@@ -433,7 +537,7 @@ def extract_dart(path: Path) -> dict:
     for m in re.finditer(method_pattern, src_clean, re.MULTILINE):
         raw_name = m.group(1)
         name = raw_name.split(".")[-1]
-        if name in {"if", "for", "while", "switch", "catch", "return", "void", "dynamic", "final", "const", "get", "set"}:
+        if name in {"if", "for", "while", "switch", "catch", "return", "void", "dynamic", "final", "const", "get", "set", "_"}:
             continue
         if re.match(r"^[A-Z]", name):
             continue
@@ -516,11 +620,13 @@ def extract_dart(path: Path) -> dict:
     # Matches any method call with type parameters: methodName<Type>() or object.methodName<Type>()
     # Automatically extracts GetIt, Injectable, Riverpod, Provider, BlocProvider, and InheritedWidget type lookups!
     generic_call_pattern = r"\b\w+<([a-zA-Z0-9_.]+(?:<[a-zA-Z0-9_.,\s<>]+>)?)\s*>\s*\("
-    type_blacklist = {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "Future", "Stream", "void"}
     for m in re.finditer(generic_call_pattern, src_clean):
-        type_name = m.group(1).split(".")[-1].strip()
-        clean_name = type_name.split("<")[0].strip()
-        if clean_name not in type_blacklist:
+        line_start = src_clean.rfind("\n", 0, m.start()) + 1
+        line = src_clean[line_start : m.start()]
+        if re.match(r"^\s*(?:class|mixin|enum|extension|typedef)\b", line):
+            continue
+        clean_name = _clean_type_name(m.group(1))
+        if clean_name:
             target_nid = _make_id(clean_name)
             add_node(target_nid, clean_name, source_file=None)
             add_edge(file_nid, target_nid, "references", context="type_lookup")
