@@ -318,6 +318,7 @@ def test_all_skill_files_exist_in_package():
         "skill-droid.md",
         "skill-trae.md",
         "skill-kiro.md",
+        "skill-qoder.md",
     ):
         assert (pkg / name).exists(), f"Missing: {name}"
 
@@ -970,3 +971,85 @@ def test_uninstall_all_removes_amp_user_skill(tmp_path, monkeypatch):
         main()
 
     assert not skill.exists()
+
+
+# ── Qoder CLI ─────────────────────────────────────────────────────────────────
+
+
+def test_qoder_install_writes_skill(tmp_path, monkeypatch):
+    """qoder install writes .qoder/skills/graphify/SKILL.md at project scope."""
+    from graphify.__main__ import _qoder_install
+
+    _qoder_install(tmp_path)
+    skill = tmp_path / ".qoder" / "skills" / "graphify" / "SKILL.md"
+    assert skill.exists()
+    content = skill.read_text()
+    assert "triggers:" in content
+    assert "graphify" in content
+
+
+def test_qoder_install_writes_agents_md(tmp_path):
+    """qoder install writes AGENTS.md section."""
+    from graphify.__main__ import _qoder_install
+
+    _qoder_install(tmp_path)
+    agents_md = tmp_path / "AGENTS.md"
+    assert agents_md.exists()
+    assert "graphify" in agents_md.read_text()
+    assert "GRAPH_REPORT.md" in agents_md.read_text()
+
+
+def test_qoder_install_idempotent(tmp_path):
+    """Installing twice does not duplicate the AGENTS.md section."""
+    from graphify.__main__ import _qoder_install
+
+    _qoder_install(tmp_path)
+    _qoder_install(tmp_path)
+    content = (tmp_path / "AGENTS.md").read_text()
+    assert content.count("## graphify") == 1
+
+
+def test_qoder_uninstall_removes_skill(tmp_path):
+    """qoder uninstall removes the skill file."""
+    from graphify.__main__ import _qoder_install, _qoder_uninstall
+
+    _qoder_install(tmp_path)
+    _qoder_uninstall(tmp_path)
+    skill = tmp_path / ".qoder" / "skills" / "graphify" / "SKILL.md"
+    assert not skill.exists()
+
+
+def test_qoder_uninstall_noop_if_not_installed(tmp_path):
+    """qoder uninstall does nothing if not installed."""
+    from graphify.__main__ import _qoder_uninstall
+
+    _qoder_uninstall(tmp_path)  # should not raise
+
+
+def test_qoder_skill_has_triggers_array():
+    """Qoder skill file must have triggers in YAML frontmatter."""
+    import graphify
+
+    skill = (Path(graphify.__file__).parent / "skill-qoder.md").read_text()
+    assert "triggers:" in skill
+
+
+def test_qoder_in_platform_config():
+    """qoder must be present in _PLATFORM_CONFIG."""
+    from graphify.__main__ import _PLATFORM_CONFIG
+
+    assert "qoder" in _PLATFORM_CONFIG
+    assert _PLATFORM_CONFIG["qoder"]["skill_file"] == "skill-qoder.md"
+
+
+def test_qoder_install_via_main(tmp_path, monkeypatch):
+    """graphify qoder install routes correctly via main()."""
+    from graphify.__main__ import main
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "qoder", "install"])
+    main()
+    assert (project / ".qoder" / "skills" / "graphify" / "SKILL.md").exists()
+    assert (project / "AGENTS.md").exists()

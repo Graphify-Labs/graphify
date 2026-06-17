@@ -160,6 +160,10 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "qoder":
+        # Qoder CLI only discovers skills at the project level.
+        return (project_dir or Path(".")) / ".qoder" / "skills" / "graphify" / "SKILL.md"
+
     if platform_name in ("antigravity", "antigravity-windows"):
         if project:
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
@@ -547,6 +551,13 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_dst": Path(".config") / "devin" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
     },
+    "qoder": {
+        # Monolith: qoder ships the full SKILL.md inline with triggers array.
+        "skill_file": "skill-qoder.md",
+        # Project scope only: .qoder/skills/graphify/SKILL.md
+        "skill_dst": Path(".qoder") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+    },
 }
 
 
@@ -632,6 +643,9 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         return
     if platform == "cursor":
         _cursor_install(Path("."))
+        return
+    if platform == "qoder":
+        _qoder_install(Path("."))
         return
     # On Windows, antigravity needs the PowerShell skill, not the bash one
     if platform == "antigravity" and sys.platform == "win32":
@@ -1610,6 +1624,20 @@ def _amp_uninstall(project_dir: Path | None = None) -> None:
     _agents_uninstall(project_dir or Path("."), platform="amp")
 
 
+def _qoder_install(project_dir: Path | None = None) -> None:
+    """Project-scope Qoder CLI install: skill to .qoder/skills/graphify/ + AGENTS.md."""
+    _copy_skill_file("qoder", project=True, project_dir=project_dir or Path("."))
+    _agents_install(project_dir or Path("."), "qoder")
+
+
+def _qoder_uninstall(project_dir: Path | None = None) -> None:
+    """Project-scope Qoder CLI uninstall: remove skill and AGENTS.md section."""
+    removed = _remove_skill_file("qoder", project=True, project_dir=project_dir or Path("."))
+    if removed:
+        print("skill removed")
+    _agents_uninstall(project_dir or Path("."), platform="qoder")
+
+
 def _project_install(platform_name: str, project_dir: Path | None = None) -> None:
     """Install platform skill/config files in the current project."""
     project_dir = project_dir or Path(".")
@@ -1625,7 +1653,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None) -> Non
     elif platform_name == "kiro":
         _kiro_install(project_dir)
         _print_project_git_add_hint([project_dir / ".kiro"])
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "qoder", "trae", "trae-cn", "hermes"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_install(project_dir, platform_name)
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
@@ -1665,7 +1693,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _cursor_uninstall(project_dir)
     elif platform_name == "kiro":
         _kiro_uninstall(project_dir)
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "qoder", "trae", "trae-cn", "hermes"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_uninstall(project_dir, platform=platform_name)
         if platform_name == "codex":
@@ -1862,6 +1890,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     vscode_uninstall(pd)
     _cursor_uninstall(pd)
     _kiro_uninstall(pd)
+    _qoder_uninstall(pd)
     _antigravity_uninstall(pd)
     # AGENTS.md covers: codex, aider, opencode, claw, droid, trae, trae-cn, hermes, copilot
     _agents_uninstall(pd)
@@ -2276,6 +2305,8 @@ def main() -> None:
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
+        print("  qoder install           write skill to .qoder/skills/graphify/ + AGENTS.md (Qoder CLI)")
+        print("  qoder uninstall         remove skill + AGENTS.md section")
         print()
         return
 
@@ -2499,6 +2530,15 @@ def main() -> None:
                 _amp_uninstall(Path("."))
         else:
             print("Usage: graphify amp [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "qoder":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            _qoder_install(Path("."))
+        elif subcmd == "uninstall":
+            _qoder_uninstall(Path("."))
+        else:
+            print("Usage: graphify qoder [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
