@@ -12181,6 +12181,275 @@ def extract_terraform(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+# ── VB.NET regex extractor ──────────────────────────────────────────────────
+# tree-sitter has no maintained VB.NET grammar, so .vb files are parsed with a
+# line-oriented regex scanner (same node/edge schema as the tree-sitter pass).
+# VB is case-insensitive, hence re.IGNORECASE throughout.
+
+_VB_STRING_RE = re.compile(r'"(?:[^"]|"")*"')
+_VB_IMPORTS_RE = re.compile(r'^\s*Imports\s+(?:[A-Za-z_]\w*\s*=\s*)?([A-Za-z_][\w.]*)', re.IGNORECASE)
+_VB_NAMESPACE_RE = re.compile(r'^\s*Namespace\s+([A-Za-z_][\w.]*)', re.IGNORECASE)
+_VB_TYPE_RE = re.compile(
+    r'^\s*(?:(?:Public|Private|Friend|Protected|Partial|MustInherit|NotInheritable'
+    r'|Shadows|Shared|Overloads|Default|Global)\s+)*'
+    r'(?P<kind>Class|Module|Structure|Interface|Enum)\s+'
+    r'(?P<name>[A-Za-z_]\w*)',
+    re.IGNORECASE)
+_VB_INHERITS_RE = re.compile(r'^\s*Inherits\s+([A-Za-z_][\w.]*)', re.IGNORECASE)
+_VB_IMPLEMENTS_RE = re.compile(r'^\s*Implements\s+(.+)$', re.IGNORECASE)
+_VB_METHOD_RE = re.compile(
+    r'^\s*(?:(?:Public|Private|Friend|Protected|Shared|Overrides|Overridable'
+    r'|Overloads|MustOverride|NotOverridable|Shadows|Partial|Async|Iterator'
+    r'|Default|ReadOnly|WriteOnly)\s+)*'
+    r'(?P<kind>Sub|Function|Property|Operator)\s+'
+    r'(?P<name>New|[A-Za-z_]\w*)',
+    re.IGNORECASE)
+_VB_END_RE = re.compile(
+    r'^\s*End\s+(?P<kind>Class|Module|Structure|Interface|Enum|Namespace'
+    r'|Sub|Function|Property|Operator)\b',
+    re.IGNORECASE)
+_VB_CALL_RE = re.compile(r'(?:(?P<recv>[A-Za-z_]\w*)\.)*(?P<name>[A-Za-z_]\w*)\s*\(')
+_VB_TYPE_KINDS = frozenset({"class", "module", "structure", "interface", "enum"})
+_VB_METHOD_KINDS = frozenset({"sub", "function", "property", "operator"})
+_VB_CALL_KEYWORDS = frozenset({
+    "if", "elseif", "while", "for", "foreach", "select", "case", "return",
+    "set", "get", "new", "and", "or", "not", "xor", "andalso", "orelse",
+    "ctype", "directcast", "trycast", "gettype", "nameof", "each", "next",
+    "do", "loop", "using", "synclock", "catch", "throw", "dim", "as",
+    "redim", "with", "addhandler", "removehandler", "raiseevent", "call",
+    "sub", "function", "property", "to", "step", "in", "is", "isnot",
+    "typeof", "then", "else", "mod", "like", "array", "string", "cint",
+    "clng", "cstr", "cbool", "cdbl", "csng", "cdate", "cdec", "cbyte",
+    "cchar", "cobj", "cshort", "cuint", "culng", "cushort", "csbyte",
+})
+
+
+def _vb_strip(text: str) -> str:
+    """Blank string literals and strip ``'``/``REM`` comments, scanning each line
+    char-by-char so a stray quote inside a comment can't swallow later lines.
+
+    Preserves the line count (one output line per input line) so reported line
+    numbers stay accurate. VB strings never span lines, so string state resets
+    per line; ``""`` inside a string is an escaped quote, not a terminator.
+    """
+    out: list[str] = []
+    for line in text.split("\n"):
+        res: list[str] = []
+        in_str = False
+        i, n = 0, len(line)
+        while i < n:
+            c = line[i]
+            if in_str:
+                if c == '"':
+                    if i + 1 < n and line[i + 1] == '"':  # escaped "" inside string
+                        i += 2
+                        continue
+                    in_str = False
+                    res.append('"')
+                i += 1
+                continue
+            if c == '"':
+                in_str = True
+                res.append('"')
+                i += 1
+                continue
+            if c == "'":  # comment to end of line
+                break
+            res.append(c)
+            i += 1
+        line_out = "".join(res)
+        rem = re.match(r"^(\s*)REM\b", line_out, re.IGNORECASE)
+        if rem:
+            line_out = rem.group(1)
+        out.append(line_out)
+    return "\n".join(out)
+
+
+def _extract_vb_regex(path: Path) -> dict:
+    """Extract namespaces, types, methods, inheritance and intra-file calls from
+    VB.NET (.vb) files. Produces the same node/edge schema as the tree-sitter pass.
+
+    Nodes: file, namespace, Class/Module/Structure/Interface/Enum, Sub/Function/
+    Property/Operator. Edges: contains, method, inherits, implements, imports, calls.
+    """
+    try:
+        # utf-8-sig strips a leading BOM, so a declaration on line 1 (e.g.
+        # "Public Class X") still matches the ^\s* anchored patterns.
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+    except Exception as exc:
+        return {"nodes": [], "edges": [], "error": str(exc)}
+
+    str_path = str(path)
+    stem = _file_stem(path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_call_pairs: set[tuple[str, str]] = set()
+
+    def _add_node(nid: str, label: str, line: int) -> None:
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": label,
+                "file_type": "code",
+                "source_file": str_path,
+                "source_location": f"L{line}",
+            })
+
+    def _add_edge(src: str, tgt: str, relation: str, line: int, context: str | None = None) -> None:
+        edge: dict = {
+            "source": src,
+            "target": tgt,
+            "relation": relation,
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": 1.0,
+        }
+        if context:
+            edge["context"] = context
+        edges.append(edge)
+
+    file_nid = _make_id(str_path)
+    _add_node(file_nid, path.name, 1)
+
+    lines = _vb_strip(raw).split("\n")
+
+    # Stack of (nid, kind) frames. kind in {"namespace","type","method"}.
+    stack: list[tuple[str, str]] = []
+
+    def _current_container() -> str:
+        for nid, kind in reversed(stack):
+            if kind in ("type", "namespace"):
+                return nid
+        return file_nid
+
+    def _current_type() -> str | None:
+        for nid, kind in reversed(stack):
+            if kind == "type":
+                return nid
+        return None
+
+    # method nid -> list of body line indices, for call resolution
+    method_bodies: dict[str, list[int]] = {}
+
+    for i, raw_line in enumerate(lines):
+        line = raw_line
+        lineno = i + 1
+
+        em = _VB_END_RE.match(line)
+        if em:
+            kind = em.group("kind").lower()
+            target = "method" if kind in _VB_METHOD_KINDS else (
+                "namespace" if kind == "namespace" else "type")
+            # pop down to and including the nearest matching frame
+            for j in range(len(stack) - 1, -1, -1):
+                if stack[j][1] == target:
+                    del stack[j:]
+                    break
+            continue
+
+        nm = _VB_NAMESPACE_RE.match(line)
+        if nm:
+            ns_name = nm.group(1)
+            ns_nid = _make_id(stem, ns_name)
+            _add_node(ns_nid, ns_name, lineno)
+            _add_edge(_current_container(), ns_nid, "contains", lineno)
+            stack.append((ns_nid, "namespace"))
+            continue
+
+        tm = _VB_TYPE_RE.match(line)
+        if tm:
+            # a type can't open inside a method — close any open method first
+            while stack and stack[-1][1] == "method":
+                stack.pop()
+            type_name = tm.group("name")
+            type_nid = _make_id(stem, type_name)
+            _add_node(type_nid, type_name, lineno)
+            _add_edge(_current_container(), type_nid, "contains", lineno)
+            stack.append((type_nid, "type"))
+            continue
+
+        im = _VB_INHERITS_RE.match(line)
+        if im:
+            cur = _current_type()
+            if cur:
+                base = im.group(1).split(".")[-1]
+                base_nid = _make_id(base)
+                _add_node(base_nid, base, lineno)
+                _add_edge(cur, base_nid, "inherits", lineno)
+            continue
+
+        pm = _VB_IMPLEMENTS_RE.match(line)
+        if pm:
+            cur = _current_type()
+            if cur:
+                for iface in pm.group(1).split(","):
+                    name = iface.strip().split(".")[-1]
+                    if re.fullmatch(r"[A-Za-z_]\w*", name):
+                        iface_nid = _make_id(name)
+                        _add_node(iface_nid, name, lineno)
+                        _add_edge(cur, iface_nid, "implements", lineno)
+            continue
+
+        mm = _VB_METHOD_RE.match(line)
+        if mm:
+            # methods don't nest — close any open method first
+            while stack and stack[-1][1] == "method":
+                stack.pop()
+            mname = mm.group("name")
+            container = _current_container()
+            method_nid = _make_id(container, mname)
+            relation = "method" if _current_type() else "contains"
+            _add_node(method_nid, f"{mname}()", lineno)
+            _add_edge(container, method_nid, relation, lineno)
+            method_bodies.setdefault(method_nid, [])
+            stack.append((method_nid, "method"))
+            continue
+
+        # accumulate body lines for the innermost open method (for calls)
+        if stack and stack[-1][1] == "method":
+            method_bodies[stack[-1][0]].append(i)
+
+    # Imports (file-level)
+    for i, line in enumerate(lines):
+        imp = _VB_IMPORTS_RE.match(line)
+        if imp:
+            ns = imp.group(1)
+            imp_nid = _make_id("ns", ns)
+            _add_node(imp_nid, ns, i + 1)
+            _add_edge(file_nid, imp_nid, "imports", i + 1, context="import")
+
+    # Intra-file call edges
+    all_methods: dict[str, str] = {
+        n["label"].removesuffix("()").lower(): n["id"]
+        for n in nodes
+        if n["id"] != file_nid and n["label"].endswith("()")
+    }
+    for caller_nid, body_idx in method_bodies.items():
+        for idx in body_idx:
+            for cm in _VB_CALL_RE.finditer(lines[idx]):
+                callee_name = cm.group("name").lower()
+                if callee_name in _VB_CALL_KEYWORDS:
+                    continue
+                callee_nid = all_methods.get(callee_name)
+                if not callee_nid or callee_nid == caller_nid:
+                    continue
+                pair = (caller_nid, callee_nid)
+                if pair in seen_call_pairs:
+                    continue
+                seen_call_pairs.add(pair)
+                _add_edge(caller_nid, callee_nid, "calls", idx + 1, context="call")
+
+    return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
+
+
+def extract_vb(path: Path) -> dict:
+    """Extract structure from VB.NET (.vb) files via a regex scanner."""
+    return _extract_vb_regex(path)
+
+
 _DISPATCH: dict[str, Any] = {
     ".py": extract_python,
     ".js": extract_js,
@@ -12264,6 +12533,7 @@ _DISPATCH: dict[str, Any] = {
     ".csproj": extract_csproj,
     ".fsproj": extract_csproj,
     ".vbproj": extract_csproj,
+    ".vb": extract_vb,
     ".razor": extract_razor,
     ".cshtml": extract_razor,
     ".cls": extract_apex,
