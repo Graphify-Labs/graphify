@@ -4284,6 +4284,7 @@ def main() -> None:
         }
         sem_cache_hits = 0
         sem_cache_misses = 0
+        fresh: dict = {"nodes": [], "edges": [], "hyperedges": []}
         if semantic_files:
             sem_paths_str = [str(p) for p in semantic_files]
             cached_nodes, cached_edges, cached_hyperedges, uncached_paths = (
@@ -4352,6 +4353,32 @@ def main() -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
+                # Incremental: never prune/replace changed files unless re-extraction
+                # actually produced nodes/edges. Invalid JSON and connection failures
+                # that yield empty chunks must abort before merge (#incremental-safe).
+                if incremental_mode and uncached_paths:
+                    from graphify.build import paths_missing_from_extraction as _paths_missing
+
+                    _missing = _paths_missing(fresh, uncached_paths, target)
+                    if fresh.get("failed_chunks", 0) > 0 or _missing:
+                        if fresh.get("failed_chunks", 0) > 0:
+                            print(
+                                f"[graphify extract] error: {fresh['failed_chunks']} semantic "
+                                f"chunk(s) failed during incremental re-extraction.",
+                                file=sys.stderr,
+                            )
+                        for _path in _missing:
+                            print(
+                                f"[graphify extract] error: re-extraction produced no "
+                                f"nodes/edges for {_path}",
+                                file=sys.stderr,
+                            )
+                        print(
+                            "[graphify extract] incremental update aborted — existing "
+                            "graph.json and manifest unchanged.",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
                 try:
                     _save_semantic_cache(
                         fresh.get("nodes", []),
@@ -4421,6 +4448,19 @@ def main() -> None:
             ftype: [f for f in flist if ftype not in _sem_types or f in _sem_extracted]
             for ftype, flist in files_by_type.items()
         }
+
+        _incremental_prune: list[str] | None = None
+        if incremental_mode:
+            from graphify.build import path_covered_by_extraction as _path_covered
+
+            _changed_code = [str(p) for p in code_files]
+            _changed_sem = [
+                str(p) for p in semantic_files
+                if _path_covered(str(p), sem_result, target)
+            ]
+            _incremental_prune = (
+                list(dict.fromkeys(deleted_files + _changed_code + _changed_sem)) or None
+            )
 
         if no_cluster:
             # --no-cluster: dump the raw merged extraction as graph.json.
@@ -4512,7 +4552,7 @@ def main() -> None:
             G = _build_merge(
                 [merged],
                 graph_path=existing_graph_path,
-                prune_sources=deleted_files or None,
+                prune_sources=_incremental_prune,
                 dedup=True,
                 dedup_llm_backend=dedup_backend,
                 root=target,

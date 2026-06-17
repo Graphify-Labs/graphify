@@ -2,7 +2,17 @@ import json
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.build import build_from_json, build, build_merge, edge_data, edge_datas, dedupe_edges, dedupe_nodes
+from graphify.build import (
+    build_from_json,
+    build,
+    build_merge,
+    dedupe_edges,
+    dedupe_nodes,
+    edge_data,
+    edge_datas,
+    path_covered_by_extraction,
+    paths_missing_from_extraction,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
