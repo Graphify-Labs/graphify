@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+import unicodedata
 
 import networkx as nx
 
@@ -45,18 +46,22 @@ def _format_location(data: dict) -> str:
 
 def _bare_name(label: str) -> str:
     """Lowercased label with the callable decoration (trailing "()") removed."""
-    label = label.lower()
+    label = _normalize_label(label)
     return label[:-2] if label.endswith("()") else label
+
+
+def _normalize_label(label: str) -> str:
+    return unicodedata.normalize("NFC", label).casefold()
 
 
 def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     if query in graph:
         return query
-    query_lower = query.lower()
+    query_lower = _normalize_label(query)
     exact_label_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if str(data.get("label", "")).lower() == query_lower
+        if _normalize_label(str(data.get("label", ""))) == query_lower
     ]
     if len(exact_label_matches) == 1:
         return exact_label_matches[0]
@@ -74,14 +79,14 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     exact_source_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if str(data.get("source_file", "")).lower() == query_lower
+        if _normalize_label(str(data.get("source_file", ""))) == query_lower
     ]
     if len(exact_source_matches) == 1:
         return exact_source_matches[0]
     contains_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if query_lower in str(data.get("label", "")).lower()
+        if query_lower in _normalize_label(str(data.get("label", "")))
     ]
     if len(contains_matches) == 1:
         return contains_matches[0]

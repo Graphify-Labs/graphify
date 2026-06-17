@@ -464,12 +464,18 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
     for nid, d in G.nodes(data=True):
         norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
         bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
         nid_lower = nid.lower()
-        if term == norm_label or term == bare_label or term == nid_lower:
+        if term == norm_label or term == bare_label or term == label_tokens or term == nid_lower:
             exact.append(nid)
-        elif norm_label.startswith(term) or bare_label.startswith(term) or nid_lower.startswith(term):
+        elif (
+            norm_label.startswith(term)
+            or bare_label.startswith(term)
+            or label_tokens.startswith(term)
+            or nid_lower.startswith(term)
+        ):
             prefix.append(nid)
-        elif term in norm_label:
+        elif term in norm_label or term in label_tokens:
             substring.append(nid)
     return exact + prefix + substring
 

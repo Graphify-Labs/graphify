@@ -123,6 +123,13 @@ def test_find_node_ignores_trailing_punctuation():
     assert _find_node(G, "extract?") == ["n1"]
 
 
+def test_find_node_matches_full_punctuated_unicode_label():
+    G = nx.Graph()
+    G.add_node("n1", label="Skill /auditar — Auditoría inquisitiva de enlaces")
+
+    assert _find_node(G, "Skill /auditar — Auditoría inquisitiva de enlaces") == ["n1"]
+
+
 def test_query_terms_strips_search_punctuation():
     assert _query_terms("what calls extract?") == ["what", "calls", "extract"]
 

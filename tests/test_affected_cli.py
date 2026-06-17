@@ -115,6 +115,27 @@ def test_resolve_seed_decorated_query_matches_bare_label():
     assert resolve_seed(graph, "Foo()") == "a"
 
 
+def test_resolve_seed_matches_unicode_normalized_label():
+    import unicodedata
+
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    graph.add_node("a", label="Auditoría", source_file="pkg/auditoria.py")
+
+    assert resolve_seed(graph, unicodedata.normalize("NFD", "Auditoría")) == "a"
+
+
+def test_resolve_seed_preserves_distinct_accents():
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    graph.add_node("a", label="resume", source_file="pkg/resume.py")
+    graph.add_node("b", label="résumé", source_file="pkg/resume_accented.py")
+
+    assert resolve_seed(graph, "resume") == "a"
+
+
 def test_resolve_seed_bare_name_tie_still_returns_none():
     from graphify.affected import resolve_seed
 
