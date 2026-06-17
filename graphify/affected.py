@@ -163,8 +163,10 @@ def format_affected(
     return "\n".join(lines)
 
 
-def load_graph(path: Path):
-    """Open the FalkorDB-backed graph for the output dir containing `path`.
+def connect_graph(path: Path):
+    """Open a connection to the FalkorDB-backed graph for the output dir containing
+    `path`. Cache-free: returns a store handle (a connection), it does NOT load the
+    graph into memory.
 
     `path` is the legacy graph.json location (e.g. graphify-out/graph.json); we
     use its parent directory to locate the FalkorDB pointer and open the store.

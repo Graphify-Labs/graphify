@@ -17,7 +17,7 @@ from graphify.serve import (
     _query_graph_text,
     _resolve_context_filters,
     _subgraph_to_text,
-    _load_graph,
+    _connect_graph,
 )
 
 
@@ -256,7 +256,7 @@ def test_query_graph_text_heuristic_context_filter_changes_traversal():
     assert "build" not in text
 
 
-# --- _load_graph ---
+# --- _connect_graph ---
 
 _LOAD_NODES = [
     {"id": "n1", "label": "extract", "source_file": "extract.py", "source_location": "L10", "community": 0, "file_type": "code"},
@@ -268,7 +268,7 @@ _LOAD_LINKS = [{"source": "n1", "target": "n2", "relation": "calls", "confidence
 
 def test_load_graph_roundtrip(tmp_path, seed_graph):
     seed_graph(tmp_path, _LOAD_NODES, _LOAD_LINKS)
-    G2 = _load_graph(str(tmp_path / "graph.json"))
+    G2 = _connect_graph(str(tmp_path / "graph.json"))
     assert G2.number_of_nodes() == 3
     assert G2.number_of_edges() == 1
 
@@ -276,7 +276,7 @@ def test_load_graph_missing_file(tmp_path):
     graphify_dir = tmp_path / "graphify-out"
     graphify_dir.mkdir()
     with pytest.raises(SystemExit):
-        _load_graph(str(graphify_dir / "nonexistent.json"))
+        _connect_graph(str(graphify_dir / "nonexistent.json"))
 
 
 # --- #874: MCP hot-reload ---
@@ -308,15 +308,15 @@ def test_maybe_reload_detects_graph_change(tmp_path):
     graph_path = out / "graph.json"
     _write_graph(graph_path, ["alpha", "beta"])
 
-    # Bootstrap _load_graph + _communities_from_graph to verify the reload path
-    G1 = _load_graph(str(graph_path))
+    # Bootstrap _connect_graph + _communities_from_graph to verify the reload path
+    G1 = _connect_graph(str(graph_path))
     assert set(G1.nodes()) == {"alpha", "beta"}
 
     # Simulate file changing (bump mtime by touching)
     time.sleep(0.01)
     _write_graph(graph_path, ["alpha", "beta", "gamma"])
 
-    G2 = _load_graph(str(graph_path))
+    G2 = _connect_graph(str(graph_path))
     assert "gamma" in G2.nodes()
 
 

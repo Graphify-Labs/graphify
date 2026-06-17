@@ -15,8 +15,10 @@ except ImportError:
     _jieba = None
 
 
-def _load_graph(graph_path: str):
-    """Open the FalkorDB-backed graph for the output dir containing `graph_path`.
+def _connect_graph(graph_path: str):
+    """Open a connection to the FalkorDB-backed graph for the output dir containing
+    `graph_path`. Cache-free: this returns a store handle (a connection), it does
+    NOT load the graph into memory.
 
     `graph_path` is the legacy graph.json location; its parent directory holds the
     FalkorDB pointer (falkordb.json). Errors out if no graph has been built yet.
@@ -592,8 +594,9 @@ def _build_server(graph_path: str):
 
     All graph query tools and resources are registered here over a single
     ``mcp.server.Server`` instance; the caller picks the transport (stdio or
-    Streamable HTTP) and runs it. Hot-reload of graph.json works the same way
-    regardless of transport, since reloads happen inside the tool handlers.
+    Streamable HTTP) and runs it. Hot-reload (reconnecting to the store when the
+    graph.json change-sentinel is rewritten on disk) works the same way regardless
+    of transport, since the reconnect happens inside the tool handlers.
     """
     import threading
 
@@ -604,7 +607,7 @@ def _build_server(graph_path: str):
     except ImportError as e:
         raise ImportError('mcp not installed. Run: pip install "graphifyy[mcp]"') from e
 
-    G = _load_graph(graph_path)
+    G = _connect_graph(graph_path)
     communities = _communities_from_graph(G)
 
     # Hot-reload state: mtime+size key lets us detect graph.json changes without
@@ -635,7 +638,7 @@ def _build_server(graph_path: str):
             if key == (_reload_state["mtime_ns"], _reload_state["size"]):
                 return  # another thread already reloaded
             try:
-                new_G = _load_graph(graph_path)
+                new_G = _connect_graph(graph_path)
             except SystemExit:
                 return  # keep serving stale graph on transient read error
             G = new_G

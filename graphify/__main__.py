@@ -78,7 +78,7 @@ def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
     Delegates to ``graphify.security.check_graph_file_size_cap`` and turns the
     raised ``ValueError`` into a CLI-style ``error: ...`` message + exit 1.
     Use this from ``__main__.py`` subcommands that already use the ``print +
-    sys.exit(1)`` idiom. Library/MCP/loader callers (``serve._load_graph``,
+    sys.exit(1)`` idiom. Library/MCP/loader callers (``serve._connect_graph``,
     ``build``, ``benchmark``, ``tree_html``, ``callflow_html``, ``prs``,
     ``global_graph``, ``watch``, ``export``) call the security helper directly
     and let the ``ValueError`` propagate.
@@ -2511,7 +2511,7 @@ def main() -> None:
         if len(sys.argv) < 3:
             print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _query_graph_text, _load_graph
+        from graphify.serve import _query_graph_text, _connect_graph
         from graphify.security import sanitize_label
         from graphify import querylog
 
@@ -2549,7 +2549,7 @@ def main() -> None:
             else:
                 i += 1
         gp = Path(graph_path).resolve()
-        G = _load_graph(graph_path)
+        G = _connect_graph(graph_path)
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
@@ -2576,7 +2576,7 @@ def main() -> None:
         if len(sys.argv) < 3:
             print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
+        from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, connect_graph
         query = sys.argv[2]
         graph_path = "graphify-out/graph.json"
         depth = 2
@@ -2620,9 +2620,9 @@ def main() -> None:
             print("error: graph file must be a .json file", file=sys.stderr)
             sys.exit(1)
         try:
-            graph = load_graph(gp)
+            graph = connect_graph(gp)
         except Exception as exc:
-            print(f"error: could not load graph: {exc}", file=sys.stderr)
+            print(f"error: could not connect to graph: {exc}", file=sys.stderr)
             sys.exit(1)
         print(
             format_affected(
@@ -2660,7 +2660,7 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _score_nodes, _load_graph
+        from graphify.serve import _score_nodes, _connect_graph
 
         source_label = sys.argv[2]
         target_label = sys.argv[3]
@@ -2670,7 +2670,7 @@ def main() -> None:
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
         gp = Path(graph_path).resolve()
-        G = _load_graph(graph_path)
+        G = _connect_graph(graph_path)
         src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
         if not src_scored:
@@ -2737,7 +2737,7 @@ def main() -> None:
         if len(sys.argv) < 3:
             print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _find_node, _load_graph
+        from graphify.serve import _find_node, _connect_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
@@ -2746,7 +2746,7 @@ def main() -> None:
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
         gp = Path(graph_path).resolve()
-        G = _load_graph(graph_path)
+        G = _connect_graph(graph_path)
         matches = _find_node(G, label)
         if not matches:
             print(f"No node matching '{label}' found.")
@@ -2978,7 +2978,7 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _load_graph
+        from graphify.serve import _connect_graph
         from graphify.cluster import cluster, score_all, remap_communities_to_previous
         from graphify.analyze import (
             god_nodes,
@@ -2988,8 +2988,8 @@ def main() -> None:
         from graphify.report import generate
         from graphify.export import to_json, to_html
 
-        print("Loading existing graph...")
-        G = _load_graph(str(graph_json))
+        print("Connecting to existing graph...")
+        G = _connect_graph(str(graph_json))
         print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
         print("Re-clustering...")
         communities = cluster(G, resolution=co_resolution, exclude_hubs_percentile=co_exclude_hubs)
@@ -3429,9 +3429,9 @@ def main() -> None:
             print(f"callflow HTML written - open in any browser: {out}")
             sys.exit(0)
 
-        from graphify.serve import _load_graph
+        from graphify.serve import _connect_graph
 
-        G = _load_graph(str(graph_path))
+        G = _connect_graph(str(graph_path))
 
         # Load optional analysis/labels
         communities: dict[int, list[str]] = {}
