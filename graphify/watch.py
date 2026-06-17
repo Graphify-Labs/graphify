@@ -264,6 +264,10 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
             n = dict(node)
             n.pop("community", None)
             n.pop("norm_label", None)
+            # _origin is AST provenance (kept in graph.json for #1116 eviction),
+            # not topology — exclude it so an unchanged graph compares equal
+            # regardless of which serializer wrote each side.
+            n.pop("_origin", None)
             norm_nodes.append(n)
         canonical["nodes"] = sorted(
             norm_nodes,

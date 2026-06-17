@@ -767,6 +767,12 @@ class GraphStore:
                 node_id, attrs = item, {}
             props = _scalar_props(attrs)
             props["id"] = node_id
+            # _origin (AST provenance) is the one underscore-marker that must
+            # survive into the store: incremental rebuild reads it back from
+            # graph.json to evict stale AST symbols removed from a surviving
+            # file (#1116). Other _-prefixed keys stay dropped.
+            if isinstance(attrs.get("_origin"), str):
+                props["_origin"] = attrs["_origin"]
             ftype = _safe_label(str(attrs.get("file_type", "Entity")).capitalize())
             by_label.setdefault(ftype, []).append(props)
             materialized.append(1)

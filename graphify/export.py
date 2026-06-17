@@ -515,6 +515,10 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     nodes = []
     for nid, attrs in G.nodes(data=True):
         nd = {k: v for k, v in attrs.items() if not k.startswith("_")}
+        # Keep _origin (AST provenance): incremental rebuild reads it back to
+        # evict stale AST symbols removed from a surviving file (#1116).
+        if isinstance(attrs.get("_origin"), str):
+            nd["_origin"] = attrs["_origin"]
         nd["id"] = nid
         cid = node_community.get(nid)
         nd["community"] = cid
