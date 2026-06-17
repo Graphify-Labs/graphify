@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+import unicodedata
 
 
 DEFAULT_AFFECTED_RELATIONS = (
@@ -41,6 +42,16 @@ def _format_location(data: dict) -> str:
     return str(source_file)
 
 
+def _normalize_label(label: str) -> str:
+    return unicodedata.normalize("NFC", label).casefold()
+
+
+def _bare_name(label: str) -> str:
+    """Normalized label with the callable decoration (trailing "()") removed."""
+    label = _normalize_label(label)
+    return label[:-2] if label.endswith("()") else label
+
+
 def resolve_seed(graph, query: str) -> str | None:
     # FalkorDB-native: resolve via scoped queries (no full-graph load).
     if hasattr(graph, "find_node_ids"):
@@ -51,16 +62,43 @@ def resolve_seed(graph, query: str) -> str | None:
             if len(matches) == 1:
                 return str(matches[0])
         return None
-    # In-memory fallback (nx / MemGraph)
+    # In-memory fallback (nx / MemGraph) — normalized + bare-name matching (#1353).
     if query in graph:
         return query
-    query_lower = query.lower()
-    for field in ("label", "source_file"):
-        exact = [str(n) for n, d in graph.nodes(data=True) if str(d.get(field, "")).lower() == query_lower]
-        if len(exact) == 1:
-            return exact[0]
-    contains = [str(n) for n, d in graph.nodes(data=True) if query_lower in str(d.get("label", "")).lower()]
-    return contains[0] if len(contains) == 1 else None
+    query_lower = _normalize_label(query)
+    exact_label_matches = [
+        str(node_id)
+        for node_id, data in graph.nodes(data=True)
+        if _normalize_label(str(data.get("label", ""))) == query_lower
+    ]
+    if len(exact_label_matches) == 1:
+        return exact_label_matches[0]
+    # Callable labels are decorated ("name()"), so a bare "name" query falls
+    # through exact matching and then ties with any "name*" sibling in the
+    # contains pass. Match on the undecorated name before giving up.
+    query_bare = _bare_name(query_lower)
+    bare_name_matches = [
+        str(node_id)
+        for node_id, data in graph.nodes(data=True)
+        if _bare_name(str(data.get("label", ""))) == query_bare
+    ]
+    if len(bare_name_matches) == 1:
+        return bare_name_matches[0]
+    exact_source_matches = [
+        str(node_id)
+        for node_id, data in graph.nodes(data=True)
+        if _normalize_label(str(data.get("source_file", ""))) == query_lower
+    ]
+    if len(exact_source_matches) == 1:
+        return exact_source_matches[0]
+    contains_matches = [
+        str(node_id)
+        for node_id, data in graph.nodes(data=True)
+        if query_lower in _normalize_label(str(data.get("label", "")))
+    ]
+    if len(contains_matches) == 1:
+        return contains_matches[0]
+    return None
 
 
 def affected_nodes(

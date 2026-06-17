@@ -295,6 +295,28 @@ def test_rebuild_bodies_are_shell_quote_safe():
         assert "'''" not in body  # would terminate the launcher's _src literal
 
 
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_read_graphify_root(name, body):
+    """The rebuild must honour the persisted scan root rather than hardcoding the
+    repo top (#1173). Both bodies read graphify-out/.graphify_root and pass the
+    recovered root to _rebuild_code instead of the bare Path('.')."""
+    assert "graphify-out/.graphify_root" in body, f"{name} ignores .graphify_root (#1173)"
+    # The recovered root is what gets rebuilt, not a hardcoded cwd.
+    assert "_rebuild_code(_root" in body, f"{name} does not pass the recovered root"
+    # Quote-safe inside the shell-double-quoted launcher: single quotes only.
+    assert "read_text(encoding='utf-8')" in body, f"{name} root read is not single-quoted"
+
+
+def test_rebuild_bodies_with_graphify_root_are_valid_python():
+    """The .graphify_root snippet must parse so a quoting slip can't ship a hook
+    that crashes the moment git fires it (#1173)."""
+    for body in (_REBUILD_BODY_COMMIT, _REBUILD_BODY_CHECKOUT):
+        ast.parse(body)
+
+
 def test_detached_launch_targets_graphify_python():
     """The launcher must run via the resolved $GRAPHIFY_PYTHON, not a bare
     `python`, so it uses the same interpreter the detection block selected."""

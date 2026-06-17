@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 import pytest
-from graphify.extract import extract_sln, extract_csproj, extract_razor
+from graphify.extract import extract_sln, extract_slnx, extract_csproj, extract_razor
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -35,6 +35,41 @@ def test_sln_contains_edges():
 def test_sln_project_dependency():
     r = extract_sln(FIXTURES / "sample.sln")
     assert "imports" in _relations(r)
+
+
+# ── .slnx ────────────────────────────────────────────────────────────────────
+
+def test_slnx_extracts_projects():
+    r = extract_slnx(FIXTURES / "sample.slnx")
+    assert "error" not in r
+    labels = set(_labels(r))
+    assert "WebApi" in labels
+    assert "Domain" in labels
+    assert "Tests" in labels
+
+
+def test_slnx_contains_edges():
+    r = extract_slnx(FIXTURES / "sample.slnx")
+    contains = [e for e in r["edges"] if e["relation"] == "contains"]
+    assert len(contains) == 3
+
+
+def test_slnx_project_dependency():
+    r = extract_slnx(FIXTURES / "sample.slnx")
+    assert "imports" in _relations(r)
+
+
+def test_slnx_invalid_xml():
+    with tempfile.NamedTemporaryFile(suffix=".slnx", mode="w", delete=False) as f:
+        f.write("<Solution><Project></Solution>")
+        f.flush()
+        r = extract_slnx(Path(f.name))
+    assert "error" in r
+
+
+def test_slnx_missing_file():
+    r = extract_slnx(Path("/nonexistent/file.slnx"))
+    assert "error" in r
 
 
 # ── .csproj ──────────────────────────────────────────────────────────────────
@@ -115,11 +150,11 @@ def test_razor_missing_file():
 
 def test_dispatch_table():
     from graphify.extract import _get_extractor
-    for ext in (".sln", ".csproj", ".fsproj", ".vbproj", ".razor", ".cshtml"):
+    for ext in (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".razor", ".cshtml"):
         assert _get_extractor(Path(f"foo{ext}")) is not None, f"{ext} not in dispatch"
 
 
 def test_code_extensions():
     from graphify.detect import CODE_EXTENSIONS
-    for ext in (".sln", ".csproj", ".fsproj", ".vbproj", ".razor", ".cshtml"):
+    for ext in (".sln", ".slnx", ".csproj", ".fsproj", ".vbproj", ".razor", ".cshtml"):
         assert ext in CODE_EXTENSIONS, f"{ext} missing"

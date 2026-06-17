@@ -16,8 +16,27 @@ def _load_manifest() -> dict:
     if _GLOBAL_MANIFEST.exists():
         try:
             return json.loads(_GLOBAL_MANIFEST.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as exc:
+            # Don't silently wipe the user's manifest on a parse error: that
+            # deletes every tracked repo. Back the bad file up and surface the
+            # error so the user can recover or report it.
+            backup = _GLOBAL_MANIFEST.with_suffix(
+                _GLOBAL_MANIFEST.suffix + f".corrupt.{int(datetime.now(timezone.utc).timestamp())}"
+            )
+            try:
+                _GLOBAL_MANIFEST.rename(backup)
+                print(
+                    f"[graphify global] manifest at {_GLOBAL_MANIFEST} failed to parse ({exc}); "
+                    f"moved to {backup} and starting fresh. Restore from the backup if this was "
+                    f"unexpected.",
+                    file=sys.stderr,
+                )
+            except Exception as rename_exc:
+                print(
+                    f"[graphify global] manifest at {_GLOBAL_MANIFEST} failed to parse ({exc}) "
+                    f"and could not be backed up ({rename_exc}). Starting fresh.",
+                    file=sys.stderr,
+                )
     return {"version": 1, "repos": {}}
 
 
@@ -81,15 +100,16 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         for n, d in G.nodes(data=True)
         if not d.get("source_file") and d.get("label")
     }
-    # Prefix source IDs for cross-project isolation, skipping external dups.
+    # Prefix source IDs for cross-project isolation. External-library nodes
+    # (no source_file) that already exist in the global graph by label are
+    # remapped onto the existing global node so incident edges are rewired
+    # instead of dropped — preserves cross-repo connectivity.
+    remap: dict[str, str] = {}
     prefixed_nodes = []
-    edge_skip: set[str] = set()
-    n_prefixed = 0
     for nid, data in src_G.nodes(data=True):
-        n_prefixed += 1
         pid = f"{repo_tag}::{nid}"
         if not data.get("source_file") and data.get("label") in external_labels:
-            edge_skip.add(pid)
+            remap[pid] = external_labels[data["label"]]
             continue
         attrs = dict(data)
         attrs["repo"] = repo_tag
@@ -99,8 +119,9 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     n_src_edges = 0
     for u, v, data in src_G.edges(data=True):
         n_src_edges += 1
-        pu, pv = f"{repo_tag}::{u}", f"{repo_tag}::{v}"
-        if pu in edge_skip or pv in edge_skip:
+        pu = remap.get(f"{repo_tag}::{u}", f"{repo_tag}::{u}")
+        pv = remap.get(f"{repo_tag}::{v}", f"{repo_tag}::{v}")
+        if pu == pv:  # don't introduce self-loops via remapping
             continue
         prefixed_edges.append((pu, pv, dict(data)))
 

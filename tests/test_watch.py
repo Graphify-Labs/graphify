@@ -424,9 +424,11 @@ def test_watch_handler_honors_graphifyignore(tmp_path, monkeypatch):
     import threading
     from graphify import watch as watch_mod
 
-    (tmp_path / ".graphifyignore").write_text("node_modules/\nbuild/\n", encoding="utf-8")
-    (tmp_path / "node_modules").mkdir()
-    (tmp_path / "build").mkdir()
+    watch_root = tmp_path / ".hidden-parent" / "corpus"
+    watch_root.mkdir(parents=True)
+    (watch_root / ".graphifyignore").write_text("node_modules/\nbuild/\n", encoding="utf-8")
+    (watch_root / "node_modules").mkdir()
+    (watch_root / "build").mkdir()
 
     rebuild_calls: list[Path] = []
     notify_calls: list[Path] = []
@@ -435,19 +437,24 @@ def test_watch_handler_honors_graphifyignore(tmp_path, monkeypatch):
 
     # Run watch() in a thread with a short debounce so we can verify the
     # post-debounce dispatch path actually runs on real events.
-    t = threading.Thread(target=watch_mod.watch, args=(tmp_path,), kwargs={"debounce": 0.2}, daemon=True)
+    t = threading.Thread(
+        target=watch_mod.watch,
+        args=(watch_root,),
+        kwargs={"debounce": 0.2},
+        daemon=True,
+    )
     t.start()
     time.sleep(0.5)  # let observer.start() settle
 
     # Ignored writes — handler must drop these.
-    (tmp_path / "node_modules" / "junk.js").write_text("// noise\n", encoding="utf-8")
-    (tmp_path / "build" / "out.py").write_text("x = 1\n", encoding="utf-8")
+    (watch_root / "node_modules" / "junk.js").write_text("// noise\n", encoding="utf-8")
+    (watch_root / "build" / "out.py").write_text("x = 1\n", encoding="utf-8")
     time.sleep(1.0)
     assert rebuild_calls == [], "ignored writes triggered a rebuild"
     assert notify_calls == [], "ignored writes triggered a notify"
 
     # Non-ignored write — handler must accept and (after debounce) dispatch.
-    (tmp_path / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (watch_root / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and not rebuild_calls:
         time.sleep(0.1)

@@ -305,19 +305,21 @@ def test_codex_uses_compact_extraction_windows_uses_verbose():
     assert "(compact)" not in windows_refs["extraction-spec.md"]
 
 
-def test_cli_inline_query_stub_has_no_vocab_expansion():
-    """cli-inline hosts get the NetworkX-fallback stub, not vocab-expansion."""
-    for key in ("codex", "windows"):
+def test_every_platform_query_has_expansion_and_fallback():
+    """#1325: the unified query reference ships BOTH the vocab-expansion step and
+    the inline NetworkX fallback to every platform (previously split so no host
+    got both — Claude had expansion but no fallback; the rest the reverse)."""
+    for key in ("claude", "codex", "windows", "opencode"):
         core, refs = _platform_artifacts(key)
-        # The core stub points at the query reference without the vocab step.
-        assert "expand the question against the graph's own vocabulary" not in core
+        # Core stub mentions both the vocab-expansion step and the inline fallback.
+        assert "expand the question against the graph's own vocabulary" in core
         assert "NetworkX traversal" in core
-        # The query reference carries the path/explain headings but not the
-        # claude-only vocab-expansion sub-headings.
+        # The query reference carries expansion, fallback, and path/explain.
         q = refs["query.md"]
+        assert "Constrained query expansion" in q
+        assert "If the CLI is unavailable" in q
         assert "## For /graphify path" in q
         assert "## For /graphify explain" in q
-        assert "Constrained query expansion" not in q
 
 
 def test_schema_singleton_passes_across_all_platforms():
@@ -365,20 +367,13 @@ def test_all_progressive_hosts_check_and_audit_clean():
         assert probs == [], f"[{key}] audit\n" + "\n".join(probs)
 
 
-def test_kiro_and_pi_omit_the_trigger_line():
-    """kiro and pi render no frontmatter trigger (trigger absent in v8)."""
-    for key in ("kiro", "pi"):
+def test_no_host_has_trigger_in_frontmatter():
+    """No split host emits a trigger: field — not part of Agent Skills spec (#1180)."""
+    for key in ("claude", "codex", "opencode", "kilo", "copilot", "claw", "droid",
+                "amp", "trae", "vscode", "kiro", "pi"):
         core, _ = _platform_artifacts(key)
         head = core.split("---", 2)[1]
-        assert "trigger:" not in head, f"[{key}] unexpectedly has a trigger line"
-
-
-def test_triggered_hosts_keep_the_trigger_line():
-    """The other split hosts keep trigger: /graphify in the frontmatter."""
-    for key in ("opencode", "kilo", "copilot", "claw", "droid", "amp", "trae", "vscode"):
-        core, _ = _platform_artifacts(key)
-        head = core.split("---", 2)[1]
-        assert "trigger: /graphify" in head, f"[{key}] missing trigger line"
+        assert "trigger:" not in head, f"[{key}] unexpectedly has a trigger: line"
 
 
 def test_kilo_renders_its_rules_tail_section():
@@ -455,24 +450,31 @@ def test_monolith_roundtrip_passes_for_aider_and_devin():
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
 
 
-def test_monoliths_change_only_the_enum_and_the_description():
-    """The rendered monolith differs from v8 on exactly the enum + description lines.
+def test_monoliths_change_only_the_enum_description_and_chunk_cleanup():
+    """The rendered monolith differs from v8 on exactly the allowed lines.
 
-    Two changes are now in play for the monoliths: the file_type enum unified to
-    the six-value superset (the prose guidance line + the schema line) and the
-    frontmatter description unified across all platforms. Nothing else may differ.
+    Three changes are now in play for the monoliths: the file_type enum unified to
+    the six-value superset (the prose guidance line + the schema line), the
+    frontmatter description unified across all platforms, and the shell-agnostic
+    chunk-cleanup rewrite (#1172). Nothing else may differ.
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
         rendered = gen.render(platforms[key])[0].content.splitlines()
-        original = gen._normalise(gen._git_show(platforms[key].roundtrip_ref)).splitlines()
+        # Strip trigger: lines from the reference — their removal (#1180) is a
+        # permitted diff alongside enum, description, and chunk-cleanup changes.
+        original = [
+            l for l in gen._normalise(gen._git_show(platforms[key].roundtrip_ref)).splitlines()
+            if not gen._is_trigger_line(l)
+        ]
         assert len(rendered) == len(original), f"[{key}] line count changed"
         diff_idx = [i for i, (r, o) in enumerate(zip(rendered, original)) if r != o]
-        # Exactly three lines change: the prose enum guidance, the schema line,
-        # and the frontmatter description.
-        assert len(diff_idx) == 3, f"[{key}] expected 3 changed lines, got {len(diff_idx)}"
+        # Four lines change: the prose enum guidance, the schema line,
+        # the frontmatter description, and the chunk-cleanup rewrite.
+        assert len(diff_idx) == 4, f"[{key}] expected 4 changed lines, got {len(diff_idx)}"
         enum_changes = 0
         desc_changes = 0
+        cleanup_changes = 0
         for i in diff_idx:
             line = rendered[i]
             if gen.ENUM_VALUES in line or gen.ENUM_PROSE in line:
@@ -482,12 +484,18 @@ def test_monoliths_change_only_the_enum_and_the_description():
                 assert UNIFIED_DESCRIPTION in line, (
                     f"[{key}] description line is not the unified text: {line!r}"
                 )
+            elif gen._is_chunk_cleanup_line(line):
+                cleanup_changes += 1
+                # The unmatched-glob abort is fixed: the rm no longer carries the
+                # bare chunk glob, and a find ... -delete sweeps the chunks.
+                assert ".graphify_chunk_*.json" not in line.split("find", 1)[0]
             else:
                 raise AssertionError(
-                    f"[{key}] changed line {i} is neither enum nor description: {line!r}"
+                    f"[{key}] changed line {i} is none of enum/description/cleanup: {line!r}"
                 )
         assert enum_changes == 2, f"[{key}] expected 2 enum line changes, got {enum_changes}"
         assert desc_changes == 1, f"[{key}] expected 1 description change, got {desc_changes}"
+        assert cleanup_changes == 1, f"[{key}] expected 1 cleanup change, got {cleanup_changes}"
         # The six-value superset replaced the five-value enum in both files.
         assert any(gen.ENUM_VALUES in line for line in rendered)
 

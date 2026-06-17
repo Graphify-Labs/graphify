@@ -579,9 +579,14 @@ def _rebuild_code(
 
         if no_cluster:
             # Normalise to "links" key so schema is consistent with the full clustered path.
+            # Dedupe parallel edges (the clustered path's DiGraph collapses them implicitly);
+            # without it, --no-cluster + repeated `update` accumulate duplicates and edge
+            # counts diverge across build modes (#1317).
+            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
             candidate_graph_data = {
-                **{k: v for k, v in result.items() if k != "edges"},
-                "links": result.get("edges", []),
+                **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
+                "nodes": _dedupe_nodes(result.get("nodes", [])),
+                "links": _dedupe_edges(result.get("edges", [])),
             }
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
@@ -619,7 +624,8 @@ def _rebuild_code(
             else:
                 print(
                     "[graphify watch] Rebuilt (no clustering): "
-                    f"{len(result.get('nodes', []))} nodes, {len(result.get('edges', []))} edges"
+                    f"{len(candidate_graph_data.get('nodes', []))} nodes, "
+                    f"{len(candidate_graph_data.get('links', []))} edges"
                 )
                 print(f"[graphify watch] graph.json updated in {out}")
             return True
@@ -836,7 +842,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             nonlocal last_trigger, pending
             if event.is_directory:
                 return
-            path = Path(event.src_path)
+            path = Path(os.fsdecode(event.src_path))
             # Check .graphifyignore BEFORE the extension/dotfile/out filters so
             # the cheapest short-circuit for users with broad ignore patterns
             # (node_modules/, .venv/, build/, …) fires first. _is_ignored
@@ -846,9 +852,13 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             if path.suffix.lower() not in _WATCHED_EXTENSIONS:
                 return
-            if any(part.startswith(".") for part in path.parts):
+            try:
+                filter_parts = path.relative_to(watch_root_for_ignore).parts
+            except ValueError:
+                filter_parts = path.parts
+            if any(part.startswith(".") for part in filter_parts):
                 return
-            if _GRAPHIFY_OUT in path.parts:
+            if _GRAPHIFY_OUT in filter_parts:
                 return
             last_trigger = time.monotonic()
             pending = True

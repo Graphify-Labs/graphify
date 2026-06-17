@@ -99,6 +99,7 @@ def _file_node_id(rel_path: Path) -> str:
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, str]] = {}
 _WORKSPACE_PACKAGE_CACHE: dict[str, dict[str, Path]] = {}
+_WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 _JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".ts", ".tsx", ".vue", ".svelte"}
 _JS_RESOLVE_EXTS = (".ts", ".tsx", ".svelte", ".js", ".jsx", ".mjs")
 _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.jsx", "index.mjs")
@@ -255,13 +256,23 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
         if extended_path.exists():
             aliases.update(_read_tsconfig_aliases(extended_path, extended_path.parent, seen))
 
-    paths = data.get("compilerOptions", {}).get("paths", {})
+    # tsconfig `paths` are resolved relative to `baseUrl` (itself relative to
+    # the tsconfig's directory), not the tsconfig directory directly. Honoring
+    # baseUrl is required for the common monorepo / NestJS layout where
+    # baseUrl points at a subdirectory, e.g. baseUrl "./src" with
+    # "@services/*": ["services/*"] must resolve to <dir>/src/services rather
+    # than <dir>/services. Defaults to "." so configs without baseUrl (paths
+    # relative to the tsconfig dir, the TS 4.1+ behavior) keep working.
+    compiler_options = data.get("compilerOptions", {})
+    base_url = compiler_options.get("baseUrl") or "."
+    paths_base = base_dir / base_url
+    paths = compiler_options.get("paths", {})
     for alias, targets in paths.items():
         if not targets:
             continue
         alias_prefix = alias.rstrip("/*")
         target_base = targets[0].rstrip("/*")
-        aliases[alias_prefix] = str(base_dir / target_base)
+        aliases[alias_prefix] = str(os.path.normpath(paths_base / target_base))
 
     return aliases
 
@@ -289,10 +300,18 @@ def _find_workspace_root(start_dir: Path) -> Path | None:
     for candidate in [current, *current.parents]:
         if (candidate / "pnpm-workspace.yaml").exists():
             return candidate
+        package_json = candidate / "package.json"
+        if package_json.is_file():
+            try:
+                data = json.loads(package_json.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if "workspaces" in data:
+                return candidate
     return None
 
 
-def _workspace_globs(workspace_file: Path) -> list[str]:
+def _pnpm_workspace_globs(workspace_file: Path) -> list[str]:
     globs: list[str] = []
     in_packages = False
     for raw_line in workspace_file.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -312,16 +331,42 @@ def _workspace_globs(workspace_file: Path) -> list[str]:
     return globs
 
 
+def _workspace_globs(root: Path) -> list[str]:
+    pnpm_workspace = root / "pnpm-workspace.yaml"
+    if pnpm_workspace.exists():
+        return _pnpm_workspace_globs(pnpm_workspace)
+
+    package_json = root / "package.json"
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    workspaces = data.get("workspaces")
+    if isinstance(workspaces, list):
+        return [item for item in workspaces if isinstance(item, str) and not item.startswith("!")]
+    if isinstance(workspaces, dict):
+        packages = workspaces.get("packages")
+        if isinstance(packages, list):
+            return [item for item in packages if isinstance(item, str) and not item.startswith("!")]
+    return []
+
+
 def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
     root = _find_workspace_root(start_dir)
     if root is None:
         return {}
-    key = str(root)
+    manifest_mtimes = tuple(
+        (name, (root / name).stat().st_mtime_ns)
+        for name in _WORKSPACE_MANIFEST_NAMES
+        if (root / name).is_file()
+    )
+    key = str((root, manifest_mtimes))
     if key in _WORKSPACE_PACKAGE_CACHE:
         return _WORKSPACE_PACKAGE_CACHE[key]
 
     packages: dict[str, Path] = {}
-    for pattern in _workspace_globs(root / "pnpm-workspace.yaml"):
+    for pattern in _workspace_globs(root):
         package_dirs: list[Path] = [root] if pattern in (".", "./") else list(root.glob(pattern))
         for package_dir in package_dirs:
             manifest = package_dir / "package.json"
@@ -1716,10 +1761,117 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
     return found
 
 
+# Node types whose value is a callable, for the JS/TS assignment / class-field
+# / function-expression forms below. Older tree-sitter-javascript grammars
+# label a function expression `function`; current ones use `function_expression`.
+_JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function"})
+
+
+def _js_member_assignment_target(left, source: bytes):
+    """Classify the symbol an `assignment_expression` LHS defines when its RHS
+    is a function. Returns (kind, owner_name, member_name) or None.
+
+      this.foo = fn            → ("this",      None,  "foo")
+      exports.foo = fn         → ("exports",   None,  "foo")
+      module.exports.foo = fn  → ("exports",   None,  "foo")
+      Foo.prototype.bar = fn   → ("prototype", "Foo", "bar")
+
+    Any other shape (an arbitrary `obj.x = fn`) returns None and is skipped —
+    capturing those would reintroduce the bare-named / phantom-god-node class
+    of bug the module-level scope guard (#1077) exists to prevent.
+    """
+    if left is None or left.type != "member_expression":
+        return None
+    prop = left.child_by_field_name("property")
+    if prop is None:
+        return None
+    member_name = _read_text(prop, source)
+    if not member_name:
+        return None
+    obj = left.child_by_field_name("object")
+    if obj is None:
+        return None
+    if obj.type == "this":
+        return ("this", None, member_name)
+    if obj.type == "identifier":
+        if _read_text(obj, source) == "exports":
+            return ("exports", None, member_name)
+        return None
+    if obj.type == "member_expression":
+        # module.exports.X  or  Foo.prototype.X
+        inner_obj = obj.child_by_field_name("object")
+        inner_prop = obj.child_by_field_name("property")
+        if inner_obj is None or inner_prop is None:
+            return None
+        inner_prop_name = _read_text(inner_prop, source)
+        if inner_obj.type == "identifier":
+            inner_obj_name = _read_text(inner_obj, source)
+            if inner_obj_name == "module" and inner_prop_name == "exports":
+                return ("exports", None, member_name)
+            if inner_prop_name == "prototype":
+                return ("prototype", inner_obj_name, member_name)
+    return None
+
+
 def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
+    # CommonJS / prototype member assignments whose value is a function:
+    #   exports.X = () => {}     → file-contained function  X()
+    #   module.exports.X = fn    → file-contained function  X()
+    #   Foo.prototype.bar = fn   → method bar() owned by Foo
+    # (`this.X = fn` lives inside a function body, which is not recursed here;
+    #  it is captured at the enclosing function — see the function branch.)
+    if node.type == "expression_statement":
+        assign = next((c for c in node.children
+                       if c.type == "assignment_expression"), None)
+        if assign is not None:
+            value = assign.child_by_field_name("right")
+            if value is not None and value.type in _JS_FUNCTION_VALUE_TYPES:
+                target = _js_member_assignment_target(
+                    assign.child_by_field_name("left"), source)
+                if target is not None:
+                    kind, owner_name, member_name = target
+                    line = node.start_point[0] + 1
+                    handled = False
+                    if kind == "exports":
+                        nid = _make_id(stem, member_name)
+                        add_node_fn(nid, f"{member_name}()", line)
+                        add_edge_fn(file_nid, nid, "contains", line)
+                        handled = True
+                    elif kind == "prototype":
+                        owner_nid = _make_id(stem, owner_name)
+                        nid = _make_id(owner_nid, member_name)
+                        add_node_fn(nid, f".{member_name}()", line)
+                        add_edge_fn(owner_nid, nid, "method", line)
+                        handled = True
+                    if handled:
+                        body = value.child_by_field_name("body")
+                        if body:
+                            function_bodies.append((nid, body))
+                        return True
+
+    # Class fields whose value is a function:
+    #   class C { handler = () => {} }   → method handler() owned by C
+    # Reaches here with parent_class_nid set because class bodies are recursed
+    # with the class nid as parent.
+    if parent_class_nid and node.type in ("field_definition", "public_field_definition"):
+        prop = node.child_by_field_name("property") or node.child_by_field_name("name")
+        value = node.child_by_field_name("value")
+        if (prop is not None and value is not None
+                and value.type in _JS_FUNCTION_VALUE_TYPES):
+            field_name = _read_text(prop, source)
+            if field_name:
+                line = node.start_point[0] + 1
+                nid = _make_id(parent_class_nid, field_name)
+                add_node_fn(nid, f".{field_name}()", line)
+                add_edge_fn(parent_class_nid, nid, "method", line)
+                body = value.child_by_field_name("body")
+                if body:
+                    function_bodies.append((nid, body))
+                return True
+
     if node.type in ("lexical_declaration", "variable_declaration"):
         # CJS require imports — emit edges, do not block other lexical_declaration handling
         require_found = _require_imports_js(node, source, file_nid, stem, edges, str_path)
@@ -1745,7 +1897,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
             for child in node.children:
                 if child.type == "variable_declarator":
                     value = child.child_by_field_name("value")
-                    if value and value.type == "arrow_function":
+                    if value and value.type in _JS_FUNCTION_VALUE_TYPES:
+                        # `const f = () => {}` and `const f = function(){}`
                         name_node = child.child_by_field_name("name")
                         if name_node:
                             func_name = _read_text(name_node, source)
@@ -2097,7 +2250,16 @@ _LUA_CONFIG = LanguageConfig(
 )
 
 
-def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> list[tuple[str, str]]:
+    """Emit module-level ``imports`` edges and report the imported modules.
+
+    A Swift ``import CoreKit`` names a module, not a file path, so — unlike the
+    file-resolving JS/TS handlers — there is no existing node for the edge to
+    point at. The returned ``(id, label)`` pairs let the extractor materialize a
+    ``type=module`` anchor node so the edge survives; without it ``build_from_json``
+    prunes every Swift import edge as a dangling/external reference (#1327).
+    """
+    modules: list[tuple[str, str]] = []
     for child in node.children:
         if child.type == "identifier":
             raw = _read_text(child, source)
@@ -2112,7 +2274,9 @@ def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, st
                 "source_location": f"L{node.start_point[0] + 1}",
                 "weight": 1.0,
             })
+            modules.append((tgt_nid, raw))
             break
+    return modules
 
 
 def _read_csharp_type_name(node, source: bytes) -> str | None:
@@ -2254,7 +2418,28 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
         # Import types
         if t in config.import_types:
             if config.import_handler:
-                config.import_handler(node, source, file_nid, stem, edges, str_path)
+                imported_modules = config.import_handler(node, source, file_nid, stem, edges, str_path)
+                # Module-level import handlers (Swift) name a module, not a file
+                # path, so there is no pre-existing node to anchor the edge to.
+                # They return (id, label) pairs for which we materialize a
+                # `type=module` node; otherwise build_from_json prunes every such
+                # import edge as a dangling/external reference. The same module
+                # imported from N files shares one id (file_type=code keeps
+                # build.py validation happy; `type=module` exempts it from
+                # id-disambiguation) so it collapses to one shared node (#1327).
+                if imported_modules:
+                    line = node.start_point[0] + 1
+                    for mod_nid, mod_label in imported_modules:
+                        if mod_nid not in seen_ids:
+                            seen_ids.add(mod_nid)
+                            nodes.append({
+                                "id": mod_nid,
+                                "label": mod_label,
+                                "file_type": "code",
+                                "type": "module",
+                                "source_file": str_path,
+                                "source_location": f"L{line}",
+                            })
             # For export_statement: only return (skip children) if it's a re-export
             # (has a `from` source). Otherwise fall through to walk children which may
             # contain function_declaration, class_declaration, etc.
@@ -3093,6 +3278,39 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                                      line, context=ctx)
 
             body = _find_body(node, config)
+            # JS/TS: capture `this.X = () => {}` / `this.X = function(){}`
+            # assigned directly in this function/constructor body. They live
+            # inside the body (otherwise only walked for calls), so without this
+            # they are never emitted — the dominant miss on constructor-style
+            # ("function Foo(){ this.bar = () => {} }") and many CommonJS repos.
+            # Owner is the enclosing class when present (a constructor's methods
+            # belong to the class), else the function itself.
+            if body is not None and config.ts_module in (
+                "tree_sitter_javascript", "tree_sitter_typescript"
+            ):
+                this_owner_nid = parent_class_nid if parent_class_nid else func_nid
+                for stmt in body.children:
+                    if stmt.type != "expression_statement":
+                        continue
+                    assign = next((c for c in stmt.children
+                                   if c.type == "assignment_expression"), None)
+                    if assign is None:
+                        continue
+                    val = assign.child_by_field_name("right")
+                    if val is None or val.type not in _JS_FUNCTION_VALUE_TYPES:
+                        continue
+                    tgt = _js_member_assignment_target(
+                        assign.child_by_field_name("left"), source)
+                    if tgt is None or tgt[0] != "this":
+                        continue
+                    m_name = tgt[2]
+                    m_line = stmt.start_point[0] + 1
+                    m_nid = _make_id(this_owner_nid, m_name)
+                    add_node(m_nid, f".{m_name}()", m_line)
+                    add_edge(this_owner_nid, m_nid, "method", m_line)
+                    m_body = val.child_by_field_name("body")
+                    if m_body:
+                        function_bodies.append((m_nid, m_body))
             if body:
                 function_bodies.append((func_nid, body))
             return
@@ -4541,7 +4759,7 @@ def extract_dart(path: Path) -> dict:
             mixin_clean = mixin.split("<")[0].strip()
             mixin_nid = _make_id(mixin_clean)
             add_node(mixin_nid, mixin_clean, source_file=None)
-            add_edge(class_nid, mixin_nid, "implements")
+            add_edge(class_nid, mixin_nid, "mixes_in")
 
         # Map interfaces
         for interface in interfaces_list:
@@ -4823,8 +5041,209 @@ def extract_dart(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+def _sv_first_identifier(node, source: bytes) -> str | None:
+    """First `simple_identifier` under node in pre-order, or None.
+
+    tree-sitter-verilog 1.0.3 nests declaration names a few levels deep instead
+    of exposing a `name` field. Scope the search to the right child node (e.g.
+    `function_identifier`) or this returns the return-type instead of the name.
+    """
+    if node is None:
+        return None
+    for child in node.children:
+        if child.type == "simple_identifier":
+            return _read_text(child, source)
+        found = _sv_first_identifier(child, source)
+        if found:
+            return found
+    return None
+
+
+def _sv_child(node, type_name: str) -> object | None:
+    if node is None:
+        return None
+    for child in node.children:
+        if child.type == type_name:
+            return child
+    return None
+
+
+_SV_BUILTIN_TYPES = frozenset({
+    "bit", "logic", "reg", "wire", "int", "integer", "shortint", "longint",
+    "byte", "time", "real", "shortreal", "void", "string", "type", "event",
+    "mailbox", "semaphore", "process", "chandle",
+})
+
+_SV_NON_TYPE_WORDS = frozenset({
+    "return", "if", "else", "for", "foreach", "while", "case", "begin", "end",
+    "function", "task", "class", "endclass", "endfunction", "endtask",
+})
+
+# One level of balanced parens (e.g. `Foo #(Bar #(int))`) — bounded so malformed
+# input cannot trigger pathological backtracking.
+_SV_PARENS_INNER = r"(?:[^()]|\([^()]*\))*"
+_SV_PARENS = r"\(" + _SV_PARENS_INNER + r"\)"
+
+_SV_FUNC_RE = re.compile(
+    r"\bfunction\s+([A-Za-z_]\w*(?:\s*#\s*" + _SV_PARENS + r")?)\s+(\w+)\s*"
+    r"\((" + _SV_PARENS_INNER + r")\)\s*;",
+    re.MULTILINE,
+)
+
+_SV_PARAM_RE = re.compile(
+    r"\s*(?:input|output|inout|ref|const\s+ref)?\s*"
+    r"([A-Za-z_]\w*(?:\s*#\s*" + _SV_PARENS + r")?)\s+\w+"
+)
+
+
+def _sv_strip_comments(text: str) -> str:
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    return re.sub(r"//.*", "", text)
+
+
+def _sv_split_type_list(text: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for idx, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            item = text[start:idx].strip()
+            if item:
+                parts.append(item)
+            start = idx + 1
+    item = text[start:].strip()
+    if item:
+        parts.append(item)
+    return parts
+
+
+def _sv_collect_type_refs(type_text: str, generic: bool = False,
+                          skip: frozenset[str] = frozenset()) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    text = type_text.strip()
+    if not text:
+        return refs
+    head = re.match(r"([A-Za-z_]\w*)", text)
+    if head:
+        name = head.group(1)
+        # `skip` carries the enclosing class's `#(type T = ...)` parameters so
+        # they are not mistaken for referenced types.
+        if name not in _SV_BUILTIN_TYPES and name not in _SV_NON_TYPE_WORDS and name not in skip:
+            refs.append((name, "generic_arg" if generic else "type"))
+    params = re.search(r"#\s*\((" + _SV_PARENS_INNER + r")\)", text)
+    if params:
+        for arg in _sv_split_type_list(params.group(1)):
+            refs.extend(_sv_collect_type_refs(arg, generic=True, skip=skip))
+    return refs
+
+
+def _augment_systemverilog_semantics(
+    raw: str,
+    stem: str,
+    str_path: str,
+    file_nid: str,
+    nodes: list[dict],
+    edges: list[dict],
+    seen_ids: set[str],
+) -> None:
+    label_to_nid = {node["label"]: node["id"] for node in nodes}
+
+    def line_for(offset: int) -> int:
+        return raw.count("\n", 0, offset) + 1
+
+    def add_node(nid: str, label: str, line: int) -> None:
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str_path, "source_location": f"L{line}",
+                          "confidence_score": 1.0})
+        label_to_nid[label] = nid
+
+    def ensure_type(label: str, line: int) -> str:
+        if label in label_to_nid:
+            return label_to_nid[label]
+        nid = _make_id(stem, label)
+        add_node(nid, label, line)
+        return nid
+
+    def add_edge(src: str, target_label: str, relation: str, line: int, context: str | None = None) -> None:
+        tgt = ensure_type(target_label, line)
+        edge = {"source": src, "target": tgt, "relation": relation,
+                "confidence": "EXTRACTED", "confidence_score": 1.0,
+                "source_file": str_path, "source_location": f"L{line}", "weight": 1.0}
+        if context:
+            edge["context"] = context
+        edges.append(edge)
+
+    text = _sv_strip_comments(raw)
+    # Consuming `endclass` (rather than a lookahead) makes each match own its
+    # terminator, so back-to-back or malformed classes cannot bleed bodies.
+    class_re = re.compile(
+        r"\b(?:(interface)\s+)?class\s+(\w+)([^;{]*)\s*;(.*?)\bendclass\b",
+        re.DOTALL,
+    )
+    for match in class_re.finditer(text):
+        class_name = match.group(2)
+        header = match.group(3) or ""
+        body = match.group(4) or ""
+        line = line_for(match.start())
+        # `#(type T = Payload)` declares `T` as a class type parameter, not a
+        # referenced type — collect these to skip below.
+        type_params = frozenset(re.findall(r"\btype\s+(\w+)", header))
+        class_nid = _make_id(stem, class_name)
+        add_node(class_nid, class_name, line)
+        edges.append({"source": file_nid, "target": class_nid, "relation": "defines",
+                      "confidence": "EXTRACTED", "confidence_score": 1.0,
+                      "source_file": str_path, "source_location": f"L{line}", "weight": 1.0})
+
+        ext = re.search(r"\bextends\s+(\w+)", header)
+        if ext:
+            add_edge(class_nid, ext.group(1), "inherits", line)
+        impl = re.search(r"\bimplements\s+([^;{]+)", header)
+        if impl:
+            for iface_name in _sv_split_type_list(impl.group(1)):
+                add_edge(class_nid, iface_name.split("#", 1)[0].strip(), "implements", line)
+
+        body_without_functions = re.sub(
+            r"\bfunction\b.*?\bendfunction\b",
+            lambda m: "\n" * m.group(0).count("\n"),
+            body,
+            flags=re.DOTALL,
+        )
+        for field in re.finditer(r"^\s*([A-Za-z_]\w*(?:\s*#\s*\([^;]+?\))?)\s+\w+\s*;", body_without_functions, re.MULTILINE):
+            # Count to the start of the type token (group 1), not the match
+            # start: `^\s*` consumes the leading newline(s), so field.start()
+            # would resolve to the class's line instead of the field's.
+            field_line = line + body_without_functions.count("\n", 0, field.start(1))
+            for ref_name, role in _sv_collect_type_refs(field.group(1), skip=type_params):
+                add_edge(class_nid, ref_name, "references", field_line, "generic_arg" if role == "generic_arg" else "field")
+
+        for fm in _SV_FUNC_RE.finditer(body):
+            return_type, func_name, params = fm.group(1), fm.group(2), fm.group(3)
+            func_line = line + body.count("\n", 0, fm.start())
+            func_nid = _make_id(class_nid, func_name)
+            add_node(func_nid, func_name, func_line)
+            edges.append({"source": class_nid, "target": func_nid, "relation": "method",
+                          "confidence": "EXTRACTED", "confidence_score": 1.0,
+                          "source_file": str_path, "source_location": f"L{func_line}", "weight": 1.0})
+            for ref_name, role in _sv_collect_type_refs(return_type, skip=type_params):
+                add_edge(func_nid, ref_name, "references", func_line, "generic_arg" if role == "generic_arg" else "return_type")
+            for param in _sv_split_type_list(params):
+                pm = _SV_PARAM_RE.match(param)
+                if not pm:
+                    continue
+                for ref_name, role in _sv_collect_type_refs(pm.group(1), skip=type_params):
+                    add_edge(func_nid, ref_name, "references", func_line, "generic_arg" if role == "generic_arg" else "parameter_type")
+
+
 def extract_verilog(path: Path) -> dict:
-    """Extract modules, functions, tasks, package imports, and instantiations from .v/.sv files."""
+    """Extract modules, functions, tasks, package imports, instantiations, and
+    SystemVerilog class semantics (inherits/implements edges, field/parameter/
+    return-type references) from .v/.sv files."""
     try:
         import tree_sitter_verilog as tsverilog
         from tree_sitter import Language, Parser
@@ -4865,10 +5284,15 @@ def extract_verilog(path: Path) -> dict:
     def walk(node, module_nid: str | None = None) -> None:
         t = node.type
 
+        # SystemVerilog class bodies are handled by _augment_systemverilog_semantics
+        # (regex over source text). Skip their subtrees so in-class methods are not
+        # double-emitted here — and with the wrong, return-type-derived name.
+        if t in ("class_declaration", "interface_class_declaration"):
+            return
+
         if t == "module_declaration":
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                mod_name = _read_text(name_node, source)
+            mod_name = _sv_first_identifier(_sv_child(node, "module_header"), source)
+            if mod_name:
                 line = node.start_point[0] + 1
                 nid = _make_id(stem, mod_name)
                 add_node(nid, mod_name, line)
@@ -4877,10 +5301,13 @@ def extract_verilog(path: Path) -> dict:
                     walk(child, nid)
                 return
 
-        elif t in ("function_declaration", "function_prototype"):
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                func_name = _read_text(name_node, source)
+        # `function_prototype` only appears inside class/interface-class bodies
+        # (skipped above) and nests its name differently; it is intentionally not
+        # handled here.
+        elif t == "function_declaration":
+            fn_body = _sv_child(node, "function_body_declaration")
+            func_name = _sv_first_identifier(_sv_child(fn_body, "function_identifier"), source)
+            if func_name:
                 line = node.start_point[0] + 1
                 parent = module_nid or file_nid
                 nid = _make_id(parent, func_name)
@@ -4888,9 +5315,9 @@ def extract_verilog(path: Path) -> dict:
                 add_edge(parent, nid, "contains", line)
 
         elif t == "task_declaration":
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                task_name = _read_text(name_node, source)
+            tk_body = _sv_child(node, "task_body_declaration")
+            task_name = _sv_first_identifier(_sv_child(tk_body, "task_identifier"), source)
+            if task_name:
                 line = node.start_point[0] + 1
                 parent = module_nid or file_nid
                 nid = _make_id(parent, task_name)
@@ -4906,14 +5333,18 @@ def extract_verilog(path: Path) -> dict:
                         line = node.start_point[0] + 1
                         tgt_nid = _make_id(pkg_name)
                         add_node(tgt_nid, pkg_name, line)
-                        src = module_nid or file_nid
-                        add_edge(src, tgt_nid, "imports_from", line)
+                        src_nid = module_nid or file_nid
+                        add_edge(src_nid, tgt_nid, "imports_from", line)
 
-        elif t == "module_instantiation":
-            # module_type instantiates another module
-            type_node = node.child_by_field_name("module_type")
-            if type_node and module_nid:
-                inst_type = _read_text(type_node, source).strip()
+        elif t in ("module_instantiation", "checker_instantiation"):
+            # `leaf u_leaf();` parses as checker_instantiation in 1.0.3;
+            # module_instantiation (when it occurs) exposes a `module_type` field.
+            # Both reduce to the first identifier under the node — the instantiated
+            # type, not the instance name (which appears later).
+            if module_nid:
+                type_node = node.child_by_field_name("module_type")
+                inst_type = (_read_text(type_node, source).strip() if type_node
+                             else _sv_first_identifier(node, source))
                 if inst_type:
                     line = node.start_point[0] + 1
                     tgt_nid = _make_id(inst_type)
@@ -4924,6 +5355,15 @@ def extract_verilog(path: Path) -> dict:
             walk(child, module_nid)
 
     walk(root)
+    _augment_systemverilog_semantics(
+        source.decode("utf-8", errors="replace"),
+        stem,
+        str_path,
+        file_nid,
+        nodes,
+        edges,
+        seen_ids,
+    )
     return {"nodes": nodes, "edges": edges}
 
 
@@ -6760,9 +7200,18 @@ def _disambiguate_colliding_node_ids(
     raw_calls: list[dict],
     root: Path,
 ) -> None:
-    """Rewrite only colliding node IDs, using source path as the disambiguator."""
+    """Rewrite only colliding node IDs, using source path as the disambiguator.
+
+    Module anchor nodes (#1327) are exempt: ``import CoreKit`` from three files
+    yields three ``type=module`` nodes with the same id but different
+    source_files. Those are the *same* module, not distinct same-named symbols,
+    so they must collapse to one shared node — disambiguating them by path would
+    scatter a single module across N file-qualified duplicates.
+    """
     by_id: dict[str, list[dict]] = {}
     for node in nodes:
+        if node.get("type") == "module":
+            continue
         nid = node.get("id")
         if isinstance(nid, str) and nid:
             by_id.setdefault(nid, []).append(node)
@@ -7189,9 +7638,14 @@ def _parse_js_tree(path: Path):
 
 
 def _walk_js_tree(node):
-    yield node
-    for child in node.children:
-        yield from _walk_js_tree(child)
+    # Iterative DFS avoids Python's O(depth) generator-chain overhead.
+    # Recursive yield-from creates one generator frame per level — at 26+
+    # levels deep each leaf's value had to propagate through 26 frames.
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        yield n
+        stack.extend(reversed(n.children))
 
 
 def _js_module_specifier(node, source: bytes) -> str | None:
@@ -7273,6 +7727,43 @@ def _js_exported_declaration_names(node, source: bytes) -> list[str]:
         if name_node is not None:
             names.append(_read_text(name_node, source))
     return names
+
+
+def _js_default_import_name(node, source: bytes) -> str | None:
+    """Local binding of a default import: the `Foo` in `import Foo from './x'`.
+
+    The default binding is a bare identifier child of the import_clause (named
+    imports live in a `named_imports` node, namespace imports in a
+    `namespace_import` node), so it is also picked up from the mixed form
+    `import Foo, { Bar } from './x'`.
+    """
+    for child in node.children:
+        if child.type == "import_clause":
+            for sub in child.children:
+                if sub.type == "identifier":
+                    return _read_text(sub, source)
+    return None
+
+
+def _js_default_export_name(node, source: bytes) -> str | None:
+    """Local name of a default export, or None for anonymous defaults.
+
+    Handles `export default class Foo {}`, `export default function foo() {}`,
+    `export default abstract class Foo {}` (name on the `declaration` field) and
+    `export default Foo` (an identifier on the `value` field). Anonymous defaults
+    (`export default class {}`, `export default {...}`) have no resolvable symbol
+    and return None.
+    """
+    if not any(child.type == "default" for child in node.children):
+        return None
+    declaration = node.child_by_field_name("declaration")
+    if declaration is not None:
+        name_node = declaration.child_by_field_name("name")
+        return _read_text(name_node, source) if name_node is not None else None
+    value = node.child_by_field_name("value")
+    if value is not None and value.type == "identifier":
+        return _read_text(value, source)
+    return None
 
 
 def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
@@ -7525,6 +8016,17 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                         node.start_point[0] + 1,
                     )
                 )
+            default_local = _js_default_import_name(node, source)
+            if default_local is not None:
+                facts.imports.append(
+                    _SymbolImportFact(
+                        path,
+                        default_local,
+                        target_path,
+                        "default",
+                        node.start_point[0] + 1,
+                    )
+                )
 
         for node in _walk_js_tree(root_node):
             for alias, target in _js_lexical_aliases(node, source):
@@ -7590,6 +8092,21 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                         exported_name,
                         node.start_point[0] + 1,
                         local_name=exported_name,
+                    )
+                )
+
+            # `export default class Foo {}` / `export default foo` exposes the
+            # symbol under the name "default"; record that so a default import
+            # (imported_name="default") resolves to it. `export { X as default }`
+            # is already handled via the export_clause path above.
+            default_name = _js_default_export_name(node, source)
+            if default_name is not None:
+                facts.exports.append(
+                    _SymbolExportFact(
+                        path,
+                        "default",
+                        node.start_point[0] + 1,
+                        local_name=default_name,
                     )
                 )
 
@@ -8157,6 +8674,134 @@ def _resolve_cross_file_java_imports(
         walk(tree.root_node)
 
     return new_edges
+
+
+def _resolve_java_type_references(
+    per_file: list[dict],
+    paths: list[Path],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Re-point dangling Java ``implements``/``inherits`` edges to the real
+    definition, using the referencing file's ``import`` statements (+ package)
+    for exact disambiguation.
+
+    Cross-file type references resolve by bare name and fall back to a no-source
+    "shadow" stub. ``_rewire_unique_stub_nodes`` repairs that only when the name
+    is globally unique; when two packages define a same-named type it bails, so
+    the ``implements`` edge stays stuck on the shadow node and the real interface
+    is wrongly isolated (#1318). An ``import com.a.handler.AIResponseHandler``
+    names the exact package, so it disambiguates where bare-name matching cannot.
+
+    Mutates ``all_nodes``/``all_edges`` in place. Runs after id-disambiguation so
+    target ids are final, and after ``_rewire_unique_stub_nodes`` so it only has
+    to handle the ambiguous remainder.
+    """
+    try:
+        import tree_sitter_java as tsjava
+        from tree_sitter import Language, Parser
+    except ImportError:
+        return
+
+    language = Language(tsjava.language())
+    parser = Parser(language)
+
+    # package + simple-name->FQN imports, keyed by the source_file string the
+    # file's own nodes use (so it matches edge/node source_file exactly).
+    pkg_by_file: dict[str, str] = {}
+    imports_by_file: dict[str, dict[str, str]] = {}
+    for path, result in zip(paths, per_file):
+        srcs = {n.get("source_file") for n in result.get("nodes", []) if n.get("source_file")}
+        if not srcs:
+            continue
+        try:
+            source = path.read_bytes()
+            tree = parser.parse(source)
+        except Exception:
+            continue
+        pkg = ""
+        imps: dict[str, str] = {}
+
+        def walk(n) -> None:
+            nonlocal pkg
+            if n.type == "package_declaration":
+                pkg = _read_text(n, source).strip()[len("package"):].strip().rstrip(";").strip()
+            elif n.type == "import_declaration":
+                body = _read_text(n, source).strip()[len("import"):].strip().rstrip(";").strip()
+                if body.startswith("static "):
+                    body = body[len("static "):].strip()
+                if body.endswith(".*") or "." not in body:
+                    return
+                simple = body.split(".")[-1]
+                if simple and simple[0].isupper():
+                    imps[simple] = body
+            for child in n.children:
+                walk(child)
+
+        walk(tree.root_node)
+        for s in srcs:
+            pkg_by_file[s] = pkg
+            imports_by_file[s] = imps
+
+    # FQN (package.Class) -> definition node id, for type-like defs with a source.
+    fqn_to_id: dict[str, str] = {}
+    for node in all_nodes:
+        label = node.get("label", "")
+        src = node.get("source_file", "")
+        nid = node.get("id", "")
+        if not (label and src and nid) or src not in pkg_by_file:
+            continue
+        if not label[:1].isupper() or label.endswith(")") or label.endswith(".java"):
+            continue
+        pkg = pkg_by_file[src]
+        fqn_to_id.setdefault(f"{pkg}.{label}" if pkg else label, nid)
+
+    # Bare shadow stubs: no source_file, type-like label.
+    stub_label: dict[str, str] = {
+        node["id"]: node.get("label", "")
+        for node in all_nodes
+        if node.get("id") and not node.get("source_file") and node.get("label", "")[:1].isupper()
+    }
+    if not stub_label:
+        return
+
+    # `imports` is included so the file-level import edge that also lands on the
+    # shadow stub gets re-pointed too, leaving the stub unreferenced (and dropped).
+    # External/stdlib imports never resolve (no internal def / same-package match),
+    # so their edges correctly stay on their stub.
+    REPOINT_RELATIONS = {"implements", "inherits", "extends", "imports"}
+    repointed_from: set[str] = set()
+    for edge in all_edges:
+        if edge.get("relation") not in REPOINT_RELATIONS:
+            continue
+        tgt = edge.get("target")
+        label = stub_label.get(tgt)
+        if not label:
+            continue
+        ref_file = edge.get("source_file", "")
+        resolved = None
+        fqn = imports_by_file.get(ref_file, {}).get(label)
+        if fqn:
+            resolved = fqn_to_id.get(fqn)
+        if resolved is None:  # same-package reference (no explicit import)
+            pkg = pkg_by_file.get(ref_file, "")
+            resolved = fqn_to_id.get(f"{pkg}.{label}" if pkg else label)
+        if resolved and resolved != tgt:
+            edge["target"] = resolved
+            repointed_from.add(tgt)
+
+    if not repointed_from:
+        return
+
+    # Drop shadow stubs that no edge references anymore.
+    still_referenced: set[str] = set()
+    for edge in all_edges:
+        still_referenced.add(edge.get("source"))
+        still_referenced.add(edge.get("target"))
+    all_nodes[:] = [
+        node for node in all_nodes
+        if node.get("id") not in repointed_from or node.get("id") in still_referenced
+    ]
 
 
 def extract_objc(path: Path) -> dict:
@@ -9814,7 +10459,7 @@ def extract_bash(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-# ── .NET project files (.sln, .csproj, .razor) ──────────────────────────────
+# ── .NET project files (.sln, .slnx, .csproj, .razor) ───────────────────────
 
 def extract_sln(path: Path) -> dict:
     """Extract projects and inter-project dependencies from a .sln file."""
@@ -9886,6 +10531,92 @@ def extract_sln(path: Path) -> dict:
                     edges.append({"source": from_nid, "target": to_nid,
                                   "relation": "imports", "confidence": "EXTRACTED",
                                   "source_file": str_path, "weight": 1.0})
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def extract_slnx(path: Path) -> dict:
+    """Extract projects and inter-project dependencies from a .slnx file.
+
+    .slnx is the XML-based replacement for the legacy .sln format. Projects
+    are listed as ``<Project Path="..."/>`` elements (optionally nested inside
+    ``<Folder>`` elements) and build-order dependencies as ``<BuildDependency
+    Project="..."/>`` children. Unlike .sln there are no GUIDs -- projects are
+    identified by their path.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        src = path.read_bytes()
+    except OSError:
+        return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
+
+    if len(src) > _PROJECT_XML_MAX_BYTES:
+        return {"nodes": [], "edges": [], "error": "project file too large"}
+    if not _project_xml_is_safe(src):
+        return {"nodes": [], "edges": [],
+                "error": "refusing XML with DOCTYPE/ENTITY declaration"}
+
+    try:
+        tree = ET.fromstring(src)
+    except ET.ParseError as e:
+        return {"nodes": [], "edges": [], "error": f"XML parse error: {e}"}
+
+    file_nid = _make_id(str(path))
+    str_path = str(path)
+    nodes: list[dict] = [{"id": file_nid, "label": path.name, "file_type": "code",
+                          "source_file": str_path, "source_location": None}]
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_ids.add(file_nid)
+
+    ns = ""
+    if tree.tag.startswith("{"):
+        ns = tree.tag.split("}")[0] + "}"
+
+    def _resolve(proj_path: str) -> str:
+        proj_path = proj_path.replace("\\", "/")
+        try:
+            return str((path.parent / proj_path).resolve())
+        except Exception:
+            return proj_path
+
+    # First pass: collect projects (anywhere in the tree, incl. <Folder>).
+    project_nids: set[str] = set()
+    for proj in tree.iter(f"{ns}Project"):
+        proj_path = proj.get("Path")
+        if not proj_path:
+            continue
+        abs_proj = _resolve(proj_path)
+        proj_nid = _make_id(abs_proj)
+        if proj_nid and proj_nid not in seen_ids:
+            seen_ids.add(proj_nid)
+            label = Path(proj_path).stem
+            nodes.append({"id": proj_nid, "label": label,
+                          "file_type": "code", "source_file": abs_proj,
+                          "source_location": None})
+            edges.append({"source": file_nid, "target": proj_nid,
+                          "relation": "contains", "confidence": "EXTRACTED",
+                          "source_file": str_path, "weight": 1.0})
+        if proj_nid:
+            project_nids.add(proj_nid)
+
+    # Second pass: build-order dependencies between known projects.
+    for proj in tree.iter(f"{ns}Project"):
+        proj_path = proj.get("Path")
+        if not proj_path:
+            continue
+        from_nid = _make_id(_resolve(proj_path))
+        for dep in proj.iter(f"{ns}BuildDependency"):
+            dep_path = dep.get("Project")
+            if not dep_path:
+                continue
+            to_nid = _make_id(_resolve(dep_path))
+            if (from_nid and to_nid and from_nid != to_nid
+                    and to_nid in project_nids):
+                edges.append({"source": from_nid, "target": to_nid,
+                              "relation": "imports", "confidence": "EXTRACTED",
+                              "source_file": str_path, "weight": 1.0})
 
     return {"nodes": nodes, "edges": edges}
 
@@ -10116,8 +10847,64 @@ def extract_razor(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+# Config/manifest JSON filenames the structural extractor understands. Anything
+# else (eval fixtures, datasets, GeoJSON, API dumps) is *data* and must NOT be
+# AST-walked into per-key nodes — that floods the graph with orphan key-nodes
+# and near-duplicate communities (#1224). Data JSON is left to the LLM semantic
+# pass instead. Matched case-insensitively against the bare filename.
+_CONFIG_JSON_NAMES = frozenset({
+    "package.json", "tsconfig.json", "jsconfig.json", "composer.json",
+    "deno.json", "deno.jsonc", "bower.json", "manifest.json",
+    "app.json", "now.json", "vercel.json", "angular.json", "nest-cli.json",
+    "biome.json", "biome.jsonc", "renovate.json", ".babelrc", ".babelrc.json",
+    ".eslintrc.json", ".prettierrc.json", ".prettierrc", "babel.config.json",
+})
+
+# Top-level keys that prove a JSON object is a config/manifest the extractor can
+# draw *cross-file* edges from (deps, extends chains, schema refs).
+_CONFIG_JSON_KEYS = frozenset({
+    "dependencies", "devDependencies", "peerDependencies",
+    "optionalDependencies", "bundleDependencies", "bundledDependencies",
+    "extends", "$ref", "$schema", "compilerOptions",
+})
+
+
+def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
+    """True if a .json file is a recognized config/manifest worth AST-extracting.
+
+    Matches by filename first (cheap), then falls back to a top-level key probe
+    so arbitrarily-named config files (e.g. ``api.tsconfig.json``,
+    ``foo.eslintrc.json``) are still picked up. Returns False for data JSON so it
+    is skipped by the structural pass (#1224)."""
+    name = path.name.casefold()
+    if name in _CONFIG_JSON_NAMES:
+        return True
+    # Common compound config names: *.eslintrc.json, *.prettierrc.json, etc.
+    if name.endswith((".eslintrc.json", ".prettierrc.json", ".babelrc.json",
+                      "tsconfig.json", "jsconfig.json")):
+        return True
+    # Top-level key probe: scan the root object's immediate keys (no deep walk).
+    for top_key in obj_node.children:
+        if top_key.type != "pair":
+            continue
+        key_node = top_key.child_by_field_name("key")
+        if key_node is None:
+            continue
+        kc = key_node.child_by_field_name("string_content")
+        text = _read_text(kc, source) if kc else _read_text(key_node, source).strip('"\'')
+        if text in _CONFIG_JSON_KEYS:
+            return True
+    return False
+
+
 def extract_json(path: Path) -> dict:
-    """Extract top-level keys, nested structure, and dependency edges from a .json file."""
+    """Extract structure and dependency edges from a *config/manifest* .json file.
+
+    Data-shaped JSON (eval fixtures, datasets, GeoJSON, API response dumps) is
+    deliberately skipped — AST-walking it produced hundreds of orphan key-nodes
+    and duplicate communities that swamped real structure (#1224). Recognition
+    is by filename (package.json, tsconfig.json, …) or a top-level key probe
+    (dependencies / extends / $ref / $schema / compilerOptions)."""
     _JSON_MAX_BYTES = 1_048_576  # 1 MiB — skip large fixture dumps / GeoJSON blobs
 
     try:
@@ -10256,7 +11043,15 @@ def extract_json(path: Path) -> dict:
     if doc.type == "document" and doc.child_count > 0:
         doc = doc.children[0]
     if doc.type == "object":
+        # Only AST-extract recognized config/manifest JSON. Data JSON (fixtures,
+        # datasets, GeoJSON, API dumps) is skipped so it doesn't explode into
+        # orphan key-nodes (#1224); it's left to the LLM semantic pass.
+        if not _is_config_json(path, doc, source):
+            return {"nodes": [], "edges": [], "skipped": "data json (not a config/manifest)"}
         walk_object(doc, file_nid, None, 0, [0])
+    else:
+        # Top-level array or scalar => data JSON, never a config/manifest.
+        return {"nodes": [], "edges": [], "skipped": "data json (non-object root)"}
 
     return {"nodes": nodes, "edges": edges}
 
@@ -10977,6 +11772,7 @@ _DISPATCH: dict[str, Any] = {
     ".toc": extract_lua,
     ".zig": extract_zig,
     ".ps1": extract_powershell,
+    ".psm1": extract_powershell,
     ".ex": extract_elixir,
     ".exs": extract_elixir,
     ".m": extract_objc,
@@ -11024,6 +11820,7 @@ _DISPATCH: dict[str, Any] = {
     ".dmm": extract_dmm,
     ".dmf": extract_dmf,
     ".sln": extract_sln,
+    ".slnx": extract_slnx,
     ".csproj": extract_csproj,
     ".fsproj": extract_csproj,
     ".vbproj": extract_csproj,
@@ -11113,6 +11910,14 @@ def _extract_parallel(
                 pass
         cpu_cap = env_cap if env_cap is not None else (os.cpu_count() or 4)
         max_workers = min(cpu_cap, len(uncached_work))
+
+    # Windows ProcessPoolExecutor hard-caps at 61 workers (CPython limitation
+    # tied to WaitForMultipleObjects). Clamp here so every path — auto-compute,
+    # GRAPHIFY_MAX_WORKERS, and --max-workers — stays valid on >61-core boxes
+    # (issue #1298). Guard against 0 from an empty work list.
+    if sys.platform == "win32":
+        max_workers = min(max_workers, 61)
+    max_workers = max(max_workers, 1)
 
     root_str = str(effective_root)
     work_items = [(idx, str(path), root_str) for idx, path in uncached_work]
@@ -11392,6 +12197,13 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java cross-file import resolution failed, skipping: %s", exc)
+        # Re-point dangling implements/inherits edges that bare-name resolution
+        # left on shadow stubs, using imports for exact-package disambiguation (#1318).
+        try:
+            _resolve_java_type_references(java_results, java_paths, all_nodes, all_edges)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
 
     # Cross-file call resolution for all languages
     # Each extractor saved unresolved calls in raw_calls. Now that we have all
@@ -11453,26 +12265,53 @@ def extract(
         if rc.get("is_member_call"):
             continue
         candidates = global_label_to_nids.get(callee.lower(), [])
-        # Skip ambiguous names that resolve to multiple nodes — these are
-        # common short names (log, execute, find) with no import evidence
-        # to pick the right target; emitting all edges inflates god_nodes.
-        if len(candidates) != 1:
+        if not candidates:
             continue
-        tgt = candidates[0]
         caller = rc["caller_nid"]
+        caller_file_nid = nid_to_file_nid.get(caller)
+        imported_symbols = file_to_symbol_imports.get(caller_file_nid, set())
+        imported_modules = file_to_module_imports.get(caller_file_nid, set())
+
+        def _has_import_evidence(candidate_id: str) -> bool:
+            # Direct symbol import (`import { foo }`) is the strongest evidence:
+            # the caller's file has an `imports` edge straight to this symbol.
+            # A module import (`import './helper.js'`) confirms the caller pulled
+            # in the file the candidate lives in.
+            candidate_file_nid = nid_to_file_nid.get(candidate_id)
+            return (
+                candidate_id in imported_symbols
+                or (candidate_file_nid is not None and candidate_file_nid in imported_modules)
+            )
+
+        if len(candidates) == 1:
+            tgt = candidates[0]
+            has_import_evidence = _has_import_evidence(tgt)
+        else:
+            # Ambiguous name (defined in 2+ files). Don't bail outright (#1219):
+            # if the caller has explicit import evidence pointing at exactly one
+            # of the candidates, that named import disambiguates unambiguously.
+            # Prefer direct symbol-import matches; fall back to module-import
+            # matches only when they too collapse to a single target. Without a
+            # unique evidence-backed pick we skip, preserving the #543 guard
+            # against over-connecting common short names (log, execute, find).
+            symbol_matches = [c for c in candidates if c in imported_symbols]
+            if len(symbol_matches) == 1:
+                tgt = symbol_matches[0]
+            else:
+                module_matches = [
+                    c for c in candidates
+                    if (cf := nid_to_file_nid.get(c)) is not None and cf in imported_modules
+                ]
+                if len(module_matches) == 1:
+                    tgt = module_matches[0]
+                else:
+                    continue
+            has_import_evidence = True
         if tgt != caller and (caller, tgt) not in existing_pairs:
             existing_pairs.add((caller, tgt))
             # Promote to EXTRACTED when there's a direct import edge from the
             # caller's file pointing at either the callee symbol itself or the
             # file the callee lives in.
-            caller_file_nid = nid_to_file_nid.get(caller)
-            callee_file_nid = nid_to_file_nid.get(tgt)
-            imported_symbols = file_to_symbol_imports.get(caller_file_nid, set())
-            imported_modules = file_to_module_imports.get(caller_file_nid, set())
-            has_import_evidence = (
-                tgt in imported_symbols
-                or (callee_file_nid is not None and callee_file_nid in imported_modules)
-            )
             if has_import_evidence:
                 confidence = "EXTRACTED"
                 confidence_score = 1.0
@@ -11526,18 +12365,34 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
     from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
     ignore_root = root if root is not None else target
     patterns = _load_graphifyignore(ignore_root)
+    # Shared across all _is_ignored calls in this scan so ancestor-directory
+    # results are memoised instead of re-evaluated per file.
+    ignore_cache: dict[Path, bool] = {}
 
     def _ignored(p: Path) -> bool:
-        return bool(patterns and _is_ignored(p, ignore_root, patterns))
+        return bool(patterns and _is_ignored(p, ignore_root, patterns, _cache=ignore_cache))
 
     if not follow_symlinks:
+        # The old rglob filter rejected paths with a noise component anywhere,
+        # including components of target itself — preserve that.
+        if any(_is_noise_dir(part) for part in target.parts):
+            return []
+        # When negation (!) patterns exist, skip directory-level ignore pruning
+        # so negated files inside ignored dirs can still be reached (same
+        # conservatism as detect's scan walk).
+        has_negation = any(pat.startswith("!") for _, pat in patterns)
         results: list[Path] = []
-        for ext in sorted(_EXTENSIONS):
-            results.extend(
-                p for p in target.rglob(f"*{ext}")
-                if not any(_is_noise_dir(part) for part in p.parts)
-                and not _ignored(p)
-            )
+        for dirpath, dirnames, filenames in os.walk(target):
+            dp = Path(dirpath)
+            dirnames[:] = [
+                d for d in dirnames
+                if not _is_noise_dir(d)
+                and (has_negation or not _ignored(dp / d))
+            ]
+            for fname in filenames:
+                p = dp / fname
+                if p.suffix in _EXTENSIONS and not _ignored(p):
+                    results.append(p)
         return sorted(results)
     # Walk with symlink following + cycle detection
     results = []

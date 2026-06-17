@@ -100,8 +100,10 @@ def _obsidian_tag(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-/]", "", name.replace(" ", "_"))
 
 
-def _strip_diacritics(text: str) -> str:
+def _strip_diacritics(text: str | None) -> str:
     import unicodedata
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
@@ -477,7 +479,7 @@ def _git_head() -> str | None:
         return None
 
 
-def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None) -> bool:
+def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -491,9 +493,12 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 import sys as _sys
                 print(
                     f"[graphify] WARNING: new graph has {new_n} nodes but existing "
-                    f"graph.json has {existing_n}. Refusing to overwrite — you may be "
-                    f"missing chunk files from a previous session. "
-                    f"Pass force=True to override.",
+                    f"graph.json has {existing_n} (net -{existing_n - new_n}). "
+                    f"Refusing to overwrite. Possible causes: missing chunk files from "
+                    f"a previous session, or fuzzy dedup collapsed same-named symbols "
+                    f"across files during an --update on an already-current graph. "
+                    f"Run a full rebuild (/graphify .) to be safe, or pass force=True "
+                    f"only if you have verified the reduction is legitimate.",
                     file=_sys.stderr,
                 )
                 return False
@@ -506,11 +511,17 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     if communities and hasattr(G, "set_communities"):
         G.set_communities(communities)
 
+    _labels: dict[int, str] = {int(k): v for k, v in (community_labels or {}).items()}
     nodes = []
     for nid, attrs in G.nodes(data=True):
         nd = {k: v for k, v in attrs.items() if not k.startswith("_")}
         nd["id"] = nid
-        nd["community"] = node_community.get(nid)
+        cid = node_community.get(nid)
+        nd["community"] = cid
+        # Carry the community name into the export (#1305) so query/MCP show
+        # names, not bare ids.
+        if cid is not None and _labels:
+            nd["community_name"] = _labels.get(cid, f"Community {cid}")
         nd["norm_label"] = _strip_diacritics(nd.get("label", "")).lower()
         nodes.append(nd)
     # Edges are stored in native source→target direction, so no _src/_tgt restore.
@@ -978,12 +989,18 @@ def to_obsidian(
         return len(neighbor_cids)
 
     community_notes_written = 0
-    for cid, members in communities.items():
+    for cid, all_members in communities.items():
         community_name = (
             community_labels.get(cid, f"Community {cid}")
             if community_labels and cid is not None
             else f"Community {cid}"
         )
+        # A community's member list can contain ids with no backing node in G
+        # (e.g. pruned nodes, stale community assignments from a prior run, or
+        # synthesized/merge-artifact ids). Dereferencing those via G.nodes[n] or
+        # node_filename[n] raises KeyError and aborts the whole vault export, so
+        # skip dangling members rather than crashing (issue #1236).
+        members = [m for m in all_members if m in G and m in node_filename]
         n_members = len(members)
         coh_value = cohesion.get(cid) if cohesion else None
 

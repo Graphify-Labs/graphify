@@ -643,9 +643,12 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
             print("\n")
 
         elif backend == "claude-cli":
-            import subprocess as _sp
+            import platform as _platform, shutil as _shutil, subprocess as _sp
+            _claude = "claude"
+            if _platform.system() == "Windows":
+                _claude = _shutil.which("claude.cmd") or _shutil.which("claude") or "claude"
             proc = _sp.run(
-                ["claude", "-p", "--no-session-persistence"],
+                [_claude, "-p", "--no-session-persistence"],
                 input=prompt, capture_output=True, text=True, timeout=120,
             )
             if proc.returncode != 0:

@@ -98,7 +98,13 @@ try:
         signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
         signal.alarm(_timeout)
     _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
-    _rebuild_code(Path('.'), changed_paths=changed, force=_force)
+    _root = Path('.')
+    _saved = Path('graphify-out/.graphify_root')
+    if _saved.exists():
+        _txt = _saved.read_text(encoding='utf-8').strip()
+        if _txt:
+            _root = Path(_txt)
+    _rebuild_code(_root, changed_paths=changed, force=_force)
 except TimeoutError as exc:
     print(f'[graphify hook] {exc}')
     sys.exit(1)
@@ -121,7 +127,13 @@ try:
     # post-checkout: branch switch can touch arbitrary files; full rebuild path
     # (no changed_paths) is correct here. The flock inside _rebuild_code still
     # prevents pile-ups when commit + checkout fire back-to-back.
-    _rebuild_code(Path('.'), force=_force)
+    _root = Path('.')
+    _saved = Path('graphify-out/.graphify_root')
+    if _saved.exists():
+        _txt = _saved.read_text(encoding='utf-8').strip()
+        if _txt:
+            _root = Path(_txt)
+    _rebuild_code(_root, force=_force)
 except TimeoutError as exc:
     print(f'[graphify] {exc}')
     sys.exit(1)

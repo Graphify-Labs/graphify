@@ -12,6 +12,11 @@ _BUILTIN_NOISE_LABELS = frozenset({
     "True", "False",
     "MagicMock", "Mock", "AsyncMock", "NonCallableMock",
     "NonCallableMagicMock", "PropertyMock", "patch", "sentinel",
+    # Python stdlib types commonly confused for project symbols
+    "Path", "Any", "Optional", "List", "Dict", "Set", "Tuple", "Union",
+    "Callable", "Type", "ClassVar", "Final", "Literal", "Protocol",
+    "Counter", "defaultdict", "OrderedDict", "datetime", "Enum",
+    "os", "sys", "re", "json", "io", "abc", "typing",
 })
 
 # Language families — extensions sharing a runtime can legitimately call each other
@@ -678,7 +683,8 @@ def find_import_cycles(
     if not file_edges:
         return []
 
-    # Step 2: Find simple cycles, bounded by length, via the simpleCycles UDF.
+    # Step 2: Find simple cycles, bounded by length, via the simpleCycles UDF
+    # (max_cycle_length bounds enumeration in-engine, like nx's length_bound #1196).
     # Self-loops (a file importing itself) are length-1 cycles; the UDF only
     # enumerates multi-node cycles, so we surface self-loops here directly.
     cycles: list[list[str]] = []

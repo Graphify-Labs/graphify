@@ -8,7 +8,7 @@ from graphify.extract import (
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
     extract_groovy, extract_sln, extract_csproj, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
-    extract_powershell, extract_apex,
+    extract_powershell, extract_apex, extract_verilog,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -596,6 +596,31 @@ def test_swift_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids
+        # #1327: targets must resolve to a node too, else build.py prunes the edge.
+        assert e["target"] in node_ids, f"dangling target {e['target']} ({e['relation']})"
+
+
+def test_swift_imports_survive_build():
+    # #1327: `import Foundation` / `import UIKit` previously emitted edges to bare
+    # module ids with no backing node, so build.py dropped 100% of Swift imports.
+    from graphify.build import build_from_json
+    r = extract_swift(FIXTURES / "sample.swift")
+    import_edges = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert import_edges, "extractor should emit Swift import edges"
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in import_edges:
+        assert e["target"] in node_ids  # synthesized module node exists
+    # Imported modules are tagged type=module (anchor nodes, #1327/#1330).
+    module_labels = {n["label"] for n in r["nodes"] if n.get("type") == "module"}
+    assert {"Foundation", "UIKit"} <= module_labels
+    # No private bookkeeping key should leak into output edges.
+    assert all("_import_label" not in e for e in r["edges"])
+    # Edges must survive the build (which prunes edges with unknown endpoints).
+    G = build_from_json(r)
+    surviving = [
+        (u, v) for u, v, d in G.edges(data=True) if d.get("relation") == "imports"
+    ]
+    assert surviving, "Swift import edges must survive build_from_json (#1327)"
 
 def test_swift_finds_actor():
     r = extract_swift(FIXTURES / "sample.swift")
@@ -1003,6 +1028,20 @@ def test_fortran_capital_F_parses_preprocessed():
 def test_powershell_no_error():
     r = extract_powershell(FIXTURES / "sample.ps1")
     assert "error" not in r
+
+
+def test_powershell_psm1_dispatched_and_extracted(tmp_path):
+    # #1315: .psm1 modules were never indexed — no dispatch entry, no CODE_EXTENSIONS.
+    from graphify.extract import _get_extractor
+    mod = tmp_path / "Utils.psm1"
+    mod.write_text(
+        "function Get-Greeting { param([string]$Name) return \"Hi $Name\" }\n",
+        encoding="utf-8",
+    )
+    assert _get_extractor(mod) is extract_powershell
+    r = extract_powershell(mod)
+    assert "error" not in r
+    assert any("Get-Greeting" in n["label"] for n in r["nodes"])
 
 
 def test_powershell_finds_class_and_method():
@@ -1628,3 +1667,52 @@ def test_apex_no_dangling_edges():
         for e in r["edges"]:
             assert e["source"] in node_ids, f"dangling source in {fixture}: {e}"
             assert e["target"] in node_ids, f"dangling target in {fixture}: {e}"
+
+
+# -- SystemVerilog -------------------------------------------------------------
+
+def test_systemverilog_no_error():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert "error" not in r
+
+
+def test_systemverilog_splits_inherits_and_implements():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "BaseProcessor") in _edge_labels(r, "inherits")
+    assert ("DataProcessor", "Processor") in _edge_labels(r, "implements")
+
+
+def test_systemverilog_field_parameter_return_and_generic_contexts():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
+    assert ("DataProcessor", "Payload") in _edge_labels(r, "references", "generic_arg")
+    assert ("build", "Payload") in _edge_labels(r, "references", "parameter_type")
+    assert ("build", "Result") in _edge_labels(r, "references", "return_type")
+    assert ("build", "Payload") in _edge_labels(r, "references", "generic_arg")
+
+
+def test_systemverilog_does_not_emit_type_parameter_refs():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    assert ("Result", "T") not in _edge_labels(r, "references", "field")
+
+
+def test_systemverilog_preserves_existing_module_extraction():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    labels = set(_labels(r))
+    assert {"top", "leaf", "add()", "tick"}.issubset(labels)
+    assert "imports_from" in _relations(r)
+    assert "instantiates" in _relations(r)
+
+
+def test_systemverilog_missing_file_returns_empty():
+    r = extract_verilog(Path("nonexistent.sv"))
+    assert r["nodes"] == []
+    assert r["edges"] == []
+
+
+def test_systemverilog_no_dangling_edges():
+    r = extract_verilog(FIXTURES / "sample.sv")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e}"
+        assert e["target"] in node_ids, f"dangling target: {e}"

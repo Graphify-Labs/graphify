@@ -9,14 +9,16 @@ import re
 import unicodedata
 from collections import defaultdict
 
-from datasketch import MinHash, MinHashLSH
+from graphify._minhash import MinHash, MinHashLSH
 from rapidfuzz.distance import JaroWinkler
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _norm(label: str) -> str:
+def _norm(label: str | None) -> str:
     """Lowercase + collapse non-alphanumeric runs to space (Unicode-aware)."""
+    if not isinstance(label, str):
+        label = "" if label is None else str(label)
     label = unicodedata.normalize("NFKC", label)
     return re.sub(r"[\W_]+", " ", label.casefold(), flags=re.UNICODE).strip()
 
@@ -124,6 +126,20 @@ _NUM_PERM = 128
 _CHUNK_SUFFIX = re.compile(r"_c\d+$")
 
 
+def _is_code(node: dict) -> bool:
+    """True for AST-extracted code symbols.
+
+    Code-node identity is the node ID (which already encodes the fully
+    qualified path: module/class/symbol). The label is only a display name
+    (e.g. a bare ``.draw()`` method name, or a function name shared by two
+    parallel backends), so label-based merging conflates distinct symbols
+    (#1205). Genuine duplicates — the same symbol re-extracted — share an ID
+    and are already collapsed by the exact-ID ``seen_ids`` pre-dedup above,
+    so code never needs label-based merging.
+    """
+    return node.get("file_type") == "code"
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 def deduplicate_entities(
@@ -171,6 +187,10 @@ def deduplicate_entities(
     # ── pass 1: exact normalization ───────────────────────────────────────────
     norm_to_nodes: dict[str, list[dict]] = defaultdict(list)
     for node in unique_nodes:
+        # Code symbols are keyed by ID, never by label — skip them entirely so
+        # distinct same-named symbols are never merged by string similarity (#1205).
+        if _is_code(node):
+            continue
         key = _norm(node.get("label", node.get("id", "")))
         if key:
             norm_to_nodes[key].append(node)
@@ -186,7 +206,11 @@ def deduplicate_entities(
         for node in group:
             sf = node.get("source_file") or ""
             by_file[sf].append(node)
-        for file_group in by_file.values():
+        for sf, file_group in by_file.items():
+            if not sf:
+                # No source_file — cannot prove same symbol; skip to avoid
+                # collapsing distinct nodes that happen to share a label (#1178).
+                continue
             if len(file_group) > 1:
                 winner = _pick_winner(file_group)
                 for node in file_group:
@@ -197,6 +221,12 @@ def deduplicate_entities(
     candidates: list[dict] = []
     seen_norms: set[str] = set()
     for node in unique_nodes:
+        # Code symbols are excluded from fuzzy matching too: two functions with
+        # similar long names in different files (parallel backends, sibling
+        # classes) must not be fuzzy-merged, and a code↔concept fuzzy match must
+        # not transitively union two distinct code symbols via a concept (#1205).
+        if _is_code(node):
+            continue
         key = _norm(node.get("label", node.get("id", "")))
         if key and key not in seen_norms:
             seen_norms.add(key)
@@ -207,19 +237,26 @@ def deduplicate_entities(
     if len(candidates) >= 2:
         lsh = MinHashLSH(threshold=_LSH_THRESHOLD, num_perm=_NUM_PERM)
         minhashes: dict[str, MinHash] = {}
+        # Pre-build O(1) lookup structures so the query loop below doesn't scan
+        # the candidates list linearly for every LSH neighbor (was O(n²×B)).
+        candidates_by_id: dict[str, dict] = {}
+        norm_cache: dict[str, str] = {}
 
         for node in candidates:
-            norm_label = _norm(node.get("label", node.get("id", "")))
-            m = _make_minhash(norm_label)
-            minhashes[node["id"]] = m
+            node_id = node["id"]
+            candidates_by_id[node_id] = node
+            nl = _norm(node.get("label", node.get("id", "")))
+            norm_cache[node_id] = nl
+            m = _make_minhash(nl)
+            minhashes[node_id] = m
             try:
-                lsh.insert(node["id"], m)
+                lsh.insert(node_id, m)
             except ValueError:
                 pass  # duplicate key in LSH — already inserted
 
         for node in candidates:
             node_id = node["id"]
-            norm_label = _norm(node.get("label", node.get("id", "")))
+            norm_label = norm_cache[node_id]
             neighbors = lsh.query(minhashes[node_id])
 
             for neighbor_id in neighbors:
@@ -228,16 +265,23 @@ def deduplicate_entities(
                 if uf.find(node_id) == uf.find(neighbor_id):
                     continue
 
-                neighbor = next((n for n in candidates if n["id"] == neighbor_id), None)
+                neighbor = candidates_by_id.get(neighbor_id)
                 if neighbor is None:
                     continue
 
-                neighbor_norm = _norm(neighbor.get("label", neighbor.get("id", "")))
+                neighbor_norm = norm_cache.get(neighbor_id) or _norm(neighbor.get("label", neighbor.get("id", "")))
                 score = JaroWinkler.normalized_similarity(norm_label, neighbor_norm) * 100
 
                 if _is_variant_pair(norm_label, neighbor_norm):
                     continue
                 if _short_label_blocked(norm_label, neighbor_norm, score):
+                    continue
+                # Prefix-extension pairs (getActiveSession / getActiveSessions,
+                # parseConfig / parseConfigFile) are almost never duplicates —
+                # one is a strict suffix-extension of the other. Block the merge
+                # regardless of JW score (#1201).
+                _lo, _hi = sorted((norm_label, neighbor_norm), key=len)
+                if _hi.startswith(_lo) and _hi != _lo:
                     continue
 
                 c1 = communities.get(node_id)
@@ -256,9 +300,11 @@ def deduplicate_entities(
                         sf_b = neighbor.get("source_file") or ""
                         if sf_a != sf_b:
                             continue
-                    all_group = norm_to_nodes.get(norm_label, [node]) + \
-                                norm_to_nodes.get(neighbor_norm, [neighbor])
-                    winner = _pick_winner(all_group)
+                    # Pick the winner from the verified pair only. Selecting it
+                    # from the union of both normalized-label groups pulls
+                    # never-compared nodes (same label, different source_file)
+                    # into the merge, bypassing the #1046/#1178 guards.
+                    winner = _pick_winner([node, neighbor])
                     uf.union(winner["id"], node_id)
                     uf.union(winner["id"], neighbor_id)
                     fuzzy_merges += 1
@@ -365,6 +411,9 @@ def _llm_tiebreak(
             if _is_variant_pair(norm_i, norm_j):
                 continue
             if _short_label_blocked(norm_i, norm_j, score):
+                continue
+            _lo, _hi = sorted((norm_i, norm_j), key=len)
+            if _hi.startswith(_lo) and _hi != _lo:
                 continue
             c1 = communities.get(node["id"])
             c2 = communities.get(neighbor["id"])
