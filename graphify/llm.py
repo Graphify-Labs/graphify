@@ -721,7 +721,12 @@ def _parse_llm_json(raw: str) -> dict:
         else:
             stripped = after_fence.strip()
     try:
-        return json.loads(stripped)
+        parsed = json.loads(stripped)
+        if isinstance(parsed, dict):
+            return parsed
+        # Top-level array/scalar (common LLM output) is not a usable graph
+        # fragment; fall through to the next strategy rather than returning a
+        # non-dict that callers will try to subscript (e.g. result["input_tokens"]).
     except json.JSONDecodeError:
         pass
     # Strategy 2: extract the first balanced JSON object found anywhere in
@@ -751,7 +756,10 @@ def _parse_llm_json(raw: str) -> dict:
                 depth -= 1
                 if depth == 0:
                     try:
-                        return json.loads(stripped[start : i + 1])
+                        parsed = json.loads(stripped[start : i + 1])
+                        if isinstance(parsed, dict):
+                            return parsed
+                        break
                     except json.JSONDecodeError:
                         break
     print(
