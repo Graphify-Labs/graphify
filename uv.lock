@@ -75,6 +75,15 @@ wheels = [
 ]
 
 [[package]]
+name = "async-timeout"
+version = "5.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/ae/136395dfbfe00dfc94da3f3e136d0b13f394cba8f4841120e34226265780/async_timeout-5.0.1.tar.gz", hash = "sha256:d9321a7a3d5a6a5e187e824d2fa0793ce379a202935782d555d6e9d2735677d3", size = 9274, upload-time = "2024-11-06T16:41:39.6Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/ba/e2081de779ca30d473f21f5b30e0e737c438205440784c7dfc81efc2b029/async_timeout-5.0.1-py3-none-any.whl", hash = "sha256:39e3809566ff85354557ec2398b55e096c8364bacac9405a7a1fa429e77fe76c", size = 6233, upload-time = "2024-11-06T16:41:37.9Z" },
+]
+
+[[package]]
 name = "attrs"
 version = "26.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -988,6 +997,19 @@ wheels = [
 ]
 
 [[package]]
+name = "falkordb"
+version = "1.6.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+    { name = "redis" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c8/3a/58da510e5800a5cdbf9591111e4287cbf68b475bf074db12a94e5db8bcea/falkordb-1.6.1.tar.gz", hash = "sha256:bbef448a0b43e00ff3062bd6201368618d7b36e969d16ba71e8b8e3fa90873d4", size = 103185, upload-time = "2026-04-28T13:24:44.524Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/90/02/1cf9cef72228ca2b2776b4ed0cb2645298ddcc57c1fe2c545cd46bc11eae/falkordb-1.6.1-py3-none-any.whl", hash = "sha256:cf51caeb433c04db303de5967a0c2590675fcc0354e80997870b1e0497d30c34", size = 37802, upload-time = "2026-04-28T13:24:45.677Z" },
+]
+
+[[package]]
 name = "faster-whisper"
 version = "1.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1131,7 +1153,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.8.37"
+version = "0.8.40"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1161,6 +1183,7 @@ dependencies = [
     { name = "tree-sitter-ruby" },
     { name = "tree-sitter-rust" },
     { name = "tree-sitter-scala" },
+    { name = "tree-sitter-solidity" },
     { name = "tree-sitter-swift" },
     { name = "tree-sitter-typescript" },
     { name = "tree-sitter-verilog" },
@@ -1171,6 +1194,7 @@ dependencies = [
 all = [
     { name = "anthropic" },
     { name = "boto3" },
+    { name = "falkordb" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11'" },
     { name = "graspologic", marker = "python_full_version < '3.13'" },
     { name = "jieba" },
@@ -1201,6 +1225,9 @@ chinese = [
 ]
 dm = [
     { name = "tree-sitter-dm" },
+]
+falkordb = [
+    { name = "falkordb" },
 ]
 gemini = [
     { name = "openai" },
@@ -1284,6 +1311,8 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'" },
     { name = "boto3", marker = "extra == 'all'" },
     { name = "boto3", marker = "extra == 'bedrock'" },
+    { name = "falkordb", marker = "extra == 'all'" },
+    { name = "falkordb", marker = "extra == 'falkordb'" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'all'" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'video'" },
     { name = "graspologic", marker = "python_full_version < '3.13' and extra == 'all'" },
@@ -1320,44 +1349,45 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'gemini'" },
     { name = "tiktoken", marker = "extra == 'kimi'" },
     { name = "tiktoken", marker = "extra == 'openai'" },
-    { name = "tree-sitter", specifier = ">=0.23.0" },
-    { name = "tree-sitter-bash" },
-    { name = "tree-sitter-c" },
-    { name = "tree-sitter-c-sharp" },
-    { name = "tree-sitter-cpp" },
+    { name = "tree-sitter", specifier = ">=0.23.0,<0.26" },
+    { name = "tree-sitter-bash", specifier = ">=0.23,<0.27" },
+    { name = "tree-sitter-c", specifier = ">=0.23,<0.25" },
+    { name = "tree-sitter-c-sharp", specifier = ">=0.23,<0.25" },
+    { name = "tree-sitter-cpp", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-dm", marker = "extra == 'all'" },
     { name = "tree-sitter-dm", marker = "extra == 'dm'" },
-    { name = "tree-sitter-elixir" },
-    { name = "tree-sitter-fortran" },
-    { name = "tree-sitter-go" },
-    { name = "tree-sitter-groovy" },
+    { name = "tree-sitter-elixir", specifier = ">=0.3,<0.5" },
+    { name = "tree-sitter-fortran", specifier = ">=0.6,<0.8" },
+    { name = "tree-sitter-go", specifier = ">=0.23,<0.26" },
+    { name = "tree-sitter-groovy", specifier = ">=0.1,<0.3" },
     { name = "tree-sitter-hcl", marker = "extra == 'all'" },
     { name = "tree-sitter-hcl", marker = "extra == 'terraform'" },
-    { name = "tree-sitter-java" },
-    { name = "tree-sitter-javascript" },
-    { name = "tree-sitter-json" },
-    { name = "tree-sitter-julia" },
-    { name = "tree-sitter-kotlin" },
-    { name = "tree-sitter-lua" },
-    { name = "tree-sitter-objc" },
-    { name = "tree-sitter-php" },
-    { name = "tree-sitter-powershell" },
-    { name = "tree-sitter-python" },
-    { name = "tree-sitter-ruby" },
-    { name = "tree-sitter-rust" },
-    { name = "tree-sitter-scala" },
+    { name = "tree-sitter-java", specifier = ">=0.23,<0.25" },
+    { name = "tree-sitter-javascript", specifier = ">=0.23,<0.26" },
+    { name = "tree-sitter-json", specifier = ">=0.23,<0.26" },
+    { name = "tree-sitter-julia", specifier = ">=0.23,<0.25" },
+    { name = "tree-sitter-kotlin", specifier = ">=1.0,<2.0" },
+    { name = "tree-sitter-lua", specifier = ">=0.2,<0.6" },
+    { name = "tree-sitter-objc", specifier = ">=3.0,<4.0" },
+    { name = "tree-sitter-php", specifier = ">=0.23,<0.25" },
+    { name = "tree-sitter-powershell", specifier = ">=0.26,<0.28" },
+    { name = "tree-sitter-python", specifier = ">=0.23,<0.26" },
+    { name = "tree-sitter-ruby", specifier = ">=0.23,<0.25" },
+    { name = "tree-sitter-rust", specifier = ">=0.23,<0.25" },
+    { name = "tree-sitter-scala", specifier = ">=0.23,<0.27" },
+    { name = "tree-sitter-solidity", specifier = ">=1.2,<2.0" },
     { name = "tree-sitter-sql", marker = "extra == 'all'" },
     { name = "tree-sitter-sql", marker = "extra == 'sql'" },
-    { name = "tree-sitter-swift" },
-    { name = "tree-sitter-typescript" },
-    { name = "tree-sitter-verilog" },
-    { name = "tree-sitter-zig" },
+    { name = "tree-sitter-swift", specifier = ">=0.7,<0.9" },
+    { name = "tree-sitter-typescript", specifier = ">=0.23,<0.25" },
+    { name = "tree-sitter-verilog", specifier = ">=1.0,<2.0" },
+    { name = "tree-sitter-zig", specifier = ">=1.0,<2.0" },
     { name = "watchdog", marker = "extra == 'all'" },
     { name = "watchdog", marker = "extra == 'watch'" },
     { name = "yt-dlp", marker = "extra == 'all'" },
     { name = "yt-dlp", marker = "extra == 'video'" },
 ]
-provides-extras = ["mcp", "neo4j", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "dm", "terraform", "all"]
+provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "dm", "terraform", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3681,6 +3711,18 @@ wheels = [
 ]
 
 [[package]]
+name = "redis"
+version = "8.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "async-timeout", marker = "python_full_version < '3.11.3'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/53/ae/ed461cca5780b5fc8b9fe8ca0ed98d89508645fb9d880c24cc42c087678f/redis-8.0.0.tar.gz", hash = "sha256:a00c5355432051ac14e593b8b197fc76c887ee12d55a0984f69328a1115fdc49", size = 5101591, upload-time = "2026-05-28T12:45:13.5Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/e3/b519734372d305bd547534a9f32e4ce9f98552af753dce72cf3483a0ff0b/redis-8.0.0-py3-none-any.whl", hash = "sha256:c938c18338585009f0bc310f4c7e4e4b4d37639356c4ac072cedf3af570c8dc7", size = 499870, upload-time = "2026-05-28T12:45:11.697Z" },
+]
+
+[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5036,6 +5078,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/07/1c/7ea42e825690ed7ceb4cb348158341ac900d0bbb152184291a3913d44381/tree_sitter_scala-0.26.0-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:3e5920b6ab7fd09cc91dceaaf7e12c76469990f5891337a8c0147ba25d1d55f9", size = 730181, upload-time = "2026-04-18T22:23:55.285Z" },
     { url = "https://files.pythonhosted.org/packages/fe/71/7c5328c30e84ad24204343c5ed5775757f9bb1c477275f443592652f099e/tree_sitter_scala-0.26.0-cp39-abi3-win_amd64.whl", hash = "sha256:5e5021d78cd80debca5848af2314ed1a4b5642a7cefb10979b8e30c4945aa6dd", size = 603989, upload-time = "2026-04-18T22:23:56.428Z" },
     { url = "https://files.pythonhosted.org/packages/0f/9a/578b52f4f94d50352ac04630c46d49966b8564bd424cf270ed016c86bc72/tree_sitter_scala-0.26.0-cp39-abi3-win_arm64.whl", hash = "sha256:0eb627916fd1448657b4bcbe178e0cab8d3c114ec04aec51f0d0cd5ca2aa996e", size = 608073, upload-time = "2026-04-18T22:23:57.855Z" },
+]
+
+[[package]]
+name = "tree-sitter-solidity"
+version = "1.2.13"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/6e/c40fcf4018302b110d48e02e2fd8128e9a009669cae04ba8e3c849e293fb/tree_sitter_solidity-1.2.13.tar.gz", hash = "sha256:5de530ee9a3d18632396c55cd51f87fd4a7dae8ebac117eb63e52b4d3bc4a7c1", size = 158785, upload-time = "2025-08-04T11:14:26.576Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/cf/9387cd5cda028790dada6f999625e19489d7d76e8e92999403421ad7b1ce/tree_sitter_solidity-1.2.13-cp38-abi3-macosx_10_9_x86_64.whl", hash = "sha256:a662d040cbe9d1a9f1083eb2be461c60748b7c90782de1f7505bf6494a1d5c05", size = 59074, upload-time = "2025-08-04T11:14:19.404Z" },
+    { url = "https://files.pythonhosted.org/packages/20/35/a8a5443d95333984914ef51c661bd85b20fee2374b0b866243d25bbc0efe/tree_sitter_solidity-1.2.13-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:703fa18a90289e20cec25ddfc0fc574440e86781e3c5d26c99acb757a6acb109", size = 61855, upload-time = "2025-08-04T11:14:20.244Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/c7/c329e23b3b93c3d55d887e0320794ea42681770704987468060964608cfb/tree_sitter_solidity-1.2.13-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3fd017ffcdcf38422175176d1b3623a3499025c6c7c896b2502c0bd55bd2b36d", size = 94185, upload-time = "2025-08-04T11:14:21.31Z" },
+    { url = "https://files.pythonhosted.org/packages/de/81/685a3c5dec31ba2c38615da84b74bc8973a77a0989091c5e2efaa7f5e4e8/tree_sitter_solidity-1.2.13-cp38-abi3-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:490a11968c79a17f9b01156d2d655f3e602ff8de9256b026cf1deb6213d34c78", size = 91941, upload-time = "2025-08-04T11:14:22.32Z" },
+    { url = "https://files.pythonhosted.org/packages/94/38/3b185a4f17d53144892ff275bbb79ad7c3f27c6227b4d5b3e8dd01007477/tree_sitter_solidity-1.2.13-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:6e008987fd7e2329b14b2558ae16b74e98460d2ac50a98affa8d9951772c977e", size = 90993, upload-time = "2025-08-04T11:14:23.536Z" },
+    { url = "https://files.pythonhosted.org/packages/57/73/f546c9f85cea28da4bb8abb4c0f4efb05694497a5c7d5a222dce6451abc4/tree_sitter_solidity-1.2.13-cp38-abi3-win_amd64.whl", hash = "sha256:3f700a305167e39b984d38dceddf45a56e898124a923bf5cb6bb4b149c2c7063", size = 69156, upload-time = "2025-08-04T11:14:24.608Z" },
+    { url = "https://files.pythonhosted.org/packages/55/37/316728600710cb8f24dbbcc6f1471b808d722285a65badb7dfc7c500fa94/tree_sitter_solidity-1.2.13-cp38-abi3-win_arm64.whl", hash = "sha256:5caa0b2eafdb5e27e3f035732a6ccca5758231befb08f6adc4287b5e118ab8d2", size = 61063, upload-time = "2025-08-04T11:14:25.595Z" },
 ]
 
 [[package]]

@@ -1582,6 +1582,368 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
             break
 
 
+# ── Solidity (.sol) ───────────────────────────────────────────────────────────
+
+_SOLIDITY_REMAPPINGS_CACHE: dict[str, list[tuple[str, str]]] = {}
+
+_SOLIDITY_BUILTIN_GLOBALS: frozenset[str] = frozenset({
+    "require", "assert", "revert", "keccak256", "sha256", "ripemd160", "ecrecover",
+    "addmod", "mulmod", "gasleft", "blockhash", "selfdestruct", "suicide",
+    "abi", "msg", "block", "tx", "type", "super", "this",
+    "payable", "view", "pure", "memory", "storage", "calldata",
+})
+
+_SOLIDITY_PRIMITIVE_TYPES: frozenset[str] = frozenset({
+    "mapping",
+    "address", "address payable",
+    "bool", "string", "bytes",
+    "byte",  # Solidity 0.4.x alias
+    "uint", "uint8", "uint16", "uint32", "uint64", "uint128", "uint256",
+    "int", "int8", "int16", "int32", "int64", "int128", "int256",
+    "fixed", "ufixed",
+    "bytes1", "bytes2", "bytes3", "bytes4", "bytes5", "bytes6", "bytes7", "bytes8",
+    "bytes9", "bytes10", "bytes11", "bytes12", "bytes13", "bytes14", "bytes15", "bytes16",
+    "bytes17", "bytes18", "bytes19", "bytes20", "bytes21", "bytes22", "bytes23", "bytes24",
+    "bytes25", "bytes26", "bytes27", "bytes28", "bytes29", "bytes30", "bytes31", "bytes32",
+})
+
+# Covers parameterized fixed types (fixed128x18, ufixed256x18) and any future
+# sized-builtin variants without expanding the explicit frozenset (#1362).
+_SOLIDITY_PRIMITIVE_TYPE_RE = re.compile(
+    r"^(u?fixed\d+x\d+|u?int\d+|int\d+|bytes\d+|byte)$"
+)
+
+
+def _solidity_strip_quotes(raw: str) -> str:
+    return raw.strip().strip('"').strip("'")
+
+
+def _parse_remappings_lines(text: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        if "=" not in line:
+            continue
+        left, right = line.split("=", 1)
+        left = left.strip()
+        right = right.strip()
+        if left and right:
+            pairs.append((left, right))
+    return pairs
+
+
+def _load_solidity_remappings(start: Path) -> list[tuple[str, str]]:
+    """Load Foundry remappings walking up from *start* (cached per directory)."""
+    cache_key = str(start.resolve())
+    if cache_key in _SOLIDITY_REMAPPINGS_CACHE:
+        return _SOLIDITY_REMAPPINGS_CACHE[cache_key]
+
+    pairs: list[tuple[str, str]] = []
+    current = start.resolve()
+    home = Path.home()
+    for _ in range(32):
+        remappings_txt = current / "remappings.txt"
+        if remappings_txt.is_file():
+            try:
+                pairs.extend(_parse_remappings_lines(
+                    remappings_txt.read_text(encoding="utf-8", errors="replace")))
+            except OSError:
+                pass
+        foundry_toml = current / "foundry.toml"
+        if foundry_toml.is_file():
+            try:
+                content = foundry_toml.read_text(encoding="utf-8", errors="replace")
+                for block in re.findall(r"remappings\s*=\s*\[(.*?)\]", content, re.DOTALL):
+                    for entry in re.findall(r"""['"]([^'"]+)['"]""", block):
+                        if "=" in entry:
+                            left, right = entry.split("=", 1)
+                            pairs.append((left.strip(), right.strip()))
+            except OSError:
+                pass
+        if pairs or (current / ".git").exists() or current == home:
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    _SOLIDITY_REMAPPINGS_CACHE[cache_key] = pairs
+    return pairs
+
+
+def _apply_solidity_remapping(import_path: str, remappings: list[tuple[str, str]]) -> str:
+    best_prefix = ""
+    best_target = ""
+    for prefix, target in remappings:
+        if import_path.startswith(prefix) and len(prefix) > len(best_prefix):
+            best_prefix = prefix
+            best_target = target
+    if not best_prefix:
+        return import_path
+    return best_target + import_path[len(best_prefix):]
+
+
+def _resolve_solidity_import_path(raw: str, str_path: str) -> Path | None:
+    """Resolve a Solidity import string to a file on disk when possible."""
+    raw = _solidity_strip_quotes(raw)
+    if not raw:
+        return None
+    base = Path(str_path).parent
+    remappings = _load_solidity_remappings(base)
+    resolved_raw = _apply_solidity_remapping(raw, remappings)
+
+    # Discover a safe project boundary for the traversal guard below.
+    project_root: Path | None = None
+    for probe in (base, *base.parents):
+        if (probe / ".git").exists() or (probe / "foundry.toml").exists() or (probe / "remappings.txt").exists():
+            project_root = probe.resolve()
+            break
+
+    if resolved_raw.startswith("."):
+        candidate = (base / resolved_raw).resolve()
+    else:
+        candidate = (base / resolved_raw).resolve()
+        if not candidate.is_file():
+            for root in (base, *base.parents):
+                if (root / "foundry.toml").is_file() or (root / "remappings.txt").is_file():
+                    candidate = (root / resolved_raw).resolve()
+                    break
+
+    # Guard: reject candidate that escaped the project tree (#1362).
+    if project_root is not None:
+        try:
+            candidate.relative_to(project_root)
+        except ValueError:
+            return None
+    if candidate.is_file():
+        return candidate
+    if not candidate.suffix:
+        for ext in (".sol",):
+            with_ext = Path(str(candidate) + ext)
+            if with_ext.is_file():
+                return with_ext
+    return None
+
+
+def _solidity_prescan_interfaces(root, source: bytes) -> set[str]:
+    names: set[str] = set()
+
+    def scan(node) -> None:
+        if node.type == "interface_declaration":
+            for child in node.children:
+                if child.type == "identifier":
+                    name = _read_text(child, source)
+                    if name:
+                        names.add(name)
+                    break
+        for child in node.children:
+            scan(child)
+
+    scan(root)
+    return names
+
+
+def _solidity_inheritance_type_name(spec_node, source: bytes) -> str | None:
+    for child in spec_node.children:
+        if child.type == "user_defined_type":
+            for sub in child.children:
+                if sub.type == "identifier":
+                    return _read_text(sub, source) or None
+        if child.type == "identifier":
+            return _read_text(child, source) or None
+    return None
+
+
+def _solidity_classify_base(
+    base_name: str,
+    interface_names: set[str],
+) -> str:
+    if base_name in interface_names:
+        return "implements"
+    if (
+        base_name.startswith("I")
+        and len(base_name) > 1
+        and base_name[1].isupper()
+    ):
+        return "implements"
+    return "inherits"
+
+
+def _solidity_append_import_edge(
+    file_nid: str,
+    tgt_nid: str,
+    str_path: str,
+    line: int,
+    edges: list,
+) -> None:
+    edges.append({
+        "source": file_nid,
+        "target": tgt_nid,
+        "relation": "imports",
+        "context": "import",
+        "confidence": "EXTRACTED",
+        "source_file": str_path,
+        "source_location": f"L{line}",
+        "weight": 1.0,
+    })
+
+
+def _import_solidity(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+    line = node.start_point[0] + 1
+    path_str: str | None = None
+    symbols: list[str] = []
+
+    for child in node.children:
+        if child.type == "string":
+            path_str = _solidity_strip_quotes(_read_text(child, source))
+        elif child.type == "identifier":
+            symbols.append(_read_text(child, source))
+
+    if path_str:
+        resolved = _resolve_solidity_import_path(path_str, str_path)
+        if resolved is not None:
+            _solidity_append_import_edge(
+                file_nid, _make_id(str(resolved)), str_path, line, edges)
+        else:
+            stem_name = Path(path_str).name
+            if stem_name.endswith(".sol"):
+                stem_name = Path(stem_name).stem
+            if stem_name:
+                _solidity_append_import_edge(
+                    file_nid, _make_id(stem_name), str_path, line, edges)
+
+    for symbol in symbols:
+        if symbol:
+            _solidity_append_import_edge(
+                file_nid, _make_id(symbol), str_path, line, edges)
+
+
+def _solidity_new_type_name(new_node, source: bytes) -> str | None:
+    for child in new_node.children:
+        if child.type != "type_name":
+            continue
+        for sub in child.children:
+            if sub.type == "user_defined_type":
+                for idc in sub.children:
+                    if idc.type == "identifier":
+                        return _read_text(idc, source) or None
+            if sub.type == "identifier":
+                return _read_text(sub, source) or None
+    return None
+
+
+def _solidity_expr_base_name(expr_wrapper, source: bytes) -> str | None:
+    if expr_wrapper is None or not expr_wrapper.children:
+        return None
+    inner = expr_wrapper.children[0]
+    if inner.type == "identifier":
+        return _read_text(inner, source) or None
+    if inner.type == "call_expression":
+        for child in inner.children:
+            if child.type == "expression":
+                return _solidity_expr_base_name(child, source)
+    return None
+
+
+def _solidity_call_from_expression(expr_node, source: bytes) -> tuple[str | None, str | None, str | None]:
+    """Return (callee, receiver_or_new_type, kind) where kind is 'new' or None."""
+    if expr_node is None or not expr_node.children:
+        return None, None, None
+    inner = expr_node.children[0]
+    if inner.type == "new_expression":
+        return None, _solidity_new_type_name(inner, source), "new"
+    if inner.type == "identifier":
+        return _read_text(inner, source) or None, None, None
+    if inner.type == "member_expression":
+        ids = [c for c in inner.children if c.type == "identifier"]
+        callee = _read_text(ids[-1], source) if ids else None
+        receiver = _read_text(ids[0], source) if len(ids) >= 2 else None
+        for child in inner.children:
+            if child.type == "expression":
+                receiver = _solidity_expr_base_name(child, source) or receiver
+        return callee, receiver, None
+    return None, None, None
+
+
+def _solidity_extra_walk(
+    node,
+    source: bytes,
+    parent_class_nid: str | None,
+    str_path: str,
+    nodes: list,
+    edges: list,
+    seen_ids: set,
+    add_node,
+    add_edge,
+) -> bool:
+    """Handle Solidity nodes the generic walk does not cover. Returns True if handled."""
+    t = node.type
+    line = node.start_point[0] + 1
+
+    if t == "event_definition" and parent_class_nid:
+        for child in node.children:
+            if child.type == "identifier":
+                ename = _read_text(child, source)
+                if not ename:
+                    return True
+                event_nid = _make_id(parent_class_nid, f"event:{ename}")
+                add_node(event_nid, ename, line)
+                add_edge(parent_class_nid, event_nid, "contains", line)
+                return True
+        return True
+
+    if t == "using_directive" and parent_class_nid:
+        library_name: str | None = None
+        for child in node.children:
+            if child.type == "type_alias":
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        library_name = _read_text(sub, source)
+                        break
+            elif child.type == "identifier" and library_name is None:
+                library_name = _read_text(child, source)
+        if library_name:
+            tgt = _make_id(library_name)
+            if tgt not in seen_ids:
+                add_node(tgt, library_name, line)
+            add_edge(parent_class_nid, tgt, "uses", line)
+        return True
+
+    if t == "state_variable_declaration" and parent_class_nid:
+        type_text: str | None = None
+        for child in node.children:
+            if child.type == "type_name":
+                type_text = _read_text(child, source).split("(")[0].strip()
+                break
+        if type_text and (
+            type_text not in _SOLIDITY_PRIMITIVE_TYPES
+            and not _SOLIDITY_PRIMITIVE_TYPE_RE.match(type_text)
+        ):
+            tgt = _make_id(type_text)
+            if tgt not in seen_ids:
+                add_node(tgt, type_text, line)
+            add_edge(parent_class_nid, tgt, "references", line, context="field")
+        return True
+
+    if t == "emit_statement" and parent_class_nid:
+        for child in node.children:
+            if child.type == "expression":
+                inner = child.children[0] if child.children else None
+                if inner and inner.type == "identifier":
+                    ename = _read_text(inner, source)
+                    if ename:
+                        tgt = _make_id(parent_class_nid, f"event:{ename}")
+                        if tgt not in seen_ids:
+                            add_node(tgt, ename, line)
+                        add_edge(parent_class_nid, tgt, "emits", line)
+                return True
+        return True
+
+    return False
+
+
 def _import_csharp(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
     for child in node.children:
         if child.type in ("qualified_name", "identifier", "name_equals"):
@@ -2101,6 +2463,36 @@ _JAVA_CONFIG = LanguageConfig(
     import_handler=_import_java,
 )
 
+_SOLIDITY_CONFIG = LanguageConfig(
+    ts_module="tree_sitter_solidity",
+    class_types=frozenset({
+        "contract_declaration",
+        "interface_declaration",
+        "library_declaration",
+        "struct_declaration",
+        "enum_declaration",
+    }),
+    function_types=frozenset({
+        "function_definition",
+        "constructor_definition",
+        "modifier_definition",
+        "fallback_receive_definition",
+    }),
+    import_types=frozenset({"import_directive"}),
+    call_types=frozenset({"call_expression", "new_expression"}),
+    call_function_field="expression",
+    call_accessor_node_types=frozenset({"member_expression"}),
+    call_accessor_field="identifier",
+    name_fallback_child_types=("identifier",),
+    body_fallback_child_types=("contract_body", "function_body", "struct_body", "enum_body"),
+    function_boundary_types=frozenset({
+        "function_definition",
+        "constructor_definition",
+        "modifier_definition",
+    }),
+    import_handler=_import_solidity,
+)
+
 _GROOVY_CONFIG = LanguageConfig(
     ts_module="tree_sitter_groovy",
     class_types=frozenset({"class_declaration", "interface_declaration"}),
@@ -2431,6 +2823,10 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
     swift_class_names: set[str] = set()
     if config.ts_module == "tree_sitter_swift":
         swift_protocol_names, swift_class_names = _swift_pre_scan(root, source)
+
+    solidity_interface_names: set[str] = set()
+    if config.ts_module == "tree_sitter_solidity":
+        solidity_interface_names = _solidity_prescan_interfaces(root, source)
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -2796,6 +3192,34 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                                         if tid.type == "type_identifier":
                                             _emit_java_parent(_read_text(tid, source), "inherits", line)
 
+            # Solidity: `contract Foo is Base, IBar`
+            if config.ts_module == "tree_sitter_solidity":
+                def _emit_solidity_parent(base_name: str, rel: str, at_line: int) -> None:
+                    if not base_name:
+                        return
+                    base_nid = _make_id(stem, base_name)
+                    if base_nid not in seen_ids:
+                        base_nid = _make_id(base_name)
+                        if base_nid not in seen_ids:
+                            nodes.append({
+                                "id": base_nid,
+                                "label": base_name,
+                                "file_type": "code",
+                                "source_file": "",
+                                "source_location": "",
+                            })
+                            seen_ids.add(base_nid)
+                    add_edge(class_nid, base_nid, rel, at_line)
+
+                for child in node.children:
+                    if child.type != "inheritance_specifier":
+                        continue
+                    base_name = _solidity_inheritance_type_name(child, source)
+                    if not base_name:
+                        continue
+                    rel = _solidity_classify_base(base_name, solidity_interface_names)
+                    _emit_solidity_parent(base_name, rel, child.start_point[0] + 1)
+
             # Scala: extends_clause carries `extends Base with Trait1 with Trait2`.
             # The first base after `extends` is `inherits`; each subsequent
             # type after `with` is `mixes_in`. Also walk class_parameters for
@@ -3094,6 +3518,17 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                 func_name: str | None = "deinit"
             elif t == "subscript_declaration":
                 func_name = "subscript"
+            elif t == "constructor_definition":
+                func_name = "constructor"
+            elif t == "fallback_receive_definition":
+                func_name = None
+                for child in node.children:
+                    if child.type == "receive":
+                        func_name = "receive"
+                        break
+                    if child.type == "fallback":
+                        func_name = "fallback"
+                        break
             elif config.resolve_function_name_fn is not None:
                 # C/C++ style: use declarator
                 declarator = node.child_by_field_name("declarator")
@@ -3400,6 +3835,17 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                         function_bodies.append((m_nid, m_body))
             if body:
                 function_bodies.append((func_nid, body))
+            if (config.ts_module == "tree_sitter_solidity"
+                    and body is not None and parent_class_nid):
+                def walk_sol_body(n) -> None:
+                    if _solidity_extra_walk(
+                        n, source, parent_class_nid, str_path,
+                        nodes, edges, seen_ids, add_node, add_edge,
+                    ):
+                        return
+                    for c in n.children:
+                        walk_sol_body(c)
+                walk_sol_body(body)
             return
 
         # JS/TS arrow functions and C# namespaces — language-specific extra handling
@@ -3419,6 +3865,13 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
             if _swift_extra_walk(node, source, file_nid, stem, str_path,
                                   nodes, edges, seen_ids, function_bodies,
                                   parent_class_nid, add_node, add_edge):
+                return
+
+        if config.ts_module == "tree_sitter_solidity":
+            if _solidity_extra_walk(
+                node, source, parent_class_nid, str_path,
+                nodes, edges, seen_ids, add_node, add_edge,
+            ):
                 return
 
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the
@@ -3579,6 +4032,62 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                         name = func_node.child_by_field_name("field") or func_node.child_by_field_name("name")
                         if name:
                             callee_name = _read_text(name, source)
+            elif config.ts_module == "tree_sitter_solidity":
+                if node.type == "call_expression":
+                    expr_node = next(
+                        (c for c in node.children if c.type == "expression"), None)
+                    callee, receiver, kind = _solidity_call_from_expression(
+                        expr_node, source)
+                    line = node.start_point[0] + 1
+                    if kind == "new" and receiver:
+                        tgt_nid = label_to_nid.get(receiver)
+                        if tgt_nid and tgt_nid != caller_nid:
+                            pair = (caller_nid, tgt_nid)
+                            if pair not in seen_call_pairs:
+                                seen_call_pairs.add(pair)
+                                edges.append({
+                                    "source": caller_nid,
+                                    "target": tgt_nid,
+                                    "relation": "instantiates",
+                                    "context": "call",
+                                    "confidence": "EXTRACTED",
+                                    "source_file": str_path,
+                                    "source_location": f"L{line}",
+                                    "weight": 1.0,
+                                })
+                    elif callee and callee not in _SOLIDITY_BUILTIN_GLOBALS:
+                        is_member_call = receiver is not None
+                        swift_receiver = receiver
+                        callee_name = callee
+                        if is_member_call and receiver:
+                            raw_calls.append({
+                                "caller_nid": caller_nid,
+                                "callee": callee_name,
+                                "is_member_call": True,
+                                "source_file": str_path,
+                                "source_location": f"L{line}",
+                                "receiver": receiver,
+                            })
+                            callee_name = None
+                elif node.type == "new_expression":
+                    type_name = _solidity_new_type_name(node, source)
+                    if type_name:
+                        tgt_nid = label_to_nid.get(type_name)
+                        if tgt_nid and tgt_nid != caller_nid:
+                            pair = (caller_nid, tgt_nid)
+                            if pair not in seen_call_pairs:
+                                seen_call_pairs.add(pair)
+                                line = node.start_point[0] + 1
+                                edges.append({
+                                    "source": caller_nid,
+                                    "target": tgt_nid,
+                                    "relation": "instantiates",
+                                    "context": "call",
+                                    "confidence": "EXTRACTED",
+                                    "source_file": str_path,
+                                    "source_location": f"L{line}",
+                                    "weight": 1.0,
+                                })
             else:
                 # Generic: get callee from call_function_field
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
@@ -3595,7 +4104,10 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                         # Try reading the node directly (e.g. Java name field is the callee)
                         callee_name = _read_text(func_node, source)
 
-            if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
+            if (callee_name
+                    and callee_name not in _LANGUAGE_BUILTIN_GLOBALS
+                    and (config.ts_module != "tree_sitter_solidity"
+                         or callee_name not in _SOLIDITY_BUILTIN_GLOBALS)):
                 tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
@@ -4222,6 +4734,11 @@ def extract_astro(path: Path) -> dict:
 def extract_java(path: Path) -> dict:
     """Extract classes, interfaces, methods, constructors, and imports from a .java file."""
     return _extract_generic(path, _JAVA_CONFIG)
+
+
+def extract_solidity(path: Path) -> dict:
+    """Extract contracts, interfaces, libraries, and call graph from a .sol file."""
+    return _extract_generic(path, _SOLIDITY_CONFIG)
 
 
 def _is_spock_file(path: Path, ts_result: dict) -> bool:
@@ -12236,6 +12753,7 @@ _DISPATCH: dict[str, Any] = {
     ".sv": extract_verilog,
     ".svh": extract_verilog,
     ".sql": extract_sql,
+    ".sol": extract_solidity,
     ".md": extract_markdown,
     ".mdx": extract_markdown,
     ".qmd": extract_markdown,

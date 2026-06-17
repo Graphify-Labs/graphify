@@ -1,0 +1,5 @@
+[profile.default]
+src = "."
+remappings = [
+    "@openzeppelin/=solidity/vendor/openzeppelin/",
+]
