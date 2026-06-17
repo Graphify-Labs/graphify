@@ -11892,16 +11892,17 @@ def _extract_parallel(
     try:
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as pool:
             futures = {
-                pool.submit(_extract_single_file, item): item[0] for item in work_items
+                pool.submit(_extract_single_file, item): pos
+                for pos, item in enumerate(work_items)
             }
             for future in concurrent.futures.as_completed(futures):
                 try:
                     idx, result = future.result()
                     per_file[idx] = result
                 except Exception as exc:
-                    idx = futures[future]
+                    pos = futures[future]
                     print(
-                        f"  warning: worker failed for {work_items[idx][1]}: {exc}",
+                        f"  warning: worker failed for {work_items[pos][1]}: {exc}",
                         file=sys.stderr, flush=True,
                     )
                 done_count += 1
