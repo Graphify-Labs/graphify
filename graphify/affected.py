@@ -174,4 +174,13 @@ def connect_graph(path: Path):
     from .store import open_store
 
     out_dir = Path(path).parent if Path(path).suffix else Path(path)
-    return open_store(out_dir, create=False)
+    store = open_store(out_dir, create=False)
+    # open_store(create=False) hands back a store even when no graph was built
+    # (it derives a name from the pointer/root rather than erroring), so guard the
+    # empty case here — matching serve._connect_graph — so `graphify affected`
+    # tells the user to build instead of silently reporting nothing.
+    if store.number_of_nodes() == 0:
+        raise FileNotFoundError(
+            f"No graph found for {out_dir} (FalkorDB graph empty). Re-run /graphify to build."
+        )
+    return store

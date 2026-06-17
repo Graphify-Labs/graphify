@@ -152,6 +152,23 @@ def test_export_graphml_creates_file(tmp_path):
     assert gml.stat().st_size > 0
     content = gml.read_text()
     assert "<graphml" in content
+    # The GraphML writer is hand-rolled (no networkx) and escapes attrs itself,
+    # so assert the output is well-formed XML — catches escaping regressions.
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(content)
+    ns = "{http://graphml.graphdrawing.org/xmlns}"
+    assert root.findall(f".//{ns}node"), "graphml has no <node> elements"
+
+
+def test_export_svg_creates_file(tmp_path):
+    pytest.importorskip("matplotlib")
+    _make_graph(tmp_path)
+    r = _run(["export", "svg"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    svg = tmp_path / "graphify-out" / "graph.svg"
+    assert svg.exists()
+    assert svg.stat().st_size > 0
+    assert "<svg" in svg.read_text()[:4000]
 
 
 # ── graphify export neo4j (cypher) ───────────────────────────────────────────

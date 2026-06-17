@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import graphify.__main__ as mainmod
 
 _NODES = [
@@ -53,3 +55,18 @@ def test_affected_cli_relation_filter_limits_reverse_traversal(monkeypatch, tmp_
     assert "Relations: calls" in out
     assert "X()" in out
     assert "__init__.py" not in out
+
+
+def test_affected_cli_unbuilt_graph_exits_with_build_hint(monkeypatch, tmp_path):
+    """On a never-built graph, `affected` must exit non-zero (telling the user to
+    build) rather than silently reporting an empty result. Guards the
+    connect_graph empty-graph check (parity with query/path/explain)."""
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "affected", "Foo", "--graph", str(tmp_path / "graph.json")],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code != 0
