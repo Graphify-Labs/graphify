@@ -757,16 +757,20 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
 
     patterns: list[tuple[Path, str]] = []
     for d in dirs:
-        # Prefer .graphifyignore; fall back to .gitignore so projects that already
-        # maintain a .gitignore get sensible defaults without duplicating it (#945).
-        ignore_file = d / ".graphifyignore"
-        if not ignore_file.exists():
-            ignore_file = d / ".gitignore"
-        if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = _parse_gitignore_line(raw)
-                if line:
-                    patterns.append((d, line))
+        # MERGE .gitignore + .graphifyignore — do NOT let one shadow the other.
+        # Read .gitignore first, then .graphifyignore, so .graphifyignore patterns
+        # are appended last and win on conflicts via last-match-wins. This keeps
+        # ".graphifyignore takes priority" while ensuring that adding a
+        # .graphifyignore can only ever exclude MORE — never silently re-include a
+        # path the .gitignore already excluded (which previously let secrets that
+        # were ignored only in .gitignore get indexed into the graph). (#1363)
+        for fname in (".gitignore", ".graphifyignore"):
+            ignore_file = d / fname
+            if ignore_file.exists():
+                for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = _parse_gitignore_line(raw)
+                    if line:
+                        patterns.append((d, line))
     return patterns
 
 

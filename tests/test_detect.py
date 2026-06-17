@@ -922,19 +922,47 @@ def test_gitignore_fallback_when_no_graphifyignore(tmp_path):
     assert not any("generated" in f for f in code)
 
 
-def test_graphifyignore_takes_precedence_over_gitignore(tmp_path):
-    """When both exist, .graphifyignore is used and .gitignore is ignored (#945)."""
+def test_graphifyignore_merges_with_gitignore(tmp_path):
+    """When both exist they are MERGED, not mutually exclusive: .gitignore patterns
+    still apply, and .graphifyignore only wins on direct conflicts via last-match-wins.
+
+    Previously .graphifyignore fully shadowed .gitignore in the same directory, so a
+    file ignored only in .gitignore (e.g. a secret) would get indexed into the graph
+    once any .graphifyignore was added. (#1363)
+    """
     (tmp_path / ".git").mkdir()
-    # .gitignore would exclude main.py; .graphifyignore excludes only other.py
-    (tmp_path / ".gitignore").write_text("main.py\n")
-    (tmp_path / ".graphifyignore").write_text("other.py\n")
-    (tmp_path / "main.py").write_text("x = 1")
-    (tmp_path / "other.py").write_text("x = 2")
+    (tmp_path / ".gitignore").write_text("gitonly.py\nkeep.py\n")
+    # .graphifyignore adds its own pattern and re-includes keep.py via negation
+    (tmp_path / ".graphifyignore").write_text("graphonly.py\n!keep.py\n")
+    (tmp_path / "main.py").write_text("x = 0")
+    (tmp_path / "gitonly.py").write_text("x = 1")
+    (tmp_path / "graphonly.py").write_text("x = 2")
+    (tmp_path / "keep.py").write_text("x = 3")
 
     result = detect(tmp_path)
     code = result["files"]["code"]
-    assert any("main.py" in f for f in code)       # gitignore NOT applied
-    assert not any("other.py" in f for f in code)  # graphifyignore IS applied
+    assert any("main.py" in f for f in code)           # ignored nowhere
+    assert not any("gitonly.py" in f for f in code)    # .gitignore still applies (NOT shadowed)
+    assert not any("graphonly.py" in f for f in code)  # .graphifyignore applies
+    assert any("keep.py" in f for f in code)           # .graphifyignore '!' wins on conflict
+
+
+def test_secret_ignored_only_in_gitignore_stays_excluded(tmp_path):
+    """Security regression (#1363): a file excluded only by .gitignore must NOT be
+    indexed just because an unrelated .graphifyignore exists in the same directory."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitignore").write_text("prod-dump.md\n")   # secret, excluded only here
+    (tmp_path / ".graphifyignore").write_text("*.png\n")     # unrelated: media only
+    (tmp_path / "prod-dump.md").write_text("# internal data dump")
+    (tmp_path / "keep.md").write_text("# keep")
+    (tmp_path / "pic.png").write_bytes(b"x")
+
+    result = detect(tmp_path)
+    docs = result["files"].get("document", [])
+    imgs = result["files"].get("image", [])
+    assert not any("pic.png" in f for f in imgs)        # .graphifyignore applies
+    assert not any("prod-dump.md" in f for f in docs)   # .gitignore NOT shadowed — secret stays out
+    assert any("keep.md" in f for f in docs)
 
 
 # Regression tests for #947 - .worktrees/ skipped and --exclude flag
