@@ -47,6 +47,19 @@ _MCP_HEADERS = {
 
 
 def _graph_file(tmp_path: Path) -> str:
+    """Seed the FalkorDB graph for tmp_path so the server's loader finds it."""
+    from graphify.store import open_store
+
+    store = open_store(tmp_path, create=True)
+    store.clear()
+    store.add_nodes_from([
+        (n["id"], dict({k: v for k, v in n.items() if k != "id"}, file_type="code"))
+        for n in SAMPLE_GRAPH["nodes"]
+    ])
+    store.add_edges_from([
+        (e["source"], e["target"], {k: v for k, v in e.items() if k not in ("source", "target")})
+        for e in SAMPLE_GRAPH["edges"]
+    ])
     p = tmp_path / "graph.json"
     p.write_text(json.dumps(SAMPLE_GRAPH), encoding="utf-8")
     return str(p)

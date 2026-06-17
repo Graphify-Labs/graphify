@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
-import networkx as nx
+from tests import nxcompat as nx
 import pytest
 
 from graphify.prs import (

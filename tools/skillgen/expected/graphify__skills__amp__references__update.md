@@ -94,11 +94,14 @@ new_extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_tex
 incremental = json.loads(Path('graphify-out/.graphify_incremental.json').read_text(encoding=\"utf-8\"))
 deleted = list(incremental.get('deleted_files', []))
 
-# Use build_merge() — reads graph.json directly without NetworkX round-trip
-# so edge direction (calls, implements, imports) is always preserved (#801).
+# build_merge() merges the new chunk into the existing FalkorDB graph for this
+# output dir. Edge direction (calls, implements, imports) is stored natively.
+from graphify.store import open_store
+_store = open_store('graphify-out', create=True)
 G = build_merge(
     [new_extraction],
-    graph_path='graphify-out/graph.json',
+    graph_name=_store.graph_name,
+    uri=_store.uri,
     prune_sources=deleted or None,
 )
 print(f'[graphify update] Merged: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges')
@@ -107,9 +110,9 @@ print(f'[graphify update] Merged: {G.number_of_nodes()} nodes, {G.number_of_edge
 merged_out = {
     'nodes': [{'id': n, **d} for n, d in G.nodes(data=True)],
     'edges': [
-        # Explicit source/target last so they win over any stale attrs in d.
-        {**{k: val for k, val in d.items() if k not in ('_src', '_tgt', 'source', 'target')},
-         'source': d.get('_src', u), 'target': d.get('_tgt', v)}
+        # Edges are stored in native source->target direction.
+        {**{k: val for k, val in d.items() if k not in ('source', 'target')},
+         'source': u, 'target': v}
         for u, v, d in G.edges(data=True)
     ],
     # G.graph["hyperedges"] holds hyperedges from both existing graph.json
@@ -138,23 +141,25 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.analyze import graph_diff
 from graphify.build import build_from_json
-from networkx.readwrite import json_graph
-import networkx as nx
+from graphify.store import open_store
 from pathlib import Path
 
-# Load old graph (before update) from backup written before merge
-old_data = json.loads(Path('graphify-out/.graphify_old.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_old.json').exists() else None
-new_extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
-G_new = build_from_json(new_extract)
+# Current (post-merge) graph lives in FalkorDB for this output dir.
+G_new = open_store('graphify-out', create=False)
 
+# Load old graph (before update) from backup written before merge and rebuild it
+# into a scratch FalkorDB graph just for the comparison.
+old_data = json.loads(Path('graphify-out/.graphify_old.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_old.json').exists() else None
 if old_data:
-    G_old = json_graph.node_link_graph(old_data, edges='links')
+    old_extract = {'nodes': old_data.get('nodes', []), 'edges': old_data.get('links', old_data.get('edges', []))}
+    G_old = build_from_json(old_extract, graph_name='graphify_diff_scratch')
     diff = graph_diff(G_old, G_new)
     print(diff['summary'])
     if diff['new_nodes']:
         print('New nodes:', ', '.join(n['label'] for n in diff['new_nodes'][:5]))
     if diff['new_edges']:
         print('New edges:', len(diff['new_edges']))
+    G_old.clear()  # drop the scratch graph
 "
 ```
 

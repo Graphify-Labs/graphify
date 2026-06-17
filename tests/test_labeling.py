@@ -3,7 +3,7 @@
 Backend calls are mocked - no network. Covers the happy path, partial replies,
 malformed replies, and the no-backend fallback.
 """
-import networkx as nx
+from tests import nxcompat as nx
 import pytest
 
 from graphify.llm import label_communities, generate_community_labels

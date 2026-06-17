@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-import networkx as nx
-
 
 DEFAULT_AFFECTED_RELATIONS = (
     "calls",
@@ -43,32 +41,26 @@ def _format_location(data: dict) -> str:
     return str(source_file)
 
 
-def resolve_seed(graph: nx.Graph, query: str) -> str | None:
+def resolve_seed(graph, query: str) -> str | None:
+    # FalkorDB-native: resolve via scoped queries (no full-graph load).
+    if hasattr(graph, "find_node_ids"):
+        if graph.has_node(query):
+            return query
+        for kwargs in ({"label": query}, {"source_file": query}, {"label_contains": query}):
+            matches = graph.find_node_ids(limit=2, **kwargs)
+            if len(matches) == 1:
+                return str(matches[0])
+        return None
+    # In-memory fallback (nx / MemGraph)
     if query in graph:
         return query
     query_lower = query.lower()
-    exact_label_matches = [
-        str(node_id)
-        for node_id, data in graph.nodes(data=True)
-        if str(data.get("label", "")).lower() == query_lower
-    ]
-    if len(exact_label_matches) == 1:
-        return exact_label_matches[0]
-    exact_source_matches = [
-        str(node_id)
-        for node_id, data in graph.nodes(data=True)
-        if str(data.get("source_file", "")).lower() == query_lower
-    ]
-    if len(exact_source_matches) == 1:
-        return exact_source_matches[0]
-    contains_matches = [
-        str(node_id)
-        for node_id, data in graph.nodes(data=True)
-        if query_lower in str(data.get("label", "")).lower()
-    ]
-    if len(contains_matches) == 1:
-        return contains_matches[0]
-    return None
+    for field in ("label", "source_file"):
+        exact = [str(n) for n, d in graph.nodes(data=True) if str(d.get(field, "")).lower() == query_lower]
+        if len(exact) == 1:
+            return exact[0]
+    contains = [str(n) for n, d in graph.nodes(data=True) if query_lower in str(d.get("label", "")).lower()]
+    return contains[0] if len(contains) == 1 else None
 
 
 def affected_nodes(
@@ -79,10 +71,32 @@ def affected_nodes(
     depth: int = 2,
 ) -> list[AffectedHit]:
     relation_set = set(relations)
+
+    # FalkorDB-native: one batched reverse-edge query per BFS level (depth queries
+    # total) instead of a per-node loop over an in-memory copy of the graph.
+    if hasattr(graph, "incoming_edges"):
+        seen = {seed}
+        hits: list[AffectedHit] = []
+        frontier = [seed]
+        for d in range(depth):
+            if not frontier:
+                break
+            rows = graph.incoming_edges(frontier, relation_set)
+            nxt: list[str] = []
+            for _fid, src, relation in sorted(rows, key=lambda r: (str(r[0]), str(r[1]), str(r[2]))):
+                src = str(src)
+                if src in seen:
+                    continue
+                seen.add(src)
+                hits.append(AffectedHit(src, d + 1, str(relation)))
+                nxt.append(src)
+            frontier = nxt
+        return hits
+
+    # In-memory fallback (nx / MemGraph)
     seen = {seed}
     queue: deque[tuple[str, int]] = deque([(seed, 0)])
-    hits: list[AffectedHit] = []
-
+    hits = []
     while queue:
         current, current_depth = queue.popleft()
         if current_depth >= depth:
@@ -103,10 +117,8 @@ def affected_nodes(
             if source in seen:
                 continue
             seen.add(source)
-            hit = AffectedHit(source, current_depth + 1, relation)
-            hits.append(hit)
+            hits.append(AffectedHit(source, current_depth + 1, relation))
             queue.append((source, current_depth + 1))
-
     return hits
 
 
@@ -123,8 +135,19 @@ def format_affected(
         return f"No unique node match for {query}"
 
     hits = affected_nodes(graph, seed, relations=relation_list, depth=depth)
+
+    # Fetch attrs for seed + all hits in one batched query (native) or per-node (fallback).
+    ids = [seed] + [h.node_id for h in hits]
+    if hasattr(graph, "node_attrs_batch"):
+        attrs = graph.node_attrs_batch(ids)
+    else:
+        attrs = {nid: dict(graph.nodes[nid]) for nid in ids if nid in graph}
+
+    def _label(nid):
+        return str(attrs.get(nid, {}).get("label") or nid)
+
     lines = [
-        f"Affected nodes for {_node_label(graph, seed)}",
+        f"Affected nodes for {_label(seed)}",
         f"Relations: {', '.join(relation_list)}",
         f"Depth: {depth}",
     ]
@@ -133,19 +156,20 @@ def format_affected(
         return "\n".join(lines)
 
     for hit in hits:
-        data = graph.nodes[hit.node_id]
+        data = attrs.get(hit.node_id, {})
         lines.append(
-            f"- {_node_label(graph, hit.node_id)} [{hit.via_relation}] {_format_location(data)}"
+            f"- {_label(hit.node_id)} [{hit.via_relation}] {_format_location(data)}"
         )
     return "\n".join(lines)
 
 
-def load_graph(path: Path) -> nx.Graph:
-    import json
-    from networkx.readwrite import json_graph
+def load_graph(path: Path):
+    """Open the FalkorDB-backed graph for the output dir containing `path`.
 
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    try:
-        return json_graph.node_link_graph(raw, edges="links")
-    except TypeError:
-        return json_graph.node_link_graph(raw)
+    `path` is the legacy graph.json location (e.g. graphify-out/graph.json); we
+    use its parent directory to locate the FalkorDB pointer and open the store.
+    """
+    from .store import open_store
+
+    out_dir = Path(path).parent if Path(path).suffix else Path(path)
+    return open_store(out_dir, create=False)

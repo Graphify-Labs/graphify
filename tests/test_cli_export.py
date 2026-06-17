@@ -16,13 +16,21 @@ PYTHON = sys.executable
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+
+
 def _run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    # Run the CLI as a subprocess from `cwd`. Ensure the repo root is importable
+    # so `python -m graphify` works even in a non-pip-installed source checkout.
+    run_env = {**os.environ, **(env or {})}
+    existing = run_env.get("PYTHONPATH", "")
+    run_env["PYTHONPATH"] = _REPO_ROOT + (os.pathsep + existing if existing else "")
     return subprocess.run(
         [PYTHON, "-m", "graphify"] + args,
         cwd=cwd,
         capture_output=True,
         text=True,
-        env=env,
+        env=run_env,
     )
 
 
@@ -36,8 +44,13 @@ def _make_graph(tmp_path: Path) -> Path:
     from graphify.cluster import cluster, score_all
     from graphify.analyze import god_nodes, surprising_connections
     from graphify.export import to_json
+    from graphify.store import open_store
 
-    G = build_from_json(extraction)
+    # Build into the FalkorDB graph bound to this output dir (writes the pointer
+    # file) so the CLI subprocess loads the same graph.
+    G = open_store(out, create=True)
+    G.clear()
+    build_from_json(extraction, store=G)
     communities = cluster(G)
     cohesion = score_all(G, communities)
     gods = god_nodes(G)
@@ -310,23 +323,23 @@ def test_cluster_only_remaps_labels_to_previous_cids(tmp_path):
     re-applies labels by raw index and they silently misalign with cluster
     contents (#1027). Mirror of the watch/update fix from #822.
     """
+    from graphify.store import open_store
+
     out = _make_graph(tmp_path)
     graph_json = out / "graph.json"
     labels_json = out / ".graphify_labels.json"
 
-    # Tag every node with an out-of-band community id and write a labels file
-    # keyed on those ids. After cluster-only, at least one of those sentinel
-    # ids must survive in the labels file (= remap succeeded by node overlap).
-    # If the cluster-only branch skips remap, Leiden returns small ints
-    # (0, 1, ...) and the sentinel keys disappear entirely.
-    g = json.loads(graph_json.read_text(encoding="utf-8"))
-    nodes = g.get("nodes", [])
-    assert len(nodes) >= 4, "fixture must have enough nodes to form 2+ communities"
+    # Tag every node with an out-of-band community id (on the FalkorDB store,
+    # which is what cluster-only reads as the prior assignment) and write a
+    # labels file keyed on those ids. After cluster-only, at least one of those
+    # sentinel ids must survive (= remap succeeded by node overlap). Without the
+    # remap, Leiden returns small ints (0, 1, ...) and the sentinel keys vanish.
+    store = open_store(out, create=False)
+    node_ids = sorted(n for n in store.nodes)
+    assert len(node_ids) >= 4, "fixture must have enough nodes to form 2+ communities"
     sentinel_a, sentinel_b = 4242, 9999
-    half = len(nodes) // 2
-    for i, n in enumerate(nodes):
-        n["community"] = sentinel_a if i < half else sentinel_b
-    graph_json.write_text(json.dumps(g), encoding="utf-8")
+    half = len(node_ids) // 2
+    store.set_communities({sentinel_a: node_ids[:half], sentinel_b: node_ids[half:]})
     labels_json.write_text(
         json.dumps({str(sentinel_a): "First Group", str(sentinel_b): "Second Group"}),
         encoding="utf-8",

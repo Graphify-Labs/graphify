@@ -99,8 +99,11 @@ def test_diagnose_extraction_categorizes_same_endpoint_collapse() -> None:
     assert summary["same_endpoint_group_count"] == 1
     assert summary["relation_variant_groups"] == 1
     assert summary["source_location_variant_groups"] == 1
-    assert summary["post_build_graph_type"] == "DiGraph"
-    assert summary["post_build_edge_count"] == 2
+    assert summary["post_build_graph_type"] == "GraphStore"
+    # FalkorDB stores parallel edges natively (one per relation type), so
+    # same-endpoint edges that differ by relation are preserved rather than
+    # collapsed the way nx.DiGraph used to (which silently dropped one).
+    assert summary["post_build_edge_count"] == 3
 
 
 def test_diagnose_extraction_accepts_node_link_links_key() -> None:
@@ -193,7 +196,7 @@ def test_diagnose_extraction_defaults_raw_inputs_to_directed(tmp_path: Path) -> 
     summary = diagnose_file(graph_path)
 
     assert summary["effective_directed"] is True
-    assert summary["post_build_graph_type"] == "DiGraph"
+    assert summary["post_build_graph_type"] == "GraphStore"
 
 
 def test_diagnose_file_reads_json_and_formats_report(tmp_path: Path) -> None:
@@ -302,7 +305,7 @@ def test_diagnose_file_defaults_to_json_directed_flag(tmp_path: Path) -> None:
     summary = diagnose_file(graph_path)
 
     assert summary["effective_directed"] is False
-    assert summary["post_build_graph_type"] == "Graph"
+    assert summary["post_build_graph_type"] == "GraphStore"
 
 
 def test_diagnose_file_explicit_directed_override(tmp_path: Path) -> None:
@@ -314,7 +317,7 @@ def test_diagnose_file_explicit_directed_override(tmp_path: Path) -> None:
     summary = diagnose_file(graph_path, directed=True)
 
     assert summary["effective_directed"] is True
-    assert summary["post_build_graph_type"] == "DiGraph"
+    assert summary["post_build_graph_type"] == "GraphStore"
 
 
 def test_scan_producer_suppression_sites_reports_missing_file(tmp_path: Path) -> None:
@@ -360,7 +363,7 @@ def test_diagnose_multigraph_cli_undirected_override(monkeypatch, tmp_path: Path
 
     out = capsys.readouterr().out
     assert "effective_directed: False" in out
-    assert "post_build_graph_type: Graph" in out
+    assert "post_build_graph_type: GraphStore" in out
 
 
 def test_diagnose_multigraph_cli_max_examples_zero(monkeypatch, tmp_path: Path, capsys) -> None:

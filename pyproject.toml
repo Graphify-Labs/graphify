@@ -11,7 +11,7 @@ license = { file = "LICENSE" }
 keywords = ["claude", "claude-code", "codex", "opencode", "kilo", "cursor", "gemini", "aider", "kiro", "pi", "devin", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
 requires-python = ">=3.10"
 dependencies = [
-    "networkx>=3.4",
+    "falkordb>=1.0",
     "datasketch>=1.6",
     "rapidfuzz>=3.0",
     "tree-sitter>=0.23.0",
@@ -50,11 +50,14 @@ Issues = "https://github.com/safishamsi/graphify/issues"
 [project.optional-dependencies]
 mcp = ["mcp"]
 neo4j = ["neo4j"]
-falkordb = ["falkordb"]
 pdf = ["pypdf", "markdownify"]
 watch = ["watchdog"]
 svg = ["matplotlib", "numpy>=2.0; python_version >= '3.13'"]
 leiden = ["graspologic; python_version < '3.13'"]
+# FalkorDB Lite: embedded in-process engine (redislite + bundled falkordb module),
+# no external server. Requires Python >= 3.12. Select with a falkordb-lite:// URI
+# or the GRAPHIFY_FALKORDB_LITE env var.
+lite = ["falkordblite; python_version >= '3.12'"]
 office = ["python-docx", "openpyxl"]
 google = ["openpyxl"]
 postgres = ["psycopg[binary]"]

@@ -1,9 +1,8 @@
 """Tests for graphify/benchmark.py."""
 from __future__ import annotations
 import json
-import pytest
-import networkx as nx
-from networkx.readwrite import json_graph
+from pathlib import Path
+from tests import nxcompat as nx
 
 from graphify.benchmark import run_benchmark, print_benchmark, _query_subgraph_tokens, _SAMPLE_QUESTIONS, _safe, _hr
 
@@ -23,8 +22,16 @@ def _make_graph() -> nx.Graph:
 
 
 def _write_graph(G: nx.Graph, path) -> None:
-    data = json_graph.node_link_data(G, edges="links")
-    path.write_text(json.dumps(data))
+    """Seed the FalkorDB graph for path's output dir from an nx fixture graph."""
+    from graphify.store import open_store
+
+    store = open_store(Path(path).parent, create=True)
+    store.clear()
+    store.add_nodes_from([(n, dict(d, file_type=d.get("file_type", "code"))) for n, d in G.nodes(data=True)])
+    store.add_edges_from([(u, v, dict(d)) for u, v, d in G.edges(data=True)])
+    path.write_text(json.dumps({"directed": True, "multigraph": False, "graph": {},
+                                "nodes": [{"id": n, **d} for n, d in G.nodes(data=True)],
+                                "links": []}))
 
 
 # --- _query_subgraph_tokens ---
@@ -170,14 +177,3 @@ def test_print_benchmark_survives_cp1252_stdout(tmp_path, monkeypatch, capsys):
     # ASCII fallbacks must be present, fancy glyphs must not.
     assert "─" not in written
     assert "→" not in written
-
-
-def test_run_benchmark_rejects_oversized_graph(monkeypatch, tmp_path):
-    """#F4: run_benchmark must refuse to read a graph.json that exceeds
-    the size cap before parsing it into memory."""
-    G = _make_graph()
-    graph_file = tmp_path / "graph.json"
-    _write_graph(G, graph_file)
-    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
-    with pytest.raises(ValueError, match="exceeds"):
-        run_benchmark(str(graph_file))

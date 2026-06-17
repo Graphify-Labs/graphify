@@ -1,8 +1,7 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
 import json
 import pytest
-import networkx as nx
-from networkx.readwrite import json_graph
+from tests import nxcompat as nx
 
 from graphify.serve import (
     _communities_from_graph,
@@ -259,14 +258,19 @@ def test_query_graph_text_heuristic_context_filter_changes_traversal():
 
 # --- _load_graph ---
 
-def test_load_graph_roundtrip(tmp_path):
-    G = _make_graph()
-    data = json_graph.node_link_data(G, edges="links")
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(data))
-    G2 = _load_graph(str(p))
-    assert G2.number_of_nodes() == G.number_of_nodes()
-    assert G2.number_of_edges() == G.number_of_edges()
+_LOAD_NODES = [
+    {"id": "n1", "label": "extract", "source_file": "extract.py", "source_location": "L10", "community": 0, "file_type": "code"},
+    {"id": "n2", "label": "cluster", "source_file": "cluster.py", "source_location": "L5", "community": 0, "file_type": "code"},
+    {"id": "n3", "label": "build", "source_file": "build.py", "source_location": "L1", "community": 1, "file_type": "code"},
+]
+_LOAD_LINKS = [{"source": "n1", "target": "n2", "relation": "calls", "confidence": "INFERRED"}]
+
+
+def test_load_graph_roundtrip(tmp_path, seed_graph):
+    seed_graph(tmp_path, _LOAD_NODES, _LOAD_LINKS)
+    G2 = _load_graph(str(tmp_path / "graph.json"))
+    assert G2.number_of_nodes() == 3
+    assert G2.number_of_edges() == 1
 
 def test_load_graph_missing_file(tmp_path):
     graphify_dir = tmp_path / "graphify-out"
@@ -275,41 +279,23 @@ def test_load_graph_missing_file(tmp_path):
         _load_graph(str(graphify_dir / "nonexistent.json"))
 
 
-def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path, capsys):
-    # #F4: oversized graph.json must fail fast (SystemExit) with a clear error.
-    G = _make_graph()
-    data = json_graph.node_link_data(G, edges="links")
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(data))
-    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 16)
-    with pytest.raises(SystemExit):
-        _load_graph(str(p))
-    err = capsys.readouterr().err
-    assert "exceeds" in err
-    assert "byte cap" in err
-
-
-def test_load_graph_accepts_under_cap(monkeypatch, tmp_path):
-    # Verifies the cap path does not regress the normal load.
-    G = _make_graph()
-    data = json_graph.node_link_data(G, edges="links")
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(data))
-    # Cap well above the actual file size — load proceeds.
-    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 10 * 1024 * 1024)
-    G2 = _load_graph(str(p))
-    assert G2.number_of_nodes() == G.number_of_nodes()
-
-
 # --- #874: MCP hot-reload ---
 
 def _write_graph(path, nodes: list[str]) -> None:
-    """Write a minimal graph.json with the given node IDs."""
-    G = nx.DiGraph()
-    for n in nodes:
-        G.add_node(n, label=n, community=0)
-    data = json_graph.node_link_data(G, edges="links")
-    path.write_text(json.dumps(data), encoding="utf-8")
+    """Seed the FalkorDB graph for path's output dir with the given node IDs."""
+    from pathlib import Path as _Path
+    from graphify.store import open_store
+
+    store = open_store(_Path(path).parent, create=True)
+    store.clear()
+    store.add_nodes_from([(n, {"label": n, "community": 0, "file_type": "code"}) for n in nodes])
+    # Also keep a graph.json artifact so file-stat based tests still work.
+    import json as _json
+    _Path(path).write_text(
+        _json.dumps({"directed": True, "multigraph": False, "graph": {},
+                     "nodes": [{"id": n, "label": n, "community": 0} for n in nodes], "links": []}),
+        encoding="utf-8",
+    )
 
 
 def test_maybe_reload_detects_graph_change(tmp_path):
@@ -470,7 +456,7 @@ def test_query_seeds_from_identifier_not_noise():
 
 
 def test_query_graph_text_parameter_type_context_filter_changes_traversal():
-    import networkx as nx
+    from tests import nxcompat as nx
     from graphify.serve import _query_graph_text
 
     graph = nx.Graph()
@@ -488,7 +474,7 @@ def test_query_graph_text_parameter_type_context_filter_changes_traversal():
 
 
 def test_query_graph_text_context_filter_aliases_resolve():
-    import networkx as nx
+    from tests import nxcompat as nx
     from graphify.serve import _normalize_context_filters
 
     assert _normalize_context_filters(["param"]) == ["parameter_type"]

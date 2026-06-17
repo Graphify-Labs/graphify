@@ -1,7 +1,6 @@
 """Graph analysis: god nodes (most connected), surprising connections (cross-community), suggested questions."""
 from __future__ import annotations
 from pathlib import Path
-import networkx as nx
 
 from graphify.build import edge_data
 
@@ -47,6 +46,21 @@ def _node_community_map(communities: dict[int, list[str]]) -> dict[str, int]:
     return {n: cid for cid, nodes in communities.items() for n in nodes}
 
 
+def _is_file_node_attrs(label: str, source_file: str, degree: int) -> bool:
+    """Attrs-based core of _is_file_node (works on a query row, no graph access)."""
+    if not label:
+        return False
+    if source_file:
+        from pathlib import Path as _Path
+        if label == _Path(source_file).name:
+            return True
+    if label.startswith(".") and label.endswith("()"):
+        return True
+    if label.endswith("()") and degree <= 1:
+        return True
+    return False
+
+
 def _is_file_node(G: nx.Graph, node_id: str) -> bool:
     """
     Return True if this node is a file-level hub node (e.g. 'client', 'models')
@@ -56,23 +70,7 @@ def _is_file_node(G: nx.Graph, node_id: str) -> bool:
     from god nodes, surprising connections, and knowledge gap reporting.
     """
     attrs = G.nodes[node_id]
-    label = attrs.get("label", "")
-    if not label:
-        return False
-    # File-level hub: label matches the actual source filename (not just any label ending in .py)
-    source_file = attrs.get("source_file", "")
-    if source_file:
-        from pathlib import Path as _Path
-        if label == _Path(source_file).name:
-            return True
-    # Method stub: AST extractor labels methods as '.method_name()'
-    if label.startswith(".") and label.endswith("()"):
-        return True
-    # Module-level function stub: labeled 'function_name()' - only has a contains edge
-    # These are real functions but structurally isolated by definition; not a gap worth flagging
-    if label.endswith("()") and G.degree(node_id) <= 1:
-        return True
-    return False
+    return _is_file_node_attrs(attrs.get("label", ""), attrs.get("source_file", ""), G.degree(node_id))
 
 
 _JSON_NOISE_LABELS: frozenset[str] = frozenset({
@@ -83,13 +81,16 @@ _JSON_NOISE_LABELS: frozenset[str] = frozenset({
 })
 
 
-def _is_json_key_node(G: nx.Graph, node_id: str) -> bool:
-    attrs = G.nodes[node_id]
-    src = (attrs.get("source_file") or "").lower()
+def _is_json_key_node_attrs(label: str, source_file: str) -> bool:
+    src = (source_file or "").lower()
     if not src.endswith(".json"):
         return False
-    label = (attrs.get("label") or "").strip().lower()
-    return label in _JSON_NOISE_LABELS
+    return (label or "").strip().lower() in _JSON_NOISE_LABELS
+
+
+def _is_json_key_node(G: nx.Graph, node_id: str) -> bool:
+    attrs = G.nodes[node_id]
+    return _is_json_key_node_attrs(attrs.get("label") or "", attrs.get("source_file") or "")
 
 
 def god_nodes(G: nx.Graph, top_n: int = 10) -> list[dict]:
@@ -98,19 +99,27 @@ def god_nodes(G: nx.Graph, top_n: int = 10) -> list[dict]:
     File-level hub nodes are excluded: they accumulate import/contains edges
     mechanically and don't represent meaningful architectural abstractions.
     """
-    degree = dict(G.degree())
-    sorted_nodes = sorted(degree.items(), key=lambda x: x[1], reverse=True)
+    # FalkorDB-native path: rank by degree in-engine and return only top candidates
+    # (no full-graph load). Filter the small candidate set in Python with the same
+    # heuristics. Fall back to the in-memory path for non-store graphs (MemGraph/nx).
+    if hasattr(G, "top_degree_nodes"):
+        cands = G.top_degree_nodes(limit=max(top_n * 50, 500))
+    else:
+        degree = dict(G.degree())
+        order = sorted(degree.items(), key=lambda x: x[1], reverse=True)
+        cands = [
+            {"id": nid, "label": G.nodes[nid].get("label", ""),
+             "source_file": G.nodes[nid].get("source_file", ""), "degree": deg}
+            for nid, deg in order[: max(top_n * 50, 500)]
+        ]
     result = []
-    for node_id, deg in sorted_nodes:
-        if _is_file_node(G, node_id) or _is_concept_node(G, node_id) or _is_json_key_node(G, node_id):
+    for c in cands:
+        label, src, deg = c.get("label", "") or "", c.get("source_file", "") or "", c["degree"]
+        if _is_file_node_attrs(label, src, deg) or _is_concept_node_attrs(src) or _is_json_key_node_attrs(label, src):
             continue
-        if G.nodes[node_id].get("label", "") in _BUILTIN_NOISE_LABELS:
+        if label in _BUILTIN_NOISE_LABELS:
             continue
-        result.append({
-            "id": node_id,
-            "label": G.nodes[node_id].get("label", node_id),
-            "degree": deg,
-        })
+        result.append({"id": c["id"], "label": label or c["id"], "degree": deg})
         if len(result) >= top_n:
             break
     return result
@@ -157,12 +166,14 @@ def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
     - Empty source_file
     - source_file doesn't look like a real file path (no extension)
     """
-    data = G.nodes[node_id]
-    source = data.get("source_file", "")
-    if not source:
+    return _is_concept_node_attrs(G.nodes[node_id].get("source_file", ""))
+
+
+def _is_concept_node_attrs(source_file: str) -> bool:
+    if not source_file:
         return True
     # Has no file extension → probably a concept label, not a real file
-    if "." not in source.split("/")[-1]:
+    if "." not in source_file.split("/")[-1]:
         return True
     return False
 
@@ -289,25 +300,15 @@ def _cross_file_surprises(G: nx.Graph, communities: dict[int, list[str]], top_n:
 
         u_source = G.nodes[u].get("source_file", "")
         v_source = G.nodes[v].get("source_file", "")
-
         if not u_source or not v_source or u_source == v_source:
             continue
 
         score, reasons = _surprise_score(G, u, v, data, node_community, u_source, v_source, degrees)
-        src_id = data.get("_src", u)
-        if src_id not in G.nodes:
-            src_id = u
-        tgt_id = data.get("_tgt", v)
-        if tgt_id not in G.nodes:
-            tgt_id = v
         candidates.append({
             "_score": score,
-            "source": G.nodes[src_id].get("label", src_id),
-            "target": G.nodes[tgt_id].get("label", tgt_id),
-            "source_files": [
-                G.nodes[src_id].get("source_file", ""),
-                G.nodes[tgt_id].get("source_file", ""),
-            ],
+            "source": G.nodes[u].get("label", u),
+            "target": G.nodes[v].get("label", v),
+            "source_files": [u_source, v_source],
             "confidence": data.get("confidence", "EXTRACTED"),
             "relation": relation,
             "why": "; ".join(reasons) if reasons else "cross-file semantic connection",
@@ -341,7 +342,7 @@ def _cross_community_surprises(
             return []
         if G.number_of_nodes() > 5000:
             return []
-        betweenness = nx.edge_betweenness_centrality(G)
+        betweenness = G.edge_betweenness()
         top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
         result = []
         for (u, v), score in top_edges:
@@ -374,21 +375,11 @@ def _cross_community_surprises(
         relation = data.get("relation", "")
         if relation in ("imports", "imports_from", "contains", "method"):
             continue
-        # This edge crosses community boundaries - interesting
         confidence = data.get("confidence", "EXTRACTED")
-        src_id = data.get("_src", u)
-        if src_id not in G.nodes:
-            src_id = u
-        tgt_id = data.get("_tgt", v)
-        if tgt_id not in G.nodes:
-            tgt_id = v
         surprises.append({
-            "source": G.nodes[src_id].get("label", src_id),
-            "target": G.nodes[tgt_id].get("label", tgt_id),
-            "source_files": [
-                G.nodes[src_id].get("source_file", ""),
-                G.nodes[tgt_id].get("source_file", ""),
-            ],
+            "source": G.nodes[u].get("label", u),
+            "target": G.nodes[v].get("label", v),
+            "source_files": [G.nodes[u].get("source_file", ""), G.nodes[v].get("source_file", "")],
             "confidence": confidence,
             "relation": relation,
             "note": f"Bridges community {cid_u} → community {cid_v}",
@@ -442,8 +433,10 @@ def suggest_questions(
 
     # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
     if G.number_of_edges() > 0:
-        k = min(100, G.number_of_nodes()) if G.number_of_nodes() > 1000 else None
-        betweenness = nx.betweenness_centrality(G, k=k, seed=42)
+        # Node betweenness via FalkorDB's built-in algo.betweenness (exact, whole
+        # graph). The old nx path sampled k sources with seed=42 on large graphs;
+        # the built-in computes exactly, so rankings are at least as accurate.
+        betweenness = G.node_betweenness()
         # Top bridge nodes that are NOT file-level hubs
         bridges = sorted(
             [(n, s) for n, s in betweenness.items()
@@ -649,9 +642,9 @@ def find_import_cycles(
         src_file = attrs.get("source_file", "")
         return src_file if isinstance(src_file, str) else ""
 
-    # Step 1: Build a directed file-level graph from import/re-export edges.
+    # Step 1: Build a directed file-level edge list from import/re-export edges.
     # IMPORTANT: resolve endpoints using source_file only; never infer from label/id.
-    file_graph = nx.DiGraph()
+    file_edges: set[tuple[str, str]] = set()
 
     for u, v, data in G.edges(data=True):
         rel = data.get("relation", "")
@@ -665,33 +658,34 @@ def find_import_cycles(
         u_file = _endpoint_source_file(u)
         v_file = _endpoint_source_file(v)
 
-        # Works for both DiGraph and Graph inputs:
-        # orient edge from edge.source_file endpoint to the opposite endpoint.
+        # Orient edge from edge.source_file endpoint to the opposite endpoint.
         if u_file == src_file_attr:
             tgt_file = v_file
         elif v_file == src_file_attr:
             tgt_file = u_file
         else:
-            # Fallback: if source endpoint cannot be matched exactly,
-            # still treat edge.source_file as source and pick the opposite endpoint
-            # only if one endpoint has a real source_file.
             tgt_file = v_file if v_file and v_file != src_file_attr else u_file
 
         if not tgt_file:
             continue
 
-        file_graph.add_edge(src_file_attr, tgt_file)
+        file_edges.add((src_file_attr, tgt_file))
 
-    if not file_graph.edges():
+    if not file_edges:
         return []
 
-    # Step 2: Find simple cycles, bounded by length.
+    # Step 2: Find simple cycles, bounded by length, via the simpleCycles UDF.
+    # Self-loops (a file importing itself) are length-1 cycles; the UDF only
+    # enumerates multi-node cycles, so we surface self-loops here directly.
     cycles: list[list[str]] = []
-    for cycle in nx.simple_cycles(file_graph):
+    self_loops = sorted({a for a, b in file_edges if a == b})
+    multi_edges = [(a, b) for a, b in file_edges if a != b]
+    for f in self_loops:
+        cycles.append([f])
+    for cycle in G.simple_cycles(sorted(multi_edges), max_cycle_length):
         if len(cycle) <= max_cycle_length:
             cycles.append(cycle)
         if len(cycles) >= top_n * 10:
-            # Stop early to avoid combinatorial explosion
             break
 
     # Step 3: Sort by length (shortest = tightest coupling), then deduplicate.

@@ -2,7 +2,6 @@
 from __future__ import annotations
 import re
 from datetime import date
-import networkx as nx
 
 
 def _safe_community_name(label: str) -> str:

@@ -1,7 +1,5 @@
 import json
 from pathlib import Path
-import networkx as nx
-from networkx.readwrite import json_graph
 from graphify.build import build_from_json, build, build_merge, edge_data, edge_datas
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -251,13 +249,11 @@ def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_pat
         "output_tokens": 0,
     }
     G = build_from_json(extraction)
-    # Only one undirected edge between the pair survives, but its stored
-    # direction must be the first-seen one (a_handler -> z_emitter), not the
-    # lexicographically-later one (z_emitter -> a_handler).
+    # Only one edge between the pair survives, stored in the first-seen direction
+    # (a_handler -> z_emitter). FalkorDB stores edges directed natively, so the
+    # surviving edge orientation itself encodes direction (no _src/_tgt markers).
     assert G.number_of_edges() == 1
-    data = edge_data(G, "a_handler", "z_emitter")
-    assert data["_src"] == "a_handler"
-    assert data["_tgt"] == "z_emitter"
+    assert ("a_handler", "z_emitter") in list(G.edges())
 
     graph_path = tmp_path / "graph.json"
     assert to_json(G, {}, str(graph_path), force=True)
@@ -275,88 +271,26 @@ def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_pat
     )
 
 
-# Regression tests for #796 — edge_data / edge_datas helpers must tolerate
-# MultiGraph and MultiDiGraph, which networkx's node_link_graph() produces
-# whenever the loaded JSON has multigraph: true. Plain G.edges[u, v] crashes
-# on those with `ValueError: not enough values to unpack (expected 3, got 2)`.
+# edge_data / edge_datas helpers operate on the FalkorDB-backed GraphStore.
+# (The old MultiGraph variants are gone: FalkorDB stores parallel edges natively,
+# so there is no MultiGraph wrapper to tolerate.)
 
-def test_edge_data_simple_graph():
-    G = nx.Graph()
-    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
-    d = edge_data(G, "a", "b")
+def test_edge_data_simple_graph(store):
+    store.add_nodes_from([("a", {"file_type": "code"}), ("b", {"file_type": "code"})])
+    store.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
+    d = edge_data(store, "a", "b")
     assert isinstance(d, dict)
     assert d["relation"] == "calls"
     assert d["confidence"] == "EXTRACTED"
 
 
-def test_edge_datas_simple_graph_returns_singleton_list():
-    G = nx.Graph()
-    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
-    ds = edge_datas(G, "a", "b")
+def test_edge_datas_simple_graph_returns_singleton_list(store):
+    store.add_nodes_from([("a", {"file_type": "code"}), ("b", {"file_type": "code"})])
+    store.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
+    ds = edge_datas(store, "a", "b")
     assert isinstance(ds, list)
     assert len(ds) == 1
     assert ds[0]["relation"] == "calls"
-
-
-def test_edge_data_multigraph_with_parallel_edges():
-    G = nx.MultiGraph()
-    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
-    G.add_edge("a", "b", relation="references", confidence="INFERRED")
-    d = edge_data(G, "a", "b")
-    assert isinstance(d, dict)
-    # First parallel edge wins; should be one of the two attribute dicts above.
-    assert d.get("relation") in ("calls", "references")
-
-
-def test_edge_datas_multigraph_returns_all_parallel_edges():
-    G = nx.MultiGraph()
-    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED")
-    G.add_edge("a", "b", relation="references", confidence="INFERRED")
-    ds = edge_datas(G, "a", "b")
-    assert isinstance(ds, list)
-    assert len(ds) == 2
-    relations = {e.get("relation") for e in ds}
-    assert relations == {"calls", "references"}
-
-
-def test_edge_data_multidigraph():
-    G = nx.MultiDiGraph()
-    G.add_edge("a", "b", relation="calls")
-    G.add_edge("a", "b", relation="imports")
-    d = edge_data(G, "a", "b")
-    assert isinstance(d, dict)
-    assert d.get("relation") in ("calls", "imports")
-    ds = edge_datas(G, "a", "b")
-    assert len(ds) == 2
-
-
-def test_edge_data_node_link_multigraph_roundtrip():
-    """A node_link JSON with multigraph: true must load as MultiGraph and the
-    helpers must operate on it without raising the 3-tuple unpack ValueError."""
-    data = {
-        "directed": False,
-        "multigraph": True,
-        "graph": {},
-        "nodes": [
-            {"id": "a", "label": "A"},
-            {"id": "b", "label": "B"},
-        ],
-        "links": [
-            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
-            {"source": "a", "target": "b", "relation": "references", "confidence": "INFERRED"},
-        ],
-    }
-    try:
-        G = json_graph.node_link_graph(data, edges="links")
-    except TypeError:
-        G = json_graph.node_link_graph(data)
-    assert isinstance(G, nx.MultiGraph)
-    # Plain G.edges[u, v] would raise here; the helper must not.
-    d = edge_data(G, "a", "b")
-    assert isinstance(d, dict)
-    assert d.get("relation") in ("calls", "references")
-    ds = edge_datas(G, "a", "b")
-    assert len(ds) == 2
 
 
 def test_build_from_json_relativizes_absolute_source_file(tmp_path):
@@ -405,16 +339,13 @@ def test_build_from_json_relative_source_file_unchanged(tmp_path):
     assert G.nodes["foo_bar"]["source_file"] == "src/foo.py"
 
 
-def test_build_merge_prune_absolute_paths_match_relative_nodes(tmp_path):
+def test_build_merge_prune_absolute_paths_match_relative_nodes(store, tmp_path):
     """#1007: manifest stores absolute paths, graph nodes store relative paths.
     prune_sources with absolute paths must still remove the right nodes and edges."""
-    import networkx as nx
-
     root = tmp_path / "corpus"
     root.mkdir()
-    graph_path = tmp_path / "graph.json"
 
-    # Simulate a graph with relative source_file paths (as built normally)
+    # Build a graph with relative source_file paths into the store.
     chunk = {"nodes": [
         {"id": "n1", "label": "login", "file_type": "code", "source_file": "module_a/auth.py"},
         {"id": "n2", "label": "format_date", "file_type": "code", "source_file": "module_b/utils.py"},
@@ -422,12 +353,11 @@ def test_build_merge_prune_absolute_paths_match_relative_nodes(tmp_path):
         {"source": "n1", "target": "n2", "relation": "calls", "confidence": "EXTRACTED",
          "source_file": "module_b/utils.py", "weight": 1.0},
     ]}
-    G0 = build([chunk], dedup=False)
-    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+    build([chunk], dedup=False, store=store)
 
     # prune_sources from manifest — absolute paths (what detect_incremental emits)
     deleted_abs = [str(root / "module_b" / "utils.py")]
-    G1 = build_merge([], graph_path, prune_sources=deleted_abs, dedup=False, root=root)
+    G1 = build_merge([], store.graph_name, prune_sources=deleted_abs, dedup=False, root=root)
 
     node_labels = {d["label"] for _, d in G1.nodes(data=True)}
     assert "format_date" not in node_labels, "stale node from deleted file should be pruned"
@@ -436,35 +366,19 @@ def test_build_merge_prune_absolute_paths_match_relative_nodes(tmp_path):
     assert G1.number_of_edges() == 0, "edge from deleted source_file should be pruned"
 
 
-def test_build_merge_prune_windows_backslash_paths(tmp_path):
+def test_build_merge_prune_windows_backslash_paths(store, tmp_path):
     """#1007: prune_sources with Windows-style backslash absolute paths must still match."""
-    import networkx as nx
-
     root = tmp_path / "corpus"
     root.mkdir()
-    graph_path = tmp_path / "graph.json"
 
     chunk = {"nodes": [
         {"id": "n1", "label": "parse_date", "file_type": "code", "source_file": "module_b/utils.py"},
     ], "edges": []}
-    G0 = build([chunk], dedup=False)
-    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+    build([chunk], dedup=False, store=store)
 
     # Simulate Windows manifest path with backslashes
     win_path = str(root / "module_b" / "utils.py").replace("/", "\\")
-    G1 = build_merge([], graph_path, prune_sources=[win_path], dedup=False, root=root)
+    G1 = build_merge([], store.graph_name, prune_sources=[win_path], dedup=False, root=root)
 
     node_labels = {d["label"] for _, d in G1.nodes(data=True)}
     assert "parse_date" not in node_labels, "node should be pruned even with backslash path"
-
-
-def test_build_merge_rejects_oversized_existing_graph(monkeypatch, tmp_path):
-    """#F4: build_merge must refuse to read an existing graph.json that
-    exceeds the size cap, rather than json.loads-ing it into memory."""
-    import pytest
-
-    graph_path = tmp_path / "graph.json"
-    graph_path.write_text(json.dumps({"nodes": [], "links": []}), encoding="utf-8")
-    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
-    with pytest.raises(ValueError, match="exceeds"):
-        build_merge([], graph_path, dedup=False)

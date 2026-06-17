@@ -4,12 +4,12 @@ import hashlib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-import networkx as nx
-from networkx.readwrite import json_graph as _jg
+
+from .store import GraphStore, DEFAULT_URI, open_store
 
 _GLOBAL_DIR = Path.home() / ".graphify"
-_GLOBAL_GRAPH = _GLOBAL_DIR / "global-graph.json"
 _GLOBAL_MANIFEST = _GLOBAL_DIR / "global-manifest.json"
+_GLOBAL_NAME = "graphify_global"
 
 
 def _load_manifest() -> dict:
@@ -26,32 +26,18 @@ def _save_manifest(manifest: dict) -> None:
     _GLOBAL_MANIFEST.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
-def _load_global_graph() -> nx.Graph:
-    if _GLOBAL_GRAPH.exists():
-        from graphify.security import check_graph_file_size_cap
-        check_graph_file_size_cap(_GLOBAL_GRAPH)
-        data = json.loads(_GLOBAL_GRAPH.read_text(encoding="utf-8"))
-        if "links" not in data and "edges" in data:
-            data = dict(data, links=data["edges"])
-        try:
-            return _jg.node_link_graph(data, edges="links")
-        except TypeError:
-            return _jg.node_link_graph(data)
-    return nx.Graph()
+def _load_global_graph(uri: str = DEFAULT_URI) -> GraphStore:
+    """The global graph is a dedicated named FalkorDB graph."""
+    return GraphStore(graph_name=_GLOBAL_NAME, uri=uri)
 
 
-def _save_global_graph(G: nx.Graph) -> None:
-    _GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        data = _jg.node_link_data(G, edges="links")
-    except TypeError:
-        data = _jg.node_link_data(G)
-    _GLOBAL_GRAPH.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-def _file_hash(path: Path) -> str:
+def _store_content_hash(G) -> str:
+    """Stable content hash of a store's nodes + edges (replaces file hashing)."""
     h = hashlib.sha256()
-    h.update(path.read_bytes())
+    for nid, attrs in G.nodes(data=True):
+        h.update(json.dumps([nid, attrs], sort_keys=True, default=str).encode("utf-8"))
+    for u, v, attrs in G.edges(data=True):
+        h.update(json.dumps([u, v, attrs], sort_keys=True, default=str).encode("utf-8"))
     return h.hexdigest()[:16]
 
 
@@ -61,13 +47,17 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped.
     Skipped=True means the source graph hasn't changed since last add.
     """
-    from graphify.build import prefix_graph_for_global, prune_repo_from_graph
+    from graphify.build import prune_repo_from_graph
 
-    if not source_path.exists():
-        raise FileNotFoundError(f"graph not found: {source_path}")
+    # Load source graph from its FalkorDB store (source_path is the legacy
+    # graph.json location; its parent dir holds the FalkorDB pointer).
+    out_dir = source_path.parent if source_path.suffix else source_path
+    src_G = open_store(out_dir, create=False)
+    if src_G.number_of_nodes() == 0:
+        raise FileNotFoundError(f"graph not found for: {source_path}")
 
     manifest = _load_manifest()
-    src_hash = _file_hash(source_path)
+    src_hash = _store_content_hash(src_G)
 
     existing = manifest["repos"].get(repo_tag, {})
     existing_path = existing.get("source_path", "")
@@ -81,20 +71,6 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     if existing.get("source_hash") == src_hash:
         return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True}
 
-    # Load source graph
-    from graphify.security import check_graph_file_size_cap
-    check_graph_file_size_cap(source_path)
-    data = json.loads(source_path.read_text(encoding="utf-8"))
-    if "links" not in data and "edges" in data:
-        data = dict(data, links=data["edges"])
-    try:
-        src_G = _jg.node_link_graph(data, edges="links")
-    except TypeError:
-        src_G = _jg.node_link_graph(data)
-
-    # Prefix IDs for cross-project isolation
-    prefixed = prefix_graph_for_global(src_G, repo_tag)
-
     # Load global graph and prune stale nodes for this repo
     G = _load_global_graph()
     removed = prune_repo_from_graph(G, repo_tag)
@@ -105,27 +81,38 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         for n, d in G.nodes(data=True)
         if not d.get("source_file") and d.get("label")
     }
-    nodes_to_skip = set()
-    for node, data in prefixed.nodes(data=True):
+    # Prefix source IDs for cross-project isolation, skipping external dups.
+    prefixed_nodes = []
+    edge_skip: set[str] = set()
+    n_prefixed = 0
+    for nid, data in src_G.nodes(data=True):
+        n_prefixed += 1
+        pid = f"{repo_tag}::{nid}"
         if not data.get("source_file") and data.get("label") in external_labels:
-            nodes_to_skip.add(node)
+            edge_skip.add(pid)
+            continue
+        attrs = dict(data)
+        attrs["repo"] = repo_tag
+        attrs.setdefault("local_id", nid)
+        prefixed_nodes.append((pid, attrs))
+    prefixed_edges = []
+    n_src_edges = 0
+    for u, v, data in src_G.edges(data=True):
+        n_src_edges += 1
+        pu, pv = f"{repo_tag}::{u}", f"{repo_tag}::{v}"
+        if pu in edge_skip or pv in edge_skip:
+            continue
+        prefixed_edges.append((pu, pv, dict(data)))
 
-    # Compose: add prefixed nodes (except deduplicated externals) into global graph
-    for node, data in prefixed.nodes(data=True):
-        if node not in nodes_to_skip:
-            G.add_node(node, **data)
-    for u, v, data in prefixed.edges(data=True):
-        if u not in nodes_to_skip and v not in nodes_to_skip:
-            G.add_edge(u, v, **data)
+    G.add_nodes_from(prefixed_nodes)
+    G.add_edges_from(prefixed_edges)
 
-    added = prefixed.number_of_nodes() - len(nodes_to_skip)
-    _save_global_graph(G)
-
+    added = len(prefixed_nodes)
     manifest["repos"][repo_tag] = {
         "added_at": datetime.now(timezone.utc).isoformat(),
         "source_path": str(source_path.resolve()),
         "node_count": added,
-        "edge_count": prefixed.number_of_edges(),
+        "edge_count": n_src_edges,
         "source_hash": src_hash,
     }
     _save_manifest(manifest)
@@ -143,7 +130,6 @@ def global_remove(repo_tag: str) -> int:
 
     G = _load_global_graph()
     removed = prune_repo_from_graph(G, repo_tag)
-    _save_global_graph(G)
 
     del manifest["repos"][repo_tag]
     _save_manifest(manifest)
@@ -155,5 +141,6 @@ def global_list() -> dict:
     return _load_manifest().get("repos", {})
 
 
-def global_path() -> Path:
-    return _GLOBAL_GRAPH
+def global_path() -> str:
+    """Name of the global FalkorDB graph (replaces the old global-graph.json path)."""
+    return _GLOBAL_NAME

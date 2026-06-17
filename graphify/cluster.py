@@ -1,80 +1,19 @@
-"""Community detection on NetworkX graphs. Uses Leiden (graspologic) if available, falls back to Louvain (networkx). Splits oversized communities. Returns cohesion scores."""
+"""Community detection on the FalkorDB-backed GraphStore. Runs Louvain via a
+server-side JS UDF (graphify_algos.louvain), splits oversized/low-cohesion
+communities, and returns stable community IDs with cohesion scores."""
 from __future__ import annotations
-import contextlib
-import inspect
-import io
-import json
-import sys
-import networkx as nx
 
 
-def _suppress_output():
-    """Context manager to suppress stdout/stderr during library calls.
+def _partition(G, resolution: float = 1.0) -> dict[str, int]:
+    """Run Louvain community detection. Returns {node_id: community_id}.
 
-    graspologic's leiden() emits ANSI escape sequences (progress bars,
-    colored warnings) that corrupt PowerShell 5.1's scroll buffer on
-    Windows (see issue #19). Redirecting stdout/stderr to devnull during
-    the call prevents this without losing any graphify output.
+    Delegates to the server-side `graphify_algos.louvain` UDF (deterministic:
+    sorted node order, no RNG). `G` is a GraphStore or a subgraph view, both of
+    which expose `louvain_partition(resolution)`.
+
+    resolution > 1.0 → more, smaller communities; < 1.0 → fewer, larger.
     """
-    return contextlib.redirect_stdout(io.StringIO())
-
-
-def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
-    """Run community detection. Returns {node_id: community_id}.
-
-    Tries Leiden (graspologic) first — best quality.
-    Falls back to Louvain (built into networkx) if graspologic is not installed.
-
-    resolution > 1.0 → more, smaller communities.
-    resolution < 1.0 → fewer, larger communities.
-
-    Output from graspologic is suppressed to prevent ANSI escape codes
-    from corrupting terminal scroll buffers on Windows PowerShell 5.1.
-    """
-    stable = nx.Graph()
-    stable.add_nodes_from(sorted(G.nodes(), key=str))
-    edge_rows = sorted(
-        G.edges(data=True),
-        key=lambda row: (
-            str(row[0]),
-            str(row[1]),
-            json.dumps(row[2], sort_keys=True, ensure_ascii=False, default=str),
-        ),
-    )
-    for src, tgt, attrs in edge_rows:
-        stable.add_edge(src, tgt, **attrs)
-
-    try:
-        from graspologic.partition import leiden
-        lsig = inspect.signature(leiden).parameters
-        kwargs: dict = {}
-        if "random_seed" in lsig:
-            kwargs["random_seed"] = 42
-        if "trials" in lsig:
-            kwargs["trials"] = 1
-        if "resolution" in lsig:
-            kwargs["resolution"] = resolution
-        # Suppress graspologic output to prevent ANSI escape codes from
-        # corrupting PowerShell 5.1 scroll buffer (issue #19)
-        old_stderr = sys.stderr
-        try:
-            sys.stderr = io.StringIO()
-            with _suppress_output():
-                result = leiden(stable, **kwargs)
-        finally:
-            sys.stderr = old_stderr
-        return result
-    except ImportError:
-        pass
-
-    # Fallback: networkx louvain (available since networkx 2.7).
-    # Inspect kwargs to stay compatible across NetworkX versions — max_level
-    # was added in a later release and prevents hangs on large sparse graphs.
-    kwargs: dict = {"seed": 42, "threshold": 1e-4, "resolution": resolution}
-    if "max_level" in inspect.signature(nx.community.louvain_communities).parameters:
-        kwargs["max_level"] = 10
-    communities = nx.community.louvain_communities(stable, **kwargs)
-    return {node: cid for cid, nodes in enumerate(communities) for node in nodes}
+    return G.louvain_partition(resolution=resolution)
 
 
 _MAX_COMMUNITY_FRACTION = 0.25   # communities larger than 25% of graph get split
