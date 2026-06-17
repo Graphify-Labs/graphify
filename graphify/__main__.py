@@ -155,6 +155,11 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_dst": Path(".kimi") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
     },
+    "qoder": {
+        "skill_file": "skill-qoder.md",
+        "skill_dst": Path(".qoder") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+    },
 }
 
 
@@ -164,6 +169,9 @@ def install(platform: str = "claude") -> None:
         return
     if platform == "cursor":
         _cursor_install(Path("."))
+        return
+    if platform == "qoder":
+        _qoder_install(Path("."))
         return
     if platform not in _PLATFORM_CONFIG:
         print(
@@ -568,6 +576,50 @@ def _kiro_uninstall(project_dir: Path) -> None:
     if steering_dst.exists():
         steering_dst.unlink()
         removed.append(str(steering_dst.relative_to(project_dir)))
+
+    print("Removed: " + (", ".join(removed) if removed else "nothing to remove"))
+
+
+def _qoder_install(project_dir: Path) -> None:
+    """Write graphify skill + AGENTS.md section for Qoder CLI."""
+    project_dir = project_dir or Path(".")
+
+    # Skill file → <project>/.qoder/skills/graphify/SKILL.md
+    skill_src = Path(__file__).parent / "skill-qoder.md"
+    skill_dst = project_dir / ".qoder" / "skills" / "graphify" / "SKILL.md"
+    skill_dst.parent.mkdir(parents=True, exist_ok=True)
+    skill_dst.write_text(skill_src.read_text(encoding="utf-8"), encoding="utf-8")
+    (skill_dst.parent / ".graphify_version").write_text(__version__, encoding="utf-8")
+    print(f"  {skill_dst.relative_to(project_dir)}  ->  /graphify skill")
+
+    # AGENTS.md section (always-on rules)
+    _agents_install(project_dir, "qoder")
+
+    print()
+    print("Qoder CLI will now check the knowledge graph before answering")
+    print("codebase questions and rebuild it after code changes.")
+
+
+def _qoder_uninstall(project_dir: Path) -> None:
+    """Remove graphify skill + AGENTS.md section for Qoder CLI."""
+    project_dir = project_dir or Path(".")
+    removed = []
+
+    skill_dst = project_dir / ".qoder" / "skills" / "graphify" / "SKILL.md"
+    if skill_dst.exists():
+        skill_dst.unlink()
+        removed.append(str(skill_dst.relative_to(project_dir)))
+        version_file = skill_dst.parent / ".graphify_version"
+        if version_file.exists():
+            version_file.unlink()
+        # Remove parent dir if empty
+        try:
+            skill_dst.parent.rmdir()
+        except OSError:
+            pass
+
+    # Remove AGENTS.md section
+    _agents_uninstall(project_dir, platform="qoder")
 
     print("Removed: " + (", ".join(removed) if removed else "nothing to remove"))
 
@@ -998,6 +1050,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     vscode_uninstall(pd)
     _cursor_uninstall(pd)
     _kiro_uninstall(pd)
+    _qoder_uninstall(pd)
     _antigravity_uninstall(pd)
     # AGENTS.md covers: codex, aider, opencode, claw, droid, trae, trae-cn, hermes, copilot
     _agents_uninstall(pd)
@@ -1225,6 +1278,8 @@ def main() -> None:
         print("  hermes uninstall        remove skill from ~/.hermes/skills/graphify/")
         print("  kiro install            write skill to .kiro/skills/graphify/ + steering file (Kiro IDE/CLI)")
         print("  kiro uninstall          remove skill + steering file")
+        print("  qoder install           write skill to .qoder/skills/graphify/ + AGENTS.md (Qoder CLI)")
+        print("  qoder uninstall         remove skill + AGENTS.md section")
         print("  pi install              write skill to ~/.pi/agent/skills/graphify/ (Pi coding agent)")
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
         print()
@@ -1370,6 +1425,15 @@ def main() -> None:
                     break
         else:
             print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "qoder":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            _qoder_install(Path("."))
+        elif subcmd == "uninstall":
+            _qoder_uninstall(Path("."))
+        else:
+            print("Usage: graphify qoder [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

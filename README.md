@@ -24,7 +24,7 @@
 
 Type `/graphify` in your AI coding assistant and it maps your entire project — code, docs, PDFs, images, videos — into a knowledge graph you can query instead of grepping through files.
 
-Works in Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kimi Code, Kiro, Pi, and Google Antigravity.
+Works in Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kimi Code, Kiro, Pi, Qoder CLI, and Google Antigravity.
 
 ```
 /graphify .
@@ -83,6 +83,7 @@ uv tool install graphifyy && graphify install
 | Kimi Code | `graphify install --platform kimi` |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify install --platform pi` |
+| Qoder CLI | `graphify install --platform qoder` |
 | Cursor | `graphify cursor install` |
 | Google Antigravity | `graphify antigravity install` |
 
@@ -113,6 +114,7 @@ Run this once in your project after building a graph:
 | Kimi Code | `graphify install --platform kimi` |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify pi install` |
+| Qoder CLI | `graphify qoder install` |
 | Google Antigravity | `graphify antigravity install` |
 
 This writes a small config file that tells your assistant to read `GRAPH_REPORT.md` before answering questions about your codebase. On platforms that support hooks (Claude Code, Codex, Gemini CLI), a hook fires automatically before every file-read call — your assistant navigates by the graph instead of grepping through everything.
@@ -304,6 +306,7 @@ graphify trae install / uninstall
 graphify trae-cn install / uninstall
 graphify hermes install / uninstall
 graphify kiro install / uninstall
+graphify qoder install / uninstall
 graphify antigravity install / uninstall
 
 graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
