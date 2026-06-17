@@ -50,21 +50,27 @@ def cluster(
     if G.number_of_edges() == 0:
         return {i: [n] for i, n in enumerate(sorted(G.nodes))}
 
+    # Materialize the full degree map in one streamed pass. Per-node G.degree(n)
+    # against the FalkorDB store is a round-trip each, so the comprehensions below
+    # would otherwise issue O(N) queries (twice over); one dict() keeps it to a
+    # single scan, matching the old in-memory nx cost.
+    degmap = dict(G.degree())
+
     # Compute hub exclusion set before removing anything so degree is based on full graph
     hub_nodes: set[str] = set()
     if exclude_hubs_percentile is not None:
-        degrees = sorted(d for _, d in G.degree())
+        degrees = sorted(degmap.values())
         if degrees:
             idx = max(0, int(len(degrees) * exclude_hubs_percentile / 100) - 1)
             threshold = degrees[idx]
-            hub_nodes = {n for n, d in G.degree() if d > threshold}
+            hub_nodes = {n for n, d in degmap.items() if d > threshold}
 
     # Leiden warns and drops isolates - handle them separately
     # Also exclude hub nodes from partitioning so they don't pull unrelated
     # subsystems into the same community
     excluded = hub_nodes
-    isolates = [n for n in G.nodes() if G.degree(n) == 0 and n not in excluded]
-    connected_nodes = [n for n in G.nodes() if G.degree(n) > 0 and n not in excluded]
+    isolates = [n for n, d in degmap.items() if d == 0 and n not in excluded]
+    connected_nodes = [n for n, d in degmap.items() if d > 0 and n not in excluded]
     connected = G.subgraph(connected_nodes)
 
     raw: dict[int, list[str]] = {}
