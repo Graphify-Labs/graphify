@@ -197,15 +197,14 @@ class TestDart(unittest.TestCase):
         )
         self.assertIsNone(bad_disposable_mixes_in)
 
-        # E. Extensions (target class string should be global without stem, source_file is None)
+        # E. Extensions (SDK targets are treated as graph noise, extension node remains)
         ext_node = next((n for n in nodes if n["label"] == "StringExtensions"), None)
         self.assertIsNotNone(ext_node)
 
         extends_string = next(
             (e for e in edges if e["source"] == ext_node["id"] and e["relation"] == "extends"), None
         )
-        self.assertIsNotNone(extends_string)
-        self.assertEqual(extends_string["target"], "string")
+        self.assertIsNone(extends_string)
 
         # F. Variable declarations
         provider_var = next((n for n in nodes if n["label"] == "authServiceProvider"), None)
