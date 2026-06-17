@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import unicodedata
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 import networkx as nx
+
+
+def _normalize(text: str) -> str:
+    """Return *text* in a canonical form so NFD and NFC compare equal.
+
+    macOS stores filenames in NFD; Python string literals and most input
+    methods produce NFC. Comparing the two without normalization silently
+    fails for accented Latin, Japanese with dakuten, and Korean Hangul.
+    """
+    return unicodedata.normalize("NFC", text)
 
 
 DEFAULT_AFFECTED_RELATIONS = (
@@ -52,11 +63,11 @@ def _bare_name(label: str) -> str:
 def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     if query in graph:
         return query
-    query_lower = query.lower()
+    query_lower = _normalize(query).lower()
     exact_label_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if str(data.get("label", "")).lower() == query_lower
+        if _normalize(str(data.get("label", ""))).lower() == query_lower
     ]
     if len(exact_label_matches) == 1:
         return exact_label_matches[0]
@@ -67,21 +78,21 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     bare_name_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if _bare_name(str(data.get("label", ""))) == query_bare
+        if _bare_name(_normalize(str(data.get("label", "")))) == query_bare
     ]
     if len(bare_name_matches) == 1:
         return bare_name_matches[0]
     exact_source_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if str(data.get("source_file", "")).lower() == query_lower
+        if _normalize(str(data.get("source_file", ""))).lower() == query_lower
     ]
     if len(exact_source_matches) == 1:
         return exact_source_matches[0]
     contains_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if query_lower in str(data.get("label", "")).lower()
+        if query_lower in _normalize(str(data.get("label", ""))).lower()
     ]
     if len(contains_matches) == 1:
         return contains_matches[0]
