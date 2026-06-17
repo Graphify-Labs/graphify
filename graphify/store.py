@@ -403,6 +403,12 @@ class MemGraph:
             return [(u, v, dict(a)) for u, v, a in rows]
         return [(u, v) for u, v, _ in rows]
 
+    def in_degree(self, node_id) -> int:
+        return sum(1 for _u, v, _a in self._esorted if v == node_id)
+
+    def out_degree(self, node_id) -> int:
+        return sum(1 for u, _v, _a in self._esorted if u == node_id)
+
     def subgraph(self, node_ids):
         return _SubgraphView(self, node_ids)
 
@@ -577,6 +583,16 @@ class GraphStore:
     @property
     def degree(self):
         return _SDegreeView(self)
+
+    def in_degree(self, node_id) -> int:
+        """Number of incoming edges (nx-compatible scoped count)."""
+        return int(self._rows(
+            "MATCH (:Entity)-[r]->(:Entity {id:$id}) RETURN count(r)", {"id": node_id})[0][0])
+
+    def out_degree(self, node_id) -> int:
+        """Number of outgoing edges (nx-compatible scoped count)."""
+        return int(self._rows(
+            "MATCH (:Entity {id:$id})-[r]->(:Entity) RETURN count(r)", {"id": node_id})[0][0])
 
     # ---- streaming + scoped read helpers (no materialization) ---------------
     def _stream(self, match_return: str, order_by: str, params: dict | None = None):

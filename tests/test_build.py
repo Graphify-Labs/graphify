@@ -195,8 +195,9 @@ def test_build_merge_preserves_call_edge_direction(tmp_path):
     assert saved_calls[0]["source"] == truth_src
     assert saved_calls[0]["target"] == truth_tgt
 
-    # Now simulate `--update` with no new chunks — load + re-save.
-    G2 = build_merge([], graph_path, dedup=False)
+    # Now simulate `--update` with no new chunks — reconnect to the same
+    # FalkorDB graph (build_merge takes a graph_name, not a graph.json path).
+    G2 = build_merge([], G1.graph_name, dedup=False)
     assert to_json(G2, communities, str(graph_path), force=True)
 
     # The calls edge must still go a -> b, not b -> a.
