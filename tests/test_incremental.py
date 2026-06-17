@@ -72,3 +72,27 @@ def test_no_incremental_without_manifest(tmp_path):
     # which pytest derives from the test name and contains "incremental".
     assert "incremental update" not in r.stdout.lower()
     assert "incremental scan" not in r.stdout.lower()
+
+
+def test_extract_no_cluster_incremental_noop_preserves_existing_graph(tmp_path):
+    """#1347: no-op incremental no-cluster extract must not overwrite graph.json."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text(
+        "def alpha():\n    return 1\n", encoding="utf-8"
+    )
+
+    first = _run(["extract", str(project), "--no-cluster"], tmp_path)
+    assert first.returncode == 0, first.stderr
+    graph_path = project / "graphify-out" / "graph.json"
+    before_text = graph_path.read_text(encoding="utf-8")
+    before = json.loads(before_text)
+    assert before.get("nodes"), "first run should produce a non-empty code graph"
+
+    second = _run(["extract", str(project), "--no-cluster"], tmp_path)
+    assert second.returncode == 0, second.stderr
+
+    after_text = graph_path.read_text(encoding="utf-8")
+    after = json.loads(after_text)
+    assert after.get("nodes"), "no-op incremental run must not empty the graph"
+    assert after_text == before_text

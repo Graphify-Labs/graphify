@@ -205,6 +205,36 @@ def _report_root_label(watch_path: Path) -> str:
     return Path.cwd().name if watch_path == Path(".") else str(watch_path)
 
 
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _changed_path_candidates(raw: Path, *, change_root: Path, watch_root: Path) -> list[Path]:
+    """Return plausible absolute locations for a hook-provided changed path.
+
+    Git hooks pass paths relative to the repository root. Watch callers may
+    also pass paths relative to the watched root. Keep both interpretations so
+    a graph rooted at ``src`` accepts ``src/app.py`` and ``app.py``.
+    """
+    if raw.is_absolute():
+        return [raw.resolve()]
+
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for base in (change_root, watch_root):
+        cand = (base / raw).resolve()
+        key = os.fspath(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(cand)
+    return candidates
+
+
 def _relativize_source_files(payload: dict, root: Path) -> None:
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
@@ -477,18 +507,47 @@ def _rebuild_code(
         # extract only changed-and-still-existing files. Deleted paths are
         # tracked separately so their stale nodes can be evicted below.
         deleted_paths: set[str] = set()
+        def _add_deleted_source(path: Path) -> None:
+            for root in (project_root, watch_root):
+                deleted_paths.add(_nsf(str(path), str(root)) or str(path))
+
         if changed_paths is not None:
             code_set = {p.resolve() for p in code_files}
             wanted: list[Path] = []
+            change_root = Path.cwd().resolve()
             for raw in changed_paths:
-                cand = (watch_root / raw).resolve() if not raw.is_absolute() else raw.resolve()
-                if cand.exists() and cand in code_set:
-                    wanted.append(cand)
-                else:
-                    # File was deleted, renamed away, or filtered out by detect
-                    # (e.g. .gitignore, vendored). Either way, evict any
-                    # preserved nodes that still claim this source path.
-                    deleted_paths.add(_nsf(str(cand), str(project_root)) or str(cand))
+                candidates = _changed_path_candidates(
+                    raw,
+                    change_root=change_root,
+                    watch_root=watch_root,
+                )
+                tracked = next((cand for cand in candidates if cand.exists() and cand in code_set), None)
+                if tracked is not None:
+                    if tracked not in wanted:
+                        wanted.append(tracked)
+                    continue
+
+                existing_in_root = next(
+                    (
+                        cand for cand in candidates
+                        if cand.exists() and _is_relative_to(cand, watch_root)
+                    ),
+                    None,
+                )
+                if existing_in_root is not None:
+                    # The path exists under the watched root but detect filtered
+                    # it out. Evict any stale nodes that still claim it.
+                    _add_deleted_source(existing_in_root)
+                    continue
+
+                deleted_in_root = next(
+                    (cand for cand in candidates if _is_relative_to(cand, watch_root)),
+                    None,
+                )
+                if deleted_in_root is not None:
+                    # File was deleted or renamed away inside the watched root.
+                    # Evict preserved nodes that still claim this source path.
+                    _add_deleted_source(deleted_in_root)
             if not wanted and not deleted_paths:
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
@@ -522,7 +581,8 @@ def _rebuild_code(
                 evict_sources: set[str] = set(deleted_paths)
                 if changed_paths is not None:
                     for p in extract_targets:
-                        evict_sources.add(_nsf(str(p), str(project_root)) or str(p))
+                        for root in (project_root, watch_root):
+                            evict_sources.add(_nsf(str(p), str(root)) or str(p))
                 else:
                     # Full re-extraction: reconcile against current code files to
                     # evict nodes from files deleted since the last run (#1007).
