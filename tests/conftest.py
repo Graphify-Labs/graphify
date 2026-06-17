@@ -26,8 +26,13 @@ def falkordb_uri() -> str:
     return _falkordb_uri()
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def _require_falkordb(falkordb_uri):
+    """Skip only tests that actually need a live FalkorDB. NOT autouse — the
+    DB-backed fixtures (store/seed_graph/make_store) depend on it, so DB tests
+    skip when no engine is reachable while DB-free tests (graphjson, _minhash,
+    detect, security, ...) still run, instead of the whole suite vanishing.
+    Session-scoped so the ping happens once."""
     pytest.importorskip("falkordb")
     from graphify.store import _connect
 
@@ -41,7 +46,7 @@ _store_counter = {"n": 0}
 
 
 @pytest.fixture()
-def store(falkordb_uri):
+def store(falkordb_uri, _require_falkordb):
     """A fresh, empty, uniquely-named GraphStore; cleaned up after the test."""
     from graphify.store import GraphStore
 
@@ -58,7 +63,7 @@ def store(falkordb_uri):
 
 
 @pytest.fixture()
-def seed_graph(falkordb_uri):
+def seed_graph(falkordb_uri, _require_falkordb):
     """Seed a FalkorDB graph for an output dir from node-link data, writing the
     pointer file so the CLI/serve loaders find it (replaces writing graph.json).
 
@@ -101,7 +106,7 @@ def seed_graph(falkordb_uri):
 
 
 @pytest.fixture()
-def make_store(falkordb_uri):
+def make_store(falkordb_uri, _require_falkordb):
     """Factory for tests needing more than one graph (e.g. graph_diff)."""
     from graphify.store import GraphStore
 

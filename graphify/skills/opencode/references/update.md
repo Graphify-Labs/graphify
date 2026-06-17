@@ -143,7 +143,7 @@ After Step 4, show the graph diff:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
-import json
+import json, os
 from graphify.analyze import graph_diff
 from graphify.build import build_from_json
 from graphify.store import open_store
@@ -153,11 +153,13 @@ from pathlib import Path
 G_new = open_store('graphify-out', create=False)
 
 # Load old graph (before update) from backup written before merge and rebuild it
-# into a scratch FalkorDB graph just for the comparison.
+# into a scratch FalkorDB graph just for the comparison. The scratch name is
+# derived from this project's graph name + pid so it never clears or collides
+# with an unrelated graph (or a concurrent update on the same project).
 old_data = json.loads(Path('graphify-out/.graphify_old.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_old.json').exists() else None
 if old_data:
     old_extract = {'nodes': old_data.get('nodes', []), 'edges': old_data.get('links', old_data.get('edges', []))}
-    G_old = build_from_json(old_extract, graph_name='graphify_diff_scratch')
+    G_old = build_from_json(old_extract, graph_name=f'{G_new.graph_name}__diff_scratch_{os.getpid()}')
     diff = graph_diff(G_old, G_new)
     print(diff['summary'])
     if diff['new_nodes']:

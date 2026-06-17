@@ -49,6 +49,10 @@ Issues = "https://github.com/safishamsi/graphify/issues"
 
 [project.optional-dependencies]
 mcp = ["mcp"]
+# falkordb is a core dependency; this extra exists so the documented
+# `graphifyy[falkordb]` install command resolves instead of erroring on an
+# unknown extra.
+falkordb = ["falkordb>=1.0"]
 neo4j = ["neo4j"]
 pdf = ["pypdf", "markdownify"]
 watch = ["watchdog"]
