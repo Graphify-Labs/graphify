@@ -99,6 +99,7 @@ def _file_node_id(rel_path: Path) -> str:
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, str]] = {}
 _WORKSPACE_PACKAGE_CACHE: dict[str, dict[str, Path]] = {}
+_WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 _JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".ts", ".tsx", ".vue", ".svelte"}
 _JS_RESOLVE_EXTS = (".ts", ".tsx", ".svelte", ".js", ".jsx", ".mjs")
 _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.jsx", "index.mjs")
@@ -299,10 +300,18 @@ def _find_workspace_root(start_dir: Path) -> Path | None:
     for candidate in [current, *current.parents]:
         if (candidate / "pnpm-workspace.yaml").exists():
             return candidate
+        package_json = candidate / "package.json"
+        if package_json.is_file():
+            try:
+                data = json.loads(package_json.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if "workspaces" in data:
+                return candidate
     return None
 
 
-def _workspace_globs(workspace_file: Path) -> list[str]:
+def _pnpm_workspace_globs(workspace_file: Path) -> list[str]:
     globs: list[str] = []
     in_packages = False
     for raw_line in workspace_file.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -322,16 +331,42 @@ def _workspace_globs(workspace_file: Path) -> list[str]:
     return globs
 
 
+def _workspace_globs(root: Path) -> list[str]:
+    pnpm_workspace = root / "pnpm-workspace.yaml"
+    if pnpm_workspace.exists():
+        return _pnpm_workspace_globs(pnpm_workspace)
+
+    package_json = root / "package.json"
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    workspaces = data.get("workspaces")
+    if isinstance(workspaces, list):
+        return [item for item in workspaces if isinstance(item, str) and not item.startswith("!")]
+    if isinstance(workspaces, dict):
+        packages = workspaces.get("packages")
+        if isinstance(packages, list):
+            return [item for item in packages if isinstance(item, str) and not item.startswith("!")]
+    return []
+
+
 def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
     root = _find_workspace_root(start_dir)
     if root is None:
         return {}
-    key = str(root)
+    manifest_mtimes = tuple(
+        (name, (root / name).stat().st_mtime_ns)
+        for name in _WORKSPACE_MANIFEST_NAMES
+        if (root / name).is_file()
+    )
+    key = str((root, manifest_mtimes))
     if key in _WORKSPACE_PACKAGE_CACHE:
         return _WORKSPACE_PACKAGE_CACHE[key]
 
     packages: dict[str, Path] = {}
-    for pattern in _workspace_globs(root / "pnpm-workspace.yaml"):
+    for pattern in _workspace_globs(root):
         package_dirs: list[Path] = [root] if pattern in (".", "./") else list(root.glob(pattern))
         for package_dir in package_dirs:
             manifest = package_dir / "package.json"
