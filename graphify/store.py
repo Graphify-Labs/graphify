@@ -560,7 +560,9 @@ class GraphStore:
         self.graph: dict = {}  # graph-level metadata only (hyperedges) — NOT the graph
         self._ensure_resultset_size()
         self._ensure_schema()
-        self._ensure_udfs()
+        # UDFs (louvain/edgeBetweenness/simpleCycles) are loaded lazily by the
+        # algorithm wrappers that need them — not here — so interactive commands
+        # (query/path/explain/affected) don't pay a UDF reload on every process.
         self._load_meta()
 
     # ---- views (nx-compatible, cache-free: each access is a live query) -----
@@ -1154,6 +1156,7 @@ class GraphStore:
         """Run the Louvain UDF over an explicit weighted edge list."""
         if not edges:
             return {}
+        self._ensure_udfs()
         rows = self._rows(f"RETURN {_UDF_LIB}.louvain($e, $res)", {"e": edges, "res": resolution}, timeout=_QUERY_TIMEOUT_MS)
         return {str(k): int(v) for k, v in dict(rows[0][0]).items()}
 
@@ -1168,6 +1171,7 @@ class GraphStore:
             "MATCH (a:Entity)-[r]->(b:Entity) RETURN a.id, b.id", "id(r)")]
         if not edges:
             return {}
+        self._ensure_udfs()
         res = self._rows(f"RETURN {_UDF_LIB}.edgeBetweenness($e)", {"e": edges}, timeout=_QUERY_TIMEOUT_MS)
         out: dict = {}
         for key, score in dict(res[0][0]).items():
@@ -1179,6 +1183,7 @@ class GraphStore:
         payload = [[str(u), str(v), 1.0] for u, v in edges]
         if not payload:
             return []
+        self._ensure_udfs()
         rows = self._rows(f"RETURN {_UDF_LIB}.simpleCycles($e, $n)", {"e": payload, "n": int(max_len)}, timeout=_QUERY_TIMEOUT_MS)
         return [[str(x) for x in cyc] for cyc in rows[0][0]]
 

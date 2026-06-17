@@ -2612,13 +2612,11 @@ def main() -> None:
                 i += 1
             else:
                 i += 1
+        # FalkorDB-only: the graph lives in the engine, located via the
+        # falkordb.json pointer next to graph_path — the legacy graph.json file
+        # need not exist. connect_graph resolves the pointer and guards the
+        # empty/missing case (matches the `query` command).
         gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        if not gp.suffix == ".json":
-            print("error: graph file must be a .json file", file=sys.stderr)
-            sys.exit(1)
         try:
             graph = connect_graph(gp)
         except Exception as exc:
@@ -2971,13 +2969,10 @@ def main() -> None:
                 i_arg += 1
         if watch_path is None:
             watch_path = Path(".")
+        # FalkorDB-only: graph_json locates the falkordb.json pointer (its parent
+        # dir); the legacy graph.json artifact need not exist. _connect_graph
+        # resolves the pointer and errors with "run /graphify" if no graph is built.
         graph_json = graph_override if graph_override is not None else watch_path / "graphify-out" / "graph.json"
-        if not graph_json.exists():
-            print(
-                f"error: no graph found at {graph_json} — run /graphify first",
-                file=sys.stderr,
-            )
-            sys.exit(1)
         from graphify.serve import _connect_graph
         from graphify.cluster import cluster, score_all, remap_communities_to_previous
         from graphify.analyze import (
