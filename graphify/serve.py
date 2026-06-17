@@ -540,18 +540,18 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
             if c["id"] in seen:
                 continue
             seen.add(c["id"])
-            rows.append((c["id"], c["norm_label"] or _strip_diacritics(c["label"]).lower()))
+            rows.append((c["id"], c["norm_label"] or _strip_diacritics(c["label"]).lower(), c["label"] or ""))
     else:
         rows = [
-            (nid, d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower())
+            (nid, d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower(), d.get("label") or "")
             for nid, d in G.nodes(data=True)
         ]
     exact: list[str] = []
     prefix: list[str] = []
     substring: list[str] = []
-    for nid, norm_label in rows:
+    for nid, norm_label, _label in rows:
         bare_label = norm_label.rstrip("()")
-        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        label_tokens = " ".join(_search_tokens(_label))
         nid_lower = nid.lower()
         if term == norm_label or term == bare_label or term == label_tokens or term == nid_lower:
             exact.append(nid)
