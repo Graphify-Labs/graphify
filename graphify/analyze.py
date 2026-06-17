@@ -431,8 +431,12 @@ def suggest_questions(
                 "why": f"Edge tagged AMBIGUOUS (relation: {relation}) - confidence is low.",
             })
 
-    # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
-    if G.number_of_edges() > 0:
+    # 2. Bridge nodes (high betweenness) → cross-cutting concern questions.
+    # Exact betweenness is ~O(V·E); cap at 5000 nodes (same guard as
+    # _cross_community_surprises) so report/cluster-only stays fast on large
+    # repos. Bridge-node questions are supplementary; the ambiguous-edge and
+    # community questions below are unaffected.
+    if G.number_of_edges() > 0 and G.number_of_nodes() <= 5000:
         # Node betweenness via FalkorDB's built-in algo.betweenness (exact, whole
         # graph). The old nx path sampled k sources with seed=42 on large graphs;
         # the built-in computes exactly, so rankings are at least as accurate.

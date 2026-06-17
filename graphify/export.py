@@ -1540,6 +1540,12 @@ def _spring_layout(G, seed: int = 42, iterations: int = 60) -> dict:
     return {nid: (p[0], p[1]) for nid, p in pos.items()}
 
 
+# Above this node count, to_svg renders a top-degree overview instead of the full
+# graph: a full-graph SVG is an unreadable hairball and the pure-Python force
+# layout is O(n^2) per iteration, so the full graph would be impractically slow.
+_SVG_MAX_NODES = 600
+
+
 def to_svg(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -1561,6 +1567,19 @@ def to_svg(
         import matplotlib.patches as mpatches
     except ImportError as e:
         raise ImportError("matplotlib not installed. Run: pip install matplotlib") from e
+
+    # For large graphs, render a top-degree overview built as an in-memory
+    # MemGraph (keeps the full node/edge/degree drawing API) so the SVG stays
+    # readable and the O(n^2) layout stays bounded.
+    if G.number_of_nodes() > _SVG_MAX_NODES and hasattr(G, "top_degree_nodes"):
+        from graphify.store import MemGraph
+        _top = [d["id"] for d in G.top_degree_nodes(limit=_SVG_MAX_NODES)]
+        _top_set = set(_top)
+        _attrs = G.node_attrs_batch(_top)
+        _nodes = [(nid, _attrs.get(nid, {})) for nid in _top]
+        _edges = [(u, v, d) for u, v, d in G.edges(nbunch=_top, data=True)
+                  if u in _top_set and v in _top_set]
+        G = MemGraph(_nodes, _edges, directed=G.is_directed())
 
     node_community = _node_community_map(communities)
 
