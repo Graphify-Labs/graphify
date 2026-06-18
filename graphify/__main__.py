@@ -3524,10 +3524,18 @@ def main() -> None:
             except TypeError:
                 G = _jg.node_link_graph(data)
             graphs.append(G)
+        # nx.compose requires all graphs to be the same type.  When input graphs
+        # come from different sources (e.g. an AST-only run vs a full LLM run) one
+        # may be a MultiGraph and another a Graph.  Normalise everything to Graph
+        # (the graphify default) by converting MultiGraphs with nx.Graph().
+        def _to_simple(g: "_nx.Graph") -> "_nx.Graph":
+            if isinstance(g, _nx.MultiGraph):
+                return _nx.Graph(g)
+            return g
         merged = _nx.Graph()
         for G, gp in zip(graphs, graph_paths):
             repo_tag = gp.parent.parent.name  # graphify-out/../ → repo dir name
-            prefixed = _prefix(G, repo_tag)
+            prefixed = _to_simple(_prefix(G, repo_tag))
             merged = _nx.compose(merged, prefixed)
         try:
             out_data = _jg.node_link_data(merged, edges="links")
