@@ -564,7 +564,11 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
             prefix.append(nid)
         elif term in norm_label or term in label_tokens:
             substring.append(nid)
-    return exact + prefix + substring
+    # Sort within each tier by node id so the result is deterministic and
+    # independent of the backend's row order (FalkorDB scan order vs. in-memory
+    # iteration). Without this, an ambiguous label that matches several nodes in
+    # the same tier could surface a different top match per backend/run (#1175).
+    return sorted(exact) + sorted(prefix) + sorted(substring)
 
 
 def _filter_blank_stdin() -> None:
