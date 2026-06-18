@@ -10,7 +10,7 @@ import unicodedata
 from collections import defaultdict
 
 from graphify._minhash import MinHash, MinHashLSH
-from rapidfuzz.distance import JaroWinkler
+from rapidfuzz.distance import Jaro, JaroWinkler
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -87,6 +87,52 @@ def _short_label_blocked(a: str, b: str, jw_score: float) -> bool:
     if jw_score >= 97.0 and len(a) == len(b) and DamerauLevenshtein.distance(a, b) <= 1:
         return False
     return True
+
+
+_DIGIT_RUN = re.compile(r"\d+")
+
+
+def _numeric_tokens_differ(a: str, b: str) -> bool:
+    """True when two labels carry different embedded numbers (#1284).
+
+    Long labels that differ only in their digit runs ("ADR 0011 §D5" vs
+    "ADR 0013 D4", "3.1 Product Goals" vs "1.1 Product Goals", "block3" vs
+    "block13", "40%+ retention" vs "<20% retention") are numbered/versioned
+    siblings, not duplicates -- but the long shared boilerplate keeps
+    Jaro-Winkler above _MERGE_THRESHOLD, and _is_variant_pair only covers
+    short trailing suffixes. Digit runs are compared as multisets with
+    leading zeros stripped, so zero-padding ("09" vs "9") does not count as
+    a difference. (String comparison, not int(): a pathological label with a
+    >4300-digit run would crash int() on Python's conversion limit.) Labels
+    with identical numbers, or none at all, are unaffected.
+    """
+    if a == b:
+        return False
+    return sorted(t.lstrip("0") or "0" for t in _DIGIT_RUN.findall(a)) != \
+        sorted(t.lstrip("0") or "0" for t in _DIGIT_RUN.findall(b))
+
+
+# file_type values whose identity is anchored to their source location, not
+# their label text. Like code (#1205), these must not be label-merged across
+# files: rationale = module/class docstrings, document = headings/positional
+# content. `concept` is intentionally excluded -- it is the type meant to unify
+# across files (protected from over-merge by the numeric/Jaro guards instead).
+_FILE_ANCHORED_NONCODE = frozenset({"rationale", "document"})
+
+
+def _crossfile_fileanchored_blocked(node: dict, neighbor: dict) -> bool:
+    """Block label-based merging of file-anchored non-code nodes across files (#1284).
+
+    rationale/document nodes are docstring- and heading-derived and as
+    file-anchored as the code they describe (#1205's reasoning, one layer up):
+    parallel modules carry near-identical boilerplate ("Django app config for
+    apps.<name>. No business logic here...") that differs by one word and sails
+    past the JW threshold. Same-file duplicates of these types may still merge.
+    """
+    if (node.get("file_type") not in _FILE_ANCHORED_NONCODE
+            and neighbor.get("file_type") not in _FILE_ANCHORED_NONCODE):
+        return False
+    return (node.get("source_file") or "") != (neighbor.get("source_file") or "")
 
 
 # ── union-find ────────────────────────────────────────────────────────────────
@@ -270,7 +316,20 @@ def deduplicate_entities(
                     continue
 
                 neighbor_norm = norm_cache.get(neighbor_id) or _norm(neighbor.get("label", neighbor.get("id", "")))
-                score = JaroWinkler.normalized_similarity(norm_label, neighbor_norm) * 100
+                # Cross-file long labels score on plain Jaro (no prefix bonus).
+                # Jaro-Winkler's leading-prefix bonus lifts pairs that share a
+                # prefix but diverge in a distinguishing token ("testing-library
+                # jest-native" vs "react-native") past threshold, fabricating
+                # destructive cross-file merges; on Jaro alone they fall short
+                # while true cross-file duplicates still clear it (#1243). Same-file
+                # near-duplicates keep Jaro-Winkler (low-risk, and a mid-string
+                # stopword insertion needs the prefix bonus to merge); short labels
+                # keep Jaro-Winkler too (gated by _short_label_blocked).
+                _xfile = (node.get("source_file") or "") != (neighbor.get("source_file") or "")
+                if _xfile and max(len(norm_label), len(neighbor_norm)) >= 12:
+                    score = Jaro.normalized_similarity(norm_label, neighbor_norm) * 100
+                else:
+                    score = JaroWinkler.normalized_similarity(norm_label, neighbor_norm) * 100
 
                 if _is_variant_pair(norm_label, neighbor_norm):
                     continue
@@ -282,6 +341,13 @@ def deduplicate_entities(
                 # regardless of JW score (#1201).
                 _lo, _hi = sorted((norm_label, neighbor_norm), key=len)
                 if _hi.startswith(_lo) and _hi != _lo:
+                    continue
+                # Numbered/versioned siblings and cross-file file-anchored
+                # boilerplate (rationale/document) are decisively distinct
+                # regardless of score (#1284).
+                if _numeric_tokens_differ(norm_label, neighbor_norm):
+                    continue
+                if _crossfile_fileanchored_blocked(node, neighbor):
                     continue
 
                 c1 = communities.get(node_id)
@@ -407,13 +473,23 @@ def _llm_tiebreak(
             if uf.find(node["id"]) == uf.find(neighbor["id"]):
                 continue
             norm_j = _norm(neighbor.get("label", neighbor.get("id", "")))
-            score = JaroWinkler.normalized_similarity(norm_i, norm_j) * 100
+            # Mirror pass 2: plain Jaro for cross-file long labels (#1243).
+            _xfile = (node.get("source_file") or "") != (neighbor.get("source_file") or "")
+            if _xfile and max(len(norm_i), len(norm_j)) >= 12:
+                score = Jaro.normalized_similarity(norm_i, norm_j) * 100
+            else:
+                score = JaroWinkler.normalized_similarity(norm_i, norm_j) * 100
             if _is_variant_pair(norm_i, norm_j):
                 continue
             if _short_label_blocked(norm_i, norm_j, score):
                 continue
             _lo, _hi = sorted((norm_i, norm_j), key=len)
             if _hi.startswith(_lo) and _hi != _lo:
+                continue
+            # Mirror pass 2: decisively-distinct pairs never reach the LLM (#1284).
+            if _numeric_tokens_differ(norm_i, norm_j):
+                continue
+            if _crossfile_fileanchored_blocked(node, neighbor):
                 continue
             c1 = communities.get(node["id"])
             c2 = communities.get(neighbor["id"])

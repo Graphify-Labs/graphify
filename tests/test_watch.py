@@ -654,6 +654,40 @@ def test_rebuild_code_prunes_deleted_file_nodes(tmp_path):
         os.chdir(cwd)
 
 
+def test_rebuild_code_accepts_repo_relative_changed_path_for_subdir_root(tmp_path):
+    """#1348: git-hook paths are repo-root-relative even when the graph root is a subdir."""
+    from graphify.watch import _rebuild_code
+
+    src = tmp_path / "src"
+    src.mkdir()
+    app = src / "app.py"
+    app.write_text("def old_name():\n    return 1\n", encoding="utf-8")
+
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        assert _rebuild_code(Path("src"), no_cluster=True, acquire_lock=False) is True
+        graph_path = src / "graphify-out" / "graph.json"
+        before = json.loads(graph_path.read_text(encoding="utf-8"))
+        assert "old_name()" in {n.get("label") for n in before.get("nodes", [])}
+
+        app.write_text("def new_name():\n    return 2\n", encoding="utf-8")
+        assert _rebuild_code(
+            Path("src"),
+            changed_paths=[Path("src/app.py")],
+            no_cluster=True,
+            acquire_lock=False,
+            force=True,
+        ) is True
+
+        after = json.loads(graph_path.read_text(encoding="utf-8"))
+        labels = {n.get("label") for n in after.get("nodes", [])}
+        assert "old_name()" not in labels
+        assert "new_name()" in labels
+    finally:
+        os.chdir(cwd)
+
+
 # --- #1059: pending-changes queue prevents commit drops under lock contention ---
 
 

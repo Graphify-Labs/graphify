@@ -4301,8 +4301,36 @@ def main() -> None:
             # anchors emitted per importing file, #1327).
             from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
             from graphify.export import backup_if_protected as _backup
+            if (
+                incremental_mode
+                and not code_files
+                and not semantic_files
+                and not deleted_files
+                and not pg_result.get("nodes")
+                and not pg_result.get("edges")
+                and not cargo_result.get("nodes")
+                and not cargo_result.get("edges")
+            ):
+                print(
+                    "[graphify extract] no incremental changes detected "
+                    "(--no-cluster); outputs left untouched."
+                )
+                try:
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
+                except Exception as exc:
+                    print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+                sys.exit(0)
+
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
+            # Backfill source_file from endpoint nodes — this raw path bypasses
+            # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
+            _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}
+            for _e in merged["edges"]:
+                if not _e.get("source_file"):
+                    _e["source_file"] = (
+                        _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
+                    )
             _backup(graphify_out)
             graph_json_path.write_text(
                 json.dumps(merged, indent=2), encoding="utf-8"

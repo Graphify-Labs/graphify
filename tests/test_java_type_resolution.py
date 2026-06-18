@@ -98,3 +98,74 @@ def test_java_implements_edge_survives_build(tmp_path: Path):
     assert impl_edges
     # The interface node has an incoming implements edge (not isolated).
     assert any(G.in_degree(v) >= 1 for _, v in impl_edges)
+
+
+def _label_edges(result: dict, relations):
+    by_id = {n["id"]: n.get("label", "") for n in result["nodes"]}
+    return {
+        (by_id.get(e["source"], ""), e["relation"], by_id.get(e["target"], ""))
+        for e in result["edges"]
+        if e.get("relation") in relations
+    }
+
+
+def test_java_record_becomes_type_node(tmp_path: Path):
+    # #1373: a Java `record` must produce a first-class type node (with a
+    # `contains` edge from its file), not be left as an isolated file node.
+    rec = _write(
+        tmp_path / "Foo.java",
+        "package com.app;\npublic record Foo(int x, String y) {}\n",
+    )
+    result = extract([rec], cache_root=tmp_path)
+
+    foo = [n for n in result["nodes"]
+           if n.get("label") == "Foo" and n.get("source_file")]
+    assert foo, "record Foo should be a type node, not just the file node"
+    contains = _label_edges(result, {"contains"})
+    assert ("Foo.java", "contains", "Foo") in contains
+
+
+def test_java_record_implements_interface(tmp_path: Path):
+    # Records reuse class interface handling: `record Foo implements I` emits it.
+    iface = _write(tmp_path / "I.java", "package com.app;\npublic interface I {}\n")
+    rec = _write(
+        tmp_path / "Foo.java",
+        "package com.app;\npublic record Foo(int x) implements I {}\n",
+    )
+    result = extract([iface, rec], cache_root=tmp_path)
+    implements = [e for e in result["edges"] if e["relation"] == "implements"]
+    assert implements, "record implementing an interface should emit an implements edge"
+
+
+def test_java_cross_file_constructor_call_resolves(tmp_path: Path):
+    # #1373: `new Foo(...)` in a method body must produce a cross-file edge to the
+    # Foo definition. Foo is NOT used as a return type here, so the edge can only
+    # come from the constructor call (object_creation_expression), not return-type
+    # handling.
+    foo = _write(
+        tmp_path / "Foo.java",
+        "package com.app;\npublic record Foo(int x, String y) {}\n",
+    )
+    caller = _write(
+        tmp_path / "Helper.java",
+        "package com.app;\n"
+        "public class Helper {\n"
+        "    public void build() {\n"
+        "        Object o = new Foo(1, \"a\");\n"
+        "        System.out.println(o);\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([foo, caller], cache_root=tmp_path)
+
+    foo_id = next(n["id"] for n in result["nodes"]
+                  if n.get("label") == "Foo" and n.get("source_file"))
+    call_targets = {
+        e["target"] for e in result["edges"]
+        if e.get("relation") in ("calls", "references")
+    }
+    assert foo_id in call_targets, "new Foo(...) should produce a calls/references edge to Foo"
+
+    # Survives graph construction (target is a real node).
+    g = build_from_json(result)
+    assert foo_id in set(g.nodes())

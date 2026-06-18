@@ -180,6 +180,19 @@ def test_to_canvas_file_paths_relative_to_vault():
             assert node["file"].endswith(".md")
 
 
+def test_to_canvas_no_communities_still_populates():
+    """#1324: empty communities (e.g. --no-cluster builds) on a populated graph
+    must NOT produce the 32-byte empty `{"nodes": [], "edges": []}` shell."""
+    G = make_graph()
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.canvas"
+        to_canvas(G, {}, str(out))  # no community data — the bug condition
+        data = json.loads(out.read_text())
+        assert len(data["nodes"]) >= G.number_of_nodes()
+        assert len(data["edges"]) >= 1
+        assert out.stat().st_size > 32
+
+
 # ── Issue #834: backup_if_protected ──────────────────────────────────────────
 
 def test_backup_no_graph_json(tmp_path):

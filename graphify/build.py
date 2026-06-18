@@ -323,6 +323,15 @@ def build_from_json(
         if src not in node_set or tgt not in node_set:
             continue  # skip edges to external/stdlib nodes - expected, not an error
         attrs = {k: v for k, v in edge.items() if k not in ("source", "target")}
+        # Backfill source_file from the endpoint nodes (every node carries one).
+        # Semantic/LLM edges occasionally omit it, which downstream validation
+        # flags and leaves query results with no file reference (#1279).
+        if not attrs.get("source_file"):
+            attrs["source_file"] = (
+                G.nodes[src].get("source_file")
+                or G.nodes[tgt].get("source_file")
+                or ""
+            )
         if "source_file" in attrs:
             attrs["source_file"] = _norm_source_file(attrs["source_file"], _root)
         # Drop cross-language INFERRED `calls` edges — same short names (render,
@@ -492,10 +501,12 @@ def build_merge(
 ) -> GraphStore:
     """Merge new chunks into the existing FalkorDB graph and persist.
 
-    Never replaces - only grows (or prunes deleted-file nodes via prune_sources).
-    Safe to call repeatedly: existing nodes and edges are preserved (pulled back
-    out of the store, combined with the new chunks, de-duplicated as a whole, and
-    rebuilt). root: absolute source_file paths in new_chunks are made relative (#932).
+    Re-extracted files REPLACE their prior contribution: any source_file present
+    in new_chunks is dropped from the loaded graph before merging, so a changed
+    file's stale nodes/edges don't accumulate. Files absent from new_chunks are
+    preserved unchanged; deleted files are removed via prune_sources.
+    Safe to call repeatedly.
+    root: if given, absolute source_file paths in new_chunks are made relative (#932).
     """
     store = GraphStore(graph_name=graph_name, uri=uri, directed=True)
     # Pull the existing graph back out of FalkorDB as an extraction-shaped chunk.
@@ -506,7 +517,36 @@ def build_merge(
         e = {k: val for k, val in a.items()}
         e["source"], e["target"] = u, v
         existing_edges.append(e)
-    base = [{"nodes": existing_nodes, "edges": existing_edges}] if existing_nodes else []
+    had_graph = bool(existing_nodes)
+
+    # Re-extracted files REPLACE their prior contribution (#1344/#1007). Every
+    # source_file present in new_chunks is dropped from the loaded base before
+    # merging, so a CHANGED file's stale nodes/edges don't accumulate across
+    # incremental updates. Without this, build() merges old+new for the same file
+    # and only exact-duplicate edges collapse — edges/nodes that disappeared from
+    # the new version survive forever. Brand-new files aren't in base (no-op);
+    # genuinely deleted files are still handled via prune_sources. Matched in both
+    # raw and _norm_source_file form because new_chunks may carry absolute win32
+    # paths while the stored graph keeps relative posix.
+    _replace_root = str(Path(root).resolve()) if root is not None else None
+    new_sources: set[str] = set()
+    for ch in new_chunks:
+        for n in ch.get("nodes", []):
+            sf = n.get("source_file")
+            if not sf:
+                continue
+            new_sources.add(sf)
+            norm = _norm_source_file(sf, _replace_root)
+            if norm:
+                new_sources.add(norm)
+    if new_sources:
+        def _kept(item: dict) -> bool:
+            sf = item.get("source_file")
+            return sf not in new_sources and _norm_source_file(sf, _replace_root) not in new_sources
+        existing_nodes = [n for n in existing_nodes if _kept(n)]
+        existing_edges = [e for e in existing_edges if _kept(e)]
+
+    base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
 
     all_chunks = base + list(new_chunks)
     G = build(
