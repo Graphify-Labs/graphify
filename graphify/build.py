@@ -574,6 +574,43 @@ def build_merge(
     return G
 
 
+def source_path_aliases(p: str, root: str | Path | None = None) -> set[str]:
+    """All normalized forms of a scan/manifest path for matching source_file."""
+    aliases: set[str] = set()
+    if not p:
+        return aliases
+    root_resolved = Path(root).resolve() if root else None
+    root_str = str(root_resolved) if root_resolved else None
+    aliases.add(p.replace("\\", "/"))
+    norm = _norm_source_file(p, root_str)
+    if norm:
+        aliases.add(norm)
+    if root_resolved is not None:
+        path = Path(p)
+        try:
+            abs_p = path if path.is_absolute() else root_resolved / path
+            aliases.add(abs_p.resolve().relative_to(root_resolved).as_posix())
+        except ValueError:
+            pass
+    return aliases
+
+
+def source_files_in_extraction(extraction: dict, root: str | Path | None = None) -> set[str]:
+    """Collect all source_file aliases present in an extraction dict."""
+    found: set[str] = set()
+    for key in ("nodes", "edges", "hyperedges"):
+        for item in extraction.get(key, []):
+            sf = item.get("source_file")
+            if sf:
+                found |= source_path_aliases(str(sf), root)
+    return found
+
+
+def path_covered_by_extraction(p: str, extraction: dict, root: str | Path | None = None) -> bool:
+    """True when extraction contains at least one node/edge/hyperedge for path p."""
+    return bool(source_path_aliases(p, root) & source_files_in_extraction(extraction, root))
+
+
 def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
     """Return a copy of G with all node IDs prefixed with repo_tag::.
 

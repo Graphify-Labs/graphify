@@ -4410,15 +4410,15 @@ def main() -> None:
         # that actually produced output (cache hit or fresh extraction). Files
         # whose chunk failed have no source_file entry in sem_result — leaving
         # their semantic_hash empty so detect_incremental re-queues them (#933).
-        _sem_extracted: set[str] = {
-            n.get("source_file", "") for n in sem_result.get("nodes", [])
-        } | {
-            e.get("source_file", "") for e in sem_result.get("edges", [])
-        }
-        _sem_extracted.discard("")
+        from graphify.build import path_covered_by_extraction as _path_covered
+
         _sem_types = {"document", "paper", "image"}
         _manifest_files = {
-            ftype: [f for f in flist if ftype not in _sem_types or f in _sem_extracted]
+            ftype: [
+                f
+                for f in flist
+                if ftype not in _sem_types or _path_covered(f, sem_result, target)
+            ]
             for ftype, flist in files_by_type.items()
         }
 
