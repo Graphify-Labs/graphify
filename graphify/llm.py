@@ -2144,6 +2144,75 @@ def _parse_label_response(text: str, labeled_cids: list[int]) -> dict[int, str]:
     return out
 
 
+def _label_batch_with_retry(
+    batch_cids: list[int],
+    batch_lines: list[str],
+    *,
+    backend: str,
+    model: str | None,
+    depth: int = 0,
+    max_depth: int = 3,
+) -> dict[int, str]:
+    """Label a batch of communities, splitting in half and retrying on parse failure.
+
+    Mirrors `_extract_with_adaptive_retry`'s recovery shape for the labeling path
+    (#1278). When the LLM returns malformed JSON or a non-object payload, the
+    batch is split at the midpoint and each half is retried recursively. Recursion
+    is capped at ``max_depth`` to bound cost.
+
+    Returns ``{cid: name}`` for everything that could be labeled. Communities
+    that still couldn't be parsed at the depth/size base case are absent from
+    the result — callers treat them as placeholder. Any non-parse exception
+    (network, missing config, programming bug) propagates unchanged.
+    """
+    prompt = (
+        "You are naming clusters in a knowledge graph. For each community below, "
+        "return a concise 2-5 word plain-language name describing what it is about "
+        "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\"). "
+        "Respond ONLY with a JSON object mapping the community id (as a string) to "
+        "its name - no prose, no markdown fences.\n\n" + "\n".join(batch_lines)
+    )
+    max_tokens = _resolve_max_tokens(min(64 + 24 * len(batch_cids), 8192))
+    call_kwargs: dict = {"backend": backend, "max_tokens": max_tokens}
+    if model is not None:
+        call_kwargs["model"] = model
+
+    try:
+        text = _call_llm(prompt, **call_kwargs)
+        return _parse_label_response(text, batch_cids)
+    except (json.JSONDecodeError, ValueError) as exc:
+        # YOUR TURN — implement the split-and-retry logic here.
+        #
+        # Two cases to handle:
+        #
+        # 1. BASE CASE: we can't or shouldn't split further.
+        #    - condition: len(batch_cids) <= 1  OR  depth >= max_depth
+        #    - action: print a warning to sys.stderr identifying which
+        #      community ids couldn't be labeled (use `batch_cids` and `exc`)
+        #    - return {}  — those cids stay as placeholders in the caller
+        #
+        # 2. SPLIT CASE: we can still split.
+        #    - mid = len(batch_cids) // 2
+        #    - recurse on the left half: batch_cids[:mid], batch_lines[:mid]
+        #      with depth=depth + 1, same backend/model/max_depth
+        #    - recurse on the right half: batch_cids[mid:], batch_lines[mid:]
+        #      with depth=depth + 1, same backend/model/max_depth
+        #    - return the merged dict (left | right works on Python 3.9+)
+        if len(batch_cids) <= 1 or depth >= max_depth:
+            print(
+                f"[graphify label] batch of {len(batch_cids)} still unparseable "
+                f"at depth {depth} (cids={batch_cids[:5]}"
+                f"{'...' if len(batch_cids) > 5 else ''}): {exc}",
+                file=sys.stderr,
+            )
+            raise
+        else:
+            mid = len(batch_cids) // 2
+            left = _label_batch_with_retry(batch_cids[:mid], batch_lines[:mid],backend=backend,model=model,depth=depth+1,max_depth=max_depth)
+            right = _label_batch_with_retry(batch_cids[mid:], batch_lines[mid:],backend=backend,model=model,depth=depth+1,max_depth=max_depth)
+            return left | right
+
+
 def label_communities(
     G,
     communities,
@@ -2188,24 +2257,10 @@ def label_communities(
         end = min(start + batch_size, len(labeled_cids))
         batch_lines = lines[start:end]
         batch_cids = labeled_cids[start:end]
-
-        prompt = (
-            "You are naming clusters in a knowledge graph. For each community below, "
-            "return a concise 2-5 word plain-language name describing what it is about "
-            "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\"). "
-            "Respond ONLY with a JSON object mapping the community id (as a string) to "
-            "its name - no prose, no markdown fences.\n\n" + "\n".join(batch_lines)
-        )
-        # 24 tok/community covers 2-5 word JSON entries including id, quotes,
-        # and punctuation. Cap at 8192 for 16k-context models. Wrapped in
-        # _resolve_max_tokens so GRAPHIFY_MAX_OUTPUT_TOKENS applies here too (#1200).
-        max_tokens = _resolve_max_tokens(min(64 + 24 * len(batch_cids), 8192))
         try:
-            call_kwargs = {"backend": backend, "max_tokens": max_tokens}
-            if model is not None:
-                call_kwargs["model"] = model
-            text = _call_llm(prompt, **call_kwargs)
-            parsed = _parse_label_response(text, batch_cids)
+            parsed = _label_batch_with_retry(
+                batch_cids, batch_lines, backend=backend, model=model,
+            )
             labels.update(parsed)
             written += len(parsed)
         except Exception as exc:
