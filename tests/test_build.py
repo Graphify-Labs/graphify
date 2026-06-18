@@ -618,6 +618,55 @@ def test_build_merge_replaces_changed_file_stale_edges(tmp_path):
     assert ("K", "A") in edges, "unchanged file's edge must survive"
 
 
+def test_build_merge_root_collapses_convention_drift(tmp_path):
+    """Skill contract: the extraction subagent must emit source_file as the
+    verbatim path from FILE_LIST AND the caller must pass root= (the build root).
+    Then build_merge canonicalizes the new chunk to the same relative base as the
+    stored graph, so re-extraction REPLACES the prior node (incl. stale nodes for
+    that file) instead of accumulating a duplicate. Without root, a drifted
+    relative base (e.g. a bare basename from a different run) mismatches and the
+    graph duplicates. Engine is unchanged — this pins the prompt/root contract."""
+    import networkx as nx
+
+    root = tmp_path
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+
+    # Stored graph: nested project-relative convention + a STALE node for the same
+    # file that the re-extraction no longer emits.
+    stored = {"nodes": [
+        {"id": "wiki_overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": "docs/wiki/overview.md"},
+        {"id": "wiki_overview_stale", "label": "Stale", "file_type": "document",
+         "source_file": "docs/wiki/overview.md"},
+    ], "edges": []}
+    G0 = build([stored], dedup=False)
+    saved = json.dumps(nx.node_link_data(G0, edges="edges"))
+    graph_path.write_text(saved, encoding="utf-8")
+
+    # BUG: --update drifted to a bare basename and no root was passed. Different
+    # base -> source_file replace misses -> stale + duplicate both survive.
+    drift = {"nodes": [
+        {"id": "overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": "overview.md"},
+    ], "edges": []}
+    G_bug = build_merge([drift], graph_path, dedup=False)
+    assert G_bug.number_of_nodes() == 3, "mismatched base must NOT replace -> stale+dup remain"
+
+    # FIX: subagent emits the verbatim path; caller passes root (the build root).
+    graph_path.write_text(saved, encoding="utf-8")
+    abs_overview = str(root / "docs" / "wiki" / "overview.md")
+    fixed = {"nodes": [
+        {"id": "wiki_overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": abs_overview},
+    ], "edges": []}
+    G_ok = build_merge([fixed], graph_path, prune_sources=None, dedup=False, root=root)
+    assert G_ok.number_of_nodes() == 1, "verbatim path + root must collapse to one node"
+    assert "wiki_overview_stale" not in G_ok, "stale node for the re-extracted file must be dropped"
+    assert G_ok.nodes["wiki_overview_overview"]["source_file"] == "docs/wiki/overview.md", \
+        "new chunk must be canonicalized to the stored relative base"
+
+
 def test_build_merge_rejects_oversized_existing_graph(monkeypatch, tmp_path):
     """#F4: build_merge must refuse to read an existing graph.json that
     exceeds the size cap, rather than json.loads-ing it into memory."""
