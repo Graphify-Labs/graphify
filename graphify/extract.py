@@ -6,12 +6,12 @@ import json
 import os
 import re
 import sys
-import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
+from .ids import make_id
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 
 _RECURSION_LIMIT = 10_000
@@ -65,17 +65,14 @@ def _safe_extract(extractor: Callable, path: Path) -> dict:
 def _make_id(*parts: str) -> str:
     r"""Build a stable node ID from one or more name parts.
 
+    Thin wrapper over :func:`graphify.ids.make_id`, the single source of truth
+    shared with ``build._normalize_id`` so the two can no longer drift (#811).
     Preserves Unicode letters/digits (CJK, Cyrillic, Arabic, accented Latin,
-    etc.) so non-ASCII identifiers produce distinct IDs and don't collapse to
-    a single per-file node (#811). NFKC normalization ensures composed and
-    decomposed forms of the same character (e.g. é vs e+combining-acute)
-    produce the same ID. Must stay in sync with build._normalize_id.
+    etc.) so non-ASCII identifiers produce distinct IDs and don't collapse to a
+    single per-file node; NFKC normalization collapses composed/decomposed forms
+    of the same character (e.g. é vs e+combining-acute) to one ID.
     """
-    combined = "_".join(p.strip("_.") for p in parts if p)
-    combined = unicodedata.normalize("NFKC", combined)
-    cleaned = re.sub(r"[^\w]+", "_", combined, flags=re.UNICODE)
-    cleaned = re.sub(r"_+", "_", cleaned)
-    return cleaned.strip("_").casefold()
+    return make_id(*parts)
 
 
 def _file_stem(path: Path) -> str:

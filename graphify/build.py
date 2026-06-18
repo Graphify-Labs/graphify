@@ -28,6 +28,7 @@ import sys
 import unicodedata
 from pathlib import Path
 import networkx as nx
+from .ids import normalize_id as _normalize_id
 from .validate import validate_extraction
 
 
@@ -49,20 +50,6 @@ _FILE_TYPE_SYNONYMS = {
     "gotcha": "concept",
     "framework": "concept",
 }
-
-
-def _normalize_id(s: str) -> str:
-    r"""Normalize an ID string the same way extract._make_id does.
-
-    Used to reconcile edge endpoints when the LLM generates IDs with slightly
-    different punctuation or casing than the AST extractor. Must stay in sync
-    with extract._make_id — NFKC normalization, \w with re.UNICODE, underscore
-    collapse, and casefold must all match (#811).
-    """
-    s = unicodedata.normalize("NFKC", s)
-    cleaned = re.sub(r"[^\w]+", "_", s, flags=re.UNICODE)
-    cleaned = re.sub(r"_+", "_", cleaned)
-    return cleaned.strip("_").casefold()
 
 
 def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
