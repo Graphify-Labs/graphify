@@ -2157,9 +2157,15 @@ def main() -> None:
         print("    --model=<name>          model to use for community naming")
         print("  query \"<question>\"       BFS traversal of graph.json for a question")
         print("    --dfs                   use depth-first instead of breadth-first")
+        print("    --mode hybrid           use sidecar retrieval seeds, then graph traversal")
+        print("    --debug-retrieval       write graphify-out/retrieval-debug/last-query.json")
         print("    --context C             explicit edge-context filter (repeatable)")
         print("    --budget N              cap output at N tokens (default 2000)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("  index [--graph path] [--out-dir dir]")
+        print("                            build optional graphify-out/vector-index sidecar")
+        print("  eval queries.jsonl [--graph path] [--mode hybrid|bfs|dfs] [--out-dir dir] [--json]")
+        print("                            measure recall@k, MRR, and graph path coverage")
         print("  affected \"X\"             reverse traversal to find nodes impacted by X")
         print("    --relation R            edge relation to traverse in reverse (repeatable)")
         print("    --depth N               reverse traversal depth (default 2)")
@@ -2669,9 +2675,113 @@ def main() -> None:
         else:
             print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
+    elif cmd == "index":
+        from graphify.retrieval import build_vector_index
+        from graphify.serve import _load_graph
+
+        graph_path = _default_graph_path()
+        out_dir: Path | None = None
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]
+                i += 2
+            elif args[i].startswith("--graph="):
+                graph_path = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--out-dir" and i + 1 < len(args):
+                out_dir = Path(args[i + 1])
+                i += 2
+            elif args[i].startswith("--out-dir="):
+                out_dir = Path(args[i].split("=", 1)[1])
+                i += 1
+            else:
+                i += 1
+        gp = Path(graph_path).resolve()
+        G = _load_graph(str(gp))
+        index_dir = build_vector_index(G, gp, out_dir)
+        print(f"Indexed {G.number_of_nodes()} nodes, {G.number_of_edges()} relations -> {index_dir}")
+    elif cmd == "eval":
+        if len(sys.argv) < 3:
+            print("Usage: graphify eval queries.jsonl [--mode hybrid|bfs|dfs] [--k N] [--depth N] [--graph path] [--out-dir dir] [--json]", file=sys.stderr)
+            sys.exit(1)
+        from graphify.eval import EvalError, evaluate_queries, format_report, load_queries
+        from graphify.serve import _load_graph
+
+        queries_path = Path(sys.argv[2])
+        graph_path = _default_graph_path()
+        out_dir: Path | None = None
+        mode = "hybrid"
+        k = 5
+        depth = 2
+        json_output = False
+        args = sys.argv[3:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--mode" and i + 1 < len(args):
+                mode = args[i + 1]
+                i += 2
+            elif args[i].startswith("--mode="):
+                mode = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--k" and i + 1 < len(args):
+                try:
+                    k = int(args[i + 1])
+                except ValueError:
+                    print("error: --k must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--k="):
+                try:
+                    k = int(args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --k must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+            elif args[i] == "--depth" and i + 1 < len(args):
+                try:
+                    depth = int(args[i + 1])
+                except ValueError:
+                    print("error: --depth must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--depth="):
+                try:
+                    depth = int(args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --depth must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+            elif args[i] == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]
+                i += 2
+            elif args[i].startswith("--graph="):
+                graph_path = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--out-dir" and i + 1 < len(args):
+                out_dir = Path(args[i + 1])
+                i += 2
+            elif args[i].startswith("--out-dir="):
+                out_dir = Path(args[i].split("=", 1)[1])
+                i += 1
+            elif args[i] == "--json":
+                json_output = True
+                i += 1
+            else:
+                i += 1
+        gp = Path(graph_path).resolve()
+        try:
+            queries = load_queries(queries_path)
+            G = _load_graph(str(gp))
+            result = evaluate_queries(G, gp, queries, mode=mode, k=k, depth=depth, out_dir=out_dir)
+        except EvalError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(json.dumps(result, indent=2, sort_keys=True) if json_output else format_report(result))
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs|--mode hybrid] [--context C] [--budget N] [--graph path] [--debug-retrieval]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -2680,6 +2790,8 @@ def main() -> None:
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
+        query_mode = "dfs" if use_dfs else "bfs"
+        debug_retrieval = "--debug-retrieval" in sys.argv
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
@@ -2706,11 +2818,25 @@ def main() -> None:
             elif args[i].startswith("--context="):
                 context_filters.append(args[i].split("=", 1)[1])
                 i += 1
+            elif args[i] == "--mode" and i + 1 < len(args):
+                query_mode = args[i + 1]
+                i += 2
+            elif args[i].startswith("--mode="):
+                query_mode = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] in ("--debug-retrieval", "--dfs"):
+                i += 1
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
                 i += 2
             else:
                 i += 1
+        if query_mode not in {"bfs", "dfs", "hybrid"}:
+            print("error: --mode must be one of: bfs, dfs, hybrid", file=sys.stderr)
+            sys.exit(1)
+        if use_dfs and query_mode == "hybrid":
+            print("error: --dfs and --mode hybrid are mutually exclusive", file=sys.stderr)
+            sys.exit(1)
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -2735,21 +2861,38 @@ def main() -> None:
             sys.exit(1)
         import time as _time
         _t0 = _time.perf_counter()
-        _mode = "dfs" if use_dfs else "bfs"
+        hybrid_seeds = None
+        hybrid_debug_path = None
+        if query_mode == "hybrid":
+            from graphify.retrieval import load_index, merge_seed_candidates, search_index, write_retrieval_debug
+            from graphify.serve import _query_terms, _score_nodes
+
+            index = load_index(gp)
+            if index is None:
+                print("warning: vector-index missing or stale; run `graphify index` to enable hybrid retrieval. Falling back to BFS.", file=sys.stderr)
+                query_mode = "bfs"
+            else:
+                lexical = _score_nodes(G, _query_terms(question))
+                semantic_hits = search_index(index, question, k=20)
+                hybrid_seeds = merge_seed_candidates(lexical, semantic_hits)
+                if debug_retrieval:
+                    hybrid_debug_path = write_retrieval_debug(gp, question, "hybrid", lexical, semantic_hits, hybrid_seeds)
         _result = _query_graph_text(
             G,
             question,
-            mode=_mode,
+            mode=query_mode,
             depth=2,
             token_budget=budget,
             context_filters=context_filters,
+            hybrid_seeds=hybrid_seeds,
+            hybrid_debug=str(hybrid_debug_path) if hybrid_debug_path else None,
         )
         querylog.log_query(
             kind="query",
             question=question,
             corpus=str(gp),
             result=_result,
-            mode=_mode,
+            mode=query_mode,
             depth=2,
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,

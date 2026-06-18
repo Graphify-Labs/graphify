@@ -429,19 +429,24 @@ def _query_graph_text(
     depth: int = 3,
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
+    hybrid_seeds: list[str] | None = None,
+    hybrid_debug: str | None = None,
 ) -> str:
     terms = _query_terms(question)
     scored = _score_nodes(G, terms)
-    start_nodes = _pick_seeds(scored)
+    start_nodes = hybrid_seeds or _pick_seeds(scored)
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(G, resolved_filters)
-    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    traversal_mode = "bfs" if mode == "hybrid" else mode
+    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if traversal_mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
+    if hybrid_debug:
+        header_parts.append(f"Retrieval debug: {hybrid_debug}")
     if resolved_filters:
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
