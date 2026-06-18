@@ -2660,14 +2660,18 @@ def main() -> None:
         )
 
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
-        if subcmd == "install":
-            print(hook_install(Path(".")))
-        elif subcmd == "uninstall":
-            print(hook_uninstall(Path(".")))
-        elif subcmd == "status":
-            print(hook_status(Path(".")))
-        else:
-            print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
+        try:
+            if subcmd == "install":
+                print(hook_install(Path(".")))
+            elif subcmd == "uninstall":
+                print(hook_uninstall(Path(".")))
+            elif subcmd == "status":
+                print(hook_status(Path(".")))
+            else:
+                print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
+                sys.exit(1)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
