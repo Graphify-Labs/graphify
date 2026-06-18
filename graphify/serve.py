@@ -28,6 +28,14 @@ def _connect_graph(graph_path: str):
         out_dir = resolved.parent if resolved.suffix else resolved
         store = open_store(out_dir, create=False)
         if store.number_of_nodes() == 0:
+            # Back-compat: the FalkorDB store is empty but a node-link graph.json
+            # may still hold the graph — an existing pre-FalkorDB project, or a
+            # `--no-cluster` run that only wrote JSON. Import it into the store on
+            # first use so query/path/explain/export work without forcing a
+            # rebuild, preserving the previous workflow.
+            gj = resolved if resolved.suffix == ".json" else (out_dir / "graph.json")
+            _import_graph_json_into_store(gj, store)
+        if store.number_of_nodes() == 0:
             raise FileNotFoundError(
                 f"No graph found for {out_dir} (FalkorDB graph empty). Re-run /graphify to build."
             )
@@ -35,6 +43,34 @@ def _connect_graph(graph_path: str):
     except (ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+def _import_graph_json_into_store(gj_path: Path, store) -> bool:
+    """One-time import of a node-link ``graph.json`` into an empty FalkorDB store.
+
+    Back-compat for projects built before the FalkorDB backend (and for
+    ``--no-cluster`` output, which writes only JSON): rather than erroring with
+    "graph empty", load the JSON so existing graphs stay queryable without a
+    rebuild. Returns True if any nodes were imported.
+    """
+    try:
+        if not gj_path.exists():
+            return False
+        data = json.loads(gj_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    nodes = data.get("nodes") or []
+    if not nodes:
+        return False
+    edges = data.get("links", data.get("edges", []))
+    from graphify.build import build_from_json
+    build_from_json({"nodes": nodes, "edges": edges}, store=store)
+    print(
+        f"[graphify] Imported {len(nodes)} nodes from {gj_path.name} into FalkorDB "
+        "(one-time migration from a pre-FalkorDB / --no-cluster graph).",
+        file=sys.stderr,
+    )
+    return True
 
 
 def _communities_from_graph(G: nx.Graph) -> dict[int, list[str]]:

@@ -2,7 +2,10 @@
 surfaced by the PR #1379 review."""
 from __future__ import annotations
 
+import json
+
 from graphify import affected as aff
+from graphify.serve import _import_graph_json_into_store
 
 
 def test_edge_attr_lookup_prefers_forward_direction(store):
@@ -64,3 +67,20 @@ def test_resolve_seed_native_bare_name(store):
     on the native store path, matching the in-memory _bare_name tier."""
     store.add_nodes_from([("n1", {"label": "foo()"}), ("n2", {"label": "fooExtra()"})])
     assert aff.resolve_seed(store, "foo") == "n1"
+
+
+def test_legacy_graph_json_imports_into_empty_store(store, tmp_path):
+    """A node-link graph.json (pre-FalkorDB project / --no-cluster output) must
+    import into an empty store so it stays queryable without a rebuild."""
+    gj = tmp_path / "graph.json"
+    gj.write_text(json.dumps({
+        "nodes": [{"id": "a", "label": "A", "source_file": "a.py"},
+                  {"id": "b", "label": "B", "source_file": "b.py"}],
+        "links": [{"source": "a", "target": "b", "relation": "calls"}],
+    }))
+    assert store.number_of_nodes() == 0
+    assert _import_graph_json_into_store(gj, store) is True
+    assert store.number_of_nodes() == 2
+    assert store.number_of_edges() == 1
+    # Missing / empty JSON is a no-op, not an error.
+    assert _import_graph_json_into_store(tmp_path / "missing.json", store) is False
