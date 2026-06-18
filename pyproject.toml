@@ -120,7 +120,11 @@ include-package-data = false
 # under graphify/skills/<host>/references/, and the always-on injection blocks
 # under graphify/always_on/. There is no graphify/skills/<host>/SKILL.md in the
 # repo, so no SKILL.md glob is needed here.
-graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", "command-kilo.md", "skill-aider.md", "skill-amp.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md", "skills/*/references/*.md", "always_on/*.md"]
+# "udfs/*.js" ships the FalkorDB server-side algorithms (Louvain, edge
+# betweenness, simple cycles) that store.py loads at runtime via
+# Path(__file__).parent / "udfs" — without it, wheel/sdist installs hit a
+# FileNotFoundError when clustering/analyze run (works only from a checkout).
+graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", "command-kilo.md", "skill-aider.md", "skill-amp.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md", "skills/*/references/*.md", "always_on/*.md", "udfs/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

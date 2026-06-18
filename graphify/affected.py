@@ -57,7 +57,15 @@ def resolve_seed(graph, query: str) -> str | None:
     if hasattr(graph, "find_node_ids"):
         if graph.has_node(query):
             return query
-        for kwargs in ({"label": query}, {"source_file": query}, {"label_contains": query}):
+        # Mirror the in-memory tier order: exact label -> bare callable name ->
+        # exact source_file -> substring (#1353). Without the bare-name tier a
+        # query like "foo" failed to resolve to "foo()" on the native path.
+        for kwargs in (
+            {"label": query},
+            {"label_bare": _bare_name(query)},
+            {"source_file": query},
+            {"label_contains": query},
+        ):
             matches = graph.find_node_ids(limit=2, **kwargs)
             if len(matches) == 1:
                 return str(matches[0])

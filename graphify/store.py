@@ -644,10 +644,18 @@ class GraphStore:
         return d
 
     def _edge_attrs(self, u, v):
+        # Prefer the forward u->v edge; fall back to a reverse v->u edge so the
+        # lookup still succeeds in the undirected model (but reports the right
+        # direction's relation when both exist).
         rows = self._rows(
-            "MATCH (a:Entity {id:$u})-[r]-(b:Entity {id:$v}) RETURN properties(r) LIMIT 1",
+            "MATCH (a:Entity {id:$u})-[r]->(b:Entity {id:$v}) RETURN properties(r) LIMIT 1",
             {"u": u, "v": v}, timeout=_QUERY_TIMEOUT_MS,
         )
+        if not rows:
+            rows = self._rows(
+                "MATCH (a:Entity {id:$u})<-[r]-(b:Entity {id:$v}) RETURN properties(r) LIMIT 1",
+                {"u": u, "v": v}, timeout=_QUERY_TIMEOUT_MS,
+            )
         return dict(rows[0][0]) if rows else None
 
     def _degree_one(self, nid):
@@ -736,13 +744,20 @@ class GraphStore:
         self._ensure_schema()
 
     def __getitem__(self, node_id):
-        """Adjacency access: ``G[u]`` -> {neighbor_id: edge_attrs} (both directions), scoped."""
+        """Adjacency access: ``G[u]`` -> {neighbor_id: edge_attrs}.
+
+        Lists neighbors reachable in EITHER direction (the undirected nx.Graph
+        model graphify uses), but when a pair is connected both ways the FORWARD
+        (u->m) edge wins, so ``G[u][v]`` reports the u->v relation rather than an
+        arbitrary direction's attributes.
+        """
         rows = self._rows(
-            "MATCH (n:Entity {id:$id})-[r]-(m:Entity) RETURN m.id, properties(r)",
+            "MATCH (n:Entity {id:$id})-[r]-(m:Entity) "
+            "RETURN m.id, properties(r), startNode(r).id = $id AS fwd ORDER BY fwd DESC",
             {"id": node_id}, timeout=_QUERY_TIMEOUT_MS,
         )
         adj: dict = {}
-        for mid, props in rows:
+        for mid, props, _fwd in rows:
             adj.setdefault(mid, dict(props))
         return adj
 
@@ -843,8 +858,12 @@ class GraphStore:
         rows = [{"src": u, "tgt": v} for u, v in pairs]
         if not rows:
             return
+        # DIRECTED delete: pairs come from edges() in native source->target
+        # order, so only the src->tgt edge is removed. An undirected `-[r]-`
+        # here would also delete a reciprocal tgt->src edge whose own
+        # source_file may not be pruned (over-deletion during incremental prune).
         self._g.query(
-            "UNWIND $rows AS row MATCH (a:Entity {id: row.src})-[r]-(b:Entity {id: row.tgt}) DELETE r",
+            "UNWIND $rows AS row MATCH (a:Entity {id: row.src})-[r]->(b:Entity {id: row.tgt}) DELETE r",
             {"rows": rows},
         )
         self._invalidate()
@@ -1094,12 +1113,21 @@ class GraphStore:
         )
         return {str(k): int(v) for k, v in rows}
 
-    def find_node_ids(self, *, label=None, source_file=None, label_contains=None, limit=None) -> list:
-        """Scoped node lookup by exact label / exact source_file / label substring."""
+    def find_node_ids(self, *, label=None, source_file=None, label_contains=None, label_bare=None, limit=None) -> list:
+        """Scoped node lookup by exact label / exact source_file / bare callable
+        name / label substring."""
         if label is not None:
             q, v = "MATCH (n:Entity) WHERE toLower(n.label) = $v RETURN n.id", label.lower()
         elif source_file is not None:
             q, v = "MATCH (n:Entity) WHERE toLower(n.source_file) = $v RETURN n.id", source_file.lower()
+        elif label_bare is not None:
+            # Bare callable name: a query like "foo" matches a node labelled
+            # "foo" OR "foo()" (the "()" decoration callables carry). Mirrors the
+            # in-memory path's _bare_name tier so `affected foo` resolves natively.
+            q, v = (
+                "MATCH (n:Entity) WHERE toLower(n.label) = $v OR toLower(n.label) = $v + '()' RETURN n.id",
+                label_bare.lower(),
+            )
         else:
             q, v = "MATCH (n:Entity) WHERE toLower(n.label) CONTAINS $v RETURN n.id", label_contains.lower()
         if limit:

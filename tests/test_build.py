@@ -50,6 +50,19 @@ def test_legacy_edge_from_to_canonicalized():
     assert G.number_of_edges() == 1
 
 
+def test_edge_missing_source_file_backfills_from_endpoints():
+    """An edge with no source_file must not crash the build; it backfills from
+    its endpoint nodes (regression: build_from_json referenced an undefined
+    `G.nodes`, raising NameError on any source_file-less edge)."""
+    ext = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "edges": [{"source": "n1", "target": "n2", "relation": "calls", "confidence": "EXTRACTED"}],
+           "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    assert G.number_of_edges() == 1
+    assert edge_data(G, "n1", "n2")["source_file"] == "a.py"
+
+
 def test_source_file_backslash_normalized():
     """Windows backslash paths and POSIX paths for the same file must produce one node."""
     extraction = {

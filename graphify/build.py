@@ -328,8 +328,8 @@ def build_from_json(
         # flags and leaves query results with no file reference (#1279).
         if not attrs.get("source_file"):
             attrs["source_file"] = (
-                G.nodes[src].get("source_file")
-                or G.nodes[tgt].get("source_file")
+                node_attrs[src].get("source_file")
+                or node_attrs[tgt].get("source_file")
                 or ""
             )
         if "source_file" in attrs:

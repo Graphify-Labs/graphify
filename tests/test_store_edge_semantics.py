@@ -1,0 +1,41 @@
+"""Regression tests for GraphStore edge-direction and seed-resolution semantics
+surfaced by the PR #1379 review."""
+from __future__ import annotations
+
+from graphify import affected as aff
+
+
+def test_edge_attr_lookup_prefers_forward_direction(store):
+    """With reciprocal directed edges, ``G[u][v]`` must report the u->v edge's
+    attributes, not an arbitrary direction (regression: undirected ``-[r]-``
+    returned the reverse edge's relation)."""
+    store.add_nodes_from([("a", {"label": "A"}), ("b", {"label": "B"})])
+    store.add_edges_from([("a", "b", {"relation": "ab"}), ("b", "a", {"relation": "ba"})])
+    assert store["a"]["b"]["relation"] == "ab"
+    assert store["b"]["a"]["relation"] == "ba"
+
+
+def test_edge_attr_lookup_falls_back_to_reverse(store):
+    """A single v->u edge is still found when queried as (u, v): the undirected
+    graph model must not lose connectivity just because direction is preferred."""
+    store.add_nodes_from([("a", {"label": "A"}), ("b", {"label": "B"})])
+    store.add_edges_from([("b", "a", {"relation": "ba"})])
+    assert store["a"]["b"]["relation"] == "ba"
+
+
+def test_remove_edges_is_directed(store):
+    """Removing (u, v) must delete only the u->v edge, not a reciprocal v->u
+    edge (regression: undirected delete nuked both directions, over-pruning
+    edges whose own source_file was not deleted)."""
+    store.add_nodes_from([("a", {"label": "A"}), ("b", {"label": "B"})])
+    store.add_edges_from([("a", "b", {"relation": "ab"}), ("b", "a", {"relation": "ba"})])
+    store.remove_edges([("a", "b")])
+    remaining = sorted((u, v, d.get("relation")) for u, v, d in store.edges(data=True))
+    assert remaining == [("b", "a", "ba")]
+
+
+def test_resolve_seed_native_bare_name(store):
+    """`affected foo` must resolve to a uniquely-matching callable node ``foo()``
+    on the native store path, matching the in-memory _bare_name tier."""
+    store.add_nodes_from([("n1", {"label": "foo()"}), ("n2", {"label": "fooExtra()"})])
+    assert aff.resolve_seed(store, "foo") == "n1"
