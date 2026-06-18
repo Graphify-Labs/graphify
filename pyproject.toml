@@ -12,6 +12,11 @@ keywords = ["claude", "claude-code", "codex", "opencode", "kilo", "cursor", "gem
 requires-python = ">=3.10"
 dependencies = [
     "falkordb>=1.0",
+    # Embedded FalkorDB engine — lets graphify run with zero setup (no separate
+    # server) by auto-falling back to it when no local server is reachable.
+    # Only available on Python >= 3.12; on older interpreters a running FalkorDB
+    # server is required.
+    "falkordblite; python_version >= '3.12'",
     "numpy>=1.21",
     "rapidfuzz>=3.0",
     "tree-sitter>=0.23.0,<0.26",

@@ -148,14 +148,44 @@ def _connect(uri: str, user: str | None = None, password: str | None = None):
         from falkordb import FalkorDB
     except ImportError as e:  # pragma: no cover
         raise ImportError("falkordb SDK not installed. Run: pip install falkordb") from e
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 6379
     connect_user = parsed.username or (user if password else None)
     connect_password = parsed.password or (password or None)
-    return FalkorDB(
-        host=parsed.hostname or "localhost",
-        port=parsed.port or 6379,
-        username=connect_user,
-        password=connect_password,
-    )
+    db = FalkorDB(host=host, port=port, username=connect_user, password=connect_password)
+    try:
+        db.connection.ping()
+        return db
+    except Exception as exc:
+        # Server unreachable. For the local default, transparently fall back to
+        # the embedded engine (FalkorDB Lite) so graphify works with zero setup,
+        # like the pre-FalkorDB version. An explicitly-configured remote host that
+        # is down is a real error and must surface, not silently use a local DB.
+        if host not in ("localhost", "127.0.0.1", "::1"):
+            raise
+        try:
+            return _connect_lite(_default_lite_dbfile())
+        except ImportError:
+            raise ConnectionError(
+                f"Could not reach a FalkorDB server at {host}:{port}, and the embedded "
+                "engine (FalkorDB Lite) is not installed. Either start a FalkorDB server "
+                "or install the embedded engine: pip install falkordblite (Python >= 3.12)."
+            ) from exc
+
+
+def _default_lite_dbfile() -> str:
+    """Stable on-disk location for the auto-fallback embedded engine. One shared
+    RDB holds every project's graph (each project uses a unique graph name, so
+    they coexist); lives outside any repo, like a server's datadir. Override with
+    GRAPHIFY_LITE_DBFILE."""
+    import os
+    override = os.environ.get("GRAPHIFY_LITE_DBFILE")
+    if override:
+        return override
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    d = Path(base) / "graphify"
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d / "falkordb_lite.rdb")
 
 
 # ---------------------------------------------------------------------------

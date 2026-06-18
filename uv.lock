@@ -1182,10 +1182,11 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.8.40"
+version = "0.8.41"
 source = { editable = "." }
 dependencies = [
     { name = "falkordb" },
+    { name = "falkordblite", marker = "python_full_version >= '3.12'" },
     { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "rapidfuzz" },
@@ -1344,6 +1345,7 @@ requires-dist = [
     { name = "falkordb", specifier = ">=1.0" },
     { name = "falkordb", marker = "extra == 'all'" },
     { name = "falkordb", marker = "extra == 'falkordb'", specifier = ">=1.0" },
+    { name = "falkordblite", marker = "python_full_version >= '3.12'" },
     { name = "falkordblite", marker = "python_full_version >= '3.12' and extra == 'lite'" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'all'" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'video'" },
