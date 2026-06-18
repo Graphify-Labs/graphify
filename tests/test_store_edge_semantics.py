@@ -34,6 +34,31 @@ def test_remove_edges_is_directed(store):
     assert remaining == [("b", "a", "ba")]
 
 
+def test_traverse_keeps_all_same_level_parent_edges(store):
+    """A node reached from multiple parents in the same BFS level must keep an
+    edge from EVERY parent (regression: marking visited mid-level dropped all but
+    the first, thinning ~⅓ of edges in the subgraph `query` shows the user).
+
+    Diamond: A->B, A->C, B->D, C->D ; from A at depth 2 both B->D and C->D survive.
+    """
+    store.add_nodes_from([(x, {"label": x}) for x in "ABCD"])
+    store.add_edges_from([("A", "B", {}), ("A", "C", {}), ("B", "D", {}), ("C", "D", {})])
+    visited, edges = store._traverse(["A"], depth=2, hub_threshold=10 ** 9)
+    assert set(visited) == set("ABCD")
+    und = {frozenset((u, v)) for u, v in edges}
+    assert frozenset(("B", "D")) in und
+    assert frozenset(("C", "D")) in und
+    assert len(edges) == 4
+
+
+def test_traverse_dedups_parallel_edges(store):
+    """Parallel edges between the same pair must not double-count in the walk."""
+    store.add_nodes_from([("A", {"label": "A"}), ("B", {"label": "B"})])
+    store.add_edges_from([("A", "B", {"relation": "r1"}), ("A", "B", {"relation": "r2"})])
+    _visited, edges = store._traverse(["A"], depth=1, hub_threshold=10 ** 9)
+    assert edges == [("A", "B")]
+
+
 def test_resolve_seed_native_bare_name(store):
     """`affected foo` must resolve to a uniquely-matching callable node ``foo()``
     on the native store path, matching the in-memory _bare_name tier."""

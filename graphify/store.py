@@ -1292,15 +1292,24 @@ class GraphStore:
                 "UNWIND $f AS fid MATCH (n:Entity {id: fid}) "
                 "WITH fid, n, size((n)--()) AS deg "
                 "WHERE fid IN $seeds OR deg < $hub "
-                f"{edge_match}{edge_where} RETURN fid, m.id",
+                f"{edge_match}{edge_where} RETURN DISTINCT fid, m.id",
                 params,
                 timeout=_QUERY_TIMEOUT_MS,
             )
+            # Defer the visited update to END-OF-LEVEL (mirrors v8 _bfs). Marking
+            # a node visited mid-level would drop every parent->child edge except
+            # the first when a node has multiple parents in the same BFS level
+            # (e.g. the diamond A->B, A->C, B->D, C->D loses C->D), thinning the
+            # subgraph the user sees. Record an edge to each newly-discovered node
+            # from EVERY same-level parent, but enqueue the node only once.
             nxt = []
+            newly: set = set()
             for fid, mid in sorted(rows, key=lambda r: (str(r[0]), str(r[1]))):
                 if mid not in visited:
-                    visited.add(mid)
                     edges_seen.append((fid, mid))
-                    nxt.append(mid)
+                    if mid not in newly:
+                        newly.add(mid)
+                        nxt.append(mid)
+            visited |= newly
             frontier = nxt
         return visited, edges_seen
