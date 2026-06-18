@@ -757,16 +757,23 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
 
     patterns: list[tuple[Path, str]] = []
     for d in dirs:
-        # Prefer .graphifyignore; fall back to .gitignore so projects that already
-        # maintain a .gitignore get sensible defaults without duplicating it (#945).
-        ignore_file = d / ".graphifyignore"
-        if not ignore_file.exists():
-            ignore_file = d / ".gitignore"
-        if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = _parse_gitignore_line(raw)
-                if line:
-                    patterns.append((d, line))
+        # Merge .gitignore and .graphifyignore for this dir (#1363). Previously
+        # the presence of a .graphifyignore made graphify skip that dir's
+        # .gitignore entirely, so a file excluded only by .gitignore (e.g. a
+        # neutrally-named secret like prod-dump.sql) silently got indexed into
+        # the graph — whose artifacts embed file contents and are often
+        # committed. .gitignore is read first and .graphifyignore last, so
+        # .graphifyignore patterns (including `!` negations) win on conflict via
+        # last-match-wins; adding a .graphifyignore can only ever exclude MORE,
+        # never re-include a .gitignore-excluded file (#945 kept: a project with
+        # only a .gitignore still gets sensible defaults).
+        for fname in (".gitignore", ".graphifyignore"):
+            ignore_file = d / fname
+            if ignore_file.exists():
+                for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = _parse_gitignore_line(raw)
+                    if line:
+                        patterns.append((d, line))
     return patterns
 
 

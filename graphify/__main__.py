@@ -4453,6 +4453,14 @@ def main() -> None:
 
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
+            # Backfill source_file from endpoint nodes — this raw path bypasses
+            # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
+            _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}
+            for _e in merged["edges"]:
+                if not _e.get("source_file"):
+                    _e["source_file"] = (
+                        _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
+                    )
             _backup(graphify_out)
             graph_json_path.write_text(
                 json.dumps(merged, indent=2), encoding="utf-8"

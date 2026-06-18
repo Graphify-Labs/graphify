@@ -283,6 +283,15 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if src not in node_set or tgt not in node_set:
             continue  # skip edges to external/stdlib nodes - expected, not an error
         attrs = {k: v for k, v in edge.items() if k not in ("source", "target")}
+        # Backfill source_file from the endpoint nodes (every node carries one).
+        # Semantic/LLM edges occasionally omit it, which downstream validation
+        # flags and leaves query results with no file reference (#1279).
+        if not attrs.get("source_file"):
+            attrs["source_file"] = (
+                G.nodes[src].get("source_file")
+                or G.nodes[tgt].get("source_file")
+                or ""
+            )
         if "source_file" in attrs:
             attrs["source_file"] = _norm_source_file(attrs["source_file"], _root)
         # Drop cross-language INFERRED `calls` edges — same short names (render,

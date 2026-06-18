@@ -108,6 +108,23 @@ def test_source_file_backslash_normalized():
     assert sources == {"src/middleware/auth.py"}
 
 
+def test_edge_missing_source_file_backfilled_from_node():
+    """#1279: a semantic/LLM edge lacking source_file must inherit it from its
+    source node rather than reach graph.json with no file reference."""
+    extraction = {
+        "nodes": [
+            {"id": "n1", "label": "A", "file_type": "concept", "source_file": "docs/a.md"},
+            {"id": "n2", "label": "B", "file_type": "concept", "source_file": "docs/b.md"},
+        ],
+        # No source_file on the edge (as LLM output sometimes omits it).
+        "edges": [{"source": "n1", "target": "n2", "relation": "relates_to", "confidence": "INFERRED"}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(extraction)
+    sf = edge_data(G, "n1", "n2").get("source_file")
+    assert sf == "docs/a.md"  # backfilled from the source node
+
+
 def test_build_merges_multiple_extractions():
     ext1 = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"}],
             "edges": [], "input_tokens": 0, "output_tokens": 0}
@@ -599,6 +616,55 @@ def test_build_merge_replaces_changed_file_stale_edges(tmp_path):
     # An unchanged file is untouched.
     assert "K" in labels, "unchanged file's node must survive"
     assert ("K", "A") in edges, "unchanged file's edge must survive"
+
+
+def test_build_merge_root_collapses_convention_drift(tmp_path):
+    """Skill contract: the extraction subagent must emit source_file as the
+    verbatim path from FILE_LIST AND the caller must pass root= (the build root).
+    Then build_merge canonicalizes the new chunk to the same relative base as the
+    stored graph, so re-extraction REPLACES the prior node (incl. stale nodes for
+    that file) instead of accumulating a duplicate. Without root, a drifted
+    relative base (e.g. a bare basename from a different run) mismatches and the
+    graph duplicates. Engine is unchanged — this pins the prompt/root contract."""
+    import networkx as nx
+
+    root = tmp_path
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+
+    # Stored graph: nested project-relative convention + a STALE node for the same
+    # file that the re-extraction no longer emits.
+    stored = {"nodes": [
+        {"id": "wiki_overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": "docs/wiki/overview.md"},
+        {"id": "wiki_overview_stale", "label": "Stale", "file_type": "document",
+         "source_file": "docs/wiki/overview.md"},
+    ], "edges": []}
+    G0 = build([stored], dedup=False)
+    saved = json.dumps(nx.node_link_data(G0, edges="edges"))
+    graph_path.write_text(saved, encoding="utf-8")
+
+    # BUG: --update drifted to a bare basename and no root was passed. Different
+    # base -> source_file replace misses -> stale + duplicate both survive.
+    drift = {"nodes": [
+        {"id": "overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": "overview.md"},
+    ], "edges": []}
+    G_bug = build_merge([drift], graph_path, dedup=False)
+    assert G_bug.number_of_nodes() == 3, "mismatched base must NOT replace -> stale+dup remain"
+
+    # FIX: subagent emits the verbatim path; caller passes root (the build root).
+    graph_path.write_text(saved, encoding="utf-8")
+    abs_overview = str(root / "docs" / "wiki" / "overview.md")
+    fixed = {"nodes": [
+        {"id": "wiki_overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": abs_overview},
+    ], "edges": []}
+    G_ok = build_merge([fixed], graph_path, prune_sources=None, dedup=False, root=root)
+    assert G_ok.number_of_nodes() == 1, "verbatim path + root must collapse to one node"
+    assert "wiki_overview_stale" not in G_ok, "stale node for the re-extracted file must be dropped"
+    assert G_ok.nodes["wiki_overview_overview"]["source_file"] == "docs/wiki/overview.md", \
+        "new chunk must be canonicalized to the stored relative base"
 
 
 def test_build_merge_rejects_oversized_existing_graph(monkeypatch, tmp_path):

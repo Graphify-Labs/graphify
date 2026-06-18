@@ -2088,10 +2088,14 @@ _TSX_CONFIG = LanguageConfig(
 
 _JAVA_CONFIG = LanguageConfig(
     ts_module="tree_sitter_java",
-    class_types=frozenset({"class_declaration", "interface_declaration"}),
+    # record_declaration shares class_declaration's name/body/interfaces fields,
+    # so it becomes a first-class type node instead of an isolated file (#1373).
+    class_types=frozenset({"class_declaration", "interface_declaration", "record_declaration"}),
     function_types=frozenset({"method_declaration", "constructor_declaration"}),
     import_types=frozenset({"import_declaration"}),
-    call_types=frozenset({"method_invocation"}),
+    # object_creation_expression (`new Foo(...)`) is handled by a dedicated Java
+    # branch in walk_calls below — its callee is in the `type` field, not `name`.
+    call_types=frozenset({"method_invocation", "object_creation_expression"}),
     call_function_field="name",
     call_accessor_node_types=frozenset(),
     function_boundary_types=frozenset({"method_declaration", "constructor_declaration"}),
@@ -3576,6 +3580,16 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                         name = func_node.child_by_field_name("field") or func_node.child_by_field_name("name")
                         if name:
                             callee_name = _read_text(name, source)
+            elif config.ts_module == "tree_sitter_java" and node.type == "object_creation_expression":
+                # `new Foo(...)` — the constructed type is in the `type` field, not
+                # `name`, so the generic path misses it (#1373). Reduce a qualified
+                # / generic type to its simple name (com.a.Foo<Bar> -> Foo). Java
+                # method_invocation still flows through the generic branch below.
+                type_node = node.child_by_field_name("type")
+                if type_node is not None:
+                    raw = _read_text(type_node, source).split("<", 1)[0].strip()
+                    if raw:
+                        callee_name = raw.rsplit(".", 1)[-1]
             else:
                 # Generic: get callee from call_function_field
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None

@@ -82,6 +82,33 @@ def test_extract_files_direct_routes_gemini_through_openai_compat(tmp_path, monk
     assert call.call_args.kwargs["max_completion_tokens"] == 16384
 
 
+@pytest.mark.parametrize(
+    "backend, env_key",
+    [
+        ("ollama", "OLLAMA_API_KEY"),
+        ("deepseek", "DEEPSEEK_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+        ("kimi", "MOONSHOT_API_KEY"),
+    ],
+)
+def test_openai_compat_backends_resolve_full_output_cap(tmp_path, monkeypatch, backend, env_key):
+    # #1365: these configs define `max_tokens: 16384`, but the dispatch used to
+    # read only the `max_completion_tokens` key (which only gemini sets), so the
+    # output cap silently fell back to 8192 and truncated deep-mode JSON. The
+    # dispatch must resolve their configured 16384.
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_MAX_OUTPUT_TOKENS", raising=False)
+    monkeypatch.setenv(env_key, "test-key")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+        llm.extract_files_direct([source], backend=backend, root=tmp_path)
+
+    assert call.call_args.kwargs["max_completion_tokens"] == 16384
+
+
 def test_gemini_model_can_be_overridden_by_env(tmp_path, monkeypatch):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("GOOGLE_API_KEY", "google-key")

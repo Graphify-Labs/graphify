@@ -93,18 +93,24 @@ from graphify.detect import save_manifest
 new_extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
 incremental = json.loads(Path('graphify-out/.graphify_incremental.json').read_text(encoding=\"utf-8\"))
 deleted = list(incremental.get('deleted_files', []))
-# Also prune old nodes for re-extracted (changed) files before inserting fresh AST.
-# Without this, build_merge's dedup pass tries to reconcile old and new versions of
-# the same file's nodes and can collapse same-named symbols across files (#1178).
-changed = [f for files in incremental.get('new_files', {}).values() for f in files]
-prune = list(dict.fromkeys(deleted + changed)) or None
+# prune_sources is ONLY for genuinely DELETED files. Changed/re-extracted files are
+# handled by build_merge's replace-on-re-extract (#1344): every source_file in
+# new_chunks is dropped from the base before merge, so old/stale nodes don't survive.
+# Do NOT add `changed` here: with root= passed, prune_set relativizes to the same base
+# as the freshly merged nodes and would DELETE the re-extracted content (#1178 is moot
+# now that replace — not the dedup pass — reconciles changed files).
+prune = list(deleted) or None
 
 # Use build_merge() — reads graph.json directly without NetworkX round-trip
 # so edge direction (calls, implements, imports) is always preserved (#801).
+# Pass root= so prune_sources (absolute paths from detect_incremental) are
+# relativized to match the graph's relative source_file values; without it
+# nothing is pruned and stale nodes accumulate on every update (#1361).
 G = build_merge(
     [new_extraction],
     graph_path='graphify-out/graph.json',
     prune_sources=prune,
+    root='INPUT_PATH',
 )
 print(f'[graphify update] Merged: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges')
 

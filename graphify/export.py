@@ -1127,6 +1127,13 @@ def to_canvas(
                 seen_names[base] = 0
                 node_filenames[node_id] = base
 
+    # Fallback: with no community data (e.g. --no-cluster builds or a missing
+    # analysis sidecar) the grid below produces nothing and the canvas is written
+    # as an empty 32-byte shell on an otherwise populated graph. Emit every node
+    # into one synthetic community so the canvas always reflects the graph (#1324).
+    if not communities and G.number_of_nodes() > 0:
+        communities = {0: [str(n) for n in G.nodes()]}
+
     num_communities = len(communities)
     cols = math.ceil(math.sqrt(num_communities)) if num_communities > 0 else 1
     rows = math.ceil(num_communities / cols) if num_communities > 0 else 1

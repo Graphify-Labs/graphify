@@ -304,7 +304,7 @@ See the [full command reference](#full-command-reference) below.
 
 Create a `.graphifyignore` in your project root — same syntax as `.gitignore`, including `!` negation.
 
-**`.gitignore` is respected automatically.** If no `.graphifyignore` is present in a directory, graphify falls back to the `.gitignore` in that directory. If both exist, `.graphifyignore` takes priority. Subdirectory scoping works the same way as git — an ignore file only affects its own subtree.
+**`.gitignore` is respected automatically.** graphify reads the `.gitignore` in each directory. If a `.graphifyignore` is also present, the two are **merged** — `.graphifyignore` patterns are evaluated last, so they win on conflicts (including `!` negations). Adding a `.graphifyignore` only ever excludes more; it never re-includes a file your `.gitignore` already excluded. Subdirectory scoping works the same way as git — an ignore file only affects its own subtree.
 
 ```
 # .graphifyignore
@@ -469,6 +469,14 @@ The KV-cache window is auto-sized but may be too large for your GPU. Reduce it:
 ```bash
 GRAPHIFY_OLLAMA_NUM_CTX=8192 graphify extract ./docs --backend ollama --token-budget 4000
 ```
+
+**`LLM returned invalid JSON` / `Unterminated string` warnings**
+The model's JSON response hit its output-token limit and was cut off mid-string. graphify auto-recovers (it splits the chunk and re-extracts the halves, and an oversized single document is first sliced at heading/paragraph boundaries so the whole file is still covered), so these warnings are noisy but not data loss. To reduce the churn, raise the output cap or shrink each chunk's output:
+```bash
+GRAPHIFY_MAX_OUTPUT_TOKENS=16384 graphify extract . --mode deep   # lift the cap
+graphify extract . --mode deep --token-budget 4000                # smaller input chunks -> smaller output
+```
+With a cloud gateway like OpenRouter, prefer `--backend openai` (set `OPENAI_BASE_URL`) over the Ollama shim — it's a cleaner OpenAI-compatible path. If the model has its own max-output ceiling, lowering `--token-budget` is the reliable lever.
 
 **Graph HTML is too large to open in a browser (>5000 nodes)**
 Skip HTML generation and use the JSON directly:
