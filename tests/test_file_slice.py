@@ -163,3 +163,18 @@ def test_bisect_slice_splits_at_newline(tmp_path):
 def test_bisect_slice_returns_none_for_tiny(tmp_path):
     f = _write(tmp_path / "a.md", "ab")
     assert bisect_slice(FileSlice(f, 0, 1, 0, 1)) is None
+
+
+def test_extract_files_direct_accepts_file_slice(tmp_path):
+    from unittest.mock import patch
+
+    f = _write(tmp_path / "doc.md", "# Title\n\nSome prose.\n")
+    sl = FileSlice(f, 0, len(f.read_text(encoding="utf-8")), 0, 1)
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+        out = llm.extract_files_direct(
+            [sl], backend="kimi", api_key="test-key", root=tmp_path,
+        )
+    assert out is result
+    user_msg = call.call_args.args[3]
+    assert "Some prose." in user_msg

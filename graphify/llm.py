@@ -24,6 +24,13 @@ from graphify.file_slice import (
     unit_path,
 )
 
+SemanticUnit = Path | FileSlice
+
+
+def _coerce_semantic_units(units: list[SemanticUnit | str]) -> list[SemanticUnit]:
+    """Normalize str/Path inputs; pass FileSlice through unchanged (#1369)."""
+    return [u if isinstance(u, FileSlice) else Path(u) for u in units]
+
 # `_read_files` truncates each file at this many characters before joining into
 # the user message. Token estimates use the same cap so packing matches reality.
 _FILE_CHAR_CAP = 20_000
@@ -1290,7 +1297,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
 
 
 def extract_files_direct(
-    files: list[Path],
+    files: list[SemanticUnit | str],
     backend: str | None = None,
     api_key: str | None = None,
     model: str | None = None,
@@ -1306,9 +1313,10 @@ def extract_files_direct(
 
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so downstream helpers (``_partition_semantic_files``, ``_read_files``,
-    ``_build_image_refs``) can rely on ``Path`` semantics (#1386).
+    ``_build_image_refs``) can rely on ``Path`` semantics (#1386). ``FileSlice``
+    units from intra-file splitting (#1369) pass through unchanged.
     """
-    files = [Path(f) for f in files]
+    files = _coerce_semantic_units(files)
     if backend is None:
         backend = detect_backend()
         if backend is None:
@@ -1514,7 +1522,7 @@ def _looks_like_context_exceeded(exc: BaseException) -> bool:
 
 
 def _extract_with_adaptive_retry(
-    chunk: list[Path],
+    chunk: list[SemanticUnit],
     backend: str,
     api_key: str | None,
     model: str | None,
@@ -1737,7 +1745,7 @@ def extract_corpus_parallel(
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so packing/slicing helpers can rely on ``Path`` semantics (#1386).
     """
-    files = [Path(f) for f in files]
+    files = _coerce_semantic_units(files)
     # Split oversized splittable documents into slices that cover the whole file
     # before packing, so content past _FILE_CHAR_CAP is extracted instead of
     # silently dropped (#1369). Files at/under the cap pass through unchanged.
@@ -1754,7 +1762,7 @@ def extract_corpus_parallel(
     }
     total = len(chunks)
 
-    def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
+    def _run_one(idx: int, chunk: list[SemanticUnit]) -> tuple[int, dict | None, Exception | None]:
         t0 = time.time()
         try:
             result = _extract_with_adaptive_retry(
