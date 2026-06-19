@@ -223,7 +223,7 @@ def test_collect_files_from_dir():
 def test_collect_files_skips_hidden():
     files = collect_files(FIXTURES)
     for f in files:
-        assert not any(part.startswith(".") for part in f.parts)
+        assert not any(part.startswith(".") for part in f.relative_to(FIXTURES).parts)
 
 
 def test_collect_files_follows_symlinked_directory(tmp_path):
@@ -259,7 +259,7 @@ def _legacy_collect_files(target, *, root=None):
     for ext in sorted(extensions):
         results.extend(
             p for p in target.rglob(f"*{ext}")
-            if not any(_is_noise_dir(part) for part in p.parts)
+            if not any(_is_noise_dir(part) for part in p.relative_to(target).parts)
             and not (patterns and _is_ignored(p, ignore_root, patterns))
         )
     return sorted(results)
