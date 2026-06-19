@@ -63,6 +63,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from graphify.ids import make_id as _shared_make_id
 from graphify.security import sanitize_label
 
 
@@ -376,12 +377,8 @@ def _add_edge(
 
 
 def _make_id(*parts: str) -> str:
-    """Build a stable node ID. Must match extract._make_id's normalisation rules."""
-    combined = "_".join(p.strip("_.") for p in parts if p)
-    combined = unicodedata.normalize("NFKC", combined)
-    cleaned = re.sub(r"[^\w]+", "_", combined, flags=re.UNICODE)
-    cleaned = re.sub(r"_+", "_", cleaned)
-    return cleaned.strip("_").casefold()
+    """Build a stable node ID via the single shared recipe (#1378)."""
+    return _shared_make_id(*parts)
 
 
 def _file_stem(path: Path) -> str:

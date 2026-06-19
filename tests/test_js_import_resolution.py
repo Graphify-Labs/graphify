@@ -459,6 +459,79 @@ def test_pnpm_workspace_package_import_resolves_package_entry(tmp_path: Path):
     assert _has_edge(result, "apps/web/src/page.ts", "packages/types/src/index.ts")
 
 
+def test_npm_workspace_package_import_resolves_package_entry(tmp_path: Path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"workspaces": ["apps/*", "packages/*"]}),
+    )
+    _write(
+        tmp_path / "packages/types/package.json",
+        json.dumps({"name": "@workspace/types", "exports": "./src/index.ts"}),
+    )
+    target = _write(
+        tmp_path / "packages/types/src/index.ts",
+        "export interface SomeDto { id: string }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/page.ts",
+        "import type { SomeDto } from '@workspace/types'\nconst dto: SomeDto = { id: '1' }\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/page.ts", "packages/types/src/index.ts")
+
+
+def test_yarn_workspace_package_import_resolves_package_entry(tmp_path: Path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"workspaces": {"packages": ["apps/*", "packages/*"]}}),
+    )
+    _write(
+        tmp_path / "packages/types/package.json",
+        json.dumps({"name": "@workspace/types", "exports": "./src/index.ts"}),
+    )
+    target = _write(
+        tmp_path / "packages/types/src/index.ts",
+        "export interface SomeDto { id: string }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/page.ts",
+        "import type { SomeDto } from '@workspace/types'\nconst dto: SomeDto = { id: '1' }\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/page.ts", "packages/types/src/index.ts")
+
+
+def test_pnpm_workspace_takes_precedence_over_package_json_workspaces(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"workspaces": ["other/*"]}),
+    )
+    _write(
+        tmp_path / "packages/types/package.json",
+        json.dumps({"name": "@workspace/types", "exports": "./src/index.ts"}),
+    )
+    target = _write(
+        tmp_path / "packages/types/src/index.ts",
+        "export interface SomeDto { id: string }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/page.ts",
+        "import type { SomeDto } from '@workspace/types'\nconst dto: SomeDto = { id: '1' }\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/page.ts", "packages/types/src/index.ts")
+
+
 def test_js_import_resolution_ignores_stale_importer_cache_when_target_appears(tmp_path: Path):
     importer = _write(
         tmp_path / "src/lib/page.ts",

@@ -150,6 +150,33 @@ def test_check_skill_version_warns_on_missing_references(tmp_path, fake_bundle, 
     assert "references/ sidecar is missing" in err
 
 
+def test_check_skill_version_ignores_permission_error(tmp_path, fake_bundle, monkeypatch, capsys):
+    """Unreadable version probes should not crash startup."""
+    platform = fake_bundle
+    _install(tmp_path, platform)
+    skill_dir = tmp_path / ".claude" / "skills" / "graphify"
+    skill = skill_dir / "SKILL.md"
+
+    # Drain install output so the no-warning assertions below see only what
+    # _check_skill_version itself emits.
+    capsys.readouterr()
+
+    original_exists = Path.exists
+
+    def guarded_exists(self):
+        if self.name == ".graphify_version":
+            raise PermissionError("denied")
+        return original_exists(self)
+
+    monkeypatch.setattr(Path, "exists", guarded_exists)
+
+    mainmod._check_skill_version(skill)
+
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert out.err == ""
+
+
 def test_hard_fail_when_bundle_dir_present_but_references_missing(tmp_path, monkeypatch):
     """A bundle dir that exists but has no references/ subdir is a malformed
     package: exit 1 rather than silently shipping an empty sidecar.

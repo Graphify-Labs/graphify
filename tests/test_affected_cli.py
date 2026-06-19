@@ -94,6 +94,36 @@ def test_affected_cli_forces_directed_on_undirected_graph(monkeypatch, tmp_path,
     assert "No affected nodes found." not in out
 
 
+def test_affected_cli_loads_edges_keyed_graph(monkeypatch, tmp_path, capsys):
+    """graphify's `extract` writes graph.json with an "edges" key (not networkx's
+    default "links"). affected.load_graph must handle it; before the edges/links
+    normalization it raised an uncaught KeyError: 'links' (same class as #1198)."""
+    graph = nx.DiGraph()
+    graph.add_node("target", label="Foo", source_file="pkg/foo.py", source_location="L1")
+    graph.add_node("caller", label="X()", source_file="app.py", source_location="L4")
+    graph.add_edge("caller", "target", relation="calls", context="call", confidence="EXTRACTED")
+
+    # Emulate graphify extract output: top-level "edges" key instead of "links".
+    data = json_graph.node_link_data(graph, edges="links")
+    data["edges"] = data.pop("links")
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "affected", "Foo", "--graph", str(graph_path)],
+    )
+
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    assert "Affected nodes for Foo" in out
+    assert "X()" in out
+    assert "calls" in out
+
+
 def test_resolve_seed_bare_name_matches_callable_label():
     from graphify.affected import resolve_seed
 
@@ -113,6 +143,27 @@ def test_resolve_seed_decorated_query_matches_bare_label():
     graph.add_node("b", label="FooBar", source_file="pkg/foobar.py")
 
     assert resolve_seed(graph, "Foo()") == "a"
+
+
+def test_resolve_seed_matches_unicode_normalized_label():
+    import unicodedata
+
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    graph.add_node("a", label="Auditoría", source_file="pkg/auditoria.py")
+
+    assert resolve_seed(graph, unicodedata.normalize("NFD", "Auditoría")) == "a"
+
+
+def test_resolve_seed_preserves_distinct_accents():
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    graph.add_node("a", label="resume", source_file="pkg/resume.py")
+    graph.add_node("b", label="résumé", source_file="pkg/resume_accented.py")
+
+    assert resolve_seed(graph, "resume") == "a"
 
 
 def test_resolve_seed_bare_name_tie_still_returns_none():

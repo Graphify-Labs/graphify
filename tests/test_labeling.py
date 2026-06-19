@@ -3,6 +3,9 @@
 Backend calls are mocked - no network. Covers the happy path, partial replies,
 malformed replies, and the no-backend fallback.
 """
+import json
+import sys
+
 import networkx as nx
 import pytest
 
@@ -38,6 +41,71 @@ def test_label_communities_happy_path(monkeypatch):
     assert "place_order" in captured["prompt"]
     assert "StripeClient" in captured["prompt"]
     assert captured["backend"] == "gemini"
+
+
+def test_label_communities_passes_model_override(monkeypatch):
+    G, communities = _graph()
+    captured = {}
+
+    def fake_call(prompt, *, backend, max_tokens=200, model=None):
+        captured["backend"] = backend
+        captured["model"] = model
+        return '{"0": "Order Management", "1": "Payment Flow"}'
+
+    monkeypatch.setattr("graphify.llm._call_llm", fake_call)
+    labels = label_communities(
+        G,
+        communities,
+        backend="gemini",
+        model="gemini-3.1-flash-lite",
+    )
+
+    assert labels == {0: "Order Management", 1: "Payment Flow"}
+    assert captured == {"backend": "gemini", "model": "gemini-3.1-flash-lite"}
+
+
+def test_label_cli_passes_model_override(tmp_path, monkeypatch):
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": "n1", "label": "OrderService", "community": 0},
+        ],
+        "links": [],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+    captured = {}
+
+    def fake_generate(G, communities, *, backend=None, model=None, gods=None, quiet=False):
+        captured["backend"] = backend
+        captured["model"] = model
+        return {0: "Orders"}, "llm"
+
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "graphify",
+            "label",
+            str(tmp_path),
+            "--backend",
+            "gemini",
+            "--model",
+            "gemini-3.1-flash-lite",
+            "--no-viz",
+        ],
+    )
+
+    cli.main()
+
+    assert captured == {"backend": "gemini", "model": "gemini-3.1-flash-lite"}
 
 
 def test_label_communities_partial_reply_fills_placeholder(monkeypatch):

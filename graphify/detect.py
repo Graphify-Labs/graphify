@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 
@@ -25,7 +26,7 @@ class FileType(str, Enum):
 
 _MANIFEST_PATH = "graphify-out/manifest.json"
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.razor', '.cshtml', '.cls', '.trigger'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.razor', '.cshtml', '.cls', '.trigger'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -382,6 +383,13 @@ def _shebang_file_type(path: Path) -> FileType | None:
 
 
 def classify_file(path: Path) -> FileType | None:
+    # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) are parsed
+    # deterministically, so route them to the AST path (CODE) rather than the LLM
+    # document path — otherwise apm.yml (a .yml "document") would be LLM-extracted
+    # and a package would split into duplicate file-anchored nodes (#1377).
+    from graphify.manifest_ingest import is_package_manifest_path
+    if is_package_manifest_path(path):
+        return FileType.CODE
     # Compound extensions must be checked before simple suffix lookup
     if path.name.lower().endswith(".blade.php"):
         return FileType.CODE
@@ -756,16 +764,23 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
 
     patterns: list[tuple[Path, str]] = []
     for d in dirs:
-        # Prefer .graphifyignore; fall back to .gitignore so projects that already
-        # maintain a .gitignore get sensible defaults without duplicating it (#945).
-        ignore_file = d / ".graphifyignore"
-        if not ignore_file.exists():
-            ignore_file = d / ".gitignore"
-        if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = _parse_gitignore_line(raw)
-                if line:
-                    patterns.append((d, line))
+        # Merge .gitignore and .graphifyignore for this dir (#1363). Previously
+        # the presence of a .graphifyignore made graphify skip that dir's
+        # .gitignore entirely, so a file excluded only by .gitignore (e.g. a
+        # neutrally-named secret like prod-dump.sql) silently got indexed into
+        # the graph — whose artifacts embed file contents and are often
+        # committed. .gitignore is read first and .graphifyignore last, so
+        # .graphifyignore patterns (including `!` negations) win on conflict via
+        # last-match-wins; adding a .graphifyignore can only ever exclude MORE,
+        # never re-include a .gitignore-excluded file (#945 kept: a project with
+        # only a .gitignore still gets sensible defaults).
+        for fname in (".gitignore", ".graphifyignore"):
+            ignore_file = d / fname
+            if ignore_file.exists():
+                for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = _parse_gitignore_line(raw)
+                    if line:
+                        patterns.append((d, line))
     return patterns
 
 
@@ -1042,13 +1057,19 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # Prune noise dirs in-place so os.walk never descends into them.
                 # Dot dirs are allowed — users often want .github/, .claude/, etc.
                 # Framework caches (.next, .nuxt, …) are caught by _is_noise_dir.
-                # When negation patterns (!) exist, skip directory-level ignore
-                # pruning so negated files inside can still be reached.
-                has_negation = any(p.startswith("!") for _, p in ignore_patterns)
+                # Negations need no special-casing here: _is_ignored already applies
+                # last-match-wins (so `!dir/` un-ignores a directory and it won't be
+                # pruned) and the gitignore parent-exclusion rule (a `!` cannot rescue
+                # a file beneath an excluded dir), so descending an ignored directory to
+                # look for a re-included file is never necessary. The previous blanket
+                # `has_negation` disabled directory pruning for EVERY ignored dir whenever
+                # any `!` rule existed — e.g. a single `!docs/**` made the walk descend
+                # bin/, obj/, wwwroot/, generated/, … : a pathological slowdown on large
+                # repos for no correctness gain.
                 dirnames[:] = [
                     d for d in dirnames
                     if not _is_noise_dir(d, dp)
-                    and (has_negation or not _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache))
+                    and not _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache)
                 ]
             for fname in filenames:
                 if fname in _SKIP_FILES:
@@ -1156,6 +1177,15 @@ def _md5_file(path: Path) -> str:
     except OSError:
         return ""
     return h.hexdigest()
+
+
+def _stat_and_hash(path_str: str) -> tuple[str, float, str] | None:
+    """Stat + MD5 a single file; returns None on OSError (e.g. deleted mid-run)."""
+    try:
+        p = Path(path_str)
+        return path_str, p.stat().st_mtime, _md5_file(p)
+    except OSError:
+        return None
 
 
 def _to_relative_for_storage(key: str, root: Path) -> str:
@@ -1273,26 +1303,29 @@ def save_manifest(
         except OSError:
             continue
 
-    for file_list in files.values():
-        for f in file_list:
-            try:
-                p = Path(f)
-                mtime = p.stat().st_mtime
-                h = _md5_file(p)
-            except OSError:
-                continue  # file deleted between detect() and manifest write
-            prev = _normalise_entry(existing.get(f, {})) or {}
-            entry: dict = {"mtime": mtime}
-            if kind in ("ast", "both"):
-                entry["ast_hash"] = h
-            else:
-                entry["ast_hash"] = prev.get("ast_hash", "")
-            if kind in ("semantic", "both"):
-                entry["semantic_hash"] = h
-            else:
-                # Preserve semantic_hash only when content is unchanged
-                entry["semantic_hash"] = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
-            manifest[f] = entry
+    all_files = [f for file_list in files.values() for f in file_list]
+    with ThreadPoolExecutor() as pool:
+        raw = pool.map(_stat_and_hash, all_files)
+    hashed: dict[str, tuple[float, str]] = {
+        r[0]: (r[1], r[2]) for r in raw if r is not None
+    }
+
+    for f in all_files:
+        if f not in hashed:
+            continue  # file deleted between detect() and manifest write
+        mtime, h = hashed[f]
+        prev = _normalise_entry(existing.get(f, {})) or {}
+        entry: dict = {"mtime": mtime}
+        if kind in ("ast", "both"):
+            entry["ast_hash"] = h
+        else:
+            entry["ast_hash"] = prev.get("ast_hash", "")
+        if kind in ("semantic", "both"):
+            entry["semantic_hash"] = h
+        else:
+            # Preserve semantic_hash only when content is unchanged
+            entry["semantic_hash"] = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
+        manifest[f] = entry
     if root is not None:
         # Persist in portable form: forward-slash relative paths. Keys outside
         # ``root`` (out-of-tree symlinked corpora, --include sources) keep

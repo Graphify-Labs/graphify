@@ -16,8 +16,27 @@ def _load_manifest() -> dict:
     if _GLOBAL_MANIFEST.exists():
         try:
             return json.loads(_GLOBAL_MANIFEST.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as exc:
+            # Don't silently wipe the user's manifest on a parse error: that
+            # deletes every tracked repo. Back the bad file up and surface the
+            # error so the user can recover or report it.
+            backup = _GLOBAL_MANIFEST.with_suffix(
+                _GLOBAL_MANIFEST.suffix + f".corrupt.{int(datetime.now(timezone.utc).timestamp())}"
+            )
+            try:
+                _GLOBAL_MANIFEST.rename(backup)
+                print(
+                    f"[graphify global] manifest at {_GLOBAL_MANIFEST} failed to parse ({exc}); "
+                    f"moved to {backup} and starting fresh. Restore from the backup if this was "
+                    f"unexpected.",
+                    file=sys.stderr,
+                )
+            except Exception as rename_exc:
+                print(
+                    f"[graphify global] manifest at {_GLOBAL_MANIFEST} failed to parse ({exc}) "
+                    f"and could not be backed up ({rename_exc}). Starting fresh.",
+                    file=sys.stderr,
+                )
     return {"version": 1, "repos": {}}
 
 

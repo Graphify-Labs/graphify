@@ -11,6 +11,14 @@ def test_classify_python():
 def test_classify_typescript():
     assert classify_file(Path("bar.ts")) == FileType.CODE
 
+def test_classify_powershell_module():
+    # #1315: .psm1 modules were never indexed (CODE_EXTENSIONS gap).
+    assert classify_file(Path("Utils.psm1")) == FileType.CODE
+
+def test_classify_powershell_manifest():
+    # #1331: .psd1 manifests must be classified as CODE so the manifest extractor runs.
+    assert classify_file(Path("MyModule.psd1")) == FileType.CODE
+
 def test_classify_markdown():
     assert classify_file(Path("README.md")) == FileType.DOCUMENT
 
@@ -542,6 +550,51 @@ def test_negation_ancestor_itself_reincluded(tmp_path):
     assert not _is_ignored(f, tmp_path, patterns)
 
 
+def test_negation_does_not_disable_directory_pruning(tmp_path, monkeypatch):
+    """A single `!` re-include must not switch off pruning of *unrelated* ignored dirs.
+
+    Regression: a blanket ``has_negation`` flag used to disable directory-level pruning
+    for EVERY ignored dir whenever any ``!`` pattern existed, so a single ``!docs/**``
+    made os.walk descend bin/, obj/, wwwroot/, generated/, … — a pathological slowdown
+    on large repos. Output stayed correct (the per-file ``_is_ignored`` filter still
+    excluded those files), so this guards the *walk* itself: the ignored dir must never
+    be descended, while the negation must still re-include its target.
+    """
+    import os
+    import graphify.detect as det
+
+    (tmp_path / ".graphifyignore").write_text("myignored/\n*.md\n!docs/**\n")
+    deep = tmp_path / "myignored" / "deep" / "deeper"
+    deep.mkdir(parents=True)
+    (deep / "junk.py").write_text("x = 1")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "guide.md").write_text("# guide")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("y = 2")
+
+    visited: list[str] = []
+    real_walk = os.walk
+
+    def tracking_walk(top, *args, **kwargs):
+        for dirpath, dirnames, filenames in real_walk(top, *args, **kwargs):
+            visited.append(dirpath)
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(det.os, "walk", tracking_walk)
+    result = det.detect(tmp_path)
+
+    # The ignored (non-noise) dir must never be descended, despite the !docs/** negation.
+    assert not any("myignored" in Path(v).parts for v in visited), (
+        "ignored 'myignored/' was walked despite being ignored — the has_negation bypass regressed"
+    )
+    # Detection itself is unaffected: negation still re-includes docs/*.md, real source is
+    # found, and nothing leaks out of the ignored dir.
+    all_files = [p for cat in result["files"].values() for p in cat]
+    assert any(p.endswith("app.py") for p in all_files)
+    assert any(p.endswith("guide.md") for p in all_files)
+    assert not any("junk.py" in p for p in all_files)
+
+
 # Regression tests for #1087 - anchored patterns must not match basename deep in tree
 
 def test_anchored_dir_not_matched_at_depth(tmp_path):
@@ -869,19 +922,38 @@ def test_gitignore_fallback_when_no_graphifyignore(tmp_path):
     assert not any("generated" in f for f in code)
 
 
-def test_graphifyignore_takes_precedence_over_gitignore(tmp_path):
-    """When both exist, .graphifyignore is used and .gitignore is ignored (#945)."""
+def test_graphifyignore_and_gitignore_are_merged(tmp_path):
+    """When both exist, their patterns are MERGED — a file excluded only by
+    .gitignore stays excluded even though .graphifyignore says nothing about it
+    (#1363). Previously the presence of a .graphifyignore silently disabled the
+    dir's .gitignore, leaking gitignore-only secrets into the graph."""
     (tmp_path / ".git").mkdir()
-    # .gitignore would exclude main.py; .graphifyignore excludes only other.py
-    (tmp_path / ".gitignore").write_text("main.py\n")
-    (tmp_path / ".graphifyignore").write_text("other.py\n")
+    (tmp_path / ".gitignore").write_text("main.py\n")        # gitignore-only exclusion
+    (tmp_path / ".graphifyignore").write_text("other.py\n")  # says nothing about main.py
     (tmp_path / "main.py").write_text("x = 1")
     (tmp_path / "other.py").write_text("x = 2")
+    (tmp_path / "keep.py").write_text("x = 3")
 
     result = detect(tmp_path)
     code = result["files"]["code"]
-    assert any("main.py" in f for f in code)       # gitignore NOT applied
-    assert not any("other.py" in f for f in code)  # graphifyignore IS applied
+    assert not any("main.py" in f for f in code)   # gitignore STILL applied (merged)
+    assert not any("other.py" in f for f in code)  # graphifyignore applied
+    assert any("keep.py" in f for f in code)       # neither excludes it
+
+
+def test_graphifyignore_negation_overrides_gitignore(tmp_path):
+    """.graphifyignore is evaluated after .gitignore, so a `!` negation in it can
+    re-include a file the .gitignore excluded (last-match-wins, #1363)."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitignore").write_text("*.py\n")           # exclude all .py
+    (tmp_path / ".graphifyignore").write_text("!keep.py\n")  # but rescue keep.py
+    (tmp_path / "main.py").write_text("x = 1")
+    (tmp_path / "keep.py").write_text("x = 2")
+
+    result = detect(tmp_path)
+    code = result["files"]["code"]
+    assert any("keep.py" in f for f in code)      # rescued by graphifyignore negation
+    assert not any("main.py" in f for f in code)  # still excluded
 
 
 # Regression tests for #947 - .worktrees/ skipped and --exclude flag
