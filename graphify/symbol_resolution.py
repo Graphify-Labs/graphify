@@ -10,6 +10,7 @@ from pathlib import Path
 from collections.abc import Sequence
 from typing import Any
 
+from graphify.ids import make_id as _shared_make_id
 from graphify.security import sanitize_metadata
 
 
@@ -357,12 +358,12 @@ def resolve_cross_file_raw_calls(
 
 
 def _bash_make_id(*parts: str) -> str:
-    """Exact copy of extract._make_id — kept here to avoid an import cycle."""
-    combined = "_".join(p.strip("_.") for p in parts if p)
-    combined = unicodedata.normalize("NFKC", combined)
-    cleaned = re.sub(r"[^\w]+", "_", combined, flags=re.UNICODE)
-    cleaned = re.sub(r"_+", "_", cleaned)
-    return cleaned.strip("_").casefold()
+    """Bash symbol node ID via the single shared recipe (#1378).
+
+    Previously an inline copy to dodge an import cycle; ``graphify.ids`` is
+    dependency-free, so it can be imported directly.
+    """
+    return _shared_make_id(*parts)
 
 
 def _bash_file_stem(rel_path: Path) -> str:

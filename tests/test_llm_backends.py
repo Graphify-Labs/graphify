@@ -133,6 +133,58 @@ def test_missing_gemini_key_names_both_supported_env_vars(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# #1386: public entry points accept str paths, not just pathlib.Path
+# ---------------------------------------------------------------------------
+
+
+def test_extract_files_direct_accepts_str_paths(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n\nThe runner emits a snapshot.\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    # str path must not raise AttributeError: 'str' object has no attribute 'suffix'
+    with patch("graphify.llm._call_openai_compat", return_value=result):
+        assert llm.extract_files_direct([str(source)], backend="gemini", root=tmp_path) is result
+
+
+def test_extract_corpus_parallel_accepts_str_and_mixed_paths(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
+    f1 = tmp_path / "a.md"
+    f1.write_text("# A\n\nNode one.\n")
+    f2 = tmp_path / "b.md"
+    f2.write_text("# B\n\nNode two.\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result):
+        # all-str, all-Path, and mixed must each pack + run without AttributeError
+        for files in ([str(f1), str(f2)], [f1, f2], [str(f1), f2]):
+            merged = llm.extract_corpus_parallel(
+                files, backend="gemini", root=tmp_path, max_concurrency=1
+            )
+            assert merged["failed_chunks"] == 0
+
+
+def test_str_path_entry_points_handle_edge_cases(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result):
+        # empty list: no chunks, nothing to extract, no crash
+        empty = llm.extract_corpus_parallel([], backend="gemini", root=tmp_path)
+        assert empty["nodes"] == [] and empty["failed_chunks"] == 0
+        # a Path subclass is still a Path and must pass through unchanged
+        class _SubPath(type(Path())):  # concrete OS-specific Path subclass
+            pass
+        sub = _SubPath(tmp_path / "c.md")
+        sub.write_text("# C\n\nNode.\n")
+        assert llm.extract_files_direct([sub], backend="gemini", root=tmp_path) is result
+
+
+# ---------------------------------------------------------------------------
 # Adaptive retry: context-window overflow recovery
 # ---------------------------------------------------------------------------
 
