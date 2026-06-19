@@ -3354,7 +3354,10 @@ def main() -> None:
                 or os.environ.get("DEEPSEEK_API_KEY")
                 or os.environ.get("GRAPHIFY_NO_TIPS")
             ):
-                print("Tip: set GEMINI_API_KEY or GOOGLE_API_KEY to use Gemini for semantic extraction.")
+                print(
+                    "Tip: set GEMINI_API_KEY or GOOGLE_API_KEY to use Gemini for semantic extraction, "
+                    "or install Claude Code (`claude` on $PATH) for zero-config extraction (claude-cli)."
+                )
         else:
             print(
                 "Nothing to update or rebuild failed — check output above.",
@@ -4210,8 +4213,9 @@ def main() -> None:
                     "error: no LLM API key found (" + "; ".join(reasons) + "). "
                     "Set GEMINI_API_KEY or GOOGLE_API_KEY (gemini), MOONSHOT_API_KEY "
                     "(kimi), ANTHROPIC_API_KEY (claude), OPENAI_API_KEY (openai), "
-                    "DEEPSEEK_API_KEY (deepseek), or pass --backend. A code-only "
-                    "corpus needs no key.",
+                    "DEEPSEEK_API_KEY (deepseek), or pass --backend. "
+                    "Alternatively, install Claude Code and ensure `claude` is on $PATH "
+                    "(claude-cli) — no API key required. A code-only corpus needs no key.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
