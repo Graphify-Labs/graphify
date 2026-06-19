@@ -88,6 +88,9 @@ The output `graph.json` uses NetworkX's node-link format. Each node has:
 - `file_type` — `code`, `document`, `paper`, `image`, `rationale`
 - `source_file` — where it came from
 
+See [RFC: file-level node summaries](node-summaries-rfc.md) for two proposed
+ways to add compact optional summaries for AI navigation.
+
 Each edge has:
 - `source`, `target` — node IDs
 - `relation` — verb phrase (e.g. `calls`, `imports`, `implements`, `semantically_similar_to`)

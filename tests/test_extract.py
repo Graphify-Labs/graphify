@@ -1,3 +1,6 @@
+import json
+import os
+from collections import Counter
 from pathlib import Path
 from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
 
@@ -246,6 +249,89 @@ def test_collect_files_handles_circular_symlinks(tmp_path):
     assert any(f.name == "mod.py" for f in files)
 
 
+def _legacy_collect_files(target, *, root=None):
+    """The pre-#1261 rglob-per-extension implementation, kept as a parity oracle."""
+    from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
+    extensions = set(_DISPATCH.keys())
+    ignore_root = root if root is not None else target
+    patterns = _load_graphifyignore(ignore_root)
+    results = []
+    for ext in sorted(extensions):
+        results.extend(
+            p for p in target.rglob(f"*{ext}")
+            if not any(_is_noise_dir(part) for part in p.parts)
+            and not (patterns and _is_ignored(p, ignore_root, patterns))
+        )
+    return sorted(results)
+
+
+def test_collect_files_parity_with_legacy_on_fixtures():
+    assert collect_files(FIXTURES) == _legacy_collect_files(FIXTURES)
+
+
+def test_collect_files_parity_with_legacy_synthetic(tmp_path):
+    (tmp_path / "src" / "deep").mkdir(parents=True)
+    (tmp_path / "src" / "app.py").write_text("x = 1")
+    (tmp_path / "src" / "deep" / "lib.ts").write_text("export const x = 1")
+    (tmp_path / "src" / "deep" / "notes.txt").write_text("not code")
+    # Fortran case distinction: .f and .F are distinct dispatch entries
+    (tmp_path / "src" / "legacy.f").write_text("      END")
+    (tmp_path / "src" / "modern.F").write_text("      END")
+    # Hidden dirs are traversed (only noise dirs are skipped)
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "ci.sh").write_text("echo hi")
+    # Noise dirs must be excluded entirely
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("x")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "app.py").write_text("x")
+    # Ignore rules incl. a negation, so directory-level pruning must not
+    # swallow re-included files
+    (tmp_path / "gen").mkdir()
+    (tmp_path / "gen" / "skip.py").write_text("x")
+    (tmp_path / "vendored").mkdir()
+    (tmp_path / "vendored" / "drop.py").write_text("x")
+    (tmp_path / "vendored" / "keep.py").write_text("x")
+    (tmp_path / ".gitignore").write_text("gen/\nvendored/*.py\n!vendored/keep.py\n")
+
+    result = collect_files(tmp_path)
+    assert result == _legacy_collect_files(tmp_path)
+    names = {f.name for f in result}
+    assert names == {"app.py", "lib.ts", "legacy.f", "modern.F", "ci.sh", "keep.py"}
+
+
+def test_collect_files_walks_each_directory_once(tmp_path, monkeypatch):
+    """collect_files must scan every directory at most once and never descend
+    into noise dirs (#1261). The old implementation ran one rglob pass per
+    supported extension (~85 walks) and filtered node_modules/.git paths only
+    after descending into them.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x = 1")
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("x")
+
+    scanned: list[str] = []
+    real_scandir = os.scandir
+
+    def counting_scandir(path=".", *args, **kwargs):
+        scanned.append(os.fspath(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+    files = collect_files(tmp_path)
+    monkeypatch.undo()
+
+    assert files == [tmp_path / "src" / "a.py"]
+    # The traversal must be visible as plain os.scandir calls (single os.walk)
+    assert any(s.endswith("src") for s in scanned)
+    # Noise dirs are pruned before descending, not filtered afterwards
+    assert not any("node_modules" in s for s in scanned)
+    # No directory is read more than once
+    counts = Counter(scanned)
+    assert max(counts.values()) == 1
+
+
 def test_no_dangling_edges_on_extract():
     """After merging multiple files, no internal edges should be dangling."""
     files = list(FIXTURES.glob("*.py"))
@@ -425,6 +511,112 @@ def test_extract_js_arrow_function_still_extracted():
         assert "greet()" in labels
     finally:
         arrow_fixture.unlink()
+
+
+def test_extract_js_this_assigned_methods(tmp_path):
+    """`this.X = () => {}` / `this.X = function(){}` in a constructor-style
+    function body must be captured as methods owned by that function.
+
+    This is the dominant pattern in pre-class JS (DAOs, route handlers): the
+    methods live in the function body, which is otherwise only walked for
+    calls, so before this they were entirely invisible as symbols.
+    """
+    from graphify.extract import extract_js
+    f = tmp_path / "dao.js"
+    f.write_text(
+        "function UserDAO(db) {\n"
+        "  this.addUser = (name) => { return name; };\n"
+        "  this.getUser = function(id) { return id; };\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    by_label = {n["label"]: n for n in result["nodes"]}
+    assert "UserDAO()" in by_label
+    assert ".addUser()" in by_label
+    assert ".getUser()" in by_label
+    # The methods are owned by UserDAO via a `method` edge.
+    owner = by_label["UserDAO()"]["id"]
+    method_edges = {
+        (e["source"], by_label_by_id(result, e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "method"
+    }
+    assert (owner, ".addUser()") in method_edges
+    assert (owner, ".getUser()") in method_edges
+
+
+def test_extract_js_commonjs_exports_assignment(tmp_path):
+    """`exports.X = fn` and `module.exports.X = fn` must produce function nodes."""
+    from graphify.extract import extract_js
+    f = tmp_path / "mod.js"
+    f.write_text(
+        "exports.alpha = (x) => x;\n"
+        "module.exports.beta = function(y) { return y; };\n"
+    )
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "alpha()" in labels
+    assert "beta()" in labels
+
+
+def test_extract_js_prototype_method_assignment(tmp_path):
+    """`Foo.prototype.bar = fn` must be captured as a method owned by Foo."""
+    from graphify.extract import extract_js
+    f = tmp_path / "proto.js"
+    f.write_text(
+        "function Foo() {}\n"
+        "Foo.prototype.bar = function() { return 1; };\n"
+    )
+    by_label = {n["label"]: n for n in extract_js(f)["nodes"]}
+    assert "Foo()" in by_label
+    assert ".bar()" in by_label
+
+
+def test_extract_js_const_function_expression(tmp_path):
+    """`const f = function(){}` (function expression, not arrow) must be captured."""
+    from graphify.extract import extract_js
+    f = tmp_path / "fnexpr.js"
+    f.write_text("const handler = function(req, res) { return res; };\n")
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "handler()" in labels
+
+
+def test_extract_ts_class_arrow_field(tmp_path):
+    """A class field initialised with an arrow function (`x = () => {}`) must be
+    captured as a method of the class — common in React/TS component classes."""
+    from graphify.extract import extract_js
+    f = tmp_path / "comp.ts"
+    f.write_text(
+        "class Widget {\n"
+        "  onClick = (e) => { return e; };\n"
+        "  render() { return null; }\n"
+        "}\n"
+    )
+    by_label = {n["label"]: n for n in extract_js(f)["nodes"]}
+    assert "Widget" in by_label
+    assert ".onClick()" in by_label   # arrow field
+    assert ".render()" in by_label    # plain method (regression guard)
+
+
+def test_extract_js_arbitrary_member_assignment_not_captured(tmp_path):
+    """Guard against the phantom-god-node class (#1077): an arbitrary
+    `obj.x = fn` (obj is neither this/exports/module.exports/<X>.prototype)
+    must NOT produce a node."""
+    from graphify.extract import extract_js
+    f = tmp_path / "noise.js"
+    f.write_text(
+        "const obj = {};\n"
+        "obj.whatever = () => 1;\n"
+    )
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "whatever()" not in labels
+    assert ".whatever()" not in labels
+
+
+def by_label_by_id(result, node_id):
+    for n in result["nodes"]:
+        if n["id"] == node_id:
+            return n["label"]
+    return None
 
 
 def test_cross_file_call_promoted_to_extracted_with_import_evidence(tmp_path):
@@ -903,6 +1095,52 @@ def test_extract_json_no_self_loops():
     result = extract_json(FIXTURES / "sample.json")
     for e in result["edges"]:
         assert e["source"] != e["target"], f"Self-loop: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Data JSON must not explode into orphan key-nodes (#1224)
+# ---------------------------------------------------------------------------
+
+def test_extract_json_data_file_skipped(tmp_path):
+    """A data-shaped .json (eval fixture / dataset) must NOT emit per-key nodes."""
+    data = tmp_path / "cases.json"
+    data.write_text(json.dumps({
+        "generation": {"target": "gpt-4", "cases_file": "c.json", "num_cases": 12},
+        "prompt_inputs_spec": {"a": 1, "b": 2},
+        "suite": [{"name": "x"}, {"name": "y"}],
+    }))
+    result = extract_json(data)
+    assert result["nodes"] == []
+    assert result["edges"] == []
+    assert "skipped" in result
+
+
+def test_extract_json_top_level_array_skipped(tmp_path):
+    """A JSON file whose root is an array is data, never a config/manifest."""
+    data = tmp_path / "records.json"
+    data.write_text(json.dumps([{"id": 1}, {"id": 2}]))
+    result = extract_json(data)
+    assert result["nodes"] == []
+    assert result["edges"] == []
+
+
+def test_extract_json_config_by_filename_still_extracted(tmp_path):
+    """tsconfig.json must still be AST-extracted even without telltale keys."""
+    cfg = tmp_path / "tsconfig.json"
+    cfg.write_text(json.dumps({"compilerOptions": {"strict": True}}))
+    result = extract_json(cfg)
+    assert len(result["nodes"]) > 0
+    assert "skipped" not in result
+
+
+def test_extract_json_config_by_key_probe(tmp_path):
+    """An arbitrarily-named JSON with config keys (dependencies) is still extracted."""
+    cfg = tmp_path / "weird-name.json"
+    cfg.write_text(json.dumps({"dependencies": {"lodash": "^4"}}))
+    result = extract_json(cfg)
+    import_edges = [e for e in result["edges"] if e["relation"] == "imports"]
+    assert any("lodash" in e["target"] for e in import_edges)
+    assert "skipped" not in result
 
 
 def test_extract_bash_via_dispatch():

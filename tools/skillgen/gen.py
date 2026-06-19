@@ -91,10 +91,9 @@ ALWAYS_ON_BLOCKS = {
 ENUM_VALUES = "code|document|paper|image|rationale|concept"
 ENUM_PROSE = "`code`, `document`, `paper`, `image`, `rationale`, `concept`"
 
-# The eight on-demand references every split platform renders. Five are
-# shared-verbatim; three (extraction-spec, query, hooks) are variant-selected and
-# their source is resolved per platform from the extraction/query_variant/
-# hooks_variant fields.
+# The eight on-demand references every split platform renders. Six are
+# shared-verbatim; two (extraction-spec, hooks) are variant-selected and resolved
+# per platform from the extraction/hooks_variant fields.
 _SHARED_REFERENCES = {
     "update": "references/shared/update.md",
     "exports": "references/shared/exports.md",
@@ -106,10 +105,13 @@ _EXTRACTION_SOURCE = {
     "verbose": "references/shared/extraction-spec.md",
     "compact": "references/shared/extraction-spec-compact.md",
 }
-_QUERY_SOURCE = {
-    "cli": "references/query/cli.md",
-    "cli-inline": "references/query/cli-inline.md",
-}
+# Single unified query reference + stub: superior vocab-expansion (Step 0) plus
+# CLI traversal plus inline NetworkX fallback, shipped to every platform. The
+# capabilities used to be split across cli.md / cli-inline.md so no platform got
+# both — Claude had expansion but no fallback, the rest had the fallback but the
+# weaker matcher (#1325).
+_QUERY_REFERENCE = "references/query/default.md"
+_QUERY_STUB = "query-stub/default.md"
 # The hooks reference is host-flavored. Most hosts read CLAUDE.md and wire
 # always-on via `graphify claude install` (the shared body). The agents-md hosts
 # (trae, trae-cn, amp) read AGENTS.md and wire it via `graphify <host> install`.
@@ -155,17 +157,6 @@ _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
 _HOOKS_TARGET = {
     "claude-md": "CLAUDE.md",
     "agents-md": "AGENTS.md",
-}
-
-# The v8 claude monolith (the coverage baseline) carries claude's CLI + vocab-
-# expansion query design. These two sub-headings are private to that design
-# (Decision C). A cli-inline platform's query reference uses the NetworkX-
-# fallback traversal instead and has no vocab-expansion step, so these headings
-# are legitimately absent there and must not count as a coverage hole. The
-# top-level query/path/explain headings are still required everywhere.
-_CLI_ONLY_QUERY_HEADINGS = {
-    "### Step 0 — Constrained query expansion (REQUIRED before traversal)",
-    "### Step 1 — Traversal",
 }
 
 # Allowlist for the per-host coverage audit (waves 2-3 consolidations).
@@ -244,9 +235,8 @@ class Platform:
     refs_dst: str | None = None
     name: str = "graphify"
     description: str | None = None
-    trigger: str | None = "/graphify"
+    trigger: str | None = None  # removed — not part of Agent Skills spec (#1180)
     dispatch: str | None = None
-    query_variant: str = "cli-inline"
     extraction: str = "verbose"
     shell: str = "posix"
     claude_md: bool = False
@@ -260,7 +250,7 @@ class Platform:
         """Resolve the rendered-name -> source-fragment map for this split platform."""
         refs = dict(_SHARED_REFERENCES)
         refs["extraction-spec"] = _EXTRACTION_SOURCE[self.extraction]
-        refs["query"] = _QUERY_SOURCE[self.query_variant]
+        refs["query"] = _QUERY_REFERENCE
         refs["hooks"] = _HOOKS_SOURCE[self.hooks_variant]
         return refs
 
@@ -283,9 +273,8 @@ def load_platforms() -> dict[str, Platform]:
             refs_dst=cfg.get("refs_dst"),
             name=cfg.get("name", "graphify"),
             description=cfg.get("description"),
-            trigger=cfg.get("trigger", "/graphify"),
+            trigger=cfg.get("trigger"),
             dispatch=cfg.get("dispatch"),
-            query_variant=cfg.get("query_variant", "cli-inline"),
             extraction=cfg.get("extraction", "verbose"),
             shell=cfg.get("shell", "posix"),
             claude_md=bool(cfg.get("claude_md", False)),
@@ -318,16 +307,14 @@ class RenderedArtifact:
 
 
 def _render_frontmatter(platform: Platform) -> str:
-    """Render the YAML frontmatter from the platform's name/description/trigger.
+    """Render the YAML frontmatter from the platform's name and description.
 
-    The trigger line is omitted when the platform has no trigger (kiro/pi).
+    Only emits fields from the Agent Skills spec (name, description).
     The description is preserved verbatim from platforms.toml — never invented.
     """
     if platform.description is None:
         raise ValueError(f"split platform '{platform.key}' is missing a description")
     lines = ["---", f"name: {platform.name}", f'description: "{platform.description}"']
-    if platform.trigger:
-        lines.append(f"trigger: {platform.trigger}")
     lines.append("---")
     return "\n".join(lines)
 
@@ -341,7 +328,7 @@ def _render_core(platform: Platform) -> str:
 
     install = _read_fragment(f"shell/{platform.shell}.md").rstrip("\n")
     dispatch = _read_fragment(f"dispatch/{platform.dispatch}.md").rstrip("\n")
-    query_stub = _read_fragment(f"query-stub/{platform.query_variant}.md").rstrip("\n")
+    query_stub = _read_fragment(_QUERY_STUB).rstrip("\n")
 
     if platform.extra_sections:
         extra = "".join(
@@ -592,9 +579,7 @@ def audit_coverage(platform: Platform) -> list[str]:
     every host is checked against claude's monolith, so each host is checked
     against itself.
 
-    Three classes of v8 heading are exempt and documented as deltas, not holes:
-      - the lean core's query stub re-homes claude's CLI vocab-expansion
-        sub-headings into the query reference (_CLI_ONLY_QUERY_HEADINGS);
+    v8 headings are exempt and documented as deltas, not holes:
       - waves 2-3 consolidations (the lean "## What graphify is for" intro and the
         per-host re-homed step/part headings on the minimal kilo/vscode bodies),
         tracked in the audit allowlist.
@@ -620,10 +605,6 @@ def audit_coverage(platform: Platform) -> list[str]:
     for h in baseline_headings:
         # Allowlisted consolidations + the lean intro are intentional deltas.
         if h in allowlist:
-            continue
-        # Query sub-headings that are private to the CLI + vocab-expansion design
-        # do not appear in a cli-inline platform's query reference (Decision C).
-        if platform.query_variant != "cli" and h in _CLI_ONLY_QUERY_HEADINGS:
             continue
         homes = []
         if h in core_headings:
@@ -705,6 +686,28 @@ def _is_frontmatter_description_line(line: str) -> bool:
     return line.lstrip().startswith("description:")
 
 
+def _is_chunk_cleanup_line(line: str) -> bool:
+    """Whether a line is the Step 9 chunk-file cleanup ``rm -f`` command.
+
+    The bare glob ``.graphify_chunk_*.json`` in the v8 cleanup line aborts the
+    whole ``rm`` under fish/zsh when no chunk files exist (no-match is a hard
+    error there, unlike bash). The fix (graphify #1172) drops the glob from the
+    ``rm`` and deletes the chunk files with ``find ... -delete`` instead. That
+    rewrite touches the single cleanup line in place (no line added or removed),
+    so it joins the enum and description unifications as an allowed monolith diff.
+    """
+    return line.lstrip().startswith("rm -f") and "find " in line and "-name '.graphify_chunk_" in line
+
+
+def _is_trigger_line(line: str) -> bool:
+    """Whether a line is the non-spec ``trigger:`` frontmatter field (#1180).
+
+    The Agent Skills spec does not include ``trigger:`` — only name/description
+    and a few optional fields. Removing it is a permitted monolith diff.
+    """
+    return line.strip().startswith("trigger:")
+
+
 def monolith_roundtrip(platform: Platform) -> list[str]:
     """Assert a monolith renders diff-clean vs its v8 blob modulo allowed changes.
 
@@ -722,22 +725,26 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     original = _normalise(_git_show(platform.roundtrip_ref))
 
     rendered_lines = rendered.splitlines()
-    original_lines = original.splitlines()
+    # Strip trigger lines from the original before comparing — they are non-spec
+    # and their removal (#1180) is a permitted diff. Filter here so the line-count
+    # check and the per-line zip both operate on the same reduced set.
+    original_lines = [l for l in original.splitlines() if not _is_trigger_line(l)]
 
     problems: list[str] = []
     if len(rendered_lines) != len(original_lines):
         problems.append(
             f"[{platform.key}] line count differs: rendered {len(rendered_lines)} vs v8 {len(original_lines)} "
-            "(the only allowed changes are the enum line(s) and the description line, "
-            "which must not add or remove lines)"
+            "(the only allowed changes are the enum line(s), the description line, "
+            "the chunk-cleanup rewrite, and trigger: removal — none must add or remove other lines)"
         )
         return problems
 
     for i, (r, o) in enumerate(zip(rendered_lines, original_lines), start=1):
         if r == o:
             continue
-        # The permitted diffs are the enum unification and the unified description.
-        if _is_enum_line(r) or _is_frontmatter_description_line(r):
+        # The permitted diffs are the enum unification, the unified description,
+        # the shell-agnostic chunk-cleanup rewrite (#1172), and trigger removal (#1180).
+        if _is_enum_line(r) or _is_frontmatter_description_line(r) or _is_chunk_cleanup_line(r):
             continue
         problems.append(
             f"[{platform.key}] line {i} differs and is not an enum or description unification:\n"

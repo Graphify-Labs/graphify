@@ -94,9 +94,16 @@ def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
 def _check_skill_version(skill_dst: Path) -> None:
     """Warn if the installed skill is from an older graphify version."""
     version_file = skill_dst.parent / ".graphify_version"
-    if not version_file.exists():
+    try:
+        if not version_file.exists():
+            return
+    except OSError:
         return
-    if not skill_dst.exists():
+    try:
+        skill_exists = skill_dst.exists()
+    except OSError:
+        return
+    if not skill_exists:
         print("  warning: skill dir exists but SKILL.md is missing. Run 'graphify install' to repair.")
         return
     # A progressive SKILL.md links to its references/ sidecar. If the body points
@@ -108,7 +115,10 @@ def _check_skill_version(skill_dst: Path) -> None:
         body = ""
     if "references/" in body and not (skill_dst.parent / "references").exists():
         print("  warning: skill references/ sidecar is missing. Run 'graphify install' to repair.", file=sys.stderr)
-    installed = version_file.read_text(encoding="utf-8").strip()
+    try:
+        installed = version_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
     if installed != __version__:
         print(f"  warning: skill is from graphify {installed}, package is {__version__}. Run 'graphify install' to update.", file=sys.stderr)
 
@@ -359,7 +369,7 @@ _SETTINGS_HOOK = {
                 "case \"$CMD\" in "
                 r"*grep*|*rg\ *|*ripgrep*|*find\ *|*fd\ *|*ack\ *|*ag\ *) "
                 "  [ -f graphify-out/graph.json ] && "
-                r"""  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify: knowledge graph at graphify-out/. For focused questions, run `graphify query \"<question>\"` (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context."}}' """
+                r"""  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"MANDATORY: graphify-out/graph.json exists. You MUST run `graphify query \"<question>\"` before grepping raw files. Only grep after graphify has oriented you, or to modify/debug specific lines."}}' """
                 "  || true ;; "
                 "esac"
             ),
@@ -389,7 +399,7 @@ _READ_SETTINGS_HOOK = {
                 "exts=('.py','.js','.ts','.tsx','.jsx','.go','.rs','.java','.rb','.c','.h','.cpp','.hpp','.cc','.cs','.kt','.swift','.php','.scala','.lua','.sh','.md','.rst','.txt','.mdx');"
                 "sys.stdout.write('1' if 'graphify-out/' not in s and any(e in s for e in exts) else '')\" 2>/dev/null || true); "
                 "if [ \"$HIT\" = 1 ] && [ -f graphify-out/graph.json ]; then "
-                r"""echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"graphify: knowledge graph at graphify-out/. For codebase questions, run `graphify query \"<question>\"` (scoped subgraph, usually much smaller than reading files one by one), `graphify explain \"<concept>\"`, or `graphify path \"<A>\" \"<B>\"`, instead of reading source files to answer. Read raw files to modify or debug specific code, or when the graph lacks the detail."}}'; """
+                r"""echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"MANDATORY: graphify-out/graph.json exists. You MUST run graphify before reading source files. Use: `graphify query \"<question>\"` (scoped subgraph), `graphify explain \"<concept>\"`, or `graphify path \"<A>\" \"<B>\"`. Only read raw files after graphify has oriented you, or to modify/debug specific lines. This rule applies to subagents too — include it in every subagent prompt involving code exploration."}}'; """
                 "fi || true"
             ),
         }
@@ -415,7 +425,7 @@ _PLATFORM_CONFIG: dict[str, dict] = {
     },
     "codex": {
         "skill_file": "skill-codex.md",
-        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "skill_dst": Path(".codex") / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "codex",
     },
@@ -486,6 +496,13 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_dst": Path(".pi") / "agent" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "pi",
+    },
+    "codebuddy": {
+        # Reuses claude's split bundle (shares skill.md).
+        "skill_file": "skill.md",
+        "skill_dst": Path(".codebuddy") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "claude",
     },
     "antigravity": {
         # Rides claude's split bundle (shares skill.md).
@@ -660,6 +677,22 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
             claude_md.write_text(registration.lstrip(), encoding="utf-8")
             print(f"  CLAUDE.md        ->  created at {claude_md}")
 
+    if platform == "codebuddy":
+        # Register in ~/.codebuddy/CODEBUDDY.md (CodeBuddy only)
+        codebuddy_md = Path.home() / ".codebuddy" / "CODEBUDDY.md"
+        registration = _skill_registration("~/.codebuddy/skills/graphify/SKILL.md")
+        if codebuddy_md.exists():
+            content = codebuddy_md.read_text(encoding="utf-8")
+            if "graphify" in content:
+                print(f"  CODEBUDDY.md     ->  already registered (no change)")
+            else:
+                codebuddy_md.write_text(content.rstrip() + registration, encoding="utf-8")
+                print(f"  CODEBUDDY.md     ->  skill registered in {codebuddy_md}")
+        else:
+            codebuddy_md.parent.mkdir(parents=True, exist_ok=True)
+            codebuddy_md.write_text(registration.lstrip(), encoding="utf-8")
+            print(f"  CODEBUDDY.md     ->  created at {codebuddy_md}")
+
     if platform == "opencode":
         _install_opencode_plugin(project_dir if project else Path("."))
 
@@ -689,6 +722,8 @@ def _print_install_usage() -> None:
 # a human edit one fragment instead of a triple-quoted literal here.
 
 _CLAUDE_MD_MARKER = "## graphify"
+
+_CODEBUDDY_MD_MARKER = "## graphify"
 
 # AGENTS.md section for Codex, OpenCode, and OpenClaw.
 # All three platforms read AGENTS.md in the project root for persistent instructions.
@@ -1088,10 +1123,20 @@ alwaysApply: true
 
 This project has a graphify knowledge graph at graphify-out/.
 
-- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (or `graphify path "<A>" "<B>"` / `graphify explain "<concept>"`). These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
-- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context
-- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
+**MANDATORY: Before using Read, Grep, Glob, or Bash to explore the codebase, you MUST run graphify first:**
+- `graphify query "<question>"` — scoped subgraph for any codebase or architecture question
+- `graphify path "<A>" "<B>"` — dependency path between two symbols
+- `graphify explain "<concept>"` — all nodes related to a concept
+
+This applies to YOU and to every subagent you spawn. Include this rule explicitly in every subagent prompt that involves code exploration. Do not skip graphify because files are "already known" or because you are executing a plan — the graph surfaces cross-file dependencies and INFERRED edges that grep and Read cannot find.
+
+Only use Read/Grep/Glob directly when:
+1. graphify has already oriented you and you need to modify or debug specific lines
+2. `graphify-out/graph.json` does not exist yet
+
+- If `graphify-out/wiki/index.md` exists, navigate it instead of reading raw files
+- Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review when query/path/explain do not surface enough context
+- After modifying code files, run `graphify update .` to keep the graph current (AST-only, no API cost)
 """
 
 
@@ -1636,6 +1681,8 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         if not removed:
             print("nothing to remove")
+    elif platform_name == "codebuddy":
+        codebuddy_uninstall(project_dir)
     else:
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
 
@@ -1810,6 +1857,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
 
     # Skill-file / config-section uninstallers
     claude_uninstall(pd)
+    codebuddy_uninstall(pd)
     gemini_uninstall(pd)
     vscode_uninstall(pd)
     _cursor_uninstall(pd)
@@ -1880,6 +1928,105 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False) 
 
     _uninstall_claude_hook(project_dir or Path("."))
 
+
+def codebuddy_install(project_dir: Path | None = None) -> None:
+    """Install the graphify skill and CODEBUDDY.md section for CodeBuddy."""
+    _copy_skill_file("codebuddy", project=bool(project_dir), project_dir=project_dir)
+    target = (project_dir or Path(".")) / "CODEBUDDY.md"
+
+    if target.exists():
+        content = target.read_text(encoding="utf-8")
+        new_content = _replace_or_append_section(
+            content, _CODEBUDDY_MD_MARKER, _always_on("claude-md")
+        )
+    else:
+        new_content = _always_on("claude-md")
+
+    if target.exists() and new_content == target.read_text(encoding="utf-8"):
+        print(f"graphify already configured in {target.resolve()} (no change)")
+    else:
+        target.write_text(new_content, encoding="utf-8")
+        print(f"graphify section written to {target.resolve()}")
+
+    # Also write CodeBuddy PreToolUse hook to .codebuddy/settings.json
+    _install_codebuddy_hook(project_dir or Path("."))
+
+    print()
+    print("CodeBuddy will now check the knowledge graph before answering")
+    print("codebase questions and rebuild it after code changes.")
+
+
+def _install_codebuddy_hook(project_dir: Path) -> None:
+    """Add graphify PreToolUse hook to .codebuddy/settings.json."""
+    settings_path = project_dir / ".codebuddy" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            settings = {}
+    else:
+        settings = {}
+
+    hooks = settings.setdefault("hooks", {})
+    pre_tool = hooks.setdefault("PreToolUse", [])
+
+    hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"].append(_SETTINGS_HOOK)
+    hooks["PreToolUse"].append(_READ_SETTINGS_HOOK)
+    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    print(f"  .codebuddy/settings.json  ->  PreToolUse hooks registered")
+
+
+def _uninstall_codebuddy_hook(project_dir: Path) -> None:
+    """Remove graphify PreToolUse hook from .codebuddy/settings.json."""
+    settings_path = project_dir / ".codebuddy" / "settings.json"
+    if not settings_path.exists():
+        return
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
+    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Read|Glob") and "graphify" in str(h))]
+    if len(filtered) == len(pre_tool):
+        return
+    settings["hooks"]["PreToolUse"] = filtered
+    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    print(f"  .codebuddy/settings.json  ->  PreToolUse hook removed")
+
+
+def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = False) -> None:
+    """Remove the graphify skill tree (SKILL.md + references/) and the CODEBUDDY.md section."""
+    project_dir = project_dir or Path(".")
+    _remove_skill_file("codebuddy", project=project, project_dir=project_dir)
+    target = project_dir / "CODEBUDDY.md"
+
+    if not target.exists():
+        print("No CODEBUDDY.md found in current directory - nothing to do")
+        return
+
+    content = target.read_text(encoding="utf-8")
+    if _CODEBUDDY_MD_MARKER not in content:
+        print("graphify section not found in CODEBUDDY.md - nothing to do")
+        return
+
+    # Remove the ## graphify section: from the marker to the next ## heading or EOF
+    cleaned = re.sub(
+        r"\n*## graphify\n.*?(?=\n## |\Z)",
+        "",
+        content,
+        flags=re.DOTALL,
+    ).rstrip()
+    if cleaned:
+        target.write_text(cleaned + "\n", encoding="utf-8")
+        print(f"graphify section removed from {target.resolve()}")
+    else:
+        target.unlink()
+        print(f"CODEBUDDY.md was empty after removal - deleted {target.resolve()}")
+
+    _uninstall_codebuddy_hook(project_dir or Path("."))
 
 def _clone_repo(
     url: str, branch: str | None = None, out_dir: Path | None = None
@@ -1967,7 +2114,7 @@ def main() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codex|opencode|aider|amp|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -2004,8 +2151,10 @@ def main() -> None:
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
         print("    --no-label              keep 'Community N' placeholders (skip LLM community naming)")
         print("    --backend=<name>        backend to use for community naming (default: auto-detect)")
+        print("    --model=<name>          model to use for community naming")
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
         print("    --backend=<name>        backend to use (default: auto-detect from API keys)")
+        print("    --model=<name>          model to use for community naming")
         print("  query \"<question>\"       BFS traversal of graph.json for a question")
         print("    --dfs                   use depth-first instead of breadth-first")
         print("    --context C             explicit edge-context filter (repeatable)")
@@ -2033,6 +2182,11 @@ def main() -> None:
         print("    --label NAME            project label in header")
         print("  extract <path>          headless full extraction (AST + semantic LLM) for CI/scripts")
         print("    --backend B             gemini|kimi|claude|openai|deepseek|ollama (default: whichever API key is set)")
+        print("                            openai also reaches self-hosted OpenAI-compatible servers (llama.cpp,")
+        print("                            vLLM, LM Studio): set OPENAI_BASE_URL (e.g. http://localhost:8080/v1)")
+        print("                            and OPENAI_MODEL to the model name your server serves")
+        print("                            claude also reaches custom Anthropic-compatible endpoints (LiteLLM")
+        print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
         print("    --max-workers N         AST extraction subprocess count (default: cpu_count)")
@@ -2042,6 +2196,10 @@ def main() -> None:
         print("    --out DIR               output dir (default: <path>); writes <DIR>/graphify-out/")
         print("    --google-workspace      export .gdoc/.gsheet/.gslides shortcuts via gws before extraction")
         print("    --no-cluster            skip clustering, write raw extraction only")
+        print("    --postgres DSN          extract schema from a live PostgreSQL database")
+        print("                            maps tables, views, functions + FK relationships;")
+        print("                            column-level detail is not represented in the graph")
+        print("    --cargo                 extract crate→crate deps from Cargo.toml")
         print("    --global                also merge the resulting graph into the global graph")
         print("    --as <tag>              repo tag for --global (default: target directory name)")
         print("  global add <graph.json>  add/update a project graph in the global graph (~/.graphify/global-graph.json)")
@@ -2060,12 +2218,10 @@ def main() -> None:
         print("  gemini uninstall        remove GEMINI.md section + BeforeTool hook")
         print("  cursor install          write .cursor/rules/graphify.mdc (Cursor)")
         print("  cursor uninstall        remove .cursor/rules/graphify.mdc")
-        print(
-            "  claude install          write graphify section to CLAUDE.md + PreToolUse hook (Claude Code)"
-        )
-        print(
-            "  claude uninstall        remove graphify section from CLAUDE.md + PreToolUse hook"
-        )
+        print("  claude install          write graphify section to CLAUDE.md + PreToolUse hook (Claude Code)")
+        print("  claude uninstall        remove graphify section from CLAUDE.md + PreToolUse hook")
+        print("  codebuddy install       write graphify section to CODEBUDDY.md + PreToolUse hook (CodeBuddy)")
+        print("  codebuddy uninstall     remove graphify section from CODEBUDDY.md + PreToolUse hook")
         print("  codex install           write graphify section to AGENTS.md (Codex)")
         print("  codex uninstall         remove graphify section from AGENTS.md")
         print(
@@ -2227,6 +2383,15 @@ def main() -> None:
                 claude_uninstall()
         else:
             print("Usage: graphify claude [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "codebuddy":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            codebuddy_install()
+        elif subcmd == "uninstall":
+            codebuddy_uninstall()
+        else:
+            print("Usage: graphify codebuddy [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "gemini":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -2805,7 +2970,7 @@ def main() -> None:
             f"  Source:    {d.get('source_file', '')} {d.get('source_location', '')}".rstrip()
         )
         print(f"  Type:      {d.get('file_type', '')}")
-        print(f"  Community: {d.get('community', '')}")
+        print(f"  Community: {d.get('community_name') or d.get('community', '')}")
         print(f"  Degree:    {G.degree(nid)}")
         from graphify.build import edge_data
         connections: list[tuple[str, str, dict]] = []  # (direction, neighbor_id, edge_data)
@@ -2983,6 +3148,8 @@ def main() -> None:
         no_label = "--no-label" in sys.argv
         _backend_arg = next((a for a in sys.argv if a.startswith("--backend=")), None)
         label_backend = _backend_arg.split("=", 1)[1] if _backend_arg else None
+        _model_arg = next((a for a in sys.argv if a.startswith("--model=")), None)
+        label_model = _model_arg.split("=", 1)[1] if _model_arg else None
         _min_cs_arg = next((a for a in sys.argv if a.startswith("--min-community-size=")), None)
         min_community_size = int(_min_cs_arg.split("=")[1]) if _min_cs_arg else 3
         args = sys.argv[2:]
@@ -2995,6 +3162,14 @@ def main() -> None:
             a = args[i_arg]
             if a == "--graph" and i_arg + 1 < len(args):
                 graph_override = Path(args[i_arg + 1]); i_arg += 2
+            elif a == "--backend" and i_arg + 1 < len(args):
+                label_backend = args[i_arg + 1]; i_arg += 2
+            elif a.startswith("--backend="):
+                label_backend = a.split("=", 1)[1]; i_arg += 1
+            elif a == "--model" and i_arg + 1 < len(args):
+                label_model = args[i_arg + 1]; i_arg += 2
+            elif a.startswith("--model="):
+                label_model = a.split("=", 1)[1]; i_arg += 1
             elif a == "--resolution" and i_arg + 1 < len(args):
                 co_resolution = float(args[i_arg + 1]); i_arg += 2
             elif a.startswith("--resolution="):
@@ -3032,7 +3207,25 @@ def main() -> None:
         from graphify.export import to_json, to_html
 
         print("Loading existing graph...")
-        _enforce_graph_size_cap_or_exit(graph_json)
+        # Solution 3 (#1019): don't hard-exit on an oversized graph.json here.
+        # Core outputs (graph.json + GRAPH_REPORT.md) still get written; the
+        # graph.html render below falls back to the community-aggregation view
+        # (node_limit=5000) when over the cap.
+        from graphify.security import check_graph_file_size_cap as _check_cap
+        _over_cap = False
+        try:
+            _check_cap(graph_json)
+        except ValueError:
+            _over_cap = True
+            try:
+                _over_cap_bytes = graph_json.stat().st_size
+            except OSError:
+                _over_cap_bytes = -1
+            print(
+                f"warning: graph.json exceeds cap ({_over_cap_bytes} bytes); "
+                f"falling back to community-aggregation view (node_limit=5000)",
+                file=sys.stderr,
+            )
         _raw = json.loads(graph_json.read_text(encoding="utf-8"))
         _directed = bool(_raw.get("directed", False))
         G = build_from_json(_raw, directed=_directed)
@@ -3074,7 +3267,7 @@ def main() -> None:
             # The final labels (LLM or placeholder fallback) are persisted to
             # .graphify_labels.json by the unconditional write below.
             labels, _ = generate_community_labels(
-                G, communities, backend=label_backend, gods=gods
+                G, communities, backend=label_backend, model=label_model, gods=gods
             )
         questions = suggest_questions(G, communities, labels)
         tokens = {"input": 0, "output": 0}
@@ -3087,7 +3280,7 @@ def main() -> None:
         (out / "GRAPH_REPORT.md").write_text(report, encoding="utf-8")
         from graphify.export import backup_if_protected as _backup
         _backup(out)
-        to_json(G, communities, str(out / "graph.json"))
+        to_json(G, communities, str(out / "graph.json"), community_labels=labels)
         labels_path.write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding="utf-8")
 
         # Mirror watch.py pattern: gate to_html so core outputs (graph.json +
@@ -3101,7 +3294,11 @@ def main() -> None:
             print(f"Done - {len(communities)} communities. GRAPH_REPORT.md and graph.json updated (--no-viz; graph.html removed).")
         else:
             try:
-                to_html(G, communities, str(html_target), community_labels=labels or None)
+                # Over-cap fallback (#1019): force the community-aggregation
+                # path so an oversized graph still renders a usable graph.html.
+                _node_limit = 5000 if _over_cap else None
+                to_html(G, communities, str(html_target), community_labels=labels or None,
+                        node_limit=_node_limit)
                 print(f"Done - {len(communities)} communities. GRAPH_REPORT.md, graph.json and graph.html updated.")
             except ValueError as viz_err:
                 if html_target.exists():
@@ -3327,10 +3524,18 @@ def main() -> None:
             except TypeError:
                 G = _jg.node_link_graph(data)
             graphs.append(G)
+        # nx.compose requires all graphs to be the same type.  When input graphs
+        # come from different sources (e.g. an AST-only run vs a full LLM run) one
+        # may be a MultiGraph and another a Graph.  Normalise everything to Graph
+        # (the graphify default) by converting MultiGraphs with nx.Graph().
+        def _to_simple(g: "_nx.Graph") -> "_nx.Graph":
+            if isinstance(g, _nx.MultiGraph):
+                return _nx.Graph(g)
+            return g
         merged = _nx.Graph()
         for G, gp in zip(graphs, graph_paths):
             repo_tag = gp.parent.parent.name  # graphify-out/../ → repo dir name
-            prefixed = _prefix(G, repo_tag)
+            prefixed = _to_simple(_prefix(G, repo_tag))
             merged = _nx.compose(merged, prefixed)
         try:
             out_data = _jg.node_link_data(merged, edges="links")
@@ -3367,7 +3572,7 @@ def main() -> None:
 
     elif cmd == "export":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
-        if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j"):
+        if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb"):
             print("Usage: graphify export <format>", file=sys.stderr)
             print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=sys.stderr)
             print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=sys.stderr)
@@ -3378,6 +3583,8 @@ def main() -> None:
             print("  graphml   [--graph PATH]", file=sys.stderr)
             print("  neo4j     [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
             print("            (or set NEO4J_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
+            print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
+            print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
             sys.exit(1)
 
         # Parse shared args
@@ -3399,12 +3606,18 @@ def main() -> None:
         node_limit = 5000
         no_viz = False
         obsidian_dir = Path(_GRAPHIFY_OUT) / "obsidian"
-        neo4j_uri: str | None = None
-        neo4j_user = "neo4j"
-        # F-031: prefer the NEO4J_PASSWORD env var so the password never
-        # appears on argv (visible in `ps` output / shell history). The
-        # explicit --password flag still overrides it for compatibility.
-        neo4j_password: str | None = os.environ.get("NEO4J_PASSWORD") or None
+        # Shared push-connection settings for the graph-database sinks (neo4j,
+        # falkordb), parsed from the generic --push/--user/--password flags below.
+        push_uri: str | None = None
+        push_user = "neo4j"  # Neo4j default user; FalkorDB auth is optional and ignores it
+        # F-031: prefer an env var so the password never appears on argv (visible
+        # in `ps` output / shell history). The explicit --password flag still
+        # overrides it. Each sink reads its own var: FALKORDB_PASSWORD for falkordb,
+        # NEO4J_PASSWORD otherwise.
+        push_password: str | None = (
+            os.environ.get("FALKORDB_PASSWORD") if subcmd == "falkordb"
+            else os.environ.get("NEO4J_PASSWORD")
+        ) or None
         i = 0
         while i < len(args):
             a = args[i]
@@ -3455,11 +3668,11 @@ def main() -> None:
             elif a == "--dir" and i + 1 < len(args):
                 obsidian_dir = Path(args[i + 1]); i += 2
             elif a == "--push" and i + 1 < len(args):
-                neo4j_uri = args[i + 1]; i += 2
+                push_uri = args[i + 1]; i += 2
             elif a == "--user" and i + 1 < len(args):
-                neo4j_user = args[i + 1]; i += 2
+                push_user = args[i + 1]; i += 2
             elif a == "--password" and i + 1 < len(args):
-                neo4j_password = args[i + 1]; i += 2
+                push_password = args[i + 1]; i += 2
             elif subcmd == "callflow-html" and not a.startswith("-") and not graph_path_explicit:
                 candidate = Path(a)
                 if candidate.name == "graph.json" or candidate.suffix.lower() == ".json":
@@ -3507,8 +3720,30 @@ def main() -> None:
 
         from networkx.readwrite import json_graph as _jg
         from graphify.build import build_from_json as _bfj
+        from graphify.security import check_graph_file_size_cap as _check_cap
 
-        _enforce_graph_size_cap_or_exit(graph_path)
+        # Solution 3 (#1019): for the HTML view, an oversized graph.json should
+        # not be a hard error. Detect the over-cap condition here and fall back
+        # to the community-aggregation view (node_limit=5000) below instead of
+        # exiting 1. All other subcommands keep the hard cap.
+        _over_cap = False
+        try:
+            _check_cap(graph_path)
+        except ValueError as _cap_err:
+            if subcmd == "html":
+                _over_cap = True
+                try:
+                    _over_cap_bytes = graph_path.stat().st_size
+                except OSError:
+                    _over_cap_bytes = -1
+                print(
+                    f"warning: graph.json exceeds cap ({_over_cap_bytes} bytes); "
+                    f"falling back to community-aggregation view (node_limit=5000)",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"error: {_cap_err}", file=sys.stderr)
+                sys.exit(1)
         _raw = json.loads(graph_path.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
@@ -3565,10 +3800,15 @@ def main() -> None:
                     html_target.unlink()
                 print("--no-viz: skipped graph.html")
             else:
+                # Over-cap fallback (#1019): force the community-aggregation
+                # path so the oversized graph still renders a usable artifact.
+                _effective_node_limit = 5000 if _over_cap else node_limit
                 _to_html(G, communities, str(out_dir / "graph.html"),
-                         community_labels=labels or None, node_limit=node_limit)
-                if G.number_of_nodes() <= node_limit:
+                         community_labels=labels or None, node_limit=_effective_node_limit)
+                if G.number_of_nodes() <= _effective_node_limit:
                     print(f"graph.html written - open in any browser, no server needed")
+                if _over_cap:
+                    sys.exit(0)
 
         elif subcmd == "obsidian":
             from graphify.export import to_obsidian as _to_obsidian, to_canvas as _to_canvas
@@ -3610,18 +3850,32 @@ def main() -> None:
             print(f"graph.graphml written - open in Gephi, yEd, or any GraphML tool")
 
         elif subcmd == "neo4j":
-            if neo4j_uri:
+            if push_uri:
                 from graphify.export import push_to_neo4j as _push
-                if neo4j_password is None:
+                if push_password is None:
                     print("error: --password required for --push", file=sys.stderr)
                     sys.exit(1)
-                result = _push(G, uri=neo4j_uri, user=neo4j_user,
-                               password=neo4j_password, communities=communities)
+                result = _push(G, uri=push_uri, user=push_user,
+                               password=push_password, communities=communities)
                 print(f"Pushed to Neo4j: {result['nodes']} nodes, {result['edges']} edges")
             else:
                 from graphify.export import to_cypher as _to_cypher
                 _to_cypher(G, str(out_dir / "cypher.txt"))
                 print(f"cypher.txt written - import with: cypher-shell < {out_dir}/cypher.txt")
+
+        elif subcmd == "falkordb":
+            if push_uri:
+                from graphify.export import push_to_falkordb as _push
+                result = _push(G, uri=push_uri, user=push_user,
+                               password=push_password, communities=communities)
+                print(f"Pushed to FalkorDB: {result['nodes']} nodes, {result['edges']} edges")
+            else:
+                from graphify.export import to_cypher as _to_cypher
+                _to_cypher(G, str(out_dir / "cypher.txt"))
+                print(f"cypher.txt written ({out_dir}/cypher.txt) - statements are OpenCypher. "
+                      f"FalkorDB's GRAPH.QUERY runs one statement at a time (no bulk script "
+                      f"import), so load a graph with: graphify export falkordb --push "
+                      f"falkordb://localhost:6379")
 
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark
@@ -3708,20 +3962,27 @@ def main() -> None:
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
-                "[--api-timeout S]",
+                "[--api-timeout S] [--postgres DSN] [--cargo]",
                 file=sys.stderr,
             )
             sys.exit(1)
 
-        target = Path(sys.argv[2]).resolve()
-        if not target.exists():
-            print(f"error: path not found: {target}", file=sys.stderr)
-            sys.exit(1)
+        has_path = True
+        if sys.argv[2].startswith("-"):
+            has_path = False
+            target = Path(".").resolve()
+        else:
+            target = Path(sys.argv[2]).resolve()
+            if not target.exists():
+                print(f"error: path not found: {target}", file=sys.stderr)
+                sys.exit(1)
 
         backend: str | None = None
         model: str | None = None
         extract_mode: str | None = None
         out_dir: Path | None = None
+        cli_postgres_dsn: str | None = None
+        cli_cargo: bool = False
         no_cluster = False
         dedup_llm = False
         google_workspace = False
@@ -3759,7 +4020,7 @@ def main() -> None:
                 sys.exit(2)
             return v
 
-        args = sys.argv[3:]
+        args = sys.argv[3:] if has_path else sys.argv[2:]
         i = 0
         while i < len(args):
             a = args[i]
@@ -3817,8 +4078,19 @@ def main() -> None:
                 cli_excludes.append(args[i + 1]); i += 2
             elif a.startswith("--exclude="):
                 cli_excludes.append(a.split("=", 1)[1]); i += 1
+            elif a == "--postgres" and i + 1 < len(args):
+                cli_postgres_dsn = args[i + 1]; i += 2
+            elif a.startswith("--postgres="):
+                cli_postgres_dsn = a.split("=", 1)[1]; i += 1
+            elif a == "--cargo":
+                cli_cargo = True
+                i += 1
             else:
                 i += 1
+
+        if not has_path and cli_postgres_dsn is None:
+            print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)
+            sys.exit(1)
 
         _VALID_MODES = {"deep"}
         if extract_mode is not None and extract_mode not in _VALID_MODES:
@@ -3853,9 +4125,17 @@ def main() -> None:
         )
         manifest_path = graphify_out / "manifest.json"
         existing_graph_path = graphify_out / "graph.json"
-        incremental_mode = manifest_path.exists() and existing_graph_path.exists()
+        incremental_mode = manifest_path.exists() and existing_graph_path.exists() if has_path else False
 
-        if incremental_mode:
+        if not has_path:
+            code_files = []
+            doc_files = []
+            paper_files = []
+            image_files = []
+            deleted_files = []
+            unchanged_total = 0
+            files_by_type = {}
+        elif incremental_mode:
             print(f"[graphify extract] incremental scan of {target}")
             detection = _detect_incremental(
                 target,
@@ -3863,12 +4143,7 @@ def main() -> None:
                 google_workspace=google_workspace or None,
                 extra_excludes=cli_excludes or None,
             )
-        else:
-            print(f"[graphify extract] scanning {target}")
-            detection = _detect(target, google_workspace=google_workspace or None, extra_excludes=cli_excludes or None)
-
-        files_by_type = detection.get("files", {})
-        if incremental_mode:
+            files_by_type = detection.get("files", {})
             new_by_type = detection.get("new_files", {})
             code_files = [Path(p) for p in new_by_type.get("code", [])]
             doc_files = [Path(p) for p in new_by_type.get("document", [])]
@@ -3877,6 +4152,9 @@ def main() -> None:
             deleted_files = list(detection.get("deleted_files", []))
             unchanged_total = sum(len(v) for v in detection.get("unchanged_files", {}).values())
         else:
+            print(f"[graphify extract] scanning {target}")
+            detection = _detect(target, google_workspace=google_workspace or None, extra_excludes=cli_excludes or None)
+            files_by_type = detection.get("files", {})
             code_files = [Path(p) for p in files_by_type.get("code", [])]
             doc_files = [Path(p) for p in files_by_type.get("document", [])]
             paper_files = [Path(p) for p in files_by_type.get("paper", [])]
@@ -3990,7 +4268,10 @@ def main() -> None:
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
         if code_files:
             from graphify.extract import extract as _ast_extract
-            ast_kwargs: dict = {"cache_root": target}
+            # Anchor the cache at the output root, not the scanned project:
+            # with --out, a <target>/graphify-out/cache/ would leak a
+            # graphify-out/ dir into a project that asked for external output.
+            ast_kwargs: dict = {"cache_root": out_root}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
@@ -4014,7 +4295,7 @@ def main() -> None:
         if semantic_files:
             sem_paths_str = [str(p) for p in semantic_files]
             cached_nodes, cached_edges, cached_hyperedges, uncached_paths = (
-                _check_semantic_cache(sem_paths_str, root=target)
+                _check_semantic_cache(sem_paths_str, root=out_root)
             )
             sem_cache_hits = len(semantic_files) - len(uncached_paths)
             sem_cache_misses = len(uncached_paths)
@@ -4084,7 +4365,7 @@ def main() -> None:
                         fresh.get("nodes", []),
                         fresh.get("edges", []),
                         fresh.get("hyperedges", []),
-                        root=target,
+                        root=out_root,
                     )
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write semantic cache: {exc}", file=sys.stderr)
@@ -4094,13 +4375,37 @@ def main() -> None:
                 sem_result["input_tokens"] += fresh.get("input_tokens", 0)
                 sem_result["output_tokens"] += fresh.get("output_tokens", 0)
 
-        # Merge AST + semantic. Order matters for deduplication: passing AST
+        pg_result: dict = {"nodes": [], "edges": []}
+        if cli_postgres_dsn is not None:
+            from graphify.pg_introspect import introspect_postgres
+            print(f"[graphify extract] introspecting PostgreSQL schema...")
+            try:
+                pg_result = introspect_postgres(cli_postgres_dsn)
+            except (ConnectionError, ImportError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(f"[graphify extract] PostgreSQL: {len(pg_result['nodes'])} nodes, "
+                  f"{len(pg_result['edges'])} edges")
+
+        cargo_result: dict = {"nodes": [], "edges": []}
+        if cli_cargo:
+            from graphify.cargo_introspect import introspect_cargo
+            print("[graphify extract] introspecting Cargo workspace...")
+            try:
+                cargo_result = introspect_cargo(target)
+            except (ConnectionError, ImportError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(f"[graphify extract] Cargo: {len(cargo_result['nodes'])} nodes, "
+                  f"{len(cargo_result['edges'])} edges")
+
+        # Merge AST + semantic + pg_result + cargo_result. Order matters for deduplication: passing AST
         # first means semantic node attributes win on collision (richer labels
         # for symbols also referenced in docs). Hyperedges only come from the
         # semantic side.
         merged: dict = {
-            "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])),
-            "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])),
+            "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])),
+            "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])),
             "hyperedges": list(sem_result.get("hyperedges", [])),
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
@@ -4128,7 +4433,42 @@ def main() -> None:
         if no_cluster:
             # --no-cluster: dump the raw merged extraction as graph.json.
             # No NetworkX, no community detection, no analysis sidecar.
+            # Dedupe nodes (by id) and parallel edges so the raw output matches the
+            # clustered path (whose DiGraph collapses both) and stays deterministic
+            # across modes (#1317; node dedup also collapses shared Swift module
+            # anchors emitted per importing file, #1327).
+            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
             from graphify.export import backup_if_protected as _backup
+            if (
+                incremental_mode
+                and not code_files
+                and not semantic_files
+                and not deleted_files
+                and not pg_result.get("nodes")
+                and not pg_result.get("edges")
+                and not cargo_result.get("nodes")
+                and not cargo_result.get("edges")
+            ):
+                print(
+                    "[graphify extract] no incremental changes detected "
+                    "(--no-cluster); outputs left untouched."
+                )
+                try:
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
+                except Exception as exc:
+                    print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+                sys.exit(0)
+
+            merged["nodes"] = _dedupe_nodes(merged["nodes"])
+            merged["edges"] = _dedupe_edges(merged["edges"])
+            # Backfill source_file from endpoint nodes — this raw path bypasses
+            # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
+            _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}
+            for _e in merged["edges"]:
+                if not _e.get("source_file"):
+                    _e["source_file"] = (
+                        _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
+                    )
             _backup(graphify_out)
             graph_json_path.write_text(
                 json.dumps(merged, indent=2), encoding="utf-8"
@@ -4351,7 +4691,7 @@ def main() -> None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
         print(
-            f"Merged {len(chunk_files)} chunks: {merged['nodes']} nodes, {len(merged['edges'])} edges, "
+            f"Merged {len(chunk_files)} chunks: {len(merged['nodes'])} nodes, {len(merged['edges'])} edges, "
             f"{merged['input_tokens']:,} in / {merged['output_tokens']:,} out tokens"
         )
 

@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+import unicodedata
 
 import networkx as nx
 
@@ -43,28 +44,49 @@ def _format_location(data: dict) -> str:
     return str(source_file)
 
 
+def _bare_name(label: str) -> str:
+    """Lowercased label with the callable decoration (trailing "()") removed."""
+    label = _normalize_label(label)
+    return label[:-2] if label.endswith("()") else label
+
+
+def _normalize_label(label: str) -> str:
+    return unicodedata.normalize("NFC", label).casefold()
+
+
 def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     if query in graph:
         return query
-    query_lower = query.lower()
+    query_lower = _normalize_label(query)
     exact_label_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if str(data.get("label", "")).lower() == query_lower
+        if _normalize_label(str(data.get("label", ""))) == query_lower
     ]
     if len(exact_label_matches) == 1:
         return exact_label_matches[0]
+    # Callable labels are decorated ("name()"), so a bare "name" query falls
+    # through exact matching and then ties with any "name*" sibling in the
+    # contains pass. Match on the undecorated name before giving up.
+    query_bare = _bare_name(query_lower)
+    bare_name_matches = [
+        str(node_id)
+        for node_id, data in graph.nodes(data=True)
+        if _bare_name(str(data.get("label", ""))) == query_bare
+    ]
+    if len(bare_name_matches) == 1:
+        return bare_name_matches[0]
     exact_source_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if str(data.get("source_file", "")).lower() == query_lower
+        if _normalize_label(str(data.get("source_file", ""))) == query_lower
     ]
     if len(exact_source_matches) == 1:
         return exact_source_matches[0]
     contains_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if query_lower in str(data.get("label", "")).lower()
+        if query_lower in _normalize_label(str(data.get("label", "")))
     ]
     if len(contains_matches) == 1:
         return contains_matches[0]
@@ -145,6 +167,15 @@ def load_graph(path: Path) -> nx.Graph:
     from networkx.readwrite import json_graph
 
     raw = json.loads(path.read_text(encoding="utf-8"))
+    # Force directed so stored caller→callee direction survives the round-trip;
+    # mirrors serve.py and __main__.py (#1174).
+    raw = {**raw, "directed": True}
+    # Normalize the edge key: graphify's `extract` output uses "edges" while
+    # networkx's node_link_data default is "links". Without this, an edges-keyed
+    # graph.json raises an uncaught KeyError: 'links' here — every other loader
+    # (__main__.py) already normalizes this (#738; same class as #1198).
+    if "links" not in raw and "edges" in raw:
+        raw = dict(raw, links=raw["edges"])
     try:
         return json_graph.node_link_graph(raw, edges="links")
     except TypeError:

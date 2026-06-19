@@ -9,14 +9,16 @@ import re
 import unicodedata
 from collections import defaultdict
 
-from datasketch import MinHash, MinHashLSH
-from rapidfuzz.distance import JaroWinkler
+from graphify._minhash import MinHash, MinHashLSH
+from rapidfuzz.distance import Jaro, JaroWinkler
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _norm(label: str) -> str:
+def _norm(label: str | None) -> str:
     """Lowercase + collapse non-alphanumeric runs to space (Unicode-aware)."""
+    if not isinstance(label, str):
+        label = "" if label is None else str(label)
     label = unicodedata.normalize("NFKC", label)
     return re.sub(r"[\W_]+", " ", label.casefold(), flags=re.UNICODE).strip()
 
@@ -87,6 +89,52 @@ def _short_label_blocked(a: str, b: str, jw_score: float) -> bool:
     return True
 
 
+_DIGIT_RUN = re.compile(r"\d+")
+
+
+def _numeric_tokens_differ(a: str, b: str) -> bool:
+    """True when two labels carry different embedded numbers (#1284).
+
+    Long labels that differ only in their digit runs ("ADR 0011 §D5" vs
+    "ADR 0013 D4", "3.1 Product Goals" vs "1.1 Product Goals", "block3" vs
+    "block13", "40%+ retention" vs "<20% retention") are numbered/versioned
+    siblings, not duplicates -- but the long shared boilerplate keeps
+    Jaro-Winkler above _MERGE_THRESHOLD, and _is_variant_pair only covers
+    short trailing suffixes. Digit runs are compared as multisets with
+    leading zeros stripped, so zero-padding ("09" vs "9") does not count as
+    a difference. (String comparison, not int(): a pathological label with a
+    >4300-digit run would crash int() on Python's conversion limit.) Labels
+    with identical numbers, or none at all, are unaffected.
+    """
+    if a == b:
+        return False
+    return sorted(t.lstrip("0") or "0" for t in _DIGIT_RUN.findall(a)) != \
+        sorted(t.lstrip("0") or "0" for t in _DIGIT_RUN.findall(b))
+
+
+# file_type values whose identity is anchored to their source location, not
+# their label text. Like code (#1205), these must not be label-merged across
+# files: rationale = module/class docstrings, document = headings/positional
+# content. `concept` is intentionally excluded -- it is the type meant to unify
+# across files (protected from over-merge by the numeric/Jaro guards instead).
+_FILE_ANCHORED_NONCODE = frozenset({"rationale", "document"})
+
+
+def _crossfile_fileanchored_blocked(node: dict, neighbor: dict) -> bool:
+    """Block label-based merging of file-anchored non-code nodes across files (#1284).
+
+    rationale/document nodes are docstring- and heading-derived and as
+    file-anchored as the code they describe (#1205's reasoning, one layer up):
+    parallel modules carry near-identical boilerplate ("Django app config for
+    apps.<name>. No business logic here...") that differs by one word and sails
+    past the JW threshold. Same-file duplicates of these types may still merge.
+    """
+    if (node.get("file_type") not in _FILE_ANCHORED_NONCODE
+            and neighbor.get("file_type") not in _FILE_ANCHORED_NONCODE):
+        return False
+    return (node.get("source_file") or "") != (neighbor.get("source_file") or "")
+
+
 # ── union-find ────────────────────────────────────────────────────────────────
 
 class _UF:
@@ -122,6 +170,20 @@ _MERGE_THRESHOLD = 92.0     # rapidfuzz normalized_similarity * 100
 _COMMUNITY_BOOST = 5.0      # score bonus when both nodes share community
 _NUM_PERM = 128
 _CHUNK_SUFFIX = re.compile(r"_c\d+$")
+
+
+def _is_code(node: dict) -> bool:
+    """True for AST-extracted code symbols.
+
+    Code-node identity is the node ID (which already encodes the fully
+    qualified path: module/class/symbol). The label is only a display name
+    (e.g. a bare ``.draw()`` method name, or a function name shared by two
+    parallel backends), so label-based merging conflates distinct symbols
+    (#1205). Genuine duplicates — the same symbol re-extracted — share an ID
+    and are already collapsed by the exact-ID ``seen_ids`` pre-dedup above,
+    so code never needs label-based merging.
+    """
+    return node.get("file_type") == "code"
 
 
 # ── main entry point ──────────────────────────────────────────────────────────
@@ -171,6 +233,10 @@ def deduplicate_entities(
     # ── pass 1: exact normalization ───────────────────────────────────────────
     norm_to_nodes: dict[str, list[dict]] = defaultdict(list)
     for node in unique_nodes:
+        # Code symbols are keyed by ID, never by label — skip them entirely so
+        # distinct same-named symbols are never merged by string similarity (#1205).
+        if _is_code(node):
+            continue
         key = _norm(node.get("label", node.get("id", "")))
         if key:
             norm_to_nodes[key].append(node)
@@ -186,7 +252,11 @@ def deduplicate_entities(
         for node in group:
             sf = node.get("source_file") or ""
             by_file[sf].append(node)
-        for file_group in by_file.values():
+        for sf, file_group in by_file.items():
+            if not sf:
+                # No source_file — cannot prove same symbol; skip to avoid
+                # collapsing distinct nodes that happen to share a label (#1178).
+                continue
             if len(file_group) > 1:
                 winner = _pick_winner(file_group)
                 for node in file_group:
@@ -197,6 +267,12 @@ def deduplicate_entities(
     candidates: list[dict] = []
     seen_norms: set[str] = set()
     for node in unique_nodes:
+        # Code symbols are excluded from fuzzy matching too: two functions with
+        # similar long names in different files (parallel backends, sibling
+        # classes) must not be fuzzy-merged, and a code↔concept fuzzy match must
+        # not transitively union two distinct code symbols via a concept (#1205).
+        if _is_code(node):
+            continue
         key = _norm(node.get("label", node.get("id", "")))
         if key and key not in seen_norms:
             seen_norms.add(key)
@@ -207,19 +283,26 @@ def deduplicate_entities(
     if len(candidates) >= 2:
         lsh = MinHashLSH(threshold=_LSH_THRESHOLD, num_perm=_NUM_PERM)
         minhashes: dict[str, MinHash] = {}
+        # Pre-build O(1) lookup structures so the query loop below doesn't scan
+        # the candidates list linearly for every LSH neighbor (was O(n²×B)).
+        candidates_by_id: dict[str, dict] = {}
+        norm_cache: dict[str, str] = {}
 
         for node in candidates:
-            norm_label = _norm(node.get("label", node.get("id", "")))
-            m = _make_minhash(norm_label)
-            minhashes[node["id"]] = m
+            node_id = node["id"]
+            candidates_by_id[node_id] = node
+            nl = _norm(node.get("label", node.get("id", "")))
+            norm_cache[node_id] = nl
+            m = _make_minhash(nl)
+            minhashes[node_id] = m
             try:
-                lsh.insert(node["id"], m)
+                lsh.insert(node_id, m)
             except ValueError:
                 pass  # duplicate key in LSH — already inserted
 
         for node in candidates:
             node_id = node["id"]
-            norm_label = _norm(node.get("label", node.get("id", "")))
+            norm_label = norm_cache[node_id]
             neighbors = lsh.query(minhashes[node_id])
 
             for neighbor_id in neighbors:
@@ -228,16 +311,43 @@ def deduplicate_entities(
                 if uf.find(node_id) == uf.find(neighbor_id):
                     continue
 
-                neighbor = next((n for n in candidates if n["id"] == neighbor_id), None)
+                neighbor = candidates_by_id.get(neighbor_id)
                 if neighbor is None:
                     continue
 
-                neighbor_norm = _norm(neighbor.get("label", neighbor.get("id", "")))
-                score = JaroWinkler.normalized_similarity(norm_label, neighbor_norm) * 100
+                neighbor_norm = norm_cache.get(neighbor_id) or _norm(neighbor.get("label", neighbor.get("id", "")))
+                # Cross-file long labels score on plain Jaro (no prefix bonus).
+                # Jaro-Winkler's leading-prefix bonus lifts pairs that share a
+                # prefix but diverge in a distinguishing token ("testing-library
+                # jest-native" vs "react-native") past threshold, fabricating
+                # destructive cross-file merges; on Jaro alone they fall short
+                # while true cross-file duplicates still clear it (#1243). Same-file
+                # near-duplicates keep Jaro-Winkler (low-risk, and a mid-string
+                # stopword insertion needs the prefix bonus to merge); short labels
+                # keep Jaro-Winkler too (gated by _short_label_blocked).
+                _xfile = (node.get("source_file") or "") != (neighbor.get("source_file") or "")
+                if _xfile and max(len(norm_label), len(neighbor_norm)) >= 12:
+                    score = Jaro.normalized_similarity(norm_label, neighbor_norm) * 100
+                else:
+                    score = JaroWinkler.normalized_similarity(norm_label, neighbor_norm) * 100
 
                 if _is_variant_pair(norm_label, neighbor_norm):
                     continue
                 if _short_label_blocked(norm_label, neighbor_norm, score):
+                    continue
+                # Prefix-extension pairs (getActiveSession / getActiveSessions,
+                # parseConfig / parseConfigFile) are almost never duplicates —
+                # one is a strict suffix-extension of the other. Block the merge
+                # regardless of JW score (#1201).
+                _lo, _hi = sorted((norm_label, neighbor_norm), key=len)
+                if _hi.startswith(_lo) and _hi != _lo:
+                    continue
+                # Numbered/versioned siblings and cross-file file-anchored
+                # boilerplate (rationale/document) are decisively distinct
+                # regardless of score (#1284).
+                if _numeric_tokens_differ(norm_label, neighbor_norm):
+                    continue
+                if _crossfile_fileanchored_blocked(node, neighbor):
                     continue
 
                 c1 = communities.get(node_id)
@@ -256,9 +366,11 @@ def deduplicate_entities(
                         sf_b = neighbor.get("source_file") or ""
                         if sf_a != sf_b:
                             continue
-                    all_group = norm_to_nodes.get(norm_label, [node]) + \
-                                norm_to_nodes.get(neighbor_norm, [neighbor])
-                    winner = _pick_winner(all_group)
+                    # Pick the winner from the verified pair only. Selecting it
+                    # from the union of both normalized-label groups pulls
+                    # never-compared nodes (same label, different source_file)
+                    # into the merge, bypassing the #1046/#1178 guards.
+                    winner = _pick_winner([node, neighbor])
                     uf.union(winner["id"], node_id)
                     uf.union(winner["id"], neighbor_id)
                     fuzzy_merges += 1
@@ -361,10 +473,23 @@ def _llm_tiebreak(
             if uf.find(node["id"]) == uf.find(neighbor["id"]):
                 continue
             norm_j = _norm(neighbor.get("label", neighbor.get("id", "")))
-            score = JaroWinkler.normalized_similarity(norm_i, norm_j) * 100
+            # Mirror pass 2: plain Jaro for cross-file long labels (#1243).
+            _xfile = (node.get("source_file") or "") != (neighbor.get("source_file") or "")
+            if _xfile and max(len(norm_i), len(norm_j)) >= 12:
+                score = Jaro.normalized_similarity(norm_i, norm_j) * 100
+            else:
+                score = JaroWinkler.normalized_similarity(norm_i, norm_j) * 100
             if _is_variant_pair(norm_i, norm_j):
                 continue
             if _short_label_blocked(norm_i, norm_j, score):
+                continue
+            _lo, _hi = sorted((norm_i, norm_j), key=len)
+            if _hi.startswith(_lo) and _hi != _lo:
+                continue
+            # Mirror pass 2: decisively-distinct pairs never reach the LLM (#1284).
+            if _numeric_tokens_differ(norm_i, norm_j):
+                continue
+            if _crossfile_fileanchored_blocked(node, neighbor):
                 continue
             c1 = communities.get(node["id"])
             c2 = communities.get(neighbor["id"])

@@ -172,6 +172,43 @@ def test_extract_codeonly_succeeds_without_api_key(monkeypatch, tmp_path):
     assert len(json.loads(graph.read_text()).get("nodes", [])) > 0
 
 
+def test_extract_out_keeps_project_root_clean(monkeypatch, tmp_path):
+    """`extract --out DIR` routes every artifact to DIR/graphify-out/ and the
+    scanned project must not grow a graphify-out/ (or anything else) beside
+    its sources.
+
+    Guards the centralized-output workflow: run from the project root with
+    --out pointing outside the repo, and the repo stays byte-identical.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    corpus = _code_only_corpus(project)
+    external = tmp_path / "external-graphs"
+
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.chdir(corpus)  # run from the project root, like a real user
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", ".", "--out", str(external)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    out = external / "graphify-out"
+    assert (out / "graph.json").exists(), "graph.json must land under --out"
+    assert (out / "manifest.json").exists(), "manifest.json must land under --out"
+    assert not (corpus / "graphify-out").exists(), (
+        "scanned project must not grow a graphify-out/ when --out is set"
+    )
+    assert sorted(p.name for p in corpus.iterdir()) == ["auth.py"], (
+        "no stray files may appear in the project root"
+    )
+
+
 def test_extract_without_key_still_errors_when_docs_present(
     monkeypatch, tmp_path, capsys
 ):

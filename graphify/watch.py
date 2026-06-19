@@ -205,6 +205,36 @@ def _report_root_label(watch_path: Path) -> str:
     return Path.cwd().name if watch_path == Path(".") else str(watch_path)
 
 
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _changed_path_candidates(raw: Path, *, change_root: Path, watch_root: Path) -> list[Path]:
+    """Return plausible absolute locations for a hook-provided changed path.
+
+    Git hooks pass paths relative to the repository root. Watch callers may
+    also pass paths relative to the watched root. Keep both interpretations so
+    a graph rooted at ``src`` accepts ``src/app.py`` and ``app.py``.
+    """
+    if raw.is_absolute():
+        return [raw.resolve()]
+
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for base in (change_root, watch_root):
+        cand = (base / raw).resolve()
+        key = os.fspath(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(cand)
+    return candidates
+
+
 def _relativize_source_files(payload: dict, root: Path) -> None:
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
@@ -477,18 +507,47 @@ def _rebuild_code(
         # extract only changed-and-still-existing files. Deleted paths are
         # tracked separately so their stale nodes can be evicted below.
         deleted_paths: set[str] = set()
+        def _add_deleted_source(path: Path) -> None:
+            for root in (project_root, watch_root):
+                deleted_paths.add(_nsf(str(path), str(root)) or str(path))
+
         if changed_paths is not None:
             code_set = {p.resolve() for p in code_files}
             wanted: list[Path] = []
+            change_root = Path.cwd().resolve()
             for raw in changed_paths:
-                cand = (watch_root / raw).resolve() if not raw.is_absolute() else raw.resolve()
-                if cand.exists() and cand in code_set:
-                    wanted.append(cand)
-                else:
-                    # File was deleted, renamed away, or filtered out by detect
-                    # (e.g. .gitignore, vendored). Either way, evict any
-                    # preserved nodes that still claim this source path.
-                    deleted_paths.add(_nsf(str(cand), str(project_root)) or str(cand))
+                candidates = _changed_path_candidates(
+                    raw,
+                    change_root=change_root,
+                    watch_root=watch_root,
+                )
+                tracked = next((cand for cand in candidates if cand.exists() and cand in code_set), None)
+                if tracked is not None:
+                    if tracked not in wanted:
+                        wanted.append(tracked)
+                    continue
+
+                existing_in_root = next(
+                    (
+                        cand for cand in candidates
+                        if cand.exists() and _is_relative_to(cand, watch_root)
+                    ),
+                    None,
+                )
+                if existing_in_root is not None:
+                    # The path exists under the watched root but detect filtered
+                    # it out. Evict any stale nodes that still claim it.
+                    _add_deleted_source(existing_in_root)
+                    continue
+
+                deleted_in_root = next(
+                    (cand for cand in candidates if _is_relative_to(cand, watch_root)),
+                    None,
+                )
+                if deleted_in_root is not None:
+                    # File was deleted or renamed away inside the watched root.
+                    # Evict preserved nodes that still claim this source path.
+                    _add_deleted_source(deleted_in_root)
             if not wanted and not deleted_paths:
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
@@ -522,7 +581,8 @@ def _rebuild_code(
                 evict_sources: set[str] = set(deleted_paths)
                 if changed_paths is not None:
                     for p in extract_targets:
-                        evict_sources.add(_nsf(str(p), str(project_root)) or str(p))
+                        for root in (project_root, watch_root):
+                            evict_sources.add(_nsf(str(p), str(root)) or str(p))
                 else:
                     # Full re-extraction: reconcile against current code files to
                     # evict nodes from files deleted since the last run (#1007).
@@ -543,9 +603,19 @@ def _rebuild_code(
                             evict_sources.add(sf)
                             evict_sources.add(norm)
                             deleted_paths.add(norm)
+                # On a full re-extraction every code file is re-extracted, so
+                # new_ast_ids is the complete current AST set. Any AST-marked node
+                # missing from it is stale and must be dropped even if its source
+                # file still exists (a symbol removed from a surviving file, #1116).
+                # Gate on full_rebuild: in incremental mode an AST node from an
+                # unchanged file is legitimately absent from new_ast_ids. Semantic
+                # nodes lack the "_origin" marker, so they are never dropped here —
+                # only by the deleted-file eviction in evict_sources above.
+                full_rebuild = changed_paths is None
                 preserved_nodes = [
                     n for n in existing.get("nodes", [])
                     if n["id"] not in new_ast_ids
+                    and not (full_rebuild and n.get("_origin") == "ast")
                     and (not evict_sources or n.get("source_file") not in evict_sources)
                 ]
                 all_ids = new_ast_ids | {n["id"] for n in preserved_nodes}
@@ -574,9 +644,14 @@ def _rebuild_code(
 
         if no_cluster:
             # Normalise to "links" key so schema is consistent with the full clustered path.
+            # Dedupe parallel edges (the clustered path's DiGraph collapses them implicitly);
+            # without it, --no-cluster + repeated `update` accumulate duplicates and edge
+            # counts diverge across build modes (#1317).
+            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
             candidate_graph_data = {
-                **{k: v for k, v in result.items() if k != "edges"},
-                "links": result.get("edges", []),
+                **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
+                "nodes": _dedupe_nodes(result.get("nodes", [])),
+                "links": _dedupe_edges(result.get("edges", [])),
             }
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
@@ -614,7 +689,8 @@ def _rebuild_code(
             else:
                 print(
                     "[graphify watch] Rebuilt (no clustering): "
-                    f"{len(result.get('nodes', []))} nodes, {len(result.get('edges', []))} edges"
+                    f"{len(candidate_graph_data.get('nodes', []))} nodes, "
+                    f"{len(candidate_graph_data.get('links', []))} edges"
                 )
                 print(f"[graphify watch] graph.json updated in {out}")
             return True
@@ -828,7 +904,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             nonlocal last_trigger, pending
             if event.is_directory:
                 return
-            path = Path(event.src_path)
+            path = Path(os.fsdecode(event.src_path))
             # Check .graphifyignore BEFORE the extension/dotfile/out filters so
             # the cheapest short-circuit for users with broad ignore patterns
             # (node_modules/, .venv/, build/, …) fires first. _is_ignored
@@ -838,9 +914,13 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             if path.suffix.lower() not in _WATCHED_EXTENSIONS:
                 return
-            if any(part.startswith(".") for part in path.parts):
+            try:
+                filter_parts = path.relative_to(watch_root_for_ignore).parts
+            except ValueError:
+                filter_parts = path.parts
+            if any(part.startswith(".") for part in filter_parts):
                 return
-            if _GRAPHIFY_OUT in path.parts:
+            if _GRAPHIFY_OUT in filter_parts:
                 return
             last_trigger = time.monotonic()
             pending = True

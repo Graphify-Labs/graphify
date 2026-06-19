@@ -77,3 +77,30 @@ jobs:
         run: |
           uv run --frozen graphify --help
           uv run --frozen graphify install
+
+  security-scan:
+    # The dev deps already include bandit, pip-audit, and safety. Run them in
+    # CI so a new HIGH-severity finding or vulnerable dependency is caught on
+    # the PR that introduces it, rather than at the next manual audit.
+    # Non-blocking for now (continue-on-error) to avoid breaking CI on
+    # pre-existing findings; remove continue-on-error after the initial
+    # cleanup pass.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: bandit (static security analysis)
+        continue-on-error: true
+        run: uv run --frozen bandit -r graphify -ll
+
+      - name: pip-audit (dependency vulnerabilities)
+        continue-on-error: true
+        run: uv run --frozen pip-audit --strict

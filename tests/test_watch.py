@@ -207,6 +207,132 @@ def test_rebuild_code_evicts_nodes_from_deleted_files(tmp_path):
     assert "login()" in node_labels_after, "nodes from surviving file must be kept"
 
 
+def test_rebuild_code_evicts_removed_symbol_from_surviving_file(tmp_path):
+    """#1116: graphify update (_rebuild_code with no changed_paths) must prune a
+    symbol removed from a file that still exists — and its inbound call edge —
+    without dropping genuine semantic nodes that share the surviving file."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+
+    (corpus / "a.py").write_text(
+        "def foo(): pass\ndef bar(): pass\n", encoding="utf-8"
+    )
+    (corpus / "b.py").write_text(
+        "from a import foo\n\ndef caller():\n    foo()\n", encoding="utf-8"
+    )
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+
+    def labels(d):
+        return {n["label"] for n in d.get("nodes", [])}
+
+    def id_for(d, label):
+        return next(n["id"] for n in d.get("nodes", []) if n["label"] == label)
+
+    def edges(d):
+        return d.get("links", d.get("edges", []))
+
+    before = labels(data)
+    assert {"foo()", "bar()", "caller()"} <= before
+    foo_id = id_for(data, "foo()")
+    caller_id = id_for(data, "caller()")
+    assert any(
+        {e.get("source"), e.get("target")} == {caller_id, foo_id}
+        for e in edges(data)
+    ), "cross-file caller->foo call edge must exist before removal"
+
+    # Pre-seed a semantic node on the surviving a.py (no AST id, no _origin
+    # marker). A naive "evict every re-extracted file's nodes by source_file"
+    # fix would wrongly delete this; the identity-based fix must keep it.
+    data["nodes"].append({
+        "id": "a_authconcept",
+        "label": "AuthConcept",
+        "file_type": "concept",
+        "source_file": "a.py",
+    })
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # Remove foo() from a.py (keep bar); leave b.py untouched.
+    (corpus / "a.py").write_text("def bar(): pass\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False, force=True) is True
+    after_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    after = labels(after_data)
+
+    assert "foo()" not in after, "removed symbol must be pruned from surviving file"
+    assert not any(
+        e.get("source") == foo_id or e.get("target") == foo_id
+        for e in edges(after_data)
+    ), "dangling edge to the removed symbol must be dropped"
+    assert "bar()" in after, "surviving symbol in the same file must be kept"
+    assert "caller()" in after, "unchanged file's nodes must be kept"
+    assert "AuthConcept" in after, "semantic node on a surviving file must not be evicted"
+
+
+def test_rebuild_code_preupgrade_marker_less_node_one_cycle_lag(tmp_path):
+    """#1118 backward-compat: a graph.json built before #1116 has no `_origin`
+    markers. On the first `graphify update` after upgrading, a symbol removed
+    from a surviving file is NOT pruned that cycle — its old node carries no
+    marker, so the new drop-rule skips it. This is a deliberate one-cycle lag
+    (no data loss); it self-heals once the node has been stamped `_origin="ast"`
+    (which a full re-extraction does for every surviving symbol)."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def bar(): pass\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+
+    def labels(d):
+        return {n["label"] for n in d.get("nodes", [])}
+
+    # Simulate a pre-#1116 graph: strip every `_origin` marker, then inject a
+    # stale AST node for a symbol no longer present in a.py's source — also
+    # marker-less, exactly as a pre-upgrade graph would carry it.
+    for n in data["nodes"]:
+        n.pop("_origin", None)
+    data["nodes"].append({
+        "id": "a_foo",
+        "label": "foo()",
+        "file_type": "function",
+        "source_file": "a.py",
+    })
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # First update after "upgrade" (full rebuild, no changed_paths): the stale
+    # node has no marker, so the drop-rule skips it and it survives this cycle.
+    assert _rebuild_code(corpus, acquire_lock=False, force=True) is True
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert "foo()" in labels(after), (
+        "pre-upgrade marker-less stale node must survive the first update — "
+        "documented one-cycle backward-compat lag (#1118)"
+    )
+
+    # Once stamped (a full re-extraction stamps every surviving symbol), the
+    # drop-rule applies on the next update and the stale node self-heals away.
+    for n in after["nodes"]:
+        if n["label"] == "foo()":
+            n["_origin"] = "ast"
+    graph_path.write_text(json.dumps(after), encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False, force=True) is True
+    healed = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert "foo()" not in labels(healed), (
+        "once carrying _origin=ast, the stale node is pruned on the next "
+        "update (self-heal)"
+    )
+    assert "bar()" in labels(healed), "surviving symbol must be kept throughout"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_non_blocking_does_not_clobber_holder(tmp_path):
     """GH-858: a non-blocking caller that fails to acquire the lock must not
@@ -298,9 +424,11 @@ def test_watch_handler_honors_graphifyignore(tmp_path, monkeypatch):
     import threading
     from graphify import watch as watch_mod
 
-    (tmp_path / ".graphifyignore").write_text("node_modules/\nbuild/\n", encoding="utf-8")
-    (tmp_path / "node_modules").mkdir()
-    (tmp_path / "build").mkdir()
+    watch_root = tmp_path / ".hidden-parent" / "corpus"
+    watch_root.mkdir(parents=True)
+    (watch_root / ".graphifyignore").write_text("node_modules/\nbuild/\n", encoding="utf-8")
+    (watch_root / "node_modules").mkdir()
+    (watch_root / "build").mkdir()
 
     rebuild_calls: list[Path] = []
     notify_calls: list[Path] = []
@@ -309,19 +437,24 @@ def test_watch_handler_honors_graphifyignore(tmp_path, monkeypatch):
 
     # Run watch() in a thread with a short debounce so we can verify the
     # post-debounce dispatch path actually runs on real events.
-    t = threading.Thread(target=watch_mod.watch, args=(tmp_path,), kwargs={"debounce": 0.2}, daemon=True)
+    t = threading.Thread(
+        target=watch_mod.watch,
+        args=(watch_root,),
+        kwargs={"debounce": 0.2},
+        daemon=True,
+    )
     t.start()
     time.sleep(0.5)  # let observer.start() settle
 
     # Ignored writes — handler must drop these.
-    (tmp_path / "node_modules" / "junk.js").write_text("// noise\n", encoding="utf-8")
-    (tmp_path / "build" / "out.py").write_text("x = 1\n", encoding="utf-8")
+    (watch_root / "node_modules" / "junk.js").write_text("// noise\n", encoding="utf-8")
+    (watch_root / "build" / "out.py").write_text("x = 1\n", encoding="utf-8")
     time.sleep(1.0)
     assert rebuild_calls == [], "ignored writes triggered a rebuild"
     assert notify_calls == [], "ignored writes triggered a notify"
 
     # Non-ignored write — handler must accept and (after debounce) dispatch.
-    (tmp_path / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (watch_root / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and not rebuild_calls:
         time.sleep(0.1)
@@ -517,6 +650,40 @@ def test_rebuild_code_prunes_deleted_file_nodes(tmp_path):
         after_sources = {n.get("source_file") for n in after.get("nodes", [])}
         assert "drop.py" not in after_sources, "deleted file's nodes should be pruned"
         assert "keep.py" in after_sources, "untouched file's nodes should survive"
+    finally:
+        os.chdir(cwd)
+
+
+def test_rebuild_code_accepts_repo_relative_changed_path_for_subdir_root(tmp_path):
+    """#1348: git-hook paths are repo-root-relative even when the graph root is a subdir."""
+    from graphify.watch import _rebuild_code
+
+    src = tmp_path / "src"
+    src.mkdir()
+    app = src / "app.py"
+    app.write_text("def old_name():\n    return 1\n", encoding="utf-8")
+
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        assert _rebuild_code(Path("src"), no_cluster=True, acquire_lock=False) is True
+        graph_path = src / "graphify-out" / "graph.json"
+        before = json.loads(graph_path.read_text(encoding="utf-8"))
+        assert "old_name()" in {n.get("label") for n in before.get("nodes", [])}
+
+        app.write_text("def new_name():\n    return 2\n", encoding="utf-8")
+        assert _rebuild_code(
+            Path("src"),
+            changed_paths=[Path("src/app.py")],
+            no_cluster=True,
+            acquire_lock=False,
+            force=True,
+        ) is True
+
+        after = json.loads(graph_path.read_text(encoding="utf-8"))
+        labels = {n.get("label") for n in after.get("nodes", [])}
+        assert "old_name()" not in labels
+        assert "new_name()" in labels
     finally:
         os.chdir(cwd)
 

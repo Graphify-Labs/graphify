@@ -128,6 +128,66 @@ def test_body_content_no_frontmatter():
     assert _body_content(content) == content
 
 
+# --- #1259: frontmatter delimiters must be whole `---` lines -----------------
+
+def test_body_content_hr_start_is_not_frontmatter():
+    """A document opening with a ``----`` thematic break has no frontmatter;
+    a later ``---`` hr must not be mistaken for a close delimiter."""
+    content = b"----\nIntro paragraph that must be hashed.\n\n---\nbody"
+    assert _body_content(content) == content
+
+
+def test_body_content_dash_title_start_is_not_frontmatter():
+    """``--- title`` on the first line is prose, not an open delimiter."""
+    content = b"--- title\nIntro that must be hashed.\n\n---\nbody"
+    assert _body_content(content) == content
+
+
+def test_body_content_dash_text_line_is_not_close_delimiter():
+    """``--- text`` and ``----`` lines inside opened frontmatter are not the
+    close; without a proper close the content passes through unchanged."""
+    content = b"---\ntitle: Test\nbody starts here\n--- not a delimiter\n----\nreal content"
+    assert _body_content(content) == content
+
+
+def test_body_content_later_proper_close_skips_dash_text_lines():
+    """A ``--- text`` line is skipped; the next whole ``---`` line closes."""
+    content = b"---\ntitle: Test\nnote: --- inline\n---\nreal body"
+    assert _body_content(content) == b"\nreal body"
+
+
+def test_body_content_well_formed_output_byte_identical():
+    """For well-formed frontmatter the stripped body must stay byte-identical
+    to the historical substring implementation, so existing semantic-cache
+    hashes do not churn (re-extraction is billed LLM work)."""
+    cases = [
+        # (input, output of the historical text.find("\n---")+4 algorithm)
+        (b"---\ntitle: Test\n---\n\nActual body.", b"\n\nActual body."),
+        (b"---\nreviewed: 2026-01-01\n---\n\n# Title\n\nBody text.", b"\n\n# Title\n\nBody text."),
+        # close delimiter with trailing whitespace keeps it in the body
+        (b"---\ntitle: Test\n---  \nbody", b"  \nbody"),
+        # CRLF line endings
+        (b"---\r\ntitle: Test\r\n---\r\nbody", b"\r\nbody"),
+        # empty frontmatter block
+        (b"---\n---\nbody", b"\nbody"),
+        # close as the very last line, no trailing newline
+        (b"---\ntitle: Test\n---", b""),
+    ]
+    for content, expected in cases:
+        assert _body_content(content) == expected, content
+
+
+def test_md_edit_above_hr_changes_hash(tmp_path):
+    """Editing content above a mid-document ``----`` break must change the
+    hash -- previously that region was silently excluded from hashing."""
+    f = tmp_path / "doc.md"
+    f.write_text("----\nIntro paragraph.\n\n---\nbody")
+    h1 = file_hash(f)
+    f.write_text("----\nEdited intro paragraph.\n\n---\nbody")
+    h2 = file_hash(f)
+    assert h1 != h2
+
+
 # --- #777: portable cache source_file fields --------------------------------
 # ``save_cached`` relativizes ``source_file`` entries inside the cache file
 # so a committed ``graphify-out/cache/`` is portable across machines and
@@ -237,6 +297,96 @@ def test_cache_portable_across_roots(tmp_path):
     # Source path re-anchored to the new root, not the old one.
     assert loaded["nodes"][0]["source_file"] == str(src_b.resolve())
     assert not str(repo_a) in loaded["nodes"][0]["source_file"]
+
+
+# --- AST cache versioning ----------------------------------------------------
+# AST cache entries are the output of graphify's own extractor code, so they
+# are only valid for the graphify version that wrote them. Keying purely on
+# file content meant extractor fixes shipped in a new release kept serving
+# stale pre-fix results. The AST cache is therefore namespaced by package
+# version; the semantic cache is NOT (invalidating it would re-bill LLM
+# extraction for unchanged files).
+
+def test_ast_cache_invalidated_on_version_bump(tmp_path, monkeypatch):
+    """An AST entry written by version X must not be served after upgrading
+    to version Y — the file is unchanged but the extractor is not."""
+    import graphify.cache as cache_mod
+
+    f = tmp_path / "mod.py"
+    f.write_text("def f(): pass\n")
+
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.8.0", raising=False)
+    save_cached(f, {"nodes": [{"id": "n1"}], "edges": []}, root=tmp_path, kind="ast")
+    assert load_cached(f, root=tmp_path, kind="ast") is not None
+
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.8.1", raising=False)
+    assert load_cached(f, root=tmp_path, kind="ast") is None, (
+        "AST cache entry from a previous graphify version must not be served"
+    )
+
+
+def test_ast_cache_version_bump_cleans_stale_entries(tmp_path, monkeypatch):
+    """Upgrading removes AST entries left behind by previous versions so the
+    cache directory does not grow one full copy per release."""
+    import graphify.cache as cache_mod
+
+    f = tmp_path / "mod.py"
+    f.write_text("def f(): pass\n")
+
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.8.0", raising=False)
+    save_cached(f, {"nodes": [{"id": "n1"}], "edges": []}, root=tmp_path, kind="ast")
+    old_dir = cache_dir(tmp_path, "ast")
+    assert any(old_dir.glob("*.json"))
+
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.8.1", raising=False)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set(), raising=False)
+    cache_dir(tmp_path, "ast")
+    assert not old_dir.exists(), (
+        "stale AST version directory must be removed on upgrade"
+    )
+
+
+def test_legacy_unversioned_ast_entries_not_served(tmp_path):
+    """Entries written by pre-versioning graphify (flat cache/ or unversioned
+    cache/ast/) are by definition from an older extractor and must not be
+    served — that staleness is exactly what version namespacing fixes."""
+    import json
+    from graphify.cache import file_hash, _GRAPHIFY_OUT
+
+    f = tmp_path / "mod.py"
+    f.write_text("def f(): pass\n")
+    h = file_hash(f, tmp_path)
+    payload = json.dumps({"nodes": [{"id": "stale"}], "edges": []})
+
+    # Unversioned cache/ast/{hash}.json (pre-versioning layout)
+    unversioned = tmp_path / _GRAPHIFY_OUT / "cache" / "ast"
+    unversioned.mkdir(parents=True)
+    (unversioned / f"{h}.json").write_text(payload)
+    # Legacy flat cache/{hash}.json (pre-0.5.3 layout)
+    (unversioned.parent / f"{h}.json").write_text(payload)
+
+    assert load_cached(f, root=tmp_path, kind="ast") is None
+
+
+def test_semantic_cache_survives_version_bump(tmp_path, monkeypatch):
+    """The semantic cache is deliberately not versioned: entries are produced
+    by the LLM from file contents, and re-extraction costs real money."""
+    import graphify.cache as cache_mod
+
+    f = tmp_path / "doc.md"
+    f.write_text("# Title\n\nBody.\n")
+
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.8.0", raising=False)
+    save_cached(f, {"nodes": [{"id": "n1"}], "edges": []}, root=tmp_path, kind="semantic")
+    semantic_dir = cache_dir(tmp_path, "semantic")
+
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.8.1", raising=False)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set(), raising=False)
+    cache_dir(tmp_path, "ast")  # triggers stale-AST cleanup
+    assert load_cached(f, root=tmp_path, kind="semantic") is not None
+    assert any(semantic_dir.glob("*.json")), (
+        "semantic entries must survive both the version bump and AST cleanup"
+    )
 
 
 def test_save_cached_in_root_symlink_keeps_symlink_name(tmp_path):

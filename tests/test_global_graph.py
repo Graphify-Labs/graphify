@@ -279,6 +279,47 @@ def test_merge_graphs_prefixes_ids(tmp_path):
     assert merged.number_of_nodes() == 2  # no silent collapse
 
 
+def test_global_add_rewires_edges_to_deduplicated_externals(tmp_path):
+    """Edges incident to an external node that gets deduplicated against an
+    already-present external must be rewired to the existing node, not dropped."""
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    GA = _make_graph(
+        [
+            {"id": "moda", "label": "ModA", "source_file": "src/a.py"},
+            {"id": "requests", "label": "requests"},
+        ],
+        [{"source": "moda", "target": "requests", "relation": "imports"}],
+    )
+    GB = _make_graph(
+        [
+            {"id": "modb", "label": "ModB", "source_file": "src/b.py"},
+            {"id": "requests", "label": "requests"},
+        ],
+        [{"source": "modb", "target": "requests", "relation": "imports"}],
+    )
+    _graph_to_json(GA, g1)
+    _graph_to_json(GB, g2)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, _load_global_graph
+        global_add(g1, "repoA")
+        global_add(g2, "repoB")
+        G = _load_global_graph()
+
+    # repoB's external "requests" was deduplicated against repoA's
+    assert "repoA::requests" in G.nodes
+    assert "repoB::requests" not in G.nodes
+    # repoA's edge is untouched
+    assert G.has_edge("repoA::moda", "repoA::requests")
+    # repoB's edge must be rewired to the existing external node, not dropped
+    assert G.has_edge("repoB::modb", "repoA::requests")
+    assert G.edges["repoB::modb", "repoA::requests"]["relation"] == "imports"
+
+
 def test_global_add_rejects_oversized_source_graph(monkeypatch, tmp_path):
     """#F4: global_add must refuse to read a source graph.json that
     exceeds the size cap, rather than json.loads-ing it into memory."""

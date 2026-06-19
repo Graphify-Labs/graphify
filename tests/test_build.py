@@ -2,9 +2,50 @@ import json
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.build import build_from_json, build, build_merge, edge_data, edge_datas
+from graphify.build import build_from_json, build, build_merge, edge_data, edge_datas, dedupe_edges, dedupe_nodes
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_dedupe_edges_collapses_exact_parallels():
+    # #1317: --no-cluster / incremental update concatenate edge lists raw.
+    edges = [
+        {"source": "a", "target": "b", "relation": "calls", "source_location": "L1"},
+        {"source": "a", "target": "b", "relation": "calls", "source_location": "L9"},  # dup
+        {"source": "a", "target": "b", "relation": "imports"},  # different relation: kept
+        {"source": "b", "target": "c", "relation": "calls"},
+    ]
+    out = dedupe_edges(edges)
+    keys = [(e["source"], e["target"], e["relation"]) for e in out]
+    assert keys == [("a", "b", "calls"), ("a", "b", "imports"), ("b", "c", "calls")]
+    # first occurrence wins (keeps L1, not L9)
+    assert out[0]["source_location"] == "L1"
+
+
+def test_dedupe_edges_is_idempotent():
+    edges = [
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "a", "target": "b", "relation": "calls"},
+    ]
+    once = dedupe_edges(edges)
+    twice = dedupe_edges(once + edges)  # simulate a second `update` re-concatenating
+    assert len(once) == 1
+    assert len(twice) == 1
+
+
+def test_dedupe_nodes_collapses_by_id_last_wins():
+    # #1327: a shared module anchor is emitted once per importing file; the
+    # --no-cluster raw writer must collapse same-id node dicts (#1317).
+    nodes = [
+        {"id": "foundation", "label": "Foundation", "type": "module", "source_file": "A.swift"},
+        {"id": "akit", "label": "AKit", "file_type": "code"},
+        {"id": "foundation", "label": "Foundation", "type": "module", "source_file": "B.swift"},
+    ]
+    out = dedupe_nodes(nodes)
+    ids = [n["id"] for n in out]
+    assert ids == ["foundation", "akit"]  # first-appearance order
+    # last writer wins on attributes
+    assert next(n for n in out if n["id"] == "foundation")["source_file"] == "B.swift"
 
 def load_extraction():
     return json.loads((FIXTURES / "extraction.json").read_text())
@@ -65,6 +106,23 @@ def test_source_file_backslash_normalized():
     G = build_from_json(extraction)
     sources = {G.nodes[n]["source_file"] for n in G.nodes()}
     assert sources == {"src/middleware/auth.py"}
+
+
+def test_edge_missing_source_file_backfilled_from_node():
+    """#1279: a semantic/LLM edge lacking source_file must inherit it from its
+    source node rather than reach graph.json with no file reference."""
+    extraction = {
+        "nodes": [
+            {"id": "n1", "label": "A", "file_type": "concept", "source_file": "docs/a.md"},
+            {"id": "n2", "label": "B", "file_type": "concept", "source_file": "docs/b.md"},
+        ],
+        # No source_file on the edge (as LLM output sometimes omits it).
+        "edges": [{"source": "n1", "target": "n2", "relation": "relates_to", "confidence": "INFERRED"}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(extraction)
+    sf = edge_data(G, "n1", "n2").get("source_file")
+    assert sf == "docs/a.md"  # backfilled from the source node
 
 
 def test_build_merges_multiple_extractions():
@@ -147,6 +205,56 @@ def test_file_type_synonym_mapping():
     assert G.nodes["n1"]["file_type"] == "document"
     assert G.nodes["n2"]["file_type"] == "code"
     assert G.nodes["n3"]["file_type"] == "concept"
+
+
+def test_ghost_merge_unique_located_node_still_merges():
+    """#1145 ghost-merge: a semantic ghost collapses into the single AST node
+    sharing its (basename, label), and edges re-point to the AST node."""
+    ext = {
+        "nodes": [
+            {"id": "ast_render", "label": "render", "file_type": "code",
+             "source_file": "src/app/index.ts", "source_location": "L10", "_origin": "ast"},
+            {"id": "ghost_render", "label": "render", "file_type": "code",
+             "source_file": "src/app/index.ts"},
+            {"id": "caller", "label": "main", "file_type": "code",
+             "source_file": "src/main.ts", "source_location": "L1", "_origin": "ast"},
+        ],
+        "edges": [{"source": "caller", "target": "ghost_render", "relation": "calls",
+                   "confidence": "EXTRACTED", "source_file": "src/main.ts", "weight": 1.0}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(ext)
+    assert "ghost_render" not in G.nodes()
+    assert G.has_edge("caller", "ast_render")
+
+
+def test_ghost_merge_skipped_on_basename_collision():
+    """#1257: when two files with the same basename both define a symbol with the
+    same label, the (basename, label) key is ambiguous and the semantic ghost
+    must not be merged into an arbitrary one of them."""
+    ext = {
+        "nodes": [
+            {"id": "a_render", "label": "render", "file_type": "code",
+             "source_file": "src/a/index.ts", "source_location": "L10", "_origin": "ast"},
+            {"id": "b_render", "label": "render", "file_type": "code",
+             "source_file": "src/b/index.ts", "source_location": "L20", "_origin": "ast"},
+            {"id": "ghost_render", "label": "render", "file_type": "code",
+             "source_file": "src/a/index.ts"},
+            {"id": "caller", "label": "main", "file_type": "code",
+             "source_file": "src/main.ts", "source_location": "L1", "_origin": "ast"},
+        ],
+        "edges": [{"source": "caller", "target": "ghost_render", "relation": "calls",
+                   "confidence": "EXTRACTED", "source_file": "src/main.ts", "weight": 1.0}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(ext)
+    # The ghost survives: merging it into either a_render or b_render would
+    # pick an arbitrary winner (set iteration order over node_set).
+    assert "ghost_render" in G.nodes()
+    assert G.number_of_nodes() == 4
+    assert G.has_edge("caller", "ghost_render")
+    assert not G.has_edge("caller", "a_render")
+    assert not G.has_edge("caller", "b_render")
 
 
 def test_build_merge_preserves_call_edge_direction(tmp_path):
@@ -456,6 +564,107 @@ def test_build_merge_prune_windows_backslash_paths(tmp_path):
 
     node_labels = {d["label"] for _, d in G1.nodes(data=True)}
     assert "parse_date" not in node_labels, "node should be pruned even with backslash path"
+
+
+def test_build_merge_replaces_changed_file_stale_edges(tmp_path):
+    """Re-extracting a CHANGED file must REPLACE its prior nodes/edges, not
+    accumulate them. build_merge previously only grew the graph, so an edge that
+    disappeared from a file's new version survived forever (only exact-duplicate
+    edges collapsed). The new-chunk source_file may be an absolute win32 path
+    while the stored graph keeps relative posix — both forms must match."""
+    import networkx as nx
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    # First build: changed.md contributed A, B and edge A->B; keep.md is unrelated.
+    chunk0 = {"nodes": [
+        {"id": "A", "label": "A", "file_type": "document", "source_file": "changed.md"},
+        {"id": "B", "label": "B", "file_type": "document", "source_file": "changed.md"},
+        {"id": "K", "label": "K", "file_type": "document", "source_file": "keep.md"},
+    ], "edges": [
+        {"source": "A", "target": "B", "relation": "references", "confidence": "EXTRACTED",
+         "source_file": "changed.md", "weight": 1.0},
+        {"source": "K", "target": "A", "relation": "references", "confidence": "EXTRACTED",
+         "source_file": "keep.md", "weight": 1.0},
+    ]}
+    G0 = build([chunk0], dedup=False)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # changed.md edited: re-extraction now yields A, C and edge A->C (B dropped).
+    # source_file arrives as an absolute win32-style path (as detect emits on Windows).
+    abs_changed = str(root / "changed.md").replace("/", "\\")
+    new_chunk = {"nodes": [
+        {"id": "A", "label": "A", "file_type": "document", "source_file": abs_changed},
+        {"id": "C", "label": "C", "file_type": "document", "source_file": abs_changed},
+    ], "edges": [
+        {"source": "A", "target": "C", "relation": "references", "confidence": "EXTRACTED",
+         "source_file": abs_changed, "weight": 1.0},
+    ]}
+    G1 = build_merge([new_chunk], graph_path, dedup=False, root=root)
+
+    labels = {d["label"] for _, d in G1.nodes(data=True)}
+    edges = {(u, v) for u, v in G1.edges()}
+
+    # Stale contribution from the old version of changed.md is gone.
+    assert "B" not in labels, "stale node from changed file's old version must be dropped"
+    assert ("A", "B") not in edges and ("B", "A") not in edges, "stale edge must be dropped"
+    # Fresh contribution is present.
+    assert "C" in labels, "re-extracted node must be present"
+    assert ("A", "C") in edges, "re-extracted edge must be present"
+    # An unchanged file is untouched.
+    assert "K" in labels, "unchanged file's node must survive"
+    assert ("K", "A") in edges, "unchanged file's edge must survive"
+
+
+def test_build_merge_root_collapses_convention_drift(tmp_path):
+    """Skill contract: the extraction subagent must emit source_file as the
+    verbatim path from FILE_LIST AND the caller must pass root= (the build root).
+    Then build_merge canonicalizes the new chunk to the same relative base as the
+    stored graph, so re-extraction REPLACES the prior node (incl. stale nodes for
+    that file) instead of accumulating a duplicate. Without root, a drifted
+    relative base (e.g. a bare basename from a different run) mismatches and the
+    graph duplicates. Engine is unchanged — this pins the prompt/root contract."""
+    import networkx as nx
+
+    root = tmp_path
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+
+    # Stored graph: nested project-relative convention + a STALE node for the same
+    # file that the re-extraction no longer emits.
+    stored = {"nodes": [
+        {"id": "wiki_overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": "docs/wiki/overview.md"},
+        {"id": "wiki_overview_stale", "label": "Stale", "file_type": "document",
+         "source_file": "docs/wiki/overview.md"},
+    ], "edges": []}
+    G0 = build([stored], dedup=False)
+    saved = json.dumps(nx.node_link_data(G0, edges="edges"))
+    graph_path.write_text(saved, encoding="utf-8")
+
+    # BUG: --update drifted to a bare basename and no root was passed. Different
+    # base -> source_file replace misses -> stale + duplicate both survive.
+    drift = {"nodes": [
+        {"id": "overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": "overview.md"},
+    ], "edges": []}
+    G_bug = build_merge([drift], graph_path, dedup=False)
+    assert G_bug.number_of_nodes() == 3, "mismatched base must NOT replace -> stale+dup remain"
+
+    # FIX: subagent emits the verbatim path; caller passes root (the build root).
+    graph_path.write_text(saved, encoding="utf-8")
+    abs_overview = str(root / "docs" / "wiki" / "overview.md")
+    fixed = {"nodes": [
+        {"id": "wiki_overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": abs_overview},
+    ], "edges": []}
+    G_ok = build_merge([fixed], graph_path, prune_sources=None, dedup=False, root=root)
+    assert G_ok.number_of_nodes() == 1, "verbatim path + root must collapse to one node"
+    assert "wiki_overview_stale" not in G_ok, "stale node for the re-extracted file must be dropped"
+    assert G_ok.nodes["wiki_overview_overview"]["source_file"] == "docs/wiki/overview.md", \
+        "new chunk must be canonicalized to the stored relative base"
 
 
 def test_build_merge_rejects_oversized_existing_graph(monkeypatch, tmp_path):

@@ -102,8 +102,10 @@ def _obsidian_tag(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-/]", "", name.replace(" ", "_"))
 
 
-def _strip_diacritics(text: str) -> str:
+def _strip_diacritics(text: str | None) -> str:
     import unicodedata
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
@@ -479,7 +481,7 @@ def _git_head() -> str | None:
         return None
 
 
-def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None) -> bool:
+def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -493,9 +495,12 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 import sys as _sys
                 print(
                     f"[graphify] WARNING: new graph has {new_n} nodes but existing "
-                    f"graph.json has {existing_n}. Refusing to overwrite — you may be "
-                    f"missing chunk files from a previous session. "
-                    f"Pass force=True to override.",
+                    f"graph.json has {existing_n} (net -{existing_n - new_n}). "
+                    f"Refusing to overwrite. Possible causes: missing chunk files from "
+                    f"a previous session, or fuzzy dedup collapsed same-named symbols "
+                    f"across files during an --update on an already-current graph. "
+                    f"Run a full rebuild (/graphify .) to be safe, or pass force=True "
+                    f"only if you have verified the reduction is legitimate.",
                     file=_sys.stderr,
                 )
                 return False
@@ -503,12 +508,16 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             pass  # unreadable existing file — proceed with write
 
     node_community = _node_community_map(communities)
+    _labels: dict[int, str] = {int(k): v for k, v in (community_labels or {}).items()}
     try:
         data = json_graph.node_link_data(G, edges="links")
     except TypeError:
         data = json_graph.node_link_data(G)
     for node in data["nodes"]:
-        node["community"] = node_community.get(node["id"])
+        cid = node_community.get(node["id"])
+        node["community"] = cid
+        if cid is not None and _labels:
+            node["community_name"] = _labels.get(cid, f"Community {cid}")
         node["norm_label"] = _strip_diacritics(node.get("label", "")).lower()
     for link in data["links"]:
         if "confidence_score" not in link:
@@ -967,12 +976,18 @@ def to_obsidian(
         return len(neighbor_cids)
 
     community_notes_written = 0
-    for cid, members in communities.items():
+    for cid, all_members in communities.items():
         community_name = (
             community_labels.get(cid, f"Community {cid}")
             if community_labels and cid is not None
             else f"Community {cid}"
         )
+        # A community's member list can contain ids with no backing node in G
+        # (e.g. pruned nodes, stale community assignments from a prior run, or
+        # synthesized/merge-artifact ids). Dereferencing those via G.nodes[n] or
+        # node_filename[n] raises KeyError and aborts the whole vault export, so
+        # skip dangling members rather than crashing (issue #1236).
+        members = [m for m in all_members if m in G and m in node_filename]
         n_members = len(members)
         coh_value = cohesion.get(cid) if cohesion else None
 
@@ -1111,6 +1126,13 @@ def to_canvas(
             else:
                 seen_names[base] = 0
                 node_filenames[node_id] = base
+
+    # Fallback: with no community data (e.g. --no-cluster builds or a missing
+    # analysis sidecar) the grid below produces nothing and the canvas is written
+    # as an empty 32-byte shell on an otherwise populated graph. Emit every node
+    # into one synthetic community so the canvas always reflects the graph (#1324).
+    if not communities and G.number_of_nodes() > 0:
+        communities = {0: [str(n) for n in G.nodes()]}
 
     num_communities = len(communities)
     cols = math.ceil(math.sqrt(num_communities)) if num_communities > 0 else 1
@@ -1274,7 +1296,10 @@ def push_to_neo4j(
 
     with driver.session() as session:
         for node_id, data in G.nodes(data=True):
-            props = {k: v for k, v in data.items() if isinstance(v, (str, int, float, bool))}
+            props = {
+                k: v for k, v in data.items()
+                if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
+            }
             props["id"] = node_id
             cid = node_community.get(node_id)
             if cid is not None:
@@ -1289,7 +1314,10 @@ def push_to_neo4j(
 
         for u, v, data in G.edges(data=True):
             rel = _safe_rel(data.get("relation", "RELATED_TO"))
-            props = {k: v for k, v in data.items() if isinstance(v, (str, int, float, bool))}
+            props = {
+                k: v for k, v in data.items()
+                if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
+            }
             session.run(
                 f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
                 f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
@@ -1300,6 +1328,102 @@ def push_to_neo4j(
             edges_pushed += 1
 
     driver.close()
+    return {"nodes": nodes_pushed, "edges": edges_pushed}
+
+
+def push_to_falkordb(
+    G: nx.Graph,
+    uri: str,
+    user: str | None = None,
+    password: str | None = None,
+    communities: dict[int, list[str]] | None = None,
+    graph_name: str = "graphify",
+) -> dict[str, int]:
+    """Push graph directly to a running FalkorDB instance via the Python SDK.
+
+    Requires: pip install falkordb
+
+    FalkorDB is OpenCypher-compatible, so the MERGE/SET upsert queries are
+    identical to push_to_neo4j. Differences from the Neo4j path:
+      - connects with FalkorDB(host, port, username, password) instead of a bolt
+        driver; only the host/port are read from the URI, so the scheme is
+        informational - "falkordb://localhost:6379", "redis://localhost:6379"
+        and a bare "localhost:6379" are all equivalent (default port 6379).
+      - a named graph is selected via db.select_graph(graph_name) (default
+        "graphify"); FalkorDB keys each graph by name in the same instance.
+      - queries run via graph.query(cypher, params) - there is no session object.
+      - auth is optional (FalkorDB runs without credentials by default), so user
+        and password may be None.
+      - no APOC: the Neo4j path does not use APOC either, so nothing to port.
+
+    Uses MERGE so re-running is safe - nodes and edges are upserted, not
+    duplicated. Returns a dict with counts of nodes and edges pushed.
+    """
+    try:
+        from falkordb import FalkorDB
+    except ImportError as e:
+        raise ImportError(
+            "falkordb SDK not installed. Run: pip install falkordb"
+        ) from e
+
+    from urllib.parse import urlparse
+
+    node_community = _node_community_map(communities) if communities else {}
+
+    def _safe_rel(relation: str) -> str:
+        return re.sub(r"[^A-Z0-9_]", "_", relation.upper().replace(" ", "_").replace("-", "_")) or "RELATED_TO"
+
+    def _safe_label(label: str) -> str:
+        """Sanitize a FalkorDB node label to prevent Cypher injection."""
+        sanitized = re.sub(r"[^A-Za-z0-9_]", "", label)
+        return sanitized if sanitized else "Entity"
+
+    parsed = urlparse(uri if "://" in uri else f"redis://{uri}")
+    # FalkorDB auth is optional. Only send credentials when a password is
+    # provided; otherwise connect anonymously and ignore any bolt-style default
+    # username (e.g. Neo4j's "neo4j"), which FalkorDB rejects as an unknown ACL
+    # user. Credentials embedded in the URI take precedence over the args.
+    connect_user = parsed.username or (user if password else None)
+    connect_password = parsed.password or (password or None)
+    db = FalkorDB(
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 6379,
+        username=connect_user,
+        password=connect_password,
+    )
+    graph = db.select_graph(graph_name)
+    nodes_pushed = 0
+    edges_pushed = 0
+
+    for node_id, data in G.nodes(data=True):
+        props = {
+            k: v for k, v in data.items()
+            if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
+        }
+        props["id"] = node_id
+        cid = node_community.get(node_id)
+        if cid is not None:
+            props["community"] = cid
+        ftype = _safe_label(data.get("file_type", "Entity").capitalize())
+        graph.query(
+            f"MERGE (n:{ftype} {{id: $id}}) SET n += $props",
+            {"id": node_id, "props": props},
+        )
+        nodes_pushed += 1
+
+    for u, v, data in G.edges(data=True):
+        rel = _safe_rel(data.get("relation", "RELATED_TO"))
+        props = {
+            k: v for k, v in data.items()
+            if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
+        }
+        graph.query(
+            f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
+            f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
+            {"src": u, "tgt": v, "props": props},
+        )
+        edges_pushed += 1
+
     return {"nodes": nodes_pushed, "edges": edges_pushed}
 
 
@@ -1317,6 +1441,15 @@ def to_graphml(
     node_community = _node_community_map(communities)
     for node_id in H.nodes():
         H.nodes[node_id]["community"] = node_community.get(node_id, -1)
+    # Drop internal markers (e.g. the AST-provenance "_origin" tag, #1116, and
+    # the "_src"/"_tgt" direction markers) — they are persistence/runtime details,
+    # not graph data, and should not leak into the exported file.
+    for _, attrs in H.nodes(data=True):
+        for k in [k for k in attrs if k.startswith("_")]:
+            del attrs[k]
+    for _, _, attrs in H.edges(data=True):
+        for k in [k for k in attrs if k.startswith("_")]:
+            del attrs[k]
     nx.write_graphml(H, output_path)
 
 
