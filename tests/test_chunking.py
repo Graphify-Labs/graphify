@@ -277,6 +277,33 @@ def test_corpus_parallel_token_budget_default_packs_files(tmp_path):
     assert chunks_seen[0] == 50
 
 
+def test_corpus_parallel_accepts_string_paths(tmp_path):
+    """String file paths should be normalised before slicing and chunking."""
+    from graphify.llm import extract_corpus_parallel
+
+    files = []
+    for i in range(2):
+        f = tmp_path / f"f{i}.py"
+        f.write_text("x = 1\n")
+        files.append(f)
+
+    chunks_seen = []
+
+    def record(chunk, **kwargs):
+        chunks_seen.append(chunk)
+        return _stub_chunk_result(len(chunk), len(chunks_seen))
+
+    with patch("graphify.llm.extract_files_direct", side_effect=record):
+        result = extract_corpus_parallel(
+            [str(f) for f in files], backend="kimi", max_concurrency=1
+        )
+
+    assert len(chunks_seen) == 1
+    assert chunks_seen[0] == files
+    assert all(isinstance(p, Path) for p in chunks_seen[0])
+    assert len(result["nodes"]) == 2
+
+
 # ---- Adaptive retry on truncation -------------------------------------------
 
 def _stub_with_finish(file_count: int, finish_reason: str = "stop") -> dict:
