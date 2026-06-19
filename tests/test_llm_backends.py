@@ -167,6 +167,26 @@ def test_extract_corpus_parallel_accepts_str_and_mixed_paths(tmp_path, monkeypat
             assert merged["failed_chunks"] == 0
 
 
+def test_corpus_parallel_oversized_markdown_does_not_crash_on_fileslice(tmp_path, monkeypatch):
+    # #1397/#1399 regression: a Markdown file large enough to be sliced into
+    # FileSlice units must not crash extract_files_direct's Path() coercion
+    # (#1386). The earlier str-path tests used tiny files, so slicing never ran.
+    from graphify.llm import _FILE_CHAR_CAP
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
+    big = tmp_path / "big.md"
+    big.write_text(("# Section\n\n" + "lorem ipsum dolor sit amet " * 60 + "\n\n") * 30)
+    assert len(big.read_text()) > _FILE_CHAR_CAP  # guarantees slicing kicks in
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result):
+        # both a str path and a FileSlice unit must flow through without TypeError
+        merged = llm.extract_corpus_parallel(
+            [str(big)], backend="gemini", root=tmp_path, max_concurrency=1
+        )
+    assert merged["failed_chunks"] == 0  # no chunk raised Path(FileSlice) TypeError
+
+
 def test_str_path_entry_points_handle_edge_cases(tmp_path, monkeypatch):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("GOOGLE_API_KEY", "google-key")

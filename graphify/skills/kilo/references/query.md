@@ -88,7 +88,7 @@ G = json_graph.node_link_graph(data, edges='links')
 
 question = 'QUESTION'
 mode = 'MODE'  # 'bfs' or 'dfs'
-terms = [t.lower() for t in question.split() if len(t) > 3]
+terms = [t.lower() for t in question.split() if len(t) >= 3]  # match the vocab threshold; keeps api/jwt/ios (#1392)
 
 # Find best-matching start nodes
 scored = []

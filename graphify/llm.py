@@ -1306,9 +1306,11 @@ def extract_files_direct(
 
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so downstream helpers (``_partition_semantic_files``, ``_read_files``,
-    ``_build_image_refs``) can rely on ``Path`` semantics (#1386).
+    ``_build_image_refs``) can rely on ``Path`` semantics (#1386). FileSlice units
+    (from extract_corpus_parallel's oversized-doc slicing, #1369) pass through
+    untouched — Path(FileSlice) would raise (#1397/#1399).
     """
-    files = [Path(f) for f in files]
+    files = [f if isinstance(f, (Path, FileSlice)) else Path(f) for f in files]
     if backend is None:
         backend = detect_backend()
         if backend is None:
@@ -1737,7 +1739,7 @@ def extract_corpus_parallel(
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so packing/slicing helpers can rely on ``Path`` semantics (#1386).
     """
-    files = [Path(f) for f in files]
+    files = [f if isinstance(f, (Path, FileSlice)) else Path(f) for f in files]
     # Split oversized splittable documents into slices that cover the whole file
     # before packing, so content past _FILE_CHAR_CAP is extracted instead of
     # silently dropped (#1369). Files at/under the cap pass through unchanged.

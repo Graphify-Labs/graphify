@@ -27,6 +27,7 @@ import argparse
 import re
 import subprocess
 import sys
+from collections import Counter
 try:
     import tomllib  # Python 3.11+ stdlib
 except ModuleNotFoundError:  # Python 3.10 - graphify supports >=3.10
@@ -672,8 +673,20 @@ def schema_singleton(platforms: dict[str, Platform]) -> list[str]:
 
 
 def _is_enum_line(line: str) -> bool:
-    """Whether a rendered line carries the unified six-value file_type enum."""
-    return ENUM_VALUES in line or ENUM_PROSE in line
+    """Whether a line carries the file_type enum (its v8 or unified form).
+
+    The unified six-value enum (``ENUM_VALUES``/``ENUM_PROSE``) and the v8
+    five-value form it replaced both match here, so the round-trip's multiset
+    diff classifies the removed-v8 line as well as the added-rendered line. The
+    five-value schema string is a prefix of the six-value one, and both prose
+    forms open with the same ``file_type:"rationale"`` guidance clause.
+    """
+    return (
+        ENUM_VALUES in line
+        or ENUM_PROSE in line
+        or "code|document|paper|image|rationale" in line
+        or 'file_type:"rationale"` for concept-like nodes' in line
+    )
 
 
 def _is_frontmatter_description_line(line: str) -> bool:
@@ -695,8 +708,14 @@ def _is_chunk_cleanup_line(line: str) -> bool:
     ``rm`` and deletes the chunk files with ``find ... -delete`` instead. That
     rewrite touches the single cleanup line in place (no line added or removed),
     so it joins the enum and description unifications as an allowed monolith diff.
+    Both the v8 form (bare ``.graphify_chunk_*.json`` glob, removed) and the fixed
+    form (``find ... -delete``, added) match here so the multiset diff classifies
+    each side of the change.
     """
-    return line.lstrip().startswith("rm -f") and "find " in line and "-name '.graphify_chunk_" in line
+    s = line.lstrip()
+    if not s.startswith("rm -f"):
+        return False
+    return ".graphify_chunk_*.json" in line or ("find " in line and "-name '.graphify_chunk_" in line)
 
 
 def _is_trigger_line(line: str) -> bool:
@@ -708,48 +727,135 @@ def _is_trigger_line(line: str) -> bool:
     return line.strip().startswith("trigger:")
 
 
+def _is_directed_fix_line(line: str) -> bool:
+    """Whether a line is part of the ``--directed`` propagation fix (#1392).
+
+    The monolith runbooks built every graph undirected, so a ``--directed`` run
+    silently collapsed reciprocal A<->B edges. Every ``build_from_json(...)`` call
+    now threads ``directed=IS_DIRECTED`` and a prose line tells the agent to
+    substitute it like ``INPUT_PATH``. Both the old bare call (removed) and the
+    new threaded call (added) match here, plus the substitution instruction.
+    """
+    return (
+        "build_from_json(" in line and "import" not in line
+    ) or "directed=IS_DIRECTED" in line or (
+        "IS_DIRECTED" in line and "Substitute it everywhere" in line
+    )
+
+
+def _is_content_scope_fix_line(line: str) -> bool:
+    """Whether a line is part of the content-only semantic scope fix (#1392).
+
+    Flattening every detect category fed code files (already covered by the AST
+    pass) back to the semantic step. The fix scopes to document/paper/image.
+    """
+    return (
+        "detect['files'].values()" in line
+        or "for cat in ('document', 'paper', 'image')" in line
+        or "Only content files go to semantic extraction" in line
+        or "structurally by the AST pass" in line
+        or "extraction step re-read every source file" in line
+    )
+
+
+def _is_cache_unlink_fix_line(line: str) -> bool:
+    """Whether a line is part of the stale-cache unlink fix (#1392).
+
+    The cache file was written only on a hit, so a miss left a prior run's
+    ``.graphify_cached.json`` for Part C to merge. The miss branch now deletes it.
+    """
+    return (
+        ".graphify_cached.json').unlink(missing_ok=True)" in line
+        or line.strip() == "else:"
+        or "Always (re)write the cache file" in line
+        or "stale .graphify_cached.json" in line
+    )
+
+
+def _is_zero_node_guard_fix_line(line: str) -> bool:
+    """Whether a line is part of the zero-node / shrink-guard ordering fix (#1392).
+
+    Step 4 wrote GRAPH_REPORT.md, graph.json and the analysis sidecar *before*
+    the zero-node guard, so an empty extraction clobbered a good graph; and the
+    report was written even when ``to_json`` refused to shrink (#479). The guard
+    now runs before any write and the report/analysis are gated on ``to_json``.
+    Both the old (removed) and new (added) forms of these lines match here.
+    """
+    s = line.strip()
+    return (
+        "number_of_nodes() == 0" in line
+        or "Graph is empty - extraction produced no nodes" in line
+        or s.startswith("print('Possible causes:")
+        or s == "raise SystemExit(1)"
+        or "to_json(G, communities," in line
+        or s == "if not wrote:"
+        or "refused to shrink graphify-out/graph.json" in line
+        or "Guard BEFORE any write" in line
+        or "GRAPH_REPORT.md / analysis sidecar" in line
+        or "Persist the graph first" in line
+        or "to_json refuses to shrink an existing graph.json" in line
+        or "report describing a graph we did not write" in line
+    )
+
+
+# Every line that may differ between a rendered monolith and its pristine v8
+# baseline. Each predicate documents one sanctioned change-class; a blank line is
+# allowed because the multi-line fix blocks insert spacing. Anything else failing
+# all of these is an unsanctioned drift the round-trip must catch.
+_SANCTIONED_MONOLITH_DIFFS = (
+    _is_enum_line,
+    _is_frontmatter_description_line,
+    _is_chunk_cleanup_line,
+    _is_directed_fix_line,
+    _is_content_scope_fix_line,
+    _is_cache_unlink_fix_line,
+    _is_zero_node_guard_fix_line,
+)
+
+
+def _is_sanctioned_monolith_diff(line: str) -> bool:
+    """Whether a single added/removed monolith line is an allowed change."""
+    return not line.strip() or any(pred(line) for pred in _SANCTIONED_MONOLITH_DIFFS)
+
+
 def monolith_roundtrip(platform: Platform) -> list[str]:
     """Assert a monolith renders diff-clean vs its v8 blob modulo allowed changes.
 
-    Two classes of line are allowed to differ between the rendered monolith and
-    the v8 source: the file_type enum lines (unified to the six-value superset)
-    and the frontmatter ``description`` line (unified across all platforms for
-    discovery). Every other line must match byte for byte.
+    The monolith bodies are hand-maintained single files frozen against a pinned
+    pristine v8 blob (``roundtrip_ref``); this is the guard that stops an
+    arbitrary edit (even a blessed one) from drifting them. Sanctioned changes are
+    enumerated as predicates in ``_SANCTIONED_MONOLITH_DIFFS``: the file_type enum
+    unification, the unified frontmatter description, the chunk-cleanup rewrite
+    (#1172), and the four #1392 runbook fixes (directed propagation, content-only
+    semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering).
+
+    The comparison is a multiset diff, not a positional zip: a line whose text is
+    unchanged but merely *moved* (the report-write line shifted below ``to_json``
+    in the ordering fix) cancels out and is not flagged. Only lines whose content
+    is genuinely added or removed are checked, and each must be sanctioned.
     """
     if platform.bucket != "monolith":
         return []
     if platform.roundtrip_ref is None:
         return [f"[{platform.key}] monolith is missing roundtrip_ref"]
 
-    rendered = render(platform)[0].content
-    original = _normalise(_git_show(platform.roundtrip_ref))
+    rendered_lines = render(platform)[0].content.splitlines()
+    # Strip trigger lines from the original — they are non-spec and their removal
+    # (#1180) is a permitted diff.
+    original_lines = [
+        l for l in _normalise(_git_show(platform.roundtrip_ref)).splitlines()
+        if not _is_trigger_line(l)
+    ]
 
-    rendered_lines = rendered.splitlines()
-    # Strip trigger lines from the original before comparing — they are non-spec
-    # and their removal (#1180) is a permitted diff. Filter here so the line-count
-    # check and the per-line zip both operate on the same reduced set.
-    original_lines = [l for l in original.splitlines() if not _is_trigger_line(l)]
+    added = Counter(rendered_lines) - Counter(original_lines)
+    removed = Counter(original_lines) - Counter(rendered_lines)
 
     problems: list[str] = []
-    if len(rendered_lines) != len(original_lines):
-        problems.append(
-            f"[{platform.key}] line count differs: rendered {len(rendered_lines)} vs v8 {len(original_lines)} "
-            "(the only allowed changes are the enum line(s), the description line, "
-            "the chunk-cleanup rewrite, and trigger: removal — none must add or remove other lines)"
-        )
-        return problems
-
-    for i, (r, o) in enumerate(zip(rendered_lines, original_lines), start=1):
-        if r == o:
-            continue
-        # The permitted diffs are the enum unification, the unified description,
-        # the shell-agnostic chunk-cleanup rewrite (#1172), and trigger removal (#1180).
-        if _is_enum_line(r) or _is_frontmatter_description_line(r) or _is_chunk_cleanup_line(r):
+    for line in list(added.elements()) + list(removed.elements()):
+        if _is_sanctioned_monolith_diff(line):
             continue
         problems.append(
-            f"[{platform.key}] line {i} differs and is not an enum or description unification:\n"
-            f"    v8:       {o!r}\n"
-            f"    rendered: {r!r}"
+            f"[{platform.key}] unsanctioned monolith change vs pristine v8: {line!r}"
         )
     return problems
 
