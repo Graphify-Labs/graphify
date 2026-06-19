@@ -333,3 +333,44 @@ def test_installed_hooks_contain_no_nohup(tmp_path):
         text = (repo / ".git" / "hooks" / name).read_text(encoding="utf-8")
         assert "nohup" not in text, f"installed {name} still references nohup"
         assert "start_new_session=True" in text
+
+
+# ── #1385: reject Windows-style hooks paths instead of creating a junk dir ───
+
+def _set_hookspath(repo: Path, value: str) -> None:
+    subprocess.run(["git", "-C", str(repo), "config", "--local", "core.hooksPath", value],
+                   check=True, capture_output=True)
+
+
+@pytest.mark.parametrize("winpath", [
+    r"C:\Users\u\repo\.git\hooks",
+    r"c:/Users/u/.git/hooks",
+    r"D:\hooks",
+    r"some\back\slashed\path",
+])
+def test_windows_hookspath_rejected_no_junk_dir(tmp_path, winpath):
+    """A Windows-style core.hooksPath must raise (loud failure), not silently
+    create a backslash-named junk directory and report success (#1385)."""
+    repo = _make_git_repo(tmp_path)
+    _set_hookspath(repo, winpath)
+    with pytest.raises(RuntimeError, match="Windows path"):
+        install(repo)
+    # no junk directory got created anywhere under the repo
+    junk = [p for p in repo.rglob("*") if "\\" in p.name or p.name.startswith(("C:", "c:", "D:"))]
+    assert junk == [], f"junk dir created: {junk}"
+
+
+def test_posix_custom_hookspath_still_works(tmp_path):
+    """A legitimate POSIX core.hooksPath (Husky-style) must still install."""
+    repo = _make_git_repo(tmp_path)
+    _set_hookspath(repo, ".husky")
+    msg = install(repo)
+    assert "post-commit" in msg
+    assert (repo / ".husky" / "post-commit").exists()
+
+
+def test_default_hooks_dir_unaffected(tmp_path):
+    """No core.hooksPath -> normal .git/hooks install, no rejection."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    assert (repo / ".git" / "hooks" / "post-commit").exists()

@@ -13,6 +13,7 @@ from typing import Any, Callable
 from .cache import load_cached, save_cached
 from .ids import make_id
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
+from .manifest_ingest import extract_package_manifest, is_package_manifest_path
 
 _RECURSION_LIMIT = 10_000
 
@@ -9668,6 +9669,56 @@ def extract_elixir(path: Path) -> dict:
     return {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls, "input_tokens": 0, "output_tokens": 0}
 
 
+# Inline markdown link: [text](target "optional title"). The negative lookbehind
+# excludes images (![alt](src)). The target stops at whitespace/closing paren so
+# an optional "title" after the URL is dropped; an optional <...> wrapper is too.
+_MD_INLINE_LINK_RE = re.compile(r'(?<!\!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]*)?\)')
+# Reference-style link definition line: [label]: target "optional title"
+_MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
+# Obsidian-style wikilink: [[target]] / [[target|alias]] / [[target#anchor]].
+_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
+
+# Extensions graphify creates document file nodes for. A link to one of these
+# resolves to that file's node; links to code/assets are skipped (left to the
+# language extractors).
+_MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
+
+
+def _resolve_markdown_link(raw: str, source_dir: Path) -> "Path | None":
+    """Resolve a markdown link target to the absolute path of a sibling document.
+
+    Returns the resolved (normalized, not necessarily existing) path when the
+    target is a *local* relative/absolute file-path link to a document, or None
+    when it should be skipped: external URLs (http/https/mailto/protocol-
+    relative/data), pure in-page anchors (``#section``), and links to non-doc
+    file types (code/assets are handled by their own extractors).
+
+    The anchor fragment (``#section``) and query (``?x=1``) are stripped before
+    resolution so ``./repo.md#setup`` resolves to the same node as ``./repo.md``.
+    Extension-less targets (typical of wikilinks) are treated as sibling ``.md``.
+    """
+    target = raw.strip()
+    if not target:
+        return None
+    # Drop anchor / query so #section links still resolve to the target doc.
+    target = target.split("#", 1)[0].split("?", 1)[0].strip()
+    if not target:
+        return None
+    low = target.lower()
+    if "://" in target or low.startswith(("mailto:", "tel:", "//", "data:")):
+        return None
+    suffix = Path(target).suffix.lower()
+    if suffix == "":
+        target = target + ".md"
+        suffix = ".md"
+    if suffix not in _MD_LINKABLE_EXTS:
+        return None
+    candidate = Path(target)
+    if not candidate.is_absolute():
+        candidate = source_dir / candidate
+    return Path(os.path.normpath(str(candidate)))
+
+
 def extract_markdown(path: Path) -> dict:
     """Extract structural nodes and edges from a Markdown file.
 
@@ -9679,6 +9730,13 @@ def extract_markdown(path: Path) -> dict:
     - file --contains--> heading
     - parent heading --contains--> child heading (nesting by level)
     - heading --references--> other node (when backtick `Name` matches a known pattern)
+    - file --references--> linked document, for inline ``[text](./other.md)``,
+      reference-style ``[label]: ./other.md`` and ``[[wikilink]]`` links, so a
+      hub doc (``index.md`` / ``table-of-contents.md``) becomes a real hub node
+      instead of an under-connected orphan (#1376). The target node ID is built
+      from the resolved target path with the same recipe as the target file's
+      own node, so the edge merges into that node (no ghost node). External
+      URLs, in-page anchors, images and non-document targets are skipped.
 
     Fenced code blocks (``` ... ```) are skipped during parsing so their
     contents don't get treated as headings, but no node is emitted for
@@ -9713,6 +9771,26 @@ def extract_markdown(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
+    source_dir = path.parent
+    # Dedup link edges by resolved target node so a hub doc that links to the
+    # same sibling many times yields one edge, not N (keeps weights meaningful).
+    linked_targets: set[str] = set()
+
+    def add_link(raw: str, line: int) -> None:
+        resolved = _resolve_markdown_link(raw, source_dir)
+        if resolved is None:
+            return
+        # Build the target ID with the SAME recipe as the target file's own
+        # node (_make_id(str(path)) at extract time, canonicalized to
+        # _file_node_id(rel) by the extract() post-pass). Using the absolute
+        # resolved path means both endpoints get remapped identically, so the
+        # edge merges into the existing doc node instead of spawning a ghost.
+        tgt_nid = _make_id(str(resolved))
+        if tgt_nid == file_nid or tgt_nid in linked_targets:
+            return
+        linked_targets.add(tgt_nid)
+        add_edge(file_nid, tgt_nid, "references", line)
+
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
     in_code_block = False
@@ -9730,6 +9808,17 @@ def extract_markdown(path: Path) -> dict:
 
         if in_code_block:
             continue
+
+        # Markdown links -> document references (#1376). Scanned on every
+        # non-fenced line (including heading lines, which the heading branch
+        # below `continue`s past) so links anywhere in the doc are captured.
+        for m in _MD_INLINE_LINK_RE.finditer(line_text):
+            add_link(m.group(1), line_num)
+        for m in _MD_WIKILINK_RE.finditer(line_text):
+            add_link(m.group(1), line_num)
+        ref_def = _MD_REF_DEF_RE.match(line_text)
+        if ref_def:
+            add_link(ref_def.group(1), line_num)
 
         # Detect headings: # Heading, ## Heading, etc.
         heading_match = re.match(r'^(#{1,6})\s+(.+)', line_text)
@@ -12291,6 +12380,11 @@ def _get_extractor(path: Path) -> Any | None:
     # (servers, commands, packages, env vars) instead of opaque JSON keys.
     if is_mcp_config_path(path):
         return extract_mcp_config
+    # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) → a canonical
+    # package node + depends_on edges, by filename before generic suffix dispatch
+    # (#1377). apm.yml would otherwise be a .yml document handled by the LLM.
+    if is_package_manifest_path(path):
+        return extract_package_manifest
     return _DISPATCH.get(path.suffix)
 
 
@@ -12595,6 +12689,12 @@ def extract(
         for n in all_nodes:
             sf = n.get("source_file")
             if not sf:
+                continue
+            # Package nodes carry a canonical name-keyed id (pkg_<name>) that must
+            # stay identical across every manifest that references the package, so
+            # they are exempt from the file-stem prefix remap (#1377), like the
+            # type=module anchors (#1327).
+            if n.get("type") == "package":
                 continue
             try:
                 entry = prefix_remap.get(Path(sf).resolve())

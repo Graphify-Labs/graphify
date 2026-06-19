@@ -450,54 +450,57 @@ def test_monolith_roundtrip_passes_for_aider_and_devin():
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
 
 
-def test_monoliths_change_only_the_enum_description_and_chunk_cleanup():
-    """The rendered monolith differs from v8 on exactly the allowed lines.
+def test_monoliths_change_only_sanctioned_lines():
+    """Every line that differs from pristine v8 is a sanctioned change-class.
 
-    Three changes are now in play for the monoliths: the file_type enum unified to
-    the six-value superset (the prose guidance line + the schema line), the
-    frontmatter description unified across all platforms, and the shell-agnostic
-    chunk-cleanup rewrite (#1172). Nothing else may differ.
+    The round-trip (multiset diff vs the pinned v8 blob) must come back clean:
+    each added/removed line matches one of the documented sanctioned predicates
+    in gen — the enum unification, the unified description, the chunk-cleanup
+    rewrite (#1172), and the four #1392 runbook fixes. Anything else is drift.
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
-        rendered = gen.render(platforms[key])[0].content.splitlines()
-        # Strip trigger: lines from the reference — their removal (#1180) is a
-        # permitted diff alongside enum, description, and chunk-cleanup changes.
-        original = [
-            l for l in gen._normalise(gen._git_show(platforms[key].roundtrip_ref)).splitlines()
-            if not gen._is_trigger_line(l)
-        ]
-        assert len(rendered) == len(original), f"[{key}] line count changed"
-        diff_idx = [i for i, (r, o) in enumerate(zip(rendered, original)) if r != o]
-        # Four lines change: the prose enum guidance, the schema line,
-        # the frontmatter description, and the chunk-cleanup rewrite.
-        assert len(diff_idx) == 4, f"[{key}] expected 4 changed lines, got {len(diff_idx)}"
-        enum_changes = 0
-        desc_changes = 0
-        cleanup_changes = 0
-        for i in diff_idx:
-            line = rendered[i]
-            if gen.ENUM_VALUES in line or gen.ENUM_PROSE in line:
-                enum_changes += 1
-            elif line.lstrip().startswith("description:"):
-                desc_changes += 1
-                assert UNIFIED_DESCRIPTION in line, (
-                    f"[{key}] description line is not the unified text: {line!r}"
-                )
-            elif gen._is_chunk_cleanup_line(line):
-                cleanup_changes += 1
-                # The unmatched-glob abort is fixed: the rm no longer carries the
-                # bare chunk glob, and a find ... -delete sweeps the chunks.
-                assert ".graphify_chunk_*.json" not in line.split("find", 1)[0]
-            else:
-                raise AssertionError(
-                    f"[{key}] changed line {i} is none of enum/description/cleanup: {line!r}"
-                )
-        assert enum_changes == 2, f"[{key}] expected 2 enum line changes, got {enum_changes}"
-        assert desc_changes == 1, f"[{key}] expected 1 description change, got {desc_changes}"
-        assert cleanup_changes == 1, f"[{key}] expected 1 cleanup change, got {cleanup_changes}"
+        assert gen.monolith_roundtrip(platforms[key]) == []
         # The six-value superset replaced the five-value enum in both files.
-        assert any(gen.ENUM_VALUES in line for line in rendered)
+        rendered = gen.render(platforms[key])[0].content
+        assert gen.ENUM_VALUES in rendered
+        assert UNIFIED_DESCRIPTION in rendered
+
+
+def test_monoliths_carry_the_1392_runbook_fixes():
+    """The four #1392 data-loss/correctness fixes are present in both monoliths.
+
+    The round-trip allows these change-classes; this test asserts they are
+    actually applied, so a regression that drops a fix fails here even though the
+    round-trip (which only forbids *unsanctioned* drift) would still pass.
+    """
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        body = gen.render(platforms[key])[0].content
+
+        # #6/#7 directed propagation: no bare build_from_json call survives, and
+        # the IS_DIRECTED substitution instruction is present.
+        assert "directed=IS_DIRECTED" in body
+        assert "build_from_json(extraction)" not in body
+        assert "Substitute it everywhere it appears" in body
+
+        # #10 content-only semantic scope: code is no longer flattened in.
+        assert "for cat in ('document', 'paper', 'image')" in body
+        assert "detect['files'].values()" not in body
+
+        # #12 stale-cache unlink on a miss.
+        assert ".graphify_cached.json').unlink(missing_ok=True)" in body
+
+        # #18/#20 zero-node guard before any write, report/analysis gated on
+        # to_json's return.
+        lines = body.splitlines()
+        build_i = next(i for i, l in enumerate(lines) if "G = build_from_json(extraction, directed=IS_DIRECTED)" in l)
+        guard_i = next(i for i, l in enumerate(lines[build_i:], build_i) if "number_of_nodes() == 0" in l)
+        report_i = next(i for i, l in enumerate(lines[build_i:], build_i) if "GRAPH_REPORT.md').write_text(report)" in l)
+        wrote_i = next(i for i, l in enumerate(lines[build_i:], build_i) if l.strip().startswith("wrote = to_json("))
+        # guard fires right after the build, before the graph/report are written.
+        assert build_i < guard_i < wrote_i < report_i, f"[{key}] Step 4 ordering not fixed"
+        assert "if not wrote:" in body
 
 
 def test_devin_keeps_its_multi_field_frontmatter():
