@@ -2061,13 +2061,13 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
 def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
-    Priority: gemini → kimi → claude → openai → deepseek → azure → bedrock → ollama (last, opt-in).
+    Priority: gemini → kimi → claude → openai → deepseek → azure → bedrock → ollama → claude-cli (last resort, no key needed).
 
-    Ollama is intentionally checked LAST so a paid API key (Anthropic/OpenAI/etc.)
-    is never silently shadowed by an incidental OLLAMA_BASE_URL in the environment
-    — see security finding F-002/F-029. Setting OLLAMA_BASE_URL alongside a paid
-    key now keeps you on the paid backend; remove the paid key (or pass
-    --backend ollama explicitly) to route to the local model.
+    Ollama is intentionally checked after paid API keys so a real key is never
+    silently shadowed by an incidental OLLAMA_BASE_URL — see security finding
+    F-002/F-029. claude-cli is checked last: it requires no API key, only the
+    ``claude`` CLI on $PATH (Claude Code). This lets users who have Claude Code
+    installed get full semantic extraction without configuring any env vars.
     """
     for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
@@ -2084,6 +2084,17 @@ def detect_backend() -> str | None:
         if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
             if _get_backend_api_key(name):
                 return name
+    # Last resort: no API key configured anywhere, but the Claude Code CLI is
+    # available locally. Route through it so users get working semantic
+    # extraction without needing to set any environment variable.
+    import shutil
+    _claude_bin = (
+        (shutil.which("claude.cmd") or shutil.which("claude"))
+        if sys.platform == "win32"
+        else shutil.which("claude")
+    )
+    if _claude_bin:
+        return "claude-cli"
     return None
 
 

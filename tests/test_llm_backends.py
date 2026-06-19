@@ -845,3 +845,30 @@ def test_openai_compat_env_var_temperature_applied(tmp_path, monkeypatch):
     llm.extract_files_direct([tmp_path / "f.py"], backend="openai", root=tmp_path)
 
     assert captured.get("temperature") == 0.3
+
+
+def test_detect_backend_falls_back_to_claude_cli_when_no_keys(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    with patch("shutil.which", return_value="/usr/local/bin/claude"):
+        assert llm.detect_backend() == "claude-cli"
+
+
+def test_detect_backend_prefers_api_key_over_claude_cli(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    with patch("shutil.which", return_value="/usr/local/bin/claude"):
+        assert llm.detect_backend() == "claude"
+
+
+def test_detect_backend_returns_none_when_no_keys_and_no_claude_cli(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    with patch("shutil.which", return_value=None):
+        assert llm.detect_backend() is None
