@@ -2506,11 +2506,13 @@ def main() -> None:
             if "--project" in sys.argv[3:]:
                 _project_install(cmd, Path("."))
             else:
+                _copy_skill_file(cmd)
                 _agents_install(Path("."), cmd)
         elif subcmd == "uninstall":
             if "--project" in sys.argv[3:]:
                 _project_uninstall(cmd, Path("."))
             else:
+                _remove_skill_file(cmd)
                 _agents_uninstall(Path("."), platform=cmd)
                 if cmd == "codex":
                     _uninstall_codex_hook(Path("."))

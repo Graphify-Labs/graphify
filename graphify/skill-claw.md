@@ -81,8 +81,12 @@ if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
         *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
     esac
 fi
-# 3. Fall back to python3
-if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
+# 3. Fall back to python3 (Unix) or python (Windows)
+if [ -z "$PYTHON" ]; then
+    if command -v python3 >/dev/null 2>&1; then PYTHON="python3"
+    elif command -v python >/dev/null 2>&1; then PYTHON="python"
+    fi
+fi
 if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
     if command -v uv >/dev/null 2>&1; then
         uv tool install --upgrade graphifyy -q 2>&1 | tail -3
@@ -596,9 +600,15 @@ if [ ! -f graphify-out/.graphify_python ]; then
     GRAPHIFY_BIN=$(which graphify 2>/dev/null)
     if [ -n "$GRAPHIFY_BIN" ]; then
         PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.-]*) PYTHON="python3" ;; esac
+        case "$PYTHON" in *[!a-zA-Z0-9/_.-]*)
+            if command -v python3 >/dev/null 2>&1; then PYTHON="python3"
+            elif command -v python >/dev/null 2>&1; then PYTHON="python"
+            fi ;;
+        esac
     else
-        PYTHON="python3"
+        if command -v python3 >/dev/null 2>&1; then PYTHON="python3"
+        elif command -v python >/dev/null 2>&1; then PYTHON="python"
+        fi
     fi
     mkdir -p graphify-out
     "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
