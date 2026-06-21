@@ -2150,6 +2150,7 @@ def main() -> None:
         print("    --no-viz                skip graph.html generation (useful for >5000 node graphs / CI)")
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
         print("    --no-label              keep 'Community N' placeholders (skip LLM community naming)")
+        print("    --missing-only          only re-label communities that have 'Community N' placeholders")
         print("    --backend=<name>        backend to use for community naming (default: auto-detect)")
         print("    --model=<name>          model to use for community naming")
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
@@ -3146,6 +3147,7 @@ def main() -> None:
         # the optional positional path can appear in any order (#724).
         no_viz = "--no-viz" in sys.argv
         no_label = "--no-label" in sys.argv
+        missing_only = "--missing-only" in sys.argv
         _backend_arg = next((a for a in sys.argv if a.startswith("--backend=")), None)
         label_backend = _backend_arg.split("=", 1)[1] if _backend_arg else None
         _model_arg = next((a for a in sys.argv if a.startswith("--model=")), None)
@@ -3178,7 +3180,7 @@ def main() -> None:
                 co_exclude_hubs = float(args[i_arg + 1]); i_arg += 2
             elif a.startswith("--exclude-hubs="):
                 co_exclude_hubs = float(a.split("=", 1)[1]); i_arg += 1
-            elif a == "--no-viz" or a.startswith("--min-community-size="):
+            elif a == "--no-viz" or a == "--missing-only" or a.startswith("--min-community-size="):
                 i_arg += 1
             elif a.startswith("--"):
                 i_arg += 1
@@ -3250,6 +3252,14 @@ def main() -> None:
         out = watch_path / "graphify-out"
         out.mkdir(parents=True, exist_ok=True)
         labels_path = out / ".graphify_labels.json"
+        
+        existing_labels = {}
+        if labels_path.exists():
+            try:
+                existing_labels = {int(k): v for k, v in json.loads(labels_path.read_text(encoding="utf-8")).items()}
+            except Exception:
+                pass
+
         if labels_path.exists() and not force_relabel:
             try:
                 labels = {int(k): v for k, v in json.loads(labels_path.read_text(encoding="utf-8")).items()}
@@ -3263,12 +3273,30 @@ def main() -> None:
             # auto-name communities with the configured backend rather than leave
             # "Community N" (#1097). Degrades to placeholders if no backend/on error.
             from graphify.llm import generate_community_labels
-            print("Labeling communities...")
+            
+            target_communities = communities
+            if missing_only and existing_labels:
+                target_communities = {
+                    cid: members for cid, members in communities.items()
+                    if cid not in existing_labels or str(existing_labels[cid]).startswith("Community ")
+                }
+                print(f"Labeling {len(target_communities)} missing communities...")
+            else:
+                print("Labeling communities...")
+                
             # The final labels (LLM or placeholder fallback) are persisted to
             # .graphify_labels.json by the unconditional write below.
-            labels, _ = generate_community_labels(
-                G, communities, backend=label_backend, model=label_model, gods=gods
+            new_labels, _ = generate_community_labels(
+                G, target_communities, backend=label_backend, model=label_model, gods=gods
             )
+            
+            if missing_only and existing_labels:
+                labels = {**existing_labels, **new_labels}
+                for cid in communities:
+                    if cid not in labels:
+                        labels[cid] = f"Community {cid}"
+            else:
+                labels = new_labels
         questions = suggest_questions(G, communities, labels)
         tokens = {"input": 0, "output": 0}
         from graphify.export import _git_head as _gh
