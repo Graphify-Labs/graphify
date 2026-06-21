@@ -57,6 +57,69 @@ def test_install_opencode(tmp_path):
     ).exists()
 
 
+def test_install_opencode_global_writes_plugin_to_config_dir(tmp_path):
+    """Global opencode install writes the plugin under ~/.config/opencode/.opencode/, not cwd.
+
+    Regression test for #1412: opencode resolves `.opencode/plugins/<name>.js`
+    entries relative to the declaring config's directory. The global config
+    lives at `~/.config/opencode/opencode.json`, so the plugin must land at
+    `~/.config/opencode/.opencode/plugins/graphify.js` to be loaded.
+    Previously the installer wrote to `<cwd>/.opencode/plugins/graphify.js`,
+    which only worked if the user happened to run `graphify install` from
+    inside `~/.config/opencode/`.
+    """
+    _install(tmp_path, "opencode")
+    # Must be at the global config dir, not under cwd
+    assert (tmp_path / ".config" / "opencode" / ".opencode" / "plugins" / "graphify.js").exists()
+    # Must NOT pollute the cwd with a stray .opencode/ tree
+    assert not (tmp_path / ".opencode").exists()
+
+
+def test_install_opencode_global_registers_plugin_in_config(tmp_path):
+    """Global opencode install registers the plugin in ~/.config/opencode/opencode.json.
+
+    opencode's only global config is ``~/.config/opencode/opencode.json`` — NOT
+    ``~/.config/opencode/.opencode/opencode.json`` (that path is neither a
+    project config walked-up from cwd nor the global config, so opencode
+    silently ignores it). The first attempt at #1412 wrote the registration
+    to the wrong file; this test pins the correct location.
+    """
+    import json as _json
+
+    _install(tmp_path, "opencode")
+    # The real global config — must contain the plugin entry.
+    global_config = tmp_path / ".config" / "opencode" / "opencode.json"
+    # The phantom path the bug created — must NOT exist as a side effect of
+    # registration (a plugin FILE may live under .opencode/plugins/, but a
+    # config file under .opencode/ at the global level is invisible to opencode).
+    phantom_config = tmp_path / ".config" / "opencode" / ".opencode" / "opencode.json"
+
+    assert global_config.exists(), f"global config not written at {global_config}"
+    config = _json.loads(global_config.read_text())
+    assert any("graphify.js" in p for p in config.get("plugin", [])), "plugin not registered in global config"
+
+    if phantom_config.exists():
+        # If a phantom config exists at all, it must NOT contain a plugin entry
+        # (otherwise we've split state across two files and opencode only loads one).
+        phantom = _json.loads(phantom_config.read_text())
+        assert not any("graphify.js" in p for p in phantom.get("plugin", [])), (
+            f"plugin entry leaked into phantom config at {phantom_config}"
+        )
+
+
+def test_uninstall_opencode_global_removes_plugin(tmp_path):
+    """Global opencode uninstall removes the plugin from ~/.config/opencode/.opencode/."""
+    _install(tmp_path, "opencode")
+    plugin = tmp_path / ".config" / "opencode" / ".opencode" / "plugins" / "graphify.js"
+    assert plugin.exists()
+    from graphify.__main__ import _uninstall_opencode_plugin
+
+    # Global mode: project=False resolves base via Path.home()
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        _uninstall_opencode_plugin(tmp_path, project=False)
+    assert not plugin.exists()
+
+
 def test_install_positional_platform_opencode(tmp_path, monkeypatch):
     from graphify.__main__ import main
     monkeypatch.chdir(tmp_path)
