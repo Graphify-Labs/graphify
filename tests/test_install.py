@@ -637,6 +637,77 @@ def test_opencode_agents_uninstall_removes_plugin(tmp_path):
         assert not any("graphify.js" in p for p in config.get("plugin", []))
 
 
+def test_opencode_plugin_echo_uses_single_quoted_string(tmp_path):
+    """The plugin must not use backticks inside a double-quoted echo.
+
+    Backticks inside double-quoted bash strings trigger command substitution,
+    which silently executes 'graphify query <question>' on every bash tool call
+    and corrupts the reminder output with 'No matching nodes found.'
+    The echo argument must be single-quoted so no substitution occurs.
+    """
+    import re
+
+    _agents_install(tmp_path, "opencode")
+    plugin = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
+    # Extract the string assigned to output.args.command (first operand before &&)
+    match = re.search(r'output\.args\.command\s*=\s*(.*?)\+\s*output\.args\.command', plugin, re.DOTALL)
+    assert match, "Could not find output.args.command assignment in plugin"
+    command_expr = match.group(1)
+    # Evaluate the JS string literal to get the actual bash command fragment
+    # The string is either 'echo "..."' (bad) or "echo '...'" (good).
+    # Check that the echo argument uses single quotes (safe) not double quotes (vulnerable).
+    assert "echo '" in command_expr, "echo argument must use single quotes to prevent bash command substitution"
+    assert "echo \"" not in command_expr, "echo must not use double quotes — backticks inside would trigger command substitution"
+
+
+def test_opencode_global_install_writes_plugin_to_xdg_config_dir(tmp_path, monkeypatch):
+    """Global 'graphify opencode install' must write the plugin to ~/.config/opencode/,
+    not to ~/.opencode/ (the npm binary dir) or the current working directory.
+    """
+    from graphify.__main__ import _agents_install as _install_fn, _opencode_global_config_dir
+
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        global_config_dir = _opencode_global_config_dir()
+        _install_fn(tmp_path, "opencode", opencode_config_dir=global_config_dir)
+
+    expected_plugin = tmp_path / ".config" / "opencode" / ".opencode" / "plugins" / "graphify.js"
+    assert expected_plugin.exists(), f"Plugin not found at {expected_plugin}"
+    wrong_plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
+    assert not wrong_plugin.exists(), f"Plugin incorrectly written to npm binary dir {wrong_plugin}"
+
+
+def test_opencode_global_install_via_main_writes_plugin_to_xdg_config_dir(tmp_path, monkeypatch):
+    """'graphify install --platform opencode' (global) writes the plugin under
+    ~/.config/opencode/, not under ~/.opencode/ or the current working directory.
+    """
+    from graphify.__main__ import main
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["graphify", "install", "--platform", "opencode"])
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        main()
+
+    expected_plugin = tmp_path / ".config" / "opencode" / ".opencode" / "plugins" / "graphify.js"
+    assert expected_plugin.exists(), f"Plugin not found at {expected_plugin}"
+    wrong_plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
+    assert not wrong_plugin.exists(), f"Plugin incorrectly written to npm binary dir {wrong_plugin}"
+
+
+def test_opencode_global_uninstall_removes_plugin_from_xdg_config_dir(tmp_path, monkeypatch):
+    """Global 'graphify opencode uninstall' removes the plugin from ~/.config/opencode/."""
+    import json as _json
+    from graphify.__main__ import _agents_install as _install_fn, _agents_uninstall as _uninstall_fn, _opencode_global_config_dir
+
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        global_config_dir = _opencode_global_config_dir()
+        _install_fn(tmp_path, "opencode", opencode_config_dir=global_config_dir)
+        _uninstall_fn(tmp_path, platform="opencode", opencode_config_dir=global_config_dir)
+
+    expected_plugin = tmp_path / ".config" / "opencode" / ".opencode" / "plugins" / "graphify.js"
+    assert not expected_plugin.exists(), f"Plugin was not removed from {expected_plugin}"
+
+
 def test_kilo_agents_install_writes_agents_md(tmp_path):
     _agents_install(tmp_path, "kilo")
     assert (tmp_path / "AGENTS.md").exists()
@@ -964,6 +1035,133 @@ def test_uninstall_all_removes_amp_user_skill(tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["graphify", "amp", "install"])
         main()
         skill = home / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
+        assert skill.exists()
+
+        monkeypatch.setattr(sys, "argv", ["graphify", "uninstall"])
+        main()
+
+    assert not skill.exists()
+
+
+# ---------------------------------------------------------------------------
+# #1403 — hermes install uses %LOCALAPPDATA% on Windows, ~/.hermes on others
+# ---------------------------------------------------------------------------
+
+def test_hermes_global_install_uses_localappdata_on_windows(tmp_path, monkeypatch):
+    """On Windows, hermes global install goes to %LOCALAPPDATA%\\hermes\\skills\\."""
+    from graphify.__main__ import _platform_skill_destination
+    import platform as _platform
+
+    fake_localappdata = tmp_path / "AppData" / "Local"
+    monkeypatch.setenv("LOCALAPPDATA", str(fake_localappdata))
+    with patch.object(_platform, "system", return_value="Windows"):
+        dst = _platform_skill_destination("hermes", project=False)
+
+    assert dst == fake_localappdata / "hermes" / "skills" / "graphify" / "SKILL.md"
+    assert ".hermes" not in str(dst)
+
+
+def test_hermes_global_install_uses_home_on_linux(tmp_path, monkeypatch):
+    """On Linux/macOS, hermes global install goes to ~/.hermes/skills/."""
+    from graphify.__main__ import _platform_skill_destination
+    import platform as _platform
+
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        with patch.object(_platform, "system", return_value="Linux"):
+            dst = _platform_skill_destination("hermes", project=False)
+
+    assert dst == tmp_path / ".hermes" / "skills" / "graphify" / "SKILL.md"
+
+
+def test_hermes_project_install_always_uses_dot_hermes(tmp_path, monkeypatch):
+    """Project-scoped hermes install always uses .hermes/ regardless of OS."""
+    from graphify.__main__ import _platform_skill_destination
+    import platform as _platform
+
+    with patch.object(_platform, "system", return_value="Windows"):
+        dst = _platform_skill_destination("hermes", project=True, project_dir=tmp_path)
+
+    assert dst == tmp_path / ".hermes" / "skills" / "graphify" / "SKILL.md"
+
+
+# ---------------------------------------------------------------------------
+# #1405 — agents platform installs skill to ~/.agents/skills/
+# ---------------------------------------------------------------------------
+
+def test_agents_global_install_writes_skill(tmp_path, monkeypatch):
+    """'graphify agents install' copies skill to ~/.agents/skills/graphify/."""
+    from graphify.__main__ import main
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "agents", "install"])
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        main()
+
+    skill = tmp_path / ".agents" / "skills" / "graphify" / "SKILL.md"
+    assert skill.exists(), f"skill not found at {skill}"
+
+
+def test_agents_global_install_writes_agents_md(tmp_path, monkeypatch):
+    """'graphify agents install' also writes AGENTS.md in the current directory."""
+    from graphify.__main__ import main
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "agents", "install"])
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        main()
+
+    assert (project / "AGENTS.md").exists()
+
+
+def test_install_platform_agents_writes_skill(tmp_path, monkeypatch):
+    """'graphify install --platform agents' copies skill to ~/.agents/skills/graphify/."""
+    from graphify.__main__ import main
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "install", "--platform", "agents"])
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        main()
+
+    skill = tmp_path / ".agents" / "skills" / "graphify" / "SKILL.md"
+    assert skill.exists(), f"skill not found at {skill}"
+
+
+def test_agents_global_uninstall_removes_skill(tmp_path, monkeypatch):
+    """'graphify agents uninstall' removes the skill from ~/.agents/skills/."""
+    from graphify.__main__ import main
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        monkeypatch.setattr(sys, "argv", ["graphify", "agents", "install"])
+        main()
+        skill = tmp_path / ".agents" / "skills" / "graphify" / "SKILL.md"
+        assert skill.exists()
+
+        monkeypatch.setattr(sys, "argv", ["graphify", "agents", "uninstall"])
+        main()
+
+    assert not skill.exists()
+
+
+def test_uninstall_all_removes_agents_user_skill(tmp_path, monkeypatch):
+    """'graphify uninstall' enumeration removes the agents global skill."""
+    from graphify.__main__ import main
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        monkeypatch.setattr(sys, "argv", ["graphify", "agents", "install"])
+        main()
+        skill = tmp_path / ".agents" / "skills" / "graphify" / "SKILL.md"
         assert skill.exists()
 
         monkeypatch.setattr(sys, "argv", ["graphify", "uninstall"])

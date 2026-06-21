@@ -1,4 +1,4 @@
-# graphify reference: incremental update and cluster-only
+﻿# graphify reference: incremental update and cluster-only
 
 Load this only when the user passed `--update` or `--cluster-only`. A first-time full build never reads this file.
 
@@ -139,7 +139,7 @@ print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])
 
 # Save manifest so next --update diffs against today's state, not the
 # prior run's baseline (prevents ghost-node reports on subsequent updates).
-save_manifest(incremental['files'])
+save_manifest(incremental['files'], root=Path('INPUT_PATH').resolve())
 print('[graphify update] Manifest saved.')
 "
 ```

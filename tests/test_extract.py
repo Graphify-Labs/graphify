@@ -1298,3 +1298,60 @@ def test_dart_child_node_ids_are_stem_based(tmp_path):
         )
 
 
+# ---------------------------------------------------------------------------
+# #1402 — cross-file type-annotation refs must not create phantom duplicate nodes
+# ---------------------------------------------------------------------------
+
+def test_cross_file_annotation_refs_produce_single_canonical_node(tmp_path):
+    """A class referenced via type annotations in N other files must appear as
+    exactly one node in the graph, not 1 + N phantom duplicates (#1402)."""
+    (tmp_path / "thing.py").write_text(
+        "class Thing:\n    def run(self): return 1\n", encoding="utf-8"
+    )
+    (tmp_path / "a.py").write_text(
+        "from thing import Thing\ndef use_a(obj: Thing) -> Thing: return obj\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "b.py").write_text(
+        "from thing import Thing\ndef use_b(obj: Thing) -> Thing: return obj\n",
+        encoding="utf-8",
+    )
+
+    result = extract(
+        [tmp_path / "thing.py", tmp_path / "a.py", tmp_path / "b.py"],
+        cache_root=tmp_path / ".cache",
+    )
+
+    thing_nodes = [n for n in result["nodes"] if n["label"] == "Thing"]
+    ids = sorted(n["id"] for n in thing_nodes)
+    assert len(thing_nodes) == 1, (
+        f"Expected 1 'Thing' node, got {len(thing_nodes)}: {ids}\n"
+        "Phantom duplicates from cross-file annotation refs were not merged."
+    )
+
+
+def test_cross_file_annotation_ref_shadow_has_no_source_file(tmp_path):
+    """When a bare-name fallback stub is emitted for a cross-file ref, it must
+    carry source_file='' so _rewire_unique_stub_nodes can merge it (#1402)."""
+    (tmp_path / "defn.py").write_text("class Widget:\n    pass\n", encoding="utf-8")
+    (tmp_path / "user.py").write_text(
+        "from defn import Widget\ndef make(w: Widget) -> Widget: return w\n",
+        encoding="utf-8",
+    )
+
+    result = extract(
+        [tmp_path / "defn.py", tmp_path / "user.py"],
+        cache_root=tmp_path / ".cache",
+    )
+
+    widget_nodes = [n for n in result["nodes"] if n["label"] == "Widget"]
+    # After rewiring there should be exactly one node and it should have a source_file.
+    assert len(widget_nodes) == 1, (
+        f"Expected 1 Widget node, got {len(widget_nodes)}: "
+        f"{[n['id'] for n in widget_nodes]}"
+    )
+    assert widget_nodes[0].get("source_file"), (
+        "Canonical Widget node has no source_file — rewiring failed."
+    )
+
+

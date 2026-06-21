@@ -674,7 +674,7 @@ from graphify.detect import save_manifest
 
 # Save manifest for --update
 detect = json.loads(Path('.graphify_detect.json').read_text())
-save_manifest(detect['files'])
+save_manifest(detect['files'], root=Path('INPUT_PATH').resolve())
 
 # Update cumulative cost tracker
 extract = json.loads(Path('.graphify_extract.json').read_text())
@@ -882,7 +882,8 @@ gods = god_nodes(G)
 surprises = surprising_connections(G, communities)
 labels = {cid: 'Community ' + str(cid) for cid in communities}
 
-report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, '.')
+scan_root = Path('graphify-out/.graphify_root').read_text().strip() if Path('graphify-out/.graphify_root').exists() else '.'
+report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, scan_root)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report)
 to_json(G, communities, 'graphify-out/graph.json')
 

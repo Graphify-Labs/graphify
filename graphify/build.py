@@ -331,6 +331,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         G.add_edge(src, tgt, **attrs)
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:
+        if _root:
+            hyperedges = [
+                dict(h, source_file=_norm_source_file(h["source_file"], _root))
+                if h.get("source_file") else h
+                for h in hyperedges
+            ]
         G.graph["hyperedges"] = hyperedges
     return G
 

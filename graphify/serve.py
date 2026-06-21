@@ -529,6 +529,7 @@ def _build_server(graph_path: str):
 
     G = _load_graph(graph_path)
     communities = _communities_from_graph(G)
+    community_labels: dict[int, str] = {}
 
     # Hot-reload state: mtime+size key lets us detect graph.json changes without
     # polling. Initialised from the file stat at startup so the first tool call
@@ -541,7 +542,7 @@ def _build_server(graph_path: str):
         _reload_state = {"mtime_ns": 0, "size": -1}
 
     def _maybe_reload() -> None:
-        nonlocal G, communities
+        nonlocal G, communities, community_labels
         try:
             s = Path(graph_path).stat()
             key = (s.st_mtime_ns, s.st_size)
@@ -563,6 +564,7 @@ def _build_server(graph_path: str):
                 return  # keep serving stale graph on transient read error
             G = new_G
             communities = _communities_from_graph(new_G)
+            community_labels = _load_community_labels()
             _reload_state["mtime_ns"], _reload_state["size"] = key
 
     server = Server("graphify")
@@ -770,7 +772,9 @@ def _build_server(graph_path: str):
         nodes = communities.get(cid, [])
         if not nodes:
             return f"Community {cid} not found."
-        lines = [f"Community {cid} ({len(nodes)} nodes):"]
+        label = community_labels.get(cid, "")
+        header = f"Community {cid}" + (f" — {label}" if label and label != f"Community {cid}" else "")
+        lines = [f"{header} ({len(nodes)} nodes):"]
         for n in nodes:
             d = G.nodes[n]
             # Sanitise label and source_file (F-010).
@@ -960,6 +964,8 @@ def _build_server(graph_path: str):
             except Exception:
                 pass
         return {cid: f"Community {cid}" for cid in communities}
+
+    community_labels.update(_load_community_labels())
 
     @server.list_resources()
     async def list_resources() -> list[types.Resource]:

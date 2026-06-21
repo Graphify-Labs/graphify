@@ -166,6 +166,14 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
         # Global Antigravity skill dir (all workspaces): ~/.gemini/config/skills/
         return Path.home() / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "hermes":
+        if project:
+            return (project_dir or Path(".")) / ".hermes" / "skills" / "graphify" / "SKILL.md"
+        if platform.system() == "Windows":
+            localappdata = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+            return Path(localappdata) / "hermes" / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / ".hermes" / "skills" / "graphify" / "SKILL.md"
+
     cfg = _PLATFORM_CONFIG[platform_name]
     if project:
         return (project_dir or Path(".")) / cfg["skill_dst"]
@@ -518,6 +526,13 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "windows",
     },
+    "agents": {
+        # Universal Skills spec directory — discovered by agents that support the Skills spec.
+        "skill_file": "skill-claw.md",
+        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "claw",
+    },
     "windows": {
         "skill_file": "skill-windows.md",
         "skill_dst": Path(".claude") / "skills" / "graphify" / "SKILL.md",
@@ -694,7 +709,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
             print(f"  CODEBUDDY.md     ->  created at {codebuddy_md}")
 
     if platform == "opencode":
-        _install_opencode_plugin(project_dir if project else Path("."))
+        _install_opencode_plugin(project_dir if project else _opencode_global_config_dir())
 
     # Refresh version stamps in all other previously-installed skill dirs so
     # stale-version warnings don't fire for platforms not explicitly re-installed.
@@ -1391,7 +1406,7 @@ export const GraphifyPlugin = async ({ directory }) => {
 
       if (input.tool === "bash") {
         output.args.command =
-          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run \\`graphify query \\"<question>\\"\\` (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." && ' +
+          "echo '[graphify] knowledge graph at graphify-out/. For focused questions, run: graphify query \\"<question>\\" (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context.' && " +
           output.args.command;
         reminded = true;
       }
@@ -1402,6 +1417,18 @@ export const GraphifyPlugin = async ({ directory }) => {
 
 _OPENCODE_PLUGIN_PATH = Path(".opencode") / "plugins" / "graphify.js"
 _OPENCODE_CONFIG_PATH = Path(".opencode") / "opencode.json"
+
+
+def _opencode_global_config_dir() -> Path:
+    """Return the opencode global config directory, respecting XDG_CONFIG_HOME.
+
+    opencode reads its global config from ~/.config/opencode/opencode.json (or
+    $XDG_CONFIG_HOME/opencode/).  ~/.opencode/ is the npm binary install dir and
+    is NOT a config dir — writing the plugin there silently has no effect.
+    """
+    import os
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(xdg) / "opencode") if xdg else (Path.home() / ".config" / "opencode")
 
 
 def _install_opencode_plugin(project_dir: Path) -> None:
@@ -1543,7 +1570,7 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
 
 
-def _agents_install(project_dir: Path, platform: str) -> None:
+def _agents_install(project_dir: Path, platform: str, *, opencode_config_dir: Path | None = None) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
     target = (project_dir or Path(".")) / "AGENTS.md"
 
@@ -1564,7 +1591,7 @@ def _agents_install(project_dir: Path, platform: str) -> None:
     if platform == "codex":
         _install_codex_hook(project_dir or Path("."))
     elif platform == "opencode":
-        _install_opencode_plugin(project_dir or Path("."))
+        _install_opencode_plugin(opencode_config_dir or project_dir or Path("."))
     elif platform == "kilo":
         _install_kilo_plugin(project_dir or Path("."))
 
@@ -1625,7 +1652,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None) -> Non
     elif platform_name == "kiro":
         _kiro_install(project_dir)
         _print_project_git_add_hint([project_dir / ".kiro"])
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "agents"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_install(project_dir, platform_name)
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
@@ -1665,7 +1692,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _cursor_uninstall(project_dir)
     elif platform_name == "kiro":
         _kiro_uninstall(project_dir)
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "agents"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_uninstall(project_dir, platform=platform_name)
         if platform_name == "codex":
@@ -1698,14 +1725,16 @@ def _project_uninstall_all(project_dir: Path | None = None) -> None:
     print("\nDone.")
 
 
-def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
+def _agents_uninstall(project_dir: Path, platform: str = "", *, opencode_config_dir: Path | None = None) -> None:
     """Remove the graphify section from the local AGENTS.md."""
     target = (project_dir or Path(".")) / "AGENTS.md"
+
+    _opencode_dir = opencode_config_dir or project_dir or Path(".")
 
     if not target.exists():
         print("No AGENTS.md found in current directory - nothing to do")
         if platform == "opencode":
-            _uninstall_opencode_plugin(project_dir or Path("."))
+            _uninstall_opencode_plugin(_opencode_dir)
         elif platform == "kilo":
             _uninstall_kilo_plugin(project_dir or Path("."))
         return
@@ -1714,7 +1743,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
     if _AGENTS_MD_MARKER not in content:
         print("graphify section not found in AGENTS.md - nothing to do")
         if platform == "opencode":
-            _uninstall_opencode_plugin(project_dir or Path("."))
+            _uninstall_opencode_plugin(_opencode_dir)
         elif platform == "kilo":
             _uninstall_kilo_plugin(project_dir or Path("."))
         return
@@ -1733,7 +1762,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
         print(f"AGENTS.md was empty after removal - deleted {target.resolve()}")
 
     if platform == "opencode":
-        _uninstall_opencode_plugin(project_dir or Path("."))
+        _uninstall_opencode_plugin(_opencode_dir)
     elif platform == "kilo":
         _uninstall_kilo_plugin(project_dir or Path("."))
 
@@ -1868,7 +1897,9 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # Amp also drops a user-scope skill at ~/.config/agents/skills, which the
     # AGENTS.md cleanup above does not touch.
     _remove_skill_file("amp")
-    _uninstall_opencode_plugin(pd)
+    # agents global install drops a user-scope skill at ~/.agents/skills/.
+    _remove_skill_file("agents")
+    _uninstall_opencode_plugin(_opencode_global_config_dir())
     _uninstall_codex_hook(pd)
 
     # Git hook
@@ -2114,7 +2145,7 @@ def main() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin|agents)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -2265,9 +2296,13 @@ def main() -> None:
             "  antigravity uninstall   remove .agents/rules, .agents/workflows, and skill"
         )
         print(
-            "  hermes install          write skill to ~/.hermes/skills/graphify/ (Hermes)"
+            "  hermes install          write skill to ~/.hermes/skills/graphify/ (or %LOCALAPPDATA%\\hermes on Windows)"
         )
         print("  hermes uninstall        remove skill from ~/.hermes/skills/graphify/")
+        print(
+            "  agents install          write skill to ~/.agents/skills/graphify/ (universal Skills spec)"
+        )
+        print("  agents uninstall        remove skill from ~/.agents/skills/graphify/")
         print(
             "  kiro install            write skill to .kiro/skills/graphify/ + steering file (Kiro IDE/CLI)"
         )
@@ -2500,18 +2535,25 @@ def main() -> None:
         else:
             print("Usage: graphify amp [install|uninstall]", file=sys.stderr)
             sys.exit(1)
-    elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "agents"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd == "install":
             if "--project" in sys.argv[3:]:
                 _project_install(cmd, Path("."))
+            elif cmd == "agents":
+                # agents global install: skill to ~/.agents/skills/ + AGENTS.md in cwd
+                _copy_skill_file("agents")
+                _agents_install(Path("."), "agents")
             else:
-                _agents_install(Path("."), cmd)
+                _agents_install(Path("."), cmd, opencode_config_dir=_opencode_global_config_dir() if cmd == "opencode" else None)
         elif subcmd == "uninstall":
             if "--project" in sys.argv[3:]:
                 _project_uninstall(cmd, Path("."))
+            elif cmd == "agents":
+                _remove_skill_file("agents")
+                _agents_uninstall(Path("."), platform="agents")
             else:
-                _agents_uninstall(Path("."), platform=cmd)
+                _agents_uninstall(Path("."), platform=cmd, opencode_config_dir=_opencode_global_config_dir() if cmd == "opencode" else None)
                 if cmd == "codex":
                     _uninstall_codex_hook(Path("."))
         else:
