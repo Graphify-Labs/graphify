@@ -153,7 +153,7 @@ COMMUNITY_COLORS = [
     "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
 ]
 
-MAX_NODES_FOR_VIZ = 5_000
+MAX_NODES_FOR_VIZ = 15_000
 
 
 def _viz_node_limit() -> int:
