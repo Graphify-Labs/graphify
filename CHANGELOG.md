@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
+- Feat: CUDA (`.cu`/`.cuh`) source files are now extracted. CUDA is a C++ superset, so these files route through the existing C++ (`tree-sitter-cpp`) extractor — no new grammar dependency. `__global__`/`__device__` kernels, host functions, structs and `#include`s are captured, host call edges are inferred, and `<<<grid, block>>>` kernel-launch syntax parses without error. Detection and file-watching follow automatically since both derive their extension sets from the dispatch table / `CODE_EXTENSIONS` (#1411).
 - Fix: the Aider and Devin monolith skills now carry the #1392 runbook fixes that the split skill got in 0.8.44. These single-file skills are hand-maintained and frozen against a pinned pristine-v8 blob by a round-trip guard, so they had been excluded. The guard is now a multiset diff that classifies every added/removed line against documented sanctioned change-classes (rather than a positional zip that forbade any line-count change), which lets the multi-line fixes land while still failing on any unsanctioned drift. Both monoliths now propagate `directed=IS_DIRECTED` into every `build_from_json` call (a `--directed` run no longer collapses reciprocal edges), scope semantic extraction to document/paper/image (code is covered by the AST pass), delete `.graphify_cached.json` on a cache miss, and run Step 4's zero-node guard before any write with the report/analysis gated on `to_json` actually persisting the graph (#1392).
 
 ## 0.8.44 (2026-06-19)
