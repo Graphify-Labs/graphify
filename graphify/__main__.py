@@ -2996,6 +2996,101 @@ def main() -> None:
             nodes_returned=len(connections),
         )
 
+    elif cmd == "label-communities":
+        # Produce human-readable community labels. serve._load_community_labels,
+        # report.py and analyze.py already READ a `.graphify_labels.json` next to
+        # the graph ({community_id: label}) and fall back to "Community <id>" when
+        # it is absent — but nothing WROTE it. This is that missing producer:
+        # deterministic, no-LLM, no new deps. For each Louvain community it picks
+        # the dominant source area + the strongest representative phrase and
+        # writes "<area> · <phrase>".
+        import re as _re
+        from collections import Counter as _Counter, defaultdict as _defaultdict
+
+        graph_path = _default_graph_path()
+        args = sys.argv[2:]
+        for i, a in enumerate(args):
+            if a == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]
+        gp = Path(graph_path).resolve()
+        if not gp.exists():
+            print(f"error: graph file not found: {gp}", file=sys.stderr)
+            sys.exit(1)
+        _enforce_graph_size_cap_or_exit(gp)
+        g = json.loads(gp.read_text(encoding="utf-8"))
+        nodes = g.get("nodes", [])
+        links = g.get("links") or g.get("edges") or []
+
+        deg: dict = _defaultdict(int)
+        for e in links:
+            deg[e.get("source")] += 1
+            deg[e.get("target")] += 1
+
+        by_comm: dict = _defaultdict(list)
+        for n in nodes:
+            cid = n.get("community")
+            if cid is not None:
+                by_comm[str(cid)].append(n)
+        if not by_comm:
+            print(
+                "error: no node has a 'community' attribute — run `graphify "
+                "extract` / `graphify cluster` first.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        _generic = {
+            "config", "configuration", "context", "operator", "namespace",
+            "capacity", "steps", "step", "outputs", "output", "deploy", "source",
+            "true", "false", "str", "int", "bool", "none", "null", "layout",
+            "index", "readme", "readme.md", "overview", "introduction", "usage",
+        }
+
+        def _area(source_file: str) -> str:
+            sf = (source_file or "").strip("/")
+            if not sf:
+                return "misc"
+            parts = sf.split("/")
+            # First directory segment, or the bare filename if at the root.
+            return parts[0] if len(parts) > 1 else parts[0]
+
+        def _short(label: str, n: int = 56) -> str:
+            label = _re.sub(r"\s+", " ", str(label)).strip().strip('"')
+            label = _re.sub(r"\s*#+\s*$", "", label)
+            return label[:n] + ("…" if len(label) > n else "")
+
+        labels: dict = {}
+        rows: list = []
+        for cid, members in by_comm.items():
+            area = _Counter(_area(m.get("source_file") or "") for m in members).most_common(1)[0][0]
+
+            def pick(pred, members=members):
+                cands = sorted(
+                    (m for m in members if pred(m)),
+                    key=lambda m: -deg.get(m.get("id"), 0),
+                )
+                for m in cands:
+                    lab = _short(m.get("label") or "")
+                    if lab and lab.lower() not in _generic and not lab.endswith("()"):
+                        return lab
+                return None
+
+            phrase = (
+                pick(lambda m: m.get("file_type") == "concept")
+                or pick(lambda m: m.get("file_type") in ("document", "rationale"))
+                or pick(lambda m: True)
+                or "(mixed)"
+            )
+            labels[cid] = f"{area} · {phrase}"
+            rows.append((cid, len(members), labels[cid]))
+
+        out_path = gp.parent / ".graphify_labels.json"
+        out_path.write_text(json.dumps(labels, ensure_ascii=False, indent=0), encoding="utf-8")
+        rows.sort(key=lambda r: -r[1])
+        print(f"Labeled {len(labels)} communities -> {out_path}")
+        for cid, size, label in rows[:10]:
+            print(f"  community {cid:<5} ({size:>4} nodes)  {label}")
+
     elif cmd == "diagnose":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd != "multigraph":
