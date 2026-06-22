@@ -2843,7 +2843,7 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _score_nodes
+        from graphify.serve import _score_nodes, _find_node
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -2868,15 +2868,25 @@ def main() -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
+        # Resolve each endpoint whole-string first (exact > prefix > substring,
+        # the same precedence `explain` uses via _find_node), and fall back to
+        # the per-token lexical scorer only when the whole-string resolver finds
+        # nothing. _score_nodes tokenises the label and scores per token, so a
+        # multi-word / natural-language endpoint never gets an exact hit; several
+        # nodes then tie and [0] resolves to the wrong one, producing a spurious
+        # "No path found" for a pair that is actually a hop or two apart.
+        src_find = _find_node(G, source_label)
+        tgt_find = _find_node(G, target_label)
         src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
-        if not src_scored:
+        if not src_find and not src_scored:
             print(f"No node matching '{source_label}' found.", file=sys.stderr)
             sys.exit(1)
-        if not tgt_scored:
+        if not tgt_find and not tgt_scored:
             print(f"No node matching '{target_label}' found.", file=sys.stderr)
             sys.exit(1)
-        src_nid, tgt_nid = src_scored[0][1], tgt_scored[0][1]
+        src_nid = src_find[0] if src_find else src_scored[0][1]
+        tgt_nid = tgt_find[0] if tgt_find else tgt_scored[0][1]
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
@@ -2887,8 +2897,13 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        for _name, _scored in (("source", src_scored), ("target", tgt_scored)):
-            if len(_scored) >= 2:
+        # Only the lexical-scorer fallback can be ambiguous; a whole-string
+        # _find_node hit is deterministic (tiered), so skip the warning there.
+        for _name, _find, _scored in (
+            ("source", src_find, src_scored),
+            ("target", tgt_find, tgt_scored),
+        ):
+            if not _find and len(_scored) >= 2:
                 _top, _runner = _scored[0][0], _scored[1][0]
                 if _top > 0 and (_top - _runner) / _top < 0.10:
                     print(
