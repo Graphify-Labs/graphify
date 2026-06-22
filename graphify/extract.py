@@ -44,6 +44,47 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
 })
 
 
+# Python primitive / library type names that leak in as nodes purely via type
+# annotations (return_type, parameter_type, field, generic_arg, base class)
+# rather than as real domain concepts. Skipping node creation for these keeps the
+# graph clean; the leftover reference edges are the dangling-to-external kind
+# build.py already tolerates. Reuses _LANGUAGE_BUILTIN_GLOBALS (the shared
+# call-site builtin filter) and layers stdlib / NumPy / PyTorch annotation types.
+#
+# Deliberately PYTHON-ONLY: these bare names are ordinary user-defined types in
+# other languages (a Rust `Response`, a Julia `Module`, a Go `Set`), so applying
+# one flat list to every extractor mis-drops real types (review #1332). Languages
+# that suppress their own primitives already do so at the collector, scoped to the
+# language — Go via _GO_PREDECLARED_TYPES, Rust by skipping `primitive_type`
+# nodes, Python scalars via _PYTHON_ANNOTATION_NOISE (#1147) — so this set only
+# layers the library/annotation type names on top, for Python.
+_PYTHON_TYPE_REF_PRIMITIVES: frozenset[str] = _LANGUAGE_BUILTIN_GLOBALS | frozenset({
+    # Python typing / stdlib annotation types
+    "Any", "Optional", "Union", "List", "Dict", "Set", "Tuple", "Sequence",
+    "Iterable", "Iterator", "Mapping", "Callable", "Type", "Literal", "Final",
+    "Annotated", "Path", "PathLike", "datetime", "timedelta", "Decimal",
+    "frozenset", "bytearray", "complex", "object", "None", "NoneType",
+    # NumPy
+    "ndarray", "np", "dtype", "NDArray", "ArrayLike",
+    # PyTorch
+    "Tensor", "Module", "torch", "device", "DataLoader", "Dataset",
+    "nn", "Parameter",
+})
+
+
+# Type-reference primitive filter keyed by tree-sitter module. Only languages with
+# an entry suppress annotation-only type names in ensure_named_node; every other
+# extractor keeps them (or filters its own predeclared types at the collector).
+_TYPE_REF_PRIMITIVES_BY_LANG: dict[str, frozenset[str]] = {
+    "tree_sitter_python": _PYTHON_TYPE_REF_PRIMITIVES,
+}
+
+
+def _type_ref_primitives(ts_module: str) -> frozenset[str]:
+    """Primitive/library type-ref names to skip as nodes for the given language."""
+    return _TYPE_REF_PRIMITIVES_BY_LANG.get(ts_module, frozenset())
+
+
 def _raise_recursion_limit() -> None:
     if sys.getrecursionlimit() < _RECURSION_LIMIT:
         sys.setrecursionlimit(_RECURSION_LIMIT)
@@ -2461,12 +2502,19 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
             edge["context"] = context
         edges.append(edge)
 
+    # Annotation-only primitive/library type names to skip as nodes, scoped to
+    # this language (empty for everything but Python — see _type_ref_primitives).
+    type_ref_primitives = _type_ref_primitives(config.ts_module)
+
     def ensure_named_node(name: str, line: int) -> str:
         nid = _make_id(stem, name)
         if nid in seen_ids:
             return nid
         nid = _make_id(name)
-        if nid not in seen_ids:
+        # Skip node creation for primitive / library type names — they pollute the
+        # graph as noise hubs. Return the id so reference edges still resolve
+        # (dangling-to-external, tolerated by build.py); just don't materialize the node.
+        if nid not in seen_ids and name not in type_ref_primitives:
             add_node(nid, name, line)
         return nid
 
