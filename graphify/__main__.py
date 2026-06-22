@@ -4395,7 +4395,7 @@ def main() -> None:
             print("[graphify extract] introspecting Cargo workspace...")
             try:
                 cargo_result = introspect_cargo(target)
-            except (ConnectionError, ImportError) as exc:
+            except (ConnectionError, ImportError, OSError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 sys.exit(1)
             print(f"[graphify extract] Cargo: {len(cargo_result['nodes'])} nodes, "
