@@ -2172,6 +2172,11 @@ def main() -> None:
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
         print("    --backend=<name>        backend to use (default: auto-detect from API keys)")
         print("    --model=<name>          model to use for community naming")
+        print("  resolve-entities <path> run entity dedup over an existing graph.json (no re-extract)")
+        print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
+        print("    --backend <name>        LLM backend for ambiguous-pair resolution (optional)")
+        print("    --dry-run               report merges that would happen, do not write")
+        print("    --skip-recluster        do not re-run clustering after the merge")
         print("  query \"<question>\"       BFS traversal of graph.json for a question")
         print("    --dfs                   use depth-first instead of breadth-first")
         print("    --context C             explicit edge-context filter (repeatable)")
@@ -3322,6 +3327,119 @@ def main() -> None:
                     html_target.unlink()
                 print(f"Skipped graph.html: {viz_err}")
                 print(f"Done - {len(communities)} communities. GRAPH_REPORT.md and graph.json updated.")
+
+    elif cmd == "resolve-entities":
+        # Standalone entity-resolution pass over an existing graph.json. Mirrors
+        # the in-build dedup step from build(), but runs after the fact so users
+        # can clean up graphs produced by custom build scripts that bypassed the
+        # standard pipeline or graphs imported from external sources, without
+        # re-extracting from source.
+        args = sys.argv[2:]
+        watch_path: Path | None = None
+        graph_override: Path | None = None
+        backend: str | None = None
+        dry_run = False
+        skip_recluster = False
+        i_arg = 0
+        while i_arg < len(args):
+            a = args[i_arg]
+            if a == "--graph" and i_arg + 1 < len(args):
+                graph_override = Path(args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--graph="):
+                graph_override = Path(a.split("=", 1)[1]); i_arg += 1
+            elif a == "--backend" and i_arg + 1 < len(args):
+                backend = args[i_arg + 1]; i_arg += 2
+            elif a.startswith("--backend="):
+                backend = a.split("=", 1)[1]; i_arg += 1
+            elif a == "--dry-run":
+                dry_run = True; i_arg += 1
+            elif a == "--skip-recluster":
+                skip_recluster = True; i_arg += 1
+            elif a.startswith("--"):
+                i_arg += 1
+            elif watch_path is None:
+                watch_path = Path(a); i_arg += 1
+            else:
+                i_arg += 1
+        if watch_path is None:
+            watch_path = Path(".")
+        graph_json = graph_override if graph_override is not None else watch_path / _GRAPHIFY_OUT / "graph.json"
+        if not graph_json.exists():
+            print(
+                f"error: no graph found at {graph_json} — run `graphify .` or `graphify update .` first",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        from graphify.dedup import deduplicate_entities
+
+        print(f"Loading {graph_json}...")
+        raw = json.loads(graph_json.read_text(encoding="utf-8"))
+        nodes = raw.get("nodes", [])
+        # NetworkX node-link format uses 'links'; raw extraction uses 'edges'.
+        # Accept either so this command works on both serialized shapes.
+        edges_key = "links" if "links" in raw else "edges"
+        edges = raw.get(edges_key, [])
+        if not nodes:
+            print("error: graph has no nodes.", file=sys.stderr)
+            sys.exit(1)
+        n_before = len(nodes)
+        e_before = len(edges)
+
+        communities = {
+            n["id"]: n["community"]
+            for n in nodes
+            if n.get("community") is not None and n.get("id") is not None
+        }
+
+        print(f"Running entity resolution on {n_before} nodes / {e_before} edges...")
+        try:
+            new_nodes, new_edges = deduplicate_entities(
+                nodes, edges, communities=communities, dedup_llm_backend=backend,
+            )
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        n_after = len(new_nodes)
+        e_after = len(new_edges)
+        print(f"Result: {n_before} → {n_after} nodes ({n_before - n_after} merged); "
+              f"{e_before} → {e_after} edges ({e_before - e_after} dropped)")
+
+        if dry_run:
+            print("DRY RUN — no files written. Re-run without --dry-run to apply.")
+            sys.exit(0)
+        if n_after == n_before:
+            print("No merges found — nothing to write.")
+            sys.exit(0)
+
+        # Backup then rewrite. One rolling backup so users can recover.
+        backup = graph_json.with_suffix(graph_json.suffix + ".bak")
+        try:
+            backup.write_bytes(graph_json.read_bytes())
+            print(f"Backed up → {backup.name}")
+        except OSError as e:
+            print(f"warning: could not write backup: {e}", file=sys.stderr)
+
+        raw["nodes"] = new_nodes
+        raw[edges_key] = new_edges
+        graph_json.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        print(f"Wrote {graph_json}")
+
+        if skip_recluster:
+            print("Skipping re-cluster (--skip-recluster). Communities may now be stale; "
+                  "run `graphify cluster-only .` to refresh.")
+        else:
+            print("Re-clustering to refresh community assignments...")
+            import subprocess as _sp
+            cluster_argv = [sys.executable, "-m", "graphify", "cluster-only", str(watch_path), "--no-label"]
+            r = _sp.run(cluster_argv, check=False)
+            if r.returncode != 0:
+                print(
+                    "warning: re-cluster step failed; graph.json has been merged but "
+                    "communities may be stale. Run `graphify cluster-only .` manually.",
+                    file=sys.stderr,
+                )
 
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
