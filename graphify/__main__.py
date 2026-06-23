@@ -171,6 +171,14 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "agents":
+        # The generic Agent-Skills target: project ./.agents/skills, global the
+        # spec's user-global ~/.agents/skills (read by `npx skills` and compliant
+        # frameworks), NOT amp's ~/.config/agents/skills.
+        if project:
+            return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
+
     if platform_name in ("antigravity", "antigravity-windows"):
         if project:
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
@@ -550,6 +558,16 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "amp",
     },
+    "agents": {
+        # The generic cross-framework Agent-Skills target. Global: ~/.agents/skills
+        # (the spec's user-global location, read by `npx skills` and compliant
+        # frameworks); project: ./.agents/skills. The CLI accepts `skills` as an
+        # alias (see _canonical_platform). Ships its own rendered bundle.
+        "skill_file": "skill-agents.md",
+        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "agents",
+    },
     "devin": {
         # Monolith: devin ships the full SKILL.md inline, no references/ sidecar.
         "skill_file": "skill-devin.md",
@@ -559,6 +577,16 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
     },
 }
+
+# CLI-only platform aliases, resolved to a real _PLATFORM_CONFIG key before
+# dispatch. `skills` is the friendly alias for the generic `agents` platform
+# (the Agent-Skills ecosystem calls them "skills").
+_PLATFORM_ALIASES: dict[str, str] = {"skills": "agents"}
+
+
+def _canonical_platform(platform_name: str) -> str:
+    """Resolve a CLI platform alias to its real _PLATFORM_CONFIG key."""
+    return _PLATFORM_ALIASES.get(platform_name, platform_name)
 
 
 def _replace_or_append_section(content: str, marker: str, new_section: str) -> str:
@@ -638,6 +666,7 @@ def _print_banner() -> None:
 
 def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
     _print_banner()
+    platform = _canonical_platform(platform)
     if platform == "gemini":
         gemini_install(project_dir=project_dir, project=project)
         return
@@ -1627,9 +1656,32 @@ def _amp_uninstall(project_dir: Path | None = None) -> None:
     _agents_uninstall(project_dir or Path("."), platform="amp")
 
 
+def _agents_platform_install(project_dir: Path | None = None) -> None:
+    """`graphify agents install`: skill into ~/.agents/skills + AGENTS.md.
+
+    The amp-twin of the generic Agent-Skills target. Mirrors _amp_install but
+    lands the skill at the spec's user-global ~/.agents/skills (set in
+    _platform_skill_destination). Wiring AGENTS.md keeps it honest with the
+    rendered hooks reference, which points at `graphify agents install`. The bare
+    `graphify install --platform agents` path stays skill-only (via install()),
+    exactly as amp's `--platform amp` does.
+    """
+    _copy_skill_file("agents")
+    _agents_install(project_dir or Path("."), "agents")
+
+
+def _agents_platform_uninstall(project_dir: Path | None = None) -> None:
+    """`graphify agents uninstall`: remove the skill and the AGENTS.md section."""
+    removed = _remove_skill_file("agents")
+    if removed:
+        print("skill removed")
+    _agents_uninstall(project_dir or Path("."), platform="agents")
+
+
 def _project_install(platform_name: str, project_dir: Path | None = None) -> None:
     """Install platform skill/config files in the current project."""
     project_dir = project_dir or Path(".")
+    platform_name = _canonical_platform(platform_name)
     if platform_name in ("claude", "windows"):
         install(platform=platform_name, project=True, project_dir=project_dir)
         claude_install(project_dir)
@@ -1662,7 +1714,9 @@ def _project_install(platform_name: str, project_dir: Path | None = None) -> Non
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
-    elif platform_name in ("copilot", "pi", "kimi"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+        # Skill-only project install: drop SKILL.md (+ references) at the scope
+        # root. `agents` -> ./.agents/skills/graphify/SKILL.md.
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
     else:
@@ -1672,6 +1726,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None) -> Non
 def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> None:
     """Remove project-scoped platform skill/config files only."""
     project_dir = project_dir or Path(".")
+    platform_name = _canonical_platform(platform_name)
     if platform_name in ("claude", "windows"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _remove_claude_skill_registration(project_dir)
@@ -1694,7 +1749,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _devin_rules_uninstall(project_dir)
         if not removed:
             print("nothing to remove")
-    elif platform_name in ("copilot", "pi", "kimi"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents"):
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         if not removed:
             print("nothing to remove")
@@ -1885,6 +1940,9 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # Amp also drops a user-scope skill at ~/.config/agents/skills, which the
     # AGENTS.md cleanup above does not touch.
     _remove_skill_file("amp")
+    # The generic agents platform's user-scope skill lives at ~/.agents/skills,
+    # which neither the AGENTS.md cleanup nor amp's removal reaches.
+    _remove_skill_file("agents")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
@@ -2131,7 +2189,7 @@ def main() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -2516,6 +2574,21 @@ def main() -> None:
                 _amp_uninstall(Path("."))
         else:
             print("Usage: graphify amp [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd in ("agents", "skills"):
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("agents", Path("."))
+            else:
+                _agents_platform_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("agents", Path("."))
+            else:
+                _agents_platform_uninstall(Path("."))
+        else:
+            print(f"Usage: graphify {cmd} [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

@@ -113,7 +113,7 @@ include-package-data = false
 # under graphify/skills/<host>/references/, and the always-on injection blocks
 # under graphify/always_on/. There is no graphify/skills/<host>/SKILL.md in the
 # repo, so no SKILL.md glob is needed here.
-graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", "command-kilo.md", "skill-aider.md", "skill-amp.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md", "skills/*/references/*.md", "always_on/*.md"]
+graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", "command-kilo.md", "skill-aider.md", "skill-amp.md", "skill-agents.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md", "skills/*/references/*.md", "always_on/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

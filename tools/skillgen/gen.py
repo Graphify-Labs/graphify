@@ -61,6 +61,12 @@ def _v8_baseline_ref(platform_key: str) -> str:
     """The git ref for a split host's own pre-split skill body."""
     if platform_key == "claude":
         return f"{_V8_BASELINE_SHA}:graphify/skill.md"
+    if platform_key == "agents":
+        # `agents` is a post-v8 platform with no own v8 body — it re-homes amp's
+        # agents-md body at the generic ~/.agents/skills location. Its render is
+        # amp's modulo the install/uninstall command wording (prose, not headings),
+        # so amp's v8 body is the correct per-host coverage baseline.
+        return f"{_V8_BASELINE_SHA}:graphify/skill-amp.md"
     return f"{_V8_BASELINE_SHA}:graphify/skill-{platform_key}.md"
 
 # Immutable baseline for --always-on-roundtrip. The six always-on instruction
@@ -151,6 +157,16 @@ _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
         "host_display": "Amp",
         "install_block": "graphify amp install",
         "uninstall_block": "graphify amp uninstall  # remove the section",
+        "pretooluse_note": "",
+    },
+    "agents": {
+        # The generic cross-framework Agent-Skills target. Mirrors amp's bare,
+        # caveat-free agents-md section, worded for an unspecified host and
+        # pointing at `graphify agents install` (which wires AGENTS.md, like amp).
+        "heading_suffix": "",
+        "host_display": "your agent",
+        "install_block": "graphify agents install",
+        "uninstall_block": "graphify agents uninstall  # remove the section",
         "pretooluse_note": "",
     },
 }

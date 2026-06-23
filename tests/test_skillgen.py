@@ -823,3 +823,59 @@ def test_amp_audit_coverage_passes_against_its_own_v8():
     assert gen._v8_baseline_ref("amp") == "47042beb05d1f6dd2186c0c499ae2840ce604ead:graphify/skill-amp.md"
     problems = gen.audit_coverage(platforms["amp"])
     assert problems == [], "\n".join(problems)
+
+
+# --- the generic agents platform (#1432) ---------------------------------------
+
+
+def test_agents_renders_its_own_agents_md_hooks_wording():
+    """`agents` re-homes amp's agents-md body but with its OWN install wording.
+
+    It shares amp's bare, caveat-free `## For native AGENTS.md integration`
+    section (no `(Trae)` suffix, no PreToolUse note) but points at
+    `graphify agents install` and is worded for an unspecified host.
+    """
+    core, refs = _platform_artifacts("agents")
+    hooks = refs["hooks.md"]
+    assert "## For native AGENTS.md integration" in hooks
+    assert "## For native AGENTS.md integration (Trae)" not in hooks
+    assert "make graphify always-on in your agent sessions" in hooks
+    assert "graphify agents install" in hooks
+    assert "graphify agents uninstall  # remove the section" in hooks
+    # No amp/trae/claude wording leaks into the agents render.
+    assert "graphify amp install" not in hooks
+    assert "graphify trae" not in hooks
+    assert "graphify claude install" not in hooks
+    assert "PreToolUse" not in hooks and "PreToolUse" not in core
+    # The lean-core pointer names AGENTS.md, not CLAUDE.md.
+    assert "## For the commit hook and native AGENTS.md integration" in core
+    assert "native CLAUDE.md integration" not in core
+
+
+def test_agents_body_matches_amp_modulo_hooks_wording():
+    """The agents skill body is amp's body verbatim (it re-homes amp's bundle).
+
+    The two platforms differ only in the hooks reference's install/uninstall
+    command wording — everything else (core, query, extraction spec, the other
+    six references) is byte-identical, which is why agents audits cleanly against
+    amp's v8 baseline.
+    """
+    platforms = gen.load_platforms()
+    amp = {a.path.rsplit("/", 1)[-1]: a.content for a in gen.render(platforms["amp"])}
+    agents = {a.path.rsplit("/", 1)[-1]: a.content for a in gen.render(platforms["agents"])}
+    # The lean-core skill body is identical (frontmatter + steps, no hooks ref).
+    assert amp["skill-amp.md"] == agents["skill-agents.md"]
+    # Every reference except hooks.md is byte-identical.
+    for name in amp:
+        if name in ("skill-amp.md", "hooks.md"):
+            continue
+        assert amp[name] == agents[name], f"{name} drifted between amp and agents"
+    assert amp["hooks.md"] != agents["hooks.md"]
+
+
+def test_agents_audit_baseline_is_amps_v8_body():
+    """`agents` is a post-v8 platform, so its audit baseline is amp's v8 body."""
+    platforms = gen.load_platforms()
+    assert gen._v8_baseline_ref("agents") == "47042beb05d1f6dd2186c0c499ae2840ce604ead:graphify/skill-amp.md"
+    problems = gen.audit_coverage(platforms["agents"])
+    assert problems == [], "\n".join(problems)

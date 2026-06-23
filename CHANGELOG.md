@@ -4,6 +4,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
+- Feat: new first-class `agents` platform installs the skill to the generic cross-framework Agent-Skills locations. `graphify install --platform agents` (alias `--platform skills`) writes the spec's user-global `~/.agents/skills/graphify/SKILL.md` — the directory `npx skills` and spec-compliant frameworks read — and `--project` writes `./.agents/skills/graphify/SKILL.md`; `graphify uninstall` removes them. Previously that user-global location was only reachable as an accidental side effect of the gemini-on-Windows branch. The skill bundle re-homes amp's agents-md body (registered in `tools/skillgen/platforms.toml`, rendered through the skillgen drift/coverage guards); the body is identical to amp's, and only the on-demand hooks reference differs — it points at `graphify agents install`, which (as the amp-twin subcommand) wires the skill plus an AGENTS.md always-on section. Bare `graphify install` is unchanged — still single-platform (claude/windows) (#1432, closes #1405).
+
 ## 0.8.46 (2026-06-23)
 
 - Perf: graph queries on large graphs are faster via a trigram candidate prefilter in the MCP/CLI query path. A trigram→node index (built once per graph and rebuilt on hot-reload) narrows the candidate set before the IDF-weighted scorer runs, cutting the previous O(N) scan. The prefilter is a strict superset of the exhaustive scorer (it indexes `norm_label`, `label_tokens`, `nid`, and `source_file`), so results and ranking are unchanged; short/CJK queries and low-selectivity terms fall back to the full scan (#1431; thanks @papinto).
