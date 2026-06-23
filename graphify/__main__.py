@@ -2246,7 +2246,15 @@ def main() -> None:
             "    --type T                query type: query|path_query|explain (default: query)"
         )
         print("    --nodes N1 N2 ...       source node labels cited in the answer")
+        print("    --outcome O             work-memory signal: useful|dead_end|corrected")
+        print("    --correction TEXT       what the right answer was (pairs with --outcome corrected)")
         print("    --memory-dir DIR        memory directory (default: graphify-out/memory)")
+        print("  reflect                 aggregate graphify-out/memory/ outcomes into a deterministic lessons doc")
+        print("    --memory-dir DIR        memory directory (default: graphify-out/memory)")
+        print("    --out FILE              output path (default: graphify-out/reflections/LESSONS.md)")
+        print("    --graph PATH            graph.json, for grouping lessons by community (optional)")
+        print("    --analysis PATH         .graphify_analysis.json (optional, auto-detected next to --graph)")
+        print("    --labels PATH           .graphify_labels.json (optional, auto-detected next to --graph)")
         print("  check-update <path>     check needs_update flag and notify if semantic re-extraction is pending (cron-safe)")
         print("  tree                    emit a D3 v7 collapsible-tree HTML for graph.json")
         print("    --graph PATH            path to graph.json (default graphify-out/graph.json)")
@@ -2906,7 +2914,8 @@ def main() -> None:
             )
         )
     elif cmd == "save-result":
-        # graphify save-result --question Q --answer A --type T [--nodes N1 N2 ...]
+        # graphify save-result --question Q --answer A [--type T] [--nodes N1 N2 ...]
+        #                      [--outcome useful|dead_end|corrected] [--correction TEXT]
         import argparse as _ap
 
         p = _ap.ArgumentParser(prog="graphify save-result")
@@ -2914,6 +2923,8 @@ def main() -> None:
         p.add_argument("--answer", required=True)
         p.add_argument("--type", dest="query_type", default="query")
         p.add_argument("--nodes", nargs="*", default=[])
+        p.add_argument("--outcome", choices=("useful", "dead_end", "corrected"), default=None)
+        p.add_argument("--correction", default=None)
         p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
         opts = p.parse_args(sys.argv[2:])
         from graphify.ingest import save_query_result as _sqr
@@ -2924,8 +2935,44 @@ def main() -> None:
             memory_dir=Path(opts.memory_dir),
             query_type=opts.query_type,
             source_nodes=opts.nodes or None,
+            outcome=opts.outcome,
+            correction=opts.correction,
         )
         print(f"Saved to {out}")
+    elif cmd == "reflect":
+        import argparse as _ap
+
+        p = _ap.ArgumentParser(prog="graphify reflect")
+        p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
+        p.add_argument(
+            "--out",
+            default=str(Path(_GRAPHIFY_OUT) / "reflections" / "LESSONS.md"),
+        )
+        p.add_argument("--graph", default=None)
+        p.add_argument("--analysis", default=None)
+        p.add_argument("--labels", default=None)
+        opts = p.parse_args(sys.argv[2:])
+        from graphify.reflect import reflect as _reflect
+
+        graph_arg = opts.graph
+        if graph_arg is None:
+            default_graph = Path(_GRAPHIFY_OUT) / "graph.json"
+            if default_graph.exists():
+                graph_arg = str(default_graph)
+
+        out_path, agg = _reflect(
+            memory_dir=Path(opts.memory_dir),
+            out_path=Path(opts.out),
+            graph_path=Path(graph_arg) if graph_arg else None,
+            analysis_path=Path(opts.analysis) if opts.analysis else None,
+            labels_path=Path(opts.labels) if opts.labels else None,
+        )
+        c = agg["counts"]
+        print(
+            f"Reflected {agg['total']} memories "
+            f"({c['useful']} useful, {c['dead_end']} dead ends, "
+            f"{c['corrected']} corrected) -> {out_path}"
+        )
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
