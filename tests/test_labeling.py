@@ -278,3 +278,53 @@ def test_label_communities_max_communities_caps_total(monkeypatch):
     label_communities(G, communities, backend="gemini", max_communities=40, batch_size=100)
     # Only 40 communities should have been sent to the backend.
     assert len(captured_cids) == 40
+
+
+def test_label_cli_missing_only_preserves_existing(tmp_path, monkeypatch):
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph = {
+        "directed": False,
+        "nodes": [
+            {"id": "n1", "label": "Node1", "community": 0},
+            {"id": "n2", "label": "Node2", "community": 1},
+        ],
+        "links": [],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+    
+    # Community 0 is named, Community 1 is missing/placeholder
+    labels_file = out / ".graphify_labels.json"
+    labels_file.write_text(json.dumps({"0": "Existing Name", "1": "Community 1"}), encoding="utf-8")
+
+    captured_targets = {}
+
+    def fake_generate(G, target_communities, *, backend=None, model=None, gods=None, quiet=False):
+        captured_targets.update(target_communities)
+        return {1: "New Name"}, "llm"
+
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "graphify",
+            "label",
+            str(tmp_path),
+            "--missing-only",
+            "--no-viz",
+        ],
+    )
+
+    cli.main()
+
+    # The generate function should only be asked to name community 1
+    assert 1 in captured_targets
+    assert 0 not in captured_targets
+
+    # The final labels file should merge the old "Existing Name" with the new "New Name"
+    final_labels = json.loads(labels_file.read_text(encoding="utf-8"))
+    assert final_labels == {"0": "Existing Name", "1": "New Name"}

@@ -2150,7 +2150,7 @@ def main() -> None:
         print("    --no-viz                skip graph.html generation (useful for >5000 node graphs / CI)")
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
         print("    --no-label              keep 'Community N' placeholders (skip LLM community naming)")
-        print("    --missing-only          only re-label communities that have 'Community N' placeholders")
+        print("    --missing-only          only re-label communities that have 'Community N' placeholders (works with 'label' command)")
         print("    --backend=<name>        backend to use for community naming (default: auto-detect)")
         print("    --model=<name>          model to use for community naming")
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
@@ -3252,7 +3252,7 @@ def main() -> None:
         out = watch_path / "graphify-out"
         out.mkdir(parents=True, exist_ok=True)
         labels_path = out / ".graphify_labels.json"
-        
+
         existing_labels = {}
         if labels_path.exists():
             try:
@@ -3273,7 +3273,7 @@ def main() -> None:
             # auto-name communities with the configured backend rather than leave
             # "Community N" (#1097). Degrades to placeholders if no backend/on error.
             from graphify.llm import generate_community_labels
-            
+
             target_communities = communities
             if missing_only and existing_labels:
                 target_communities = {
@@ -3283,13 +3283,13 @@ def main() -> None:
                 print(f"Labeling {len(target_communities)} missing communities...")
             else:
                 print("Labeling communities...")
-                
+
             # The final labels (LLM or placeholder fallback) are persisted to
             # .graphify_labels.json by the unconditional write below.
             new_labels, _ = generate_community_labels(
                 G, target_communities, backend=label_backend, model=label_model, gods=gods
             )
-            
+
             if missing_only and existing_labels:
                 labels = {**existing_labels, **new_labels}
                 for cid in communities:
