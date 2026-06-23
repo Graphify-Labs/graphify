@@ -1636,6 +1636,35 @@ def _import_kotlin(node, source: bytes, file_nid: str, stem: str, edges: list, s
             break
 
 
+def _import_haskell(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+    # Haskell `import` nodes carry the module path in a `module` field
+    # (`import Data.Map as Map` -> module=`Data.Map`). Mirror the Kotlin handler:
+    # anchor an `imports` edge to the file and key the target on the last dotted
+    # segment (Data.Map.Strict -> Strict) for parity with the other languages.
+    mod_node = node.child_by_field_name("module")
+    if mod_node is None:
+        for child in node.children:
+            if child.type in ("module", "qualified"):
+                mod_node = child
+                break
+    if mod_node is None:
+        return
+    raw = _read_text(mod_node, source)
+    module_name = raw.split(".")[-1].strip()
+    if module_name:
+        tgt_nid = _make_id(module_name)
+        edges.append({
+            "source": file_nid,
+            "target": tgt_nid,
+            "relation": "imports",
+            "context": "import",
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{node.start_point[0] + 1}",
+            "weight": 1.0,
+        })
+
+
 def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
     for child in node.children:
         if child.type in ("stable_id", "identifier"):
@@ -2187,6 +2216,34 @@ _KOTLIN_CONFIG = LanguageConfig(
     body_fallback_child_types=("function_body", "class_body"),
     function_boundary_types=frozenset({"function_declaration"}),
     import_handler=_import_kotlin,
+)
+
+_HASKELL_CONFIG = LanguageConfig(
+    ts_module="tree_sitter_haskell",
+    # data/newtype/type-synonym/class/instance all expose a `name` field and act
+    # as containers. NOTE: `type_synomym` is the grammar's real (misspelled) node
+    # type — do not "fix" it.
+    class_types=frozenset({"data_type", "newtype", "type_synomym", "class", "instance"}),
+    # `function` and `bind` are value definitions. `signature` (the type sig) is
+    # deliberately excluded — and crucially, a function *type* `a -> b` is ALSO a
+    # `function` node nested under `signature`. We rely on `name_field="name"`
+    # (present only on real definitions) with NO name fallback, so type-level
+    # `function` nodes resolve to no name and are skipped.
+    function_types=frozenset({"function", "bind"}),
+    import_types=frozenset({"import"}),
+    # Haskell application nests (`f x y` -> apply(apply(f, x), y)) and uses no
+    # member-accessor syntax. We also treat bare `variable`/`qualified` leaves as
+    # calls so higher-order uses (`map area xs`) attribute `area` to the caller.
+    # The dedicated walk_calls branch (keyed on tree_sitter_haskell) resolves all
+    # three node types; only in-file names produce edges, the rest are cross-file.
+    call_types=frozenset({"apply", "variable", "qualified"}),
+    call_function_field="function",
+    name_field="name",
+    name_fallback_child_types=(),
+    body_field="",
+    body_fallback_child_types=("match",),
+    function_boundary_types=frozenset({"function", "bind"}),
+    import_handler=_import_haskell,
 )
 
 _SCALA_CONFIG = LanguageConfig(
@@ -3552,6 +3609,25 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                                 if child.type == "identifier":
                                     callee_name = _read_text(child, source)
                                     break
+            elif config.ts_module == "tree_sitter_haskell":
+                # Application nests (`f x y` -> apply(apply(f, x), y)); the direct
+                # callee is the leftmost leaf reached by descending the `function`
+                # field. Bare `variable`/`qualified` leaves are also in call_types
+                # so higher-order uses (the `area` in `map area xs`) attribute to
+                # the caller. Strip the module qualifier (Map.insert -> insert).
+                if node.type == "apply":
+                    cur = node
+                    while cur is not None and cur.type == "apply":
+                        cur = cur.child_by_field_name("function")
+                    if cur is not None:
+                        if cur.type in ("variable", "name"):
+                            callee_name = _read_text(cur, source)
+                        elif cur.type in ("qualified", "constructor"):
+                            callee_name = _read_text(cur, source).rsplit(".", 1)[-1]
+                elif node.type == "variable":
+                    callee_name = _read_text(node, source)
+                elif node.type == "qualified":
+                    callee_name = _read_text(node, source).rsplit(".", 1)[-1]
             elif config.ts_module == "tree_sitter_c_sharp" and node.type == "invocation_expression":
                 # C#: try name field, then first named child
                 name_node = node.child_by_field_name("name")
@@ -4588,6 +4664,11 @@ def extract_apex(path: Path) -> dict:
 def extract_kotlin(path: Path) -> dict:
     """Extract classes, objects, functions, and imports from a .kt/.kts file."""
     return _extract_generic(path, _KOTLIN_CONFIG)
+
+
+def extract_haskell(path: Path) -> dict:
+    """Extract data types, classes, functions, and imports from a .hs file."""
+    return _extract_generic(path, _HASKELL_CONFIG)
 
 
 def extract_scala(path: Path) -> dict:
@@ -12389,6 +12470,7 @@ _DISPATCH: dict[str, Any] = {
     ".cs": extract_csharp,
     ".kt": extract_kotlin,
     ".kts": extract_kotlin,
+    ".hs": extract_haskell,
     ".scala": extract_scala,
     ".php": extract_php,
     ".swift": extract_swift,
