@@ -12580,6 +12580,9 @@ def _get_extractor(path: Path) -> Any | None:
     # (#1377). apm.yml would otherwise be a .yml document handled by the LLM.
     if is_package_manifest_path(path):
         return extract_package_manifest
+    if path.suffix in (".graphqls", ".graphql"):
+        from graphify.graphql_sdl import extract_graphql_sdl
+        return extract_graphql_sdl
     return _DISPATCH.get(path.suffix)
 
 
