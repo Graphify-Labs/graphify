@@ -866,7 +866,14 @@ def to_obsidian(
         cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
         # Strip trailing .md/.mdx/.markdown so "CLAUDE.md" doesn't become "CLAUDE.md.md"
         cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        return _cap_filename(cleaned) if cleaned else "unnamed"
+        # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
+        # strip above but is empty once a downstream tool re-slugs on word chars
+        # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
+        # `qmd update`). Require at least one word char; else fall back so we never
+        # emit a "@.md"-style filename. (#1409)
+        if not re.search(r"\w", cleaned, flags=re.UNICODE):
+            return "unnamed"
+        return _cap_filename(cleaned)
 
     node_filename: dict[str, str] = {}
     seen_names: dict[str, int] = {}
@@ -1112,7 +1119,14 @@ def to_canvas(
     def safe_name(label: str) -> str:
         cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
         cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        return _cap_filename(cleaned) if cleaned else "unnamed"
+        # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
+        # strip above but is empty once a downstream tool re-slugs on word chars
+        # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
+        # `qmd update`). Require at least one word char; else fall back so we never
+        # emit a "@.md"-style filename. (#1409)
+        if not re.search(r"\w", cleaned, flags=re.UNICODE):
+            return "unnamed"
+        return _cap_filename(cleaned)
 
     # Build node_filenames if not provided (same dedup logic as to_obsidian)
     if node_filenames is None:

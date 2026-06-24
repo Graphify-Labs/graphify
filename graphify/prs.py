@@ -25,6 +25,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import networkx as nx
+
+from graphify.paths import default_graph_json as _default_graph_json
 
 
 # ── ANSI colours ─────────────────────────────────────────────────────────────
@@ -676,7 +682,7 @@ def cmd_prs(argv: list[str]) -> None:
     do_conflicts = False
     show_wrong_base = False
     pr_number: int | None = None
-    graph_path = Path("graphify-out/graph.json")
+    graph_path = Path(_default_graph_json())
 
     i = 0
     while i < len(argv):

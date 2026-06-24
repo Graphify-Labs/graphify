@@ -227,6 +227,36 @@ def test_cpp_struct_inherits_edge():
     assert found, "RetryingHttpClient (struct) should have inherits edge to HttpClient"
 
 
+# ── CUDA ──────────────────────────────────────────────────────────────────────
+# CUDA is a C++ superset, so .cu/.cuh route through the C++ (tree-sitter-cpp)
+# extractor. These tests guard that __global__/__device__ kernels, host
+# functions, structs and includes are all extracted.
+
+def test_cuda_no_error():
+    r = extract_cpp(FIXTURES / "sample.cu")
+    assert "error" not in r
+
+def test_cuda_finds_kernel_and_device_functions():
+    r = extract_cpp(FIXTURES / "sample.cu")
+    labels = _labels(r)
+    assert any("saxpy" in l for l in labels)   # __global__ kernel
+    assert any("dot" in l for l in labels)     # __device__ function
+
+def test_cuda_finds_struct():
+    r = extract_cpp(FIXTURES / "sample.cu")
+    assert any("Vec3" in l for l in _labels(r))
+
+def test_cuda_finds_includes():
+    r = extract_cpp(FIXTURES / "sample.cu")
+    assert "imports" in _relations(r)
+
+def test_cuda_host_call_edges():
+    r = extract_cpp(FIXTURES / "sample.cu")
+    calls = _calls(r)
+    assert ("host_norm()", "dot()") in calls
+    assert ("main()", "host_norm()") in calls
+
+
 # ── Ruby ─────────────────────────────────────────────────────────────────────
 
 def test_ruby_no_error():

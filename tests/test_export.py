@@ -1,9 +1,10 @@
 import json
+import re
 import tempfile
 from pathlib import Path
 from graphify.build import build_from_json
 from graphify.cluster import cluster
-from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas
+from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -191,6 +192,49 @@ def test_to_canvas_no_communities_still_populates():
         assert len(data["nodes"]) >= G.number_of_nodes()
         assert len(data["edges"]) >= 1
         assert out.stat().st_size > 32
+
+
+# ── Issue #1409: punctuation-only Obsidian/Canvas filenames ───────────────────
+
+def _punct_graph(label: str):
+    """A 2-node graph where one node's label is all-punctuation (e.g. a `@/*`
+    tsconfig paths key) and the other is a normal symbol."""
+    return build_from_json({
+        "nodes": [
+            {"id": "n1", "label": label, "file_type": "code", "source_file": "tsconfig.json"},
+            {"id": "n2", "label": "AuthHandler", "file_type": "code", "source_file": "auth.ts"},
+        ],
+        "edges": [],
+    })
+
+
+def test_to_obsidian_never_emits_punctuation_only_filenames():
+    """#1409: an all-punctuation label (e.g. `@/*`) must not produce a `@.md`-style
+    filename — valid on disk but empty once a downstream tool re-slugs on word chars
+    (crashes `qmd update`). It falls back to `unnamed`."""
+    G = _punct_graph("@/*")
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp)
+        stems = [p.stem for p in Path(tmp).rglob("*.md")]
+        assert stems, "to_obsidian wrote no notes"
+        bad = [s for s in stems if not re.search(r"\w", s, flags=re.UNICODE)]
+        assert not bad, f"punctuation-only filenames emitted: {bad}"
+        assert any(s == "unnamed" or s.startswith("unnamed") for s in stems), stems
+
+
+def test_to_canvas_never_emits_punctuation_only_filenames():
+    """#1409: same guard on the canvas exporter's file-node names."""
+    G = _punct_graph("@")
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.canvas"
+        to_canvas(G, communities, str(out))
+        data = json.loads(out.read_text())
+        file_nodes = [n for n in data["nodes"] if n.get("type") == "file"]
+        assert file_nodes, "canvas has no file nodes"
+        bad = [n["file"] for n in file_nodes if not re.search(r"\w", Path(n["file"]).stem, flags=re.UNICODE)]
+        assert not bad, f"punctuation-only canvas filenames: {bad}"
 
 
 # ── Issue #834: backup_if_protected ──────────────────────────────────────────

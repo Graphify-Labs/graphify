@@ -12,6 +12,10 @@ from graphify.serve import (
     _bfs,
     _dfs,
     _find_node,
+    _trigrams,
+    _node_search_text,
+    _get_trigram_index,
+    _trigram_candidates,
     _filter_graph_by_context,
     _infer_context_filters,
     _query_terms,
@@ -128,6 +132,107 @@ def test_find_node_matches_full_punctuated_unicode_label():
     G.add_node("n1", label="Skill /auditar — Auditoría inquisitiva de enlaces")
 
     assert _find_node(G, "Skill /auditar — Auditoría inquisitiva de enlaces") == ["n1"]
+
+
+# --- trigram candidate prefilter (the trigram index that shrinks the O(N) scan) ---
+
+
+def _force_full_scan(monkeypatch):
+    """Disable the prefilter so a call exercises the original full-node scan."""
+    monkeypatch.setattr("graphify.serve._trigram_candidates", lambda *a, **k: None)
+
+
+def _make_big_graph(n: int = 150) -> nx.Graph:
+    """A graph large enough that the selectivity guard lets the fast-path fire for
+    rare terms and fall back for common ones. Most labels share the 'item'/'node'
+    stem (common), plus a few distinctive rare labels and one punctuated label."""
+    G = nx.Graph()
+    for i in range(n):
+        G.add_node(f"id{i}", label=f"item node {i}", source_file=f"pkg/item_{i}.py")
+    G.add_node("rareA", label="ZebraQuokkaWidget", source_file="zoo/zqw.py")
+    G.add_node("rareB", label="MarmosetGadget handler", source_file="zoo/marmoset.py")
+    G.add_node("punct", label="Foo.Bar:Baz", source_file="pkg/foobar.py")
+    return G
+
+
+def test_trigrams_basic():
+    assert _trigrams("foobar") == {"foo", "oob", "oba", "bar"}
+    assert _trigrams("ab") == {"ab"}        # <3 chars -> whole string is the key
+    assert _trigrams("") == set()
+
+
+def test_node_search_text_includes_all_matched_fields():
+    G = _make_big_graph()
+    text = _node_search_text(G.nodes["punct"], "punct")
+    # norm_label, the tokenized label (label_tokens), nid, and source are all present,
+    # NUL-separated so trigrams can't span fields.
+    parts = text.split("\x00")
+    assert parts[0] == "foo.bar:baz"          # norm_label (punctuation kept)
+    assert parts[1] == "foo bar baz"          # label_tokens (tokenized)
+    assert parts[2] == "punct"                # nid
+    assert parts[3] == "pkg/foobar.py"        # source_file
+
+
+def test_trigram_candidates_fast_path_fires_for_rare_term():
+    G = _make_big_graph()
+    cand = _trigram_candidates(G, ["zebraquokkawidget"])
+    assert cand is not None                   # selective -> fast-path used
+    assert "rareA" in cand
+    assert len(cand) < G.number_of_nodes()    # a real shrink, not the whole graph
+
+
+def test_trigram_candidates_falls_back_on_common_term():
+    G = _make_big_graph()
+    # 'item' is in the label of every one of the 150 'item node N' nodes -> the
+    # rarest trigram is still common -> guard returns None (full-scan fallback).
+    assert _trigram_candidates(G, ["item"]) is None
+
+
+def test_trigram_candidates_falls_back_on_short_token():
+    G = _make_big_graph()
+    assert _trigram_candidates(G, ["ab"]) is None   # <3 chars -> can't trigram-filter
+
+
+def test_score_nodes_prefilter_is_identical_to_full_scan(monkeypatch):
+    G = _make_big_graph()
+    queries = ["zebraquokkawidget", "marmosetgadget handler", "foo bar baz",
+               "item", "node 42", "nonexistentxyz"]
+    for q in queries:
+        terms = _query_terms(q)
+        fast = _score_nodes(G, terms)
+        _force_full_scan(monkeypatch)
+        full = _score_nodes(G, terms)
+        monkeypatch.undo()
+        assert fast == full, f"prefilter diverged from full scan for {q!r}"
+
+
+def test_find_node_prefilter_is_identical_to_full_scan(monkeypatch):
+    G = _make_big_graph()
+    # includes the punctuated label, exercised via its tokenized (label_tokens) form
+    for label in ["ZebraQuokkaWidget", "MarmosetGadget handler", "Foo Bar Baz",
+                  "item node 7", "missing"]:
+        fast = _find_node(G, label)
+        _force_full_scan(monkeypatch)
+        full = _find_node(G, label)
+        monkeypatch.undo()
+        assert fast == full, f"_find_node prefilter diverged (order!) for {label!r}"
+
+
+def test_find_node_label_tokens_branch_covered_by_index():
+    # "foo bar baz" matches label "Foo.Bar:Baz" only via the tokenized label_tokens
+    # form (the dotted/colon norm_label never contains the spaced query). The index
+    # must surface this node as a candidate, or the prefilter would silently drop it.
+    G = _make_big_graph()
+    assert _find_node(G, "Foo Bar Baz") == ["punct"]
+
+
+def test_trigram_index_cached_and_rebuilt_per_graph():
+    G = _make_big_graph()
+    idx1 = _get_trigram_index(G)
+    assert idx1 is _get_trigram_index(G)            # cached on the same graph object
+    assert G.graph["_trigram_index"] is idx1
+    G2 = _make_big_graph()
+    assert _get_trigram_index(G2) is not idx1       # a fresh graph rebuilds (reload safety)
 
 
 def test_query_terms_strips_search_punctuation():

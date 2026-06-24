@@ -1,9 +1,4 @@
-"""Shared primitives for per-language extractors.
-
-Moved verbatim from graphify/extract.py as part of the incremental split
-(see MIGRATION.md in this directory). This module must not import from
-graphify.extract — import direction is strictly extract.py -> extractors/.
-"""
+# DO NOT import from graphify.extract here — direction is extract.py → extractors/ only.
 from __future__ import annotations
 
 from pathlib import Path
@@ -38,21 +33,10 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
 
 
 def _make_id(*parts: str) -> str:
-    r"""Build a stable node ID from one or more name parts.
-
-    Thin wrapper over :func:`graphify.ids.make_id`, the single source of truth
-    shared with ``build._normalize_id`` so the two can no longer drift (#811).
-    Preserves Unicode letters/digits (CJK, Cyrillic, Arabic, accented Latin,
-    etc.) so non-ASCII identifiers produce distinct IDs and don't collapse to a
-    single per-file node; NFKC normalization collapses composed/decomposed forms
-    of the same character (e.g. é vs e+combining-acute) to one ID.
-    """
     return make_id(*parts)
 
 
 def _file_stem(path: Path) -> str:
-    """Return a stem qualified with the parent directory name to avoid ID collisions
-    when multiple files share the same filename in different directories (#550)."""
     parent = path.parent.name
     if parent and parent not in (".", ""):
         return f"{parent}.{path.stem}"

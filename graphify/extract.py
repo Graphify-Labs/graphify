@@ -446,6 +446,7 @@ class LanguageConfig:
     call_function_field: str = "function"           # field on call node for callee
     call_accessor_node_types: frozenset = frozenset()  # member/attribute nodes
     call_accessor_field: str = "attribute"          # field on accessor for method name
+    call_accessor_object_field: str = ""            # field on accessor for the receiver/object
 
     # Stop recursion at these types in walk_calls
     function_boundary_types: frozenset = frozenset()
@@ -1991,6 +1992,7 @@ _PYTHON_CONFIG = LanguageConfig(
     call_function_field="function",
     call_accessor_node_types=frozenset({"attribute"}),
     call_accessor_field="attribute",
+    call_accessor_object_field="object",
     function_boundary_types=frozenset({"function_definition"}),
     import_handler=_import_python,
 )
@@ -2426,7 +2428,21 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
             return nid
         nid = _make_id(name)
         if nid not in seen_ids:
-            add_node(nid, name, line)
+            # The name isn't defined in this file, so this is a cross-file reference
+            # (e.g. a `Thing` type annotation imported from another module). Emit a
+            # SOURCELESS stub — like the inheritance-base path below — so the
+            # corpus-level rewire can collapse it onto the real definition. A sourced
+            # stub here makes _disambiguate_colliding_node_ids bake the referencing
+            # file's path (with extension) into the id and blocks the rewire, which is
+            # the phantom-duplicate-node bug (#1402).
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
         return nid
 
     file_nid = _make_id(str(path))
@@ -3446,6 +3462,7 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
             callee_name: str | None = None
             is_member_call: bool = False
             swift_receiver: str | None = None
+            member_receiver: str | None = None
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -3562,12 +3579,29 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                             attr = func_node.child_by_field_name(config.call_accessor_field)
                             if attr:
                                 callee_name = _read_text(attr, source)
+                        if config.call_accessor_object_field:
+                            # Capture a simple-identifier receiver (e.g. `ClassName`
+                            # in `ClassName.method()`) so cross-file member-call
+                            # resolution can resolve qualified class-method calls
+                            # (#1446). Chained receivers (`a.b.method()`) are skipped.
+                            obj = func_node.child_by_field_name(config.call_accessor_object_field)
+                            if obj is not None and obj.type == "identifier":
+                                member_receiver = _read_text(obj, source)
                     else:
                         # Try reading the node directly (e.g. Java name field is the callee)
                         callee_name = _read_text(func_node, source)
 
             if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
-                tgt_nid = label_to_nid.get(callee_name)
+                # A capitalized-receiver member call (`ClassName.method()`) must defer
+                # to receiver-based cross-file resolution: the bare method name can
+                # collide with an in-file node — even the calling method itself, when a
+                # viewset action delegates to a same-named service action — which would
+                # match `tgt_nid == caller_nid` and silently drop the call (#1446). The
+                # captured receiver is resolved later in _resolve_python_member_calls.
+                if is_member_call and member_receiver and member_receiver[:1].isupper():
+                    tgt_nid = None
+                else:
+                    tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
@@ -3591,7 +3625,7 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                         "is_member_call": is_member_call,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
-                        "receiver": swift_receiver,
+                        "receiver": swift_receiver or member_receiver,
                     })
 
             # Helper function calls: config('foo.bar') → uses_config edge to "foo"
@@ -5733,7 +5767,21 @@ def extract_julia(path: Path) -> dict:
             return nid
         nid = _make_id(name)
         if nid not in seen_ids:
-            add_node(nid, name, line)
+            # The name isn't defined in this file, so this is a cross-file reference
+            # (e.g. a `Thing` type annotation imported from another module). Emit a
+            # SOURCELESS stub — like the inheritance-base path below — so the
+            # corpus-level rewire can collapse it onto the real definition. A sourced
+            # stub here makes _disambiguate_colliding_node_ids bake the referencing
+            # file's path (with extension) into the id and blocks the rewire, which is
+            # the phantom-duplicate-node bug (#1402).
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
         return nid
 
     def _func_name_from_signature(sig_node) -> str | None:
@@ -6015,7 +6063,21 @@ def extract_fortran(path: Path) -> dict:
             return nid
         nid = _make_id(name)
         if nid not in seen_ids:
-            add_node(nid, name, line)
+            # The name isn't defined in this file, so this is a cross-file reference
+            # (e.g. a `Thing` type annotation imported from another module). Emit a
+            # SOURCELESS stub — like the inheritance-base path below — so the
+            # corpus-level rewire can collapse it onto the real definition. A sourced
+            # stub here makes _disambiguate_colliding_node_ids bake the referencing
+            # file's path (with extension) into the id and blocks the rewire, which is
+            # the phantom-duplicate-node bug (#1402).
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
         return nid
 
     def emit_signature_refs(scope_node, fn_nid: str, is_function: bool) -> None:
@@ -6590,7 +6652,21 @@ def extract_rust(path: Path) -> dict:
             return nid
         nid = _make_id(name)
         if nid not in seen_ids:
-            add_node(nid, name, line)
+            # The name isn't defined in this file, so this is a cross-file reference
+            # (e.g. a `Thing` type annotation imported from another module). Emit a
+            # SOURCELESS stub — like the inheritance-base path below — so the
+            # corpus-level rewire can collapse it onto the real definition. A sourced
+            # stub here makes _disambiguate_colliding_node_ids bake the referencing
+            # file's path (with extension) into the id and blocks the rewire, which is
+            # the phantom-duplicate-node bug (#1402).
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
         return nid
 
     def emit_param_return_refs(func_node, func_nid: str, line: int) -> None:
@@ -6875,7 +6951,21 @@ def extract_powershell(path: Path) -> dict:
             return nid
         nid = _make_id(name)
         if nid not in seen_ids:
-            add_node(nid, name, line)
+            # The name isn't defined in this file, so this is a cross-file reference
+            # (e.g. a `Thing` type annotation imported from another module). Emit a
+            # SOURCELESS stub — like the inheritance-base path below — so the
+            # corpus-level rewire can collapse it onto the real definition. A sourced
+            # stub here makes _disambiguate_colliding_node_ids bake the referencing
+            # file's path (with extension) into the id and blocks the rewire, which is
+            # the phantom-duplicate-node bug (#1402).
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
         return nid
 
     def _ps_type_name(type_literal_node) -> str | None:
@@ -8997,6 +9087,95 @@ def _resolve_swift_member_calls(
         })
 
 
+def _resolve_python_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve cross-file Python qualified class-method calls (``ClassName.method()``)
+    to the class-qualified method node (#1446).
+
+    The shared cross-file call pass drops every ``is_member_call`` because a bare
+    method name (``log``) collides across the corpus and inflates god-nodes
+    (#543/#1219). That guard is right for *instance* calls (``obj.method()``) but
+    misses *class-qualified* calls (``ClassName.method()``), where the receiver is
+    an explicitly-named class — an exact, unambiguous reference. This pass uses the
+    receiver captured by the extractor, and when it is a capitalized name resolving
+    to exactly one class node that owns the called method, emits an EXTRACTED
+    ``calls`` edge. Purely additive (only member calls the shared pass skipped),
+    with a single-definition god-node guard.
+
+    Must run after id-disambiguation so node ids and caller_nids are final.
+    """
+    def _key(label: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
+
+    node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
+
+    # A class owns methods: it is the source of one or more `method` edges. Index
+    # class label -> owning class node ids (len != 1 is the god-node guard), and
+    # (class_node_id, method_key) -> method_node_id.
+    class_def_nids: dict[str, list[str]] = {}
+    method_index: dict[tuple[str, str], str] = {}
+    for e in all_edges:
+        if e.get("relation") != "method":
+            continue
+        src, tgt = e.get("source"), e.get("target")
+        cnode = node_by_id.get(src)
+        if cnode is not None:
+            class_def_nids.setdefault(_key(cnode.get("label", "")), []).append(src)
+        tnode = node_by_id.get(tgt)
+        if tnode is not None:
+            method_index[(src, _key(tnode.get("label", "")))] = tgt
+    if not class_def_nids:
+        return
+    # A class with N methods produced N entries; collapse to a unique set.
+    for k in list(class_def_nids):
+        class_def_nids[k] = sorted(set(class_def_nids[k]))
+
+    all_raw_calls: list[dict] = []
+    for result in per_file:
+        all_raw_calls.extend(result.get("raw_calls", []))
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for rc in all_raw_calls:
+        if not rc.get("is_member_call"):
+            continue
+        receiver = rc.get("receiver")
+        callee = rc.get("callee")
+        caller = rc.get("caller_nid")
+        if not receiver or not callee or not caller:
+            continue
+        # Only a capitalized receiver is treated as a class reference, so an
+        # instance/module (`self`, `obj`, `config`) never collides with a
+        # same-spelled class via the case-folding key.
+        if not receiver[:1].isupper():
+            continue
+        class_nids = class_def_nids.get(_key(receiver), [])
+        if len(class_nids) != 1:  # absent or ambiguous -> bail (god-node guard)
+            continue
+        method_nid = method_index.get((class_nids[0], _key(callee)))
+        if not method_nid or method_nid == caller:
+            continue
+        if (caller, method_nid) in existing_pairs:
+            continue
+        existing_pairs.add((caller, method_nid))
+        # EXTRACTED: a qualified `ClassName.method()` is an explicit, unambiguous
+        # static reference (unlike a bare instance member call), and the class
+        # resolved to exactly one definition that owns the method.
+        all_edges.append({
+            "source": caller,
+            "target": method_nid,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED",
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 def extract_objc(path: Path) -> dict:
     """Extract interfaces, implementations, protocols, methods, and imports from .m/.mm/.h files."""
     try:
@@ -9053,7 +9232,21 @@ def extract_objc(path: Path) -> dict:
             return nid
         nid = _make_id(name)
         if nid not in seen_ids:
-            add_node(nid, name, line)
+            # The name isn't defined in this file, so this is a cross-file reference
+            # (e.g. a `Thing` type annotation imported from another module). Emit a
+            # SOURCELESS stub — like the inheritance-base path below — so the
+            # corpus-level rewire can collapse it onto the real definition. A sourced
+            # stub here makes _disambiguate_colliding_node_ids bake the referencing
+            # file's path (with extension) into the id and blocks the rewire, which is
+            # the phantom-duplicate-node bug (#1402).
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
         return nid
 
     def walk(node, parent_nid: str | None = None) -> None:
@@ -11737,6 +11930,8 @@ _DISPATCH: dict[str, Any] = {
     ".cc": extract_cpp,
     ".cxx": extract_cpp,
     ".hpp": extract_cpp,
+    ".cu": extract_cpp,
+    ".cuh": extract_cpp,
     ".rb": extract_ruby,
     ".cs": extract_csharp,
     ".kt": extract_kotlin,
@@ -12330,6 +12525,16 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Swift member-call resolution failed, skipping: %s", exc)
+
+    # Cross-file Python qualified class-method resolution (#1446). Same shape as the
+    # Swift pass: additive, runs after id-disambiguation, single-definition guard.
+    py_paths = [p for p in paths if p.suffix == ".py"]
+    if py_paths:
+        try:
+            _resolve_python_member_calls(per_file, all_nodes, all_edges)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Python member-call resolution failed, skipping: %s", exc)
 
     # Relativize source_file fields so paths are portable across machines (#555)
     for item in all_nodes + all_edges:

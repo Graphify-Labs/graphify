@@ -171,6 +171,28 @@ def test_validate_graph_path_raises_if_file_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         validate_graph_path(str(base / "missing.json"), base=base)
 
+def test_validate_graph_path_default_base_discovers_output_dir(tmp_path):
+    """With base omitted, the output dir is discovered by walking the path's
+    parents for the configured output-dir name (default 'graphify-out')."""
+    base = tmp_path / "graphify-out"
+    base.mkdir()
+    graph = base / "graph.json"
+    graph.write_text("{}")
+    assert validate_graph_path(str(graph)) == graph.resolve()
+
+def test_validate_graph_path_default_base_honours_graphify_out_override(tmp_path, monkeypatch):
+    """The base=None discovery must honour GRAPHIFY_OUT, not the hardcoded
+    'graphify-out' literal — otherwise a renamed output dir validates against the
+    wrong base or raises spuriously (#1423)."""
+    monkeypatch.setattr("graphify.security.GRAPHIFY_OUT_NAME", "custom-out")
+    monkeypatch.setattr("graphify.security.GRAPHIFY_OUT", "custom-out")
+    out = tmp_path / "custom-out"
+    out.mkdir()
+    graph = out / "graph.json"
+    graph.write_text("{}")
+    # No base passed → must discover custom-out by name rather than graphify-out.
+    assert validate_graph_path(str(graph)) == graph.resolve()
+
 
 # ---------------------------------------------------------------------------
 # sanitize_label

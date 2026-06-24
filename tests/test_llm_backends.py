@@ -845,3 +845,32 @@ def test_openai_compat_env_var_temperature_applied(tmp_path, monkeypatch):
     llm.extract_files_direct([tmp_path / "f.py"], backend="openai", root=tmp_path)
 
     assert captured.get("temperature") == 0.3
+
+
+def test_native_extraction_prompt_requests_hyperedges():
+    """The native-backend prompt must request hyperedges, like the skill's
+    extraction-spec does — otherwise `graphify extract --backend X` silently
+    produces zero hyperedges while the agent path produces them. Guards against
+    the two prompts drifting apart again.
+    """
+    for deep in (False, True):
+        prompt = llm._extraction_system(deep=deep)
+        assert "hyperedge" in prompt.lower(), f"deep={deep}: prompt does not mention hyperedges"
+        assert "3 or more nodes" in prompt, f"deep={deep}: prompt lacks the hyperedge guidance"
+        # The schema example must show a populated hyperedge, not an empty array.
+        assert '"hyperedges":[]' not in prompt, f"deep={deep}: schema still shows empty hyperedges"
+        assert '"nodes":["node_id1"' in prompt, f"deep={deep}: schema lacks a populated hyperedge example"
+
+
+def test_native_extraction_prompt_matches_skill_spec_on_hyperedges():
+    """Both extraction paths share the same hyperedge contract (the '3 or more
+    nodes … participate together' rule), so a corpus yields the same hyperedge
+    behaviour whether built via the skill or `graphify extract --backend`.
+    """
+    spec = (
+        Path(__file__).resolve().parents[1]
+        / "tools" / "skillgen" / "fragments" / "references" / "shared" / "extraction-spec.md"
+    ).read_text(encoding="utf-8")
+    shared = "3 or more nodes clearly participate together"
+    assert shared in spec, "skill extraction-spec changed its hyperedge wording"
+    assert shared in llm._EXTRACTION_SYSTEM, "native prompt drifted from the skill hyperedge wording"
