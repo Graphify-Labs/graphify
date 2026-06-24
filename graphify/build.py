@@ -182,8 +182,25 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         print(f"[graphify] Extraction warning ({len(real_errors)} issues): {real_errors[0]}", file=sys.stderr)
     G: nx.Graph = nx.DiGraph() if directed else nx.Graph()
     for node in extraction.get("nodes", []):
-        if "source_file" in node:
-            node["source_file"] = _norm_source_file(node["source_file"], _root)
+        # Skip dict nodes with a missing or non-hashable id (e.g. a list emitted
+        # by a buggy LLM extraction) so NetworkX add_node never raises
+        # TypeError: unhashable type. Non-dict nodes are deliberately left to
+        # raise as before, so callers that probe build for shape errors (e.g.
+        # the multigraph diagnostic) still observe the malformed shape.
+        if isinstance(node, dict):
+            if "id" not in node:
+                continue
+            try:
+                hash(node["id"])
+            except TypeError:
+                print(
+                    f"[graphify] WARNING: skipping node with non-hashable id "
+                    f"{node['id']!r} (must be a string).",
+                    file=sys.stderr,
+                )
+                continue
+            if "source_file" in node:
+                node["source_file"] = _norm_source_file(node["source_file"], _root)
         G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
     node_set = set(G.nodes())
 
@@ -276,6 +293,19 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if "source" not in edge or "target" not in edge:
             continue
         src, tgt = edge["source"], edge["target"]
+        # Skip edges with non-hashable endpoints (e.g. a list emitted by a buggy
+        # LLM extraction) so the `not in node_set` membership test below never
+        # raises TypeError: unhashable type. The validator already reported these.
+        try:
+            hash(src)
+            hash(tgt)
+        except TypeError:
+            print(
+                f"[graphify] WARNING: skipping edge with non-hashable endpoint "
+                f"(source={src!r}, target={tgt!r}).",
+                file=sys.stderr,
+            )
+            continue
         # Remap mismatched IDs via normalization before dropping the edge.
         if src not in node_set:
             src = norm_to_id.get(_normalize_id(src), src)
