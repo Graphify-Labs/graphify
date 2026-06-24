@@ -2252,9 +2252,11 @@ def main() -> None:
         print("  reflect                 aggregate graphify-out/memory/ outcomes into a deterministic lessons doc")
         print("    --memory-dir DIR        memory directory (default: graphify-out/memory)")
         print("    --out FILE              output path (default: graphify-out/reflections/LESSONS.md)")
-        print("    --graph PATH            graph.json, for grouping lessons by community (optional)")
+        print("    --graph PATH            graph.json, for community grouping + dropping stale nodes (optional)")
         print("    --analysis PATH         .graphify_analysis.json (optional, auto-detected next to --graph)")
         print("    --labels PATH           .graphify_labels.json (optional, auto-detected next to --graph)")
+        print("    --half-life-days N      signal weight halves every N days (default 30)")
+        print("    --min-corroboration N   distinct useful results to prefer a node (default 2)")
         print("  check-update <path>     check needs_update flag and notify if semantic re-extraction is pending (cron-safe)")
         print("  tree                    emit a D3 v7 collapsible-tree HTML for graph.json")
         print("    --graph PATH            path to graph.json (default graphify-out/graph.json)")
@@ -2951,6 +2953,10 @@ def main() -> None:
         p.add_argument("--graph", default=None)
         p.add_argument("--analysis", default=None)
         p.add_argument("--labels", default=None)
+        p.add_argument("--half-life-days", type=float, default=30.0,
+                       help="signal weight halves every N days (default 30)")
+        p.add_argument("--min-corroboration", type=int, default=2,
+                       help="distinct useful results to promote a node to preferred (default 2)")
         opts = p.parse_args(sys.argv[2:])
         from graphify.reflect import reflect as _reflect
 
@@ -2966,6 +2972,8 @@ def main() -> None:
             graph_path=Path(graph_arg) if graph_arg else None,
             analysis_path=Path(opts.analysis) if opts.analysis else None,
             labels_path=Path(opts.labels) if opts.labels else None,
+            half_life_days=opts.half_life_days,
+            min_corroboration=opts.min_corroboration,
         )
         c = agg["counts"]
         print(

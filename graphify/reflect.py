@@ -4,13 +4,22 @@
 into the graph, aggregates their outcome signals (useful / dead_end / corrected), and
 writes a single lessons artifact an agent can load at the start of the next session:
 
-  - **Preferred sources** — nodes that recurred in answers marked ``useful``.
+  - **Preferred sources** — nodes corroborated by multiple ``useful`` answers.
+  - **Tentative** — nodes seen useful only once (not yet corroborated).
+  - **Contested** — nodes with both positive and negative signals; recency decides.
   - **Known dead ends** — questions/sources marked ``dead_end``; don't re-derive them.
   - **Corrections** — answers the user corrected, and what the right answer was.
 
-It is deterministic: no LLM, stable sort orders, byte-stable output for a given input.
-When a graph (`graph.json` + `.graphify_analysis.json`) is available the lessons are also
-grouped by community label; without it they degrade to a single flat section.
+Source nodes are scored, not counted: each citation contributes a signed,
+time-decayed value (``useful`` positive, ``dead_end``/``corrected`` negative, with a
+half-life so a fresh dead end outweighs a months-old useful). A node is only promoted
+to "preferred" once corroborated by enough distinct results; one save can't mint a
+trusted lesson. When a graph is in hand, source nodes that no longer exist are dropped.
+
+It is deterministic: no LLM, stable sort orders, byte-stable output for a given input
+and a given ``now``. When a graph (`graph.json` + `.graphify_analysis.json`) is available
+the lessons are also grouped by community label; without it they degrade to a single
+flat section.
 
 The artifact lands at ``graphify-out/reflections/LESSONS.md`` rather than inside the wiki
 because ``graphify export wiki`` deletes every ``wiki/*.md`` on each run — a lessons file
@@ -21,14 +30,21 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from graphify.ingest import OUTCOMES
 
-# Human-facing labels for the outcome buckets, in display order.
-_OUTCOME_ORDER = ("useful", "dead_end", "corrected")
 _UNCATEGORIZED = "Uncategorized"
+
+# Scoring defaults (both exposed as CLI flags).
+_DEFAULT_HALF_LIFE_DAYS = 30.0   # a signal's weight halves every 30 days
+_DEFAULT_MIN_CORROBORATION = 2   # distinct useful results needed to "prefer" a node
+
+# Rounding for the signed score keeps sort order and the contested verdict stable
+# across platforms (C pow can differ in the last ULP).
+_SCORE_NDIGITS = 9
 
 
 # --- frontmatter parsing -------------------------------------------------------
@@ -109,7 +125,8 @@ def load_memory_docs(memory_dir: Path) -> list[dict[str, Any]]:
     """Parse every memory doc under ``memory_dir``, sorted by date then filename.
 
     Each record is the parsed frontmatter plus ``_path`` (the source file). Docs
-    without recognisable frontmatter (foreign .md files) are skipped.
+    without recognisable frontmatter (foreign .md files, the LESSONS.md artifact)
+    are skipped.
     """
     memory_dir = Path(memory_dir)
     if not memory_dir.exists():
@@ -164,7 +181,27 @@ def _load_node_community(graph_path: Path, analysis_path: Path,
     return node_community
 
 
-def _doc_community(doc: dict[str, Any],
+def _load_known_nodes(graph_path: Path) -> set[str] | None:
+    """The set of node ids in the current graph, or None if unavailable.
+
+    Used to drop source nodes from lessons once the code they pointed at is gone
+    (deleted/renamed) — a stale lesson shouldn't keep getting recommended.
+    """
+    try:
+        data = json.loads(Path(graph_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    nodes = data.get("nodes")
+    if not isinstance(nodes, list):
+        return None
+    ids: set[str] = set()
+    for n in nodes:
+        if isinstance(n, dict) and n.get("id") is not None:
+            ids.add(str(n["id"]))
+    return ids or None
+
+
+def _doc_community(nodes: list[str],
                    node_community: dict[str, str] | None) -> str:
     """The community a doc belongs to: the plurality community of its source nodes.
 
@@ -174,7 +211,7 @@ def _doc_community(doc: dict[str, Any],
     """
     if not node_community:
         return _UNCATEGORIZED
-    labels = [node_community[n] for n in doc.get("source_nodes", []) if n in node_community]
+    labels = [node_community[n] for n in nodes if n in node_community]
     if not labels:
         return _UNCATEGORIZED
     counts = Counter(labels)
@@ -183,54 +220,135 @@ def _doc_community(doc: dict[str, Any],
     return min(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
 
 
+# --- scoring helpers -----------------------------------------------------------
+
+
+def _parse_dt(date_str: str) -> datetime | None:
+    """Parse an ISO date/datetime to an aware UTC datetime, or None if unparseable."""
+    if not date_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(date_str)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _decay(date_str: str, now: datetime, half_life_days: float) -> float:
+    """Time-decay weight in (0, 1]: halves every ``half_life_days``.
+
+    Undated/unparseable signals keep full weight (1.0); future-dated ones are
+    clamped to age 0 (also 1.0).
+    """
+    dt = _parse_dt(date_str)
+    if dt is None or half_life_days <= 0:
+        return 1.0
+    age_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+    return 0.5 ** (age_days / half_life_days)
+
+
 # --- aggregation ---------------------------------------------------------------
 
 
 def _empty_bucket() -> dict[str, Any]:
     return {
         "counts": {k: 0 for k in (*OUTCOMES, "unmarked")},
-        "preferred_sources": Counter(),
+        # node -> running signed, time-decayed score
+        "node_score": {},
+        # node -> distinct positive / negative result counts (for corroboration)
+        "node_pos": Counter(),
+        "node_neg": Counter(),
+        # node -> most recent event date seen (for the contested verdict line)
+        "node_last": {},
         "dead_ends": [],
         "corrections": [],
     }
 
 
+def _record_node(bucket: dict[str, Any], node: str, sign: int,
+                 weight: float, date: str) -> None:
+    bucket["node_score"][node] = bucket["node_score"].get(node, 0.0) + sign * weight
+    if sign > 0:
+        bucket["node_pos"][node] += 1
+    elif sign < 0:
+        bucket["node_neg"][node] += 1
+    if date > bucket["node_last"].get(node, ""):
+        bucket["node_last"][node] = date
+
+
+def _finalize_sources(bucket: dict[str, Any],
+                      min_corroboration: int) -> dict[str, list]:
+    """Split a bucket's scored nodes into preferred / tentative / contested lists."""
+    preferred, tentative, contested = [], [], []
+    for node in bucket["node_score"]:
+        pos = bucket["node_pos"][node]
+        neg = bucket["node_neg"][node]
+        score = round(bucket["node_score"][node], _SCORE_NDIGITS)
+        if pos and neg:
+            verdict = "useful" if score > 0 else "dead end" if score < 0 else "even"
+            contested.append({"node": node, "pos": pos, "neg": neg,
+                              "score": score, "verdict": verdict,
+                              "last": bucket["node_last"].get(node, "")})
+        elif pos:  # positive-only
+            entry = {"node": node, "n": pos, "score": score}
+            (preferred if pos >= min_corroboration else tentative).append(entry)
+        # negative-only nodes are surfaced via the dead-ends questions, not here.
+    preferred.sort(key=lambda e: (-e["score"], e["node"]))
+    tentative.sort(key=lambda e: (-e["score"], e["node"]))
+    contested.sort(key=lambda e: (-e["score"], e["node"]))
+    return {"preferred": preferred, "tentative": tentative, "contested": contested}
+
+
 def aggregate_lessons(docs: list[dict[str, Any]],
-                      node_community: dict[str, str] | None = None) -> dict[str, Any]:
+                      node_community: dict[str, str] | None = None,
+                      *,
+                      now: datetime | None = None,
+                      half_life_days: float = _DEFAULT_HALF_LIFE_DAYS,
+                      min_corroboration: int = _DEFAULT_MIN_CORROBORATION,
+                      known_nodes: set[str] | None = None) -> dict[str, Any]:
     """Aggregate parsed memory docs into a deterministic lessons structure.
 
-    Returns ``{"total", "counts", "preferred_sources", "dead_ends", "corrections",
-    "by_community"}``. ``by_community`` is empty when no graph is supplied.
+    ``now`` anchors the time-decay (pass it explicitly for byte-stable output).
+    ``known_nodes`` (when given) gates out source nodes no longer in the graph.
+    Returns ``{"total", "counts", "min_corroboration", "preferred", "tentative",
+    "contested", "dead_ends", "corrections", "by_community"}``; ``by_community`` is
+    empty unless a graph is supplied.
     """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
     overall = _empty_bucket()
     by_community: dict[str, dict[str, Any]] = {}
 
     for doc in docs:
         outcome = doc.get("outcome")
-        nodes = doc.get("source_nodes", [])
-        community = _doc_community(doc, node_community)
+        date = doc.get("date", "")
+        # One event per node per doc; drop nodes the graph no longer knows about.
+        raw = doc.get("source_nodes", [])
+        nodes = list(dict.fromkeys(
+            n for n in raw if known_nodes is None or n in known_nodes))
+        community = _doc_community(nodes, node_community)
         bucket = by_community.setdefault(community, _empty_bucket())
 
-        for target in (overall, bucket):
-            if outcome in OUTCOMES:
-                target["counts"][outcome] += 1
-            else:
-                target["counts"]["unmarked"] += 1
+        sign = 1 if outcome == "useful" else -1 if outcome in ("dead_end", "corrected") else 0
+        weight = _decay(date, now, half_life_days) if sign else 0.0
 
-            if outcome == "useful":
+        for target in (overall, bucket):
+            target["counts"][outcome if outcome in OUTCOMES else "unmarked"] += 1
+            if sign:
                 for n in nodes:
-                    target["preferred_sources"][n] += 1
-            elif outcome == "dead_end":
+                    _record_node(target, n, sign, weight, date)
+            if outcome == "dead_end":
                 target["dead_ends"].append(
-                    {"question": doc.get("question", ""), "nodes": nodes,
-                     "date": doc.get("date", "")}
-                )
+                    {"question": doc.get("question", ""), "nodes": nodes, "date": date})
             elif outcome == "corrected":
                 target["corrections"].append(
                     {"question": doc.get("question", ""),
-                     "correction": doc.get("correction", ""),
-                     "date": doc.get("date", "")}
-                )
+                     "correction": doc.get("correction", ""), "date": date})
 
     # Only surface per-community grouping when a graph was actually supplied;
     # without one every doc falls into Uncategorized and the section would just
@@ -238,69 +356,81 @@ def aggregate_lessons(docs: list[dict[str, Any]],
     community_out: dict[str, dict[str, Any]] = {}
     if node_community:
         community_out = {
-            label: {
-                "counts": b["counts"],
-                "preferred_sources": _rank_sources(b["preferred_sources"]),
-                "dead_ends": b["dead_ends"],
-                "corrections": b["corrections"],
-            }
+            label: {"counts": b["counts"], **_finalize_sources(b, min_corroboration),
+                    "dead_ends": b["dead_ends"], "corrections": b["corrections"]}
             for label, b in by_community.items()
         }
 
     return {
         "total": len(docs),
         "counts": overall["counts"],
-        "preferred_sources": _rank_sources(overall["preferred_sources"]),
+        "min_corroboration": min_corroboration,
+        **_finalize_sources(overall, min_corroboration),
         "dead_ends": overall["dead_ends"],
         "corrections": overall["corrections"],
         "by_community": community_out,
     }
 
 
-def _rank_sources(counter: Counter) -> list[tuple[str, int]]:
-    """Sources ranked by frequency desc, then name asc (deterministic)."""
-    return sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
-
-
 # --- rendering -----------------------------------------------------------------
 
 
-def _render_bucket(out: list[str], data: dict[str, Any]) -> None:
-    sources = data["preferred_sources"]
+def _render_bucket(out: list[str], data: dict[str, Any], k: int) -> None:
+    preferred = data["preferred"]
+    tentative = data["tentative"]
+    contested = data["contested"]
     dead_ends = data["dead_ends"]
     corrections = data["corrections"]
 
-    if sources:
-        out += ["**Preferred sources** — recurred in useful answers; start here.", ""]
-        for node, n in sources:
-            out.append(f"- `{node}` ({n}×)")
+    if preferred:
+        out += [f"**Preferred sources** — corroborated by ≥{k} useful results; "
+                "start here.", ""]
+        for e in preferred:
+            out.append(f"- `{e['node']}` ({e['n']}× useful)")
+        out.append("")
+    if tentative:
+        out += [f"**Tentative** — useful in fewer than {k} results; verify before "
+                "relying.", ""]
+        for e in tentative:
+            out.append(f"- `{e['node']}` ({e['n']}× useful)")
+        out.append("")
+    if contested:
+        out += ["**Contested** — mixed signals; recency decides.", ""]
+        for e in contested:
+            day = e["last"][:10]
+            verdict = ("evenly split" if e["verdict"] == "even"
+                       else f"recency leans **{e['verdict']}**")
+            out.append(
+                f"- `{e['node']}` — {e['pos']}× useful, {e['neg']}× "
+                f"dead end/corrected → {verdict}"
+                + (f" (latest {day})" if day else ""))
         out.append("")
     if dead_ends:
         out += ["**Known dead ends** — led nowhere; don't re-derive.", ""]
         for d in dead_ends:
             nodes = ", ".join(f"`{n}`" for n in d["nodes"])
-            tail = f" — {nodes}" if nodes else ""
-            out.append(f"- \"{d['question']}\"{tail}")
+            out.append(f"- \"{d['question']}\"" + (f" — {nodes}" if nodes else ""))
         out.append("")
     if corrections:
         out += ["**Corrections** — do these differently.", ""]
         for c in corrections:
             out.append(f"- \"{c['question']}\" → {c['correction']}")
         out.append("")
-    if not (sources or dead_ends or corrections):
+    if not (preferred or tentative or contested or dead_ends or corrections):
         out += ["_No marked outcomes yet._", ""]
 
 
 def render_lessons_md(agg: dict[str, Any]) -> str:
     """Render the aggregate into the deterministic LESSONS.md markdown body."""
     c = agg["counts"]
+    k = agg.get("min_corroboration", _DEFAULT_MIN_CORROBORATION)
     out: list[str] = [
         "# Lessons",
         "",
         f"_Auto-generated by `graphify reflect` from {agg['total']} session "
         f"{'memory' if agg['total'] == 1 else 'memories'} in graphify-out/memory/. "
-        "Deterministic; no LLM. Load this at the start of a session to reuse what "
-        "worked and skip what didn't._",
+        "Deterministic; no LLM. Use for orientation — verify before relying, and "
+        "revisit dead ends if the code has changed since._",
         "",
         "## Summary",
         "",
@@ -310,7 +440,7 @@ def render_lessons_md(agg: dict[str, Any]) -> str:
         "## Lessons",
         "",
     ]
-    _render_bucket(out, agg)
+    _render_bucket(out, agg, k)
 
     if agg["by_community"]:
         out += ["## By topic", ""]
@@ -319,7 +449,7 @@ def render_lessons_md(agg: dict[str, Any]) -> str:
             return (1 if label == _UNCATEGORIZED else 0, label)
         for label in sorted(agg["by_community"], key=_topic_key):
             out += [f"### {label}", ""]
-            _render_bucket(out, agg["by_community"][label])
+            _render_bucket(out, agg["by_community"][label], k)
 
     # Single trailing newline, no trailing whitespace lines.
     return "\n".join(out).rstrip("\n") + "\n"
@@ -331,15 +461,21 @@ def render_lessons_md(agg: dict[str, Any]) -> str:
 def reflect(memory_dir: Path, out_path: Path,
             graph_path: Path | None = None,
             analysis_path: Path | None = None,
-            labels_path: Path | None = None) -> tuple[Path, dict[str, Any]]:
+            labels_path: Path | None = None,
+            *,
+            now: datetime | None = None,
+            half_life_days: float = _DEFAULT_HALF_LIFE_DAYS,
+            min_corroboration: int = _DEFAULT_MIN_CORROBORATION,
+            ) -> tuple[Path, dict[str, Any]]:
     """Scan ``memory_dir``, write the lessons doc to ``out_path``, return (path, agg).
 
-    If ``graph_path`` is given (and its analysis sidecar exists) lessons are also
-    grouped by community; otherwise the doc is a single flat section.
+    If ``graph_path`` is given lessons are grouped by community and source nodes no
+    longer in the graph are dropped; otherwise the doc is a single flat section.
     """
     docs = load_memory_docs(memory_dir)
 
     node_community = None
+    known_nodes = None
     if graph_path is not None:
         graph_path = Path(graph_path)
         analysis_path = Path(analysis_path) if analysis_path else (
@@ -347,8 +483,15 @@ def reflect(memory_dir: Path, out_path: Path,
         labels_path = Path(labels_path) if labels_path else (
             graph_path.parent / ".graphify_labels.json")
         node_community = _load_node_community(graph_path, analysis_path, labels_path)
+        known_nodes = _load_known_nodes(graph_path)
 
-    agg = aggregate_lessons(docs, node_community)
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    agg = aggregate_lessons(docs, node_community, now=now,
+                            half_life_days=half_life_days,
+                            min_corroboration=min_corroboration,
+                            known_nodes=known_nodes)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_lessons_md(agg), encoding="utf-8")

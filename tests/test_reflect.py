@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,13 @@ from graphify.reflect import (
 
 PYTHON = sys.executable
 FIXTURES = Path(__file__).parent / "fixtures"
+
+# Fixed clock so time-decay scoring is byte-stable in tests (reflect/aggregate take `now`).
+_NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+
+def _days_before(n: int) -> str:
+    return (_NOW - timedelta(days=n)).isoformat()
 
 
 def _run(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -151,16 +159,121 @@ def test_aggregate_counts_each_outcome():
     assert agg["counts"] == {"useful": 2, "dead_end": 1, "corrected": 1, "unmarked": 1}
 
 
-def test_preferred_sources_ranked_by_frequency_then_name():
+def test_sources_split_into_preferred_tentative_contested():
+    """Corroboration (k>=2) + sign decide the bucket, not raw frequency:
+    A is useful twice but also a dead end -> contested; B twice-useful -> preferred;
+    C once-useful -> tentative."""
     docs = [
-        _doc("useful", ["A", "B"]),
-        _doc("useful", ["A"]),
+        _doc("useful", ["A", "B"]), _doc("useful", ["A", "B"]),
         _doc("useful", ["C"]),
-        _doc("dead_end", ["A"]),  # dead-end citations never count as preferred
+        _doc("dead_end", ["A"]),  # gives A a negative signal
     ]
-    agg = aggregate_lessons(docs)
-    # A appears in 2 useful answers, B and C in 1 each -> A first, then B before C.
-    assert agg["preferred_sources"] == [("A", 2), ("B", 1), ("C", 1)]
+    agg = aggregate_lessons(docs, now=_NOW, min_corroboration=2)
+    preferred = [e["node"] for e in agg["preferred"]]
+    tentative = [e["node"] for e in agg["tentative"]]
+    contested = [e["node"] for e in agg["contested"]]
+    assert preferred == ["B"]            # 2 useful, no negatives
+    assert tentative == ["C"]            # 1 useful only
+    assert contested == ["A"]            # 2 useful + 1 dead end
+    # A never silently appears as a plain preferred/tentative source.
+    assert "A" not in preferred and "A" not in tentative
+
+
+def test_corroboration_threshold_promotes_only_repeated_nodes():
+    """One save can't mint a 'preferred' lesson; a second distinct result promotes it."""
+    one = aggregate_lessons([_doc("useful", ["A"])], now=_NOW, min_corroboration=2)
+    assert [e["node"] for e in one["tentative"]] == ["A"]
+    assert one["preferred"] == []
+
+    two = aggregate_lessons(
+        [_doc("useful", ["A"]), _doc("useful", ["A"])], now=_NOW, min_corroboration=2)
+    assert [e["node"] for e in two["preferred"]] == ["A"]
+    assert two["tentative"] == []
+
+
+def test_recency_decides_contested_verdict():
+    """A fresh dead_end outweighs a stale useful (30d half-life), so the contested
+    node leans 'dead end'; flip the dates and it leans 'useful'."""
+    stale_useful = _doc("useful", ["N"], date=_days_before(120))
+    fresh_deadend = _doc("dead_end", ["N"], date=_days_before(1))
+    agg = aggregate_lessons([stale_useful, fresh_deadend], now=_NOW)
+    contested = agg["contested"]
+    assert len(contested) == 1 and contested[0]["node"] == "N"
+    assert contested[0]["verdict"] == "dead end"
+
+    flipped = aggregate_lessons(
+        [_doc("useful", ["N"], date=_days_before(1)),
+         _doc("dead_end", ["N"], date=_days_before(120))], now=_NOW)
+    assert flipped["contested"][0]["verdict"] == "useful"
+
+
+def test_node_existence_gate_drops_stale_nodes():
+    """A cited node no longer in the graph is dropped from lessons entirely."""
+    docs = [_doc("useful", ["Alive", "Deleted"]), _doc("useful", ["Alive", "Deleted"])]
+    agg = aggregate_lessons(docs, now=_NOW, known_nodes={"Alive"})
+    names = [e["node"] for e in agg["preferred"] + agg["tentative"] + agg["contested"]]
+    assert "Deleted" not in names
+    assert "Alive" in names
+
+
+def test_corroboration_counts_distinct_docs_not_citations():
+    """A node cited twice *within one doc* counts as ONE corroborating result, so it
+    stays tentative under k=2 — guards the dict.fromkeys per-doc dedup."""
+    agg = aggregate_lessons([_doc("useful", ["A", "A"])], now=_NOW, min_corroboration=2)
+    assert agg["preferred"] == []
+    assert [e["node"] for e in agg["tentative"]] == ["A"]
+    assert agg["tentative"][0]["n"] == 1
+
+
+def test_min_corroboration_is_honored_not_hardcoded():
+    """Two distinct useful results -> preferred at k=2, but only tentative at k=3."""
+    docs = [_doc("useful", ["A"]), _doc("useful", ["A"])]
+    assert [e["node"] for e in aggregate_lessons(docs, now=_NOW, min_corroboration=2)["preferred"]] == ["A"]
+    at_k3 = aggregate_lessons(docs, now=_NOW, min_corroboration=3)
+    assert at_k3["preferred"] == []
+    assert [e["node"] for e in at_k3["tentative"]] == ["A"]
+
+
+def test_half_life_actually_feeds_decay():
+    """Two stale useful + one fresh dead_end: a long half-life (≈no decay) lets the 2
+    useful win; a short half-life lets the fresh dead end win. Proves the flag feeds
+    the decay, not just the default."""
+    docs = [
+        _doc("useful", ["N"], date=_days_before(90)),
+        _doc("useful", ["N"], date=_days_before(90)),
+        _doc("dead_end", ["N"], date=_days_before(1)),
+    ]
+    long_hl = aggregate_lessons(docs, now=_NOW, half_life_days=100000)
+    short_hl = aggregate_lessons(docs, now=_NOW, half_life_days=10)
+    assert long_hl["contested"][0]["verdict"] == "useful"
+    assert short_hl["contested"][0]["verdict"] == "dead end"
+
+
+def test_evenly_split_verdict_when_signals_cancel():
+    """A same-date useful + dead_end on one node cancel to score 0 -> 'evenly split'."""
+    day = _days_before(5)
+    agg = aggregate_lessons(
+        [_doc("useful", ["N"], date=day), _doc("dead_end", ["N"], date=day)], now=_NOW)
+    assert agg["contested"][0]["verdict"] == "even"
+    assert "evenly split" in render_lessons_md(agg)
+
+
+def test_nonpositive_half_life_disables_decay():
+    """half_life<=0 turns decay off (full weight), so a stale useful and a fresh
+    dead_end weigh equally and cancel."""
+    docs = [_doc("useful", ["N"], date=_days_before(365)),
+            _doc("dead_end", ["N"], date=_days_before(1))]
+    agg = aggregate_lessons(docs, now=_NOW, half_life_days=0)
+    assert agg["contested"][0]["verdict"] == "even"
+
+
+def test_negative_only_node_absent_from_sources():
+    """A node seen only in dead_end docs never appears as a source bucket entry, but
+    its dead-end question still renders."""
+    agg = aggregate_lessons([_doc("dead_end", ["Bad"], question="why?")], now=_NOW)
+    names = [e["node"] for e in agg["preferred"] + agg["tentative"] + agg["contested"]]
+    assert "Bad" not in names
+    assert agg["dead_ends"][0]["nodes"] == ["Bad"]
 
 
 def test_dead_ends_and_corrections_collected():
@@ -255,18 +368,51 @@ def test_topic_sections_alpha_with_uncategorized_last():
 
 
 def test_render_byte_stable_across_independent_aggregations(tmp_path):
-    """The headline guarantee: identical memory/ contents -> byte-identical output,
-    built from scratch twice (not just render(agg)==render(agg))."""
+    """The headline guarantee: identical memory/ contents + same `now` -> byte-identical
+    output, built from scratch twice (not just render(agg)==render(agg))."""
     mem = tmp_path / "memory"
     _write_raw_doc(mem, "a.md", "2026-01-01", outcome="useful", nodes=["A", "B"])
     _write_raw_doc(mem, "b.md", "2026-01-02", outcome="dead_end", question="dead?")
-    first = render_lessons_md(aggregate_lessons(load_memory_docs(mem)))
-    second = render_lessons_md(aggregate_lessons(load_memory_docs(mem)))
+    first = render_lessons_md(aggregate_lessons(load_memory_docs(mem), now=_NOW))
+    second = render_lessons_md(aggregate_lessons(load_memory_docs(mem), now=_NOW))
     assert first == second
 
 
+def test_contested_node_renders_once_under_contested():
+    """A mixed-signal node appears in a single Contested line, not silently in both
+    a positive bucket and elsewhere."""
+    docs = [_doc("useful", ["N"]), _doc("dead_end", ["N"], question="bad?")]
+    md = render_lessons_md(aggregate_lessons(docs, now=_NOW))
+    assert "**Contested**" in md
+    # Exactly one rendered line carries the node as a contested source.
+    contested_lines = [l for l in md.splitlines()
+                       if l.startswith("- `N` —") and "useful" in l and "dead end" in l]
+    assert len(contested_lines) == 1
+
+
+def test_header_is_cautious():
+    """The header nudges verification, not blind reuse."""
+    md = render_lessons_md(aggregate_lessons([_doc("useful", ["A"])], now=_NOW))
+    assert "verify before relying" in md
+    assert "reuse what worked" not in md
+
+
+def test_lessons_artifact_cannot_be_globbed_back_into_memory(tmp_path):
+    """Regression guard: the LESSONS.md output must never be re-ingested as a memory
+    doc. It has no frontmatter, so parse_memory_doc rejects it and load_memory_docs
+    skips it even if it lands inside memory/."""
+    md = render_lessons_md(aggregate_lessons([_doc("useful", ["A"])], now=_NOW))
+    assert parse_memory_doc(md) is None
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "LESSONS.md").write_text(md, encoding="utf-8")
+    save_query_result("real", "a", mem, outcome="useful")
+    docs = load_memory_docs(mem)
+    assert len(docs) == 1 and docs[0]["question"] == "real"
+
+
 def test_render_empty_memory_is_graceful():
-    md = render_lessons_md(aggregate_lessons([]))
+    md = render_lessons_md(aggregate_lessons([], now=_NOW))
     assert "from 0 session memories" in md
     assert "_No marked outcomes yet._" in md
 
@@ -365,6 +511,22 @@ def test_cli_reflect_groups_by_community_when_graph_present(tmp_path):
     assert r.returncode == 0, r.stderr
     body = (out / "reflections" / "LESSONS.md").read_text(encoding="utf-8")
     assert "## By topic" in body
+
+
+def test_cli_node_existence_gate_drops_stale_node_end_to_end(tmp_path):
+    """Through reflect()/CLI with a real graph.json: a cited node that isn't in the
+    graph is dropped from LESSONS.md; a real one stays. Exercises _load_known_nodes
+    + the wiring, not just the known_nodes param."""
+    out = _make_graph(tmp_path)
+    real = json.loads((out / "graph.json").read_text())["nodes"][0]["id"]
+
+    _run(["save-result", "--question", "q", "--answer", "a",
+          "--nodes", real, "GhostNode", "--outcome", "useful"], tmp_path)
+    r = _run(["reflect"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    body = (out / "reflections" / "LESSONS.md").read_text(encoding="utf-8")
+    assert "GhostNode" not in body
+    assert f"`{real}`" in body
 
 
 def _make_graph(tmp_path: Path) -> Path:
