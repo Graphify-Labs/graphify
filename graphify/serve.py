@@ -898,7 +898,13 @@ def _build_server(graph_path: str):
         nodes = communities.get(cid, [])
         if not nodes:
             return f"Community {cid} not found."
-        lines = [f"Community {cid} ({len(nodes)} nodes):"]
+        # Surface the community name the same way get_node and query output do
+        # (the community_name node attribute written by to_json). All nodes in a
+        # community share it; fall back to the bare id for graphs built before
+        # community_name was persisted.
+        name = G.nodes[nodes[0]].get("community_name")
+        header = f"Community {cid} — {sanitize_label(str(name))}" if name else f"Community {cid}"
+        lines = [f"{header} ({len(nodes)} nodes):"]
         for n in nodes:
             d = G.nodes[n]
             # Sanitise label and source_file (F-010).
