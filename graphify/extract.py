@@ -12494,6 +12494,7 @@ _DISPATCH: dict[str, Any] = {
     ".hpp": extract_cpp,
     ".cu": extract_cpp,
     ".cuh": extract_cpp,
+    ".metal": extract_cpp,  # Metal Shading Language is C++14 — reuse cpp extractor (CUDA precedent)
     ".rb": extract_ruby,
     ".cs": extract_csharp,
     ".kt": extract_kotlin,

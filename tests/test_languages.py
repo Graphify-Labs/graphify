@@ -257,6 +257,23 @@ def test_cuda_host_call_edges():
     assert ("main()", "host_norm()") in calls
 
 
+# Metal Shading Language is C++14, so .metal routes through the C++
+# (tree-sitter-cpp) extractor, exactly like CUDA. ERROR nodes around Metal
+# qualifiers ([[buffer(0)]], kernel) are expected and harmless.
+
+def test_metal_no_error():
+    r = extract_cpp(FIXTURES / "sample.metal")
+    assert "error" not in r
+
+def test_metal_finds_struct():
+    r = extract_cpp(FIXTURES / "sample.metal")
+    assert any("Vec3" in l for l in _labels(r))
+
+def test_metal_finds_function():
+    r = extract_cpp(FIXTURES / "sample.metal")
+    assert any("dot3" in l for l in _labels(r))
+
+
 # ── Ruby ─────────────────────────────────────────────────────────────────────
 
 def test_ruby_no_error():
