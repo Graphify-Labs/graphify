@@ -7651,6 +7651,11 @@ def _disambiguate_colliding_node_ids(
     for node in nodes:
         if node.get("type") == "module":
             continue
+        # GraphQL SDL nodes use name-keyed ids (gql_<name>) deliberately: the same
+        # type declared in a repo's private AND public schema is the SAME federated
+        # entity, so it must collapse to one node, not split per file (#dup-entity).
+        if str(node.get("type", "")).startswith("gql"):
+            continue
         nid = node.get("id")
         if isinstance(nid, str) and nid:
             by_id.setdefault(nid, []).append(node)
@@ -12749,6 +12754,92 @@ def _extract_sequential(
 _PARALLEL_THRESHOLD = 20
 
 
+def _consolidate_gql_duplicates(all_nodes: list[dict]) -> int:
+    """Collapse same-id GraphQL SDL nodes (a type declared in both the private and
+    public schema of one repo) into a single node. An ``@key`` entity marking and
+    its key fields win over a plain ``gql_type`` so the federation owner is never
+    lost to merge order. Mutates ``all_nodes`` in place; returns nodes removed.
+    """
+    first: dict[str, dict] = {}
+    dropped = 0
+    keep: list[dict] = []
+    for n in all_nodes:
+        if not str(n.get("type", "")).startswith("gql"):
+            keep.append(n)
+            continue
+        nid = n.get("id")
+        prev = first.get(nid)
+        if prev is None:
+            first[nid] = n
+            keep.append(n)
+            continue
+        # merge into the already-kept node, preferring the entity marking
+        dropped += 1
+        if n.get("type") == "gql_entity":
+            if prev.get("type") != "gql_entity":
+                prev["type"] = "gql_entity"
+            if n.get("federation") == "entity" or prev.get("federation") is None:
+                prev["federation"] = n.get("federation", prev.get("federation"))
+            keys = sorted(set(prev.get("key_fields", []) or []) | set(n.get("key_fields", []) or []))
+            if keys:
+                prev["key_fields"] = keys
+    if dropped:
+        all_nodes[:] = keep
+    return dropped
+
+
+def _link_gql_operations_to_resolvers(all_nodes: list[dict], all_edges: list[dict]) -> int:
+    """Connect GraphQL operations (from the SDL extractor) to the code functions
+    that implement them, so the contract layer isn't an island floating off the
+    AST. Matches a ``gql_operation`` node's name to a callable code node by
+    normalized identifier — e.g. operation ``createPilotDistro`` -> resolver
+    ``.CreatePilotDistro()``. Name-based, so edges are INFERRED. Returns count.
+    """
+    ops = [n for n in all_nodes if n.get("type") == "gql_operation"]
+    if not ops:
+        return 0
+
+    def _core(label: str) -> str:
+        s = str(label).strip()
+        if s.startswith("."):
+            s = s[1:]
+        if s.endswith("()"):
+            s = s[:-2]
+        return s.lower()
+
+    # Index callable (function/method) code nodes by normalized name. Restrict to
+    # labels ending in ')' so we target resolvers/functions, not types or fields.
+    callable_by_core: dict[str, str] = {}
+    for n in all_nodes:
+        if str(n.get("type", "")).startswith("gql"):
+            continue
+        if n.get("file_type") != "code":
+            continue
+        lbl = str(n.get("label", ""))
+        if not lbl.endswith(")"):
+            continue
+        callable_by_core.setdefault(_core(lbl), n["id"])
+
+    existing = {(e.get("source"), e.get("target")) for e in all_edges}
+    added = 0
+    for op in ops:
+        tgt = callable_by_core.get(str(op.get("label", "")).lower())
+        if tgt and tgt != op["id"] and (op["id"], tgt) not in existing:
+            existing.add((op["id"], tgt))
+            all_edges.append({
+                "source": op["id"],
+                "target": tgt,
+                "relation": "implemented_by",
+                "confidence": "INFERRED",
+                "confidence_score": 0.85,
+                "source_file": op.get("source_file", ""),
+                "source_location": op.get("source_location"),
+                "weight": 1.0,
+            })
+            added += 1
+    return added
+
+
 def extract(
     paths: list[Path],
     cache_root: Path | None = None,
@@ -13120,6 +13211,12 @@ def extract(
     # even when its source file still exists (#1116).
     for n in all_nodes:
         n["_origin"] = "ast"
+
+    # Collapse private/public duplicates of the same GraphQL type into one node
+    # (entity marking wins), then bridge the SDL contract to its implementing code
+    # by linking each operation to the resolver function that implements it.
+    _consolidate_gql_duplicates(all_nodes)
+    _link_gql_operations_to_resolvers(all_nodes, all_edges)
 
     return {
         "nodes": all_nodes,

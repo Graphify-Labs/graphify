@@ -1,4 +1,5 @@
 from __future__ import annotations
+import collections
 import json
 import hashlib
 import sys
@@ -74,6 +75,46 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
+def _stitch_federation(G: nx.Graph) -> int:
+    """Link Apollo Federation entities across repos in the global graph.
+
+    The SDL extractor tags entity types with ``federation='entity'`` (the service
+    that owns ``type X @key``) or ``federation='extends'`` (a service that
+    ``extend type X @key`` references it). Same entity name in two repos = the
+    same federated entity, so each reference gets a ``federation_key`` edge to the
+    owner. Idempotent: prior ``federation_key`` edges are dropped first, so it is
+    safe to re-run after every ``global_add``.
+    """
+    stale = [(u, v) for u, v, d in G.edges(data=True)
+             if d.get("relation") == "federation_key"]
+    G.remove_edges_from(stale)
+
+    origins: dict[str, list[str]] = collections.defaultdict(list)
+    refs: dict[str, list[str]] = collections.defaultdict(list)
+    for nid, d in G.nodes(data=True):
+        if d.get("type") != "gql_entity":
+            continue
+        name = str(d.get("label", "")).split(" ", 1)[0]
+        if not name:
+            continue
+        if d.get("federation") == "entity":
+            origins[name].append(nid)
+        elif d.get("federation") == "extends":
+            refs[name].append(nid)
+
+    added = 0
+    for name, ref_ids in refs.items():
+        for ref in ref_ids:
+            ref_repo = G.nodes[ref].get("repo")
+            for origin in origins.get(name, []):
+                if G.nodes[origin].get("repo") == ref_repo:
+                    continue
+                G.add_edge(ref, origin, relation="federation_key", confidence="EXTRACTED",
+                           confidence_score=1.0, source_file="<federation:@key>", weight=1.0)
+                added += 1
+    return added
+
+
 def global_add(source_path: Path, repo_tag: str) -> dict:
     """Add or update a project graph in the global graph.
 
@@ -142,6 +183,11 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             G.add_edge(u, v, **data)
 
     added = prefixed.number_of_nodes() - len(remap)
+
+    # Re-stitch cross-repo federation @key links now that this repo's entities
+    # are present (idempotent — recomputed over the whole graph each add).
+    _stitch_federation(G)
+
     _save_global_graph(G)
 
     manifest["repos"][repo_tag] = {

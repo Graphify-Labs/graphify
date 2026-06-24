@@ -73,3 +73,49 @@ def test_graphql_sdl_malformed_schema_does_not_raise(tmp_path):
     assert result["nodes"] == []
     assert result["edges"] == []
     assert "error" in result
+
+
+_FEDERATED = """
+type Deal @key(fields: "id") {
+    id: ID!
+    name: String!
+}
+
+extend type Account @key(fields: "userID") {
+    userID: ID!
+}
+"""
+
+
+def test_graphql_sdl_tags_key_entities(tmp_path):
+    """`type X @key` is a federation origin entity; `extend type X @key` is a reference."""
+    schema = _write(tmp_path / "schema.graphqls", _FEDERATED)
+
+    nodes = {n["id"]: n for n in extract_graphql_sdl(schema)["nodes"]}
+
+    deal = nodes["gql_deal"]
+    assert deal["type"] == "gql_entity"
+    assert deal["federation"] == "entity"
+    assert deal["key_fields"] == ["id"]
+
+    account = nodes["gql_account"]
+    assert account["type"] == "gql_entity"
+    assert account["federation"] == "extends"
+    assert account["key_fields"] == ["userID"]
+
+
+def test_graphql_sdl_non_key_type_is_not_an_entity(tmp_path):
+    """A plain object type without @key stays gql_type, with no federation marker."""
+    nodes = {n["id"]: n for n in extract_graphql_sdl(_write(tmp_path / "s.graphqls", _SCHEMA))["nodes"]}
+    assert nodes["gql_deal"]["type"] == "gql_type"
+    assert "federation" not in nodes["gql_deal"]
+
+
+def test_graphql_sdl_edges_carry_confidence(tmp_path):
+    """Every SDL edge has confidence metadata so the graph validator stays quiet."""
+    edges = extract_graphql_sdl(_write(tmp_path / "s.graphqls", _SCHEMA))["edges"]
+    assert edges
+    for e in edges:
+        assert e["confidence"] == "EXTRACTED"
+        assert e["confidence_score"] == 1.0
+        assert e["weight"] == 1.0

@@ -49,6 +49,22 @@ def _line(node) -> int:
         return 1
 
 
+def _key_directives(d) -> list[str]:
+    """Apollo Federation @key(fields: "...") directives on a type definition.
+
+    Returns one entry per @key directive (a type can have several composite keys).
+    Empty list means the type is not a federated entity.
+    """
+    out: list[str] = []
+    for directive in getattr(d, "directives", []) or []:
+        if getattr(directive.name, "value", None) != "key":
+            continue
+        for arg in getattr(directive, "arguments", []) or []:
+            if arg.name.value == "fields" and isinstance(arg.value, _A.StringValueNode):
+                out.append(arg.value.value)
+    return out
+
+
 def extract_graphql_sdl(path: Path) -> dict[str, Any]:
     """Per-file extractor: parse one SDL file into graphify nodes/edges."""
     if not _HAVE_GRAPHQL:
@@ -67,17 +83,30 @@ def extract_graphql_sdl(path: Path) -> dict[str, Any]:
     edges: list[dict] = []
     seen: set[str] = set()
 
-    def node(_id: str, label: str, line: int, kind: str) -> str:
+    by_id: dict[str, dict] = {}
+
+    def node(_id: str, label: str, line: int, kind: str, **extra) -> str:
         if _id not in seen:
             seen.add(_id)
-            nodes.append({
+            n = {
                 "id": _id,
                 "label": label,
                 "file_type": "code",
                 "type": kind,
                 "source_file": sp,
                 "source_location": f"L{line}",
-            })
+            }
+            n.update(extra)
+            nodes.append(n)
+            by_id[_id] = n
+        elif extra.get("federation") == "entity":
+            # An owning `type X @key` definition outranks a prior `extend type X`
+            # stub seen earlier in the same file: the origin marker wins so the
+            # cross-repo stitch points references at the real owner.
+            existing = by_id.get(_id)
+            if existing is not None:
+                existing["type"] = kind
+                existing.update(extra)
         return _id
 
     def edge(src: str, dst: str | None, relation: str, line: int) -> None:
@@ -87,8 +116,11 @@ def extract_graphql_sdl(path: Path) -> dict[str, Any]:
             "source": src,
             "target": dst,
             "relation": relation,
+            "confidence": "EXTRACTED",
+            "confidence_score": 1.0,
             "source_file": sp,
             "source_location": f"L{line}",
+            "weight": 1.0,
         })
 
     def fields(type_id: str, type_name: str, field_nodes, kind: str) -> None:
@@ -115,7 +147,17 @@ def extract_graphql_sdl(path: Path) -> dict[str, Any]:
             if name in ROOT_OPS:
                 operations(d.fields)
             else:
-                tid = node(_nid(name), name, _line(d), "gql_type")
+                keys = _key_directives(d)
+                if keys:
+                    # Apollo Federation entity. `type X @key` = this service owns
+                    # the entity (origin); `extend type X @key` = it references an
+                    # entity owned elsewhere. The cross-repo stitch links the two.
+                    is_extend = isinstance(d, _A.ObjectTypeExtensionNode)
+                    tid = node(_nid(name), name, _line(d), "gql_entity",
+                               federation="extends" if is_extend else "entity",
+                               key_fields=keys)
+                else:
+                    tid = node(_nid(name), name, _line(d), "gql_type")
                 fields(tid, name, d.fields, "gql")
         elif isinstance(d, (_A.InputObjectTypeDefinitionNode, _A.InputObjectTypeExtensionNode)):
             name = d.name.value
