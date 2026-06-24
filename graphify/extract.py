@@ -12571,6 +12571,11 @@ _DISPATCH: dict[str, Any] = {
 }
 
 
+# Code suffixes that can embed GraphQL operation call sites in string literals
+# (gql`...` tagged templates in TS/JS, graphql:"..." struct tags in Go).
+_GQL_CALL_SUFFIXES = {".go", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"}
+
+
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name.endswith(".blade.php"):
@@ -12588,7 +12593,12 @@ def _get_extractor(path: Path) -> Any | None:
     if path.suffix in (".graphqls", ".graphql"):
         from graphify.graphql_sdl import extract_graphql_sdl
         return extract_graphql_sdl
-    return _DISPATCH.get(path.suffix)
+    base = _DISPATCH.get(path.suffix)
+    # TS/JS/Go can embed GraphQL operation call sites in string literals; fold
+    # their extraction into the per-file result so it caches like the AST nodes.
+    if base is not None and path.suffix in _GQL_CALL_SUFFIXES:
+        return _compose_with_gql_calls(base)
+    return base
 
 
 def _extract_single_file(args: tuple) -> tuple[int, dict]:
@@ -12786,6 +12796,105 @@ def _consolidate_gql_duplicates(all_nodes: list[dict]) -> int:
     if dropped:
         all_nodes[:] = keep
     return dropped
+
+
+def _anchor_gql_calls(base_nodes: list[dict], call_nodes: list[dict]) -> list[dict]:
+    """Anchor each ``gql_call`` site to the nearest code symbol defined above it
+    in the same file (so the node isn't an island within its repo). Returns
+    ``references`` edges from that enclosing symbol to the call node.
+    """
+    anchors: list[tuple[int, str]] = []
+    for n in base_nodes:
+        if n.get("file_type") != "code" or str(n.get("type", "")).startswith("gql"):
+            continue
+        loc = str(n.get("source_location") or "")
+        if not loc.startswith("L"):
+            continue
+        try:
+            anchors.append((int(loc[1:].split("-")[0]), n["id"]))
+        except ValueError:
+            continue
+    anchors.sort()
+    edges: list[dict] = []
+    for cn in call_nodes:
+        try:
+            ln = int(str(cn.get("source_location"))[1:])
+        except (ValueError, TypeError):
+            continue
+        prev_id = None
+        for a_line, a_id in anchors:
+            if a_line <= ln:
+                prev_id = a_id
+            else:
+                break
+        if prev_id and prev_id != cn["id"]:
+            edges.append({
+                "source": prev_id,
+                "target": cn["id"],
+                "relation": "references",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": cn.get("source_file"),
+                "source_location": cn.get("source_location"),
+                "weight": 1.0,
+            })
+    return edges
+
+
+def _compose_with_gql_calls(base_extractor):
+    """Wrap a code extractor so each file's result also carries the GraphQL
+    operation *call sites* it embeds (``gql`...` `` / ``graphql:"..."`` literals,
+    which tree-sitter sees as opaque text). Folded into the per-file result so it
+    is cached and incremental like the AST nodes. No-op for files without a
+    GraphQL literal.
+    """
+    from graphify.graphql_calls import extract_gql_calls
+
+    def _composed(path: Path) -> dict:
+        result = base_extractor(path)
+        if "error" in result:
+            return result
+        call_nodes = extract_gql_calls(path).get("nodes", [])
+        if call_nodes:
+            base_nodes = result.get("nodes", [])
+            result["edges"] = result.get("edges", []) + _anchor_gql_calls(base_nodes, call_nodes)
+            result["nodes"] = base_nodes + call_nodes
+        return result
+
+    return _composed
+
+
+def _link_gql_calls_to_operations(all_nodes: list[dict], all_edges: list[dict]) -> int:
+    """Link ``gql_call`` call sites to the ``gql_operation`` they invoke, by name,
+    *within one repo* (e.g. a service calling its own operation). Cross-repo
+    links are added by the global stitch. Name-based, so edges are INFERRED.
+    """
+    ops_by_name: dict[str, str] = {}
+    for n in all_nodes:
+        if n.get("type") == "gql_operation":
+            ops_by_name.setdefault(str(n.get("label", "")), n["id"])
+    if not ops_by_name:
+        return 0
+    existing = {(e.get("source"), e.get("target")) for e in all_edges}
+    added = 0
+    for n in all_nodes:
+        if n.get("type") != "gql_call":
+            continue
+        tgt = ops_by_name.get(str(n.get("op_name", "")))
+        if tgt and tgt != n["id"] and (n["id"], tgt) not in existing:
+            existing.add((n["id"], tgt))
+            all_edges.append({
+                "source": n["id"],
+                "target": tgt,
+                "relation": "calls",
+                "confidence": "INFERRED",
+                "confidence_score": 0.8,
+                "source_file": n.get("source_file", ""),
+                "source_location": n.get("source_location"),
+                "weight": 1.0,
+            })
+            added += 1
+    return added
 
 
 def _link_gql_operations_to_resolvers(all_nodes: list[dict], all_edges: list[dict]) -> int:
@@ -13217,6 +13326,7 @@ def extract(
     # by linking each operation to the resolver function that implements it.
     _consolidate_gql_duplicates(all_nodes)
     _link_gql_operations_to_resolvers(all_nodes, all_edges)
+    _link_gql_calls_to_operations(all_nodes, all_edges)
 
     return {
         "nodes": all_nodes,
