@@ -677,3 +677,40 @@ def test_build_merge_rejects_oversized_existing_graph(monkeypatch, tmp_path):
     monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
     with pytest.raises(ValueError, match="exceeds"):
         build_merge([], graph_path, dedup=False)
+
+
+def test_build_from_json_skips_non_hashable_node_id():
+    # A malformed LLM extraction can emit a list-valued id; build_from_json must
+    # skip it (NetworkX add_node would otherwise raise unhashable type) and still
+    # build the graph from the well-formed nodes.
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": ["x", "y"], "label": "B", "file_type": "code", "source_file": "b.py"},
+            {"label": "C", "file_type": "code", "source_file": "c.py"},  # missing id
+        ],
+        "edges": [],
+    }
+    G = build_from_json(extraction)
+    assert set(G.nodes()) == {"a"}
+
+
+def test_build_from_json_skips_edge_with_non_hashable_endpoint():
+    # A list-valued edge endpoint must be skipped rather than crash the
+    # `not in node_set` membership test. The well-formed edge survives.
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "a", "target": ["b", "c"], "relation": "calls",
+             "confidence": "INFERRED", "source_file": "a.py"},
+            {"source": "a", "target": "b", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "a.py"},
+        ],
+    }
+    G = build_from_json(extraction)
+    assert G.number_of_nodes() == 2
+    assert G.number_of_edges() == 1
+    assert G.has_edge("a", "b")
