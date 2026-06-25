@@ -1160,15 +1160,21 @@ def to_canvas(
     group_x_offsets: list[int] = []
     group_y_offsets: list[int] = []
 
-    # Precompute group sizes so we can calculate offsets
+    # Precompute group sizes so we can calculate offsets.
+    # inner_cols is the per-community grid width; the box dimensions AND the node
+    # placement loop below both derive from it, so the cards always fill the box
+    # instead of wrapping into a narrow strip inside an oversized box.
     sorted_cids = sorted(communities.keys())
     group_sizes: dict[int, tuple[int, int]] = {}
+    group_cols: dict[int, int] = {}
     for cid in sorted_cids:
         members = communities[cid]
         n = len(members)
-        w = max(600, 220 * math.ceil(math.sqrt(n)) if n > 0 else 600)
-        h = max(400, 100 * math.ceil(n / 3) + 120 if n > 0 else 400)
+        inner_cols = max(1, math.ceil(math.sqrt(n)))
+        w = max(600, 220 * inner_cols)
+        h = max(400, 100 * math.ceil(n / inner_cols) + 120)
         group_sizes[cid] = (w, h)
+        group_cols[cid] = inner_cols
 
     # Compute cumulative row heights and col widths for grid placement
     # Each grid cell uses the max width/height in its col/row
@@ -1232,11 +1238,13 @@ def to_canvas(
             "color": canvas_color,
         })
 
-        # Node cards inside the group - rows of 3
+        # Node cards inside the group - laid out in the same ceil(sqrt(n))-column
+        # grid the box was sized for (group_cols[cid]), so cards fill the box.
+        inner_cols = group_cols[cid]
         sorted_members = sorted(members, key=lambda n: G.nodes[n].get("label", n))
         for m_idx, node_id in enumerate(sorted_members):
-            col = m_idx % 3
-            row = m_idx // 3
+            col = m_idx % inner_cols
+            row = m_idx // inner_cols
             nx_x = gx + 20 + col * (180 + 20)
             nx_y = gy + 80 + row * (60 + 20)
             fname = node_filenames.get(node_id, safe_name(G.nodes[node_id].get("label", node_id)))

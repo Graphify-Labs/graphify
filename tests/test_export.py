@@ -1,4 +1,5 @@
 import json
+import math
 import re
 import tempfile
 from pathlib import Path
@@ -192,6 +193,48 @@ def test_to_canvas_no_communities_still_populates():
         assert len(data["nodes"]) >= G.number_of_nodes()
         assert len(data["edges"]) >= 1
         assert out.stat().st_size > 32
+
+
+def test_to_canvas_node_grid_matches_box_columns():
+    """#1452: a community's node cards are laid out in the same ceil(sqrt(n))-column
+    grid the group box is sized for. Previously the box width assumed sqrt(n)
+    columns while the placement loop hardcoded 3, so any community bigger than ~9
+    rendered as a cramped 3-wide strip filling only part of an over-wide box.
+    Covers a perfect square (25 -> 5x5) and a non-square count (10 -> 4 cols, a
+    partial last row) so both the column count and the row count are pinned."""
+    for n in (10, 25):
+        G = build_from_json({
+            "nodes": [
+                {"id": f"n{i}", "label": f"sym_{i:02d}", "file_type": "code", "source_file": "a.py"}
+                for i in range(n)
+            ],
+            "edges": [],
+        })
+        communities = {0: [f"n{i}" for i in range(n)]}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "graph.canvas"
+            to_canvas(G, communities, str(out))
+            data = json.loads(out.read_text())
+
+        group = next(g for g in data["nodes"] if g.get("type") == "group")
+        cards = [c for c in data["nodes"] if c.get("type") == "file"]
+        assert len(cards) == n, f"n={n}"
+
+        # Cards occupy the ceil(sqrt(n))-column / ceil(n/cols)-row grid the box is
+        # sized for — not the old fixed 3 columns, which spread cards across far
+        # more rows (the load-bearing checks: distinct column/row positions).
+        expected_cols = math.ceil(math.sqrt(n))
+        expected_rows = math.ceil(n / expected_cols)
+        distinct_x = len({c["x"] for c in cards})
+        distinct_y = len({c["y"] for c in cards})
+        assert distinct_x == expected_cols, f"n={n}: expected {expected_cols} cols, got {distinct_x}"
+        assert distinct_y == expected_rows, f"n={n}: expected {expected_rows} rows, got {distinct_y}"
+
+        # And every card sits fully inside its group box on both axes.
+        gx, gy, gw, gh = group["x"], group["y"], group["width"], group["height"]
+        for c in cards:
+            assert gx <= c["x"] and c["x"] + c["width"] <= gx + gw, (n, c)
+            assert gy <= c["y"] and c["y"] + c["height"] <= gy + gh, (n, c)
 
 
 # ── Issue #1409: punctuation-only Obsidian/Canvas filenames ───────────────────

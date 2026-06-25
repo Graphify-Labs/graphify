@@ -4,6 +4,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
+- Fix: `to_canvas` Obsidian Canvas export now lays out each community's node cards in the same `ceil(sqrt(n))`-column grid the group box is sized for. The box width already assumed a roughly-square `sqrt(n)`-column layout, but the placement loop hardcoded 3 columns, so the cards spanned only ~600px regardless of community size while the box kept widening — any community larger than ~9 members rendered as a cramped 3-wide strip squeezed into the left of an over-wide, mostly-empty box (a 25-member community's cards filled ~600px of an 1100px-wide box and wrapped into 9 rows where 5 would do). The column count is now computed once per community and reused for both the box dimensions and card placement, so the cards fill the box. Purely cosmetic, no data change (#1452; thanks @zachary-zae).
+
 ## 0.8.49 (2026-06-24)
 
 - Fix (packaging): include the new `graphify.extractors` subpackage in the wheel. 0.8.48 added `graphify/extractors/` (the per-language extractor split, #1212) but `[tool.setuptools] packages` listed only `graphify`, so the subpackage was omitted from the built distribution and `graphify extract` raised `ModuleNotFoundError: No module named 'graphify.extractors'` on install. Dev/editable installs and the test suite were unaffected (they import from the source tree), which is why it slipped through. 0.8.48 is yanked; use 0.8.49.
