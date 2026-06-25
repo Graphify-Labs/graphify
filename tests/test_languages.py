@@ -1,4 +1,4 @@
-"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files."""
+"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML."""
 from __future__ import annotations
 from pathlib import Path
 import pytest
@@ -6,7 +6,7 @@ from graphify.extract import (
     extract_java, extract_c, extract_cpp, extract_ruby,
     extract_csharp, extract_kotlin, extract_scala, extract_php,
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
-    extract_groovy, extract_sln, extract_csproj, extract_razor,
+    extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_verilog,
     extract_powershell_manifest,
@@ -1755,7 +1755,7 @@ def test_dmf_no_dangling_edges():
         assert e["target"] in node_ids
 
 
-# -- .NET project files (.sln, .csproj, .razor) -------------------------------
+# -- .NET project files (.sln, .csproj, .xaml, .razor) ------------------------
 
 def test_sln_no_error():
     r = extract_sln(FIXTURES / "sample.sln")
@@ -1797,6 +1797,12 @@ def test_csproj_finds_target_framework():
 def test_csproj_finds_sdk():
     r = extract_csproj(FIXTURES / "sample.csproj")
     assert any("Microsoft.NET.Sdk.Web" in l for l in _labels(r))
+
+def test_xaml_finds_class_and_event_references():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    assert "error" not in r
+    assert "MainWindow" in _labels(r)
+    assert any(e["relation"] == "references" and e.get("context") == "event" for e in r["edges"])
 
 def test_razor_no_error():
     r = extract_razor(FIXTURES / "sample.razor")

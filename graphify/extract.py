@@ -11036,6 +11036,213 @@ def extract_csproj(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+def _xml_local_name(name: str) -> str:
+    return name.rsplit("}", 1)[-1] if name.startswith("{") else name
+
+
+def _xaml_codebehind_path(path: Path) -> Path | None:
+    expected = path.with_suffix(path.suffix + ".cs")
+    if expected.exists():
+        return expected
+    try:
+        for sibling in path.parent.iterdir():
+            if sibling.name.casefold() == expected.name.casefold():
+                return sibling
+    except OSError:
+        return None
+    return None
+
+
+def _xaml_codebehind_symbols(
+    path: Path,
+    class_name: str | None,
+) -> tuple[dict | None, dict[str, dict], list[dict]]:
+    codebehind = _xaml_codebehind_path(path)
+    if not codebehind:
+        return None, {}, []
+    result = extract_csharp(codebehind)
+    if result.get("error"):
+        return None, {}, []
+
+    class_simple = class_name.rsplit(".", 1)[-1] if class_name else None
+    class_node = None
+    if class_simple:
+        for node in result.get("nodes", []):
+            if node.get("label") == class_simple:
+                class_node = node
+                break
+
+    class_method_edges: list[dict] = []
+    if class_node:
+        class_id = class_node.get("id")
+        for edge in result.get("edges", []):
+            if edge.get("source") == class_id and edge.get("relation") == "method":
+                class_method_edges.append(edge)
+    method_ids = {edge.get("target") for edge in class_method_edges} if class_node else None
+    methods: dict[str, dict] = {}
+    for node in result.get("nodes", []):
+        if method_ids is not None and node.get("id") not in method_ids:
+            continue
+        label = str(node.get("label", ""))
+        if label.startswith(".") and label.endswith("()"):
+            methods[label.strip("()").lstrip(".")] = node
+    return class_node, methods, class_method_edges
+
+
+def extract_xaml(path: Path) -> dict:
+    """Extract WPF/XAML structure, bindings, x:Class, and event handler references."""
+    import xml.etree.ElementTree as ET
+
+    try:
+        src = path.read_bytes()
+    except OSError:
+        return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
+
+    if len(src) > _PROJECT_XML_MAX_BYTES:
+        return {"nodes": [], "edges": [], "error": "xaml file too large"}
+    if not _project_xml_is_safe(src):
+        return {"nodes": [], "edges": [],
+                "error": "refusing XML with DOCTYPE/ENTITY declaration"}
+
+    try:
+        tree = ET.fromstring(src)
+    except ET.ParseError as e:
+        return {"nodes": [], "edges": [], "error": f"XML parse error: {e}"}
+
+    text = src.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    str_path = str(path)
+    stem = _file_stem(path)
+    file_nid = _make_id(str(path))
+    root_type = _xml_local_name(tree.tag)
+    root_nid = _make_id(stem, root_type)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_edges: set[tuple[str, str, str, str | None]] = set()
+
+    def line_for(value: str | None) -> int:
+        if value:
+            for idx, line in enumerate(lines, 1):
+                if value in line:
+                    return idx
+        return 1
+
+    def add_node(
+        nid: str,
+        label: str,
+        line: int | None,
+        *,
+        file_type: str = "code",
+        source_file: str = str_path,
+    ) -> None:
+        if nid in seen_ids:
+            return
+        seen_ids.add(nid)
+        nodes.append({
+            "id": nid, "label": label, "file_type": file_type,
+            "source_file": source_file,
+            "source_location": f"L{line}" if line else None,
+        })
+
+    def add_existing_node(node: dict | None) -> None:
+        if not node:
+            return
+        nid = node.get("id")
+        if not nid or nid in seen_ids:
+            return
+        seen_ids.add(nid)
+        nodes.append(dict(node))
+
+    def add_edge(
+        src_nid: str,
+        tgt_nid: str,
+        relation: str,
+        line: int,
+        *,
+        context: str | None = None,
+        source_file: str = str_path,
+    ) -> None:
+        key = (src_nid, tgt_nid, relation, context)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edge = {
+            "source": src_nid, "target": tgt_nid, "relation": relation,
+            "confidence": "EXTRACTED", "source_file": source_file,
+            "source_location": f"L{line}", "weight": 1.0,
+        }
+        if context:
+            edge["context"] = context
+        edges.append(edge)
+
+    def add_existing_edge(edge: dict) -> None:
+        key = (edge.get("source"), edge.get("target"), edge.get("relation"), edge.get("context"))
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
+        edges.append(dict(edge))
+
+    add_node(file_nid, path.name, 1)
+    add_node(root_nid, root_type, 1)
+    add_edge(file_nid, root_nid, "contains", 1)
+
+    class_name = None
+    for key, value in tree.attrib.items():
+        if _xml_local_name(key) == "Class" and value:
+            class_name = value.strip()
+            break
+
+    class_node, codebehind_methods, class_method_edges = _xaml_codebehind_symbols(path, class_name)
+    if class_name:
+        if class_node:
+            class_nid = class_node["id"]
+            add_existing_node(class_node)
+        else:
+            class_label = class_name.rsplit(".", 1)[-1]
+            class_nid = _make_id(stem, class_label)
+            add_node(class_nid, class_label, line_for(class_name))
+        add_edge(root_nid, class_nid, "references", line_for(class_name), context="x_class")
+
+    binding_re = re.compile(r"\{Binding\s+([^,}\s]+)")
+
+    for elem in tree.iter():
+        elem_type = _xml_local_name(elem.tag)
+        elem_name = None
+        for key, value in elem.attrib.items():
+            if _xml_local_name(key) == "Name" and value:
+                elem_name = value.strip()
+                break
+        owner_nid = root_nid
+        if elem_name:
+            owner_nid = _make_id(stem, elem_name)
+            add_node(owner_nid, elem_name, line_for(elem_name))
+            add_edge(root_nid, owner_nid, "contains", line_for(elem_name))
+            type_nid = _make_id("xaml", elem_type)
+            add_node(type_nid, elem_type, line_for(elem_name), file_type="concept")
+            add_edge(owner_nid, type_nid, "references", line_for(elem_name), context="type")
+
+        for value in elem.attrib.values():
+            method = codebehind_methods.get(value or "")
+            if method:
+                add_existing_node(method)
+                add_edge(owner_nid, method["id"], "references", line_for(value), context="event")
+                for method_edge in class_method_edges:
+                    if method_edge.get("target") == method["id"]:
+                        add_existing_node(class_node)
+                        add_existing_edge(method_edge)
+                        break
+            for match in binding_re.finditer(value or ""):
+                binding = match.group(1).strip()
+                if not binding:
+                    continue
+                bind_nid = _make_id("binding", binding)
+                add_node(bind_nid, binding, line_for(value), file_type="concept")
+                add_edge(owner_nid, bind_nid, "references", line_for(value), context="binding")
+
+    return {"nodes": nodes, "edges": edges}
+
+
 
 
 # Config/manifest JSON filenames the structural extractor understands. Anything
@@ -12018,6 +12225,7 @@ _DISPATCH: dict[str, Any] = {
     ".csproj": extract_csproj,
     ".fsproj": extract_csproj,
     ".vbproj": extract_csproj,
+    ".xaml": extract_xaml,
     ".razor": extract_razor,
     ".cshtml": extract_razor,
     ".cls": extract_apex,
