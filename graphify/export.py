@@ -840,6 +840,26 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     return f"{truncated}_{digest}"
 
 
+def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
+    """Map each node_id to a unique note filename, appending a numeric suffix on
+    collision. The collision map is keyed on the lowercased name so two labels
+    differing only by case (e.g. "References" vs "references") still get distinct
+    filenames - on case-insensitive filesystems (macOS/APFS, Windows/NTFS) they
+    would otherwise resolve to one path and silently overwrite each other on disk."""
+    node_filenames: dict[str, str] = {}
+    seen_names: dict[str, int] = {}
+    for node_id, data in G.nodes(data=True):
+        base = safe_name(data.get("label", node_id))
+        key = base.lower()
+        if key in seen_names:
+            seen_names[key] += 1
+            node_filenames[node_id] = f"{base}_{seen_names[key]}"
+        else:
+            seen_names[key] = 0
+            node_filenames[node_id] = base
+    return node_filenames
+
+
 def to_obsidian(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -875,16 +895,7 @@ def to_obsidian(
             return "unnamed"
         return _cap_filename(cleaned)
 
-    node_filename: dict[str, str] = {}
-    seen_names: dict[str, int] = {}
-    for node_id, data in G.nodes(data=True):
-        base = safe_name(data.get("label", node_id))
-        if base in seen_names:
-            seen_names[base] += 1
-            node_filename[node_id] = f"{base}_{seen_names[base]}"
-        else:
-            seen_names[base] = 0
-            node_filename[node_id] = base
+    node_filename = _dedup_node_filenames(G, safe_name)
 
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
@@ -1130,16 +1141,7 @@ def to_canvas(
 
     # Build node_filenames if not provided (same dedup logic as to_obsidian)
     if node_filenames is None:
-        node_filenames = {}
-        seen_names: dict[str, int] = {}
-        for node_id, data in G.nodes(data=True):
-            base = safe_name(data.get("label", node_id))
-            if base in seen_names:
-                seen_names[base] += 1
-                node_filenames[node_id] = f"{base}_{seen_names[base]}"
-            else:
-                seen_names[base] = 0
-                node_filenames[node_id] = base
+        node_filenames = _dedup_node_filenames(G, safe_name)
 
     # Fallback: with no community data (e.g. --no-cluster builds or a missing
     # analysis sidecar) the grid below produces nothing and the canvas is written

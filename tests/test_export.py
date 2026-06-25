@@ -237,6 +237,49 @@ def test_to_canvas_never_emits_punctuation_only_filenames():
         assert not bad, f"punctuation-only canvas filenames: {bad}"
 
 
+# ── Case-only-distinct labels must not collide on case-insensitive filesystems ──
+
+def _case_collision_graph():
+    """Two nodes whose labels differ only by case - on macOS/APFS and Windows/NTFS
+    their notes resolve to the same path unless the dedup map folds case."""
+    return build_from_json({
+        "nodes": [
+            {"id": "n1", "label": "References", "file_type": "code", "source_file": "a.py"},
+            {"id": "n2", "label": "references", "file_type": "document", "source_file": "b.md"},
+        ],
+        "edges": [],
+    })
+
+
+def test_to_obsidian_case_only_distinct_labels_dont_overwrite():
+    """Both notes must survive as separate files. On a case-insensitive filesystem
+    a missing suffix silently overwrites the first note (fewer files than nodes);
+    on a case-sensitive one it writes two stems equal under .lower(). Assert both:
+    every node note is on disk, and no two stems collide case-insensitively."""
+    G = _case_collision_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp)
+        notes = [p for p in Path(tmp).rglob("*.md") if not p.name.startswith("_COMMUNITY")]
+        assert len(notes) == G.number_of_nodes(), [p.name for p in notes]
+        lowered = [p.stem.lower() for p in notes]
+        assert len(set(lowered)) == len(lowered), [p.name for p in notes]
+
+
+def test_to_canvas_case_only_distinct_labels_get_distinct_files():
+    """Canvas file-node references for case-only-distinct labels must be distinct
+    case-insensitively, else both cards point at one overwritten note."""
+    G = _case_collision_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.canvas"
+        to_canvas(G, communities, str(out))
+        data = json.loads(out.read_text())
+        files = [n["file"] for n in data["nodes"] if n.get("type") == "file"]
+        lowered = [f.lower() for f in files]
+        assert len(set(lowered)) == len(lowered), files
+
+
 # ── Issue #834: backup_if_protected ──────────────────────────────────────────
 
 def test_backup_no_graph_json(tmp_path):
