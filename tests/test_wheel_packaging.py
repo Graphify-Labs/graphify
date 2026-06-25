@@ -52,6 +52,18 @@ def _expected_artifacts() -> list[Path]:
     return bodies + refs + always
 
 
+def _expected_python_modules() -> list[Path]:
+    """Every committed package module must ship in the wheel.
+
+    A manually curated setuptools package list can accidentally omit subpackages
+    while source-tree pytest still passes. The installed CLI then fails at import
+    time, which is what this guard prevents.
+    """
+    modules = sorted(PKG.rglob("*.py"))
+    assert modules, "no package Python modules found — packaging test mis-wired"
+    return modules
+
+
 @pytest.fixture(scope="module")
 def wheel_namelist(tmp_path_factory) -> set[str]:
     if not _has_build():
@@ -81,4 +93,18 @@ def test_skill_artifact_ships_in_wheel(artifact: Path, wheel_namelist: set[str])
         f"{rel} is committed in the repo but NOT in the built wheel — "
         f"`graphify install` would hard-exit for this host. Check the "
         f"[tool.setuptools.package-data] globs in pyproject.toml."
+    )
+
+
+@pytest.mark.parametrize(
+    "module",
+    _expected_python_modules(),
+    ids=lambda p: str(p.relative_to(PKG)),
+)
+def test_python_module_ships_in_wheel(module: Path, wheel_namelist: set[str]) -> None:
+    rel = "graphify/" + module.relative_to(PKG).as_posix()
+    assert rel in wheel_namelist, (
+        f"{rel} is committed in the repo but NOT in the built wheel — "
+        f"installed graphify commands may fail with ModuleNotFoundError. Check "
+        f"the [tool.setuptools].packages list in pyproject.toml."
     )
