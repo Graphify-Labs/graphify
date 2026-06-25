@@ -2230,6 +2230,7 @@ def label_communities(
     max_communities: int | None = None,
     top_k: int = _LABEL_TOP_K,
     batch_size: int = _LABEL_BATCH_SIZE,
+    max_concurrency: int = 4,
 ) -> dict[int, str]:
     """Return a complete ``{cid: name}`` map using ``backend`` for naming.
 
@@ -2257,32 +2258,62 @@ def label_communities(
         return labels
 
     n_batches = (len(labeled_cids) + batch_size - 1) // batch_size
-    written = 0
-    first_error: Exception | None = None
-    for batch_idx in range(n_batches):
+
+    # Mirror extract_corpus_parallel's backend guards: Ollama serves one request at
+    # a time per loaded model (parallel batches cause VRAM pressure and hollow
+    # replies, #798) and claude-cli shells out to a single Claude Code session that
+    # parallel subprocesses corrupt. Force serial for these unless the user opts in
+    # via the same env switches.
+    if backend == "ollama" and os.environ.get("GRAPHIFY_OLLAMA_PARALLEL", "").strip() != "1":
+        max_concurrency = 1
+    if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
+        max_concurrency = 1
+    workers = max(1, min(max_concurrency, n_batches))
+
+    def _run_batch(batch_idx: int):
         start = batch_idx * batch_size
         end = min(start + batch_size, len(labeled_cids))
-        batch_lines = lines[start:end]
-        batch_cids = labeled_cids[start:end]
         try:
             parsed = _label_batch_with_retry(
-                batch_cids, batch_lines, backend=backend, model=model,
+                labeled_cids[start:end], lines[start:end], backend=backend, model=model,
             )
-            labels.update(parsed)
-            written += len(parsed)
-        except Exception as exc:
-            if first_error is None:
-                first_error = exc
+            return batch_idx, parsed, None
+        except Exception as exc:  # noqa: BLE001 - reported per-batch; surfaced below
+            return batch_idx, None, exc
+
+    written = 0
+    errors: dict[int, Exception] = {}
+
+    def _merge(batch_idx: int, parsed, exc) -> None:
+        nonlocal written
+        if exc is not None:
+            errors[batch_idx] = exc
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(labeled_cids))
             print(
                 f"[graphify label] batch {batch_idx + 1}/{n_batches} "
-                f"({len(batch_cids)} communities) failed: {exc}",
+                f"({end - start} communities) failed: {exc}",
                 file=sys.stderr,
             )
-            continue
+            return
+        labels.update(parsed)
+        written += len(parsed)
 
-    if written == 0 and first_error is not None:
-        # Every batch failed; propagate so generate_community_labels degrades cleanly.
-        raise first_error
+    # Fan out batches; merge on the main thread so `labels` is never mutated
+    # concurrently. workers == 1 keeps the original sequential path verbatim.
+    if workers == 1:
+        for batch_idx in range(n_batches):
+            _merge(*_run_batch(batch_idx))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_run_batch, b) for b in range(n_batches)]
+            for future in as_completed(futures):
+                _merge(*future.result())
+
+    if written == 0 and errors:
+        # Every batch failed; propagate the lowest-index error so the message is
+        # deterministic and generate_community_labels degrades cleanly.
+        raise errors[min(errors)]
     return labels
 
 
@@ -2294,6 +2325,8 @@ def generate_community_labels(
     model: str | None = None,
     gods=None,
     quiet: bool = False,
+    max_concurrency: int = 4,
+    batch_size: int = _LABEL_BATCH_SIZE,
 ) -> tuple[dict[int, str], str]:
     """CLI entry point: resolve a backend, name communities, and degrade to
     ``Community N`` placeholders on any failure (no backend, API error, malformed
@@ -2313,7 +2346,10 @@ def generate_community_labels(
             )
         return _placeholder_community_labels(communities), "placeholder"
     try:
-        labels = label_communities(G, communities, backend=backend, model=model, gods=gods)
+        labels = label_communities(
+            G, communities, backend=backend, model=model, gods=gods,
+            max_concurrency=max_concurrency, batch_size=batch_size,
+        )
         return labels, "llm"
     except Exception as exc:
         if not quiet:

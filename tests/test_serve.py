@@ -23,6 +23,7 @@ from graphify.serve import (
     _resolve_context_filters,
     _subgraph_to_text,
     _load_graph,
+    _community_header,
 )
 
 
@@ -682,3 +683,27 @@ def test_query_text_chinese_finds_routing_nodes():
     text = _query_graph_text(G, "页面路由", mode="bfs", depth=2)
     assert "No matching nodes found." not in text
     assert "路由" in text
+
+
+# --- get_community header (#1448): show the community name, no placeholder doubling ---
+
+def test_community_header_shows_real_name():
+    assert _community_header(12, "Auth & Sessions") == "Community 12 — Auth & Sessions"
+
+
+def test_community_header_skips_placeholder_name():
+    # community_name is written as the "Community N" placeholder for unnamed
+    # communities; the header must not read "Community 12 — Community 12".
+    assert _community_header(12, "Community 12") == "Community 12"
+
+
+def test_community_header_falls_back_when_no_name():
+    assert _community_header(7, None) == "Community 7"
+    assert _community_header(7, "") == "Community 7"
+
+
+def test_community_header_sanitizes_name():
+    # control characters in an LLM-derived name are stripped (F-010)
+    out = _community_header(3, "Pay\x00ments\x1b[31m")
+    assert out.startswith("Community 3 — ")
+    assert "\x00" not in out and "\x1b" not in out

@@ -11,9 +11,20 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
-from .ids import make_id
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
+
+# --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
+from graphify.extractors.base import (  # noqa: F401
+    _LANGUAGE_BUILTIN_GLOBALS,
+    _file_stem,
+    _make_id,
+    _read_text,
+)
+from graphify.extractors.blade import extract_blade  # noqa: F401
+from graphify.extractors.elixir import extract_elixir  # noqa: F401
+from graphify.extractors.razor import extract_razor  # noqa: F401
+from graphify.extractors.zig import extract_zig  # noqa: F401
 
 _RECURSION_LIMIT = 10_000
 
@@ -22,26 +33,6 @@ _RECURSION_LIMIT = 10_000
 # Without this filter they become god-nodes accumulating spurious edges from
 # every call site. Filter applied at same-file and cross-file resolution.
 # See issue #726.
-_LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
-    # JavaScript / TypeScript ECMAScript built-ins
-    "String", "Number", "Boolean", "Object", "Array", "Symbol", "BigInt",
-    "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError",
-    "ReferenceError", "EvalError", "URIError",
-    "Promise", "Map", "Set", "WeakMap", "WeakSet", "JSON", "Math",
-    "Reflect", "Proxy", "Intl",
-    "parseInt", "parseFloat", "isNaN", "isFinite",
-    "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI",
-    # Browser / Node common globals
-    "URL", "URLSearchParams", "FormData", "Blob", "File",
-    "Headers", "Request", "Response", "AbortController", "AbortSignal",
-    "TextEncoder", "TextDecoder", "console",
-    # Python built-in callables
-    "str", "int", "float", "bool", "list", "dict", "set", "tuple", "bytes",
-    "len", "range", "enumerate", "zip", "map", "filter", "sum", "min", "max",
-    "print", "open", "isinstance", "type", "super", "sorted", "reversed",
-    "any", "all", "abs", "round", "next", "iter", "hash", "id", "repr",
-    "callable", "getattr", "setattr", "hasattr", "delattr", "vars", "dir",
-})
 
 
 def _raise_recursion_limit() -> None:
@@ -63,26 +54,8 @@ def _safe_extract(extractor: Callable, path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": f"{type(e).__name__}: {e}"}
 
 
-def _make_id(*parts: str) -> str:
-    r"""Build a stable node ID from one or more name parts.
-
-    Thin wrapper over :func:`graphify.ids.make_id`, the single source of truth
-    shared with ``build._normalize_id`` so the two can no longer drift (#811).
-    Preserves Unicode letters/digits (CJK, Cyrillic, Arabic, accented Latin,
-    etc.) so non-ASCII identifiers produce distinct IDs and don't collapse to a
-    single per-file node; NFKC normalization collapses composed/decomposed forms
-    of the same character (e.g. é vs e+combining-acute) to one ID.
-    """
-    return make_id(*parts)
 
 
-def _file_stem(path: Path) -> str:
-    """Return a stem qualified with the parent directory name to avoid ID collisions
-    when multiple files share the same filename in different directories (#550)."""
-    parent = path.parent.name
-    if parent and parent not in (".", ""):
-        return f"{parent}.{path.stem}"
-    return path.stem
 
 
 def _file_node_id(rel_path: Path) -> str:
@@ -503,8 +476,6 @@ class LanguageConfig:
 
 # ── Generic helpers ───────────────────────────────────────────────────────────
 
-def _read_text(node, source: bytes) -> str:
-    return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
 
 _PYTHON_TYPE_CONTAINERS = frozenset({
@@ -4620,51 +4591,6 @@ def extract_php(path: Path) -> dict:
     return _extract_generic(path, _PHP_CONFIG)
 
 
-def extract_blade(path: Path) -> dict:
-    """Extract @include, <livewire:> components, and wire:click bindings from Blade templates."""
-    import re
-    try:
-        src = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return {"error": f"cannot read {path}"}
-
-    file_nid = _make_id(str(path))
-    nodes = [{"id": file_nid, "label": path.name, "file_type": "code",
-              "source_file": str(path), "source_location": None}]
-    edges = []
-
-    # @include('path.to.partial') or @include("path.to.partial")
-    for m in re.finditer(r"@include\(['\"]([^'\"]+)['\"]", src):
-        tgt = m.group(1).replace(".", "/")
-        tgt_nid = _make_id(tgt)
-        if tgt_nid not in {n["id"] for n in nodes}:
-            nodes.append({"id": tgt_nid, "label": m.group(1), "file_type": "code",
-                          "source_file": str(path), "source_location": None})
-        edges.append({"source": file_nid, "target": tgt_nid, "relation": "includes",
-                      "confidence": "EXTRACTED", "confidence_score": 1.0,
-                      "source_file": str(path), "source_location": None, "weight": 1.0})
-
-    # <livewire:component.name /> or <livewire:component.name>
-    for m in re.finditer(r"<livewire:([\w.\-]+)", src):
-        tgt_nid = _make_id(m.group(1))
-        if tgt_nid not in {n["id"] for n in nodes}:
-            nodes.append({"id": tgt_nid, "label": m.group(1), "file_type": "code",
-                          "source_file": str(path), "source_location": None})
-        edges.append({"source": file_nid, "target": tgt_nid, "relation": "uses_component",
-                      "confidence": "EXTRACTED", "confidence_score": 1.0,
-                      "source_file": str(path), "source_location": None, "weight": 1.0})
-
-    # wire:click="methodName"
-    for m in re.finditer(r'wire:click=["\']([^"\']+)["\']', src):
-        tgt_nid = _make_id(m.group(1))
-        if tgt_nid not in {n["id"] for n in nodes}:
-            nodes.append({"id": tgt_nid, "label": m.group(1), "file_type": "code",
-                          "source_file": str(path), "source_location": None})
-        edges.append({"source": file_nid, "target": tgt_nid, "relation": "binds_method",
-                      "confidence": "EXTRACTED", "confidence_score": 1.0,
-                      "source_file": str(path), "source_location": None, "weight": 1.0})
-
-    return {"nodes": nodes, "edges": edges}
 
 
 def extract_dart(path: Path) -> dict:
@@ -6973,172 +6899,6 @@ def extract_rust(path: Path) -> dict:
 
 # ── Zig ───────────────────────────────────────────────────────────────────────
 
-def extract_zig(path: Path) -> dict:
-    """Extract functions, structs, enums, unions, and imports from a .zig file."""
-    try:
-        import tree_sitter_zig as tszig
-        from tree_sitter import Language, Parser
-    except ImportError:
-        return {"nodes": [], "edges": [], "error": "tree_sitter_zig not installed"}
-
-    try:
-        language = Language(tszig.language())
-        parser = Parser(language)
-        source = path.read_bytes()
-        tree = parser.parse(source)
-        root = tree.root_node
-    except Exception as e:
-        return {"nodes": [], "edges": [], "error": str(e)}
-
-    stem = _file_stem(path)
-    str_path = str(path)
-    nodes: list[dict] = []
-    edges: list[dict] = []
-    seen_ids: set[str] = set()
-    function_bodies: list[tuple[str, Any]] = []
-
-    def add_node(nid: str, label: str, line: int) -> None:
-        if nid not in seen_ids:
-            seen_ids.add(nid)
-            nodes.append({"id": nid, "label": label, "file_type": "code",
-                          "source_file": str_path, "source_location": f"L{line}"})
-
-    def add_edge(src: str, tgt: str, relation: str, line: int,
-                 confidence: str = "EXTRACTED", weight: float = 1.0,
-                 context: str | None = None) -> None:
-        edge = {"source": src, "target": tgt, "relation": relation,
-                "confidence": confidence, "source_file": str_path,
-                "source_location": f"L{line}", "weight": weight}
-        if context:
-            edge["context"] = context
-        edges.append(edge)
-
-    file_nid = _make_id(str(path))
-    add_node(file_nid, path.name, 1)
-
-    def _extract_import(node) -> None:
-        for child in node.children:
-            if child.type == "builtin_function":
-                bi = None
-                args = None
-                for c in child.children:
-                    if c.type == "builtin_identifier":
-                        bi = _read_text(c, source)
-                    elif c.type == "arguments":
-                        args = c
-                if bi in ("@import", "@cImport") and args:
-                    for arg in args.children:
-                        if arg.type in ("string_literal", "string"):
-                            raw = _read_text(arg, source).strip('"')
-                            module_name = raw.split("/")[-1].split(".")[0]
-                            if module_name:
-                                tgt_nid = _make_id(module_name)
-                                add_edge(file_nid, tgt_nid, "imports_from",
-                                         node.start_point[0] + 1)
-                            return
-            elif child.type == "field_expression":
-                _extract_import(child)
-                return
-
-    def walk(node, parent_struct_nid: str | None = None) -> None:
-        t = node.type
-
-        if t == "function_declaration":
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                func_name = _read_text(name_node, source)
-                line = node.start_point[0] + 1
-                if parent_struct_nid:
-                    func_nid = _make_id(parent_struct_nid, func_name)
-                    add_node(func_nid, f".{func_name}()", line)
-                    add_edge(parent_struct_nid, func_nid, "method", line)
-                else:
-                    func_nid = _make_id(stem, func_name)
-                    add_node(func_nid, f"{func_name}()", line)
-                    add_edge(file_nid, func_nid, "contains", line)
-                body = node.child_by_field_name("body")
-                if body:
-                    function_bodies.append((func_nid, body))
-            return
-
-        if t == "variable_declaration":
-            name_node = None
-            value_node = None
-            for child in node.children:
-                if child.type == "identifier":
-                    name_node = child
-                elif child.type in ("struct_declaration", "enum_declaration",
-                                    "union_declaration", "builtin_function",
-                                    "field_expression"):
-                    value_node = child
-
-            if value_node and value_node.type == "struct_declaration":
-                if name_node:
-                    struct_name = _read_text(name_node, source)
-                    line = node.start_point[0] + 1
-                    struct_nid = _make_id(stem, struct_name)
-                    add_node(struct_nid, struct_name, line)
-                    add_edge(file_nid, struct_nid, "contains", line)
-                    for child in value_node.children:
-                        walk(child, parent_struct_nid=struct_nid)
-                return
-
-            if value_node and value_node.type in ("enum_declaration", "union_declaration"):
-                if name_node:
-                    type_name = _read_text(name_node, source)
-                    line = node.start_point[0] + 1
-                    type_nid = _make_id(stem, type_name)
-                    add_node(type_nid, type_name, line)
-                    add_edge(file_nid, type_nid, "contains", line)
-                return
-
-            if value_node and value_node.type in ("builtin_function", "field_expression"):
-                _extract_import(node)
-            return
-
-        for child in node.children:
-            walk(child, parent_struct_nid)
-
-    walk(root)
-
-    seen_call_pairs: set[tuple[str, str]] = set()
-    raw_calls: list[dict] = []
-
-    def walk_calls(node, caller_nid: str) -> None:
-        if node.type == "function_declaration":
-            return
-        if node.type == "call_expression":
-            fn = node.child_by_field_name("function")
-            if fn:
-                fn_text = _read_text(fn, source)
-                callee = fn_text.split(".")[-1]
-                is_member_call = "." in fn_text
-                tgt_nid = next((n["id"] for n in nodes if n["label"] in
-                                (f"{callee}()", f".{callee}()")), None)
-                if tgt_nid and tgt_nid != caller_nid:
-                    pair = (caller_nid, tgt_nid)
-                    if pair not in seen_call_pairs:
-                        seen_call_pairs.add(pair)
-                        add_edge(caller_nid, tgt_nid, "calls",
-                                 node.start_point[0] + 1,
-                                 confidence="EXTRACTED", weight=1.0)
-                elif callee:
-                    raw_calls.append({
-                        "caller_nid": caller_nid,
-                        "callee": callee,
-                        "is_member_call": is_member_call,
-                        "source_file": str_path,
-                        "source_location": f"L{node.start_point[0] + 1}",
-                    })
-        for child in node.children:
-            walk_calls(child, caller_nid)
-
-    for caller_nid, body_node in function_bodies:
-        walk_calls(body_node, caller_nid)
-
-    clean_edges = [e for e in edges if e["source"] in seen_ids and
-                   (e["target"] in seen_ids or e["relation"] == "imports_from")]
-    return {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
 
 
 # ── PowerShell ────────────────────────────────────────────────────────────────
@@ -9669,197 +9429,6 @@ def extract_objc(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
 
 
-def extract_elixir(path: Path) -> dict:
-    """Extract modules, functions, imports, and calls from a .ex/.exs file."""
-    try:
-        import tree_sitter_elixir as tselixir
-        from tree_sitter import Language, Parser
-    except ImportError:
-        return {"nodes": [], "edges": [], "error": "tree_sitter_elixir not installed"}
-
-    try:
-        language = Language(tselixir.language())
-        parser = Parser(language)
-        source = path.read_bytes()
-        tree = parser.parse(source)
-        root = tree.root_node
-    except Exception as e:
-        return {"nodes": [], "edges": [], "error": str(e)}
-
-    stem = _file_stem(path)
-    str_path = str(path)
-    nodes: list[dict] = []
-    edges: list[dict] = []
-    seen_ids: set[str] = set()
-    function_bodies: list[tuple[str, Any]] = []
-
-    def add_node(nid: str, label: str, line: int) -> None:
-        if nid not in seen_ids:
-            seen_ids.add(nid)
-            nodes.append({"id": nid, "label": label, "file_type": "code",
-                          "source_file": str_path, "source_location": f"L{line}"})
-
-    def add_edge(src: str, tgt: str, relation: str, line: int,
-                 confidence: str = "EXTRACTED", weight: float = 1.0,
-                 context: str | None = None) -> None:
-        edge = {"source": src, "target": tgt, "relation": relation,
-                "confidence": confidence, "source_file": str_path,
-                "source_location": f"L{line}", "weight": weight}
-        if context:
-            edge["context"] = context
-        edges.append(edge)
-
-    file_nid = _make_id(str(path))
-    add_node(file_nid, path.name, 1)
-
-    _IMPORT_KEYWORDS = frozenset({"alias", "import", "require", "use"})
-
-    def _get_alias_text(node) -> str | None:
-        for child in node.children:
-            if child.type == "alias":
-                return source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-        return None
-
-    def walk(node, parent_module_nid: str | None = None) -> None:
-        if node.type != "call":
-            for child in node.children:
-                walk(child, parent_module_nid)
-            return
-
-        identifier_node = None
-        arguments_node = None
-        do_block_node = None
-        for child in node.children:
-            if child.type == "identifier":
-                identifier_node = child
-            elif child.type == "arguments":
-                arguments_node = child
-            elif child.type == "do_block":
-                do_block_node = child
-
-        if identifier_node is None:
-            for child in node.children:
-                walk(child, parent_module_nid)
-            return
-
-        keyword = source[identifier_node.start_byte:identifier_node.end_byte].decode("utf-8", errors="replace")
-        line = node.start_point[0] + 1
-
-        if keyword == "defmodule":
-            module_name = _get_alias_text(arguments_node) if arguments_node else None
-            if not module_name:
-                return
-            module_nid = _make_id(stem, module_name)
-            add_node(module_nid, module_name, line)
-            add_edge(file_nid, module_nid, "contains", line)
-            if do_block_node:
-                for child in do_block_node.children:
-                    walk(child, parent_module_nid=module_nid)
-            return
-
-        if keyword in ("def", "defp"):
-            func_name = None
-            if arguments_node:
-                for child in arguments_node.children:
-                    if child.type == "call":
-                        for sub in child.children:
-                            if sub.type == "identifier":
-                                func_name = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="replace")
-                                break
-                    elif child.type == "identifier":
-                        func_name = source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-                        break
-            if not func_name:
-                return
-            container = parent_module_nid or file_nid
-            func_nid = _make_id(container, func_name)
-            add_node(func_nid, f"{func_name}()", line)
-            if parent_module_nid:
-                add_edge(parent_module_nid, func_nid, "method", line)
-            else:
-                add_edge(file_nid, func_nid, "contains", line)
-            if do_block_node:
-                function_bodies.append((func_nid, do_block_node))
-            return
-
-        if keyword in _IMPORT_KEYWORDS and arguments_node:
-            module_name = _get_alias_text(arguments_node)
-            if module_name:
-                tgt_nid = _make_id(module_name)
-                add_edge(file_nid, tgt_nid, "imports", line, context="import")
-            return
-
-        for child in node.children:
-            walk(child, parent_module_nid)
-
-    walk(root)
-
-    label_to_nid: dict[str, str] = {}
-    for n in nodes:
-        normalised = n["label"].strip("()").lstrip(".")
-        label_to_nid[normalised] = n["id"]
-
-    seen_call_pairs: set[tuple[str, str]] = set()
-    raw_calls: list[dict] = []
-    _SKIP_KEYWORDS = frozenset({
-        "def", "defp", "defmodule", "defmacro", "defmacrop",
-        "defstruct", "defprotocol", "defimpl", "defguard",
-        "alias", "import", "require", "use",
-        "if", "unless", "case", "cond", "with", "for",
-    })
-
-    def walk_calls(node, caller_nid: str) -> None:
-        if node.type != "call":
-            for child in node.children:
-                walk_calls(child, caller_nid)
-            return
-        for child in node.children:
-            if child.type == "identifier":
-                kw = source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-                if kw in _SKIP_KEYWORDS:
-                    for c in node.children:
-                        walk_calls(c, caller_nid)
-                    return
-                break
-        callee_name: str | None = None
-        is_member_call: bool = False
-        for child in node.children:
-            if child.type == "dot":
-                is_member_call = True
-                dot_text = source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-                parts = dot_text.rstrip(".").split(".")
-                if parts:
-                    callee_name = parts[-1]
-                break
-            if child.type == "identifier":
-                callee_name = source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-                break
-        if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
-            tgt_nid = label_to_nid.get(callee_name)
-            if tgt_nid and tgt_nid != caller_nid:
-                pair = (caller_nid, tgt_nid)
-                if pair not in seen_call_pairs:
-                    seen_call_pairs.add(pair)
-                    add_edge(caller_nid, tgt_nid, "calls",
-                             node.start_point[0] + 1, confidence="EXTRACTED", weight=1.0,
-                             context="call")
-            else:
-                raw_calls.append({
-                    "caller_nid": caller_nid,
-                    "callee": callee_name,
-                    "is_member_call": is_member_call,
-                    "source_file": str_path,
-                    "source_location": f"L{node.start_point[0] + 1}",
-                })
-        for child in node.children:
-            walk_calls(child, caller_nid)
-
-    for caller_nid, body in function_bodies:
-        walk_calls(body, caller_nid)
-
-    clean_edges = [e for e in edges if e["source"] in seen_ids and
-                   (e["target"] in seen_ids or e["relation"] == "imports")]
-    return {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls, "input_tokens": 0, "output_tokens": 0}
 
 
 # Inline markdown link: [text](target "optional title"). The negative lookbehind
@@ -11467,116 +11036,6 @@ def extract_csproj(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def extract_razor(path: Path) -> dict:
-    """Extract directives, component refs, and @code methods from .razor/.cshtml."""
-    try:
-        src = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
-
-    file_nid = _make_id(str(path))
-    str_path = str(path)
-    nodes: list[dict] = [{"id": file_nid, "label": path.name, "file_type": "code",
-                          "source_file": str_path, "source_location": None}]
-    edges: list[dict] = []
-    seen_ids: set[str] = set()
-    seen_ids.add(file_nid)
-
-    def _add_ref(target_name: str, relation: str, line: int) -> None:
-        tgt_nid = _make_id(target_name)
-        if not tgt_nid:
-            return
-        if tgt_nid not in seen_ids:
-            seen_ids.add(tgt_nid)
-            nodes.append({"id": tgt_nid, "label": target_name,
-                          "file_type": "code", "source_file": str_path,
-                          "source_location": f"L{line}"})
-        edges.append({"source": file_nid, "target": tgt_nid,
-                      "relation": relation, "confidence": "EXTRACTED",
-                      "source_file": str_path, "source_location": f"L{line}",
-                      "weight": 1.0})
-
-    for i, line in enumerate(src.splitlines(), 1):
-        m = re.match(r'@using\s+([\w.]+)', line)
-        if m:
-            _add_ref(m.group(1), "imports", i)
-            continue
-
-        m = re.match(r'@inject\s+([\w.<>\[\]]+)\s+(\w+)', line)
-        if m:
-            _add_ref(m.group(1), "imports", i)
-            continue
-
-        m = re.match(r'@inherits\s+([\w.<>\[\]]+)', line)
-        if m:
-            _add_ref(m.group(1), "inherits", i)
-            continue
-
-        m = re.match(r'@model\s+([\w.<>\[\]]+)', line)
-        if m:
-            _add_ref(m.group(1), "references", i)
-            continue
-
-        m = re.match(r'@page\s+"([^"]+)"', line)
-        if m:
-            route = m.group(1)
-            route_nid = _make_id("route", route)
-            if route_nid and route_nid not in seen_ids:
-                seen_ids.add(route_nid)
-                nodes.append({"id": route_nid, "label": f"route:{route}",
-                              "file_type": "concept", "source_file": str_path,
-                              "source_location": f"L{i}"})
-                edges.append({"source": file_nid, "target": route_nid,
-                              "relation": "references", "confidence": "EXTRACTED",
-                              "source_file": str_path, "weight": 1.0})
-            continue
-
-    _COMPONENT_RE = re.compile(r'<([A-Z][A-Za-z0-9]+)[\s/>]')
-    _HTML_TAGS = frozenset({
-        "DOCTYPE", "Html", "Head", "Body", "Div", "Span", "Table", "Form",
-        "Input", "Button", "Select", "Option", "Label", "Textarea",
-        "Script", "Style", "Link", "Meta", "Title", "Header", "Footer",
-        "Nav", "Main", "Section", "Article", "Aside",
-    })
-    for m in _COMPONENT_RE.finditer(src):
-        comp_name = m.group(1)
-        if comp_name in _HTML_TAGS:
-            continue
-        line_num = src[:m.start()].count("\n") + 1
-        _add_ref(comp_name, "calls", line_num)
-
-    _CODE_BLOCK_RE = re.compile(r'@code\s*\{', re.MULTILINE)
-    for m in _CODE_BLOCK_RE.finditer(src):
-        block_start = m.end()
-        depth = 1
-        pos = block_start
-        while pos < len(src) and depth > 0:
-            if src[pos] == '{':
-                depth += 1
-            elif src[pos] == '}':
-                depth -= 1
-            pos += 1
-        code_block = src[block_start:pos - 1] if depth == 0 else ""
-
-        _METHOD_RE = re.compile(
-            r'(?:public|private|protected|internal|static|async|override|virtual|abstract)\s+'
-            r'[\w<>\[\],\s]+\s+(\w+)\s*\('
-        )
-        for mm in _METHOD_RE.finditer(code_block):
-            method_name = mm.group(1)
-            abs_pos = block_start + mm.start()
-            method_line = src[:abs_pos].count("\n") + 1
-            method_nid = _make_id(_file_stem(path), method_name)
-            if method_nid and method_nid not in seen_ids:
-                seen_ids.add(method_nid)
-                nodes.append({"id": method_nid, "label": method_name,
-                              "file_type": "code", "source_file": str_path,
-                              "source_location": f"L{method_line}"})
-                edges.append({"source": file_nid, "target": method_nid,
-                              "relation": "contains", "confidence": "EXTRACTED",
-                              "source_file": str_path, "weight": 1.0})
-
-    return {"nodes": nodes, "edges": edges}
 
 
 # Config/manifest JSON filenames the structural extractor understands. Anything

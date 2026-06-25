@@ -540,6 +540,7 @@ graphify install  # overwrites the skill file
 
 graphify save-result --question "Q" --answer "A" --nodes Foo Bar --outcome useful   # record how a Q&A turned out (work memory; outcome ∈ useful|dead_end|corrected)
 graphify reflect                   # aggregate graphify-out/memory/ outcomes into reflections/LESSONS.md
+graphify reflect --if-stale        # no-op when LESSONS.md is already newer than every input (cheap to run each session)
 graphify reflect --out docs/LESSONS.md    # write the lessons doc somewhere else
 graphify reflect --graph graphify-out/graph.json  # also group lessons by community
 
@@ -645,6 +646,7 @@ graphify update ./src --no-cluster  # skip reclustering, write raw AST graph onl
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
 graphify cluster-only ./my-project
 graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph location
+graphify cluster-only ./my-project --max-concurrency 16 --batch-size 200  # parallel community labeling (large graphs)
 graphify cluster-only ./my-project --resolution 1.5            # more, smaller communities
 graphify cluster-only ./my-project --exclude-hubs 99           # exclude p99 degree nodes from partitioning
 graphify cluster-only ./my-project --no-label                  # keep "Community N" placeholders

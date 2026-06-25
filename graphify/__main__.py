@@ -2227,9 +2227,13 @@ def main() -> None:
         print("    --no-label              keep 'Community N' placeholders (skip LLM community naming)")
         print("    --backend=<name>        backend to use for community naming (default: auto-detect)")
         print("    --model=<name>          model to use for community naming")
+        print("    --max-concurrency=N     parallel community-labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
+        print("    --batch-size=N          communities per labeling LLM call (default 100)")
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
         print("    --backend=<name>        backend to use (default: auto-detect from API keys)")
         print("    --model=<name>          model to use for community naming")
+        print("    --max-concurrency=N     parallel labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
+        print("    --batch-size=N          communities per labeling LLM call (default 100)")
         print("  query \"<question>\"       BFS traversal of graph.json for a question")
         print("    --dfs                   use depth-first instead of breadth-first")
         print("    --context C             explicit edge-context filter (repeatable)")
@@ -3309,6 +3313,8 @@ def main() -> None:
         graph_override: Path | None = None
         co_resolution: float = 1.0
         co_exclude_hubs: float | None = None
+        label_max_concurrency: int = 4
+        label_batch_size: int = 100
         i_arg = 0
         while i_arg < len(args):
             a = args[i_arg]
@@ -3330,6 +3336,14 @@ def main() -> None:
                 co_exclude_hubs = float(args[i_arg + 1]); i_arg += 2
             elif a.startswith("--exclude-hubs="):
                 co_exclude_hubs = float(a.split("=", 1)[1]); i_arg += 1
+            elif a == "--max-concurrency" and i_arg + 1 < len(args):
+                label_max_concurrency = int(args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--max-concurrency="):
+                label_max_concurrency = int(a.split("=", 1)[1]); i_arg += 1
+            elif a == "--batch-size" and i_arg + 1 < len(args):
+                label_batch_size = int(args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--batch-size="):
+                label_batch_size = int(a.split("=", 1)[1]); i_arg += 1
             elif a == "--no-viz" or a.startswith("--min-community-size="):
                 i_arg += 1
             elif a.startswith("--"):
@@ -3419,7 +3433,8 @@ def main() -> None:
             # The final labels (LLM or placeholder fallback) are persisted to
             # .graphify_labels.json by the unconditional write below.
             labels, _ = generate_community_labels(
-                G, communities, backend=label_backend, model=label_model, gods=gods
+                G, communities, backend=label_backend, model=label_model, gods=gods,
+                max_concurrency=label_max_concurrency, batch_size=label_batch_size,
             )
         questions = suggest_questions(G, communities, labels)
         tokens = {"input": 0, "output": 0}

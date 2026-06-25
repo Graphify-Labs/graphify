@@ -631,6 +631,21 @@ def _filter_blank_stdin() -> None:
     sys.stdin = open(0, "r", closefd=False)
 
 
+def _community_header(cid: int, community_name) -> str:
+    # Header for get_community: "Community N — Name", matching get_node / query
+    # output which read the community_name attribute to_json writes onto nodes.
+    # Skip the name when it is just the "Community N" placeholder (written for
+    # unnamed communities) so the header never reads "Community 12 — Community 12";
+    # also falls back to the bare id when there is no name. Name is sanitised
+    # (F-010) like every other LLM-derived field.
+    base = f"Community {cid}"
+    if community_name:
+        clean = sanitize_label(str(community_name))
+        if clean and clean != base:
+            return f"{base} — {clean}"
+    return base
+
+
 def _build_server(graph_path: str):
     """Build the configured low-level MCP Server (shared by every transport).
 
@@ -898,7 +913,8 @@ def _build_server(graph_path: str):
         nodes = communities.get(cid, [])
         if not nodes:
             return f"Community {cid} not found."
-        lines = [f"Community {cid} ({len(nodes)} nodes):"]
+        header = _community_header(cid, G.nodes[nodes[0]].get("community_name"))
+        lines = [f"{header} ({len(nodes)} nodes):"]
         for n in nodes:
             d = G.nodes[n]
             # Sanitise label and source_file (F-010).
