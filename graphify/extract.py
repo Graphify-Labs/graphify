@@ -2343,8 +2343,15 @@ _SWIFT_CONFIG = LanguageConfig(
 
 # ── Generic extractor ─────────────────────────────────────────────────────────
 
-def _extract_generic(path: Path, config: LanguageConfig) -> dict:
-    """Generic AST extractor driven by LanguageConfig."""
+def _extract_generic(
+    path: Path, config: LanguageConfig, *, source_override: bytes | None = None
+) -> dict:
+    """Generic AST extractor driven by LanguageConfig.
+
+    ``source_override`` parses the given bytes instead of reading ``path``, while
+    still keying nodes/edges off ``path``. Lets container formats (e.g. Vue SFCs)
+    mask the wrapper and parse just the embedded ``<script>``.
+    """
     try:
         mod = importlib.import_module(config.ts_module)
         from tree_sitter import Language, Parser
@@ -2371,7 +2378,7 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
 
     try:
         parser = Parser(language)
-        source = path.read_bytes()
+        source = path.read_bytes() if source_override is None else source_override
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -4231,6 +4238,119 @@ def extract_astro(path: Path) -> dict:
                     "source_file": str(path),
                 })
                 existing_ids.add(node_id)
+    except Exception:
+        pass
+    return result
+
+
+_VUE_SCRIPT_RE = re.compile(
+    r"(<script\b[^>]*>)([\s\S]*?)(</script\s*>)", re.IGNORECASE
+)
+_VUE_SCRIPT_LANG_RE = re.compile(
+    r"""\blang\s*=\s*['"]?([A-Za-z]+)['"]?""", re.IGNORECASE
+)
+
+
+def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
+    """Blank everything outside ``<script>`` bodies, keeping ``\\r``/``\\n``.
+
+    Replaces template/style/tags with spaces so a JS/TS grammar sees only the
+    script, while preserved newlines keep line numbers accurate. Returns
+    ``(masked_source, lang)``; ``lang`` is the first block's declared ``lang``.
+    """
+    def _blank(s: str) -> str:
+        return re.sub(r"[^\r\n]", " ", s)
+
+    out: list[str] = []
+    pos = 0
+    lang: str | None = None
+    for m in _VUE_SCRIPT_RE.finditer(src):
+        out.append(_blank(src[pos:m.start()]))  # markup/style before this block
+        out.append(_blank(m.group(1)))           # <script …> open tag
+        out.append(m.group(2))                   # script body, verbatim
+        out.append(_blank(m.group(3)))           # </script> close tag
+        pos = m.end()
+        if lang is None:
+            lang_m = _VUE_SCRIPT_LANG_RE.search(m.group(1))
+            if lang_m:
+                lang = lang_m.group(1).lower()
+    out.append(_blank(src[pos:]))
+    return "".join(out), lang
+
+
+def extract_vue(path: Path) -> dict:
+    """Extract imports, symbols, and type refs from a ``.vue`` SFC.
+
+    Masks the non-``<script>`` regions and parses the script with the grammar
+    its ``lang`` implies (``tsx``→TSX, ``js``/``jsx``→JS, ``ts`` or unset→TS;
+    TS is a superset of JS so it is a safe default). A regex pass then recovers
+    ``import('…')`` dynamic imports the AST does not edge.
+    """
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"nodes": [], "edges": []}
+
+    masked, lang = _vue_mask_non_script(src)
+    if lang == "tsx":
+        config = _TSX_CONFIG
+    elif lang in ("js", "jsx"):
+        config = _JS_CONFIG
+    else:  # "ts" or unspecified — default to the TS grammar (superset of JS)
+        config = _TS_CONFIG
+
+    result = _extract_generic(path, config, source_override=masked.encode("utf-8"))
+
+    # Dynamic `import('…')` calls aren't edged by the AST pass; recover by regex,
+    # mirroring extract_svelte/extract_astro.
+    try:
+        existing_ids = {n["id"] for n in result.get("nodes", [])}
+        file_node_id = _make_id(str(path))
+        aliases = _load_tsconfig_aliases(path.parent)
+        for m in re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
+            raw = m.group(1)
+            if not raw:
+                continue
+            if raw.startswith("."):
+                resolved = Path(os.path.normpath(path.parent / raw))
+                resolved = _resolve_js_module_path(resolved)
+                node_id = _make_id(str(resolved))
+                stub_source_file = str(resolved)
+            else:
+                resolved_alias = None
+                for alias_prefix, alias_base in aliases.items():
+                    if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
+                        rest = raw[len(alias_prefix):].lstrip("/")
+                        resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
+                        break
+                if resolved_alias is not None:
+                    resolved_alias = _resolve_js_module_path(resolved_alias)
+                    node_id = _make_id(str(resolved_alias))
+                    stub_source_file = str(resolved_alias)
+                else:
+                    module_name = raw.split("/")[-1]
+                    if not module_name:
+                        continue
+                    node_id = _make_id(module_name)
+                    stub_source_file = raw
+            if node_id in existing_ids:
+                result.setdefault("edges", []).append({
+                    "source": file_node_id, "target": node_id,
+                    "relation": "dynamic_import", "confidence": "EXTRACTED",
+                    "source_file": str(path),
+                })
+                continue
+            result.setdefault("nodes", []).append({
+                "id": node_id, "label": raw,
+                "file_type": "code", "source_file": stub_source_file,
+                "confidence": "EXTRACTED",
+            })
+            result.setdefault("edges", []).append({
+                "source": file_node_id, "target": node_id,
+                "relation": "dynamic_import", "confidence": "EXTRACTED",
+                "source_file": str(path),
+            })
+            existing_ids.add(node_id)
     except Exception:
         pass
     return result
@@ -7823,13 +7943,25 @@ def _apply_symbol_resolution_facts(
 def _parse_js_tree(path: Path):
     try:
         from tree_sitter import Language, Parser
-        if path.suffix in (".ts", ".tsx"):
+        # .vue embeds the script in non-JS markup; mask it out and parse the
+        # <script> with TS.
+        vue_lang: str | None = None
+        if path.suffix == ".vue":
+            masked, vue_lang = _vue_mask_non_script(
+                path.read_text(encoding="utf-8", errors="replace")
+            )
+            source = masked.encode("utf-8")
+        else:
+            source = path.read_bytes()
+        use_ts = path.suffix in (".ts", ".tsx") or (
+            path.suffix == ".vue" and vue_lang not in ("js", "jsx")
+        )
+        if use_ts:
             import tree_sitter_typescript as tstypescript
             language = Language(tstypescript.language_typescript())
         else:
             import tree_sitter_javascript as tsjavascript
             language = Language(tsjavascript.language())
-        source = path.read_bytes()
         parser = Parser(language)
         return source, parser.parse(source).root_node
     except Exception:
@@ -8174,7 +8306,7 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
 def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
     js_paths = [
         path for path in paths
-        if path.suffix in _JS_CACHE_BYPASS_SUFFIXES and path.suffix != ".vue"
+        if path.suffix in _JS_CACHE_BYPASS_SUFFIXES
     ]
     if not js_paths:
         return
@@ -12243,7 +12375,7 @@ _DISPATCH: dict[str, Any] = {
     ".F03": extract_fortran,
     ".f08": extract_fortran,
     ".F08": extract_fortran,
-    ".vue": extract_js,
+    ".vue": extract_vue,
     ".svelte": extract_svelte,
     ".astro": extract_astro,
     ".dart": extract_dart,
