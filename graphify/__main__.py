@@ -155,6 +155,10 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
     if platform_name == "hermes":
         if project:
             return (project_dir or Path(".")) / ".hermes" / "skills" / "graphify" / "SKILL.md"
+        # Respect HERMES_HOME if set; fall back to platform defaults.
+        hermes_home = os.environ.get("HERMES_HOME")
+        if hermes_home:
+            return Path(hermes_home) / "skills" / "graphify" / "SKILL.md"
         # On Windows, Hermes scans %LOCALAPPDATA%\hermes\skills, not ~/.hermes (#1403).
         if platform.system() == "Windows":
             local_appdata = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
@@ -1943,6 +1947,9 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
+    # Hermes user-scope skill lives at $HERMES_HOME/skills, LOCALAPPDATA/hermes/skills,
+    # or ~/.hermes/skills — not covered by AGENTS.md cleanup.
+    _remove_skill_file("hermes")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
