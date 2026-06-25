@@ -1,4 +1,5 @@
 from __future__ import annotations
+import collections
 import json
 import hashlib
 import sys
@@ -74,6 +75,91 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
+def _stitch_federation(G: nx.Graph) -> int:
+    """Link Apollo Federation entities across repos in the global graph.
+
+    The SDL extractor tags entity types with ``federation='entity'`` (the service
+    that owns ``type X @key``) or ``federation='extends'`` (a service that
+    ``extend type X @key`` references it). Same entity name in two repos = the
+    same federated entity, so each reference gets a ``federation_key`` edge to the
+    owner. Idempotent: prior ``federation_key`` edges are dropped first, so it is
+    safe to re-run after every ``global_add``.
+    """
+    stale = [(u, v) for u, v, d in G.edges(data=True)
+             if d.get("relation") == "federation_key"]
+    G.remove_edges_from(stale)
+
+    origins: dict[str, list[str]] = collections.defaultdict(list)
+    refs: dict[str, list[str]] = collections.defaultdict(list)
+    for nid, d in G.nodes(data=True):
+        if d.get("type") != "gql_entity":
+            continue
+        name = str(d.get("label", "")).split(" ", 1)[0]
+        if not name:
+            continue
+        if d.get("federation") == "entity":
+            origins[name].append(nid)
+        elif d.get("federation") == "extends":
+            refs[name].append(nid)
+
+    added = 0
+    for name, ref_ids in refs.items():
+        for ref in ref_ids:
+            ref_repo = G.nodes[ref].get("repo")
+            for origin in origins.get(name, []):
+                if G.nodes[origin].get("repo") == ref_repo:
+                    continue
+                G.add_edge(ref, origin, relation="federation_key", confidence="EXTRACTED",
+                           confidence_score=1.0, source_file="<federation:@key>", weight=1.0)
+                added += 1
+    return added
+
+
+def _stitch_gql_calls(G: nx.Graph) -> int:
+    """Link GraphQL operation *call sites* to the operations they invoke, across
+    repos, in the global graph.
+
+    The call-site extractor tags each ``gql`...` `` / ``graphql:"..."`` usage as a
+    ``gql_call`` node carrying ``op_name``; the SDL extractor owns the matching
+    ``gql_operation`` in whatever service defines the schema. A frontend calling
+    a backend mutation is the common cross-repo case, so each ``gql_call`` gets a
+    ``calls`` edge to the operation node of the same name. With this edge,
+    ``graphify affected "<operation>"`` reverse-traverses to every consumer a
+    backend change would affect. Idempotent: prior ``calls`` edges are dropped
+    first, so it is safe to re-run after every ``global_add``.
+    """
+    stale = [(u, v) for u, v, d in G.edges(data=True)
+             if d.get("relation") == "calls"]
+    G.remove_edges_from(stale)
+
+    ops_by_name: dict[str, list[str]] = collections.defaultdict(list)
+    calls_by_name: dict[str, list[str]] = collections.defaultdict(list)
+    for nid, d in G.nodes(data=True):
+        t = d.get("type")
+        if t == "gql_operation":
+            name = str(d.get("label", "")).split(" ", 1)[0]
+            if name:
+                ops_by_name[name].append(nid)
+        elif t == "gql_call":
+            name = str(d.get("op_name") or d.get("label", ""))
+            if name:
+                calls_by_name[name].append(nid)
+
+    added = 0
+    for name, call_ids in calls_by_name.items():
+        targets = ops_by_name.get(name)
+        if not targets:
+            continue
+        for call in call_ids:
+            for op in targets:
+                if call == op:
+                    continue
+                G.add_edge(call, op, relation="calls", confidence="INFERRED",
+                           confidence_score=0.8, source_file="<gql:call-site>", weight=1.0)
+                added += 1
+    return added
+
+
 def global_add(source_path: Path, repo_tag: str) -> dict:
     """Add or update a project graph in the global graph.
 
@@ -142,6 +228,14 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             G.add_edge(u, v, **data)
 
     added = prefixed.number_of_nodes() - len(remap)
+
+    # Re-stitch cross-repo federation @key links now that this repo's entities
+    # are present (idempotent — recomputed over the whole graph each add).
+    _stitch_federation(G)
+    # Link GraphQL call sites to the operations they invoke across repos
+    # (frontend -> backend mutation); idempotent, same rationale.
+    _stitch_gql_calls(G)
+
     _save_global_graph(G)
 
     manifest["repos"][repo_tag] = {

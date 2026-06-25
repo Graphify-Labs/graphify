@@ -30,6 +30,13 @@ try:
 except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
+# Local extractor-logic salt: the package version alone does not change when the
+# extractor source is edited in place (forks/dev), so AST cache entries would be
+# served stale. Bump this whenever extractor output changes (e.g. the GraphQL SDL
+# @key/federation work, or the gql call-site extraction) to invalidate the AST
+# cache namespace.
+_EXTRACTOR_VERSION = f"{_EXTRACTOR_VERSION}+sdlfed1+gqlcalls1"
+
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()
 

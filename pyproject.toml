@@ -14,6 +14,7 @@ dependencies = [
     "networkx>=3.4",
     "numpy>=1.21",
     "rapidfuzz>=3.0",
+    "graphql-core>=3.2,<4",
     "tree-sitter>=0.23.0,<0.26",
     "tree-sitter-python>=0.23,<0.26",
     "tree-sitter-javascript>=0.23,<0.26",
