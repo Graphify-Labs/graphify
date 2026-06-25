@@ -248,12 +248,16 @@ def to_wiki(
     used_slugs: set[str] = set()
 
     def _unique_slug(base: str) -> str:
+        # Fold case in the collision check: two labels differing only by case
+        # (e.g. "Parser" vs "parser") resolve to one path on case-insensitive
+        # filesystems (macOS/APFS, Windows/NTFS), so they must dedup against each
+        # other while still emitting the original-case filename.
         slug = base
         n = 2
-        while slug in used_slugs:
+        while slug.lower() in used_slugs:
             slug = f"{base}_{n}"
             n += 1
-        used_slugs.add(slug)
+        used_slugs.add(slug.lower())
         return slug
 
     # Community articles

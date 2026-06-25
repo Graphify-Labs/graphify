@@ -210,3 +210,41 @@ def test_community_article_handles_null_source_file(tmp_path):
     # Must not raise TypeError
     to_wiki(G, communities, tmp_path, community_labels=labels)
     assert (tmp_path / "index.md").exists()
+
+
+def test_to_wiki_case_only_distinct_labels_dont_overwrite(tmp_path):
+    """Two community labels differing only by case must each get their own
+    article. The slug-dedup set folds case, so on case-insensitive filesystems
+    (macOS/APFS, Windows/NTFS) the second article gets a numeric suffix instead
+    of silently overwriting the first."""
+    G = nx.Graph()
+    G.add_node("n1", label="parse", file_type="code", source_file="a.py", community=0)
+    G.add_node("n2", label="render", file_type="code", source_file="b.py", community=1)
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+    communities = {0: ["n1"], 1: ["n2"]}
+    labels = {0: "Parser", 1: "parser"}
+    n = to_wiki(G, communities, tmp_path, community_labels=labels)
+    articles = [p for p in tmp_path.glob("*.md") if p.name != "index.md"]
+    # both communities survive as separate files on disk (no silent overwrite)
+    assert len(articles) == n == 2, [p.name for p in articles]
+    # filenames are distinct even when compared case-insensitively
+    lowered = [p.stem.lower() for p in articles]
+    assert len(set(lowered)) == len(lowered), [p.name for p in articles]
+
+
+def test_to_wiki_god_node_label_case_collides_with_community(tmp_path):
+    """Community and god-node articles share one slug-dedup set, so a god-node
+    label differing only by case from a community label must still get its own
+    file rather than overwriting the community article."""
+    G = nx.Graph()
+    G.add_node("n1", label="parse", file_type="code", source_file="a.py", community=0)
+    G.add_node("n2", label="run", file_type="code", source_file="b.py", community=0)
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+    communities = {0: ["n1", "n2"]}
+    labels = {0: "Parser"}
+    god_nodes = [{"id": "n1", "label": "parser", "degree": 1}]
+    n = to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
+    articles = [p for p in tmp_path.glob("*.md") if p.name != "index.md"]
+    assert len(articles) == n == 2, [p.name for p in articles]
+    lowered = [p.stem.lower() for p in articles]
+    assert len(set(lowered)) == len(lowered), [p.name for p in articles]
