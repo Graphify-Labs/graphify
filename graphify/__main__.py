@@ -10,6 +10,30 @@ import shutil
 import sys
 from pathlib import Path
 
+# Auto-load .env from CWD if present — no hard dependency on python-dotenv
+def _load_dotenv() -> None:
+    env_file = Path.cwd() / ".env"
+    if not env_file.exists():
+        return
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(env_file, override=False)
+        return
+    except ImportError:
+        pass
+    # Fallback: manual parse (no dotenv installed)
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        v = v.strip()
+        if k and k not in os.environ:
+            os.environ[k] = v
+
+_load_dotenv()
+
 try:
     from importlib.metadata import version as _pkg_version
 
