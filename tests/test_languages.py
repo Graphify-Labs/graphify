@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from graphify.extract import (
     extract_java, extract_c, extract_cpp, extract_ruby,
-    extract_csharp, extract_kotlin, extract_scala, extract_php,
+    extract_csharp, extract_kotlin, extract_haskell, extract_scala, extract_php,
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
     extract_groovy, extract_sln, extract_csproj, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
@@ -420,6 +420,63 @@ def test_kotlin_parameter_return_generic_and_field_contexts():
     assert ("run", "Result") in _edge_labels(r, "references", "return_type")
     assert ("run", "DataProcessor") in _edge_labels(r, "references", "generic_arg")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
+
+
+# ── Haskell ───────────────────────────────────────────────────────────────────
+
+_needs_haskell = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_haskell") is None,
+    reason="tree-sitter-haskell not installed",
+)
+
+
+@_needs_haskell
+def test_haskell_no_error():
+    r = extract_haskell(FIXTURES / "sample.hs")
+    assert "error" not in r
+
+
+@_needs_haskell
+def test_haskell_finds_data_type():
+    r = extract_haskell(FIXTURES / "sample.hs")
+    assert any("Shape" in l for l in _labels(r))
+
+
+@_needs_haskell
+def test_haskell_finds_class():
+    r = extract_haskell(FIXTURES / "sample.hs")
+    assert any("Describable" in l for l in _labels(r))
+
+
+@_needs_haskell
+def test_haskell_finds_functions():
+    r = extract_haskell(FIXTURES / "sample.hs")
+    labels = _labels(r)
+    assert any("area" in l for l in labels)
+    assert any("totalArea" in l for l in labels)
+    assert any("main" in l for l in labels)
+
+
+@_needs_haskell
+def test_haskell_excludes_type_level_signatures():
+    """A function *type* (`Shape -> Double`) is a `function` node nested under
+    `signature`; it must not be mistaken for a value definition (no `Double()`)."""
+    r = extract_haskell(FIXTURES / "sample.hs")
+    assert not any(_normalize_symbol_label(l) == "Double" for l in _labels(r))
+
+
+@_needs_haskell
+def test_haskell_emits_imports():
+    r = extract_haskell(FIXTURES / "sample.hs")
+    assert "imports" in _relations(r)
+
+
+@_needs_haskell
+def test_haskell_emits_in_file_call():
+    """totalArea applies `area` as a higher-order argument (`map area shapes`);
+    the apply/variable call-walker branch must attribute area to totalArea."""
+    r = extract_haskell(FIXTURES / "sample.hs")
+    assert ("totalArea()", "area()") in _calls(r)
 
 
 # ── Scala ─────────────────────────────────────────────────────────────────────

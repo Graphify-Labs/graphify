@@ -27,6 +27,7 @@ dependencies = [
     "tree-sitter-ruby>=0.23,<0.25",
     "tree-sitter-c-sharp>=0.23,<0.25",
     "tree-sitter-kotlin>=1.0,<2.0",
+    "tree-sitter-haskell>=0.23,<0.24",
     "tree-sitter-scala>=0.23,<0.27",
     "tree-sitter-php>=0.23,<0.25",
     "tree-sitter-swift>=0.7,<0.9",
