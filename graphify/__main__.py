@@ -405,6 +405,10 @@ _READ_SETTINGS_HOOK = {
     # python3 (already a graphify dependency), the shell is POSIX, and every branch
     # fails open, so a legitimate read always goes through. Reading the graph's own
     # report under graphify-out/ is suppressed so it never starts a feedback loop.
+    # The extension test compares each value's real trailing extension (segment
+    # after the last '/' then after the last '.') against exts -- not a substring
+    # scan, which both missed framework files like .astro and false-matched .json
+    # against .js (the substring '.js' is inside '.json').
     "matcher": "Read|Glob",
     "hooks": [
         {
@@ -414,9 +418,11 @@ _READ_SETTINGS_HOOK = {
                 "import json,sys;"
                 "d=json.load(sys.stdin);"
                 "t=d.get('tool_input',d);"
-                "s=(str(t.get('file_path') or '')+' '+str(t.get('pattern') or '')+' '+str(t.get('path') or '')).lower().replace(chr(92),'/');"
-                "exts=('.py','.js','.ts','.tsx','.jsx','.go','.rs','.java','.rb','.c','.h','.cpp','.hpp','.cc','.cs','.kt','.swift','.php','.scala','.lua','.sh','.md','.rst','.txt','.mdx');"
-                "sys.stdout.write('1' if 'graphify-out/' not in s and any(e in s for e in exts) else '')\" 2>/dev/null || true); "
+                "exts=('.py','.js','.ts','.tsx','.jsx','.astro','.vue','.svelte','.go','.rs','.java','.rb','.c','.h','.cpp','.hpp','.cc','.cs','.kt','.swift','.php','.scala','.lua','.sh','.md','.rst','.txt','.mdx');"
+                "vals=[str(t.get('file_path') or ''),str(t.get('pattern') or ''),str(t.get('path') or '')];"
+                "j=' '.join(vals).lower().replace(chr(92),'/');"
+                "tails=[('.'+x.rsplit('.',1)[-1]) for v in vals if v for x in [v.lower().replace(chr(92),'/').rsplit('/',1)[-1]] if '.' in x];"
+                "sys.stdout.write('1' if 'graphify-out/' not in j and any(tl in exts for tl in tails) else '')\" 2>/dev/null || true); "
                 "if [ \"$HIT\" = 1 ] && [ -f graphify-out/graph.json ]; then "
                 r"""echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"MANDATORY: graphify-out/graph.json exists. You MUST run graphify before reading source files. Use: `graphify query \"<question>\"` (scoped subgraph), `graphify explain \"<concept>\"`, or `graphify path \"<A>\" \"<B>\"`. Only read raw files after graphify has oriented you, or to modify/debug specific lines. This rule applies to subagents too — include it in every subagent prompt involving code exploration."}}'; """
                 "fi || true"

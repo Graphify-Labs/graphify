@@ -62,6 +62,25 @@ def test_glob_pattern_nudges(tmp_path):
     assert "graphify query" in out
 
 
+def test_nudges_on_framework_source(tmp_path):
+    """.astro/.vue/.svelte are real source types and must nudge (regression)."""
+    for path in ("src/components/Hero.astro", "src/App.vue", "src/Card.svelte"):
+        out = _run({"file_path": path}, tmp_path, graph=True).stdout
+        assert "graphify query" in out, f"{path} should nudge"
+
+
+def test_astro_glob_nudges(tmp_path):
+    out = _run({"pattern": "**/*.astro"}, tmp_path, graph=True).stdout
+    assert "graphify query" in out
+
+
+def test_silent_on_json_config(tmp_path):
+    """Config files must stay silent: '.json' must not match the '.js' extension."""
+    for path in ("package.json", "tsconfig.json", "data.geojson"):
+        out = _run({"file_path": path}, tmp_path, graph=True).stdout
+        assert out.strip() == "", f"{path} should not nudge"
+
+
 def test_fails_open_on_malformed_stdin(tmp_path):
     (tmp_path / "graphify-out").mkdir()
     (tmp_path / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
