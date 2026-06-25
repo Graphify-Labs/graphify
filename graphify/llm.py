@@ -70,7 +70,9 @@ BACKENDS: dict[str, dict] = {
         "vision": True,
     },
     "kimi": {
-        "base_url": "https://api.moonshot.ai/v1",
+        # KIMI_BASE_URL points the backend at any OpenAI-compatible server for
+        # Moonshot's Kimi models (LiteLLM, self-hosted proxy, ...).
+        "base_url": os.environ.get("KIMI_BASE_URL", "https://api.moonshot.ai/v1"),
         "default_model": "kimi-k2.6",
         "env_key": "MOONSHOT_API_KEY",
         # kimi-k2.6 is natively multimodal (MoonViT) and accepts the same
@@ -89,7 +91,10 @@ BACKENDS: dict[str, dict] = {
         "max_tokens": 16384,
     },
     "gemini": {
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        # GEMINI_BASE_URL points the backend at any OpenAI-compatible server for
+        # Gemini models (LiteLLM, self-hosted proxy, ...). Falls back to Google's
+        # official OpenAI-compatible endpoint.
+        "base_url": os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"),
         "default_model": "gemini-3-flash-preview",
         "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "model_env_key": "GRAPHIFY_GEMINI_MODEL",
@@ -118,7 +123,10 @@ BACKENDS: dict[str, dict] = {
         "vision": True,
     },
     "deepseek": {
-        "base_url": "https://api.deepseek.com",
+        # DEEPSEEK_BASE_URL points the backend at any OpenAI-compatible server for
+        # DeepSeek models (LiteLLM, self-hosted proxy, ...). Falls back to DeepSeek's
+        # official API endpoint.
+        "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         "default_model": "deepseek-v4-flash",
         "env_key": "DEEPSEEK_API_KEY",
         "model_env_key": "GRAPHIFY_DEEPSEEK_MODEL",
