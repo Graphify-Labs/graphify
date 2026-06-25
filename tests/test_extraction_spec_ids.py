@@ -4,7 +4,7 @@
 copies skillgen renders from it) tell the subagents how to build node IDs, with
 worked examples like::
 
-    `src/auth/session.py` + `ValidateToken` → `auth_session_validatetoken`
+    `src/auth/session.py` + `ValidateToken` → `src_auth_session_validatetoken`
 
 Those examples are the LLM's ground truth, and they must reproduce exactly what
 the AST extractor emits (`extract._file_stem` + `extract._make_id`) or the two
@@ -86,10 +86,11 @@ def test_spec_node_id_examples_match_ast_extractor(path, entity, expected):
 
 
 def test_cautionary_wrong_forms_are_actually_wrong():
-    """The canonical spec warns against the filename-only and full-path ID forms.
+    """The canonical spec warns against the filename-only and one-parent ID forms.
     Lock those anti-examples to the code too, so the warning can't go stale."""
     correct = _ast_symbol_id("src/auth/session.py", "ValidateToken")
-    assert correct == "auth_session_validatetoken"
-    # filename-only (drops the parent dir) and full-path (keeps every segment)
+    assert correct == "src_auth_session_validatetoken"
+    # filename-only (drops directories) and one-parent (drops the repo-relative
+    # prefix) are both non-canonical.
     assert _make_id("session", "ValidateToken") != correct
-    assert _make_id("src", "auth", "session", "ValidateToken") != correct
+    assert _make_id("auth", "session", "ValidateToken") != correct

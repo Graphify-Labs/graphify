@@ -63,6 +63,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from graphify.ids import file_stem as _shared_file_stem
 from graphify.ids import make_id as _shared_make_id
 from graphify.security import sanitize_label
 
@@ -382,8 +383,5 @@ def _make_id(*parts: str) -> str:
 
 
 def _file_stem(path: Path) -> str:
-    """Mirror extract._file_stem: include parent dir name to disambiguate."""
-    parent = path.parent.name
-    if parent and parent not in (".", ""):
-        return f"{parent}.{path.stem}"
-    return path.stem
+    """Mirror extract._file_stem through the shared path-stem helper."""
+    return _shared_file_stem(path)

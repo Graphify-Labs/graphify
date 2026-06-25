@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from pathlib import Path
 
-__all__ = ["normalize_id", "make_id"]
+__all__ = ["normalize_id", "make_id", "file_stem"]
 
 
 def normalize_id(s: str) -> str:
@@ -48,3 +49,30 @@ def make_id(*parts: str) -> str:
     what the builder produces from the joined string.
     """
     return normalize_id("_".join(p.strip("_.") for p in parts if p))
+
+
+def file_stem(path: str | Path, repo_root: str | Path | None = None) -> str:
+    """Build the canonical file-stem prefix for path-derived node IDs.
+
+    When ``repo_root`` is available, the stem is based on the full path relative
+    to that root. Relative paths are treated as already repo-relative. Absolute
+    paths without a root keep the historical one-parent fallback so extractors
+    can still be remapped after the scan root is known.
+    """
+    path = Path(path)
+    relative_path: Path | None = None
+    if repo_root is not None:
+        try:
+            relative_path = path.resolve().relative_to(Path(repo_root).resolve())
+        except ValueError:
+            relative_path = None
+    elif not path.is_absolute():
+        relative_path = path
+
+    if relative_path is not None:
+        return ".".join(relative_path.with_suffix("").parts)
+
+    parent = path.parent.name
+    if parent and parent not in (".", ""):
+        return f"{parent}.{path.stem}"
+    return path.stem

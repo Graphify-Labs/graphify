@@ -1,13 +1,14 @@
-"""Regression tests for issue #1033: AST file-level node IDs must match the
-skill.md `{parent_dir}_{stem}` spec (one parent level, no extension) so AST and
-semantic extraction produce the SAME node for a file instead of two disconnected
+"""Regression tests for path-derived AST node IDs.
+
+AST file-level node IDs must match the skill.md repo-relative stem spec so AST
+and semantic extraction produce the SAME node for a file instead of disconnected
 ghosts.
 
 skill.md spec (line ~390):
-    stem = {parent_dir}_{filename_without_ext}, lowercased, non-alphanumeric -> _
+    stem = {repo_relative_path_without_ext}, lowercased, non-alphanumeric -> _
     examples:
-        src/auth/session.py + ValidateToken -> auth_session_validatetoken
-        match/script/pipeline_step.py (file node) -> script_pipeline_step
+        src/auth/session.py + ValidateToken -> src_auth_session_validatetoken
+        match/script/pipeline_step.py (file node) -> match_script_pipeline_step
         setup.py (top-level) -> setup
 """
 from pathlib import Path
@@ -24,8 +25,8 @@ def _file_nodes(extraction: dict) -> list[dict]:
     ]
 
 
-def test_file_node_id_uses_parent_dir_and_stem_no_extension(tmp_path):
-    """match/script/pipeline_step.py -> file node id 'script_pipeline_step'."""
+def test_file_node_id_uses_repo_relative_stem_no_extension(tmp_path):
+    """match/script/pipeline_step.py -> file node id 'match_script_pipeline_step'."""
     sub = tmp_path / "match" / "script"
     sub.mkdir(parents=True)
     f = sub / "pipeline_step.py"
@@ -34,8 +35,8 @@ def test_file_node_id_uses_parent_dir_and_stem_no_extension(tmp_path):
     extraction = extract([f], cache_root=tmp_path)
     ids = {n["id"] for n in extraction["nodes"]}
 
-    assert "script_pipeline_step" in ids, (
-        f"expected spec-format file id 'script_pipeline_step', got {sorted(ids)}"
+    assert "match_script_pipeline_step" in ids, (
+        f"expected spec-format file id 'match_script_pipeline_step', got {sorted(ids)}"
     )
     # The old buggy full-path-with-extension id must be gone.
     assert "match_script_pipeline_step_py" not in ids
@@ -79,9 +80,8 @@ def test_top_level_file_SYMBOL_ids_use_bare_stem(tmp_path):
     assert contains and contains[0]["source"] == "main"
 
 
-def test_nested_file_symbol_ids_unchanged(tmp_path):
-    """Regression guard: nested files (immediate parent identical in abs/rel form)
-    must be completely unaffected by the symbol remap."""
+def test_single_directory_nested_file_ids_stay_readable(tmp_path):
+    """A one-directory nested file keeps the same concise repo-relative stem."""
     sub = tmp_path / "sub"
     sub.mkdir()
     f = sub / "mod.py"
@@ -94,7 +94,7 @@ def test_nested_file_symbol_ids_unchanged(tmp_path):
 
 
 def test_symbol_and_file_ids_share_the_same_stem(tmp_path):
-    """Symbol ids already use {parent}_{stem}_{name}; the file node must share
+    """Symbol ids already use {repo_relative_stem}_{name}; the file node must share
     that stem prefix so 'contains' edges connect file -> symbol."""
     sub = tmp_path / "match" / "script"
     sub.mkdir(parents=True)
@@ -104,16 +104,16 @@ def test_symbol_and_file_ids_share_the_same_stem(tmp_path):
     extraction = extract([f], cache_root=tmp_path)
     ids = {n["id"] for n in extraction["nodes"]}
 
-    assert "script_pipeline_step" in ids          # file node
-    assert "script_pipeline_step_stage" in ids     # class symbol shares stem
+    assert "match_script_pipeline_step" in ids          # file node
+    assert "match_script_pipeline_step_stage" in ids     # class symbol shares stem
 
     # The file -> class 'contains' edge must reference the real file node id.
     contains = [
         e for e in extraction["edges"]
-        if e["relation"] == "contains" and e["target"] == "script_pipeline_step_stage"
+        if e["relation"] == "contains" and e["target"] == "match_script_pipeline_step_stage"
     ]
     assert contains, "no 'contains' edge to the class symbol"
-    assert contains[0]["source"] == "script_pipeline_step", (
+    assert contains[0]["source"] == "match_script_pipeline_step", (
         f"contains edge source {contains[0]['source']!r} does not match file node"
     )
 
@@ -149,3 +149,46 @@ def test_cross_file_import_edges_stay_connected(tmp_path):
         # imports_from edges between files must land on a known node.
         if e["relation"] == "imports_from" and e["source"] == "pkg_auth":
             assert e["target"] in node_ids or "models" in e["target"]
+
+
+def test_deep_same_named_files_use_full_repo_relative_identity(tmp_path):
+    """Same-named files below different package roots must not merge through the
+    old one-parent stem form (`src_index`)."""
+    package_a = tmp_path / "packages" / "a" / "src"
+    package_b = tmp_path / "packages" / "b" / "src"
+    package_a.mkdir(parents=True)
+    package_b.mkdir(parents=True)
+    (package_a / "index.py").write_text("class Parser:\n    pass\n")
+    (package_b / "index.py").write_text("class Contract:\n    pass\n")
+
+    extraction = extract(
+        [(package_a / "index.py").resolve(), (package_b / "index.py").resolve()],
+        cache_root=tmp_path,
+    )
+    ids = {n["id"] for n in extraction["nodes"]}
+
+    assert "packages_a_src_index" in ids
+    assert "packages_b_src_index" in ids
+    assert "packages_a_src_index_parser" in ids
+    assert "packages_b_src_index_contract" in ids
+    assert "src_index" not in ids
+
+
+def test_repo_root_name_does_not_affect_deep_symbol_ids(tmp_path):
+    """The repo folder name belongs in graph metadata, not in node IDs."""
+    root_one = tmp_path / "checkout-one"
+    root_two = tmp_path / "checkout-two"
+    rel_path = Path("packages/a/src/index.py")
+    for root in (root_one, root_two):
+        source_file = root / rel_path
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("def parse():\n    return 1\n")
+
+    first = extract([(root_one / rel_path).resolve()], cache_root=root_one)
+    second = extract([(root_two / rel_path).resolve()], cache_root=root_two)
+
+    first_ids = {n["id"] for n in first["nodes"]}
+    second_ids = {n["id"] for n in second["nodes"]}
+    assert first_ids == second_ids
+    assert "packages_a_src_index_parse" in first_ids
+    assert not any("checkout" in node_id for node_id in first_ids)

@@ -20,7 +20,7 @@ import pytest
 
 from graphify.build import _normalize_id
 from graphify.extract import _make_id
-from graphify.ids import make_id, normalize_id
+from graphify.ids import file_stem, make_id, normalize_id
 
 # Inputs that previously diverged or are easy to get wrong. The single-part form
 # of `_make_id` must equal `_normalize_id` for every one of these.
@@ -63,8 +63,8 @@ def test_make_id_joins_then_normalizes():
     parts = ("auth", "session.py", "ValidateToken")
     assert make_id(*parts) == normalize_id("_".join(parts))
     # Documented spec example.
-    assert make_id("src/auth/session.py".split("/")[-2], "session", "ValidateToken") == \
-        "auth_session_validatetoken"
+    assert make_id(file_stem("src/auth/session.py"), "ValidateToken") == \
+        "src_auth_session_validatetoken"
 
 
 def test_unicode_identifiers_do_not_collapse_to_empty():

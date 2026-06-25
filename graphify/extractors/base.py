@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.ids import make_id
+from graphify.ids import file_stem, make_id
 
 # Language built-in globals that AST may classify as call targets when used as
 # constructors or coercion functions (e.g. String(x), Number(x), Boolean(x)).
@@ -36,11 +36,8 @@ def _make_id(*parts: str) -> str:
     return make_id(*parts)
 
 
-def _file_stem(path: Path) -> str:
-    parent = path.parent.name
-    if parent and parent not in (".", ""):
-        return f"{parent}.{path.stem}"
-    return path.stem
+def _file_stem(path: Path, repo_root: Path | None = None) -> str:
+    return file_stem(path, repo_root)
 
 
 def _read_text(node, source: bytes) -> str:

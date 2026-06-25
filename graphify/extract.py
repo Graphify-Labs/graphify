@@ -59,12 +59,14 @@ def _safe_extract(extractor: Callable, path: Path) -> dict:
 
 
 def _file_node_id(rel_path: Path) -> str:
-    """File-level node ID matching the skill.md spec: ``{parent_dir}_{stem}`` —
-    one parent directory level, no extension. ``rel_path`` MUST be relative to
-    the project root so top-level files collapse to a bare stem (``setup.py`` ->
-    ``setup``) instead of picking up the root directory name. This must equal the
-    ID semantic subagents generate, or AST and semantic extraction split a file
-    into two disconnected ghost nodes (#1033)."""
+    """File-level node ID matching the skill.md repo-relative stem spec.
+
+    ``rel_path`` MUST be relative to the project root so top-level files collapse
+    to a bare stem (``setup.py`` -> ``setup``) while nested files keep every
+    repo-relative directory segment. This must equal the ID semantic subagents
+    generate, or AST and semantic extraction split a file into two disconnected
+    ghost nodes (#1033/#1158).
+    """
     return _make_id(_file_stem(rel_path))
 
 
@@ -12301,7 +12303,7 @@ def extract(
     _augment_symbol_resolution_edges(paths, all_nodes, all_edges, root)
 
     # Remap file node IDs from absolute-path-derived to the canonical
-    # {parent_dir}_{stem} spec form so (a) graph.json edge endpoints are stable
+    # repo-relative stem spec form so (a) graph.json edge endpoints are stable
     # across machines (#502) and (b) AST file nodes match the IDs semantic
     # subagents generate (#1033). Resolve before relativizing so paths passed in
     # relative form still anchor to the (resolved) root.

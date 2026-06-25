@@ -10,6 +10,7 @@ from pathlib import Path
 from collections.abc import Sequence
 from typing import Any
 
+from graphify.ids import file_stem as _shared_file_stem
 from graphify.ids import make_id as _shared_make_id
 from graphify.security import sanitize_metadata
 
@@ -367,18 +368,14 @@ def _bash_make_id(*parts: str) -> str:
 
 
 def _bash_file_stem(rel_path: Path) -> str:
-    """Exact copy of extract._file_stem — kept here to avoid an import cycle."""
-    parent = rel_path.parent.name
-    if parent and parent not in (".", ""):
-        return f"{parent}.{rel_path.stem}"
-    return rel_path.stem
+    """Bash file stem via the single shared path recipe (#1158)."""
+    return _shared_file_stem(rel_path)
 
 
 def _file_node_id_for_path(path: Path, root: Path) -> str:
-    # Produce the canonical {parent_dir}_{stem} file-node ID that extract()'s
+    # Produce the canonical repo-relative stem file-node ID that extract()'s
     # id_remap generates (#1033), so bash `source` edges land on the real file
-    # node instead of an orphan. _bash_make_id / _bash_file_stem are exact copies
-    # of extract._make_id / extract._file_stem, so IDs match.
+    # node instead of an orphan.
     try:
         rel = path.resolve().relative_to(root.resolve())
     except ValueError:
