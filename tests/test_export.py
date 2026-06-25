@@ -264,6 +264,30 @@ def test_to_obsidian_case_only_distinct_labels_dont_overwrite():
         assert len(notes) == G.number_of_nodes(), [p.name for p in notes]
         lowered = [p.stem.lower() for p in notes]
         assert len(set(lowered)) == len(lowered), [p.name for p in notes]
+        # the suffixed name must be the expected one, not merely distinct
+        assert sorted(p.stem for p in notes) == ["References", "references_1"], [p.name for p in notes]
+
+
+def test_to_obsidian_generated_suffix_doesnt_overwrite_literal():
+    """A generated `_1` suffix must not collide with a node whose literal label is
+    already that suffixed name. With labels [dup, dup, dup_1] the second `dup`
+    becomes `dup_1`, which would clobber the third node unless the candidate is
+    re-checked. This collides on case-sensitive filesystems too, so it guards the
+    dedup loop independently of case-folding."""
+    G = build_from_json({
+        "nodes": [
+            {"id": "a", "label": "dup", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "dup", "file_type": "code", "source_file": "b.py"},
+            {"id": "c", "label": "dup_1", "file_type": "code", "source_file": "c.py"},
+        ],
+        "edges": [],
+    })
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp)
+        notes = [p for p in Path(tmp).rglob("*.md") if not p.name.startswith("_COMMUNITY")]
+        assert len(notes) == 3, [p.name for p in notes]
+        assert len({p.stem.lower() for p in notes}) == 3, [p.name for p in notes]
 
 
 def test_to_canvas_case_only_distinct_labels_get_distinct_files():
@@ -278,6 +302,43 @@ def test_to_canvas_case_only_distinct_labels_get_distinct_files():
         files = [n["file"] for n in data["nodes"] if n.get("type") == "file"]
         lowered = [f.lower() for f in files]
         assert len(set(lowered)) == len(lowered), files
+
+
+def test_obsidian_canvas_filenames_agree():
+    """The CLI calls to_obsidian and to_canvas separately with no shared map, so
+    they must independently produce the same node->filename mapping - otherwise a
+    canvas card points at a note file that doesn't exist on disk."""
+    G = _case_collision_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp)
+        note_stems = {p.stem for p in Path(tmp).rglob("*.md") if not p.name.startswith("_COMMUNITY")}
+        out = Path(tmp) / "graph.canvas"
+        to_canvas(G, communities, str(out))
+        data = json.loads(out.read_text())
+        canvas_stems = {Path(n["file"]).stem for n in data["nodes"] if n.get("type") == "file"}
+        assert canvas_stems <= note_stems, (sorted(canvas_stems), sorted(note_stems))
+
+
+def test_to_obsidian_community_notes_case_collision():
+    """Two community labels differing only by case must each get their own
+    `_COMMUNITY_*.md` overview note. This path had no dedup at all, so even
+    same-case duplicate labels previously overwrote silently."""
+    G = build_from_json({
+        "nodes": [
+            {"id": "n1", "label": "alpha", "file_type": "code", "source_file": "a.py"},
+            {"id": "n2", "label": "beta", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [],
+    })
+    communities = {0: ["n1"], 1: ["n2"]}
+    labels = {0: "API", 1: "Api"}
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp, community_labels=labels)
+        comm = [p for p in Path(tmp).rglob("_COMMUNITY_*.md")]
+        assert len(comm) == 2, [p.name for p in comm]
+        lowered = [p.stem.lower() for p in comm]
+        assert len(set(lowered)) == len(lowered), [p.name for p in comm]
 
 
 # ── Issue #834: backup_if_protected ──────────────────────────────────────────
