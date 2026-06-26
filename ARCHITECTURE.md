@@ -16,23 +16,23 @@ Each stage is a single function in its own module. They communicate through plai
 
 | Module | Function | Input → Output |
 |--------|----------|----------------|
-| `detect.py` | `collect_files(root)` | directory → `[Path]` filtered list |
+| `detect.py` | `detect(root)` | directory → detection result dict (files, word/line counts, warnings) |
 | `extract.py` | `extract(path)` | file path → `{nodes, edges}` dict (dispatches to per-language extractors) |
 | `extractors/` | per-language `extract_<lang>` | file path → `{nodes, edges}` dict (blade, elixir, razor, zig, and shared base) |
-| `build.py` | `build_graph(extractions)` | list of extraction dicts → `nx.Graph` |
-| `dedup.py` | `deduplicate_by_label(G)` | graph → graph with duplicate nodes collapsed |
+| `build.py` | `build_from_json(extraction)` | extraction dict → `nx.Graph` |
+| `dedup.py` | `deduplicate_entities(nodes, edges, ...)` | nodes + edges → deduplicated `(nodes, edges)` with near-identical entities merged |
 | `cluster.py` | `cluster(G)` | graph → graph with `community` attr on each node |
 | `analyze.py` | `analyze(G)` | graph → analysis dict (god nodes, surprises, import cycles, questions) |
-| `report.py` | `render_report(G, analysis)` | graph + analysis → GRAPH_REPORT.md string |
-| `export.py` | `export(G, out_dir, ...)` | graph → Obsidian vault, graph.json, graph.html, graph.svg, wiki, canvas |
+| `report.py` | `generate(G, communities, ...)` | graph + analysis → GRAPH_REPORT.md string |
+| `export.py` | `to_json / to_html / ...` | graph → Obsidian vault, graph.json, graph.html, graph.svg, wiki, canvas |
 | `wiki.py` | `to_wiki(G, out_dir)` | graph → agent-crawlable Markdown wiki |
 
 ### Query and serving
 
 | Module | Function | Input → Output |
 |--------|----------|----------------|
-| `serve.py` | `start_server(graph_path)` | graph file path → MCP stdio/HTTP server |
-| `prs.py` | `run_prs(...)` | graph + GitHub API → PR dashboard with graph blast radius |
+| `serve.py` | `serve(graph_path)` | graph file path → MCP stdio/HTTP server |
+| `prs.py` | `cmd_prs(argv)` | graph + GitHub API → PR dashboard with graph blast radius |
 | `querylog.py` | logging helpers | query calls → `~/.cache/graphify-queries.log` JSON Lines |
 
 ### Incremental updates and work memory

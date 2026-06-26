@@ -331,9 +331,14 @@ graphify can track which graph nodes and Q&A results were actually useful across
 
 **Record outcomes as you work:**
 ```bash
-graphify save-result --question "how does auth work?" --answer "..." --nodes AuthMiddleware SessionStore --outcome useful          # mark as useful
-graphify save-result --question "how does auth work?" --answer "..." --nodes AuthMiddleware SessionStore --outcome dead_end        # mark as a dead end (led nowhere)
-graphify save-result --question "how does auth work?" --answer "..." --nodes AuthMiddleware SessionStore --outcome corrected --correction "the real path is X"  # mark as corrected
+# Mark as useful:
+graphify save-result --question "how does auth work?" --answer "..." --nodes AuthMiddleware SessionStore --outcome useful
+
+# Mark as a dead end:
+graphify save-result --question "how does auth work?" --answer "..." --nodes AuthMiddleware SessionStore --outcome dead_end
+
+# Mark as corrected:
+graphify save-result --question "how does auth work?" --answer "..." --nodes AuthMiddleware SessionStore --outcome corrected --correction "the real path is X"
 ```
 
 **Regenerate the lessons summary:**
