@@ -82,7 +82,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 **Step 1 — install the package:**
 
 ```bash
-# Recommended (uv puts graphify on PATH automatically):
+# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
 uv tool install graphifyy
 
 # Alternatives:
@@ -115,7 +115,9 @@ for example `graphify claude install --project` or `graphify codex install --pro
 
 > **PowerShell note:** Use `graphify .` not `/graphify .` — the leading slash is a path separator in PowerShell.
 
-> **`graphify: command not found`?** Use `uv tool install graphifyy` or `pipx install graphifyy` — both put the CLI on PATH automatically. With plain `pip`, add `~/.local/bin` (Linux) or `~/Library/Python/3.x/bin` (Mac) to your PATH, or run `python -m graphify`.
+> **`graphify: command not found`?** `uv tool install` / `pipx install` put the `graphify` command in their tool bin dir (`~/.local/bin`). If your shell can't find it right after install — common on a fresh macOS + zsh setup — that dir isn't on your `PATH` yet: run `uv tool update-shell` (or `pipx ensurepath`), then open a new terminal. With plain `pip`, add `~/.local/bin` (Linux) or `~/Library/Python/3.x/bin` (Mac) to your PATH, or run `python -m graphify`.
+
+> **Running with `uvx` / `uv tool run` instead of installing?** Name the package, not the command: `uvx --from graphifyy graphify install`. Plain `uvx graphify …` fails (`No solution found … no versions of graphify`) because `uv tool run` reads the first word as a *package*, and the package is `graphifyy` — the `graphify` command lives inside it.
 
 > **Avoid `pip install` on Mac/Windows** if possible. The skill resolves Python at runtime from `graphify-out/.graphify_python`; if that points to a different environment than where `pip` installed the package, you'll get `ModuleNotFoundError: No module named 'graphify'`. `uv tool install` and `pipx install` isolate the package in their own env and avoid this entirely.
 
@@ -448,14 +450,17 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 
 ## Troubleshooting
 
-**`graphify: command not found` after `pip install graphifyy`**
-pip installs scripts to a user bin directory that may not be on your PATH. Fix:
-- macOS: add `~/Library/Python/3.x/bin` to your PATH in `~/.zshrc`
-- Linux: add `~/.local/bin` to your PATH in `~/.bashrc`
-- Or use `uv tool install graphifyy` / `pipx install graphifyy` — both manage PATH automatically.
+**`graphify: command not found` after installing**
+The CLI is installed but its bin directory isn't on your shell's `PATH`. Pick the fix for how you installed:
+- **uv** (`uv tool install graphifyy`): the command lands in uv's tool bin dir (`~/.local/bin`), which a fresh macOS/zsh setup often doesn't have on `PATH`. Run `uv tool update-shell`, then open a new terminal. (Find the dir with `uv tool dir --bin`.)
+- **pipx** (`pipx install graphifyy`): run `pipx ensurepath`, then open a new terminal.
+- **pip** (`pip install graphifyy`): pip installs scripts to a user bin dir that may not be on `PATH` — add `~/Library/Python/3.x/bin` (macOS) or `~/.local/bin` (Linux) to your `PATH` in `~/.zshrc`/`~/.bashrc`, or just run `python -m graphify`.
+
+**`uvx graphify …` or `uv tool run graphify …` fails to resolve `graphify`**
+The PyPI package is `graphifyy`; `graphify` is only the command it provides. `uv tool run` treats the first word as a *package name*, so it looks for a package called `graphify` and reports `No solution found … no versions of graphify`. Name the package explicitly: `uvx --from graphifyy graphify install` (same as `uv tool run --from graphifyy graphify install`). Or `uv tool install graphifyy` once and then call `graphify` directly.
 
 **`python -m graphify` works but `graphify` command doesn't**
-Your shell's PATH doesn't include the Python scripts directory. Use `uv` or `pipx` instead of plain `pip`.
+Your shell's `PATH` doesn't include the bin directory the command was installed to. Prefer `uv tool install` / `pipx install` over plain `pip`, then run `uv tool update-shell` / `pipx ensurepath` and open a new terminal (see the install notes above).
 
 **`/graphify .` causes "path not recognized" in PowerShell**
 PowerShell treats a leading `/` as a path separator. Use `graphify .` (no slash) on Windows.
