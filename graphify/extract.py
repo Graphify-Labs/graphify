@@ -2577,6 +2577,56 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
     return False
 
 
+# ── TS extra walk for namespace / module declarations ─────────────────────────
+
+def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                   nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                   parent_class_nid: str | None, add_node_fn, add_edge_fn,
+                   walk_fn) -> bool:
+    """Emit a container node for a TS `namespace`/`module` declaration.
+
+    `namespace Foo {}` parses as `internal_module` (with `name`/`body` fields);
+    `module Bar {}` and ambient `declare module "pkg" {}` parse as a named
+    `module` node that exposes no fields, so its name and body are found
+    positionally. Without this the container was never a node — its members were
+    still reached by the default recurse but lost their namespace context. The
+    members stay file-contained (parity with C#'s `_csharp_extra_walk`); the
+    namespace becomes a sibling marker node so it is queryable. Returns True if
+    handled.
+
+    The guard requires `is_named` because the anonymous `module` keyword token
+    shares the `module` type string and would otherwise match here.
+    """
+    if node.is_named and node.type in ("internal_module", "module"):
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            for child in node.children:
+                if child.is_named and child.type in (
+                        "identifier", "nested_identifier", "string"):
+                    name_node = child
+                    break
+        body = node.child_by_field_name("body")
+        if body is None:
+            for child in node.children:
+                if child.type == "statement_block":
+                    body = child
+                    break
+        if name_node is not None:
+            ns_name = _read_text(name_node, source)
+            if name_node.type == "string":
+                ns_name = ns_name.strip("'\"`")
+            if ns_name:
+                ns_nid = _make_id(stem, ns_name)
+                line = node.start_point[0] + 1
+                add_node_fn(ns_nid, ns_name, line)
+                add_edge_fn(file_nid, ns_nid, "contains", line)
+        if body is not None:
+            for child in body.children:
+                walk_fn(child, parent_class_nid)
+        return True
+    return False
+
+
 # ── C# extra walk for namespace declarations ──────────────────────────────────
 
 def _csharp_namespace_name(node, source: bytes) -> str:
@@ -4429,6 +4479,13 @@ def _extract_generic(
                               nodes, edges, seen_ids, function_bodies,
                               parent_class_nid, add_node, add_edge,
                               callable_def_nids, local_bound_names):
+                return
+
+        # TS namespace / module containers (internal_module, module)
+        if config.ts_module == "tree_sitter_typescript":
+            if _ts_extra_walk(node, source, file_nid, stem, str_path,
+                              nodes, edges, seen_ids, function_bodies,
+                              parent_class_nid, add_node, add_edge, walk):
                 return
 
         if config.ts_module == "tree_sitter_c_sharp":
