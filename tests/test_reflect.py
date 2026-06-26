@@ -607,6 +607,22 @@ def test_lessons_fresh_false_when_graph_newer(tmp_path):
     assert lessons_fresh(out, mem, graph) is False
 
 
+@pytest.mark.parametrize("sidecar_name", [".graphify_analysis.json", ".graphify_labels.json"])
+def test_lessons_fresh_false_when_graph_sidecar_newer(tmp_path, sidecar_name):
+    import os
+    mem = tmp_path / "memory"; mem.mkdir()
+    (mem / "q.md").write_text("x", encoding="utf-8")
+    out = tmp_path / "LESSONS.md"; out.write_text("y", encoding="utf-8")
+    graph = tmp_path / "graph.json"; graph.write_text("{}", encoding="utf-8")
+    analysis = tmp_path / ".graphify_analysis.json"; analysis.write_text("{}", encoding="utf-8")
+    labels = tmp_path / ".graphify_labels.json"; labels.write_text("{}", encoding="utf-8")
+    for p in [mem / "q.md", graph, analysis, labels]:
+        os.utime(p, (1000, 1000))
+    os.utime(out, (1500, 1500))
+    os.utime(tmp_path / sidecar_name, (2000, 2000))
+    assert lessons_fresh(out, mem, graph, analysis, labels) is False
+
+
 def test_cli_reflect_if_stale_skips_when_fresh(tmp_path):
     """`reflect --if-stale` skips the rebuild when LESSONS.md is already current,
     and still runs when a new outcome arrives."""
@@ -631,6 +647,33 @@ def test_cli_reflect_if_stale_skips_when_fresh(tmp_path):
     ran = _run(["reflect", "--if-stale"], tmp_path)
     assert ran.returncode == 0
     assert "up to date" not in (ran.stdout + ran.stderr).lower()
+
+
+def test_cli_reflect_if_stale_reruns_when_labels_newer(tmp_path):
+    """A label refresh changes LESSONS.md topic headings, so --if-stale must rebuild."""
+    out = _make_graph(tmp_path)
+    graph_data = json.loads((out / "graph.json").read_text())
+    node = graph_data["nodes"][0]
+    real = node["label"]
+    community = str(node["community"])
+    _run(["save-result", "--question", "q", "--answer", "a",
+          "--nodes", real, "--outcome", "useful"], tmp_path)
+    first = _run(["reflect"], tmp_path)
+    assert first.returncode == 0, first.stderr
+
+    lessons = out / "reflections" / "LESSONS.md"
+    labels_path = out / ".graphify_labels.json"
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))
+    labels[community] = "Renamed Topic"
+    labels_path.write_text(json.dumps(labels), encoding="utf-8")
+
+    import os
+    os.utime(lessons, (1500, 1500))
+    os.utime(labels_path, (2000, 2000))
+    ran = _run(["reflect", "--if-stale"], tmp_path)
+    assert ran.returncode == 0, ran.stderr
+    assert "up to date" not in (ran.stdout + ran.stderr).lower()
+    assert "### Renamed Topic" in lessons.read_text(encoding="utf-8")
 
 
 def test_dead_ends_and_corrections_dedupe_by_question():

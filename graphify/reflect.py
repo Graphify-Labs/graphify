@@ -501,9 +501,11 @@ def render_lessons_md(agg: dict[str, Any]) -> str:
 
 
 def lessons_fresh(out_path: Path, memory_dir: Path,
-                  graph_path: Path | None = None) -> bool:
+                  graph_path: Path | None = None,
+                  analysis_path: Path | None = None,
+                  labels_path: Path | None = None) -> bool:
     """True if ``out_path`` exists and is at least as new as every input that
-    feeds it (the memory docs, and the graph when one is used).
+    feeds it (the memory docs, and the graph/sidecars when one is used).
 
     Lets ``graphify reflect --if-stale`` skip a redundant run — e.g. when the git
     post-commit hook just regenerated ``LESSONS.md`` and an agent then runs reflect
@@ -524,8 +526,10 @@ def lessons_fresh(out_path: Path, memory_dir: Path,
                 newest = max(newest, f.stat().st_mtime)
             except OSError:
                 pass
-    if graph_path is not None:
-        gp = Path(graph_path)
+    for input_path in (graph_path, analysis_path, labels_path):
+        if input_path is None:
+            continue
+        gp = Path(input_path)
         try:
             newest = max(newest, gp.stat().st_mtime)
         except OSError:

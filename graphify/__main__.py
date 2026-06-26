@@ -2980,15 +2980,25 @@ def main() -> None:
                 graph_arg = str(default_graph)
 
         _gp = Path(graph_arg) if graph_arg else None
-        if opts.if_stale and _lessons_fresh(Path(opts.out), Path(opts.memory_dir), _gp):
+        _analysis_path = None
+        _labels_path = None
+        if _gp is not None:
+            _analysis_path = Path(opts.analysis) if opts.analysis else (
+                _gp.parent / ".graphify_analysis.json")
+            _labels_path = Path(opts.labels) if opts.labels else (
+                _gp.parent / ".graphify_labels.json")
+
+        if opts.if_stale and _lessons_fresh(
+            Path(opts.out), Path(opts.memory_dir), _gp, _analysis_path, _labels_path
+        ):
             print(f"Lessons already up to date -> {opts.out} (skipped; omit --if-stale to force)")
         else:
             out_path, agg = _reflect(
                 memory_dir=Path(opts.memory_dir),
                 out_path=Path(opts.out),
                 graph_path=_gp,
-                analysis_path=Path(opts.analysis) if opts.analysis else None,
-                labels_path=Path(opts.labels) if opts.labels else None,
+                analysis_path=_analysis_path,
+                labels_path=_labels_path,
                 half_life_days=opts.half_life_days,
                 min_corroboration=opts.min_corroboration,
             )
