@@ -656,6 +656,19 @@ def count_words(path: Path) -> int:
         return 0
 
 
+def count_lines(path: Path) -> int:
+    """Non-blank line count — used for the corpus lines-of-code total."""
+    try:
+        count = 0
+        with path.open(encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if line.strip():
+                    count += 1
+        return count
+    except Exception:
+        return 0
+
+
 # Directory names to always skip - venvs, caches, build artifacts, deps
 _SKIP_DIRS = {
     "venv", ".venv", "env", ".env",
@@ -1022,6 +1035,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         FileType.VIDEO: [],
     }
     total_words = 0
+    total_lines = 0
 
     skipped_sensitive: list[str] = []
     ignore_patterns = _load_graphifyignore(root)
@@ -1116,6 +1130,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         continue
                     files[ftype].append(str(md_path))
                     total_words += count_words(md_path)
+                    total_lines += count_lines(md_path)
                 else:
                     skipped_sensitive.append(str(p) + " [Google Workspace export produced no readable text]")
                 continue
@@ -1127,6 +1142,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         continue
                     files[ftype].append(str(md_path))
                     total_words += count_words(md_path)
+                    total_lines += count_lines(md_path)
                 else:
                     # Conversion failed (library not installed) - skip with note
                     skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
@@ -1134,6 +1150,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             files[ftype].append(str(p))
             if ftype != FileType.VIDEO:
                 total_words += count_words(p)
+            if ftype in (FileType.CODE, FileType.DOCUMENT):
+                total_lines += count_lines(p)
 
     for ftype in files:
         files[ftype].sort()
@@ -1159,6 +1177,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         "files": {k.value: v for k, v in files.items()},
         "total_files": total_files,
         "total_words": total_words,
+        "total_lines": total_lines,
         "needs_graph": needs_graph,
         "warning": warning,
         "skipped_sensitive": skipped_sensitive,

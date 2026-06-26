@@ -51,7 +51,7 @@ def generate(
         lines.append(f"- {detection_result['warning']}")
     else:
         lines += [
-            f"- {detection_result['total_files']} files · ~{detection_result['total_words']:,} words",
+            f"- {detection_result['total_files']} files · ~{detection_result['total_words']:,} words · {detection_result.get('total_lines', 0):,} lines",
             "- Verdict: corpus is large enough that graph structure adds value.",
         ]
 

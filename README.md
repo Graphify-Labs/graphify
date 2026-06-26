@@ -325,6 +325,33 @@ dist/
 
 ---
 
+## Work memory
+
+graphify can track which graph nodes and Q&A results were actually useful across sessions — surfacing preferred sources and known dead ends at the start of each new session.
+
+**Record outcomes as you work:**
+```bash
+# Mark as useful:
+graphify save-result --question "how does auth work?" --answer "..." --nodes AuthMiddleware SessionStore --outcome useful
+
+# Mark as a dead end:
+graphify save-result --question "how does auth work?" --answer "..." --nodes AuthMiddleware SessionStore --outcome dead_end
+
+# Mark as corrected:
+graphify save-result --question "how does auth work?" --answer "..." --nodes AuthMiddleware SessionStore --outcome corrected --correction "the real path is X"
+```
+
+**Regenerate the lessons summary:**
+```bash
+graphify reflect                    # write graphify-out/reflections/LESSONS.md
+graphify reflect --if-stale         # no-op if LESSONS.md is already up to date (cheap, run each session)
+graphify reflect --graph graphify-out/graph.json  # group lessons by community
+```
+
+The git post-commit hook (installed by `graphify hook install`) auto-runs `reflect` after each rebuild so `LESSONS.md` stays current between sessions. Without the hook, run `graphify reflect --if-stale` at the start of each session — it costs almost nothing when nothing has changed.
+
+---
+
 ## Team setup
 
 `graphify-out/` is meant to be committed to git so everyone on the team starts with a map.
@@ -410,7 +437,10 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `OPENAI_BASE_URL` | OpenAI-compatible server URL (llama.cpp, vLLM, LM Studio, ...) | `--backend openai` (default: `https://api.openai.com/v1`) |
 | `OPENAI_MODEL` | Model name for the OpenAI backend — for self-hosted servers, use the model name/alias your server exposes (check its `/v1/models` endpoint), e.g. `LFM2.5-8B-A1B-UD-Q4_K_XL` for llama.cpp | `--backend openai` (default: `gpt-4.1-mini`) |
 | `DEEPSEEK_API_KEY` | DeepSeek backend | `--backend deepseek` |
+| `DEEPSEEK_BASE_URL` | DeepSeek-compatible endpoint URL (proxy, gateway, or self-hosted relay) | `--backend deepseek` (default: official DeepSeek API) |
 | `MOONSHOT_API_KEY` | Kimi Code backend | `--backend kimi` |
+| `KIMI_BASE_URL` | Kimi/Moonshot-compatible endpoint URL | `--backend kimi` (default: official Moonshot API) |
+| `GEMINI_BASE_URL` | Gemini-compatible endpoint URL (proxy, gateway, or self-hosted relay) | `--backend gemini` (default: official Google API) |
 | `OLLAMA_BASE_URL` | Ollama local inference URL | `--backend ollama` (default: `http://localhost:11434`) |
 | `OLLAMA_MODEL` | Ollama model name | `--backend ollama` (default: auto-detect) |
 | `GRAPHIFY_OLLAMA_NUM_CTX` | Override Ollama KV-cache window size | optional — auto-sized by default |

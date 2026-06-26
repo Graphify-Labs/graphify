@@ -734,6 +734,7 @@ def _rebuild_code(
             "files": {"code": [str(f) for f in code_files], "document": [], "paper": [], "image": []},
             "total_files": len(code_files),
             "total_words": detected.get("total_words", 0),
+            "total_lines": detected.get("total_lines", 0),
         }
 
         G = build_from_json(result)

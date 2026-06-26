@@ -1541,6 +1541,33 @@ class CallflowOptions:
         self.max_diagram_edges = max_diagram_edges
 
 
+def _corpus_stats_from_report(report_text: str) -> dict[str, int | None]:
+    """Extract corpus stats (files, words, lines) from GRAPH_REPORT.md's Corpus Check section."""
+    import re as _re
+    stats: dict[str, int | None] = {"files": None, "words": None, "lines": None}
+    if not report_text.strip():
+        return stats
+    in_corpus = False
+    for line in report_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            in_corpus = stripped == "## Corpus Check"
+            continue
+        if in_corpus and stripped.startswith("- "):
+            # Match: "- 4 files · ~62,400 words · 12,345 lines"
+            m = _re.search(r"(\d[\d,]*)\s+files", stripped)
+            if m:
+                stats["files"] = int(m.group(1).replace(",", ""))
+            m = _re.search(r"~?([\d,]+)\s+words", stripped)
+            if m:
+                stats["words"] = int(m.group(1).replace(",", ""))
+            m = _re.search(r"([\d,]+)\s+lines", stripped)
+            if m:
+                stats["lines"] = int(m.group(1).replace(",", ""))
+            break  # only the first bullet in Corpus Check
+    return stats
+
+
 def _report_highlights(report_text: str, lang: str) -> str:
     """Extract a compact highlights card from GRAPH_REPORT.md."""
     if not report_text.strip():
@@ -1772,6 +1799,22 @@ def write_callflow_html(
 
     # ── Section: Statistics ──
     total_sections = sum(1 for s in sections if s["id"] != "overview")
+    corpus = _corpus_stats_from_report(report_text)
+    corpus_rows = ""
+    if corpus.get("files") is not None:
+        corpus_rows += f"\n      <tr><td>Files</td><td>{corpus['files']:,}</td></tr>"
+    if corpus.get("words") is not None:
+        corpus_rows += f"\n      <tr><td>Words</td><td>~{corpus['words']:,}</td></tr>"
+    if corpus.get("lines") is not None:
+        corpus_rows += f"\n      <tr><td>Lines of Code</td><td>{corpus['lines']:,}</td></tr>"
+    corpus_card = (
+        f"""  <div class="card">
+    <h4>Corpus</h4>
+    <table style="width:100%;font-size:0.85rem;">{corpus_rows}
+    </table>
+  </div>"""
+        if corpus_rows else ""
+    )
     html.append(f"""<h2 id="stats">Project Statistics</h2>
 
 <div class="grid">
@@ -1793,6 +1836,7 @@ def write_callflow_html(
       <tr><td>AMBIGUOUS</td><td>{sum(1 for e in edges if e.get('confidence') == 'AMBIGUOUS')}</td></tr>
     </table>
   </div>
+{corpus_card}
 </div>
 """)
 
