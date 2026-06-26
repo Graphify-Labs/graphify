@@ -659,8 +659,12 @@ def count_words(path: Path) -> int:
 def count_lines(path: Path) -> int:
     """Non-blank line count — used for the corpus lines-of-code total."""
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        return sum(1 for line in text.splitlines() if line.strip())
+        count = 0
+        with path.open(encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if line.strip():
+                    count += 1
+        return count
     except Exception:
         return 0
 
@@ -1146,6 +1150,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             files[ftype].append(str(p))
             if ftype != FileType.VIDEO:
                 total_words += count_words(p)
+            if ftype in (FileType.CODE, FileType.DOCUMENT):
                 total_lines += count_lines(p)
 
     for ftype in files:
