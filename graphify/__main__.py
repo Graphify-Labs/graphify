@@ -2932,13 +2932,18 @@ def main() -> None:
 
         p = _ap.ArgumentParser(prog="graphify save-result")
         p.add_argument("--question", required=True)
-        p.add_argument("--answer", required=True)
+        p.add_argument("--answer", default=None)
+        p.add_argument("--answer-file", dest="answer_file", default=None)
         p.add_argument("--type", dest="query_type", default="query")
         p.add_argument("--nodes", nargs="*", default=[])
         p.add_argument("--outcome", choices=("useful", "dead_end", "corrected"), default=None)
         p.add_argument("--correction", default=None)
         p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
         opts = p.parse_args(sys.argv[2:])
+        if opts.answer_file:
+            opts.answer = Path(opts.answer_file).read_text(encoding="utf-8").strip()
+        elif not opts.answer:
+            p.error("--answer or --answer-file is required")
         from graphify.ingest import save_query_result as _sqr
 
         out = _sqr(

@@ -1490,6 +1490,15 @@ def to_graphml(
     for _, _, attrs in H.edges(data=True):
         for k in [k for k in attrs if k.startswith("_")]:
             del attrs[k]
+    # nx.write_graphml raises ValueError on None attribute values; replace with "".
+    for node_id in H.nodes():
+        for key, val in list(H.nodes[node_id].items()):
+            if val is None:
+                H.nodes[node_id][key] = ""
+    for u, v in H.edges():
+        for key, val in list(H.edges[u, v].items()):
+            if val is None:
+                H.edges[u, v][key] = ""
     nx.write_graphml(H, output_path)
 
 

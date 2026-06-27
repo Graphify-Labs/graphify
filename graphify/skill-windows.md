@@ -116,56 +116,69 @@ if (-not $GRAPHIFY_PYTHON) {
     $GRAPHIFY_PYTHON = Find-GraphifyPython
 }
 
-# Save interpreter path — all subsequent steps read this
+# Fail fast — every subsequent step needs the interpreter
+if (-not $GRAPHIFY_PYTHON) {
+    Write-Error '[graphify] ERROR: Python with graphify not found. Install with: uv tool install graphifyy  (or pip install graphifyy)'
+    exit 1
+}
+
+# Save interpreter path and scripts path — all subsequent steps read these from disk
 $GRAPHIFY_PYTHON | Out-File -FilePath graphify-out\.graphify_python -Encoding utf8 -NoNewline
-# Save scan root so `graphify update` (no args) knows where to look next time
+$GRAPHIFY_SCRIPTS = (& $GRAPHIFY_PYTHON -c "import graphify, os; print(os.path.join(os.path.dirname(graphify.__file__), 'windows-scripts'))").Trim()
+$GRAPHIFY_SCRIPTS | Out-File -FilePath graphify-out\.graphify_scripts -Encoding utf8 -NoNewline
+# Save scan root so `--update` (no args) knows where to look next time
 (Resolve-Path INPUT_PATH).Path | Out-File -FilePath graphify-out\.graphify_root -Encoding utf8 -NoNewline
 ```
 
-If the import succeeds, print nothing and move straight to Step 2.
+If Step 1 succeeds, print nothing and move straight to Step 2.
 
-**In every subsequent block, run Python through the saved interpreter — `& (Get-Content graphify-out\.graphify_python)` in place of a bare `python3` — so every step uses the interpreter that actually has graphify.**
+**In every subsequent block**, load the interpreter and scripts paths from disk at the top — each PowerShell tool call is a fresh process and cannot inherit variables from previous calls:
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+```
 
 ### Step 2 - Detect files
 
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import json
-from graphify.detect import detect
-from pathlib import Path
-result = detect(Path('INPUT_PATH'))
-print(json.dumps(result, ensure_ascii=False))
-" > graphify-out/.graphify_detect.json
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\detect_files.py" "INPUT_PATH"
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\print_detect_summary.py"
+$exitCode = $LASTEXITCODE
 ```
 
-Replace INPUT_PATH with the actual path the user provided. Do NOT cat or print the JSON - read it silently and present a clean summary instead:
+Replace INPUT_PATH with the actual path the user provided. Relay the `print_detect_summary.py` output verbatim to the user, then:
 
-```
-Corpus: X files · ~Y words
-  code:     N files (.py .ts .go ...)
-  docs:     N files (.md .txt ...)
-  papers:   N files (.pdf ...)
-  images:   N files
-  video:    N files (.mp4 .mp3 ...)
-```
-
-Omit any category with 0 files from the summary.
-
-Then act on it:
-- If `total_files` is 0: stop with "No supported files found in [path]."
-- If `skipped_sensitive` is non-empty: mention file count skipped, not the file names.
-- If `total_words` > 2,000,000 OR `total_files` > 500: show the warning. Then compute the top 5 first-level subdirectories by file count:
-  - Read `scan_root` from the detect JSON (always an absolute path to the resolved INPUT_PATH).
-  - Concatenate all file lists across all types (`code`, `document`, `paper`, `image`, `video`).
-  - Filter out any path that starts with `scan_root + "/graphify-out/"` to exclude converted sidecars.
-  - For each file, strip the `scan_root` prefix and take the first path component. Files directly in `scan_root` with no subdirectory count as `(root)`.
-  - If all files are in `(root)` with no subdirectories, do not ask to narrow — no subfolders exist. Instead suggest `--no-cluster` to skip the expensive clustering step and proceed.
-  - Otherwise rank by count, show the top 5 with file counts, then ask which subfolder to run on. Wait for the user's answer before proceeding.
-- Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
+- If `$exitCode` is 1: stop — no supported files found.
+- If `$exitCode` is 2: the output already lists the top 5 subdirectories; ask the user which subfolder to run on and wait for their answer before proceeding.
+- If the output contains `HAS_VIDEO=true`: proceed to Step 2.5; otherwise skip to Step 3.
 
 ### Step 2.5 - Video and audio (only if video files detected)
 
-Skip this step entirely if `detect` returned zero `video` files. When the corpus has video or audio, see `references/transcribe.md` to transcribe them to text first, then treat the transcripts as doc files in Step 3.
+Skip this step entirely if `detect` returned zero `video` files.
+
+Video and audio files cannot be read directly. Transcribe them to text first, then treat the transcripts as doc files in Step 3.
+
+**Step 1 - Write the Whisper prompt.** Read the top node labels from the detection output, then compose a short domain hint sentence. For example:
+- Labels: `transformer, attention, encoder, decoder` → `"Machine learning research on transformer architectures and attention mechanisms. Use proper punctuation and paragraph breaks."`
+- Labels: `kubernetes, deployment, pod, helm` → `"DevOps discussion about Kubernetes deployments and Helm charts. Use proper punctuation and paragraph breaks."`
+
+If the corpus has only video files with no other docs/code, use: `"Use proper punctuation and paragraph breaks."`
+
+Set it as `$env:GRAPHIFY_WHISPER_PROMPT` before running transcription.
+
+**Step 2 - Transcribe:**
+
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+# If --whisper-model <name> was passed: $env:GRAPHIFY_WHISPER_MODEL = "<name>"
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\transcribe_video.py" | Out-File -FilePath graphify-out\.graphify_transcripts.json -Encoding utf8
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\add_transcripts_to_detect.py"
+```
+
+`add_transcripts_to_detect.py` merges transcript paths into `graphify-out/.graphify_detect.json` so they are treated as docs in Step 3. Relay its output to the user.
 
 ### Step 3 - Extract entities and relationships
 
@@ -184,81 +197,43 @@ Print it once, then continue — do not wait for the user to supply a key. If `G
 
 **Run Part A (AST) and Part B (semantic) in parallel. Dispatch all semantic subagents AND start AST extraction in the same message. Both can run simultaneously since they operate on different file types. Merge results in Part C as before.**
 
-Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is deterministic and fast; start it while subagents are processing docs/papers.
-
 #### Part A - Structural extraction for code files
 
 For any code files detected, run AST extraction in parallel with Part B subagents:
 
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import sys, json
-from graphify.extract import collect_files, extract
-from pathlib import Path
-import json
-
-code_files = []
-detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
-for f in detect.get('files', {}).get('code', []):
-    code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
-
-if code_files:
-    result = extract(code_files, cache_root=Path('INPUT_PATH'))
-    Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-    print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
-else:
-    Path('graphify-out/.graphify_ast.json').write_text(json.dumps({'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}, ensure_ascii=False), encoding=\"utf-8\")
-    print('No code files - skipping AST extraction')
-"
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\ast_extraction.py" "INPUT_PATH"
 ```
 
 #### Part B - Semantic extraction (parallel subagents)
 
-**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input (it reads `.graphify_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
+**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code — there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input:
 
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import json
-from pathlib import Path
-Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
-"
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+& $GRAPHIFY_PYTHON -c "import json; from pathlib import Path; Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')"
 ```
 
 **MANDATORY: You MUST use the Agent tool here. Reading files yourself one-by-one is forbidden - it is 5-10x slower. If you do not use the Agent tool you are doing this wrong.**
 
 Before dispatching subagents, print a timing estimate:
-- Load `total_words` and file counts from `graphify-out/.graphify_detect.json`
-- Estimate agents needed: `ceil(uncached_non_code_files / 22)` (chunk size is 20-25)
-- Estimate time: ~45s per agent batch (they run in parallel, so total ≈ 45s × ceil(agents/parallel_limit))
-- Print: "Semantic extraction: ~N files → X agents, estimated ~Ys"
+
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\print_timing_estimate.py"
+```
 
 **Step B0 - Check extraction cache first**
 
 Before dispatching any subagents, check which files already have cached extraction results:
 
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import json
-from graphify.cache import check_semantic_cache
-from pathlib import Path
-
-detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
-# Only content files go to semantic extraction. Code is already covered structurally
-# by the AST pass (Part A); flattening every category here makes subagents re-read
-# every source file (#1392). Video is transcribed to a document in Step 2.5 first.
-all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
-
-cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH')
-
-# Always (re)write the cache file: write hits, else DELETE any leftover from a prior
-# run so Part C never merges a stale .graphify_cached.json (#1392).
-if cached_nodes or cached_edges or cached_hyperedges:
-    Path('graphify-out/.graphify_cached.json').write_text(json.dumps({'nodes': cached_nodes, 'edges': cached_edges, 'hyperedges': cached_hyperedges}, ensure_ascii=False), encoding=\"utf-8\")
-else:
-    Path('graphify-out/.graphify_cached.json').unlink(missing_ok=True)
-Path('graphify-out/.graphify_uncached.txt').write_text('\n'.join(uncached), encoding=\"utf-8\")
-print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
-"
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\check_extraction_cache.py" "INPUT_PATH"
 ```
 
 Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip to Part C directly.
@@ -295,318 +270,160 @@ See `references/extraction-spec.md` for the exact subagent prompt (JSON schema, 
 
 **Step B3 - Collect, cache, and merge**
 
-Wait for all subagents. For each result:
-- Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
-- If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
-- If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
+Wait for all subagents. After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging — the chunk JSON itself always has placeholder zeros.
 
-If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
+Then collect and validate chunks (checks >50% success threshold, deduplicates nodes):
 
-Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import json, glob
-from pathlib import Path
-
-chunks = sorted(glob.glob('graphify-out/.graphify_chunk_*.json'))
-all_nodes, all_edges, all_hyperedges = [], [], []
-total_in, total_out = 0, 0
-for c in chunks:
-    d = json.loads(Path(c).read_text(encoding=\"utf-8\"))
-    all_nodes += d.get('nodes', [])
-    all_edges += d.get('edges', [])
-    all_hyperedges += d.get('hyperedges', [])
-    total_in += d.get('input_tokens', 0)
-    total_out += d.get('output_tokens', 0)
-Path('graphify-out/.graphify_semantic_new.json').write_text(json.dumps({
-    'nodes': all_nodes, 'edges': all_edges, 'hyperedges': all_hyperedges,
-    'input_tokens': total_in, 'output_tokens': total_out,
-}, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens')
-"
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\collect_chunk_results.py"
 ```
 
-Save new results to cache:
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import json
-from graphify.cache import save_semantic_cache
-from pathlib import Path
+If exit code is 1, stop and tell the user to re-run ensuring `subagent_type="general-purpose"` is used.
 
-new = json.loads(Path('graphify-out/.graphify_semantic_new.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root='INPUT_PATH')
-print(f'Cached {saved} files')
-"
+Save new results to cache:
+```powershell
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\save_results_to_cache.py" "INPUT_PATH"
 ```
 
 Merge cached + new results into `graphify-out/.graphify_semantic.json`:
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import json
-from pathlib import Path
-
-cached = json.loads(Path('graphify-out/.graphify_cached.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_cached.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-new = json.loads(Path('graphify-out/.graphify_semantic_new.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-
-all_nodes = cached['nodes'] + new.get('nodes', [])
-all_edges = cached['edges'] + new.get('edges', [])
-all_hyperedges = cached.get('hyperedges', []) + new.get('hyperedges', [])
-seen = set()
-deduped = []
-for n in all_nodes:
-    if n['id'] not in seen:
-        seen.add(n['id'])
-        deduped.append(n)
-
-merged = {
-    'nodes': deduped,
-    'edges': all_edges,
-    'hyperedges': all_hyperedges,
-    'input_tokens': new.get('input_tokens', 0),
-    'output_tokens': new.get('output_tokens', 0),
-}
-Path('graphify-out/.graphify_semantic.json').write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-print(f'Extraction complete - {len(deduped)} nodes, {len(all_edges)} edges ({len(cached[\"nodes\"])} from cache, {len(new.get(\"nodes\",[]))} new)')
-"
+```powershell
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\merge_semantic_results.py"
 ```
-Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.graphify_uncached.txt graphify-out/.graphify_semantic_new.json`
+
+Clean up temp files:
+```powershell
+Remove-Item -Force -ErrorAction SilentlyContinue 'graphify-out\.graphify_cached.json', 'graphify-out\.graphify_uncached.txt', 'graphify-out\.graphify_semantic_new.json'
+```
 
 #### Part C - Merge AST + semantic into final extraction
 
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import sys, json
-from pathlib import Path
-
-ast = json.loads(Path('graphify-out/.graphify_ast.json').read_text(encoding=\"utf-8\"))
-sem = json.loads(Path('graphify-out/.graphify_semantic.json').read_text(encoding=\"utf-8\"))
-
-# Merge: AST nodes first, semantic nodes deduplicated by id
-seen = {n['id'] for n in ast['nodes']}
-merged_nodes = list(ast['nodes'])
-for n in sem['nodes']:
-    if n['id'] not in seen:
-        merged_nodes.append(n)
-        seen.add(n['id'])
-
-merged_edges = ast['edges'] + sem['edges']
-merged_hyperedges = sem.get('hyperedges', [])
-merged = {
-    'nodes': merged_nodes,
-    'edges': merged_edges,
-    'hyperedges': merged_hyperedges,
-    'input_tokens': sem.get('input_tokens', 0),
-    'output_tokens': sem.get('output_tokens', 0),
-}
-Path('graphify-out/.graphify_extract.json').write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-total = len(merged_nodes)
-edges = len(merged_edges)
-print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(sem[\"nodes\"])} semantic)')
-"
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\merge_ast_semantic.py"
 ```
 
 ### Step 4 - Build graph, cluster, analyze, generate outputs
 
-**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source→target), otherwise `False` (the default undirected `Graph`). Substitute it the same way you substitute `INPUT_PATH` — do not leave the literal `IS_DIRECTED` in the code.
+**Before starting:** Replace `IS_DIRECTED` with `true` if `--directed` was given, otherwise `false`. Replace `INPUT_PATH` with the actual path.
 
-```bash
-mkdir -p graphify-out
-$(cat graphify-out/.graphify_python) -c "
-import sys, json
-from graphify.build import build_from_json
-from graphify.cluster import cluster, score_all
-from graphify.analyze import god_nodes, surprising_connections, suggest_questions
-from graphify.report import generate
-from graphify.export import to_json
-from pathlib import Path
-
-extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
-detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
-
-# root= mirrors the --update runbook (#1361): relativize source_file to the same
-# base so the full build and incremental --update never drift apart on re-extract.
-G = build_from_json(extraction, root='INPUT_PATH', directed=IS_DIRECTED)
-# Guard BEFORE any write: an empty extraction must not clobber a good graph.json /
-# GRAPH_REPORT.md / analysis sidecar. Check immediately after build (#1392).
-if G.number_of_nodes() == 0:
-    print('ERROR: Graph is empty - extraction produced no nodes.')
-    print('Possible causes: all files were skipped, binary-only corpus, or extraction failed.')
-    raise SystemExit(1)
-communities = cluster(G)
-cohesion = score_all(G, communities)
-tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
-gods = god_nodes(G)
-surprises = surprising_connections(G, communities)
-labels = {cid: 'Community ' + str(cid) for cid in communities}
-# Placeholder questions - regenerated with real labels in Step 5
-questions = suggest_questions(G, communities, labels)
-
-# Export FIRST and honor the #479 shrink-guard: to_json returns False (writing
-# nothing) when the new graph is smaller than the existing graph.json. Only write
-# GRAPH_REPORT.md + the analysis sidecar when the graph was actually written, so
-# they never describe a graph that graph.json doesn't contain (#1392).
-wrote = to_json(G, communities, 'graphify-out/graph.json')
-if not wrote:
-    print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
-    print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
-    raise SystemExit(1)
-report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
-Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
-analysis = {
-    'communities': {str(k): v for k, v in communities.items()},
-    'cohesion': {str(k): v for k, v in cohesion.items()},
-    'gods': gods,
-    'surprises': surprises,
-    'questions': questions,
-}
-Path('graphify-out/.graphify_analysis.json').write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-print(f'Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {len(communities)} communities')
-"
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\build_graph.py" "INPUT_PATH" "IS_DIRECTED"
 ```
 
 If this step prints `ERROR: Graph is empty`, stop and tell the user what happened - do not proceed to labeling or visualization.
 
-Replace INPUT_PATH with the actual path.
+If this step prints `ERROR: refused to shrink`, it means the new graph has fewer nodes than the existing one. Stop and tell the user; they can force a full rebuild if the reduction is intentional.
 
 ### Step 4.5 - Graph health check (read-only integrity gate)
 
-A non-destructive diagnostic on the extraction, before labeling. It surfaces edge collapse, dangling/missing endpoints, and self-loops — the silent-corruption modes of incremental updates and AST/LLM id mismatches. Read-only; never aborts.
-
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import json
-from pathlib import Path
-from graphify.diagnostics import diagnose_extraction, format_diagnostic_report
-
-extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
-summary = diagnose_extraction(extraction, directed=IS_DIRECTED, root='INPUT_PATH')
-print(format_diagnostic_report(summary))
-flags = [f'{summary[k]} {label}' for k, label in (
-    ('dangling_endpoint_edges', 'dangling-endpoint edges'),
-    ('missing_endpoint_edges', 'missing-endpoint edges'),
-    ('self_loop_edges', 'self-loop edges'),
-    ('directed_same_endpoint_collapsed_edges', 'collapsed (directed) edges'),
-    ('undirected_same_endpoint_collapsed_edges', 'collapsed (undirected) edges'),
-) if summary.get(k, 0)]
-print('GRAPH HEALTH WARNING: ' + '; '.join(flags) + ' - graph may be incomplete/corrupt.' if flags else 'Graph health: OK (no dangling/missing/collapsed edges).')
-"
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\check_graph_health.py" "INPUT_PATH" "IS_DIRECTED"
 ```
 
-Substitute `IS_DIRECTED` and `INPUT_PATH` as in Step 4. If a `GRAPH HEALTH WARNING` prints, surface it in the final summary (do not abort — the graph is still usable, but the integrity issue must be visible, per the Honesty Rules).
+Substitute `IS_DIRECTED` and `INPUT_PATH` as in Step 4. If the output contains `GRAPH HEALTH WARNING`, surface it in the final summary (do not abort — the graph is still usable, but the integrity issue must be visible).
 
 ### Step 5 - Label communities
 
 Read `graphify-out/.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
 
-Then regenerate the report and save the labels for the visualizer:
+**Use the Write tool** to write the labels JSON to `graphify-out/.graphify_labels_input.json` — do NOT pass labels on the command line, which breaks on long names (PowerShell command-line length limit):
 
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import sys, json
-from graphify.build import build_from_json
-from graphify.cluster import score_all
-from graphify.analyze import god_nodes, surprising_connections, suggest_questions
-from graphify.report import generate
-from pathlib import Path
-
-extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
-detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
-analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text(encoding=\"utf-8\"))
-
-# root= as in Step 4 / the --update runbook (#1361) — same base for node-key parity.
-G = build_from_json(extraction, root='INPUT_PATH', directed=IS_DIRECTED)
-communities = {int(k): v for k, v in analysis['communities'].items()}
-cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
-tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
-
-# LABELS - replace these with the names you chose above
-labels = LABELS_DICT
-
-# Regenerate questions with real community labels (labels affect question phrasing)
-questions = suggest_questions(G, communities, labels)
-
-report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)
-Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
-Path('graphify-out/.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding=\"utf-8\")
-print('Report updated with community labels')
-"
+```json
+{"0": "Community Name A", "1": "Community Name B"}
 ```
 
-Replace `LABELS_DICT` with the actual dict you constructed (e.g. `{0: "Attention Mechanism", 1: "Training Pipeline"}`).
-Replace INPUT_PATH with the actual path.
+Then run:
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\label_communities.py" "INPUT_PATH" "IS_DIRECTED"
+```
+
+Replace `INPUT_PATH` and `IS_DIRECTED` as in Step 4. The script reads labels from `graphify-out/.graphify_labels_input.json` and regenerates both `graphify-out/GRAPH_REPORT.md` and `graphify-out/.graphify_labels.json`.
 
 ### Step 6 - Generate Obsidian vault (opt-in) + HTML
 
 **Generate HTML always** (unless `--no-viz`). **Obsidian vault only if `--obsidian` was explicitly given** — skip it otherwise, it generates one file per node.
 
 If `--obsidian` was given:
-
-- If `--obsidian-dir <path>` was also given, pass it via `--dir`. Otherwise defaults to `graphify-out/obsidian`.
-
-```bash
+```powershell
 graphify export obsidian
-# or with custom dir: graphify export obsidian --dir ~/vaults/my-project
+# or with custom dir: graphify export obsidian --dir "C:\path\to\vault"
 ```
 
 Generate the HTML graph (always, unless `--no-viz`):
-
-```bash
+```powershell
 graphify export html  # auto-aggregates to community view if graph > 5000 nodes
-# or: graphify export html --no-viz
 ```
 
 ### Steps 6b-8 - Wiki, Neo4j, FalkorDB, SVG, GraphML, MCP, benchmark (only on their flags)
 
-These run only when their flag is present (`--wiki`, `--neo4j`/`--neo4j-push`, `--falkordb`/`--falkordb-push`, `--svg`, `--graphml`, `--mcp`) or, for the token-reduction benchmark, when `total_words` exceeds 5,000. A default run with no export flags skips all of them. See `references/exports.md` for each one. Run any `--wiki` export before Step 9 cleanup so `.graphify_labels.json` is still available.
+These run only when their flag is present (`--wiki`, `--neo4j`/`--neo4j-push`, `--falkordb`/`--falkordb-push`, `--svg`, `--graphml`, `--mcp`) or, for the token-reduction benchmark, when `total_words` exceeds 5,000. A default run with no export flags skips all of them. Run any `--wiki` export before Step 9 cleanup so `.graphify_labels.json` is still available.
+
+For **`--wiki`**:
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\export_wiki.py"
+```
+
+For **`--neo4j`** (generate Cypher file):
+```powershell
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\export_neo4j_cypher.py"
+```
+
+For **`--neo4j-push <uri>`** (push to Neo4j — ask user for credentials if not provided):
+```powershell
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\export_neo4j_push.py" "NEO4J_URI" "NEO4J_USER" "NEO4J_PASSWORD"
+```
+
+For **`--falkordb`** or **`--falkordb-push`**: see `references/exports.md` for the FalkorDB flow.
+
+For **`--svg`**:
+```powershell
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\export_svg.py"
+```
+
+For **`--graphml`**:
+```powershell
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\export_graphml.py"
+```
+
+For **`--mcp`**:
+```powershell
+& $GRAPHIFY_PYTHON -m graphify.serve graphify-out/graph.json
+```
+
+For the **benchmark** (when `total_words` > 5,000):
+```powershell
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\run_benchmark.py"
+```
 
 ---
 
 ### Step 9 - Save manifest, update cost tracker, clean up, and report
 
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import json
-from pathlib import Path
-from datetime import datetime, timezone
-from graphify.detect import save_manifest
-
-# Save manifest for --update
-detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
-# In --update mode, 'all_files' carries the full corpus; 'files' is the changed
-# subset. Full-rebuild mode populates only 'files', so the fallback handles that.
-# root= relativizes the manifest keys to the scan root (same base as the build),
-# so the on-disk manifest is portable across clones/machines and a later --update
-# matches cached files instead of missing every one (#1417).
-save_manifest(detect.get('all_files') or detect['files'], root='INPUT_PATH')
-
-# Update cumulative cost tracker
-extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
-input_tok = extract.get('input_tokens', 0)
-output_tok = extract.get('output_tokens', 0)
-
-cost_path = Path('graphify-out/cost.json')
-if cost_path.exists():
-    cost = json.loads(cost_path.read_text(encoding=\"utf-8\"))
-else:
-    cost = {'runs': [], 'total_input_tokens': 0, 'total_output_tokens': 0}
-
-cost['runs'].append({
-    'date': datetime.now(timezone.utc).isoformat(),
-    'input_tokens': input_tok,
-    'output_tokens': output_tok,
-    'files': detect.get('total_files', 0),
-})
-cost['total_input_tokens'] += input_tok
-cost['total_output_tokens'] += output_tok
-cost_path.write_text(json.dumps(cost, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-
-print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
-print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
-"
-rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json
-find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
-rm -f graphify-out/.needs_update 2>/dev/null || true
+```powershell
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\save_manifest_and_cost.py" "INPUT_PATH"
+Remove-Item -Force -ErrorAction SilentlyContinue `
+    'graphify-out\.graphify_detect.json', `
+    'graphify-out\.graphify_extract.json', `
+    'graphify-out\.graphify_ast.json', `
+    'graphify-out\.graphify_semantic.json', `
+    'graphify-out\.graphify_analysis.json', `
+    'graphify-out\.graphify_incremental.json', `
+    'graphify-out\.graphify_labels_input.json', `
+    'graphify-out\.needs_update'
+Get-ChildItem 'graphify-out' -Filter '.graphify_chunk_*.json' -ErrorAction SilentlyContinue | Remove-Item -Force
 ```
 
 Replace INPUT_PATH with the actual path (same value used in Steps 4-5) so the manifest is relativized to the scan root.
@@ -644,25 +461,129 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 ## Interpreter guard for subcommands
 
-Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `.graphify_python` exists. If it's missing (e.g. user deleted `graphify-out/`), re-resolve the interpreter first:
+Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that the interpreter files exist. If they're missing (e.g. user deleted `graphify-out/`), re-resolve and re-save them first:
 
-```bash
-if [ ! -f graphify-out/.graphify_python ]; then
-    GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-    if [ -n "$GRAPHIFY_BIN" ]; then
-        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.-]*) PYTHON="python3" ;; esac
-    else
-        PYTHON="python3"
-    fi
-    mkdir -p graphify-out
-    "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
-fi
+```powershell
+if (-not (Test-Path 'graphify-out\.graphify_python')) {
+    New-Item -ItemType Directory -Force -Path graphify-out | Out-Null
+    $py = (Get-Command python -ErrorAction SilentlyContinue)
+    if (-not $py) { Write-Error 'Python not found. Install graphify first: uv tool install graphifyy'; exit 1 }
+    & $py.Source -c "import graphify" 2>$null
+    if ($LASTEXITCODE -ne 0) { Write-Error 'graphify not found in Python env. Install: uv tool install graphifyy'; exit 1 }
+    $pyExe = (& $py.Source -c "import sys; print(sys.executable)").Trim()
+    $pyExe | Out-File -FilePath graphify-out\.graphify_python -Encoding utf8 -NoNewline
+    $scripts = (& $pyExe -c "import graphify, os; print(os.path.join(os.path.dirname(graphify.__file__), 'windows-scripts'))").Trim()
+    $scripts | Out-File -FilePath graphify-out\.graphify_scripts -Encoding utf8 -NoNewline
+}
+$GRAPHIFY_PYTHON = (Get-Content 'graphify-out\.graphify_python' -Raw).Trim()
+$GRAPHIFY_SCRIPTS = (Get-Content 'graphify-out\.graphify_scripts' -Raw).Trim()
 ```
 
-## For --update and --cluster-only
+---
 
-Both are non-default subcommands. `--update` re-extracts only new or changed files; `--cluster-only` reruns clustering on the existing graph. See `references/update.md` for both flows.
+## For --update (incremental re-extraction)
+
+Use when you've added or modified files since the last run. Only re-extracts changed files — saves tokens and time.
+
+Run the interpreter guard first. Then:
+
+```powershell
+# Save old graph for diff display after merge
+Copy-Item 'graphify-out\graph.json' 'graphify-out\.graphify_old.json' -ErrorAction SilentlyContinue
+
+# Detect changed files (filters assets/, writes .graphify_detect.json and .graphify_incremental.json)
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\detect_incremental.py" "INPUT_PATH"
+```
+
+If exit code is 0 ("No files changed since last run"), stop — nothing to do.
+
+Check whether all changed files are code-only (no docs/papers/images = skip semantic subagents):
+
+```powershell
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\check_code_only.py"
+```
+
+The output says `code_only: True` or `code_only: False`.
+
+If `code_only: True`: print `[graphify update] Code-only changes — skipping semantic extraction (no LLM needed)`. Run only **Part A** (AST extraction) on the changed files, skip Part B entirely, then write an empty semantic file and go straight to Part C:
+
+```powershell
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\ast_extraction.py" "INPUT_PATH"
+& $GRAPHIFY_PYTHON -c "import json; from pathlib import Path; Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')"
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\merge_ast_semantic.py"
+```
+
+If `code_only: False` (any changed file is a doc/paper/image/video):
+- If any changed file is in `new_files['video']`: run Step 2.5 transcription on those files, then re-add transcripts to detect. Then run the full Steps 3A–3C pipeline as normal on the changed files.
+- Otherwise: run the full Steps 3A–3C pipeline as normal on the changed files (the detect JSON is already scoped to changed files only).
+
+After extraction (Part C produces `graphify-out/.graphify_extract.json` with the new-files-only result), merge with the existing graph:
+
+```powershell
+& $GRAPHIFY_PYTHON -c "
+import json, sys
+from graphify.build import build_merge
+from pathlib import Path
+
+new_extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding='utf-8'))
+incremental    = json.loads(Path('graphify-out/.graphify_incremental.json').read_text(encoding='utf-8'))
+deleted = list(incremental.get('deleted_files', []))
+
+# build_merge() reads graph.json directly (no NetworkX round-trip) so edge
+# direction (calls, implements, imports) is always preserved (#801).
+# prune_sources: only genuinely DELETED files. Changed/re-extracted files are
+# handled by build_merge's replace-on-re-extract (#1344).
+# root= relativizes absolute paths from detect_incremental so prune matches
+# the graph's relative source_file values (#1361).
+# directed=IS_DIRECTED: replace with True if --directed was given, else False.
+G = build_merge(
+    [new_extraction],
+    graph_path='graphify-out/graph.json',
+    prune_sources=deleted or None,
+    root='INPUT_PATH',
+    directed=IS_DIRECTED,
+)
+print(f'[graphify update] Merged: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges')
+
+merged_out = {
+    'nodes': [{'id': n, **d} for n, d in G.nodes(data=True)],
+    'edges': [
+        {**{k: v for k, v in d.items() if k not in ('_src','_tgt','source','target')},
+         'source': d.get('_src', u), 'target': d.get('_tgt', v)}
+        for u, v, d in G.edges(data=True)
+    ],
+    'hyperedges': list(G.graph.get('hyperedges', [])),
+    'input_tokens': new_extraction.get('input_tokens', 0),
+    'output_tokens': new_extraction.get('output_tokens', 0),
+}
+Path('graphify-out/.graphify_extract.json').write_text(json.dumps(merged_out, ensure_ascii=False), encoding='utf-8')
+print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])} nodes, {len(merged_out[\"edges\"])} edges)')
+"
+```
+
+Replace `INPUT_PATH` and `IS_DIRECTED` as in the main pipeline.
+
+Then run Steps 4–9 as normal on the merged graph.
+
+After Step 4, show the graph diff:
+
+```powershell
+& $GRAPHIFY_PYTHON "$GRAPHIFY_SCRIPTS\graph_diff.py" "IS_DIRECTED"
+```
+
+Then clean up: `Remove-Item -Force -ErrorAction SilentlyContinue 'graphify-out\.graphify_old.json'`
+
+---
+
+## For --cluster-only
+
+Skip Steps 1–3. Re-run clustering on the existing graph:
+
+```powershell
+graphify cluster-only .
+```
+
+`graphify cluster-only .` is **self-contained**: it re-clusters, names communities, and regenerates `GRAPH_REPORT.md`, `graph.json`, and `graph.html` from the existing graph. **Do not re-run Steps 5–9** — they read intermediate files that Step 9 already cleaned up. When it finishes, present the refreshed `GRAPH_REPORT.md` summary as usual.
 
 ---
 
@@ -670,11 +591,13 @@ Both are non-default subcommands. `--update` re-extracts only new or changed fil
 
 When `graphify-out/graph.json` already exists and the user asks a question about the corpus, answer from the graph rather than rebuilding it:
 
-```bash
+```powershell
 graphify query "<question>"
 ```
 
 Before traversal, expand the question against the graph's own vocabulary so a wording mismatch does not collapse the answer to noise. If the `graphify query` CLI is unavailable, fall back to an inline NetworkX traversal of `graphify-out/graph.json`. Answer using only what the graph output contains, and quote `source_location` when citing a specific fact. For that vocab-expansion step, the BFS/DFS traversal modes, the `--budget` cap, the NetworkX fallback, `save-result` feedback, and the `/graphify path` and `/graphify explain` flows, see `references/query.md`.
+
+**Windows note for `save-result`:** On Windows, long answers can exceed the PowerShell command-line length limit. Use the Write tool to write the answer to `graphify-out/.graphify_answer.txt`, then pass `--answer-file graphify-out/.graphify_answer.txt` instead of `--answer "..."`.
 
 ---
 
@@ -700,6 +623,20 @@ If vertical scrolling breaks in PowerShell after running graphify, this is cause
 2. **Use Windows Terminal** instead of the legacy PowerShell console — Windows Terminal handles ANSI codes correctly
 3. **Reset your terminal**: close and reopen PowerShell
 4. **Skip graspologic**: uninstall it (`pip uninstall graspologic`) and graphify will fall back to NetworkX's built-in Louvain algorithm, which produces no ANSI output
+
+### Python not found / graphify import fails
+
+Run Step 1 manually to re-detect:
+```powershell
+graphify install windows
+```
+
+Or install manually:
+```powershell
+uv tool install graphifyy   # preferred
+# or:
+pip install graphifyy
+```
 
 ---
 
