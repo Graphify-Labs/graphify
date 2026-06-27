@@ -84,7 +84,7 @@ def test_extract_solidity_inheritance_and_implements():
 
 def test_extract_solidity_using_directive():
     result = extract_solidity(FIXTURES / "sample.sol")
-    assert ("Token", "SafeMath") in _edge_pairs(result, "uses")
+    assert ("Token", "SafeMath") in _edge_pairs(result, "imports_from", context="using_for")
 
 
 def test_extract_solidity_field_references():
@@ -289,3 +289,40 @@ def test_extract_solidity_base_file():
     assert "error" not in result
     assert "Base" in _labels(result)
     assert any(".onlyOwner()" in label for label in _labels(result))
+
+
+def test_extract_solidity_applies_modifier():
+    result = extract_solidity(FIXTURES / "sample.sol")
+    modifier_edges = _edge_pairs(result, "applies_modifier")
+    assert len(modifier_edges) > 0, "Expected at least one applies_modifier edge"
+    assert any(".whenActive()" in src or ".transfer()" in src for src, _ in modifier_edges)
+
+
+def test_extract_solidity_error_declaration():
+    result = extract_solidity(FIXTURES / "sample.sol")
+    labels = _labels(result)
+    assert "InsufficientBalance" in labels, "Expected error declaration node"
+
+
+def test_extract_solidity_revert_not_in_calls():
+    result = extract_solidity(FIXTURES / "sample.sol")
+    call_pairs = _edge_pairs(result, "calls")
+    call_targets = {tgt for _, tgt in call_pairs}
+    assert "InsufficientBalance" not in call_targets, "revert statement should not create calls edge"
+
+
+def test_extract_solidity_member_call_confidence():
+    result = extract_solidity(FIXTURES / "sample.sol")
+    member_calls = [e for e in result.get("edges", [])
+                   if e.get("relation") == "calls" and e.get("context") == "member_call"]
+    assert len(member_calls) > 0, "Expected at least one member call"
+    for call in member_calls:
+        assert call.get("confidence") == "INFERRED", "Member calls should have INFERRED confidence"
+        assert call.get("weight") == 0.5, "Member calls should have weight 0.5"
+
+
+def test_extract_solidity_imports_from_using_for():
+    result = extract_solidity(FIXTURES / "sample.sol")
+    using_edges = [e for e in result.get("edges", [])
+                   if e.get("relation") == "imports_from" and e.get("context") == "using_for"]
+    assert len(using_edges) > 0, "Expected imports_from edge with using_for context"

@@ -40,3 +40,6 @@ paper/
 # Local dev environment artifacts
 .specstory/
 .cursorindexingignore
+
+# macOS Finder metadata
+.DS_Store

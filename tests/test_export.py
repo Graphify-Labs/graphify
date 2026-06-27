@@ -1,9 +1,11 @@
 import json
+import math
+import re
 import tempfile
 from pathlib import Path
 from graphify.build import build_from_json
 from graphify.cluster import cluster
-from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas
+from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -191,6 +193,195 @@ def test_to_canvas_no_communities_still_populates():
         assert len(data["nodes"]) >= G.number_of_nodes()
         assert len(data["edges"]) >= 1
         assert out.stat().st_size > 32
+
+
+def test_to_canvas_node_grid_matches_box_columns():
+    """#1452: a community's node cards are laid out in the same ceil(sqrt(n))-column
+    grid the group box is sized for. Previously the box width assumed sqrt(n)
+    columns while the placement loop hardcoded 3, so any community bigger than ~9
+    rendered as a cramped 3-wide strip filling only part of an over-wide box.
+    Covers a perfect square (25 -> 5x5) and a non-square count (10 -> 4 cols, a
+    partial last row) so both the column count and the row count are pinned."""
+    for n in (10, 25):
+        G = build_from_json({
+            "nodes": [
+                {"id": f"n{i}", "label": f"sym_{i:02d}", "file_type": "code", "source_file": "a.py"}
+                for i in range(n)
+            ],
+            "edges": [],
+        })
+        communities = {0: [f"n{i}" for i in range(n)]}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "graph.canvas"
+            to_canvas(G, communities, str(out))
+            data = json.loads(out.read_text())
+
+        group = next(g for g in data["nodes"] if g.get("type") == "group")
+        cards = [c for c in data["nodes"] if c.get("type") == "file"]
+        assert len(cards) == n, f"n={n}"
+
+        # Cards occupy the ceil(sqrt(n))-column / ceil(n/cols)-row grid the box is
+        # sized for — not the old fixed 3 columns, which spread cards across far
+        # more rows (the load-bearing checks: distinct column/row positions).
+        expected_cols = math.ceil(math.sqrt(n))
+        expected_rows = math.ceil(n / expected_cols)
+        distinct_x = len({c["x"] for c in cards})
+        distinct_y = len({c["y"] for c in cards})
+        assert distinct_x == expected_cols, f"n={n}: expected {expected_cols} cols, got {distinct_x}"
+        assert distinct_y == expected_rows, f"n={n}: expected {expected_rows} rows, got {distinct_y}"
+
+        # And every card sits fully inside its group box on both axes.
+        gx, gy, gw, gh = group["x"], group["y"], group["width"], group["height"]
+        for c in cards:
+            assert gx <= c["x"] and c["x"] + c["width"] <= gx + gw, (n, c)
+            assert gy <= c["y"] and c["y"] + c["height"] <= gy + gh, (n, c)
+
+
+# ── Issue #1409: punctuation-only Obsidian/Canvas filenames ───────────────────
+
+def _punct_graph(label: str):
+    """A 2-node graph where one node's label is all-punctuation (e.g. a `@/*`
+    tsconfig paths key) and the other is a normal symbol."""
+    return build_from_json({
+        "nodes": [
+            {"id": "n1", "label": label, "file_type": "code", "source_file": "tsconfig.json"},
+            {"id": "n2", "label": "AuthHandler", "file_type": "code", "source_file": "auth.ts"},
+        ],
+        "edges": [],
+    })
+
+
+def test_to_obsidian_never_emits_punctuation_only_filenames():
+    """#1409: an all-punctuation label (e.g. `@/*`) must not produce a `@.md`-style
+    filename — valid on disk but empty once a downstream tool re-slugs on word chars
+    (crashes `qmd update`). It falls back to `unnamed`."""
+    G = _punct_graph("@/*")
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp)
+        stems = [p.stem for p in Path(tmp).rglob("*.md")]
+        assert stems, "to_obsidian wrote no notes"
+        bad = [s for s in stems if not re.search(r"\w", s, flags=re.UNICODE)]
+        assert not bad, f"punctuation-only filenames emitted: {bad}"
+        assert any(s == "unnamed" or s.startswith("unnamed") for s in stems), stems
+
+
+def test_to_canvas_never_emits_punctuation_only_filenames():
+    """#1409: same guard on the canvas exporter's file-node names."""
+    G = _punct_graph("@")
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.canvas"
+        to_canvas(G, communities, str(out))
+        data = json.loads(out.read_text())
+        file_nodes = [n for n in data["nodes"] if n.get("type") == "file"]
+        assert file_nodes, "canvas has no file nodes"
+        bad = [n["file"] for n in file_nodes if not re.search(r"\w", Path(n["file"]).stem, flags=re.UNICODE)]
+        assert not bad, f"punctuation-only canvas filenames: {bad}"
+
+
+# ── Case-only-distinct labels must not collide on case-insensitive filesystems ──
+
+def _case_collision_graph():
+    """Two nodes whose labels differ only by case - on macOS/APFS and Windows/NTFS
+    their notes resolve to the same path unless the dedup map folds case."""
+    return build_from_json({
+        "nodes": [
+            {"id": "n1", "label": "References", "file_type": "code", "source_file": "a.py"},
+            {"id": "n2", "label": "references", "file_type": "document", "source_file": "b.md"},
+        ],
+        "edges": [],
+    })
+
+
+def test_to_obsidian_case_only_distinct_labels_dont_overwrite():
+    """Both notes must survive as separate files. On a case-insensitive filesystem
+    a missing suffix silently overwrites the first note (fewer files than nodes);
+    on a case-sensitive one it writes two stems equal under .lower(). Assert both:
+    every node note is on disk, and no two stems collide case-insensitively."""
+    G = _case_collision_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp)
+        notes = [p for p in Path(tmp).rglob("*.md") if not p.name.startswith("_COMMUNITY")]
+        assert len(notes) == G.number_of_nodes(), [p.name for p in notes]
+        lowered = [p.stem.lower() for p in notes]
+        assert len(set(lowered)) == len(lowered), [p.name for p in notes]
+        # the suffixed name must be the expected one, not merely distinct
+        assert sorted(p.stem for p in notes) == ["References", "references_1"], [p.name for p in notes]
+
+
+def test_to_obsidian_generated_suffix_doesnt_overwrite_literal():
+    """A generated `_1` suffix must not collide with a node whose literal label is
+    already that suffixed name. With labels [dup, dup, dup_1] the second `dup`
+    becomes `dup_1`, which would clobber the third node unless the candidate is
+    re-checked. This collides on case-sensitive filesystems too, so it guards the
+    dedup loop independently of case-folding."""
+    G = build_from_json({
+        "nodes": [
+            {"id": "a", "label": "dup", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "dup", "file_type": "code", "source_file": "b.py"},
+            {"id": "c", "label": "dup_1", "file_type": "code", "source_file": "c.py"},
+        ],
+        "edges": [],
+    })
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp)
+        notes = [p for p in Path(tmp).rglob("*.md") if not p.name.startswith("_COMMUNITY")]
+        assert len(notes) == 3, [p.name for p in notes]
+        assert len({p.stem.lower() for p in notes}) == 3, [p.name for p in notes]
+
+
+def test_to_canvas_case_only_distinct_labels_get_distinct_files():
+    """Canvas file-node references for case-only-distinct labels must be distinct
+    case-insensitively, else both cards point at one overwritten note."""
+    G = _case_collision_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.canvas"
+        to_canvas(G, communities, str(out))
+        data = json.loads(out.read_text())
+        files = [n["file"] for n in data["nodes"] if n.get("type") == "file"]
+        lowered = [f.lower() for f in files]
+        assert len(set(lowered)) == len(lowered), files
+
+
+def test_obsidian_canvas_filenames_agree():
+    """The CLI calls to_obsidian and to_canvas separately with no shared map, so
+    they must independently produce the same node->filename mapping - otherwise a
+    canvas card points at a note file that doesn't exist on disk."""
+    G = _case_collision_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp)
+        note_stems = {p.stem for p in Path(tmp).rglob("*.md") if not p.name.startswith("_COMMUNITY")}
+        out = Path(tmp) / "graph.canvas"
+        to_canvas(G, communities, str(out))
+        data = json.loads(out.read_text())
+        canvas_stems = {Path(n["file"]).stem for n in data["nodes"] if n.get("type") == "file"}
+        assert canvas_stems <= note_stems, (sorted(canvas_stems), sorted(note_stems))
+
+
+def test_to_obsidian_community_notes_case_collision():
+    """Two community labels differing only by case must each get their own
+    `_COMMUNITY_*.md` overview note. This path had no dedup at all, so even
+    same-case duplicate labels previously overwrote silently."""
+    G = build_from_json({
+        "nodes": [
+            {"id": "n1", "label": "alpha", "file_type": "code", "source_file": "a.py"},
+            {"id": "n2", "label": "beta", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [],
+    })
+    communities = {0: ["n1"], 1: ["n2"]}
+    labels = {0: "API", 1: "Api"}
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp, community_labels=labels)
+        comm = [p for p in Path(tmp).rglob("_COMMUNITY_*.md")]
+        assert len(comm) == 2, [p.name for p in comm]
+        lowered = [p.stem.lower() for p in comm]
+        assert len(set(lowered)) == len(lowered), [p.name for p in comm]
 
 
 # ── Issue #834: backup_if_protected ──────────────────────────────────────────

@@ -840,6 +840,28 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     return f"{truncated}_{digest}"
 
 
+def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
+    """Map each node_id to a unique note filename, appending a numeric suffix on
+    collision. The collision set is keyed on the lowercased name so two labels
+    differing only by case (e.g. "References" vs "references") still get distinct
+    filenames - on case-insensitive filesystems (macOS/APFS, Windows/NTFS) they
+    would otherwise resolve to one path and silently overwrite each other on disk.
+    The suffixed candidate is itself re-checked, so a generated "base_1" never
+    silently overwrites a node whose literal label is already "base_1"."""
+    node_filenames: dict[str, str] = {}
+    used: set[str] = set()
+    for node_id, data in G.nodes(data=True):
+        base = safe_name(data.get("label", node_id))
+        candidate = base
+        n = 1
+        while candidate.lower() in used:
+            candidate = f"{base}_{n}"
+            n += 1
+        used.add(candidate.lower())
+        node_filenames[node_id] = candidate
+    return node_filenames
+
+
 def to_obsidian(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -866,18 +888,16 @@ def to_obsidian(
         cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
         # Strip trailing .md/.mdx/.markdown so "CLAUDE.md" doesn't become "CLAUDE.md.md"
         cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        return _cap_filename(cleaned) if cleaned else "unnamed"
+        # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
+        # strip above but is empty once a downstream tool re-slugs on word chars
+        # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
+        # `qmd update`). Require at least one word char; else fall back so we never
+        # emit a "@.md"-style filename. (#1409)
+        if not re.search(r"\w", cleaned, flags=re.UNICODE):
+            return "unnamed"
+        return _cap_filename(cleaned)
 
-    node_filename: dict[str, str] = {}
-    seen_names: dict[str, int] = {}
-    for node_id, data in G.nodes(data=True):
-        base = safe_name(data.get("label", node_id))
-        if base in seen_names:
-            seen_names[base] += 1
-            node_filename[node_id] = f"{base}_{seen_names[base]}"
-        else:
-            seen_names[base] = 0
-            node_filename[node_id] = base
+    node_filename = _dedup_node_filenames(G, safe_name)
 
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
@@ -975,13 +995,33 @@ def to_obsidian(
         }
         return len(neighbor_cids)
 
-    community_notes_written = 0
-    for cid, all_members in communities.items():
-        community_name = (
+    def _community_name(cid) -> str:
+        return (
             community_labels.get(cid, f"Community {cid}")
             if community_labels and cid is not None
             else f"Community {cid}"
         )
+
+    # One case-folded-deduped filename per community, computed once so the note we
+    # write and every [[_COMMUNITY_...]] cross-reference resolve to the same file.
+    # Two community labels differing only by case (e.g. LLM labels "API" vs "Api")
+    # would otherwise overwrite each other on case-insensitive filesystems - and
+    # this path had no dedup at all, so even same-case duplicate labels collided.
+    community_filename: dict = {}
+    used_community: set[str] = set()
+    for cid in communities:
+        base = f"_COMMUNITY_{safe_name(_community_name(cid))}"
+        candidate = base
+        n = 1
+        while candidate.lower() in used_community:
+            candidate = f"{base}_{n}"
+            n += 1
+        used_community.add(candidate.lower())
+        community_filename[cid] = candidate
+
+    community_notes_written = 0
+    for cid, all_members in communities.items():
+        community_name = _community_name(cid)
         # A community's member list can contain ids with no backing node in G
         # (e.g. pruned nodes, stale community assignments from a prior run, or
         # synthesized/merge-artifact ids). Dereferencing those via G.nodes[n] or
@@ -1045,13 +1085,8 @@ def to_obsidian(
         if cross:
             lines.append("## Connections to other communities")
             for other_cid, edge_count in sorted(cross.items(), key=lambda x: -x[1]):
-                other_name = (
-                    community_labels.get(other_cid, f"Community {other_cid}")
-                    if community_labels and other_cid is not None
-                    else f"Community {other_cid}"
-                )
-                other_safe = safe_name(other_name)
-                lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[_COMMUNITY_{other_safe}]]")
+                other_fname = community_filename.get(other_cid) or f"_COMMUNITY_{safe_name(_community_name(other_cid))}"
+                lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[{other_fname}]]")
             lines.append("")
 
         # Top bridge nodes - highest degree nodes that connect to other communities
@@ -1071,8 +1106,7 @@ def to_obsidian(
                     f"{'community' if reach == 1 else 'communities'}"
                 )
 
-        community_safe = safe_name(community_name)
-        fname = f"_COMMUNITY_{community_safe}.md"
+        fname = community_filename[cid] + ".md"
         (out / fname).write_text("\n".join(lines), encoding="utf-8")  # nosec
         community_notes_written += 1
 
@@ -1112,20 +1146,18 @@ def to_canvas(
     def safe_name(label: str) -> str:
         cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
         cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        return _cap_filename(cleaned) if cleaned else "unnamed"
+        # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
+        # strip above but is empty once a downstream tool re-slugs on word chars
+        # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
+        # `qmd update`). Require at least one word char; else fall back so we never
+        # emit a "@.md"-style filename. (#1409)
+        if not re.search(r"\w", cleaned, flags=re.UNICODE):
+            return "unnamed"
+        return _cap_filename(cleaned)
 
     # Build node_filenames if not provided (same dedup logic as to_obsidian)
     if node_filenames is None:
-        node_filenames = {}
-        seen_names: dict[str, int] = {}
-        for node_id, data in G.nodes(data=True):
-            base = safe_name(data.get("label", node_id))
-            if base in seen_names:
-                seen_names[base] += 1
-                node_filenames[node_id] = f"{base}_{seen_names[base]}"
-            else:
-                seen_names[base] = 0
-                node_filenames[node_id] = base
+        node_filenames = _dedup_node_filenames(G, safe_name)
 
     # Fallback: with no community data (e.g. --no-cluster builds or a missing
     # analysis sidecar) the grid below produces nothing and the canvas is written
@@ -1146,15 +1178,21 @@ def to_canvas(
     group_x_offsets: list[int] = []
     group_y_offsets: list[int] = []
 
-    # Precompute group sizes so we can calculate offsets
+    # Precompute group sizes so we can calculate offsets.
+    # inner_cols is the per-community grid width; the box dimensions AND the node
+    # placement loop below both derive from it, so the cards always fill the box
+    # instead of wrapping into a narrow strip inside an oversized box.
     sorted_cids = sorted(communities.keys())
     group_sizes: dict[int, tuple[int, int]] = {}
+    group_cols: dict[int, int] = {}
     for cid in sorted_cids:
         members = communities[cid]
         n = len(members)
-        w = max(600, 220 * math.ceil(math.sqrt(n)) if n > 0 else 600)
-        h = max(400, 100 * math.ceil(n / 3) + 120 if n > 0 else 400)
+        inner_cols = max(1, math.ceil(math.sqrt(n)))
+        w = max(600, 220 * inner_cols)
+        h = max(400, 100 * math.ceil(n / inner_cols) + 120)
         group_sizes[cid] = (w, h)
+        group_cols[cid] = inner_cols
 
     # Compute cumulative row heights and col widths for grid placement
     # Each grid cell uses the max width/height in its col/row
@@ -1218,11 +1256,13 @@ def to_canvas(
             "color": canvas_color,
         })
 
-        # Node cards inside the group - rows of 3
+        # Node cards inside the group - laid out in the same ceil(sqrt(n))-column
+        # grid the box was sized for (group_cols[cid]), so cards fill the box.
+        inner_cols = group_cols[cid]
         sorted_members = sorted(members, key=lambda n: G.nodes[n].get("label", n))
         for m_idx, node_id in enumerate(sorted_members):
-            col = m_idx % 3
-            row = m_idx // 3
+            col = m_idx % inner_cols
+            row = m_idx // inner_cols
             nx_x = gx + 20 + col * (180 + 20)
             nx_y = gy + 80 + row * (60 + 20)
             fname = node_filenames.get(node_id, safe_name(G.nodes[node_id].get("label", node_id)))

@@ -301,9 +301,12 @@ def test_rebuild_bodies_are_shell_quote_safe():
 )
 def test_rebuild_bodies_read_graphify_root(name, body):
     """The rebuild must honour the persisted scan root rather than hardcoding the
-    repo top (#1173). Both bodies read graphify-out/.graphify_root and pass the
+    repo top (#1173). Both bodies read <output-dir>/.graphify_root and pass the
     recovered root to _rebuild_code instead of the bare Path('.')."""
-    assert "graphify-out/.graphify_root" in body, f"{name} ignores .graphify_root (#1173)"
+    assert ".graphify_root" in body, f"{name} ignores .graphify_root (#1173)"
+    # The output dir is resolved from GRAPHIFY_OUT at hook-run time, not hardcoded
+    # to graphify-out/, so a renamed output dir is still found (#1423).
+    assert "GRAPHIFY_OUT" in body, f"{name} ignores the GRAPHIFY_OUT override (#1423)"
     # The recovered root is what gets rebuilt, not a hardcoded cwd.
     assert "_rebuild_code(_root" in body, f"{name} does not pass the recovered root"
     # Quote-safe inside the shell-double-quoted launcher: single quotes only.

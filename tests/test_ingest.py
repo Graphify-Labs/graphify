@@ -66,3 +66,35 @@ def test_answer_in_body(tmp_path):
     out = save_query_result("what is the answer?", answer, mem)
     content = out.read_text()
     assert answer in content
+
+def test_outcome_in_frontmatter_and_body(tmp_path):
+    """An outcome signal is written to both frontmatter (for `reflect`) and an
+    ## Outcome body section (so it round-trips into the graph on re-extraction)."""
+    out = save_query_result("q", "a", tmp_path / "memory", outcome="useful")
+    content = out.read_text()
+    assert 'outcome: "useful"' in content
+    assert "## Outcome" in content
+    assert "- Signal: useful" in content
+
+
+def test_correction_in_frontmatter_and_body(tmp_path):
+    out = save_query_result(
+        "what hashes passwords?", "MD5", tmp_path / "memory",
+        outcome="corrected", correction="It's bcrypt, see PasswordHasher",
+    )
+    content = out.read_text()
+    assert 'correction: "It\'s bcrypt, see PasswordHasher"' in content
+    assert "- Correction: It's bcrypt, see PasswordHasher" in content
+
+
+def test_no_outcome_means_no_outcome_section(tmp_path):
+    """Backward compatible: a result without an outcome looks exactly as before."""
+    out = save_query_result("q", "a", tmp_path / "memory")
+    content = out.read_text()
+    assert "outcome:" not in content
+    assert "## Outcome" not in content
+
+
+def test_invalid_outcome_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        save_query_result("q", "a", tmp_path / "memory", outcome="great")

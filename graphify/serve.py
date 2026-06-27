@@ -4,11 +4,13 @@ import json
 import math
 import re
 import sys
+from array import array
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap
 from graphify.build import edge_data
+from graphify.paths import default_graph_json as _default_graph_json
 
 try:
     import jieba as _jieba  # type: ignore[import-untyped]
@@ -134,6 +136,109 @@ def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
     return {t: cache.get(t, math.log(1 + N)) for t in terms}
 
 
+def _trigrams(text: str) -> set[str]:
+    """Character trigrams of `text`; for <3-char text the whole string is the key."""
+    if len(text) < 3:
+        return {text} if text else set()
+    return {text[i:i + 3] for i in range(len(text) - 2)}
+
+
+def _node_search_text(data: dict, nid: str) -> str:
+    """Concatenate every field _score_nodes / _find_node match a query against, so
+    one trigram index over this text is a complete candidate generator for both.
+
+    - `norm_label` and `source_file` feed _score_nodes' per-term substring tiers.
+    - `label_tokens` (the space-joined token form) feeds _find_node's
+      `term in label_tokens` branch, where a multi-word `term` can span a token
+      boundary that punctuation hides in `norm_label` (e.g. query "foo bar" matches
+      label "foo.bar" only via its tokenized form).
+    - `nid` feeds the whole-query `joined == nid_lower` tier.
+
+    NUL separators stop a trigram from spanning two fields (a query never contains
+    NUL, so a cross-field trigram can never be a real match).
+    """
+    norm_label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
+    label_tokens = " ".join(_search_tokens(data.get("label") or ""))
+    source = (data.get("source_file") or "").lower()
+    return "\x00".join((norm_label, label_tokens, str(nid).lower(), source))
+
+
+def _get_trigram_index(G: nx.Graph) -> dict:
+    """Lazily build and cache a trigram -> node-position postings map on the graph.
+
+    Cached on `G.graph` so it auto-invalidates when _maybe_reload() swaps in a
+    fresh graph object, exactly like `_idf_cache`. `set_cache` memoizes per-trigram
+    id-sets across queries within one graph generation.
+    """
+    idx = G.graph.get("_trigram_index")
+    if idx is not None:
+        return idx
+    ids = list(G.nodes())
+    postings: dict[str, array] = {}
+    for i, nid in enumerate(ids):
+        for g in _trigrams(_node_search_text(G.nodes[nid], nid)):
+            bucket = postings.get(g)
+            if bucket is None:
+                bucket = array("i")
+                postings[g] = bucket
+            bucket.append(i)
+    idx = {"ids": ids, "postings": postings, "set_cache": {}}
+    G.graph["_trigram_index"] = idx
+    return idx
+
+
+def _trigram_candidates(G: nx.Graph, needles: list[str], *, guard_frac: float = 0.10) -> list[str] | None:
+    """Node IDs whose text could contain any `needle` as a substring, via the
+    trigram index — a *superset* the caller then re-scores with the exact predicates.
+
+    Returns candidates in graph-iteration order (so order-sensitive callers like
+    _find_node stay byte-identical to a full scan), or **None** when the index isn't
+    worth it — a needle is too short to trigram, or its rarest trigram is still
+    common enough that the candidate set would approach the whole graph. The caller
+    falls back to the full scan, preserving the never-worse contract. The guard is
+    cheap: postings-length lookups only, no set intersection.
+    """
+    idx = _get_trigram_index(G)
+    ids, postings, set_cache = idx["ids"], idx["postings"], idx["set_cache"]
+    n = len(ids)
+    if n == 0:
+        return []
+    needles = [s for s in needles if s]
+    thresh = int(n * guard_frac)
+    for s in needles:
+        tgs = _trigrams(s)
+        if not tgs or any(len(g) < 3 for g in tgs):
+            return None  # too short to trigram-filter
+        present = [len(postings[g]) for g in tgs if g in postings]
+        if not present:
+            continue  # this needle matches nothing — contributes no candidates
+        if min(present) > thresh:
+            return None  # rarest trigram still too common -> not worth the index
+    cand: set[int] = set()
+    for s in needles:
+        sets: list[set] | None = []
+        for g in _trigrams(s):
+            bucket = postings.get(g)
+            if bucket is None:
+                sets = None  # a trigram absent everywhere -> needle matches nothing
+                break
+            cached = set_cache.get(g)
+            if cached is None:
+                cached = set(bucket)
+                set_cache[g] = cached
+            sets.append(cached)
+        if not sets:
+            continue
+        sets.sort(key=len)  # intersect smallest-first
+        hit = set(sets[0])
+        for other in sets[1:]:
+            hit &= other
+            if not hit:
+                break
+        cand |= hit
+    return [ids[i] for i in sorted(cand)]
+
+
 def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     scored = []
     norm_terms = [tok for t in terms for tok in _search_tokens(t)]
@@ -143,7 +248,16 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     # Weight the full-query bonus by the rarest constituent term so a specific
     # multi-word label still outweighs common-token noise; floor at 1.0.
     joined_w = max((idf.get(t, 1.0) for t in norm_terms), default=1.0)
-    for nid, data in G.nodes(data=True):
+    # Trigram prefilter: score only nodes whose text could match a term, falling
+    # back to the whole graph when the index isn't selective. The result is
+    # identical either way — the per-node scoring below is unchanged and a
+    # non-candidate node always scores 0. (IDF above stays a whole-graph statistic.)
+    candidate_ids = _trigram_candidates(G, norm_terms + ([joined] if joined else []))
+    node_iter = (
+        G.nodes(data=True) if candidate_ids is None
+        else ((nid, G.nodes[nid]) for nid in candidate_ids)
+    )
+    for nid, data in node_iter:
         norm_label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
         bare_label = norm_label.rstrip("()")
         # Tokenized form of the label (punctuation stripped, same transform as the
@@ -461,7 +575,14 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
     exact: list[str] = []
     prefix: list[str] = []
     substring: list[str] = []
-    for nid, d in G.nodes(data=True):
+    # Trigram prefilter (graph-iteration order preserved so exact/prefix/substring
+    # ordering — and thus matches[0] — is byte-identical to the full scan).
+    candidate_ids = _trigram_candidates(G, [term])
+    node_iter = (
+        G.nodes(data=True) if candidate_ids is None
+        else ((nid, G.nodes[nid]) for nid in candidate_ids)
+    )
+    for nid, d in node_iter:
         norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
         bare_label = norm_label.rstrip("()")
         label_tokens = " ".join(_search_tokens(d.get("label") or ""))
@@ -510,6 +631,21 @@ def _filter_blank_stdin() -> None:
     sys.stdin = open(0, "r", closefd=False)
 
 
+def _community_header(cid: int, community_name) -> str:
+    # Header for get_community: "Community N — Name", matching get_node / query
+    # output which read the community_name attribute to_json writes onto nodes.
+    # Skip the name when it is just the "Community N" placeholder (written for
+    # unnamed communities) so the header never reads "Community 12 — Community 12";
+    # also falls back to the bare id when there is no name. Name is sanitised
+    # (F-010) like every other LLM-derived field.
+    base = f"Community {cid}"
+    if community_name:
+        clean = sanitize_label(str(community_name))
+        if clean and clean != base:
+            return f"{base} — {clean}"
+    return base
+
+
 def _build_server(graph_path: str):
     """Build the configured low-level MCP Server (shared by every transport).
 
@@ -529,6 +665,11 @@ def _build_server(graph_path: str):
 
     G = _load_graph(graph_path)
     communities = _communities_from_graph(G)
+    # Build the trigram query index eagerly so the first query doesn't pay the
+    # one-time build (a few seconds on a large graph). serve exists to answer
+    # queries, so absorbing the cost at startup beats spiking a random first
+    # request; it's cached on G.graph, so queries just reuse it.
+    _get_trigram_index(G)
 
     # Hot-reload state: mtime+size key lets us detect graph.json changes without
     # polling. Initialised from the file stat at startup so the first tool call
@@ -561,6 +702,8 @@ def _build_server(graph_path: str):
                 new_G = _load_graph(graph_path)
             except SystemExit:
                 return  # keep serving stale graph on transient read error
+            _get_trigram_index(new_G)  # warm before exposing, so the first
+            # post-reload query is fast too (same rationale as startup)
             G = new_G
             communities = _communities_from_graph(new_G)
             _reload_state["mtime_ns"], _reload_state["size"] = key
@@ -770,7 +913,8 @@ def _build_server(graph_path: str):
         nodes = communities.get(cid, [])
         if not nodes:
             return f"Community {cid} not found."
-        lines = [f"Community {cid} ({len(nodes)} nodes):"]
+        header = _community_header(cid, G.nodes[nodes[0]].get("community_name"))
+        lines = [f"{header} ({len(nodes)} nodes):"]
         for n in nodes:
             d = G.nodes[n]
             # Sanitise label and source_file (F-010).
@@ -1038,8 +1182,9 @@ def _build_server(graph_path: str):
     return server
 
 
-def serve(graph_path: str = "graphify-out/graph.json") -> None:
+def serve(graph_path: str | None = None) -> None:
     """Start the MCP server over stdio (the default, per-developer transport)."""
+    graph_path = graph_path or _default_graph_json()
     try:
         from mcp.server.stdio import stdio_server
     except ImportError as e:
@@ -1196,7 +1341,7 @@ def _build_http_app(
 
 
 def serve_http(
-    graph_path: str = "graphify-out/graph.json",
+    graph_path: str | None = None,
     *,
     host: str = "127.0.0.1",
     port: int = 8080,
@@ -1217,6 +1362,7 @@ def serve_http(
     deliberate follow-up. Binding ``0.0.0.0`` exposes the server beyond
     localhost — set an api_key when you do.
     """
+    graph_path = graph_path or _default_graph_json()
     try:
         import uvicorn
     except ImportError as e:
@@ -1304,7 +1450,7 @@ def _main(argv: list[str] | None = None) -> None:
         help="Reap stateful sessions idle this many seconds (default: 3600; 0 disables)",
     )
     args = parser.parse_args(argv)
-    graph_path = args.graph_flag or args.graph_path or "graphify-out/graph.json"
+    graph_path = args.graph_flag or args.graph_path or _default_graph_json()
 
     if args.transport == "http":
         serve_http(

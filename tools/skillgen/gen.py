@@ -61,6 +61,12 @@ def _v8_baseline_ref(platform_key: str) -> str:
     """The git ref for a split host's own pre-split skill body."""
     if platform_key == "claude":
         return f"{_V8_BASELINE_SHA}:graphify/skill.md"
+    if platform_key == "agents":
+        # `agents` is a post-v8 platform with no own v8 body — it re-homes amp's
+        # agents-md body at the generic ~/.agents/skills location. Its render is
+        # amp's modulo the install/uninstall command wording (prose, not headings),
+        # so amp's v8 body is the correct per-host coverage baseline.
+        return f"{_V8_BASELINE_SHA}:graphify/skill-amp.md"
     return f"{_V8_BASELINE_SHA}:graphify/skill-{platform_key}.md"
 
 # Immutable baseline for --always-on-roundtrip. The six always-on instruction
@@ -151,6 +157,16 @@ _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
         "host_display": "Amp",
         "install_block": "graphify amp install",
         "uninstall_block": "graphify amp uninstall  # remove the section",
+        "pretooluse_note": "",
+    },
+    "agents": {
+        # The generic cross-framework Agent-Skills target. Mirrors amp's bare,
+        # caveat-free agents-md section, worded for an unspecified host and
+        # pointing at `graphify agents install` (which wires AGENTS.md, like amp).
+        "heading_suffix": "",
+        "host_display": "your agent",
+        "install_block": "graphify agents install",
+        "uninstall_block": "graphify agents uninstall  # remove the section",
         "pretooluse_note": "",
     },
 }
@@ -798,6 +814,34 @@ def _is_zero_node_guard_fix_line(line: str) -> bool:
     )
 
 
+def _is_manifest_root_fix_line(line: str) -> bool:
+    """Whether a line is part of the manifest-portability fix (#1417).
+
+    The monolith Step 9 called ``save_manifest(detect['files'])`` with no
+    ``root=``, so the manifest stored absolute path keys and a clone or move
+    broke ``--update`` — every cached file missed and the whole corpus
+    re-extracted. The call now threads ``root='INPUT_PATH'`` so keys are
+    relativized to the scan root, matching the native ``graphify update`` path.
+    Both the old bare call (removed) and the new rooted call (added) match here;
+    the ``import`` guard avoids matching the ``from graphify.detect import
+    save_manifest`` line.
+    """
+    return "save_manifest(" in line and "import" not in line
+
+
+def _is_no_api_key_fix_line(line: str) -> bool:
+    """Whether a line is part of the "no API key required" clarity (#1461).
+
+    The aider/devin monoliths described Step 3 semantic extraction without ever
+    stating that graphify needs no API key, and (like the subagent-host skills)
+    framed the no-key path only around dispatching subagents. Terminal hosts that
+    run the CLI directly and can't dispatch subagents looped for minutes insisting
+    on a missing key. A single blockquote added after the "two parts" line states
+    that no key is ever required and gives a non-subagent fallback.
+    """
+    return "graphify needs no API key" in line
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -810,6 +854,8 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_content_scope_fix_line,
     _is_cache_unlink_fix_line,
     _is_zero_node_guard_fix_line,
+    _is_manifest_root_fix_line,
+    _is_no_api_key_fix_line,
 )
 
 

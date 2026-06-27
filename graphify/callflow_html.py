@@ -30,6 +30,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from html import escape
 
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME
+
 
 # ──────────────────────────────────────────────
 # 1. CSS template (fixed, project-agnostic)
@@ -404,7 +406,7 @@ def infer_project_name(graph_path: str, meta: dict) -> str:
     if meta.get("project_name"):
         return meta["project_name"]
     path = Path(graph_path).resolve()
-    if path.parent.name == "graphify-out" and len(path.parents) > 1:
+    if path.parent.name == GRAPHIFY_OUT_NAME and len(path.parents) > 1:
         return path.parents[1].name
     return path.parent.name or "Project"
 
@@ -419,9 +421,9 @@ def resolve_graphify_paths(args) -> dict:
     elif (base / "graph.json").exists():
         graphify_out = base
     else:
-        graphify_out = base / "graphify-out"
+        graphify_out = base / GRAPHIFY_OUT
 
-    project_root = graphify_out.parent if graphify_out.name == "graphify-out" else base
+    project_root = graphify_out.parent if graphify_out.name == GRAPHIFY_OUT_NAME else base
     graph = Path(args.graph).expanduser() if args.graph else graphify_out / "graph.json"
     report = Path(args.report).expanduser() if args.report else graphify_out / "GRAPH_REPORT.md"
     labels = Path(args.labels).expanduser() if args.labels else graphify_out / ".graphify_labels.json"

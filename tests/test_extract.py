@@ -100,6 +100,29 @@ def test_extract_disambiguates_duplicate_symbol_ids_by_source_path(tmp_path):
             assert edge["target"] in node_ids, f"Dangling structural target: {edge}"
 
 
+def test_cross_file_type_annotation_refs_resolve_to_single_node(tmp_path):
+    """#1402: a class defined once but referenced via type annotations in N other
+    files must NOT create 1+N phantom duplicate nodes (with the referencing file's
+    path — extension and all — baked into the id, e.g. ``pkg_a_py_thing``). The
+    annotation references resolve to the single canonical definition.
+
+    Contrast with test_extract_disambiguates_...: genuinely *defined* duplicates
+    stay separate; only cross-file *references* collapse onto the real node."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "thing.py").write_text("class Thing:\n    def run(self):\n        return 1\n", encoding="utf-8")
+    (pkg / "a.py").write_text("from pkg.thing import Thing\ndef use_a(obj: Thing) -> Thing:\n    return obj\n", encoding="utf-8")
+    (pkg / "b.py").write_text("from pkg.thing import Thing\ndef use_b(obj: Thing) -> Thing:\n    return obj\n", encoding="utf-8")
+
+    result = extract([pkg / "thing.py", pkg / "a.py", pkg / "b.py"], cache_root=tmp_path)
+
+    thing_nodes = [n for n in result["nodes"] if n["label"] == "Thing"]
+    assert len(thing_nodes) == 1, [n["id"] for n in thing_nodes]
+    # The tell-tale phantom signature is the referencing file's path (with .py
+    # extension) baked into the id — must not appear.
+    assert "_py" not in thing_nodes[0]["id"], thing_nodes[0]["id"]
+
+
 def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_path):
     first = tmp_path / "apps/api/Program.cs"
     second = tmp_path / "tools/api/Program.cs"
@@ -666,6 +689,119 @@ def test_cross_file_call_remains_inferred_without_import_evidence(tmp_path):
     ]
     assert len(call_edges) == 1
     assert call_edges[0]["confidence"] == "INFERRED"
+
+
+def test_python_qualified_class_method_call_resolves_extracted(tmp_path):
+    """`ClassName.method()` across files resolves to the class-qualified method
+    node with an EXTRACTED `calls` edge (#1446)."""
+    actions = tmp_path / "actions.py"
+    viewset = tmp_path / "viewset.py"
+    actions.write_text(
+        "class TaskActions:\n"
+        "    @staticmethod\n"
+        "    def approve(pk):\n"
+        "        return pk\n"
+    )
+    viewset.write_text(
+        "from actions import TaskActions\n\n"
+        "class TaskViewSet:\n"
+        "    def handle(self, request):\n"
+        "        return TaskActions.approve(request)\n"
+    )
+    result = extract([viewset, actions], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    call_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "handle" in nodes[e["source"]]["label"]
+        and "approve" in nodes[e["target"]]["label"]
+        and "actions.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(call_edges) == 1, f"expected one handle->approve edge, got {call_edges}"
+    assert call_edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_python_qualified_call_resolves_when_method_name_collides_with_caller(tmp_path):
+    """The real #1446 shape: a viewset action `approve()` delegates to a SERVICE
+    action of the SAME name via `Service.approve()`. The bare-name in-file lookup
+    would match the caller's own node (tgt == caller) and silently drop the call;
+    the qualified receiver must still resolve it cross-file to the service method."""
+    actions = tmp_path / "actions.py"
+    viewset = tmp_path / "viewset.py"
+    actions.write_text(
+        "class TaskActions:\n"
+        "    @staticmethod\n"
+        "    def approve(pk):\n"
+        "        return pk\n"
+    )
+    viewset.write_text(
+        "from actions import TaskActions\n\n"
+        "class TaskViewSet:\n"
+        "    def approve(self, request):\n"          # same name as the callee
+        "        return TaskActions.approve(request)\n"
+    )
+    result = extract([viewset, actions], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    cross = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "viewset.py" in (nodes[e["source"]].get("source_file") or "")
+        and "actions.py" in (nodes[e["target"]].get("source_file") or "")
+        and "approve" in nodes[e["target"]]["label"]
+    ]
+    assert len(cross) == 1, f"expected viewset->service approve edge, got {cross}"
+    assert cross[0]["confidence"] == "EXTRACTED"
+
+
+def test_python_instance_member_call_not_overconnected(tmp_path):
+    """A lowercase-receiver member call (`obj.run()`, `self.run()`) must NOT be
+    resolved cross-file — the #543/#1219 god-node guard stays intact (#1446)."""
+    svc = tmp_path / "svc.py"
+    worker = tmp_path / "worker.py"
+    svc.write_text(
+        "class Service:\n"
+        "    def run(self):\n"
+        "        return 1\n"
+    )
+    worker.write_text(
+        "class Worker:\n"
+        "    def go(self, obj):\n"
+        "        return obj.run()\n"
+    )
+    result = extract([worker, svc], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    bad = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "go" in nodes[e["source"]]["label"]
+        and "run" in nodes[e["target"]]["label"]
+    ]
+    assert bad == [], f"instance member call must not connect cross-file: {bad}"
+
+
+def test_python_qualified_call_ambiguous_class_bails(tmp_path):
+    """When the class name is defined in 2+ files, the qualified call must not
+    resolve — single-definition god-node guard (#1446)."""
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    caller = tmp_path / "caller.py"
+    a.write_text("class Helper:\n    def do(self):\n        return 1\n")
+    b.write_text("class Helper:\n    def do(self):\n        return 2\n")
+    caller.write_text(
+        "from a import Helper\n\n"
+        "class C:\n"
+        "    def f(self):\n"
+        "        return Helper.do(self)\n"
+    )
+    result = extract([caller, a, b], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    resolved = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "f" == nodes[e["source"]]["label"].strip("().")
+        and "do" in nodes[e["target"]]["label"]
+    ]
+    assert resolved == [], f"ambiguous class name must not resolve: {resolved}"
 
 
 # ── TSX (JSX-aware) parsing ──────────────────────────────────────────────────

@@ -533,6 +533,17 @@ def test_non_ollama_backend_gets_no_num_ctx_extra_body(monkeypatch):
     assert eb is None or "options" not in eb, "non-ollama backends must not get num_ctx injection"
 
 
+def test_openai_compat_forces_non_streaming_response(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://gateway.example/v1", "sk-test", "gpt-4.1-mini",
+        "u", temperature=0, max_completion_tokens=8192, backend="openai",
+    )
+
+    assert captured["stream"] is False
+
+
 # ---------------------------------------------------------------------------
 # Custom-provider extra_body: lets providers.json route around the moonshot-only
 # default. Self-hosted Qwen3 served by vLLM needs
@@ -845,3 +856,78 @@ def test_openai_compat_env_var_temperature_applied(tmp_path, monkeypatch):
     llm.extract_files_direct([tmp_path / "f.py"], backend="openai", root=tmp_path)
 
     assert captured.get("temperature") == 0.3
+
+
+def test_native_extraction_prompt_requests_hyperedges():
+    """The native-backend prompt must request hyperedges, like the skill's
+    extraction-spec does — otherwise `graphify extract --backend X` silently
+    produces zero hyperedges while the agent path produces them. Guards against
+    the two prompts drifting apart again.
+    """
+    for deep in (False, True):
+        prompt = llm._extraction_system(deep=deep)
+        assert "hyperedge" in prompt.lower(), f"deep={deep}: prompt does not mention hyperedges"
+        assert "3 or more nodes" in prompt, f"deep={deep}: prompt lacks the hyperedge guidance"
+        # The schema example must show a populated hyperedge, not an empty array.
+        assert '"hyperedges":[]' not in prompt, f"deep={deep}: schema still shows empty hyperedges"
+        assert '"nodes":["node_id1"' in prompt, f"deep={deep}: schema lacks a populated hyperedge example"
+
+
+def test_native_extraction_prompt_matches_skill_spec_on_hyperedges():
+    """Both extraction paths share the same hyperedge contract (the '3 or more
+    nodes … participate together' rule), so a corpus yields the same hyperedge
+    behaviour whether built via the skill or `graphify extract --backend`.
+    """
+    spec = (
+        Path(__file__).resolve().parents[1]
+        / "tools" / "skillgen" / "fragments" / "references" / "shared" / "extraction-spec.md"
+    ).read_text(encoding="utf-8")
+    shared = "3 or more nodes clearly participate together"
+    assert shared in spec, "skill extraction-spec changed its hyperedge wording"
+    assert shared in llm._EXTRACTION_SYSTEM, "native prompt drifted from the skill hyperedge wording"
+
+
+# --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------
+# BACKENDS reads the env at import time, so each case runs in a fresh interpreter
+# (subprocess) to avoid reload contamination of the test session.
+import subprocess
+import sys as _sys
+
+
+def _backend_base_url(backend: str, env_extra: dict) -> str:
+    out = subprocess.run(
+        [_sys.executable, "-c",
+         f"import graphify.llm as l; print(l.BACKENDS[{backend!r}]['base_url'])"],
+        env={**os.environ, **env_extra}, capture_output=True, text=True, check=True,
+    )
+    return out.stdout.strip()
+
+
+import os  # noqa: E402
+
+
+@pytest.mark.parametrize("backend,env_var,override", [
+    ("kimi", "KIMI_BASE_URL", "https://proxy.example/kimi/v1"),
+    ("gemini", "GEMINI_BASE_URL", "https://proxy.example/gemini"),
+    ("deepseek", "DEEPSEEK_BASE_URL", "https://proxy.example/deepseek"),
+])
+def test_base_url_env_overrides(backend, env_var, override):
+    assert _backend_base_url(backend, {env_var: override}) == override
+
+
+@pytest.mark.parametrize("backend,default", [
+    ("kimi", "https://api.moonshot.ai/v1"),
+    ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/"),
+    ("deepseek", "https://api.deepseek.com"),
+])
+def test_base_url_defaults_without_env(backend, default):
+    # Ensure the override env vars are unset so the hardcoded default is used.
+    cleared = {k: "" for k in ("KIMI_BASE_URL", "GEMINI_BASE_URL", "DEEPSEEK_BASE_URL")}
+    # empty string would be falsy-but-set; delete instead by reconstructing env without them
+    env = {k: v for k, v in os.environ.items() if k not in cleared}
+    out = subprocess.run(
+        [_sys.executable, "-c",
+         f"import graphify.llm as l; print(l.BACKENDS[{backend!r}]['base_url'])"],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip() == default

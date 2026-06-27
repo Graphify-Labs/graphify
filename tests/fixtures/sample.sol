@@ -26,6 +26,7 @@ enum Status {
 
 contract Token is Base, IToken {
     event Transfer(address indexed from, address indexed to, uint256 value);
+    error InsufficientBalance(uint256 available, uint256 required);
 
     using SafeMath for uint256;
 

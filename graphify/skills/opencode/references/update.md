@@ -139,7 +139,10 @@ print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])
 
 # Save manifest so next --update diffs against today's state, not the
 # prior run's baseline (prevents ghost-node reports on subsequent updates).
-save_manifest(incremental['files'])
+# root= matches the build_merge call above so the manifest keys stay relative to
+# the scan root — portable across clones/machines, so --update keeps matching
+# cached files instead of missing every one after a move (#1417).
+save_manifest(incremental['files'], root='INPUT_PATH')
 print('[graphify update] Manifest saved.')
 "
 ```
