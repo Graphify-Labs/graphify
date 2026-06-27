@@ -912,6 +912,7 @@ def _call_openai_compat(
             {"role": "user", "content": _openai_content(user_message, images or [])},
         ],
         "max_completion_tokens": max_completion_tokens,
+        "stream": False,
     }
     if temperature is not None:
         kwargs["temperature"] = temperature

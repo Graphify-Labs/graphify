@@ -533,6 +533,17 @@ def test_non_ollama_backend_gets_no_num_ctx_extra_body(monkeypatch):
     assert eb is None or "options" not in eb, "non-ollama backends must not get num_ctx injection"
 
 
+def test_openai_compat_forces_non_streaming_response(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://gateway.example/v1", "sk-test", "gpt-4.1-mini",
+        "u", temperature=0, max_completion_tokens=8192, backend="openai",
+    )
+
+    assert captured["stream"] is False
+
+
 # ---------------------------------------------------------------------------
 # Custom-provider extra_body: lets providers.json route around the moonshot-only
 # default. Self-hosted Qwen3 served by vLLM needs
