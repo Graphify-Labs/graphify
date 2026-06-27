@@ -120,6 +120,48 @@ def test_label_cli_passes_model_override(tmp_path, monkeypatch):
     }
 
 
+def test_label_cli_missing_only_preserves_existing_labels(tmp_path, monkeypatch):
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {"id": "orders", "label": "OrderService", "community": 0},
+            {"id": "payments", "label": "PaymentService", "community": 1},
+        ],
+        "links": [],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+    (out / ".graphify_labels.json").write_text(
+        json.dumps({"0": "Order Management", "1": "Community 1"}),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def fake_generate(G, communities, *, backend=None, model=None, gods=None,
+                      quiet=False, max_concurrency=4, batch_size=100):
+        captured["communities"] = dict(communities)
+        return {1: "Payment Flow"}, "llm"
+
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "label", str(tmp_path), "--missing-only", "--backend", "gemini", "--no-viz"],
+    )
+
+    cli.main()
+
+    assert set(captured["communities"]) == {1}
+    labels = json.loads((out / ".graphify_labels.json").read_text(encoding="utf-8"))
+    assert labels == {"0": "Order Management", "1": "Payment Flow"}
+
+
 def test_label_communities_partial_reply_fills_placeholder(monkeypatch):
     G, communities = _graph()
     monkeypatch.setattr("graphify.llm._call_llm",

@@ -2236,6 +2236,7 @@ def main() -> None:
         print("    --max-concurrency=N     parallel community-labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
         print("    --batch-size=N          communities per labeling LLM call (default 100)")
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
+        print("    --missing-only         keep existing labels and only name missing/placeholder communities")
         print("    --backend=<name>        backend to use (default: auto-detect from API keys)")
         print("    --model=<name>          model to use for community naming")
         print("    --max-concurrency=N     parallel labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
@@ -3318,6 +3319,7 @@ def main() -> None:
         # the optional positional path can appear in any order (#724).
         no_viz = "--no-viz" in sys.argv
         no_label = "--no-label" in sys.argv
+        missing_only = "--missing-only" in sys.argv
         _backend_arg = next((a for a in sys.argv if a.startswith("--backend=")), None)
         label_backend = _backend_arg.split("=", 1)[1] if _backend_arg else None
         _model_arg = next((a for a in sys.argv if a.startswith("--model=")), None)
@@ -3360,7 +3362,7 @@ def main() -> None:
                 label_batch_size = int(args[i_arg + 1]); i_arg += 2
             elif a.startswith("--batch-size="):
                 label_batch_size = int(a.split("=", 1)[1]); i_arg += 1
-            elif a == "--no-viz" or a.startswith("--min-community-size="):
+            elif a in ("--no-viz", "--missing-only") or a.startswith("--min-community-size="):
                 i_arg += 1
             elif a.startswith("--"):
                 i_arg += 1
@@ -3432,9 +3434,19 @@ def main() -> None:
         out = watch_path / _GRAPHIFY_OUT
         out.mkdir(parents=True, exist_ok=True)
         labels_path = out / ".graphify_labels.json"
+        existing_labels: dict[int, str] = {}
+        if labels_path.exists():
+            try:
+                existing_labels = {
+                    int(k): v
+                    for k, v in json.loads(labels_path.read_text(encoding="utf-8")).items()
+                    if isinstance(v, str)
+                }
+            except Exception:
+                existing_labels = {}
         if labels_path.exists() and not force_relabel:
             try:
-                labels = {int(k): v for k, v in json.loads(labels_path.read_text(encoding="utf-8")).items()}
+                labels = existing_labels
             except Exception:
                 labels = {cid: f"Community {cid}" for cid in communities}
         elif no_label and not force_relabel:
@@ -3448,10 +3460,23 @@ def main() -> None:
             print("Labeling communities...")
             # The final labels (LLM or placeholder fallback) are persisted to
             # .graphify_labels.json by the unconditional write below.
-            labels, _ = generate_community_labels(
-                G, communities, backend=label_backend, model=label_model, gods=gods,
+            label_communities_input = communities
+            labels = {}
+            if missing_only:
+                labels = {
+                    cid: existing_labels.get(cid, f"Community {cid}")
+                    for cid in communities
+                }
+                label_communities_input = {
+                    cid: members
+                    for cid, members in communities.items()
+                    if cid not in existing_labels or existing_labels.get(cid) == f"Community {cid}"
+                }
+            generated_labels, _ = generate_community_labels(
+                G, label_communities_input, backend=label_backend, model=label_model, gods=gods,
                 max_concurrency=label_max_concurrency, batch_size=label_batch_size,
             )
+            labels.update(generated_labels)
         questions = suggest_questions(G, communities, labels)
         tokens = {"input": 0, "output": 0}
         from graphify.export import _git_head as _gh
