@@ -2461,6 +2461,7 @@ def _extract_generic(
                 "file_type": "code",
                 "source_file": "",
                 "source_location": "",
+                "origin_file": str_path,
             })
         return nid
 
@@ -7517,6 +7518,13 @@ def _source_key(source_file: str, root: Path) -> str:
         return str(source_path)
 
 
+def _node_disambiguation_source_key(node: dict, root: Path) -> str:
+    source_file = str(node.get("source_file", ""))
+    if source_file:
+        return _source_key(source_file, root)
+    return _source_key(str(node.get("origin_file", "")), root)
+
+
 def _disambiguate_colliding_node_ids(
     nodes: list[dict],
     edges: list[dict],
@@ -7542,12 +7550,12 @@ def _disambiguate_colliding_node_ids(
     remap: dict[tuple[str, str], str] = {}
     ambiguous_ids: set[str] = set()
     for old_id, group in by_id.items():
-        source_keys = {_source_key(str(node.get("source_file", "")), root) for node in group}
+        source_keys = {_node_disambiguation_source_key(node, root) for node in group}
         if len(group) < 2 or len(source_keys) < 2:
             continue
         ambiguous_ids.add(old_id)
         for node in group:
-            source_key = _source_key(str(node.get("source_file", "")), root)
+            source_key = _node_disambiguation_source_key(node, root)
             if not source_key:
                 continue
             new_id = _make_id(source_key, old_id)

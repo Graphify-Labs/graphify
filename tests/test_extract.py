@@ -123,6 +123,25 @@ def test_cross_file_type_annotation_refs_resolve_to_single_node(tmp_path):
     assert "_py" not in thing_nodes[0]["id"], thing_nodes[0]["id"]
 
 
+def test_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
+    """#1462: imported stdlib/type stubs with the same label are distinct uses
+    when there is no single project definition to rewire onto. They need the
+    referencing file as a disambiguator while still keeping ``source_file`` empty
+    so real project definitions can be rewired by #1402."""
+    first = tmp_path / "pkg/a.py"
+    second = tmp_path / "pkg/b.py"
+    first.parent.mkdir(parents=True)
+    first.write_text("from pathlib import Path\ndef use_a(p: Path):\n    return p\n", encoding="utf-8")
+    second.write_text("from pathlib import Path\ndef use_b(p: Path):\n    return p\n", encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+    path_nodes = [node for node in result["nodes"] if node["label"] == "Path"]
+
+    assert len(path_nodes) == 2
+    assert len({node["id"] for node in path_nodes}) == 2
+    assert all(not node.get("source_file") for node in path_nodes)
+
+
 def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_path):
     first = tmp_path / "apps/api/Program.cs"
     second = tmp_path / "tools/api/Program.cs"
