@@ -13,6 +13,12 @@ from typing import Any, Callable
 from .cache import load_cached, save_cached
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
+from .resolver_registry import (
+    LanguageResolver,
+    register as register_language_resolver,
+    run_language_resolvers,
+)
+from .ruby_resolution import resolve_ruby_member_calls
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.extractors.base import (  # noqa: F401
@@ -2341,6 +2347,63 @@ _SWIFT_CONFIG = LanguageConfig(
     import_handler=_import_swift,
 )
 
+# ── Ruby local type inference (for member-call resolution) ─────────────────────
+
+
+def _ruby_new_class_name(node, source: bytes) -> str | None:
+    """Return ``ClassName`` if ``node`` is a ``ClassName.new(...)`` call, else None.
+
+    Only a bare capitalized constant receiver counts (``Processor.new``);
+    namespaced (``A::B.new``) and dynamic receivers are intentionally ignored so
+    the binding stays unambiguous.
+    """
+    if node is None or node.type != "call":
+        return None
+    recv = node.child_by_field_name("receiver")
+    meth = node.child_by_field_name("method")
+    if recv is None or meth is None:
+        return None
+    if recv.type != "constant" or _read_text(meth, source) != "new":
+        return None
+    return _read_text(recv, source)
+
+
+def _ruby_local_class_bindings(body_node, source: bytes) -> dict[str, str | None]:
+    """Map ``local_var -> ClassName`` for ``var = ClassName.new`` within one Ruby
+    method body, not descending into nested method definitions.
+
+    100%-confidence contract: a variable assigned more than once, or to anything
+    other than a single ``Constant.new``, maps to ``None`` (ambiguous) so callers
+    never resolve it. Only the certain single-binding case carries a type.
+    """
+    bindings: dict[str, str | None] = {}
+    boundary = {"method", "singleton_method"}
+
+    def visit(n) -> None:
+        for child in n.children:
+            if child.type in boundary:
+                continue  # nested method has its own scope
+            if child.type == "assignment":
+                left = child.child_by_field_name("left")
+                right = child.child_by_field_name("right")
+                if left is not None and left.type == "identifier":
+                    var = _read_text(left, source)
+                    cls = _ruby_new_class_name(right, source) if right is not None else None
+                    if cls is None:
+                        # assigned to something we can't type: poison if it was typed
+                        if var in bindings:
+                            bindings[var] = None
+                    elif var in bindings:
+                        if bindings[var] != cls:
+                            bindings[var] = None  # reassigned to a different class
+                    else:
+                        bindings[var] = cls
+            visit(child)
+
+    visit(body_node)
+    return bindings
+
+
 # ── Generic extractor ─────────────────────────────────────────────────────────
 
 def _extract_generic(
@@ -3474,6 +3537,10 @@ def _extract_generic(
     seen_helper_ref_pairs: set[tuple[str, str, str]] = set()
     seen_bind_pairs: set[tuple[str, str, str]] = set()
     raw_calls: list[dict] = []  # unresolved calls for cross-file resolution in extract()
+    # Ruby: per-method `var -> ClassName` table from `var = Const.new` bindings,
+    # populated before walk_calls runs. Lets member-call raw_calls carry a
+    # receiver_type so the cross-file pass resolves `var.method` by type (#ruby).
+    ruby_var_types: dict[str, dict[str, str | None]] = {}
 
     def _php_class_const_scope(n) -> str | None:
         scope = n.child_by_field_name("scope")
@@ -3608,6 +3675,20 @@ def _extract_generic(
                     raw = _read_text(type_node, source).split("<", 1)[0].strip()
                     if raw:
                         callee_name = raw.rsplit(".", 1)[-1]
+            elif config.ts_module == "tree_sitter_ruby":
+                # Ruby's `call` node carries `receiver` and `method` as direct
+                # fields (no intermediate accessor node), so the generic accessor
+                # model doesn't apply. Read them directly and capture a simple
+                # receiver (`p` in `p.run`, `Processor` in `Processor.new`) so the
+                # cross-file pass can resolve member calls by the receiver's type.
+                meth = node.child_by_field_name("method")
+                if meth is not None:
+                    callee_name = _read_text(meth, source)
+                recv = node.child_by_field_name("receiver")
+                if recv is not None:
+                    is_member_call = True
+                    if recv.type in ("identifier", "constant"):
+                        member_receiver = _read_text(recv, source)
             else:
                 # Generic: get callee from call_function_field
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
@@ -3660,14 +3741,21 @@ def _extract_generic(
                         })
                 elif callee_name and not tgt_nid:
                     # Callee not in this file — save for cross-file resolution in extract()
-                    raw_calls.append({
+                    rc_entry = {
                         "caller_nid": caller_nid,
                         "callee": callee_name,
                         "is_member_call": is_member_call,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                         "receiver": swift_receiver or member_receiver,
-                    })
+                    }
+                    # Ruby: attach the receiver's inferred type from the method's
+                    # local `var = Const.new` bindings, when unambiguously known.
+                    if member_receiver and config.ts_module == "tree_sitter_ruby":
+                        rc_entry["receiver_type"] = ruby_var_types.get(
+                            caller_nid, {}
+                        ).get(member_receiver)
+                    raw_calls.append(rc_entry)
 
             # Helper function calls: config('foo.bar') → uses_config edge to "foo"
             if (callee_name and callee_name in config.helper_fn_names):
@@ -3795,6 +3883,10 @@ def _extract_generic(
 
         for child in node.children:
             walk_calls(child, caller_nid)
+
+    if config.ts_module == "tree_sitter_ruby":
+        for caller_nid, body_node in function_bodies:
+            ruby_var_types[caller_nid] = _ruby_local_class_bindings(body_node, source)
 
     for caller_nid, body_node in function_bodies:
         walk_calls(body_node, caller_nid)
@@ -9352,6 +9444,23 @@ def _resolve_python_member_calls(
         })
 
 
+# Register the cross-file, language-specific member-call resolvers into the shared
+# registry (framework lives in graphify.resolver_registry). A new language plugs in
+# by adding one register() call below — no edits to extract()'s body. Order
+# preserved from the prior inlined wiring: Swift (#1356) before Python (#1446).
+register_language_resolver(
+    LanguageResolver("swift_member_calls", frozenset({".swift"}), _resolve_swift_member_calls)
+)
+register_language_resolver(
+    LanguageResolver("python_member_calls", frozenset({".py"}), _resolve_python_member_calls)
+)
+# Ruby type-aware member-call resolution (Class.new + typed var.method). Lives in
+# graphify.ruby_resolution; registered here as a second consumer of the framework.
+register_language_resolver(
+    LanguageResolver("ruby_member_calls", frozenset({".rb"}), resolve_ruby_member_calls)
+)
+
+
 def extract_objc(path: Path) -> dict:
     """Extract interfaces, implementations, protocols, methods, and imports from .m/.mm/.h files."""
     try:
@@ -13373,26 +13482,12 @@ def extract(
                 "weight": 1.0,
             })
 
-    # Cross-file Swift member-call resolution (#1356). Runs after the shared call
-    # pass so node ids/caller_nids are final; additive (only receiver-typed calls
-    # the shared pass skipped), with a single-definition god-node guard.
-    swift_paths = [p for p in paths if p.suffix == ".swift"]
-    if swift_paths:
-        try:
-            _resolve_swift_member_calls(per_file, all_nodes, all_edges)
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("Swift member-call resolution failed, skipping: %s", exc)
-
-    # Cross-file Python qualified class-method resolution (#1446). Same shape as the
-    # Swift pass: additive, runs after id-disambiguation, single-definition guard.
-    py_paths = [p for p in paths if p.suffix == ".py"]
-    if py_paths:
-        try:
-            _resolve_python_member_calls(per_file, all_nodes, all_edges)
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("Python member-call resolution failed, skipping: %s", exc)
+    # Cross-file, language-specific member-call resolution. Runs after the shared
+    # call pass so node ids/caller_nids are final; each pass is additive (only the
+    # receiver-typed/qualified calls the shared pass skipped) with its own
+    # single-definition god-node guard. Registered in graphify.resolver_registry so
+    # a new language plugs in without editing this body (#1356 Swift, #1446 Python).
+    run_language_resolvers(paths, per_file, all_nodes, all_edges)
 
     # Relativize source_file fields so paths are portable across machines (#555)
     for item in all_nodes + all_edges:
