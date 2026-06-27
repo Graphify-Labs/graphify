@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: the Go AST extractor no longer creates phantom duplicate nodes for cross-file type references — the Go copy of `ensure_named_node` still used the older sourced-stub fallback; it now emits a sourceless stub like the other extractors, extending the #1402 fix to Go (#1500).
+
 ## 0.8.50 (2026-06-27)
 
 - Feat: `graphify label --missing-only` relabels only communities that are unnamed or still hold a `Community N` placeholder, preserving existing non-placeholder labels from `.graphify_labels.json` (#1481, thanks @jiangyq9; supersedes #1421 by @matiasduartee, who proposed the same flag). Lets a large graph be relabeled incrementally without re-naming (and paying for) communities that already have good names.

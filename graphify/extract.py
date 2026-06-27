@@ -6472,7 +6472,21 @@ def extract_go(path: Path) -> dict:
             return nid
         nid = _make_id(name)
         if nid not in seen_ids:
-            add_node(nid, name, line)
+            # The name isn't declared in this file, so this is a cross-file reference
+            # (e.g. a type defined in another file of the package). Emit a SOURCELESS
+            # stub — like the inheritance-base path in the other extractors — so the
+            # corpus-level rewire can collapse it onto the real definition. A sourced
+            # stub here makes _disambiguate_colliding_node_ids bake the referencing
+            # file's path (with extension) into the id and blocks the rewire, which is
+            # the phantom-duplicate-node bug (#1402).
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
         return nid
 
     def emit_go_method_refs(func_node, func_nid: str, line: int) -> None:
