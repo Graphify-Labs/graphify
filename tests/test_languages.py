@@ -344,6 +344,25 @@ def test_java_parameter_return_generic_and_attribute_contexts():
     assert ("build", "Override") in _edge_labels(result, "references", "attribute")
 
 
+def test_java_field_type_references_have_field_context(tmp_path):
+    source = tmp_path / "Fields.java"
+    source.write_text(
+        "class PaymentGateway {}\n"
+        "class Handler {}\n"
+        "class CheckoutService {\n"
+        "    PaymentGateway gateway;\n"
+        "    List<Handler> handlers;\n"
+        "}\n"
+    )
+    result = extract_java(source)
+    assert ("CheckoutService", "PaymentGateway") in _edge_labels(
+        result, "references", "field"
+    )
+    assert ("CheckoutService", "Handler") in _edge_labels(
+        result, "references", "generic_arg"
+    )
+
+
 def test_csharp_field_type_references_have_field_context():
     r = extract_csharp(FIXTURES / "sample.cs")
     refs = _references(r)

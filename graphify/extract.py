@@ -2964,6 +2964,22 @@ def _extract_generic(
                          "references", line, context="field")
             return
 
+        if (config.ts_module == "tree_sitter_java"
+                and t == "field_declaration"
+                and parent_class_nid):
+            type_node = node.child_by_field_name("type")
+            if type_node is not None:
+                line = node.start_point[0] + 1
+                refs: list[tuple[str, str]] = []
+                _java_collect_type_refs(type_node, source, False, refs)
+                for ref_name, role in refs:
+                    ctx = "generic_arg" if role == "generic_arg" else "field"
+                    target_nid = ensure_named_node(ref_name, line)
+                    if target_nid != parent_class_nid:
+                        add_edge(parent_class_nid, target_nid, "references",
+                                 line, context=ctx)
+            return
+
         if (config.ts_module == "tree_sitter_php"
                 and t == "property_declaration"
                 and parent_class_nid):
