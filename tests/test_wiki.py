@@ -1,6 +1,7 @@
 """Tests for graphify.wiki — Wikipedia-style article generation."""
 import pytest
 from pathlib import Path
+import re
 import networkx as nx
 from graphify.wiki import to_wiki, _index_md, _community_article, _god_node_article
 
@@ -53,8 +54,8 @@ def test_index_links_all_communities(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS)
     index = (tmp_path / "index.md").read_text()
-    assert "[[Parsing Layer]]" in index
-    assert "[[Rendering Layer]]" in index
+    assert "[[Parsing_Layer|Parsing Layer]]" in index
+    assert "[[Rendering_Layer|Rendering Layer]]" in index
 
 
 def test_index_lists_god_nodes(tmp_path):
@@ -70,7 +71,7 @@ def test_community_article_has_cross_links(tmp_path):
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS)
     parsing = (tmp_path / "Parsing_Layer.md").read_text()
     # n1 (parsing) references n3 (rendering) → cross-community link
-    assert "[[Rendering Layer]]" in parsing
+    assert "[[Rendering_Layer|Rendering Layer]]" in parsing
 
 
 def test_community_article_shows_cohesion(tmp_path):
@@ -92,14 +93,14 @@ def test_god_node_article_has_connections(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS, god_nodes_data=GOD_NODES)
     article = (tmp_path / "parse.md").read_text()
-    assert "[[validate]]" in article or "[[render]]" in article
+    assert "**validate**" in article or "**render**" in article
 
 
 def test_god_node_article_links_community(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS, god_nodes_data=GOD_NODES)
     article = (tmp_path / "parse.md").read_text()
-    assert "[[Parsing Layer]]" in article
+    assert "[[Parsing_Layer|Parsing Layer]]" in article
 
 
 def test_to_wiki_skips_missing_god_node_ids(tmp_path):
@@ -164,7 +165,7 @@ def test_god_node_article_community_without_node_attr(tmp_path):
     god_nodes = [{"id": "n1", "label": "parse", "degree": 1}]
     to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
     article = (tmp_path / "parse.md").read_text()
-    assert "[[Core Logic]]" in article
+    assert "[[Core_Logic|Core Logic]]" in article
 
 
 # Regression tests for #936 - stale community node IDs crash to_wiki after dedup/re-extract
@@ -230,6 +231,16 @@ def test_to_wiki_case_only_distinct_labels_dont_overwrite(tmp_path):
     # filenames are distinct even when compared case-insensitively
     lowered = [p.stem.lower() for p in articles]
     assert len(set(lowered)) == len(lowered), [p.name for p in articles]
+
+
+def test_to_wiki_wikilinks_resolve_to_generated_filenames(tmp_path):
+    G = _make_graph()
+    to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS, god_nodes_data=GOD_NODES)
+
+    stems = {p.stem for p in tmp_path.glob("*.md")}
+    for article in tmp_path.glob("*.md"):
+        for raw_target in re.findall(r"\[\[([^\]|#]+)", article.read_text(encoding="utf-8")):
+            assert raw_target in stems, f"{article.name} has dangling wikilink target {raw_target!r}"
 
 
 def test_to_wiki_god_node_label_case_collides_with_community(tmp_path):
