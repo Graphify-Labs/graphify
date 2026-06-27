@@ -257,6 +257,27 @@ def test_cuda_host_call_edges():
     assert ("main()", "host_norm()") in calls
 
 
+# Metal Shading Language is a C++14-derived language, so .metal files route
+# through the C++ extractor just like CUDA does.
+
+def test_metal_is_code_extension():
+    from graphify.detect import CODE_EXTENSIONS
+    assert ".metal" in CODE_EXTENSIONS
+
+
+def test_metal_no_error():
+    r = extract_cpp(FIXTURES / "sample.metal")
+    assert "error" not in r
+
+
+def test_metal_finds_kernel_function_and_struct():
+    r = extract_cpp(FIXTURES / "sample.metal")
+    labels = _labels(r)
+    assert any("Vec3" in l for l in labels)
+    assert any("dot3" in l for l in labels)
+    assert any("saxpy" in l for l in labels)
+
+
 # ── Ruby ─────────────────────────────────────────────────────────────────────
 
 def test_ruby_no_error():
