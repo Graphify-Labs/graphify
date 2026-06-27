@@ -165,13 +165,14 @@ def test_trigrams_basic():
 def test_node_search_text_includes_all_matched_fields():
     G = _make_big_graph()
     text = _node_search_text(G.nodes["punct"], "punct")
-    # norm_label, the tokenized label (label_tokens), nid, and source are all present,
-    # NUL-separated so trigrams can't span fields.
+    # norm_label, tokenized label, nid, raw source, and tokenized source are all
+    # present, NUL-separated so trigrams can't span fields.
     parts = text.split("\x00")
     assert parts[0] == "foo.bar:baz"          # norm_label (punctuation kept)
     assert parts[1] == "foo bar baz"          # label_tokens (tokenized)
     assert parts[2] == "punct"                # nid
     assert parts[3] == "pkg/foobar.py"        # source_file
+    assert parts[4] == "pkg foobar py"        # source_file tokens
 
 
 def test_trigram_candidates_fast_path_fires_for_rare_term():
@@ -225,6 +226,30 @@ def test_find_node_label_tokens_branch_covered_by_index():
     # must surface this node as a candidate, or the prefilter would silently drop it.
     G = _make_big_graph()
     assert _find_node(G, "Foo Bar Baz") == ["punct"]
+
+
+def test_find_node_source_file_path_prefers_file_level_node():
+    G = _make_big_graph()
+    source_file = "app/api/example/route.ts"
+    # Insert the function node first to prove source-file lookup reorders the
+    # file-level node ahead of other nodes from the same file.
+    G.add_node(
+        "example_route_get",
+        label="GET()",
+        source_file=source_file,
+        source_location="L42",
+    )
+    G.add_node(
+        "example_route",
+        label="route.ts",
+        source_file=source_file,
+        source_location="L1",
+    )
+
+    matches = _find_node(G, source_file)
+
+    assert matches[0] == "example_route"
+    assert "example_route_get" in matches
 
 
 def test_trigram_index_cached_and_rebuilt_per_graph():
