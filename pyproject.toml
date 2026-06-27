@@ -41,6 +41,7 @@ dependencies = [
     "tree-sitter-bash>=0.23,<0.27",
     "tree-sitter-json>=0.23,<0.26",
     "tree-sitter-solidity>=1.2,<2.0",
+    "tree-sitter-ada>=0.1,<0.2",
 ]
 
 [project.urls]

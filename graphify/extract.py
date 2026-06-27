@@ -6771,6 +6771,675 @@ def extract_julia(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+# ── Ada extractor (custom walk) ────────────────────────────────────────────
+
+def _ada_extract_selected_component_names(node, source: bytes) -> list[str]:
+    """Extract all identifier names from a selected_component node (e.g., Ada.Text_IO -> ['Ada', 'Text_IO'])."""
+    names = []
+    for child in node.children:
+        if child.type == "identifier":
+            name = _read_text(child, source)
+            if name:
+                names.append(name)
+        elif child.type == "selected_component":
+            names.extend(_ada_extract_selected_component_names(child, source))
+    return names
+
+
+def _ada_get_name_from_node(node, source: bytes) -> str | None:
+    """Extract name from a node using 'name' field or first identifier child."""
+    name_node = node.child_by_field_name("name")
+    if name_node:
+        return _read_text(name_node, source)
+    for child in node.children:
+        if child.type == "identifier":
+            return _read_text(child, source)
+    return None
+
+
+def _ada_collect_subtype_mark_refs(node, source: bytes, out: list[tuple[str, str]]) -> None:
+    """Recursively collect type references from parameter/result/type nodes.
+    
+    Handles both subtype_mark nodes and plain identifier nodes in type positions.
+    """
+    if node is None:
+        return
+    
+    # Handle subtype_mark nodes
+    if node.type == "subtype_mark":
+        name = _read_text(node, source)
+        if name:
+            out.append((name, "type"))
+        return
+    
+    # Handle selected_component (e.g., Ada.Text_IO)
+    if node.type == "selected_component":
+        names = _ada_extract_selected_component_names(node, source)
+        if names:
+            out.append((".".join(names), "type"))
+        return
+    
+    # Handle parameter_specification specially: skip param name, collect type
+    if node.type == "parameter_specification":
+        identifiers = [c for c in node.children if c.type == "identifier"]
+        # In Ada, parameter_specification is: identifier ':' type
+        # So the type is the last identifier
+        if len(identifiers) >= 2:
+            type_id = identifiers[-1]
+            name = _read_text(type_id, source)
+            if name:
+                out.append((name, "type"))
+        elif len(identifiers) == 1:
+            # Single identifier could be the type (anonymous parameter)
+            name = _read_text(identifiers[0], source)
+            if name:
+                out.append((name, "type"))
+        return
+    
+    # Handle result_profile: collect the identifier after 'return'
+    if node.type == "result_profile":
+        for child in node.children:
+            if child.type == "identifier":
+                name = _read_text(child, source)
+                if name:
+                    out.append((name, "type"))
+            elif child.type == "subtype_mark":
+                name = _read_text(child, source)
+                if name:
+                    out.append((name, "type"))
+            elif child.is_named and child.type not in ("identifier",):
+                _ada_collect_subtype_mark_refs(child, source, out)
+        return
+    
+    # Handle plain identifier nodes (in type positions like component_definition)
+    if node.type == "identifier":
+        name = _read_text(node, source)
+        if name:
+            out.append((name, "type"))
+        return
+    
+    # Recurse into children for other node types
+    for child in node.children:
+        if child.is_named:
+            _ada_collect_subtype_mark_refs(child, source, out)
+
+
+def _ada_extract_call_name(node, source: bytes) -> str | None:
+    """Extract the callable name from a function_call or procedure_call_statement node."""
+    name_node = node.child_by_field_name("name")
+    if not name_node:
+        return None
+    if name_node.type == "selected_component":
+        names = _ada_extract_selected_component_names(name_node, source)
+        return names[-1] if names else None
+    return _read_text(name_node, source)
+
+
+def extract_ada(path: Path) -> dict:
+    """Extract packages, subprograms, types, imports, calls, and type references from Ada files.
+    
+    Handles:
+    - Packages (spec and body)
+    - Subprograms (procedures and functions, declarations and bodies)
+    - Types (record, derived, interface, array, access, enumeration)
+    - Subtypes
+    - Tasks and protected objects (types and bodies)
+    - Entries (declarations and bodies)
+    - Generics (packages and instantiations)
+    - Exceptions
+    - Object declarations with type references
+    - With and use clauses (imports)
+    - Call graphs (procedure and function calls)
+    - Type reference edges (parameter types, return types, field types)
+    - Inheritance/derivation edges
+    """
+    try:
+        import tree_sitter_ada as tsada
+        from tree_sitter import Language, Parser
+    except ImportError:
+        return {"nodes": [], "edges": [], "error": "tree-sitter-ada not installed"}
+
+    try:
+        language = Language(tsada.language())
+        parser = Parser(language)
+        source = path.read_bytes()
+        tree = parser.parse(source)
+        root = tree.root_node
+    except Exception as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    stem = _file_stem(path)
+    str_path = str(path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+    function_bodies: list[tuple[str, object]] = []
+
+    def add_node(nid: str, label: str, line: int) -> None:
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": label,
+                "file_type": "code",
+                "source_file": str_path,
+                "source_location": f"L{line}",
+            })
+
+    def add_edge(src: str, tgt: str, relation: str, line: int,
+                 confidence: str = "EXTRACTED", weight: float = 1.0,
+                 context: str | None = None) -> None:
+        edge = {
+            "source": src,
+            "target": tgt,
+            "relation": relation,
+            "confidence": confidence,
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": weight,
+        }
+        if context:
+            edge["context"] = context
+        edges.append(edge)
+
+    file_nid = _make_id(str(path))
+    add_node(file_nid, path.name, 1)
+
+    def ensure_named_node(name: str, line: int) -> str:
+        nid = _make_id(stem, name)
+        if nid in seen_ids:
+            return nid
+        nid = _make_id(name)
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
+        return nid
+
+    def _emit_type_refs(owner_nid: str, type_node, line: int, context: str) -> None:
+        """Emit references edges for type references in a type expression."""
+        refs: list[tuple[str, str]] = []
+        _ada_collect_subtype_mark_refs(type_node, source, refs)
+        for ref_name, _role in refs:
+            target_nid = ensure_named_node(ref_name, line)
+            if target_nid != owner_nid:
+                edges.append(_semantic_reference_edge(
+                    owner_nid, target_nid, context, str_path, line))
+
+    def walk_calls(body_node, func_nid: str) -> None:
+        """Walk a body node to find function and procedure calls."""
+        if body_node is None:
+            return
+        t = body_node.type
+        if t in ("subprogram_body", "package_body", "task_body", "protected_body"):
+            return
+        if t in ("function_call", "procedure_call_statement"):
+            name = _ada_extract_call_name(body_node, source)
+            if name:
+                target_nid = ensure_named_node(name, body_node.start_point[0] + 1)
+                add_edge(func_nid, target_nid, "calls", body_node.start_point[0] + 1,
+                         confidence="EXTRACTED", context="call")
+        elif t == "exception_handler":
+            # Exception handler references exceptions via exception_choice_list > exception_choice
+            for child in body_node.children:
+                if child.type == "exception_choice_list":
+                    for choice in child.children:
+                        if choice.type == "exception_choice":
+                            for cc in choice.children:
+                                if cc.type == "identifier":
+                                    exc_name = _read_text(cc, source)
+                                    if exc_name:
+                                        exc_nid = ensure_named_node(exc_name, body_node.start_point[0] + 1)
+                                        add_edge(func_nid, exc_nid, "references", body_node.start_point[0] + 1,
+                                                 confidence="EXTRACTED", context="exception_handler")
+                                elif cc.type == "selected_component":
+                                    names = _ada_extract_selected_component_names(cc, source)
+                                    if names:
+                                        exc_nid = ensure_named_node(names[-1], body_node.start_point[0] + 1)
+                                        add_edge(func_nid, exc_nid, "references", body_node.start_point[0] + 1,
+                                                 confidence="EXTRACTED", context="exception_handler")
+        elif t == "raise_statement":
+            # Raise statement references an exception
+            for child in body_node.children:
+                if child.type == "identifier":
+                    exc_name = _read_text(child, source)
+                    if exc_name:
+                        exc_nid = ensure_named_node(exc_name, body_node.start_point[0] + 1)
+                        add_edge(func_nid, exc_nid, "references", body_node.start_point[0] + 1,
+                                 confidence="EXTRACTED", context="raise")
+                elif child.type == "selected_component":
+                    names = _ada_extract_selected_component_names(child, source)
+                    if names:
+                        exc_name = names[-1]
+                        exc_nid = ensure_named_node(exc_name, body_node.start_point[0] + 1)
+                        add_edge(func_nid, exc_nid, "references", body_node.start_point[0] + 1,
+                                 confidence="EXTRACTED", context="raise")
+        for child in body_node.children:
+            walk_calls(child, func_nid)
+
+    def walk(node, scope_nid: str) -> None:
+        t = node.type
+        line = node.start_point[0] + 1
+
+        # Package declaration or body
+        if t in ("package_declaration", "package_body"):
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                pkg_nid = _make_id(stem, name)
+                add_node(pkg_nid, name, line)
+                add_edge(scope_nid, pkg_nid, "defines", line)
+                for child in node.children:
+                    walk(child, pkg_nid)
+            return
+
+        # Generic package declaration
+        if t == "generic_package_declaration":
+            # Find the nested package_declaration to get the name
+            pkg_decl = None
+            for child in node.children:
+                if child.type == "package_declaration":
+                    pkg_decl = child
+                    break
+            
+            if pkg_decl:
+                name = _ada_get_name_from_node(pkg_decl, source)
+                if name:
+                    pkg_nid = _make_id(stem, name)
+                    add_node(pkg_nid, name, line)
+                    add_edge(scope_nid, pkg_nid, "defines", line)
+                    # Walk the package_declaration to extract its contents
+                    for child in pkg_decl.children:
+                        walk(child, pkg_nid)
+            return
+
+        # Subprogram body (procedure or function with body)
+        if t == "subprogram_body":
+            spec_node = None
+            for child in node.children:
+                if child.type in ("procedure_specification", "function_specification"):
+                    spec_node = child
+                    break
+            if spec_node:
+                func_name = _ada_get_name_from_node(spec_node, source)
+                if func_name:
+                    func_nid = _make_id(stem, func_name)
+                    add_node(func_nid, f"{func_name}()", line)
+                    add_edge(scope_nid, func_nid, "defines", line)
+                    # Extract parameter type references
+                    for child in spec_node.children:
+                        if child.type == "formal_part":
+                            for param in child.children:
+                                if param.type == "parameter_specification":
+                                    _emit_type_refs(func_nid, param, line, "parameter_type")
+                        elif child.type == "result_profile":
+                            _emit_type_refs(func_nid, child, line, "return_type")
+                    function_bodies.append((func_nid, node))
+            return
+
+        # Subprogram declaration (procedure or function without body)
+        if t == "subprogram_declaration":
+            spec_node = None
+            for child in node.children:
+                if child.type in ("procedure_specification", "function_specification"):
+                    spec_node = child
+                    break
+            if spec_node:
+                func_name = _ada_get_name_from_node(spec_node, source)
+                if func_name:
+                    func_nid = _make_id(stem, func_name)
+                    add_node(func_nid, f"{func_name}()", line)
+                    add_edge(scope_nid, func_nid, "defines", line)
+                    # Extract parameter type references
+                    for child in spec_node.children:
+                        if child.type == "formal_part":
+                            for param in child.children:
+                                if param.type == "parameter_specification":
+                                    _emit_type_refs(func_nid, param, line, "parameter_type")
+                        elif child.type == "result_profile":
+                            _emit_type_refs(func_nid, child, line, "return_type")
+            return
+
+        # Expression function declaration (function with expression body)
+        if t == "expression_function_declaration":
+            spec_node = None
+            for child in node.children:
+                if child.type == "function_specification":
+                    spec_node = child
+                    break
+            if spec_node:
+                func_name = _ada_get_name_from_node(spec_node, source)
+                if func_name:
+                    func_nid = _make_id(stem, func_name)
+                    add_node(func_nid, f"{func_name}()", line)
+                    add_edge(scope_nid, func_nid, "defines", line)
+                    # Extract parameter type references
+                    for child in spec_node.children:
+                        if child.type == "formal_part":
+                            for param in child.children:
+                                if param.type == "parameter_specification":
+                                    _emit_type_refs(func_nid, param, line, "parameter_type")
+                        elif child.type == "result_profile":
+                            _emit_type_refs(func_nid, child, line, "return_type")
+            return
+
+        # Null procedure declaration
+        if t == "null_procedure_declaration":
+            spec_node = None
+            for child in node.children:
+                if child.type == "procedure_specification":
+                    spec_node = child
+                    break
+            if spec_node:
+                func_name = _ada_get_name_from_node(spec_node, source)
+                if func_name:
+                    func_nid = _make_id(stem, func_name)
+                    add_node(func_nid, f"{func_name}()", line)
+                    add_edge(scope_nid, func_nid, "defines", line)
+                    # Extract parameter type references
+                    for child in spec_node.children:
+                        if child.type == "formal_part":
+                            for param in child.children:
+                                if param.type == "parameter_specification":
+                                    _emit_type_refs(func_nid, param, line, "parameter_type")
+            return
+
+        # Type declarations
+        if t == "full_type_declaration":
+            has_task_or_protected = any(
+                c.type in ("task_type_declaration", "protected_type_declaration")
+                for c in node.children
+            )
+            if has_task_or_protected:
+                for child in node.children:
+                    walk(child, scope_nid)
+                return
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                type_nid = _make_id(stem, name)
+                add_node(type_nid, name, line)
+                add_edge(scope_nid, type_nid, "defines", line)
+                # Check for derived type (inheritance)
+                for child in node.children:
+                    if child.type == "derived_type_definition":
+                        sm = child.child_by_field_name("subtype_mark")
+                        if sm:
+                            parent_name = _read_text(sm, source)
+                            if parent_name:
+                                parent_nid = ensure_named_node(parent_name, line)
+                                add_edge(type_nid, parent_nid, "inherits", line)
+                        # Check for interface implementations
+                        for sub in child.children:
+                            if sub.type == "identifier":
+                                iface_name = _read_text(sub, source)
+                                if iface_name and iface_name != name:
+                                    iface_nid = ensure_named_node(iface_name, line)
+                                    add_edge(type_nid, iface_nid, "implements", line)
+                    elif child.type == "interface_type_definition":
+                        # Interface type itself - no special handling needed
+                        pass
+                    elif child.type == "record_type_definition":
+                        # Extract field type references
+                        for rec_def in child.children:
+                            if rec_def.type == "record_definition":
+                                for comp_list in rec_def.children:
+                                    if comp_list.type == "component_list":
+                                        for comp_decl in comp_list.children:
+                                            if comp_decl.type == "component_declaration":
+                                                for comp_def in comp_decl.children:
+                                                    if comp_def.type == "component_definition":
+                                                        _emit_type_refs(type_nid, comp_def, line, "field")
+                    elif child.type in ("array_type_definition", "access_to_object_definition",
+                                       "access_to_subprogram_definition"):
+                        _emit_type_refs(type_nid, child, line, "field")
+            return
+
+        # Subtype declaration
+        if t == "subtype_declaration":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                subtype_nid = _make_id(stem, name)
+                add_node(subtype_nid, name, line)
+                add_edge(scope_nid, subtype_nid, "defines", line)
+                sm = node.child_by_field_name("subtype_mark")
+                if sm:
+                    parent_name = _read_text(sm, source)
+                    if parent_name:
+                        parent_nid = ensure_named_node(parent_name, line)
+                        add_edge(subtype_nid, parent_nid, "inherits", line)
+            return
+
+        # Task type declaration
+        if t == "task_type_declaration":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                task_nid = _make_id(stem, name)
+                add_node(task_nid, name, line)
+                add_edge(scope_nid, task_nid, "defines", line)
+                for child in node.children:
+                    walk(child, task_nid)
+            return
+
+        # Task body
+        if t == "task_body":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                task_nid = _make_id(stem, name)
+                add_node(task_nid, name, line)
+                add_edge(scope_nid, task_nid, "defines", line)
+                function_bodies.append((task_nid, node))
+                for child in node.children:
+                    walk(child, task_nid)
+            return
+
+        # Protected type declaration
+        if t == "protected_type_declaration":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                prot_nid = _make_id(stem, name)
+                add_node(prot_nid, name, line)
+                add_edge(scope_nid, prot_nid, "defines", line)
+                for child in node.children:
+                    walk(child, prot_nid)
+            return
+
+        # Protected body
+        if t == "protected_body":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                prot_nid = _make_id(stem, name)
+                add_node(prot_nid, name, line)
+                add_edge(scope_nid, prot_nid, "defines", line)
+                function_bodies.append((prot_nid, node))
+                for child in node.children:
+                    walk(child, prot_nid)
+            return
+
+        # Entry declaration (within task or protected)
+        if t == "entry_declaration":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                entry_nid = _make_id(scope_nid, name)
+                add_node(entry_nid, f"{name}()", line)
+                add_edge(scope_nid, entry_nid, "defines", line)
+                # Extract parameter type references
+                for child in node.children:
+                    if child.type == "parameter_specification":
+                        _emit_type_refs(entry_nid, child, line, "parameter_type")
+            return
+
+        # Entry body
+        if t == "entry_body":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                entry_nid = _make_id(scope_nid, name)
+                add_node(entry_nid, f"{name}()", line)
+                add_edge(scope_nid, entry_nid, "defines", line)
+                function_bodies.append((entry_nid, node))
+            return
+
+        # Single task declaration (task My_Task is ... end My_Task;)
+        if t == "single_task_declaration":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                task_nid = _make_id(stem, name)
+                add_node(task_nid, name, line)
+                add_edge(scope_nid, task_nid, "defines", line)
+                for child in node.children:
+                    walk(child, task_nid)
+            return
+
+        # Single protected object declaration (protected My_Object is ... end My_Object;)
+        if t == "single_protected_declaration":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                prot_nid = _make_id(stem, name)
+                add_node(prot_nid, name, line)
+                add_edge(scope_nid, prot_nid, "defines", line)
+                for child in node.children:
+                    walk(child, prot_nid)
+            return
+
+        # Object renaming declaration (X : Integer renames Y;)
+        if t == "object_renaming_declaration":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                ren_nid = _make_id(stem, name)
+                add_node(ren_nid, name, line)
+                add_edge(scope_nid, ren_nid, "defines", line)
+                # Structure: identifier (name) : identifier (type) renames identifier (renamed_obj)
+                identifiers = [c for c in node.children if c.type == "identifier"]
+                if len(identifiers) >= 2:
+                    # Second identifier is the type
+                    type_name = _read_text(identifiers[1], source)
+                    if type_name:
+                        type_nid = ensure_named_node(type_name, line)
+                        edges.append(_semantic_reference_edge(
+                            ren_nid, type_nid, "field", str_path, line))
+                if len(identifiers) >= 3:
+                    # Third identifier is the renamed object
+                    renamed_obj = _read_text(identifiers[2], source)
+                    if renamed_obj:
+                        renamed_nid = ensure_named_node(renamed_obj, line)
+                        add_edge(ren_nid, renamed_nid, "references", line,
+                                 confidence="EXTRACTED", context="renames")
+            return
+
+        # Exception declaration
+        if t == "exception_declaration":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                exc_nid = _make_id(stem, name)
+                add_node(exc_nid, name, line)
+                add_edge(scope_nid, exc_nid, "defines", line)
+            return
+
+        # Object declaration (constants and variables)
+        if t == "object_declaration":
+            # Check if this wraps a single_task_declaration or single_protected_declaration
+            has_task_or_protected = any(
+                c.type in ("single_task_declaration", "single_protected_declaration")
+                for c in node.children
+            )
+            if has_task_or_protected:
+                for child in node.children:
+                    walk(child, scope_nid)
+                return
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                obj_nid = _make_id(stem, name)
+                add_node(obj_nid, name, line)
+                add_edge(scope_nid, obj_nid, "defines", line)
+                # Extract type reference
+                sm = node.child_by_field_name("subtype_mark")
+                if sm:
+                    type_name = _read_text(sm, source)
+                    if type_name:
+                        type_nid = ensure_named_node(type_name, line)
+                        edges.append(_semantic_reference_edge(
+                            obj_nid, type_nid, "field", str_path, line))
+            return
+
+        # With clause (import)
+        if t == "with_clause":
+            for child in node.children:
+                if child.type == "selected_component":
+                    names = _ada_extract_selected_component_names(child, source)
+                    if names:
+                        mod_name = ".".join(names)
+                        mod_nid = _make_id(mod_name)
+                        add_node(mod_nid, mod_name, line)
+                        add_edge(scope_nid, mod_nid, "imports", line, context="import")
+                elif child.type == "identifier":
+                    mod_name = _read_text(child, source)
+                    if mod_name:
+                        mod_nid = _make_id(mod_name)
+                        add_node(mod_nid, mod_name, line)
+                        add_edge(scope_nid, mod_nid, "imports", line, context="import")
+            return
+
+        # Use clause
+        if t == "use_clause":
+            for child in node.children:
+                if child.type == "selected_component":
+                    names = _ada_extract_selected_component_names(child, source)
+                    if names:
+                        mod_name = ".".join(names)
+                        mod_nid = _make_id(mod_name)
+                        add_node(mod_nid, mod_name, line)
+                        add_edge(scope_nid, mod_nid, "imports", line, context="use")
+                elif child.type == "identifier":
+                    mod_name = _read_text(child, source)
+                    if mod_name:
+                        mod_nid = _make_id(mod_name)
+                        add_node(mod_nid, mod_name, line)
+                        add_edge(scope_nid, mod_nid, "imports", line, context="use")
+            return
+
+        # Generic instantiation
+        if t == "generic_instantiation":
+            name = _ada_get_name_from_node(node, source)
+            if name:
+                inst_nid = _make_id(stem, name)
+                add_node(inst_nid, name, line)
+                add_edge(scope_nid, inst_nid, "defines", line)
+                # Find the function_call child which contains the generic being instantiated
+                for child in node.children:
+                    if child.type == "function_call":
+                        # First identifier in function_call is the generic name
+                        for fc_child in child.children:
+                            if fc_child.type == "identifier":
+                                generic_name = _read_text(fc_child, source)
+                                if generic_name:
+                                    generic_nid = ensure_named_node(generic_name, line)
+                                    add_edge(inst_nid, generic_nid, "instantiates", line)
+                                break
+                            elif fc_child.type == "selected_component":
+                                gnames = _ada_extract_selected_component_names(fc_child, source)
+                                if gnames:
+                                    generic_name = gnames[-1]
+                                    generic_nid = ensure_named_node(generic_name, line)
+                                    add_edge(inst_nid, generic_nid, "instantiates", line)
+                                break
+                        break
+            return
+
+        for child in node.children:
+            walk(child, scope_nid)
+
+    walk(root, file_nid)
+
+    for func_nid, body_node in function_bodies:
+        for child in body_node.children:
+            walk_calls(child, func_nid)
+
+    return {"nodes": nodes, "edges": edges}
+
+
 _FORTRAN_CPP_EXTS = {".F", ".F90", ".F95", ".F03", ".F08"}
 
 
@@ -13478,6 +14147,9 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".ada": extract_ada,
+    ".adb": extract_ada,
+    ".ads": extract_ada,
 }
 
 

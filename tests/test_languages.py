@@ -9,7 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_verilog,
-    extract_powershell_manifest,
+    extract_powershell_manifest, extract_ada,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -2074,3 +2074,274 @@ def test_systemverilog_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e}"
         assert e["target"] in node_ids, f"dangling target: {e}"
+
+
+# ── Ada ──────────────────────────────────────────────────────────────────────
+
+
+def test_ada_no_error_spec():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert "error" not in r
+
+
+def test_ada_no_error_body():
+    r = extract_ada(FIXTURES / "sample.adb")
+    assert "error" not in r
+
+
+def test_ada_finds_package():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Sample_Package" in l for l in _labels(r))
+
+
+def test_ada_finds_procedure():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Initialize" in l for l in _labels(r))
+
+
+def test_ada_finds_function():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Get_Value" in l for l in _labels(r))
+
+
+def test_ada_finds_type():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Counter_Type" in l for l in _labels(r))
+
+
+def test_ada_finds_task():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Worker_Task" in l for l in _labels(r))
+
+
+def test_ada_finds_protected():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Shared_Counter" in l for l in _labels(r))
+
+
+def test_ada_finds_generic_package():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Generic_Img" in l for l in _labels(r))
+
+
+def test_ada_finds_imports():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert "imports" in _relations(r)
+
+
+def test_ada_finds_generic_instantiation():
+    r = extract_ada(FIXTURES / "sample.adb")
+    assert any("Integer_Container" in l for l in _labels(r))
+
+
+def test_ada_import_edges_have_import_context():
+    r = extract_ada(FIXTURES / "sample.ads")
+    import_edges = _edges_with_relation(r, "imports")
+    assert import_edges
+    assert all(e.get("context") in ("import", "use") for e in import_edges)
+
+
+def test_ada_no_dangling_edges():
+    r = extract_ada(FIXTURES / "sample.ads")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e}"
+        assert e["target"] in node_ids, f"dangling target: {e}"
+
+
+def test_ada_body_no_dangling_edges():
+    r = extract_ada(FIXTURES / "sample.adb")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e}"
+        assert e["target"] in node_ids, f"dangling target: {e}"
+
+
+def test_ada_finds_calls():
+    r = extract_ada(FIXTURES / "sample.adb")
+    calls = _calls(r)
+    assert any("Put_Line" in target for _, target in calls)
+
+
+def test_ada_finds_derived_type():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Derived_Type" in l for l in _labels(r))
+
+
+def test_ada_inheritance_edges():
+    r = extract_ada(FIXTURES / "sample.ads")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    inherits = _edges_with_relation(r, "inherits")
+    assert inherits
+    # Derived_Type inherits from Base_Type
+    assert any(
+        "Derived_Type" in node_by_id.get(e["source"], "")
+        and "Base_Type" in node_by_id.get(e["target"], "")
+        for e in inherits
+    )
+
+
+def test_ada_implements_edges():
+    r = extract_ada(FIXTURES / "sample.ads")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    implements = _edges_with_relation(r, "implements")
+    assert implements
+    # Dog_Type implements Animal_Interface
+    assert any(
+        "Dog_Type" in node_by_id.get(e["source"], "")
+        and "Animal_Interface" in node_by_id.get(e["target"], "")
+        for e in implements
+    )
+
+
+def test_ada_finds_interface():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Animal_Interface" in l for l in _labels(r))
+
+
+def test_ada_finds_subtype():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Positive_Integer" in l for l in _labels(r))
+
+
+def test_ada_subtype_inherits():
+    r = extract_ada(FIXTURES / "sample.ads")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    inherits = _edges_with_relation(r, "inherits")
+    # Positive_Integer inherits from Integer
+    assert any(
+        "Positive_Integer" in node_by_id.get(e["source"], "")
+        and "Integer" in node_by_id.get(e["target"], "")
+        for e in inherits
+    )
+
+
+def test_ada_finds_enumeration_type():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Color_Enum" in l for l in _labels(r))
+
+
+def test_ada_finds_array_type():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Color_Array" in l for l in _labels(r))
+
+
+def test_ada_finds_access_type():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Access_To_Integer" in l for l in _labels(r))
+
+
+def test_ada_finds_exception():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("My_Error" in l for l in _labels(r))
+
+
+def test_ada_finds_expression_function():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Expr_Func" in l for l in _labels(r))
+
+
+def test_ada_finds_null_procedure():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Null_Proc" in l for l in _labels(r))
+
+
+def test_ada_finds_object_declaration():
+    r = extract_ada(FIXTURES / "sample.ads")
+    assert any("Max_Size" in l for l in _labels(r))
+    assert any("Counter" in l for l in _labels(r))
+
+
+def test_ada_object_type_references():
+    r = extract_ada(FIXTURES / "sample.ads")
+    refs = _references(r)
+    # Max_Size references Integer
+    assert any("Max_Size" in src and "Integer" in tgt for src, tgt, _ in refs)
+
+
+def test_ada_parameter_type_references():
+    r = extract_ada(FIXTURES / "sample.ads")
+    refs = _references(r)
+    # Initialize references Counter_Type
+    assert any("Initialize" in src and "Counter_Type" in tgt for src, tgt, _ in refs)
+
+
+def test_ada_return_type_references():
+    r = extract_ada(FIXTURES / "sample.ads")
+    refs = _references(r)
+    # Get_Value references Integer
+    assert any("Get_Value" in src and "Integer" in tgt for src, tgt, _ in refs)
+
+def test_ada_field_type_references():
+    r = extract_ada(FIXTURES / "sample.ads")
+    refs = _references(r)
+    # Counter_Type fields reference Integer and String
+    assert any("Counter_Type" in src and "Integer" in tgt for src, tgt, _ in refs)
+
+
+def test_ada_multiple_calls():
+    r = extract_ada(FIXTURES / "sample.adb")
+    calls = _calls(r)
+    # Worker_Task calls Put_Line, Process, Compute
+    assert any("Put_Line" in target for _, target in calls)
+    assert any("Process" in target for _, target in calls)
+    assert any("Compute" in target for _, target in calls)
+
+
+def test_ada_nested_package_body():
+    r = extract_ada(FIXTURES / "sample.adb")
+    # Generic_Img body should be found
+    assert any("Generic_Img" in l for l in _labels(r))
+    # To_String function in Generic_Img
+    assert any("To_String" in l for l in _labels(r))
+
+
+def test_ada_generic_instantiation_instantiates():
+    r = extract_ada(FIXTURES / "sample.adb")
+    instantiates = _edges_with_relation(r, "instantiates")
+    assert instantiates
+    # Integer_Container instantiates Generic_Img
+    assert any("integer_container" in e["source"] and "generic_img" in e["target"] for e in instantiates)
+
+
+def test_ada_single_task_declaration():
+    r = extract_ada(FIXTURES / "sample.ads")
+    # Monitor_Task should be found
+    assert any("Monitor_Task" in l for l in _labels(r))
+    # Check for entry (Check)
+    assert any("Check" in l for l in _labels(r))
+
+
+def test_ada_single_protected_declaration():
+    r = extract_ada(FIXTURES / "sample.ads")
+    # Shared_Buffer should be found
+    assert any("Shared_Buffer" in l for l in _labels(r))
+    # Check for procedures/functions inside
+    assert any("Add" in l for l in _labels(r))
+    assert any("Get" in l for l in _labels(r))
+
+
+def test_ada_object_renaming_declaration():
+    r = extract_ada(FIXTURES / "sample.ads")
+    # Renamed_Value should be found
+    assert any("Renamed_Value" in l for l in _labels(r))
+    # Should have a reference to Counter (the renamed object)
+    refs = _edges_with_relation(r, "references")
+    assert any("renamed_value" in e["source"] and "counter" in e["target"] for e in refs)
+
+
+def test_ada_exception_handler():
+    r = extract_ada(FIXTURES / "sample.adb")
+    # Check that exception handlers create references
+    refs = _edges_with_relation(r, "references")
+    # Speak procedure should reference Constraint_Error and My_Error
+    assert any("constraint_error" in e["target"] for e in refs)
+    assert any("my_error" in e["target"] for e in refs)
+
+
+def test_ada_raise_statement():
+    r = extract_ada(FIXTURES / "sample.adb")
+    # Check that raise statements create references
+    refs = _edges_with_relation(r, "references")
+    # Safe_Operation should reference Program_Error
+    assert any("program_error" in e["target"] for e in refs)
