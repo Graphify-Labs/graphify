@@ -9,10 +9,11 @@ sys.stderr.reconfigure(encoding='utf-8')
 input_path = sys.argv[1] if len(sys.argv) > 1 else '.'
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding='utf-8'))
 
-# In --update mode, 'all_files' carries the full corpus; 'files' is the changed subset.
-# Full-rebuild mode populates only 'files', so the fallback handles that.
+# 'files' is the changed subset in --update mode, or the full corpus in a full build.
+# save_manifest() seeds unchanged entries from the existing manifest, so passing
+# only changed files is correct — there is no need to re-hash the full corpus.
 # root= relativizes manifest keys so a later --update matches cached files (#1417).
-save_manifest(detect.get('all_files') or detect['files'], root=Path(input_path))
+save_manifest(detect['files'], root=Path(input_path))
 
 extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding='utf-8'))
 input_tok = extract.get('input_tokens', 0)

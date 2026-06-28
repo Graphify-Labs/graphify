@@ -7,7 +7,7 @@ sys.stderr.reconfigure(encoding='utf-8')
 def _is_assets(path_str: str) -> bool:
     return any(part.lower() == 'assets' for part in Path(path_str).parts)
 
-result = detect_incremental(Path(sys.argv[1]))
+result = detect_incremental(Path(sys.argv[1]), kind='ast')
 
 # Discard files inside any folder named 'assets'
 for category in result.get('files', {}):

@@ -56,6 +56,12 @@ If no path was given, use `.` (current directory). Do not ask the user for a pat
 
 If the path argument starts with `https://github.com/` or `http://github.com/`, treat it as a GitHub URL - run Step 0 before anything else, then continue with the resolved local path.
 
+**Command routing — read before running any step:**
+- `--update`: Run only Step 1 (interpreter guard), then jump to `## For --update (incremental re-extraction)`. **Do not run Steps 2–3** — they do a full file scan and full extraction, which `--update` deliberately avoids to save tokens and time.
+- `--cluster-only`: Run Step 1, then jump to `## For --cluster-only`.
+- `--watch` or `/graphify add`: Run Step 1, then see `references/add-watch.md`.
+- All other invocations: follow Steps 0–9 below in order.
+
 Follow these steps in order. Do not skip steps.
 
 ### Step 0 - GitHub repos and multi-path merge (only if a URL or several paths)
@@ -563,7 +569,7 @@ print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])
 
 Replace `INPUT_PATH` and `IS_DIRECTED` as in the main pipeline.
 
-Then run Steps 4–9 as normal on the merged graph.
+Then run Steps 4–9 as normal. The merged `.graphify_extract.json` and scoped `.graphify_detect.json` are already written above — **do not re-run Steps 2–3**.
 
 After Step 4, show the graph diff:
 
