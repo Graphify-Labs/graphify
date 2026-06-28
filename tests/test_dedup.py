@@ -364,3 +364,43 @@ def test_dedup_still_merges_crossfile_true_duplicates():
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
     assert len(result_nodes) == 1
+
+
+# ── #1504: cross-chunk node ID collision warning ──────────────────────────────
+
+def test_cross_chunk_id_collision_emits_warning(capsys):
+    """When two nodes share the same ID but come from different source files
+    (a cross-chunk LLM ID collision), a WARNING must be printed to stderr
+    and only the first node survives (#1504)."""
+    nodes = [
+        {"id": "readme_booking_service", "label": "Booking Service",
+         "file_type": "concept", "source_file": "module-a/README.md"},
+        {"id": "readme_booking_service", "label": "Booking Service",
+         "file_type": "concept", "source_file": "module-b/README.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["source_file"] == "module-a/README.md"
+
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert "readme_booking_service" in captured.err
+    assert "module-b/README.md" in captured.err
+    assert "module-a/README.md" in captured.err
+
+
+def test_same_id_same_source_file_no_warning(capsys):
+    """When two nodes share both ID and source_file (same-file dedup),
+    no collision warning should be emitted."""
+    nodes = [
+        {"id": "readme_booking_service", "label": "Booking Service",
+         "file_type": "concept", "source_file": "module-a/README.md"},
+        {"id": "readme_booking_service", "label": "Booking Service (dupe)",
+         "file_type": "concept", "source_file": "module-a/README.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+
+    assert len(result_nodes) == 1
+    captured = capsys.readouterr()
+    assert "WARNING" not in captured.err
