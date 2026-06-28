@@ -13466,6 +13466,15 @@ def extract(
         except ValueError:
             pass
 
+    # origin_file is an internal disambiguation hint (#1462): the colliding-id pass
+    # above reads it to keep same-named cross-file stubs distinct, after which nothing
+    # consumes it. Drop it from the returned nodes so it never ships into graph.json as
+    # an absolute, machine-specific path — the same "no absolute paths in output"
+    # contract that relativizes source_file just above (#555, #932). The per-file AST
+    # cache keeps its own copy, which is what the colliding-id pass reads on a cache hit.
+    for n in all_nodes:
+        n.pop("origin_file", None)
+
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction
     # the watcher drops any AST-marked node missing from the fresh output

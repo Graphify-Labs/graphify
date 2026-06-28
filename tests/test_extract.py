@@ -171,6 +171,36 @@ def test_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
     assert all(not node.get("source_file") for node in path_nodes)
 
 
+def test_origin_file_is_not_serialized_into_extract_output(tmp_path):
+    """origin_file is an internal disambiguation hint (#1462) consumed only by the
+    colliding-id pass during extraction. It must not survive into the returned nodes
+    (and thus graph.json), where it would ship as an absolute, machine-specific path —
+    the "no absolute paths in output" contract (#555, #932). Disambiguation still keys
+    on it first, so the two same-label cross-file stubs stay distinct."""
+    first = tmp_path / "pkg/a.py"
+    second = tmp_path / "pkg/b.py"
+    first.parent.mkdir(parents=True)
+    first.write_text("from pathlib import Path\ndef use_a(p: Path):\n    return p\n", encoding="utf-8")
+    second.write_text("from pathlib import Path\ndef use_b(p: Path):\n    return p\n", encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+
+    # The internal field is gone from every node...
+    assert all("origin_file" not in node for node in result["nodes"])
+    # ...so no node leaks the absolute sandbox path that origin_file used to carry.
+    leaked = [
+        (node.get("id"), key, value)
+        for node in result["nodes"]
+        for key, value in node.items()
+        if isinstance(value, str) and str(tmp_path) in value
+    ]
+    assert not leaked, f"absolute paths leaked into nodes: {leaked}"
+    # ...yet the colliding-id pass still kept the two cross-file stubs distinct.
+    path_nodes = [node for node in result["nodes"] if node["label"] == "Path"]
+    assert len(path_nodes) == 2
+    assert len({node["id"] for node in path_nodes}) == 2
+
+
 def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_path):
     first = tmp_path / "apps/api/Program.cs"
     second = tmp_path / "tools/api/Program.cs"

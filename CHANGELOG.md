@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: the internal `origin_file` disambiguation field (#1462) is no longer serialized into graph.json, where it had shipped as an absolute, machine-specific path — it is dropped once the colliding-id pass consumes it, keeping output portable (#555, #932). `_origin` stays (the incremental watcher needs it, #1116).
+
 ## 0.8.51 (2026-06-28)
 
 - Fix: the Obsidian export (`--obsidian` / `to_obsidian`) no longer overwrites a user's own notes or `.obsidian/` config when pointed at an existing vault (#1506). It wrote one note per node straight into the target dir and unconditionally replaced `.obsidian/graph.json`, so `--obsidian-dir ~/my-vault` could clobber a same-named note (`Database.md`) and the user's graph-view settings — silently, no backup. graphify now records the files it owns in a `.graphify_obsidian_manifest.json` and refuses to overwrite any pre-existing file it didn't create (skipping it with one aggregated warning); a re-run still updates graphify's own notes. The default `graphify-out/obsidian` output is unchanged.
