@@ -931,3 +931,55 @@ def test_base_url_defaults_without_env(backend, default):
         env=env, capture_output=True, text=True, check=True,
     )
     assert out.stdout.strip() == default
+
+
+# ---------------------------------------------------------------------------
+# #1505: claude-cli subprocess.run must use errors="replace" so non-UTF-8
+# bytes from claude.cmd on Chinese Windows (GBK/cp936) don't crash the reader
+# thread.
+# ---------------------------------------------------------------------------
+
+import json as _json
+
+
+def _make_cli_envelope(result_text: str) -> str:
+    """Return a minimal claude -p --output-format json envelope."""
+    return _json.dumps({"type": "result", "result": result_text, "usage": {}, "modelUsage": {}})
+
+
+def test_call_claude_cli_passes_errors_replace_to_subprocess():
+    """subprocess.run must be called with errors='replace' so non-UTF-8 output
+    bytes (e.g. GBK from claude.cmd on Chinese Windows) are tolerated instead
+    of crashing the reader thread with UnicodeDecodeError (#1505)."""
+    from unittest.mock import patch, MagicMock
+
+    valid_envelope = _make_cli_envelope('{"nodes":[],"edges":[],"hyperedges":[]}')
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stdout = valid_envelope
+    mock_proc.stderr = ""
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("shutil.which", return_value="/usr/bin/claude"), \
+         patch("subprocess.run", return_value=mock_proc) as mock_run:
+        llm._call_claude_cli("test prompt")
+
+    assert mock_run.call_args.kwargs.get("errors") == "replace", \
+        "subprocess.run missing errors='replace' — non-UTF-8 bytes will crash the reader thread"
+
+
+def test_call_claude_cli_tolerates_non_utf8_in_stderr():
+    """When errors='replace' is set, non-UTF-8 bytes in stderr produce replacement
+    chars instead of UnicodeDecodeError, allowing the error path to report cleanly."""
+    from unittest.mock import patch, MagicMock
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.stdout = ""
+    mock_proc.stderr = "GBK error: ��"  # replacement chars after decode
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("shutil.which", return_value="/usr/bin/claude"), \
+         patch("subprocess.run", return_value=mock_proc):
+        with pytest.raises(RuntimeError, match="claude -p exited 1"):
+            llm._call_claude_cli("test prompt")

@@ -1160,6 +1160,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
         capture_output=True,
         text=True,
         encoding="utf-8",  # Force UTF-8 — prevents UnicodeEncodeError on Windows cp1252
+        errors="replace",  # Tolerate non-UTF-8 bytes (e.g. GBK/cp936 from claude.cmd on Chinese Windows)
         timeout=_resolve_api_timeout(),
         check=False,
         **_no_window_kwargs(),
@@ -1913,6 +1914,7 @@ def _call_llm(
             capture_output=True,
             text=True,
             encoding="utf-8",  # Force UTF-8 — prevents UnicodeEncodeError on Windows cp1252
+            errors="replace",  # Tolerate non-UTF-8 bytes (e.g. GBK/cp936 from claude.cmd on Chinese Windows)
             timeout=_resolve_api_timeout(),
             check=False,
             **_no_window_kwargs(),

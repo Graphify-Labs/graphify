@@ -40,3 +40,7 @@ paper/
 
 # macOS Finder metadata
 .DS_Store
+
+# OSS contribution analysis files (local only)
+analyze-*.md
+tracking.md
