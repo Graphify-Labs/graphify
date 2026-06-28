@@ -171,6 +171,28 @@ def test_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
     assert all(not node.get("source_file") for node in path_nodes)
 
 
+def test_go_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
+    """#1462 (dedicated extractors): the imported-type-stub disambiguation (the
+    ``origin_file`` key) landed only in the generic extractor, so the six dedicated
+    extractors (Go, Rust, Julia, Fortran, PowerShell, ObjC) still collapsed same-label
+    cross-file stubs into one conflated bare-id node — a false cross-package link.
+    They must stay distinct per file while keeping ``source_file`` empty so the #1402
+    rewire still collapses them onto a real definition when one exists."""
+    first = tmp_path / "a/use_a.go"
+    second = tmp_path / "b/use_b.go"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text('package a\n\nimport "ext"\n\nfunc UseA(w ext.Widget) {}\n', encoding="utf-8")
+    second.write_text('package b\n\nimport "ext"\n\nfunc UseB(w ext.Widget) {}\n', encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+    widget_nodes = [node for node in result["nodes"] if node["label"] == "Widget"]
+
+    assert len(widget_nodes) == 2
+    assert len({node["id"] for node in widget_nodes}) == 2
+    assert all(not node.get("source_file") for node in widget_nodes)
+
+
 def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_path):
     first = tmp_path / "apps/api/Program.cs"
     second = tmp_path / "tools/api/Program.cs"

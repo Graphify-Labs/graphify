@@ -5967,6 +5967,7 @@ def extract_julia(path: Path) -> dict:
                 "file_type": "code",
                 "source_file": "",
                 "source_location": "",
+                "origin_file": str_path,
             })
         return nid
 
@@ -6263,6 +6264,7 @@ def extract_fortran(path: Path) -> dict:
                 "file_type": "code",
                 "source_file": "",
                 "source_location": "",
+                "origin_file": str_path,
             })
         return nid
 
@@ -6512,6 +6514,7 @@ def extract_go(path: Path) -> dict:
                 "file_type": "code",
                 "source_file": "",
                 "source_location": "",
+                "origin_file": str_path,
             })
         return nid
 
@@ -6866,6 +6869,7 @@ def extract_rust(path: Path) -> dict:
                 "file_type": "code",
                 "source_file": "",
                 "source_location": "",
+                "origin_file": str_path,
             })
         return nid
 
@@ -7169,6 +7173,7 @@ def extract_powershell(path: Path) -> dict:
                 "file_type": "code",
                 "source_file": "",
                 "source_location": "",
+                "origin_file": str_path,
             })
         return nid
 
@@ -9481,6 +9486,7 @@ def extract_objc(path: Path) -> dict:
                 "file_type": "code",
                 "source_file": "",
                 "source_location": "",
+                "origin_file": str_path,
             })
         return nid
 
