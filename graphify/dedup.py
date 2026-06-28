@@ -4,6 +4,7 @@ Pipeline: exact normalization → entropy gate → MinHash/LSH blocking →
 Jaro-Winkler verification → same-community boost → union-find merge.
 """
 from __future__ import annotations
+import functools
 import math
 import re
 import unicodedata
@@ -15,6 +16,7 @@ from rapidfuzz.distance import Jaro, JaroWinkler
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+@functools.lru_cache(maxsize=None)
 def _norm(label: str | None) -> str:
     """Lowercase + collapse non-alphanumeric runs to space (Unicode-aware)."""
     if not isinstance(label, str):
