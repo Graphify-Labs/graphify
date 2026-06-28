@@ -399,6 +399,36 @@ def test_java_type_annotations_have_attribute_context(tmp_path):
     assert ("CheckoutService", "Entity") in refs
 
 
+def test_java_enum_and_annotation_declarations_are_type_nodes(tmp_path):
+    source = tmp_path / "TypeDeclarations.java"
+    source.write_text(
+        "enum PaymentStatus { PENDING, PAID }\n"
+        "@interface Audited {}\n"
+        "class Order { PaymentStatus status; }\n"
+        "@Audited class CheckoutService {}\n"
+    )
+
+    result = extract_java(source)
+
+    assert ("TypeDeclarations.java", "PaymentStatus") in _edge_labels(
+        result, "contains"
+    )
+    assert ("TypeDeclarations.java", "Audited") in _edge_labels(result, "contains")
+    assert ("Order", "PaymentStatus") in _edge_labels(
+        result, "references", "field"
+    )
+    assert ("CheckoutService", "Audited") in _edge_labels(
+        result, "references", "attribute"
+    )
+    definitions = {
+        node["label"]: node
+        for node in result["nodes"]
+        if node.get("label") in {"PaymentStatus", "Audited"}
+    }
+    assert definitions["PaymentStatus"].get("source_file") == str(source)
+    assert definitions["Audited"].get("source_file") == str(source)
+
+
 def test_csharp_field_type_references_have_field_context():
     r = extract_csharp(FIXTURES / "sample.cs")
     refs = _references(r)
