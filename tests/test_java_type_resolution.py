@@ -137,6 +137,19 @@ def test_java_record_implements_interface(tmp_path: Path):
     assert implements, "record implementing an interface should emit an implements edge"
 
 
+def test_java_type_parameters_do_not_resolve_to_real_class(tmp_path: Path):
+    real_type = _write(tmp_path / "T.java", "public class T {}\n")
+    generic = _write(
+        tmp_path / "Generic.java",
+        "public class Generic<T> { java.util.List<T> values; }\n",
+    )
+
+    result = extract([real_type, generic], cache_root=tmp_path)
+
+    references = _label_edges(result, {"references"})
+    assert ("Generic", "references", "T") not in references
+
+
 def test_java_cross_file_constructor_call_resolves(tmp_path: Path):
     # #1373: `new Foo(...)` in a method body must produce a cross-file edge to the
     # Foo definition. Foo is NOT used as a return type here, so the edge can only

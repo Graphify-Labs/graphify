@@ -644,16 +644,54 @@ def _csharp_attribute_names(method_node, source: bytes) -> list[str]:
     return names
 
 
-def _java_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
+_JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS = frozenset({
+    "class_declaration",
+    "interface_declaration",
+    "record_declaration",
+    "method_declaration",
+    "constructor_declaration",
+})
+
+
+def _java_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
+    """Return Java type-parameter names visible from ``node``."""
+    names: set[str] = set()
+    scope = node
+    while scope is not None:
+        if scope.type in _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS:
+            params = scope.child_by_field_name("type_parameters")
+            if params is not None:
+                for param in params.children:
+                    if param.type != "type_parameter":
+                        continue
+                    name_node = next(
+                        (child for child in param.children if child.type == "type_identifier"),
+                        None,
+                    )
+                    if name_node is not None:
+                        names.add(_read_text(name_node, source))
+        scope = scope.parent
+    return frozenset(names)
+
+
+def _java_collect_type_refs(
+    node,
+    source: bytes,
+    generic: bool,
+    out: list[tuple[str, str]],
+    skip: frozenset[str] | None = None,
+) -> None:
     """Walk a Java type expression; append (name, role) tuples."""
     if node is None:
         return
+    if skip is None:
+        skip = _java_type_parameters_in_scope(node, source)
     t = node.type
     if t in ("integral_type", "floating_point_type", "boolean_type", "void_type"):
         return
     if t == "type_identifier":
         name = _read_text(node, source)
-        if name:
+        if name and name not in skip:
             out.append((name, "generic_arg" if generic else "type"))
         return
     if t == "scoped_type_identifier":
@@ -665,24 +703,24 @@ def _java_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[
         for c in node.children:
             if c.type in ("type_identifier", "scoped_type_identifier"):
                 text = _read_text(c, source).rsplit(".", 1)[-1]
-                if text:
+                if text and (c.type == "scoped_type_identifier" or text not in skip):
                     out.append((text, "generic_arg" if generic else "type"))
                 break
         for c in node.children:
             if c.type == "type_arguments":
                 for arg in c.children:
                     if arg.is_named:
-                        _java_collect_type_refs(arg, source, True, out)
+                        _java_collect_type_refs(arg, source, True, out, skip)
         return
     if t == "array_type":
         for c in node.children:
             if c.is_named:
-                _java_collect_type_refs(c, source, generic, out)
+                _java_collect_type_refs(c, source, generic, out, skip)
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _java_collect_type_refs(c, source, generic, out)
+                _java_collect_type_refs(c, source, generic, out, skip)
 
 
 def _java_annotation_names(declaration_node, source: bytes) -> list[str]:
