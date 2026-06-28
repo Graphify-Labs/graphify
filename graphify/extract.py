@@ -2862,6 +2862,34 @@ def _extract_generic(
                         add_edge(class_nid, target_nid, "references", line,
                                  context="attribute")
 
+                if t == "record_declaration":
+                    components = node.child_by_field_name("parameters")
+                    if components is not None:
+                        for component in components.children:
+                            if component.type == "formal_parameter":
+                                type_node = component.child_by_field_name("type")
+                            elif component.type == "spread_parameter":
+                                type_node = next(
+                                    (
+                                        child
+                                        for child in component.children
+                                        if child.is_named
+                                        and child.type not in ("modifiers", "variable_declarator")
+                                    ),
+                                    None,
+                                )
+                            else:
+                                continue
+                            refs: list[tuple[str, str]] = []
+                            _java_collect_type_refs(type_node, source, False, refs)
+                            component_line = component.start_point[0] + 1
+                            for ref_name, role in refs:
+                                ctx = "generic_arg" if role == "generic_arg" else "field"
+                                target_nid = ensure_named_node(ref_name, component_line)
+                                if target_nid != class_nid:
+                                    add_edge(class_nid, target_nid, "references",
+                                             component_line, context=ctx)
+
             # Scala: extends_clause carries `extends Base with Trait1 with Trait2`.
             # The first base after `extends` is `inherits`; each subsequent
             # type after `with` is `mixes_in`. Also walk class_parameters for
