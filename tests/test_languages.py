@@ -357,6 +357,28 @@ def test_java_normalizes_inherits_and_implements():
     assert ("DataProcessor", "Processor") in _edge_labels(result, "implements")
 
 
+def test_java_generic_parents_include_type_argument_references(tmp_path):
+    source = tmp_path / "GenericParents.java"
+    source.write_text(
+        "class Dependency {}\n"
+        "interface Event {}\n"
+        "class Base<T> {}\n"
+        "interface Handler<T> {}\n"
+        "interface DerivedHandler extends Handler<Event> {}\n"
+        "class Service extends Base<Dependency> implements Handler<Event> {}\n"
+    )
+
+    result = extract_java(source)
+
+    assert ("Service", "Base") in _edge_labels(result, "inherits")
+    assert ("Service", "Handler") in _edge_labels(result, "implements")
+    refs = _edge_labels(result, "references", "generic_arg")
+    assert ("Service", "Dependency") in refs
+    assert ("Service", "Event") in refs
+    assert ("DerivedHandler", "Handler") in _edge_labels(result, "inherits")
+    assert ("DerivedHandler", "Event") in refs
+
+
 def test_java_parameter_return_generic_and_attribute_contexts():
     result = extract_java(FIXTURES / "sample.java")
     assert ("build", "HttpClient") in _edge_labels(result, "references", "parameter_type")

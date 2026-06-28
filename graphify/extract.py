@@ -2776,11 +2776,25 @@ def _extract_generic(
                             seen_ids.add(base_nid)
                     add_edge(class_nid, base_nid, rel, at_line)
 
+                def _emit_java_parent_type(type_node, rel: str, at_line: int) -> None:
+                    refs: list[tuple[str, str]] = []
+                    _java_collect_type_refs(type_node, source, False, refs)
+                    parent_emitted = False
+                    for ref_name, role in refs:
+                        if role == "type" and not parent_emitted:
+                            _emit_java_parent(ref_name, rel, at_line)
+                            parent_emitted = True
+                        elif role == "generic_arg":
+                            target_nid = ensure_named_node(ref_name, at_line)
+                            if target_nid != class_nid:
+                                add_edge(class_nid, target_nid, "references", at_line,
+                                         context="generic_arg")
+
                 sup = node.child_by_field_name("superclass")
                 if sup is not None:
                     for sub in sup.children:
-                        if sub.type == "type_identifier":
-                            _emit_java_parent(_read_text(sub, source), "inherits", line)
+                        if sub.is_named:
+                            _emit_java_parent_type(sub, "inherits", line)
                             break
 
                 ifs = node.child_by_field_name("interfaces")
@@ -2788,8 +2802,8 @@ def _extract_generic(
                     for sub in ifs.children:
                         if sub.type == "type_list":
                             for tid in sub.children:
-                                if tid.type == "type_identifier":
-                                    _emit_java_parent(_read_text(tid, source), "implements", line)
+                                if tid.is_named:
+                                    _emit_java_parent_type(tid, "implements", line)
 
                 if t == "interface_declaration":
                     for child in node.children:
@@ -2797,8 +2811,8 @@ def _extract_generic(
                             for sub in child.children:
                                 if sub.type == "type_list":
                                     for tid in sub.children:
-                                        if tid.type == "type_identifier":
-                                            _emit_java_parent(_read_text(tid, source), "inherits", line)
+                                        if tid.is_named:
+                                            _emit_java_parent_type(tid, "inherits", line)
 
                 for anno_name in _java_annotation_names(node, source):
                     target_nid = ensure_named_node(anno_name, line)
