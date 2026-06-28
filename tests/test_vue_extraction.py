@@ -52,3 +52,45 @@ import Hero from './components/Hero.vue';
     result = extractor(page)
     targets = _import_targets(result, relation="imports_from")
     assert _make_id(str(hero)) in targets
+
+
+def test_extract_vue_picks_up_dynamic_import(tmp_path):
+    page = _write(
+        tmp_path / "src/App.vue",
+        """<script setup>
+const Lazy = await import('./components/Lazy.vue');
+</script>
+
+<template>
+  <Lazy />
+</template>
+""",
+    )
+    lazy = _write(tmp_path / "src/components/Lazy.vue", "<template><h1>lazy</h1></template>\n")
+
+    extractor = _get_extractor(page)
+    result = extractor(page)
+    targets = _import_targets(result, relation="dynamic_import")
+    assert _make_id(str(lazy)) in targets
+
+
+def test_extract_vue_picks_up_lang_ts_script_imports(tmp_path):
+    # The <script> regex matches attributes like `lang="ts"`, so a TypeScript SFC's
+    # static imports are still recovered.
+    page = _write(
+        tmp_path / "src/App.vue",
+        """<script setup lang="ts">
+import Hero from './components/Hero.vue';
+</script>
+
+<template>
+  <Hero />
+</template>
+""",
+    )
+    hero = _write(tmp_path / "src/components/Hero.vue", "<template><h1>hi</h1></template>\n")
+
+    extractor = _get_extractor(page)
+    result = extractor(page)
+    targets = _import_targets(result, relation="imports_from")
+    assert _make_id(str(hero)) in targets

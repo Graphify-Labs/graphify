@@ -3752,18 +3752,6 @@ def extract_svelte(path: Path) -> dict:
     return result
 
 
-def extract_vue(path: Path) -> dict:
-    """Extract imports from .vue Single-File Components.
-
-    A ``.vue`` SFC has the same ``<template>``/``<script>``/``<style>`` structure as a
-    ``.svelte`` file, so tree-sitter-javascript fed the whole file produces a top-level
-    ERROR node and the ``import_statement`` nodes inside ``<script>``/``<script setup>``
-    are never reached and silently dropped (#713). The Svelte recovery (static imports in
-    each ``<script>`` block plus dynamic ``import()``) applies identically, so reuse it.
-    """
-    return extract_svelte(path)
-
-
 def extract_astro(path: Path) -> dict:
     """Extract imports from .astro files: frontmatter (TS) + template regex fallback.
 
@@ -10583,7 +10571,12 @@ _DISPATCH: dict[str, Any] = {
     ".F03": extract_fortran,
     ".f08": extract_fortran,
     ".F08": extract_fortran,
-    ".vue": extract_vue,
+    # .vue SFCs share .svelte's <template>/<script>/<style> shape: the JS grammar fed the
+    # whole file yields an ERROR root, so <script> imports are only recoverable via the regex
+    # rescue extract_svelte already performs (#713) -- route .vue through it directly.
+    # (.vue intentionally diverges from .svelte at the JS symbol-resolution bypass; see the
+    # `path.suffix != ".vue"` guard above. That divergence is separate from extraction.)
+    ".vue": extract_svelte,
     ".svelte": extract_svelte,
     ".astro": extract_astro,
     ".dart": extract_dart,
