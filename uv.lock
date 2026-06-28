@@ -1180,6 +1180,7 @@ dependencies = [
     { name = "tree-sitter-ruby" },
     { name = "tree-sitter-rust" },
     { name = "tree-sitter-scala" },
+    { name = "tree-sitter-solidity" },
     { name = "tree-sitter-swift" },
     { name = "tree-sitter-typescript" },
     { name = "tree-sitter-verilog" },
@@ -1375,6 +1376,7 @@ requires-dist = [
     { name = "tree-sitter-ruby", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-rust", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-scala", specifier = ">=0.23,<0.27" },
+    { name = "tree-sitter-solidity", specifier = ">=1.2,<2.0" },
     { name = "tree-sitter-sql", marker = "extra == 'all'" },
     { name = "tree-sitter-sql", marker = "extra == 'sql'" },
     { name = "tree-sitter-swift", specifier = ">=0.7,<0.9" },
@@ -5077,6 +5079,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/07/1c/7ea42e825690ed7ceb4cb348158341ac900d0bbb152184291a3913d44381/tree_sitter_scala-0.26.0-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:3e5920b6ab7fd09cc91dceaaf7e12c76469990f5891337a8c0147ba25d1d55f9", size = 730181, upload-time = "2026-04-18T22:23:55.285Z" },
     { url = "https://files.pythonhosted.org/packages/fe/71/7c5328c30e84ad24204343c5ed5775757f9bb1c477275f443592652f099e/tree_sitter_scala-0.26.0-cp39-abi3-win_amd64.whl", hash = "sha256:5e5021d78cd80debca5848af2314ed1a4b5642a7cefb10979b8e30c4945aa6dd", size = 603989, upload-time = "2026-04-18T22:23:56.428Z" },
     { url = "https://files.pythonhosted.org/packages/0f/9a/578b52f4f94d50352ac04630c46d49966b8564bd424cf270ed016c86bc72/tree_sitter_scala-0.26.0-cp39-abi3-win_arm64.whl", hash = "sha256:0eb627916fd1448657b4bcbe178e0cab8d3c114ec04aec51f0d0cd5ca2aa996e", size = 608073, upload-time = "2026-04-18T22:23:57.855Z" },
+]
+
+[[package]]
+name = "tree-sitter-solidity"
+version = "1.2.13"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/6e/c40fcf4018302b110d48e02e2fd8128e9a009669cae04ba8e3c849e293fb/tree_sitter_solidity-1.2.13.tar.gz", hash = "sha256:5de530ee9a3d18632396c55cd51f87fd4a7dae8ebac117eb63e52b4d3bc4a7c1", size = 158785, upload-time = "2025-08-04T11:14:26.576Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/cf/9387cd5cda028790dada6f999625e19489d7d76e8e92999403421ad7b1ce/tree_sitter_solidity-1.2.13-cp38-abi3-macosx_10_9_x86_64.whl", hash = "sha256:a662d040cbe9d1a9f1083eb2be461c60748b7c90782de1f7505bf6494a1d5c05", size = 59074, upload-time = "2025-08-04T11:14:19.404Z" },
+    { url = "https://files.pythonhosted.org/packages/20/35/a8a5443d95333984914ef51c661bd85b20fee2374b0b866243d25bbc0efe/tree_sitter_solidity-1.2.13-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:703fa18a90289e20cec25ddfc0fc574440e86781e3c5d26c99acb757a6acb109", size = 61855, upload-time = "2025-08-04T11:14:20.244Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/c7/c329e23b3b93c3d55d887e0320794ea42681770704987468060964608cfb/tree_sitter_solidity-1.2.13-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3fd017ffcdcf38422175176d1b3623a3499025c6c7c896b2502c0bd55bd2b36d", size = 94185, upload-time = "2025-08-04T11:14:21.31Z" },
+    { url = "https://files.pythonhosted.org/packages/de/81/685a3c5dec31ba2c38615da84b74bc8973a77a0989091c5e2efaa7f5e4e8/tree_sitter_solidity-1.2.13-cp38-abi3-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:490a11968c79a17f9b01156d2d655f3e602ff8de9256b026cf1deb6213d34c78", size = 91941, upload-time = "2025-08-04T11:14:22.32Z" },
+    { url = "https://files.pythonhosted.org/packages/94/38/3b185a4f17d53144892ff275bbb79ad7c3f27c6227b4d5b3e8dd01007477/tree_sitter_solidity-1.2.13-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:6e008987fd7e2329b14b2558ae16b74e98460d2ac50a98affa8d9951772c977e", size = 90993, upload-time = "2025-08-04T11:14:23.536Z" },
+    { url = "https://files.pythonhosted.org/packages/57/73/f546c9f85cea28da4bb8abb4c0f4efb05694497a5c7d5a222dce6451abc4/tree_sitter_solidity-1.2.13-cp38-abi3-win_amd64.whl", hash = "sha256:3f700a305167e39b984d38dceddf45a56e898124a923bf5cb6bb4b149c2c7063", size = 69156, upload-time = "2025-08-04T11:14:24.608Z" },
+    { url = "https://files.pythonhosted.org/packages/55/37/316728600710cb8f24dbbcc6f1471b808d722285a65badb7dfc7c500fa94/tree_sitter_solidity-1.2.13-cp38-abi3-win_arm64.whl", hash = "sha256:5caa0b2eafdb5e27e3f035732a6ccca5758231befb08f6adc4287b5e118ab8d2", size = 61063, upload-time = "2025-08-04T11:14:25.595Z" },
 ]
 
 [[package]]
