@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: `to_html` now ships `vis-network@9.1.6` inside the `graphify` package instead of pulling it from `unpkg.com` at view time. The UMD bundle (702,611 bytes) is vendored at `graphify/assets/vis-network.min.js`, registered in `pyproject.toml` `package-data`, and copied next to each generated `graph.html` as `./vis-network.min.js` (idempotent — only rewritten when the bytes change, so file watchers / Obsidian sync don't churn). Every `graphify-out/graph.html` is now self-contained and renders offline. **Notes:** the generated `graph.html` is no longer a single-file artifact — it has a same-directory `vis-network.min.js` sibling, so copy / archive / e-mail the pair together; the wheel grows by ~700 KB; the previous `unpkg.com` `<script src>` (with its SRI `integrity=` and `crossorigin="anonymous"`) is gone — see the security note below.
+
+- Security: the Subresource Integrity pin against `unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js` (sha384) is removed because the asset now ships inside the trusted Python package (same origin as the HTML). The threat model shifts from "CDN compromise" to "package compromise": a tampered wheel would still be served, but the trust boundary moves from a third-party CDN to the package supply chain (the same one users already trust for the rest of `graphify`). This is the intended trade-off for an offline-capable, no-network viewer; if you need the old SRI behavior, pin to the pre-`Unreleased` `to_html` output.
+
 ## 0.9.1 (2026-06-28)
 
 - Fix: rate-limited (HTTP 429) extraction chunks are now retried instead of dropped (#1523, thanks @bercedev). The provider SDKs back off and honor `Retry-After`, but the SDK default of 2 retries was too low for strict per-org concurrency/RPM caps (e.g. Moonshot/kimi), so a parallel `extract` 429'd, each chunk logged `chunk N failed`, and was silently lost (incomplete graph + console spam). The OpenAI-compatible, Azure, and Anthropic clients are now built with a higher `max_retries` (default 6, override via `GRAPHIFY_MAX_RETRIES`). For very tight accounts, `--max-concurrency 1` further reduces the concurrency that triggers org-level limits.
