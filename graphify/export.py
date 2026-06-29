@@ -272,8 +272,10 @@ function esc(s) {{
 const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
   id: n.id, label: n.label, color: n.color, size: n.size,
   font: n.font, title: n.title,
+  ...(n.borderWidth ? {{ borderWidth: n.borderWidth }} : {{}}),
   _community: n.community, _community_name: n.community_name,
   _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
+  _learning_status: n.learning_status,
 }})));
 
 const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
@@ -331,6 +333,7 @@ function showInfo(nodeId) {{
     <div class="field">Community: ${{esc(n._community_name)}}</div>
     <div class="field">Source: ${{esc(n._source_file || '-')}}</div>
     <div class="field">Degree: ${{n._degree}}</div>
+    ${{n._learning_status ? `<div class="field">Lesson: ${{esc(n._learning_status)}}</div>` : ''}}
     ${{neighborIds.length ? `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${{neighborIds.length}})</div><div id="neighbors-list">${{neighborItems}}</div>` : ''}}
   `;
 }}
@@ -713,6 +716,15 @@ def to_html(
     max_deg = max(degree.values(), default=1) or 1
     max_mc = (max(member_counts.values(), default=1) or 1) if member_counts else 1
 
+    # Work-memory verdict ring colors (graphify reflect --annotate-graph, #1441).
+    # Used as a node's border so the community color can stay the fill.
+    _learning_border = {
+        "preferred": "#59A14F",  # green — start here
+        "tentative": "#8CD17D",  # light green
+        "contested": "#F1CE63",  # amber — mixed signals
+        "dead_end": "#E15759",   # red — avoid
+    }
+
     # Build nodes list for vis.js
     vis_nodes = []
     for node_id, data in G.nodes(data=True):
@@ -728,7 +740,7 @@ def to_html(
             size = 10 + 30 * (deg / max_deg)
             # Only show label for high-degree nodes by default; others show on hover
             font_size = 12 if deg >= max_deg * 0.15 else 0
-        vis_nodes.append({
+        node = {
             "id": node_id,
             "label": label,
             "color": {"background": color, "border": color, "highlight": {"background": "#ffffff", "border": color}},
@@ -740,7 +752,17 @@ def to_html(
             "source_file": sanitize_label(str(data.get("source_file") or "")),
             "file_type": data.get("file_type", ""),
             "degree": deg,
-        })
+        }
+        # Give an annotated node a status-colored ring (the community color stays the
+        # fill) and carry the verdict to the info panel. Only the four known statuses
+        # get a ring, so no arbitrary text reaches the HTML by this path.
+        _ring = _learning_border.get(data.get("learning_status"))
+        if _ring:
+            node["color"]["border"] = _ring
+            node["color"]["highlight"]["border"] = _ring
+            node["borderWidth"] = 4
+            node["learning_status"] = sanitize_label(str(data.get("learning_status")))
+        vis_nodes.append(node)
 
     # Build edges list. Restore original edge direction from _src/_tgt
     # (stashed by build.py for exactly this reason): undirected NetworkX

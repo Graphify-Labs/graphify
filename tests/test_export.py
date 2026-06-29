@@ -534,3 +534,27 @@ def test_backup_env_disable(tmp_path, monkeypatch):
     (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
     (tmp_path / ".graphify_semantic_marker").write_text("{}")
     assert backup_if_protected(tmp_path) is None
+
+
+def test_to_html_surfaces_learning_status_ring():
+    """An annotated node (reflect --annotate-graph) gets a status-colored ring in the
+    viz payload and a Lesson field in the info panel; un-annotated graphs are unaffected."""
+    G = make_graph()
+    communities = cluster(G)
+    nid = next(iter(G.nodes()))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        plain = Path(tmp) / "plain.html"
+        to_html(G, communities, str(plain))
+        plain_html = plain.read_text()
+        assert "#59A14F" not in plain_html  # no ring without annotation
+
+        G.nodes[nid]["learning_status"] = "preferred"
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out))
+        html = out.read_text()
+
+    assert "learning_status" in html          # carried into the node payload
+    assert "#59A14F" in html                   # preferred ring color
+    assert "_learning_status: n.learning_status" in html   # mapped to the frontend
+    assert "Lesson:" in html                   # rendered in the info panel
