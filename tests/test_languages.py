@@ -1102,6 +1102,118 @@ def test_objc_header_dispatch_routes_objc_not_c(tmp_path):
     assert _get_extractor(c_h) is _ec
 
 
+def test_objc_ns_assume_nonnull_macro_does_not_break_parsing(tmp_path):
+    """`NS_ASSUME_NONNULL_BEGIN` before `@interface` made tree-sitter-objc fail to
+    emit a class_interface node, swallowing the whole interface; blanking the
+    argument-less macro restores it (#1475)."""
+    p = tmp_path / "AlertManager.h"
+    p.write_text(
+        "#import <Foundation/Foundation.h>\n"
+        "NS_ASSUME_NONNULL_BEGIN\n"
+        "@class Other;\n"
+        "@interface AlertManager : NSObject\n"
+        "- (void)show;\n"
+        "@end\n"
+        "NS_ASSUME_NONNULL_END\n"
+    )
+    r = extract_objc(p)
+    labels = {n["label"] for n in r["nodes"]}
+    assert "AlertManager" in labels
+    assert ("AlertManager", "NSObject") in _edge_labels(r, "inherits")
+    # `@class Other;` is only a forward declaration; it must not mint a class node.
+    assert "Other" not in labels
+
+
+def test_objc_macro_free_header_unchanged(tmp_path):
+    """A macro-free header still parses exactly as before (regression)."""
+    p = tmp_path / "Plain.h"
+    p.write_text(
+        "@interface Plain : NSObject\n"
+        "- (void)go;\n"
+        "@end\n"
+    )
+    r = extract_objc(p)
+    labels = {n["label"] for n in r["nodes"]}
+    assert "Plain" in labels
+    assert ("Plain", "NSObject") in _edge_labels(r, "inherits")
+
+
+def test_objc_quoted_import_edges_resolve_to_real_nodes(tmp_path):
+    """Quoted `#import "X.h"` edges must target the real (disambiguated) file node id,
+    not the bare stem, which gets salted away when a `.h`/`.m` pair exists and left
+    the import edge dangling (#1475)."""
+    from graphify.extract import extract
+    (tmp_path / "Product.h").write_text("@interface Product : NSObject\n@end\n")
+    (tmp_path / "Product.m").write_text("#import \"Product.h\"\n@implementation Product\n@end\n")
+    (tmp_path / "Order.h").write_text("@interface Order : NSObject\n@end\n")
+    (tmp_path / "Order.m").write_text("#import \"Order.h\"\n@implementation Order\n@end\n")
+    consumer_a = tmp_path / "ConsumerA.m"
+    consumer_a.write_text("#import \"Product.h\"\n@implementation ConsumerA\n@end\n")
+    consumer_b = tmp_path / "ConsumerB.m"
+    consumer_b.write_text("#import \"Order.h\"\n@implementation ConsumerB\n@end\n")
+    files = [
+        tmp_path / "Product.h", tmp_path / "Product.m",
+        tmp_path / "Order.h", tmp_path / "Order.m",
+        consumer_a, consumer_b,
+    ]
+    r = extract(files, parallel=False)
+    node_ids = {n["id"] for n in r["nodes"]}
+    id_to_label = {n["id"]: n.get("label", "") for n in r["nodes"]}
+    import_edges = [e for e in r["edges"] if e["relation"] in ("imports", "imports_from")]
+    assert import_edges
+    for e in import_edges:
+        # No dangling targets...
+        assert e["target"] in node_ids, f"dangling import target: {e}"
+        # ...and no self-loops: a `.m` importing its own `.h` must resolve to the
+        # header file node, not get salted back to the importing `.m` (#1475).
+        assert e["source"] != e["target"], f"self-loop import edge: {e}"
+        # every quoted import targets a header (.h) file node
+        assert str(id_to_label.get(e["target"], "")).endswith(".h"), (
+            f"import target is not a header file node: {e} -> {id_to_label.get(e['target'])}"
+        )
+    # the self-import (Product.m -> Product.h) specifically lands on the .h variant
+    prod_imports = [e for e in import_edges if id_to_label.get(e["source"], "").endswith("Product.m")]
+    assert prod_imports and all(id_to_label.get(e["target"]) == "Product.h" for e in prod_imports), (
+        f"Product.m should import the Product.h node, got {[(id_to_label.get(e['source']), id_to_label.get(e['target'])) for e in prod_imports]}"
+    )
+
+
+def test_objc_alloc_init_emits_type_reference(tmp_path):
+    """`[[Foo alloc] init]` must emit a `references` edge to the project class Foo (#1475)."""
+    from graphify.extract import extract
+    (tmp_path / "Foo.h").write_text("@interface Foo : NSObject\n@end\n")
+    (tmp_path / "Foo.m").write_text("#import \"Foo.h\"\n@implementation Foo\n@end\n")
+    user = tmp_path / "User.m"
+    user.write_text(
+        "#import \"Foo.h\"\n"
+        "@implementation User\n"
+        "- (void)build { Foo *x = [[Foo alloc] init]; }\n"
+        "@end\n"
+    )
+    r = extract([tmp_path / "Foo.h", tmp_path / "Foo.m", user], parallel=False)
+    assert ("-build", "Foo") in _edge_labels(r, "references")
+
+
+def test_objc_alloc_init_unknown_class_no_resolved_edge(tmp_path):
+    """`[[Unknown alloc] init]` with no such class must not produce a resolved
+    reference edge (the sourceless stub is collapsed only when a real class exists)."""
+    p = tmp_path / "Caller.m"
+    p.write_text(
+        "@implementation Caller\n"
+        "- (void)build { id x = [[Unknown alloc] init]; }\n"
+        "- (void)other { [self build]; [x doStuff]; }\n"
+        "@end\n"
+    )
+    r = extract_objc(p)
+    # The single-file extractor emits the edge to a sourceless stub; assert there is
+    # no resolved reference to a *real* (sourced) Unknown node and that ordinary
+    # selector sends ([self build] / [x doStuff]) produce no alloc reference.
+    sourced_ids = {n["id"] for n in r["nodes"] if n.get("source_file")}
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    for e in refs:
+        assert e["target"] not in sourced_ids, f"unexpected resolved ref: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Go
 # ---------------------------------------------------------------------------

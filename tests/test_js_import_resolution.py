@@ -532,6 +532,192 @@ def test_pnpm_workspace_takes_precedence_over_package_json_workspaces(tmp_path: 
     assert _has_edge(result, "apps/web/src/page.ts", "packages/types/src/index.ts")
 
 
+def test_workspace_subpath_export_string_resolves(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "exports": {
+                ".": "./src/index.ts",
+                "./browser": "./src/browser.ts",
+            },
+        }),
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/src/browser.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/browser'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/browser.ts")
+
+
+def test_workspace_subpath_export_condition_object_resolves(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "exports": {
+                "./browser": {
+                    "source": "./src/browser.ts",
+                    "import": "./dist/esm/browser.js",
+                    "require": "./dist/cjs/browser.js",
+                    "types": "./dist/types/browser.d.ts",
+                },
+            },
+        }),
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/src/browser.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/browser'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/browser.ts")
+
+
+def test_workspace_subpath_export_wildcard_resolves(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "exports": {
+                "./*": {"source": "./src/*.ts"},
+            },
+        }),
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/src/utils.ts",
+        "export function add(a: number, b: number) { return a + b }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { add } from '@example/pkg-a/utils'\nexport const sum = add(1, 2)\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/utils.ts")
+
+
+def test_workspace_subpath_export_falls_back_to_filesystem(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({"name": "@example/pkg-a"}),
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/browser.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/browser'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/browser.ts")
+
+
+def test_workspace_subpath_export_rejects_path_escape(tmp_path: Path):
+    # An exports target that escapes the package dir must NOT resolve to the
+    # outside path (path-containment security guard). Resolution falls through
+    # to the bare-path fallback, which has no real file here, so no edge lands
+    # on the escaped target.
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "exports": {
+                "./evil": "../../../../secret.ts",
+            },
+        }),
+    )
+    # A real file outside the package that the malicious export points at.
+    outside = _write(
+        tmp_path / "secret.ts",
+        'export const leak = "secret"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { leak } from '@example/pkg-a/evil'\nexport const v = leak\n",
+    )
+
+    result = _extract_for([outside, importer], tmp_path)
+
+    # The import must NOT resolve to the escaped outside file.
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "secret.ts")
+
+
+def test_workspace_subpath_export_default_consulted_last(tmp_path: Path):
+    # When both `default` and an earlier condition match, the earlier
+    # condition (import) must win -- `default` is Node's catch-all.
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "exports": {
+                "./browser": {
+                    "default": "./src/default-entry.ts",
+                    "import": "./src/import-entry.ts",
+                },
+            },
+        }),
+    )
+    import_entry = _write(
+        tmp_path / "packages/pkg-a/src/import-entry.ts",
+        'export const value = "import"\n',
+    )
+    default_entry = _write(
+        tmp_path / "packages/pkg-a/src/default-entry.ts",
+        'export const value = "default"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/browser'\nexport const v = value\n",
+    )
+
+    result = _extract_for([import_entry, default_entry, importer], tmp_path)
+
+    # `import` wins over `default`.
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/import-entry.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/default-entry.ts")
+
+
 def test_js_import_resolution_ignores_stale_importer_cache_when_target_appears(tmp_path: Path):
     importer = _write(
         tmp_path / "src/lib/page.ts",
@@ -636,3 +822,108 @@ def test_ts_type_relationships_and_contexts(tmp_path: Path):
     assert ("run", "Payload", "parameter_type") in reference_contexts
     assert ("run", "Result", "return_type") in reference_contexts
     assert ("run", "Payload", "generic_arg") in reference_contexts
+
+
+# ── #1531: tsconfig path-alias fallback targets ──────────────────────────────
+
+
+def test_tsconfig_alias_resolves_second_target_when_first_missing(tmp_path: Path):
+    # tsc tries each `paths` target in declared order until one resolves on disk.
+    # The file lives only at the SECOND target, so keeping only the first entry
+    # (#1531) dropped the edge.
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"$lib/*": ["generated/*", "src/lib/*"]}}}),
+    )
+    target = _write(tmp_path / "src/lib/utils.ts", "export const helper = 1\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { helper } from '$lib/utils'\nconsole.log(helper)\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "src/lib/utils.ts")
+
+
+def test_tsconfig_alias_first_target_wins_when_both_exist(tmp_path: Path):
+    # When the file exists at BOTH targets, tsc resolves to the FIRST. The edge
+    # must target the generated/ copy, not src/lib.
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"$lib/*": ["generated/*", "src/lib/*"]}}}),
+    )
+    first = _write(tmp_path / "generated/utils.ts", "export const helper = 1\n")
+    second = _write(tmp_path / "src/lib/utils.ts", "export const helper = 2\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { helper } from '$lib/utils'\nconsole.log(helper)\n",
+    )
+
+    result = _extract_for([first, second, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "generated/utils.ts")
+    assert not _has_edge(result, "src/routes/page.ts", "src/lib/utils.ts")
+
+
+def test_tsconfig_alias_none_exist_creates_no_false_edge(tmp_path: Path):
+    # The file exists at neither target; no concrete imports_from edge to either
+    # candidate may be fabricated (it stays an external/phantom target).
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"$lib/*": ["generated/*", "src/lib/*"]}}}),
+    )
+    other = _write(tmp_path / "src/routes/other.ts", "export const x = 1\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { helper } from '$lib/utils'\nconsole.log(helper)\n",
+    )
+
+    result = _extract_for([other, importer], tmp_path)
+
+    assert not _has_edge(result, "src/routes/page.ts", "generated/utils.ts")
+    assert not _has_edge(result, "src/routes/page.ts", "src/lib/utils.ts")
+
+
+# ── #1529: alias/workspace import targets orphaned by the full-path migration ──
+
+
+def test_alias_import_edge_resolves_with_relative_input_paths(tmp_path, monkeypatch):
+    # CRUCIAL: pass RELATIVE input paths (chdir into the project). Alias imports
+    # resolve specifiers through .resolve(), so the import-target id is keyed off
+    # the ABSOLUTE path; with relative inputs the id_remap (keyed on the input
+    # form) never rewrote it -> orphan -> dropped edge (#1529). Absolute/tmp_path
+    # inputs hide the bug because the two forms coincide.
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(tmp_path / "src/lib/utils.ts", "export function formatDate(d) { return d }\n")
+    _write(
+        tmp_path / "src/components/Button.tsx",
+        "import { formatDate } from '@/lib/utils'\nexport function Button() { return formatDate(1) }\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    rel_paths = [Path("src/lib/utils.ts"), Path("src/components/Button.tsx")]
+    result = extract(rel_paths, cache_root=Path("."))
+
+    node_ids = {n["id"] for n in result["nodes"]}
+    target_id = _file_node_id(Path("src/lib/utils.ts"))
+
+    # The file-level imports_from edge must target the REAL utils file node (a node
+    # that exists in the graph), not an orphan keyed by an absolute prefix.
+    assert _has_edge(result, "src/components/Button.tsx", "src/lib/utils.ts")
+    assert target_id in node_ids
+    import_targets = {
+        e["target"]
+        for e in result["edges"]
+        if e["relation"] == "imports_from" and e["source"] == _file_node_id(Path("src/components/Button.tsx"))
+    }
+    assert target_id in import_targets
+    # No surviving edge target may carry an absolute-path prefix from tmp_path.
+    abs_prefix = _file_node_id(Path("src/lib/utils.ts").resolve())
+    assert all(not t.startswith(abs_prefix + "_") and t != abs_prefix for t in import_targets)
+
+    # The named-symbol edge to formatDate must resolve to the real symbol node too.
+    assert _has_symbol_edge(result, "src/components/Button.tsx", "src/lib/utils.ts", "formatDate")

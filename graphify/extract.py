@@ -76,7 +76,7 @@ def _file_node_id(rel_path: Path) -> str:
     return _make_id(_file_stem(rel_path))
 
 
-_TSCONFIG_ALIAS_CACHE: dict[str, dict[str, str]] = {}
+_TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 _WORKSPACE_PACKAGE_CACHE: dict[str, dict[str, Path]] = {}
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 _JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".ts", ".tsx", ".vue", ".svelte"}
@@ -183,7 +183,7 @@ def _strip_jsonc(text: str) -> str:
     return stripped
 
 
-def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[str, str]:
+def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[str, list[str]]:
     """Recursively read path aliases from a tsconfig, following extends chains.
 
     Child config paths override parent. Circular extends are detected via seen set.
@@ -211,7 +211,7 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
         print(f"  warning: failed to parse {tsconfig} ({type(e).__name__}: {e})", file=sys.stderr, flush=True)
         return {}
 
-    aliases: dict[str, str] = {}
+    aliases: dict[str, list[str]] = {}
     # `extends` may be a string or, since TypeScript 5.0, an array of paths.
     # For an array, parents are processed in order with later entries
     # overriding earlier ones; the extending config (paths below) overrides
@@ -250,17 +250,26 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
         if not targets:
             continue
         alias_prefix = alias.rstrip("/*")
-        target_base = targets[0].rstrip("/*")
-        aliases[alias_prefix] = str(os.path.normpath(paths_base / target_base))
+        # Keep ALL targets in declared order — tsc tries each until one resolves
+        # on disk. Discarding the fallbacks (#1531) misresolved/dropped imports
+        # whose file lived at a non-first target. Empty/non-string entries skipped.
+        target_bases = [
+            str(os.path.normpath(paths_base / t.rstrip("/*")))
+            for t in targets
+            if isinstance(t, str) and t
+        ]
+        if target_bases:
+            aliases[alias_prefix] = target_bases
 
     return aliases
 
 
-def _load_tsconfig_aliases(start_dir: Path) -> dict[str, str]:
+def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     """Walk up from start_dir to find tsconfig.json and return compilerOptions.paths aliases.
 
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
-    Returns a dict mapping alias prefix (e.g. "@/") to resolved base dir (e.g. "src/").
+    Returns a dict mapping alias prefix (e.g. "@") to an ordered list of resolved
+    base dirs (e.g. ["src"]) — tsc tries each in declared order (#1531).
     Result is cached by tsconfig path string.
     """
     current = start_dir.resolve()
@@ -272,6 +281,26 @@ def _load_tsconfig_aliases(start_dir: Path) -> dict[str, str]:
                 _TSCONFIG_ALIAS_CACHE[key] = _read_tsconfig_aliases(tsconfig, candidate, seen=set())
             return _TSCONFIG_ALIAS_CACHE[key]
     return {}
+
+
+def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]]) -> "Path | None":
+    """Resolve `raw` against tsconfig path aliases. Try each target in declared
+    order; return the first whose candidate resolves to a real file (tsc parity).
+    If none exist, return the first candidate (no false edge fabricated, prior
+    single-target behavior preserved). Returns a Path or None if no alias matches."""
+    for alias_prefix, alias_bases in aliases.items():
+        if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
+            rest = raw[len(alias_prefix):].lstrip("/")
+            first = None
+            for base in alias_bases:
+                cand = Path(os.path.normpath(Path(base) / rest))
+                resolved = _resolve_js_import_path(cand)
+                if resolved.is_file():
+                    return resolved
+                if first is None:
+                    first = cand
+            return first
+    return None
 
 
 def _find_workspace_root(start_dir: Path) -> Path | None:
@@ -362,6 +391,42 @@ def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
     return packages
 
 
+# Condition keys consulted when resolving an `exports` target, in priority
+# order. `default` is Node's catch-all and must be consulted LAST so a more
+# specific condition (source/import/module/etc.) wins when several match.
+_EXPORT_CONDITION_PRIORITY = (
+    "source", "import", "module", "svelte", "types", "require", "default",
+)
+
+
+def _resolve_export_target(value: Any) -> str | None:
+    """Resolve an `exports` map value (string or condition object) to a
+    relative target string, honouring _EXPORT_CONDITION_PRIORITY for objects
+    and recursing into nested condition objects."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for cond in _EXPORT_CONDITION_PRIORITY:
+            v = value.get(cond)
+            if isinstance(v, str):
+                return v
+            if isinstance(v, dict):
+                nested = _resolve_export_target(v)
+                if nested:
+                    return nested
+    return None
+
+
+def _contained_in_package(resolved: Path, package_dir: Path) -> bool:
+    """Guard against `exports` targets that escape the package directory
+    (e.g. "./evil": "../../../etc/passwd"). Only accept paths that stay
+    within package_dir after resolution."""
+    try:
+        return resolved.resolve().is_relative_to(package_dir.resolve())
+    except ValueError:
+        return False
+
+
 def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
     manifest = package_dir / "package.json"
     manifest_data: dict[str, Any] = {}
@@ -371,20 +436,39 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
         pass
 
     if subpath:
+        # Consult the package's `exports` subpath map before the bare-path
+        # fallback (#1308): "./browser" -> conditions -> file, plus single
+        # wildcard "./*" patterns. Targets that escape the package dir are
+        # rejected; resolution then falls through to the bare path.
+        exports = manifest_data.get("exports")
+        if isinstance(exports, dict):
+            subpath_key = "./" + subpath
+            target = _resolve_export_target(exports.get(subpath_key))
+            if target:
+                candidate = package_dir / target
+                if _contained_in_package(candidate, package_dir):
+                    return [candidate]
+            else:
+                for pattern, pattern_value in exports.items():
+                    if "*" in pattern and pattern.count("*") == 1:
+                        prefix, suffix = pattern.split("*", 1)
+                        if (subpath_key.startswith(prefix)
+                                and (not suffix or subpath_key.endswith(suffix))):
+                            matched = subpath_key[len(prefix):len(subpath_key) - len(suffix) if suffix else None]
+                            resolved = _resolve_export_target(pattern_value)
+                            if resolved and "*" in resolved:
+                                candidate = package_dir / resolved.replace("*", matched)
+                                if _contained_in_package(candidate, package_dir):
+                                    return [candidate]
         return [package_dir / subpath]
 
     exports = manifest_data.get("exports")
     if isinstance(exports, str):
         return [package_dir / exports]
     if isinstance(exports, dict):
-        dot_export = exports.get(".")
-        if isinstance(dot_export, str):
-            return [package_dir / dot_export]
-        if isinstance(dot_export, dict):
-            for key in ("types", "import", "default", "svelte"):
-                value = dot_export.get(key)
-                if isinstance(value, str):
-                    return [package_dir / value]
+        dot_target = _resolve_export_target(exports.get("."))
+        if dot_target:
+            return [package_dir / dot_target]
 
     candidates: list[Path] = []
     for key in ("svelte", "module", "main", "types"):
@@ -428,10 +512,9 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
         return _resolve_js_import_path(start_dir / raw)
 
     aliases = _load_tsconfig_aliases(start_dir)
-    for alias_prefix, alias_base in aliases.items():
-        if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-            rest = raw[len(alias_prefix):].lstrip("/")
-            return _resolve_js_import_path(Path(os.path.normpath(Path(alias_base) / rest)))
+    hit = _resolve_tsconfig_alias(raw, aliases)
+    if hit is not None:
+        return _resolve_js_import_path(hit)
 
     return _resolve_workspace_import(raw, start_dir)
 
@@ -4213,12 +4296,7 @@ def extract_svelte(path: Path) -> dict:
                 # Check tsconfig.json path aliases (e.g. "$lib/" -> "src/lib/", "@/" -> "src/")
                 # before treating as external. Mirrors _import_js logic so SvelteKit alias
                 # imports resolve to the same file node IDs the extractor creates (#701).
-                resolved_alias = None
-                for alias_prefix, alias_base in aliases.items():
-                    if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-                        rest = raw[len(alias_prefix):].lstrip("/")
-                        resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
-                        break
+                resolved_alias = _resolve_tsconfig_alias(raw, aliases)
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
                     node_id = _make_id(str(resolved_alias))
@@ -4276,12 +4354,7 @@ def extract_svelte(path: Path) -> dict:
                     node_id = _make_id(str(resolved))
                     stub_source_file = str(resolved)
                 else:
-                    resolved_alias = None
-                    for alias_prefix, alias_base in aliases.items():
-                        if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-                            rest = raw[len(alias_prefix):].lstrip("/")
-                            resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
-                            break
+                    resolved_alias = _resolve_tsconfig_alias(raw, aliases)
                     if resolved_alias is not None:
                         node_id = _make_id(str(resolved_alias))
                         stub_source_file = str(resolved_alias)
@@ -4346,12 +4419,7 @@ def extract_astro(path: Path) -> dict:
                 node_id = _make_id(str(resolved))
                 stub_source_file = str(resolved)
             else:
-                resolved_alias = None
-                for alias_prefix, alias_base in aliases.items():
-                    if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-                        rest = raw[len(alias_prefix):].lstrip("/")
-                        resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
-                        break
+                resolved_alias = _resolve_tsconfig_alias(raw, aliases)
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
                     node_id = _make_id(str(resolved_alias))
@@ -4412,12 +4480,7 @@ def extract_astro(path: Path) -> dict:
                     node_id = _make_id(str(resolved))
                     stub_source_file = str(resolved)
                 else:
-                    resolved_alias = None
-                    for alias_prefix, alias_base in aliases.items():
-                        if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-                            rest = raw[len(alias_prefix):].lstrip("/")
-                            resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
-                            break
+                    resolved_alias = _resolve_tsconfig_alias(raw, aliases)
                     if resolved_alias is not None:
                         node_id = _make_id(str(resolved_alias))
                         stub_source_file = str(resolved_alias)
@@ -4528,12 +4591,7 @@ def extract_vue(path: Path) -> dict:
                 node_id = _make_id(str(resolved))
                 stub_source_file = str(resolved)
             else:
-                resolved_alias = None
-                for alias_prefix, alias_base in aliases.items():
-                    if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-                        rest = raw[len(alias_prefix):].lstrip("/")
-                        resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
-                        break
+                resolved_alias = _resolve_tsconfig_alias(raw, aliases)
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
                     node_id = _make_id(str(resolved_alias))
@@ -7825,6 +7883,24 @@ def _disambiguate_colliding_node_ids(
         if len(candidates) == 1:
             unambiguous_remaps[old_id] = next(iter(candidates))
 
+    # A C/ObjC/C++ `#include "foo.h"` / `#import "foo.h"` resolves to the header's
+    # file node, but `foo.h` and its sibling `foo.c`/`foo.m`/`foo.cpp` collapse to
+    # the same `foo` file id, so disambiguation salts them apart by path. A
+    # cross-file import edge from a THIRD file carries neither salt's source_key, so
+    # the (target, edge_source_key) lookup misses and the edge dangles on the now
+    # dead `foo` id. Repoint those import edges to the HEADER variant (the include
+    # always targeted the header), keyed by the original colliding id (#1475).
+    _HEADER_SUFFIXES = (".h", ".hpp", ".hh", ".hxx")
+    header_remaps: dict[str, str] = {}
+    for old_id in ambiguous_ids:
+        for node in by_id.get(old_id, []):
+            sk = _node_disambiguation_source_key(node, root)
+            if sk and Path(sk).suffix.lower() in _HEADER_SUFFIXES:
+                new_id = remap.get((old_id, sk))
+                if new_id:
+                    header_remaps[old_id] = new_id
+                    break
+
     for edge in edges:
         edge_source_key = _source_key(str(edge.get("source_file", "")), root)
         source_key = (edge.get("source", ""), edge_source_key)
@@ -7833,7 +7909,15 @@ def _disambiguate_colliding_node_ids(
             edge["source"] = remap[source_key]
         elif edge.get("source") in unambiguous_remaps:
             edge["source"] = unambiguous_remaps[str(edge["source"])]
-        if target_key in remap:
+        # imports/imports_from always target a header file, so they must resolve to
+        # the header variant BEFORE the same-source-file salt is considered. Keying
+        # the import target by the importer's own source file mis-points a `.m`
+        # importing its own `.h` back at itself (self-loop), and is wrong for any
+        # cross-file import whose importer shares the colliding id (#1475).
+        if (edge.get("relation") in ("imports", "imports_from")
+                and edge.get("target") in header_remaps):
+            edge["target"] = header_remaps[str(edge["target"])]
+        elif target_key in remap:
             edge["target"] = remap[target_key]
         elif edge.get("target") in unambiguous_remaps:
             edge["target"] = unambiguous_remaps[str(edge["target"])]
@@ -9408,9 +9492,10 @@ def _resolve_swift_member_calls(
     (#543/#1219). Swift extractors record the receiver of each member call and a
     per-file ``name -> type`` table (``swift_type_table``); this pass uses them to
     type the receiver, then emits an edge ONLY when that type name resolves to
-    exactly one definition. Everything it adds is INFERRED (type inference, not an
-    explicit import), and the line-12503 drop stays intact: this is purely
-    additive and fires only on receiver-typed Swift calls.
+    exactly one definition. A type-qualified call (``Type.staticMethod()``) is
+    EXTRACTED (the type is named explicitly in source); an instance call typed via
+    local inference (``obj.method()``) is INFERRED. The shared-pass member-call drop
+    stays intact: this is purely additive and fires only on receiver-typed Swift calls.
 
     Must run after id-disambiguation so node ids and caller_nids are final.
     """
@@ -9467,8 +9552,10 @@ def _resolve_swift_member_calls(
         # declaring file's local type table.
         if receiver[:1].isupper():
             type_name = receiver
+            type_qualified = True
         else:
             type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
+            type_qualified = False
         if not type_name:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
@@ -9484,13 +9571,17 @@ def _resolve_swift_member_calls(
         if target == caller or (caller, target) in existing_pairs:
             continue
         existing_pairs.add((caller, target))
+        # A type-qualified call (`Type.staticMethod()`) names the receiver type
+        # explicitly in source, so it is an exact reference — EXTRACTED, matching
+        # the Python qualified-class-method pass (#1533). An instance call whose
+        # receiver type came from local inference (`obj.method()`) stays INFERRED.
         all_edges.append({
             "source": caller,
             "target": target,
             "relation": relation,
             "context": "call",
-            "confidence": "INFERRED",
-            "confidence_score": 0.8,
+            "confidence": "EXTRACTED" if type_qualified else "INFERRED",
+            "confidence_score": 1.0 if type_qualified else 0.8,
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
             "weight": 1.0,
@@ -9615,6 +9706,13 @@ def extract_objc(path: Path) -> dict:
         language = Language(tsobjc.language())
         parser = Parser(language)
         source = path.read_bytes()
+        # tree-sitter-objc cannot expand these argument-less annotation macros (no
+        # trailing ';'), and their presence before @interface makes the parser fail to
+        # emit a class_interface node (#1475). Blank them to equal-length spaces so byte
+        # offsets / line numbers are preserved and the interface parses.
+        _OBJC_BLANK_MACROS = (b"NS_ASSUME_NONNULL_BEGIN", b"NS_ASSUME_NONNULL_END")
+        for _m in _OBJC_BLANK_MACROS:
+            source = source.replace(_m, b" " * len(_m))
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -9707,10 +9805,18 @@ def extract_objc(path: Path) -> dict:
                     for sub in child.children:
                         if sub.type == "string_content":
                             raw = _read(sub)
-                            module = raw.split("/")[-1].replace(".h", "")
-                            if module:
-                                tgt_nid = _make_id(module)
-                                add_edge(file_nid, tgt_nid, "imports", line, context="import")
+                            # Resolve the quoted include to a real file so the target id
+                            # matches the (possibly disambiguated) node id _make_id gives
+                            # that file; the bare-stem id never survives
+                            # _disambiguate_colliding_node_ids when a .h/.m pair exists,
+                            # so the edge dangled and was dropped (#1475).
+                            resolved = _resolve_c_include_path(raw, str_path)
+                            if resolved is not None:
+                                add_edge(file_nid, _make_id(str(resolved)), "imports", line, context="import")
+                            else:
+                                module = raw.split("/")[-1].replace(".h", "")
+                                if module:
+                                    add_edge(file_nid, _make_id(module), "imports", line, context="import")
             return
 
         if t == "module_import":
@@ -9845,6 +9951,23 @@ def extract_objc(path: Path) -> dict:
     for caller_nid, body_node in method_bodies:
         def walk_calls(n) -> None:
             if n.type == "message_expression":
+                # `[[Foo alloc] init]` is a message_expression whose method is the
+                # identifier `alloc` and whose receiver is the bare class identifier
+                # `Foo`; resolve that class name and emit a `references` edge so the
+                # allocating method links to the allocated type. ensure_named_node
+                # emits a sourceless stub for unknown names, which the corpus rewire
+                # collapses ONLY when exactly one real class of that name exists, so an
+                # unknown/ambiguous class produces no false resolved edge (#1475).
+                meth = n.child_by_field_name("method")
+                recv = n.child_by_field_name("receiver")
+                if (meth is not None and meth.type == "identifier" and _read(meth) == "alloc"
+                        and recv is not None and recv.type == "identifier"):
+                    tname = _read(recv)
+                    ref_line = n.start_point[0] + 1
+                    type_nid = ensure_named_node(tname, ref_line)
+                    if type_nid != caller_nid:
+                        edges.append(_semantic_reference_edge(
+                            caller_nid, type_nid, "type", str_path, ref_line))
                 # [receiver sel] and [receiver kw1:a kw2:b] both parse to a
                 # message_expression whose selector parts carry the field name
                 # "method" (one for a simple selector, several for a compound one);
@@ -13402,7 +13525,14 @@ def extract(
     # main_run -- splitting the symbol into AST/semantic ghosts (#1096). Relativize
     # the symbol prefix the same way, gated by source_file so two files sharing a
     # prefix can't cross-contaminate. Keyed by resolved path -> (old_pref, new_pref).
-    prefix_remap: dict[Path, tuple[str, str]] = {}
+    # Each file maps from up to TWO old prefixes — the input-form prefix
+    # _file_node_id(path) and the absolute-resolved-form prefix
+    # _file_node_id(path.resolve()). Alias/workspace imports resolve specifiers
+    # through .resolve(), so their edge targets are keyed off the ABSOLUTE form;
+    # when inputs are relative the two forms differ and absolute-derived targets
+    # would otherwise orphan (#1529). Stored as a list so the symbol-prefix remap
+    # below can try both (identical forms collapse to one — a no-op).
+    prefix_remap: dict[Path, list[tuple[str, str]]] = {}
     for path in paths:
         old_id = _make_id(str(path))
         try:
@@ -13415,9 +13545,21 @@ def extract(
         new_id = _file_node_id(rel)
         if old_id != new_id:
             id_remap[old_id] = new_id
+        # Also register the absolute-resolved form of the file-level id so
+        # alias/workspace import targets (resolved via .resolve()) remap to
+        # canonical instead of orphaning (#1529).
+        old_id_abs = _make_id(str(path.resolve()))
+        if old_id_abs != new_id:
+            id_remap[old_id_abs] = new_id
+        old_prefs: list[tuple[str, str]] = []
         old_pref = _file_node_id(path)
         if old_pref != new_id:
-            prefix_remap[path.resolve()] = (old_pref, new_id)
+            old_prefs.append((old_pref, new_id))
+        old_pref_abs = _file_node_id(path.resolve())
+        if old_pref_abs != new_id and old_pref_abs != old_pref:
+            old_prefs.append((old_pref_abs, new_id))
+        if old_prefs:
+            prefix_remap[path.resolve()] = old_prefs
     if id_remap:
         for n in all_nodes:
             if n.get("id") in id_remap:
@@ -13445,12 +13587,16 @@ def extract(
                 continue
             if entry is None:
                 continue
-            old_pref, new_pref = entry
             nid = n.get("id", "")
-            if nid.startswith(old_pref + "_"):
-                new_nid = new_pref + nid[len(old_pref):]
-                if new_nid != nid:
-                    sym_remap[nid] = new_nid
+            # Try both the input-form and absolute-form prefixes for this file
+            # (#1529). source_file gating above already prevents cross-file
+            # contamination, so the first matching prefix wins.
+            for old_pref, new_pref in entry:
+                if nid.startswith(old_pref + "_"):
+                    new_nid = new_pref + nid[len(old_pref):]
+                    if new_nid != nid:
+                        sym_remap[nid] = new_nid
+                    break
         if sym_remap:
             for n in all_nodes:
                 if n.get("id") in sym_remap:
