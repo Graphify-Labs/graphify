@@ -517,3 +517,8 @@ def test_backup_env_disable(tmp_path, monkeypatch):
     (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
     (tmp_path / ".graphify_semantic_marker").write_text("{}")
     assert backup_if_protected(tmp_path) is None
+
+
+def test_vis_network_filename_constant():
+    from graphify.export import _VIS_NETWORK_FILENAME
+    assert _VIS_NETWORK_FILENAME == "vis-network.min.js"

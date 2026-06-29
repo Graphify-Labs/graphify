@@ -30,6 +30,12 @@ _BACKUP_ARTIFACTS = [
 ]
 
 
+# Filename of the vendored vis-network UMD bundle copied next to generated
+# graph.html files. The actual bytes live in graphify/assets/ and are read
+# via importlib.resources at generation time.
+_VIS_NETWORK_FILENAME = "vis-network.min.js"
+
+
 def backup_if_protected(out_dir: Path) -> "Path | None":
     """Snapshot graph artifacts to a dated subfolder before an overwrite.
 
