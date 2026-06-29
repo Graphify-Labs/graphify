@@ -61,3 +61,20 @@ def test_report_shows_raw_cohesion_scores():
     assert "Cohesion:" in report
     assert "✓" not in report
     assert "⚠" not in report
+
+def test_knowledge_gaps_thin_count_uses_min_community_size():
+    # A community of 3 non-file nodes is omitted from the Communities section when
+    # min_community_size=5 (3 < 5). The Knowledge Gaps "thin communities omitted" count
+    # must use the same threshold, not a hardcoded 3, which would miss this community.
+    import networkx as nx
+    G = nx.Graph()
+    for n in ("c1", "c2", "c3"):
+        G.add_node(n, label=n, node_type="concept")
+    G.add_edges_from([("c1", "c2"), ("c2", "c3"), ("c3", "c1")])
+    communities = {0: ["c1", "c2", "c3"]}
+    cohesion = {0: 0.5}
+    labels = {0: "Concept Cluster"}
+    detection = {"total_files": 1, "total_words": 100, "needs_graph": True, "warning": None}
+    tokens = {"input": 10, "output": 10}
+    report = generate(G, communities, cohesion, labels, [], [], detection, tokens, "./project", min_community_size=5)
+    assert "1 thin communities (<5 nodes) omitted from report" in report
