@@ -817,9 +817,7 @@ def to_html(
 <head>
 <meta charset="UTF-8">
 <title>graphify - {title}</title>
-<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"
-        integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
-        crossorigin="anonymous"></script>
+<script src="./vis-network.min.js"></script>
 {_html_styles()}
 </head>
 <body>
@@ -847,6 +845,7 @@ def to_html(
 </body>
 </html>"""
 
+    _emit_vis_js(Path(output_path))
     Path(output_path).write_text(html, encoding="utf-8")  # nosec
 
 

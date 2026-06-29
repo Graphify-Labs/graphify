@@ -98,6 +98,24 @@ def test_to_html_contains_visjs():
         to_html(G, communities, str(out))
         content = out.read_text()
         assert "vis-network" in content
+        # New: same-origin reference, no CDN, no SRI, no crossorigin.
+        assert '<script src="./vis-network.min.js"></script>' in content
+        assert 'unpkg.com' not in content
+        assert 'integrity=' not in content
+        assert 'crossorigin="anonymous"' not in content
+
+
+def test_to_html_emits_local_vis_network_asset():
+    from graphify.export import _vendored_vis_js
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out))
+        asset = out.parent / "vis-network.min.js"
+        assert asset.exists()
+        # Byte-equality with the vendored copy is the correctness contract.
+        assert asset.read_bytes() == _vendored_vis_js()
 
 
 def test_to_html_pins_visjs_version_with_sri():
