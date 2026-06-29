@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from graphify.extract import _file_node_id, _file_stem, _make_id, extract
 
 
@@ -135,6 +137,90 @@ def test_ts_export_star_from_index_resolves_imported_symbol_to_origin(tmp_path: 
     result = _extract_for([target, barrel, consumer], tmp_path)
 
     assert _has_edge(result, "src/lib/index.ts", "src/lib/foo.ts", "re_exports")
+    assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
+
+
+@pytest.mark.parametrize("suffix", ["ts", "js"])
+def test_js_namespace_reexport_import_targets_real_binding(
+    tmp_path: Path,
+    monkeypatch,
+    suffix: str,
+):
+    monkeypatch.chdir(tmp_path)
+    target = _write(Path(f"src/lib/foo.{suffix}"), "export class Foo { id = '' }\n")
+    barrel = _write(Path(f"src/lib/index.{suffix}"), "export * as ns from './foo'\n")
+    consumer = _write(
+        Path(f"src/routes/page.{suffix}"),
+        "import { ns } from '../lib/index'\nexport const use = () => ns.Foo\n",
+    )
+
+    result = _extract_for([target, barrel, consumer], Path("."))
+
+    namespace_id = _make_id(_file_stem(Path(f"src/lib/index.{suffix}")), "ns")
+    node_ids = {node["id"] for node in result["nodes"]}
+    assert namespace_id in node_ids
+    assert _has_symbol_edge(
+        result,
+        f"src/routes/page.{suffix}",
+        f"src/lib/index.{suffix}",
+        "ns",
+    )
+    assert _has_edge(
+        result,
+        f"src/lib/index.{suffix}",
+        f"src/lib/foo.{suffix}",
+        "re_exports",
+    )
+    assert (
+        _file_node_id(Path(f"src/lib/index.{suffix}")),
+        namespace_id,
+        "contains",
+    ) in {
+        (edge["source"], edge["target"], edge["relation"])
+        for edge in result["edges"]
+    }
+    assert not [
+        edge
+        for edge in result["edges"]
+        if edge["source"] not in node_ids or edge["target"] not in node_ids
+    ]
+
+
+def test_ts_reexport_cycle_resolves_symbol_from_non_cycle_branch(tmp_path: Path):
+    target = _write(tmp_path / "src/lib/foo.ts", "export class Foo { id = '' }\n")
+    first = _write(
+        tmp_path / "src/lib/first.ts",
+        "export * from './second'\nexport * from './foo'\n",
+    )
+    second = _write(tmp_path / "src/lib/second.ts", "export * from './first'\n")
+    consumer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import type { Foo } from '../lib/first'\nexport type X = Foo\n",
+    )
+
+    result = _extract_for([target, first, second, consumer], tmp_path)
+
+    assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
+
+
+def test_ts_reexport_chain_beyond_sixteen_hops_resolves_origin(tmp_path: Path):
+    target = _write(tmp_path / "src/lib/foo.ts", "export class Foo { id = '' }\n")
+    barrels: list[Path] = []
+    previous = "foo"
+    for index in range(20):
+        barrel = _write(
+            tmp_path / f"src/lib/barrel_{index}.ts",
+            f"export * from './{previous}'\n",
+        )
+        barrels.append(barrel)
+        previous = f"barrel_{index}"
+    consumer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import type { Foo } from '../lib/barrel_19'\nexport type X = Foo\n",
+    )
+
+    result = extract([target, *barrels, consumer], cache_root=tmp_path, parallel=False)
+
     assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
 
 

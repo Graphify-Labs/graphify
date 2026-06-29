@@ -8042,6 +8042,14 @@ class _StarExportFact:
 
 
 @dataclass(frozen=True)
+class _NamespaceExportFact:
+    file_path: Path
+    exported_name: str
+    target_path: Path
+    line: int
+
+
+@dataclass(frozen=True)
 class _SymbolUseFact:
     file_path: Path
     source_id: str
@@ -8058,6 +8066,7 @@ class _SymbolResolutionFacts:
     aliases: list[_SymbolAliasFact] = field(default_factory=list)
     exports: list[_SymbolExportFact] = field(default_factory=list)
     star_exports: list[_StarExportFact] = field(default_factory=list)
+    namespace_exports: list[_NamespaceExportFact] = field(default_factory=list)
     uses: list[_SymbolUseFact] = field(default_factory=list)
     # File-to-file submodule imports from `from pkg import submod` (#1146).
     # Each entry is (importing_file, submodule_file, line).
@@ -8078,6 +8087,7 @@ def _apply_symbol_resolution_facts(
         or facts.aliases
         or facts.exports
         or facts.star_exports
+        or facts.namespace_exports
         or facts.uses
         or facts.module_imports
     ):
@@ -8180,6 +8190,36 @@ def _apply_symbol_resolution_facts(
                 "export",
                 star_fact.line,
                 star_fact.file_path,
+            )
+
+    for namespace_fact in facts.namespace_exports:
+        source_path = namespace_fact.file_path.resolve()
+        target_path = namespace_fact.target_path.resolve()
+        namespace_id = ensure_symbol_node(
+            namespace_fact.file_path,
+            namespace_fact.exported_name,
+            namespace_fact.line,
+        )
+        named_exports_by_file.setdefault(source_path, {})[
+            namespace_fact.exported_name
+        ] = (source_path, namespace_fact.exported_name)
+        source_id = source_file_id.get(source_path)
+        if source_id is not None:
+            add_edge(
+                source_id,
+                namespace_id,
+                "contains",
+                "namespace_export",
+                namespace_fact.line,
+                namespace_fact.file_path,
+            )
+            add_edge(
+                source_id,
+                _make_id(str(path_by_resolved.get(target_path, target_path))),
+                "re_exports",
+                "export",
+                namespace_fact.line,
+                namespace_fact.file_path,
             )
 
     for export_fact in facts.exports:
@@ -8361,6 +8401,16 @@ def _js_export_clause(node):
 
 def _js_export_statement_is_star(node) -> bool:
     return any(child.type == "*" for child in node.children)
+
+
+def _js_namespace_export_name(node, source: bytes) -> str | None:
+    for child in node.children:
+        if child.type != "namespace_export":
+            continue
+        for sub in child.children:
+            if sub.type == "identifier":
+                return _read_text(sub, source) or None
+    return None
 
 
 def _js_lexical_aliases(node, source: bytes) -> list[tuple[str, str]]:
@@ -8727,7 +8777,17 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                 if target_path is None:
                     continue
                 target_path = target_path.resolve()
-                if _js_export_statement_is_star(node):
+                namespace_name = _js_namespace_export_name(node, source)
+                if namespace_name is not None:
+                    facts.namespace_exports.append(
+                        _NamespaceExportFact(
+                            path,
+                            namespace_name,
+                            target_path,
+                            node.start_point[0] + 1,
+                        )
+                    )
+                elif _js_export_statement_is_star(node):
                     facts.star_exports.append(
                         _StarExportFact(path, target_path, node.start_point[0] + 1)
                     )
