@@ -33,7 +33,8 @@ $PYTHON -m pip download \
     --dest "$WHEELHOUSE" \
     --python-version 3.10 \
     --platform win_amd64 \
-    --only-binary=:all: \
+    --platform py3-none-any \
+    --no-deps \
     --requirement <($PYTHON -c "
 try:
     import tomllib
