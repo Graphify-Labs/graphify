@@ -186,7 +186,7 @@ def generate(
     ]
     thin_communities = {
         cid: nodes for cid, nodes in communities.items()
-        if 0 < sum(1 for n in nodes if not _is_file_node(G, n)) < 3
+        if 0 < sum(1 for n in nodes if not _is_file_node(G, n)) < min_community_size
     }
     gap_count = len(isolated) + len(thin_communities)
 
