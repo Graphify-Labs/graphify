@@ -61,3 +61,24 @@ def test_report_shows_raw_cohesion_scores():
     assert "Cohesion:" in report
     assert "✓" not in report
     assert "⚠" not in report
+
+
+def test_report_work_memory_lessons_section():
+    """Nodes annotated by `reflect --annotate-graph` produce a Work-memory lessons
+    section grouped by verdict; an un-annotated graph omits it entirely."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    base = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Work-memory lessons" not in base
+
+    nodes = list(G.nodes())
+    G.nodes[nodes[0]]["learning_status"] = "preferred"
+    G.nodes[nodes[0]]["learning_score"] = 2.0
+    G.nodes[nodes[0]]["learning_uses"] = 2
+    G.nodes[nodes[1]]["learning_status"] = "dead_end"
+
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Work-memory lessons" in report
+    assert "Preferred sources (start here):" in report
+    assert "Known dead ends (avoid):" in report
+    good = G.nodes[nodes[0]].get("label", nodes[0])
+    assert f"`{good}` (2× useful)" in report

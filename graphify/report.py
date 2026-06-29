@@ -202,6 +202,38 @@ def generate(
         if amb_pct > 20:
             lines.append(f"- **High ambiguity: {amb_pct}% of edges are AMBIGUOUS.** Review the Ambiguous Edges section above.")
 
+    # Work-memory lessons (graphify reflect --annotate-graph, #1441): surface the
+    # distilled per-node verdicts in the broad overview, not only when you query a
+    # specific node. Absent unless the graph has been annotated.
+    _status_heading = {
+        "preferred": "Preferred sources (start here)",
+        "tentative": "Tentative (useful once — verify)",
+        "contested": "Contested (mixed signals)",
+        "dead_end": "Known dead ends (avoid)",
+    }
+    _lessons: dict[str, list[tuple[float, str, object]]] = {s: [] for s in _status_heading}
+    for n, data in G.nodes(data=True):
+        status = data.get("learning_status")
+        if status in _lessons:
+            _lessons[status].append(
+                (-(data.get("learning_score") or 0.0), str(data.get("label", n)),
+                 data.get("learning_uses"))
+            )
+    if any(_lessons.values()):
+        lines += ["", "## Work-memory lessons",
+                  "_Distilled from saved query outcomes (`graphify reflect`); verify before relying._"]
+        for status, heading in _status_heading.items():
+            entries = sorted(_lessons[status], key=lambda e: (e[0], e[1]))
+            if not entries:
+                continue
+            shown = entries[:8]
+            labels = ", ".join(
+                f"`{label}`" + (f" ({uses}× useful)" if uses else "")
+                for _, label, uses in shown
+            )
+            more = f" (+{len(entries) - 8} more)" if len(entries) > 8 else ""
+            lines.append(f"- **{heading}:** {labels}{more}")
+
     if suggested_questions:
         lines += ["", "## Suggested Questions"]
         no_signal = len(suggested_questions) == 1 and suggested_questions[0].get("type") == "no_signal"
