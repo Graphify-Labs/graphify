@@ -375,10 +375,16 @@ Create `tests/test_installer_path_win.py`:
 
 `path_win` shells out to PowerShell to set/unset the user-level PATH.
 We mock `subprocess.run` so the tests don't actually touch the registry.
+
+Tests 1–4 verify the PowerShell call shape on Windows. They're skipped on
+non-Windows because the implementation's no-op short-circuits before the
+mocked subprocess is called. Test 5 verifies the no-op behavior itself
+and runs on every platform.
 """
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -386,6 +392,7 @@ import pytest
 from graphify.installer import path_win
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell call only runs on Windows")
 def test_add_to_user_path_invokes_powershell_with_setx():
     """On Windows, add_to_user_path must call PowerShell's
     [Environment]::SetEnvironmentVariable with Target=User."""
@@ -404,6 +411,7 @@ def test_add_to_user_path_invokes_powershell_with_setx():
     assert r"C:\Users\me\AppData\Local\graphify\bin" in command_str
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell call only runs on Windows")
 def test_add_to_user_path_is_idempotent():
     """Calling add_to_user_path twice with the same value must not error and
     must produce the same PowerShell call shape both times."""
@@ -414,6 +422,7 @@ def test_add_to_user_path_is_idempotent():
     assert fake.call_count == 2
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell call only runs on Windows")
 def test_remove_from_user_path_invokes_powershell():
     fake = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
     with patch("graphify.installer.path_win.subprocess.run", fake):
@@ -426,6 +435,7 @@ def test_remove_from_user_path_invokes_powershell():
     assert r"C:\graphify\bin" in command_str
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell call only runs on Windows")
 def test_add_to_user_path_raises_on_powershell_failure():
     fake = MagicMock(return_value=MagicMock(returncode=1, stdout="", stderr="boom"))
     with patch("graphify.installer.path_win.subprocess.run", fake):
