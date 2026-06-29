@@ -16,6 +16,14 @@ from typing import Optional
 
 from graphify.installer.host_probe import Host, host_skill_dir
 
+# Hosts detected on the user's machine but NOT supported by the offline
+# installer. Their real install path is via `graphify install <host>` (which
+# runs after the offline installer has placed the binary on PATH). The
+# offline installer must NOT write a SKILL.md into their directories — that
+# would silently fail (the host's own format is different — `.mdc`, hook
+# into GEMINI.md, etc.).
+_UNSUPPORTED_IN_OFFLINE_INSTALLER = frozenset({"cursor", "gemini"})
+
 # Map host name -> the skill body filename in the graphify package.
 # Hosts whose body is `skill.md` (the Claude bundle) don't need an entry.
 _BODY_BY_HOST = {
@@ -90,6 +98,18 @@ def copy_skill(
     without `importlib.resources` finding real files.
     """
     out_dir = host_skill_dir(host, root=root)
+    if host.name in _UNSUPPORTED_IN_OFFLINE_INSTALLER:
+        # Skip silently — no SKILL.md, no references/. The user's next
+        # `graphify install cursor` (or `graphify install gemini`) will
+        # write the host's real config. We do NOT mkdir the target dir:
+        # some hosts (notably `gemini`) are sensitive to empty dirs.
+        import sys
+        print(
+            f"[graphify-installer] note: skipping {host.name}; "
+            f"after install run `graphify install {host.name}` to register the skill.",
+            file=sys.stderr,
+        )
+        return out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Read the body.

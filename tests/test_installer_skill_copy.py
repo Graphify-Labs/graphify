@@ -81,3 +81,23 @@ def test_copy_skill_for_mobilecoder_uses_skill_md_fallback(tmp_path):
     out_dir = host_skill_dir(host, root=tmp_path)
     skill_copy.copy_skill(host, root=tmp_path, package_root=pkg)
     assert (out_dir / "SKILL.md").exists()
+
+
+def test_copy_skill_skips_cursor_and_gemini(tmp_path, capsys):
+    """cursor and gemini are NOT supported by the offline installer — they
+    use a different install format (`.mdc` for cursor, GEMINI.md section +
+    settings.json hook for gemini). The offline installer must not write a
+    stray SKILL.md into their directories."""
+    pkg = _write_minimal_graphify_package(tmp_path, with_references=False)
+    for host_name in ("cursor", "gemini"):
+        host = next(h for h in KNOWN_HOSTS if h.name == host_name)
+        out_dir = host_skill_dir(host, root=tmp_path)
+        skill_copy.copy_skill(host, root=tmp_path, package_root=pkg)
+        # No SKILL.md written
+        assert not (out_dir / "SKILL.md").exists(), (
+            f"{host_name}: SKILL.md should not be written by the offline installer"
+        )
+    # A note is printed to stderr
+    captured = capsys.readouterr()
+    assert "cursor" in captured.err
+    assert "gemini" in captured.err
