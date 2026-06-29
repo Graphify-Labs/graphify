@@ -356,6 +356,26 @@ def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
     return packages
 
 
+_EXPORT_CONDITION_PRIORITY = (
+    "source", "import", "module", "default", "require", "svelte", "types",
+)
+
+
+def _resolve_export_target(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for cond in _EXPORT_CONDITION_PRIORITY:
+            v = value.get(cond)
+            if isinstance(v, str):
+                return v
+            if isinstance(v, dict):
+                nested = _resolve_export_target(v)
+                if nested:
+                    return nested
+    return None
+
+
 def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
     manifest = package_dir / "package.json"
     manifest_data: dict[str, Any] = {}
@@ -365,20 +385,30 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
         pass
 
     if subpath:
+        exports = manifest_data.get("exports")
+        if isinstance(exports, dict):
+            subpath_key = "./" + subpath
+            target = _resolve_export_target(exports.get(subpath_key))
+            if target:
+                return [package_dir / target]
+            for pattern, pattern_value in exports.items():
+                if "*" in pattern and pattern.count("*") == 1:
+                    prefix, suffix = pattern.split("*", 1)
+                    if (subpath_key.startswith(prefix)
+                            and (not suffix or subpath_key.endswith(suffix))):
+                        matched = subpath_key[len(prefix):len(subpath_key) - len(suffix) if suffix else None]
+                        resolved = _resolve_export_target(pattern_value)
+                        if resolved and "*" in resolved:
+                            return [package_dir / resolved.replace("*", matched)]
         return [package_dir / subpath]
 
     exports = manifest_data.get("exports")
     if isinstance(exports, str):
         return [package_dir / exports]
     if isinstance(exports, dict):
-        dot_export = exports.get(".")
-        if isinstance(dot_export, str):
-            return [package_dir / dot_export]
-        if isinstance(dot_export, dict):
-            for key in ("types", "import", "default", "svelte"):
-                value = dot_export.get(key)
-                if isinstance(value, str):
-                    return [package_dir / value]
+        dot_target = _resolve_export_target(exports.get("."))
+        if dot_target:
+            return [package_dir / dot_target]
 
     candidates: list[Path] = []
     for key in ("svelte", "module", "main", "types"):
@@ -1346,7 +1376,7 @@ def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | Non
         return None
     resolved_path = _resolve_js_module_path(raw, Path(str_path).parent)
     if resolved_path is not None:
-        return _make_id(str(resolved_path)), resolved_path
+        return _make_id(_file_stem(resolved_path)), resolved_path
     module_name = raw.split("/")[-1]
     if not module_name:
         return None
@@ -4115,7 +4145,7 @@ def extract_svelte(path: Path) -> dict:
                 # imports of bare paths and .svelte.ts rune files land on real
                 # file nodes instead of phantom ids (#716).
                 resolved = _resolve_js_module_path(resolved)
-                node_id = _make_id(str(resolved))
+                node_id = _make_id(_file_stem(resolved))
                 stub_source_file = str(resolved)
             else:
                 # Check tsconfig.json path aliases (e.g. "$lib/" -> "src/lib/", "@/" -> "src/")
@@ -4129,7 +4159,7 @@ def extract_svelte(path: Path) -> dict:
                         break
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
-                    node_id = _make_id(str(resolved_alias))
+                    node_id = _make_id(_file_stem(resolved_alias))
                     stub_source_file = str(resolved_alias)
                 else:
                     # Bare/scoped import (node_modules) - use last segment;
@@ -4181,7 +4211,7 @@ def extract_svelte(path: Path) -> dict:
                         resolved = resolved.with_suffix(".ts")
                     elif resolved.suffix == ".jsx":
                         resolved = resolved.with_suffix(".tsx")
-                    node_id = _make_id(str(resolved))
+                    node_id = _make_id(_file_stem(resolved))
                     stub_source_file = str(resolved)
                 else:
                     resolved_alias = None
@@ -4191,7 +4221,7 @@ def extract_svelte(path: Path) -> dict:
                             resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
                             break
                     if resolved_alias is not None:
-                        node_id = _make_id(str(resolved_alias))
+                        node_id = _make_id(_file_stem(resolved_alias))
                         stub_source_file = str(resolved_alias)
                     else:
                         module_name = raw.split("/")[-1]
@@ -4251,7 +4281,7 @@ def extract_astro(path: Path) -> dict:
             if raw.startswith("."):
                 resolved = Path(os.path.normpath(path.parent / raw))
                 resolved = _resolve_js_module_path(resolved)
-                node_id = _make_id(str(resolved))
+                node_id = _make_id(_file_stem(resolved))
                 stub_source_file = str(resolved)
             else:
                 resolved_alias = None
@@ -4262,7 +4292,7 @@ def extract_astro(path: Path) -> dict:
                         break
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
-                    node_id = _make_id(str(resolved_alias))
+                    node_id = _make_id(_file_stem(resolved_alias))
                     stub_source_file = str(resolved_alias)
                 else:
                     module_name = raw.split("/")[-1]
@@ -4317,7 +4347,7 @@ def extract_astro(path: Path) -> dict:
                         resolved = resolved.with_suffix(".ts")
                     elif resolved.suffix == ".jsx":
                         resolved = resolved.with_suffix(".tsx")
-                    node_id = _make_id(str(resolved))
+                    node_id = _make_id(_file_stem(resolved))
                     stub_source_file = str(resolved)
                 else:
                     resolved_alias = None
@@ -4327,7 +4357,7 @@ def extract_astro(path: Path) -> dict:
                             resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
                             break
                     if resolved_alias is not None:
-                        node_id = _make_id(str(resolved_alias))
+                        node_id = _make_id(_file_stem(resolved_alias))
                         stub_source_file = str(resolved_alias)
                     else:
                         module_name = raw.split("/")[-1]
@@ -4433,7 +4463,7 @@ def extract_vue(path: Path) -> dict:
             if raw.startswith("."):
                 resolved = Path(os.path.normpath(path.parent / raw))
                 resolved = _resolve_js_module_path(resolved)
-                node_id = _make_id(str(resolved))
+                node_id = _make_id(_file_stem(resolved))
                 stub_source_file = str(resolved)
             else:
                 resolved_alias = None
@@ -4444,7 +4474,7 @@ def extract_vue(path: Path) -> dict:
                         break
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
-                    node_id = _make_id(str(resolved_alias))
+                    node_id = _make_id(_file_stem(resolved_alias))
                     stub_source_file = str(resolved_alias)
                 else:
                     module_name = raw.split("/")[-1]
@@ -13307,6 +13337,8 @@ def extract(
         if old_id != new_id:
             id_remap[old_id] = new_id
         old_pref = _file_node_id(path)
+        if old_pref != new_id and old_pref not in id_remap:
+            id_remap[old_pref] = new_id
         if old_pref != new_id:
             prefix_remap[path.resolve()] = (old_pref, new_id)
     if id_remap:

@@ -532,6 +532,119 @@ def test_pnpm_workspace_takes_precedence_over_package_json_workspaces(tmp_path: 
     assert _has_edge(result, "apps/web/src/page.ts", "packages/types/src/index.ts")
 
 
+def test_workspace_subpath_export_string_resolves(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "exports": {
+                ".": "./src/index.ts",
+                "./browser": "./src/browser.ts",
+            },
+        }),
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/src/browser.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/browser'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/browser.ts")
+
+
+def test_workspace_subpath_export_condition_object_resolves(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "exports": {
+                "./browser": {
+                    "source": "./src/browser.ts",
+                    "import": "./dist/esm/browser.js",
+                    "require": "./dist/cjs/browser.js",
+                    "types": "./dist/types/browser.d.ts",
+                },
+            },
+        }),
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/src/browser.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/browser'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/browser.ts")
+
+
+def test_workspace_subpath_export_wildcard_resolves(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "exports": {
+                "./*": {"source": "./src/*.ts"},
+            },
+        }),
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/src/utils.ts",
+        "export function add(a: number, b: number) { return a + b }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { add } from '@example/pkg-a/utils'\nexport const sum = add(1, 2)\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/utils.ts")
+
+
+def test_workspace_subpath_export_falls_back_to_filesystem(tmp_path: Path):
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({"name": "@example/pkg-a"}),
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/browser.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/browser'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/browser.ts")
+
+
 def test_js_import_resolution_ignores_stale_importer_cache_when_target_appears(tmp_path: Path):
     importer = _write(
         tmp_path / "src/lib/page.ts",
