@@ -1177,6 +1177,16 @@ from typing import List, Optional
 
 from graphify.installer import host_probe, manifest, path_win, skill_copy
 
+# Re-export the helpers at the package level. Two reasons:
+#   1. Tests `monkeypatch.setattr("graphify.installer.<name>", ...)` need
+#      the names reachable on the package itself; submodule-only lookups
+#      would miss the patch.
+#   2. `install()` / `uninstall()` below look up these names through the
+#      module globals, so the same patch chain applies in production code.
+detect_hosts = host_probe.detect_hosts
+add_to_user_path = path_win.add_to_user_path
+remove_from_user_path = path_win.remove_from_user_path
+
 
 def install(
     *,
@@ -1193,7 +1203,7 @@ def install(
     3. Register `install_path / bin` on the user-level PATH.
     4. Write the install manifest.
     """
-    hosts = host_probe.detect_hosts(root=user_root)
+    hosts = detect_hosts(root=user_root)
     skill_dirs: List[str] = []
 
     for host in hosts:
@@ -1210,7 +1220,7 @@ def install(
 
     bin_path = install_path / "bin"
     try:
-        path_win.add_to_user_path(str(bin_path))
+        add_to_user_path(str(bin_path))
         user_path_added = True
     except path_win.PathWinError as exc:
         print(
@@ -1245,7 +1255,7 @@ def uninstall(*, manifest_file: Path) -> None:
 
     if m.user_path_added:
         try:
-            path_win.remove_from_user_path(str(m.install_path / "bin"))
+            remove_from_user_path(str(m.install_path / "bin"))
         except path_win.PathWinError as exc:
             print(
                 f"[graphify-installer] warn: could not remove PATH entry ({exc}); "
