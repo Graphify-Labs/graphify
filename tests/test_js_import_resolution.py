@@ -951,6 +951,55 @@ def test_tsconfig_wildcard_alias_substitutes_before_suffix(tmp_path: Path):
     )
 
 
+def test_tsconfig_wildcard_alias_substitutes_before_normalizing_target(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"@/*": ["generated/*/../shared"]},
+            }
+        }),
+    )
+    target = _write(
+        tmp_path / "generated/feature/shared/index.ts",
+        "export const shared = 1\n",
+    )
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { shared } from '@/feature/nested'\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(
+        result,
+        "src/routes/page.ts",
+        "generated/feature/shared/index.ts",
+    )
+
+
+def test_tsconfig_wildcard_alias_allows_empty_capture(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"app*": ["src/config/index.ts"]},
+            }
+        }),
+    )
+    target = _write(tmp_path / "src/config/index.ts", "export const config = {}\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { config } from 'app'\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "src/config/index.ts")
+
+
 def test_tsconfig_wildcard_alias_prefers_longest_matching_prefix(tmp_path: Path):
     _write(
         tmp_path / "tsconfig.json",

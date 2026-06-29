@@ -252,10 +252,10 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
         # Keep ALL targets in declared order — tsc tries each until one resolves
         # on disk. Discarding the fallbacks (#1531) misresolved/dropped imports
         # whose file lived at a non-first target. Preserve wildcard tokens in
-        # both sides so the resolver can substitute the captured segment (#927).
-        # Empty/non-string entries are skipped.
+        # both sides until the resolver substitutes the captured segment, then
+        # normalizes the concrete path (#927). Empty/non-string entries are skipped.
         target_patterns = [
-            str(os.path.normpath(paths_base / t))
+            str(paths_base / t)
             for t in targets
             if isinstance(t, str) and t
         ]
@@ -298,7 +298,7 @@ def _match_tsconfig_alias(raw: str, pattern: str) -> "tuple[tuple[int, int], str
         if not raw.startswith(prefix) or not raw.endswith(suffix):
             return None
         end = len(raw) - len(suffix) if suffix else len(raw)
-        if end <= len(prefix):
+        if end < len(prefix):
             return None
         return (1, -len(prefix)), raw[len(prefix):end], True
 
@@ -334,7 +334,9 @@ def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]]) -> "Path | 
     first = None
     for target in targets:
         if is_wildcard:
-            cand = Path(os.path.normpath(target.replace("*", captured)))
+            # TypeScript substitutes only when the matched star is non-empty.
+            substituted = target.replace("*", captured, 1) if captured else target
+            cand = Path(os.path.normpath(substituted))
         else:
             cand = Path(target)
             if captured:
