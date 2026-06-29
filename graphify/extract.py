@@ -9723,7 +9723,7 @@ def extract_objc(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    method_bodies: list[tuple[str, Any]] = []
+    method_bodies: list[tuple[str, Any, str]] = []
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -9937,7 +9937,7 @@ def extract_objc(path: Path) -> dict:
                 add_node(method_nid, f"{prefix}{method_name}", line)
                 add_edge(container, method_nid, "method", line)
                 if t == "method_definition":
-                    method_bodies.append((method_nid, node))
+                    method_bodies.append((method_nid, node, container))
             return
 
         for child in node.children:
@@ -9947,8 +9947,13 @@ def extract_objc(path: Path) -> dict:
 
     # Second pass: resolve calls inside method bodies
     all_method_nids = {n["id"] for n in nodes if n["id"] != file_nid}
+    class_method_nids: dict[str, set[str]] = {}
+    for m_nid, _, container_nid in method_bodies:
+        class_method_nids.setdefault(container_nid, set()).add(m_nid)
     seen_calls: set[tuple[str, str]] = set()
-    for caller_nid, body_node in method_bodies:
+    for caller_nid, body_node, container_nid in method_bodies:
+        sibling_nids = class_method_nids.get(container_nid, set())
+
         def walk_calls(n) -> None:
             if n.type == "message_expression":
                 # `[[Foo alloc] init]` is a message_expression whose method is the
@@ -9992,6 +9997,42 @@ def extract_objc(path: Path) -> dict:
                                 seen_calls.add(pair)
                                 add_edge(caller_nid, candidate, "calls", n.start_point[0] + 1,
                                          confidence="EXTRACTED", weight=1.0, context="call")
+            elif n.type == "field_expression":
+                # self.name / self.product.name — dot-syntax sugar for [self name].
+                # Restrict resolution to sibling methods within the same class to
+                # prevent fan-out when multiple classes declare a property with the
+                # same name (#1475).
+                for child in n.children:
+                    if child.type == "field_identifier":
+                        field_name = _read(child)
+                        needle = _make_id("", field_name).lstrip("_")
+                        matches = [c for c in sibling_nids
+                                   if c.endswith(needle) and c != caller_nid]
+                        if len(matches) == 1:
+                            pair = (caller_nid, matches[0])
+                            if pair not in seen_calls:
+                                seen_calls.add(pair)
+                                add_edge(caller_nid, matches[0], "accesses",
+                                         n.start_point[0] + 1,
+                                         confidence="EXTRACTED", weight=1.0)
+            elif n.type == "selector_expression":
+                # @selector(doSomething:withParam:) — compile-time method ref.
+                # Only emit when exactly one method matches across the entire file
+                # to avoid ambiguous fan-out (#1475).
+                sel_parts = [_read(c) for c in n.children if c.type == "identifier"]
+                sel_name = "".join(sel_parts)
+                if sel_name:
+                    needle = _make_id("", sel_name).lstrip("_")
+                    matches = [c for c in all_method_nids
+                               if c.endswith(needle) and c != caller_nid]
+                    if len(matches) == 1:
+                        pair = (caller_nid, matches[0])
+                        if pair not in seen_calls:
+                            seen_calls.add(pair)
+                            add_edge(caller_nid, matches[0], "calls",
+                                     n.start_point[0] + 1,
+                                     confidence="EXTRACTED", weight=1.0,
+                                     context="call")
             for child in n.children:
                 walk_calls(child)
         walk_calls(body_node)

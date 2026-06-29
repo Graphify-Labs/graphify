@@ -1214,6 +1214,96 @@ def test_objc_alloc_init_unknown_class_no_resolved_edge(tmp_path):
         assert e["target"] not in sourced_ids, f"unexpected resolved ref: {e}"
 
 
+def test_objc_dot_syntax_property_accesses_edge(tmp_path):
+    """self.name dot-syntax resolves to an accesses edge within the same class."""
+    p = tmp_path / "Dog.m"
+    p.write_text(
+        "@implementation Dog\n"
+        "- (NSString *)name { return @\"Rex\"; }\n"
+        "- (void)greet { NSLog(@\"%@\", self.name); }\n"
+        "@end\n"
+    )
+    r = extract_objc(p)
+    accesses = [(e["source"], e["target"]) for e in r["edges"]
+                if e["relation"] == "accesses"]
+    nid2label = {n["id"]: n["label"] for n in r["nodes"]}
+    assert len(accesses) == 1
+    assert nid2label[accesses[0][1]] == "-name"
+
+
+def test_objc_dot_syntax_no_fanout_two_same_named_properties(tmp_path):
+    """Two classes each declaring -name: self.name in A must NOT fan out to B's -name."""
+    p = tmp_path / "AB.m"
+    p.write_text(
+        "@implementation A\n"
+        "- (NSString *)name { return @\"A\"; }\n"
+        "- (void)show { NSLog(@\"%@\", self.name); }\n"
+        "@end\n"
+        "@implementation B\n"
+        "- (NSString *)name { return @\"B\"; }\n"
+        "- (void)show { NSLog(@\"%@\", self.name); }\n"
+        "@end\n"
+    )
+    r = extract_objc(p)
+    accesses = [e for e in r["edges"] if e["relation"] == "accesses"]
+    assert len(accesses) == 2, f"expected 2 scoped accesses, got {len(accesses)}: {accesses}"
+    nid2label = {n["id"]: n["label"] for n in r["nodes"]}
+    for e in accesses:
+        src_label = nid2label[e["source"]]
+        tgt_label = nid2label[e["target"]]
+        assert src_label == "-show" and tgt_label == "-name"
+
+
+def test_objc_dot_syntax_unresolvable_property_zero_edges(tmp_path):
+    """Accessing a property not defined in the current class produces zero accesses edges."""
+    p = tmp_path / "X.m"
+    p.write_text(
+        "@implementation X\n"
+        "- (void)run { NSLog(@\"%@\", self.missing); }\n"
+        "@end\n"
+    )
+    r = extract_objc(p)
+    accesses = [e for e in r["edges"] if e["relation"] == "accesses"]
+    assert len(accesses) == 0
+
+
+def test_objc_selector_expression_calls_edge(tmp_path):
+    """@selector(uniqueMethod) with exactly one match produces a calls edge."""
+    p = tmp_path / "Sched.m"
+    p.write_text(
+        "@implementation Sched\n"
+        "- (void)fetch { }\n"
+        "- (void)schedule { [self performSelector:@selector(fetch)]; }\n"
+        "@end\n"
+    )
+    r = extract_objc(p)
+    nid2label = {n["id"]: n["label"] for n in r["nodes"]}
+    sel_calls = [(nid2label.get(e["source"]), nid2label.get(e["target"]))
+                 for e in r["edges"]
+                 if e["relation"] == "calls" and e.get("context") == "call"]
+    assert ("-schedule", "-fetch") in sel_calls
+
+
+def test_objc_selector_no_fanout_two_same_named_methods(tmp_path):
+    """@selector(doThing) with two doThing methods must emit zero calls edges."""
+    p = tmp_path / "Dual.m"
+    p.write_text(
+        "@implementation A\n"
+        "- (void)doThing { }\n"
+        "- (void)run { [self performSelector:@selector(doThing)]; }\n"
+        "@end\n"
+        "@implementation B\n"
+        "- (void)doThing { }\n"
+        "@end\n"
+    )
+    r = extract_objc(p)
+    nid2label = {n["id"]: n["label"] for n in r["nodes"]}
+    sel_edges = [e for e in r["edges"]
+                 if e["relation"] == "calls"
+                 and nid2label.get(e["target"], "").endswith("doThing")]
+    assert len(sel_edges) == 0, f"expected 0 selector edges with ambiguous name, got {sel_edges}"
+
+
 # ---------------------------------------------------------------------------
 # Go
 # ---------------------------------------------------------------------------
