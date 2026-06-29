@@ -35,7 +35,10 @@ $PYTHON -m pip download \
     --platform win_amd64 \
     --only-binary=:all: \
     --requirement <($PYTHON -c "
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 with open('pyproject.toml', 'rb') as f:
     data = tomllib.load(f)
 print('\n'.join(data['project']['optional-dependencies']['windows-offline']))
