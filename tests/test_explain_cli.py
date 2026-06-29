@@ -54,3 +54,29 @@ def test_caller_shows_callee_as_outbound(monkeypatch, tmp_path, capsys):
     out = _run(monkeypatch, p, "createPatchHandler", capsys)
     assert "--> validateSanitySession() [calls]" in out
     assert "<-- " not in out
+
+
+def test_explain_source_file_path_prefers_file_level_node(monkeypatch, tmp_path, capsys):
+    source_file = "app/api/example/route.ts"
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "example_route_get", "label": "GET()",
+             "source_file": source_file, "source_location": "L42", "community": 0},
+            {"id": "example_route", "label": "route.ts",
+             "source_file": source_file, "source_location": "L1", "community": 0},
+        ],
+        "links": [
+            {"source": "example_route", "target": "example_route_get",
+             "relation": "contains", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+
+    out = _run(monkeypatch, p, source_file, capsys)
+
+    assert "Node: route.ts" in out
+    assert "ID:        example_route" in out
+    assert f"Source:    {source_file} L1" in out
+    assert "Node: GET()" not in out

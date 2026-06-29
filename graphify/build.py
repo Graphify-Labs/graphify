@@ -28,7 +28,8 @@ import sys
 import unicodedata
 from pathlib import Path
 import networkx as nx
-from .ids import normalize_id as _normalize_id
+from .ids import make_id, normalize_id as _normalize_id
+from .paths import default_graph_json as _default_graph_json
 from .validate import validate_extraction
 
 
@@ -133,6 +134,110 @@ def dedupe_edges(edges: list[dict]) -> list[dict]:
     return out
 
 
+def _old_file_stems(rel: Path) -> list[str]:
+    """Pre-migration stem forms a semantic fragment may have used for ``rel``.
+
+    Ordered longest-first so prefix stripping is greedy and unambiguous:
+      - one-parent form: ``parent.stem``  (the old _file_stem rule, #550-era)
+      - zero-parent form: ``stem``        (the old llm.py prompt rule, #1509)
+    """
+    forms: list[str] = []
+    parent = rel.parent.name
+    if parent and parent not in (".", ""):
+        forms.append(make_id(f"{parent}.{rel.stem}"))
+    forms.append(make_id(rel.stem))
+    # Dedupe while preserving order (top-level files collapse both forms).
+    seen: set[str] = set()
+    return [f for f in forms if f and not (f in seen or seen.add(f))]
+
+
+def _semantic_id_remap(nodes: list, root: str | None) -> dict:
+    """Re-derive non-AST node ids from ``source_file`` using the canonical
+    full-path stem, so a cached/LLM fragment carrying a pre-migration short id
+    reconciles with the AST node instead of spawning a ghost (#1504/#1509).
+
+    Drift-proof by construction: the new id is computed from ``source_file`` in
+    code, never trusted from the fragment's own ``id`` string. AST-origin nodes
+    are skipped (they are already canonical via the extract() post-pass)."""
+    from graphify.extractors.base import _file_stem  # local: avoid import cost at module load
+
+    remap: dict[str, str] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("_origin") == "ast":
+            continue
+        nid = node.get("id")
+        sf = node.get("source_file")
+        if not nid or not isinstance(nid, str) or not sf:
+            continue
+        sf_norm = _norm_source_file(str(sf), root) or str(sf)
+        rel = Path(sf_norm)
+        if rel.is_absolute():
+            continue  # can't relativize (no/failed root) — leave id untouched
+        new_stem = make_id(_file_stem(rel))
+        if not new_stem:
+            continue
+        norm_nid = _normalize_id(nid)
+        new_id: str | None = None
+        for old_stem in _old_file_stems(rel):
+            if old_stem == new_stem:
+                continue  # already canonical for this form
+            if norm_nid == old_stem:
+                new_id = new_stem  # the file node itself
+                break
+            prefix = old_stem + "_"
+            if norm_nid.startswith(prefix):
+                entity = norm_nid[len(prefix):]
+                new_id = make_id(new_stem, entity)
+                break
+        if new_id and new_id != nid:
+            remap[nid] = new_id
+    return remap
+
+
+def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: int = 300) -> bool:
+    """Whether a loaded graph still uses pre-#1504 node IDs (parent-dir / filename
+    stem) rather than the full repo-relative path. Read-only consumers (query,
+    serve) use this to nudge the user to rebuild, since they don't re-extract.
+
+    Heuristic and cheap: only **file-level** nodes (source_location ``L1``) are
+    inspected, because their ID is unambiguously the file stem. Symbol nodes are
+    skipped — some extractors scope a symbol by package/directory (Go's
+    ``_make_id(pkg_dir, name)`` → ``sub_thing``), which can coincide with an old
+    file-stem form and would otherwise false-positive. Returns True as soon as one
+    file node's ID matches an OLD stem form but not the canonical full-path form."""
+    from graphify.extractors.base import _file_stem
+    _r = str(root) if root is not None else None
+    checked = 0
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("source_location") or "") != "L1":
+            continue  # only file-level nodes carry an unambiguous file-stem ID
+        nid = node.get("id")
+        sf = node.get("source_file")
+        if not nid or not isinstance(nid, str) or not sf:
+            continue
+        rel = Path(_norm_source_file(str(sf), _r) or str(sf))
+        if rel.is_absolute():
+            continue
+        new_stem = make_id(_file_stem(rel))
+        if not new_stem:
+            continue
+        norm = _normalize_id(nid)
+        if norm == new_stem or norm.startswith(new_stem + "_"):
+            checked += 1
+        else:
+            for old in _old_file_stems(rel):
+                if old != new_stem and (norm == old or norm.startswith(old + "_")):
+                    return True
+            checked += 1
+        if checked >= sample:
+            break
+    return False
+
+
 def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
     """Build a NetworkX graph from an extraction dict.
 
@@ -179,10 +284,53 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     real_errors = [e for e in errors if "does not match any node id" not in e]
     if real_errors:
         print(f"[graphify] Extraction warning ({len(real_errors)} issues): {real_errors[0]}", file=sys.stderr)
+    # Deterministic semantic re-key (#1504/#1509): the node-ID stem is now the
+    # full repo-relative path (docs/v1/api/README.md -> docs_v1_api_readme), but
+    # the semantic cache is UNVERSIONED, so a cached/LLM fragment can still carry
+    # an OLD short id whose stem was just the immediate parent dir (api_readme),
+    # or a prompt-drifting id with zero parent dirs (readme). Rather than trust
+    # LLM prose to emit the right stem, we re-derive every non-AST node's id from
+    # its own source_file in code, so a drifted fragment physically reconciles
+    # with the AST node instead of spawning a ghost / a re-bill. AST-origin nodes
+    # already carry canonical ids (the extract() id-remap post-pass guarantees it)
+    # and are left untouched.
+    _rekey: dict[str, str] = _semantic_id_remap(extraction.get("nodes", []), _root)
+    if _rekey:
+        for node in extraction.get("nodes", []):
+            if isinstance(node, dict) and node.get("id") in _rekey:
+                node["id"] = _rekey[node["id"]]
+        for edge in extraction.get("edges", []):
+            if not isinstance(edge, dict):
+                continue
+            if edge.get("source") in _rekey:
+                edge["source"] = _rekey[edge["source"]]
+            if edge.get("target") in _rekey:
+                edge["target"] = _rekey[edge["target"]]
+        for he in extraction.get("hyperedges", []) or []:
+            if isinstance(he, dict) and isinstance(he.get("nodes"), list):
+                he["nodes"] = [_rekey.get(n, n) for n in he["nodes"]]
+
     G: nx.Graph = nx.DiGraph() if directed else nx.Graph()
     for node in extraction.get("nodes", []):
-        if "source_file" in node:
-            node["source_file"] = _norm_source_file(node["source_file"], _root)
+        # Skip dict nodes with a missing or non-hashable id (e.g. a list emitted
+        # by a buggy LLM extraction) so NetworkX add_node never raises
+        # TypeError: unhashable type. Non-dict nodes are deliberately left to
+        # raise as before, so callers that probe build for shape errors (e.g.
+        # the multigraph diagnostic) still observe the malformed shape.
+        if isinstance(node, dict):
+            if "id" not in node:
+                continue
+            try:
+                hash(node["id"])
+            except TypeError:
+                print(
+                    f"[graphify] WARNING: skipping node with non-hashable id "
+                    f"{node['id']!r} (must be a string).",
+                    file=sys.stderr,
+                )
+                continue
+            if "source_file" in node:
+                node["source_file"] = _norm_source_file(node["source_file"], _root)
         G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
     node_set = set(G.nodes())
 
@@ -256,6 +404,30 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     for ghost_id, canonical_id in _ghost_remap.items():
         norm_to_id[_normalize_id(ghost_id)] = canonical_id
         norm_to_id[ghost_id] = canonical_id
+    # Pre-migration alias index (#1504): register each canonical node's OLD-stem id
+    # forms as aliases so a stale-id edge endpoint coming from an un-re-keyed
+    # fragment (e.g. an incremental update whose fragment references a symbol in a
+    # file that was NOT re-extracted) still resolves to the migrated node instead
+    # of dangling. Only fills gaps — never overrides a real node id.
+    from graphify.extractors.base import _file_stem as _fs
+    for nid in node_set:
+        attrs = G.nodes[nid]
+        sf = attrs.get("source_file")
+        if not sf:
+            continue
+        rel = Path(str(sf))
+        if rel.is_absolute():
+            continue
+        new_stem = make_id(_fs(rel))
+        suffix = ""
+        if _normalize_id(nid).startswith(new_stem):
+            suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
+        for old_stem in _old_file_stems(rel):
+            if old_stem == new_stem:
+                continue
+            alias = old_stem + suffix
+            norm_to_id.setdefault(_normalize_id(alias), nid)
+            norm_to_id.setdefault(alias, nid)
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
@@ -275,6 +447,19 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if "source" not in edge or "target" not in edge:
             continue
         src, tgt = edge["source"], edge["target"]
+        # Skip edges with non-hashable endpoints (e.g. a list emitted by a buggy
+        # LLM extraction) so the `not in node_set` membership test below never
+        # raises TypeError: unhashable type. The validator already reported these.
+        try:
+            hash(src)
+            hash(tgt)
+        except TypeError:
+            print(
+                f"[graphify] WARNING: skipping edge with non-hashable endpoint "
+                f"(source={src!r}, target={tgt!r}).",
+                file=sys.stderr,
+            )
+            continue
         # Remap mismatched IDs via normalization before dropping the edge.
         if src not in node_set:
             src = norm_to_id.get(_normalize_id(src), src)
@@ -305,6 +490,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 ".go": "go", ".rs": "rs",
                 ".java": "jvm", ".kt": "jvm", ".scala": "jvm", ".groovy": "jvm",
                 ".c": "c", ".h": "c", ".cc": "cpp", ".cpp": "cpp", ".hpp": "cpp",
+                ".cu": "cpp", ".cuh": "cpp", ".metal": "cpp",
                 ".rb": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
             }
             src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
@@ -435,7 +621,7 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
 
 def build_merge(
     new_chunks: list[dict],
-    graph_path: str | Path = "graphify-out/graph.json",
+    graph_path: str | Path | None = None,
     prune_sources: list[str] | None = None,
     *,
     directed: bool = False,
@@ -452,7 +638,7 @@ def build_merge(
     Safe to call repeatedly.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
     """
-    graph_path = Path(graph_path)
+    graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
     if graph_path.exists():
         # Read JSON directly instead of going through node_link_graph().
         # The latter rebuilds an undirected nx.Graph and then enumerating

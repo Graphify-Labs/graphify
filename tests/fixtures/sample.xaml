@@ -1,0 +1,10 @@
+<Window x:Class="GraphifyDemo.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Dashboard"
+        Loaded="Window_Loaded">
+    <StackPanel x:Name="RootPanel">
+        <TextBox Name="UserNameBox" Text="{Binding UserName}" TextChanged="UserNameChanged" />
+        <Button x:Name="SaveButton" Content="Save" Click="Save_Click" />
+    </StackPanel>
+</Window>

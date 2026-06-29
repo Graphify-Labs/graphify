@@ -355,6 +355,7 @@ def _check_shrink(
     tmp: "Path | None" = None,
     *,
     had_explicit_deletions: bool = False,
+    rebuilt_sources: "set[str] | None" = None,
 ) -> bool:
     """Return True (ok to proceed) or False (shrink refused).
 
@@ -366,23 +367,43 @@ def _check_shrink(
     has declared which files were removed (e.g. the post-commit hook saw
     a ``D`` in ``git diff --name-only``) and a smaller graph is the expected
     outcome — skip the guard so legitimate refactors don't require ``--force``.
+
+    ``rebuilt_sources`` (when given) is the set of source files re-extracted this
+    run. A net shrink is legitimate — not a failed chunk — when every *lost* node
+    belonged to one of those files (a symbol removed from a re-extracted file) or
+    carries no source_file. Only an unexplained loss (a node from a file we did
+    NOT touch — e.g. a dropped semantic/doc node) refuses the write. This lets a
+    plain ``graphify update`` after deleting a function refresh the graph without
+    ``--force`` (#1116 left stale nodes write-blocked even though build dropped them).
     """
     if force or not existing_data or had_explicit_deletions:
         return True
-    existing_n = len(existing_data.get("nodes", []))
-    new_n = len(new_data.get("nodes", []))
-    if new_n < existing_n:
-        if tmp is not None:
-            tmp.unlink(missing_ok=True)
-        print(
-            f"[graphify] WARNING: new graph has {new_n} nodes but existing "
-            f"graph.json has {existing_n}. Refusing to overwrite — you may be "
-            f"missing chunk files from a previous session. "
-            f"Pass --force to override.",
-            file=sys.stderr,
-        )
-        return False
-    return True
+    existing_nodes = existing_data.get("nodes", [])
+    new_nodes = new_data.get("nodes", [])
+    if len(new_nodes) >= len(existing_nodes):
+        return True
+    if rebuilt_sources is not None:
+        from graphify.build import _norm_source_file
+        new_ids = {n.get("id") for n in new_nodes}
+        lost = [n for n in existing_nodes if n.get("id") not in new_ids]
+
+        def _accounted(n: dict) -> bool:
+            sf = n.get("source_file")
+            return (not sf
+                    or sf in rebuilt_sources
+                    or _norm_source_file(sf) in rebuilt_sources)
+        if all(_accounted(n) for n in lost):
+            return True
+    if tmp is not None:
+        tmp.unlink(missing_ok=True)
+    print(
+        f"[graphify] WARNING: new graph has {len(new_nodes)} nodes but existing "
+        f"graph.json has {len(existing_nodes)}. Refusing to overwrite — you may be "
+        f"missing chunk files from a previous session. "
+        f"Pass --force to override.",
+        file=sys.stderr,
+    )
+    return False
 
 
 def _report_for_compare(report_text: str) -> str:
@@ -620,9 +641,40 @@ def _rebuild_code(
                     and (not evict_sources or n.get("source_file") not in evict_sources)
                 ]
                 all_ids = new_ast_ids | {n["id"] for n in preserved_nodes}
+                # An edge is OWNED by the file it was extracted from (its
+                # source_file). When that file is re-extracted, its prior edges must
+                # not be carried forward — the fresh extraction re-emits whichever
+                # ones still exist. Preserving by endpoint membership alone keeps a
+                # removed import's edge alive forever whenever both endpoint nodes
+                # survive (e.g. `a` no longer imports from `b`, but both `a` and `b`
+                # are still present), producing phantom circular dependencies
+                # (#1521). So drop preserved edges whose source_file was re-extracted
+                # this run (or deleted). Unlike the node-level evict set, this MUST
+                # cover the full-rebuild case too — there every file is re-extracted
+                # but `evict_sources` only lists deleted files, so a removed import
+                # in a surviving file would never be pruned. Edges with no
+                # source_file, or owned by a file that was NOT re-extracted, are
+                # kept exactly as before, so cross-file edges that merely point at a
+                # re-extracted file (#1402 sourceless stubs / cross-file rewire) are
+                # not over-pruned — only edges the re-extracted file itself produced.
+                edge_evict_sources: set[str] = set(evict_sources)
+                for p in extract_targets:
+                    for _root in (project_root, watch_root):
+                        edge_evict_sources.add(_nsf(str(p), str(_root)) or str(p))
+                def _edge_evicted(e: dict) -> bool:
+                    if not edge_evict_sources:
+                        return False
+                    sf = e.get("source_file")
+                    if not sf:
+                        return False
+                    if sf in edge_evict_sources:
+                        return True
+                    norm = _nsf(sf, str(project_root))
+                    return bool(norm) and norm in edge_evict_sources
                 preserved_edges = [
                     e for e in existing.get("links", existing.get("edges", []))
                     if e.get("source") in all_ids and e.get("target") in all_ids
+                    and not _edge_evicted(e)
                 ]
                 result = {
                     "nodes": result["nodes"] + preserved_nodes,
@@ -635,6 +687,18 @@ def _rebuild_code(
                 pass  # corrupt graph.json - proceed with AST-only
 
         _relativize_source_files(result, project_root)
+        # Source files re-extracted this run — their symbol sets may legitimately
+        # shrink (a removed function), so the shrink-guard should not block the
+        # write when every lost node belongs to one of them (or a deleted file).
+        _rebuilt_root = str(project_root)
+        if changed_paths is None:
+            rebuilt_sources = {
+                _nsf(str(p.relative_to(project_root)), _rebuilt_root)
+                for p in code_files if p.is_relative_to(project_root)
+            }
+        else:
+            rebuilt_sources = {(_nsf(str(p), _rebuilt_root) or str(p)) for p in extract_targets}
+        rebuilt_sources |= set(deleted_paths)
         out.mkdir(exist_ok=True)
         # Write the user-supplied path rather than the resolved absolute form
         # so a committed ``graphify-out/.graphify_root`` is portable across
@@ -670,6 +734,7 @@ def _rebuild_code(
                 if not _check_shrink(
                     force, existing_graph_data, candidate_graph_data,
                     had_explicit_deletions=bool(deleted_paths),
+                    rebuilt_sources=rebuilt_sources,
                 ):
                     return False
                 existing_graph.write_text(candidate_graph_text, encoding="utf-8")
@@ -776,6 +841,7 @@ def _rebuild_code(
                 force, existing_graph_data, candidate_graph_data,
                 tmp=graph_tmp,
                 had_explicit_deletions=bool(deleted_paths),
+                rebuilt_sources=rebuilt_sources,
             ):
                 return False
             from graphify.export import backup_if_protected as _backup

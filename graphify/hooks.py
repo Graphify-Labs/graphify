@@ -106,6 +106,17 @@ try:
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, changed_paths=changed, force=_force)
+    # Refresh the work-memory lessons doc when saved Q&A outcomes exist
+    # (best-effort; never fails the hook).
+    try:
+        _md = (_root / _out) / 'memory'
+        if _md.is_dir() and any(_md.glob('*.md')):
+            from graphify.reflect import reflect as _reflect
+            _gj = (_root / _out) / 'graph.json'
+            _reflect(memory_dir=_md, out_path=(_root / _out) / 'reflections' / 'LESSONS.md',
+                     graph_path=_gj if _gj.exists() else None)
+    except Exception:
+        pass
 except TimeoutError as exc:
     print(f'[graphify hook] {exc}')
     sys.exit(1)
@@ -136,6 +147,17 @@ try:
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, force=_force)
+    # Refresh the work-memory lessons doc when saved Q&A outcomes exist
+    # (best-effort; never fails the hook).
+    try:
+        _md = (_root / _out) / 'memory'
+        if _md.is_dir() and any(_md.glob('*.md')):
+            from graphify.reflect import reflect as _reflect
+            _gj = (_root / _out) / 'graph.json'
+            _reflect(memory_dir=_md, out_path=(_root / _out) / 'reflections' / 'LESSONS.md',
+                     graph_path=_gj if _gj.exists() else None)
+    except Exception:
+        pass
 except TimeoutError as exc:
     print(f'[graphify] {exc}')
     sys.exit(1)

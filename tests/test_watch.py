@@ -260,7 +260,10 @@ def test_rebuild_code_evicts_removed_symbol_from_surviving_file(tmp_path):
     # Remove foo() from a.py (keep bar); leave b.py untouched.
     (corpus / "a.py").write_text("def bar(): pass\n", encoding="utf-8")
 
-    assert _rebuild_code(corpus, acquire_lock=False, force=True) is True
+    # No force=True: a symbol removed from a re-extracted file is a legitimate
+    # shrink, so the shrink-guard must let `graphify update` refresh the graph
+    # without --force (the lost node belongs to a rebuilt source).
+    assert _rebuild_code(corpus, acquire_lock=False) is True
     after_data = json.loads(graph_path.read_text(encoding="utf-8"))
     after = labels(after_data)
 
@@ -548,6 +551,36 @@ def test_check_shrink_allows_no_existing_data():
         new_data=_shrink_payload(50),
     )
     assert ok is True
+
+
+def test_check_shrink_allows_shrink_within_rebuilt_sources(capsys):
+    """#1116: a symbol removed from a re-extracted file is a legitimate shrink —
+    every lost node belongs to a rebuilt source, so the write proceeds (no --force)."""
+    existing = {"nodes": [
+        {"id": "a", "source_file": "m.py"},
+        {"id": "b", "source_file": "m.py"},
+        {"id": "c", "source_file": "other.py"},
+    ], "links": []}
+    new = {"nodes": [
+        {"id": "a", "source_file": "m.py"},
+        {"id": "c", "source_file": "other.py"},
+    ], "links": []}
+    ok = _check_shrink(False, existing, new, rebuilt_sources={"m.py"})
+    assert ok is True
+    assert "Refusing to overwrite" not in capsys.readouterr().err
+
+
+def test_check_shrink_blocks_shrink_outside_rebuilt_sources(capsys):
+    """The guard's real job is intact: a node lost from a file we did NOT re-extract
+    (the failed-chunk signal) is still refused even with rebuilt_sources set."""
+    existing = {"nodes": [
+        {"id": "a", "source_file": "m.py"},
+        {"id": "z", "source_file": "untouched.py"},
+    ], "links": []}
+    new = {"nodes": [{"id": "a", "source_file": "m.py"}], "links": []}
+    ok = _check_shrink(False, existing, new, rebuilt_sources={"m.py"})
+    assert ok is False
+    assert "Refusing to overwrite" in capsys.readouterr().err
 
 
 def test_check_shrink_allows_growth():

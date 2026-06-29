@@ -54,7 +54,46 @@ def _normalize_label(label: str) -> str:
     return unicodedata.normalize("NFC", label).casefold()
 
 
+def _prefer_file_node(
+    graph: nx.Graph,
+    node_ids: list[str],
+    query: str,
+) -> str | None:
+    """Return the file-level node when a source_file query matches many nodes."""
+    query_basename = _normalize_label(Path(query).name)
+    exact_file_nodes = [
+        node_id
+        for node_id in node_ids
+        if str(graph.nodes[node_id].get("source_location", "")) == "L1"
+        and _normalize_label(str(graph.nodes[node_id].get("label", ""))) == query_basename
+    ]
+    if len(exact_file_nodes) == 1:
+        return exact_file_nodes[0]
+
+    l1_nodes = [
+        node_id
+        for node_id in node_ids
+        if str(graph.nodes[node_id].get("source_location", "")) == "L1"
+    ]
+    if len(l1_nodes) == 1:
+        return l1_nodes[0]
+
+    basename_nodes = [
+        node_id
+        for node_id in node_ids
+        if _normalize_label(str(graph.nodes[node_id].get("label", ""))) == query_basename
+    ]
+    if len(basename_nodes) == 1:
+        return basename_nodes[0]
+
+    return None
+
+
 def resolve_seed(graph: nx.Graph, query: str) -> str | None:
+    # A trailing path separator must not change a source-file match — serve's
+    # _find_node tokenizes the path (which drops it), so strip it here for parity
+    # (otherwise `affected "src/x.ts/"` returned None while `explain` resolved it).
+    query = query.rstrip("/\\") or query
     if query in graph:
         return query
     query_lower = _normalize_label(query)
@@ -83,6 +122,10 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     ]
     if len(exact_source_matches) == 1:
         return exact_source_matches[0]
+    if exact_source_matches:
+        preferred_file_node = _prefer_file_node(graph, exact_source_matches, query)
+        if preferred_file_node is not None:
+            return preferred_file_node
     contains_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)

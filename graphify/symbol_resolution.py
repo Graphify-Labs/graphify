@@ -366,12 +366,7 @@ def _bash_make_id(*parts: str) -> str:
     return _shared_make_id(*parts)
 
 
-def _bash_file_stem(rel_path: Path) -> str:
-    """Exact copy of extract._file_stem — kept here to avoid an import cycle."""
-    parent = rel_path.parent.name
-    if parent and parent not in (".", ""):
-        return f"{parent}.{rel_path.stem}"
-    return rel_path.stem
+from graphify.extractors.base import _file_stem as _bash_file_stem  # canonical recipe (no import cycle: base imports only graphify.ids)
 
 
 def _file_node_id_for_path(path: Path, root: Path) -> str:

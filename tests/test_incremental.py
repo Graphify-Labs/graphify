@@ -96,3 +96,40 @@ def test_extract_no_cluster_incremental_noop_preserves_existing_graph(tmp_path):
     after = json.loads(after_text)
     assert after.get("nodes"), "no-op incremental run must not empty the graph"
     assert after_text == before_text
+
+
+def _edges(graph_json: Path) -> list[dict]:
+    g = json.loads(graph_json.read_text())
+    return g.get("links", g.get("edges", []))
+
+
+def test_update_prunes_a_removed_imports_edge(tmp_path):
+    """#1521: when an import is deleted from a file, `graphify update` must prune
+    the edge it produced — preserving it (keyed only on endpoint membership) left a
+    stale edge that drove phantom circular-dependency findings."""
+    proj = tmp_path / "proj"
+    pkg = proj / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "b.py").write_text("def helper():\n    return 1\n")
+    (pkg / "a.py").write_text("from pkg.b import helper\ndef use():\n    return helper()\n")
+
+    # initial extract -> the import edge a -> b exists
+    r1 = _run(["extract", str(proj), "--no-cluster"], tmp_path)
+    assert r1.returncode == 0, r1.stderr
+    gj = proj / "graphify-out" / "graph.json"
+    before = _edges(gj)
+    assert any(e.get("relation") in ("imports", "imports_from") and
+               str(e.get("source_file", "")).endswith("a.py") for e in before), \
+        f"expected an import edge from a.py initially: {before}"
+
+    # remove the import, then update
+    (pkg / "a.py").write_text("def use():\n    return 1\n")
+    r2 = _run(["update", str(proj)], tmp_path)
+    assert r2.returncode == 0, r2.stderr
+    after = _edges(gj)
+
+    # the stale import edge owned by a.py must be gone
+    stale = [e for e in after
+             if e.get("relation") in ("imports", "imports_from")
+             and str(e.get("source_file", "")).endswith("a.py")]
+    assert not stale, f"removed import's edge survived update (stale): {stale}"

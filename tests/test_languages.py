@@ -1,4 +1,4 @@
-"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files."""
+"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML."""
 from __future__ import annotations
 from pathlib import Path
 import pytest
@@ -6,7 +6,7 @@ from graphify.extract import (
     extract_java, extract_c, extract_cpp, extract_ruby,
     extract_csharp, extract_kotlin, extract_scala, extract_php,
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
-    extract_groovy, extract_sln, extract_csproj, extract_razor,
+    extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_verilog,
     extract_powershell_manifest,
@@ -227,6 +227,57 @@ def test_cpp_struct_inherits_edge():
     assert found, "RetryingHttpClient (struct) should have inherits edge to HttpClient"
 
 
+# ── CUDA ──────────────────────────────────────────────────────────────────────
+# CUDA is a C++ superset, so .cu/.cuh route through the C++ (tree-sitter-cpp)
+# extractor. These tests guard that __global__/__device__ kernels, host
+# functions, structs and includes are all extracted.
+
+def test_cuda_no_error():
+    r = extract_cpp(FIXTURES / "sample.cu")
+    assert "error" not in r
+
+def test_cuda_finds_kernel_and_device_functions():
+    r = extract_cpp(FIXTURES / "sample.cu")
+    labels = _labels(r)
+    assert any("saxpy" in l for l in labels)   # __global__ kernel
+    assert any("dot" in l for l in labels)     # __device__ function
+
+def test_cuda_finds_struct():
+    r = extract_cpp(FIXTURES / "sample.cu")
+    assert any("Vec3" in l for l in _labels(r))
+
+def test_cuda_finds_includes():
+    r = extract_cpp(FIXTURES / "sample.cu")
+    assert "imports" in _relations(r)
+
+def test_cuda_host_call_edges():
+    r = extract_cpp(FIXTURES / "sample.cu")
+    calls = _calls(r)
+    assert ("host_norm()", "dot()") in calls
+    assert ("main()", "host_norm()") in calls
+
+
+# Metal Shading Language is a C++14-derived language, so .metal files route
+# through the C++ extractor just like CUDA does.
+
+def test_metal_is_code_extension():
+    from graphify.detect import CODE_EXTENSIONS
+    assert ".metal" in CODE_EXTENSIONS
+
+
+def test_metal_no_error():
+    r = extract_cpp(FIXTURES / "sample.metal")
+    assert "error" not in r
+
+
+def test_metal_finds_kernel_function_and_struct():
+    r = extract_cpp(FIXTURES / "sample.metal")
+    labels = _labels(r)
+    assert any("Vec3" in l for l in labels)
+    assert any("dot3" in l for l in labels)
+    assert any("saxpy" in l for l in labels)
+
+
 # ── Ruby ─────────────────────────────────────────────────────────────────────
 
 def test_ruby_no_error():
@@ -306,12 +357,164 @@ def test_java_normalizes_inherits_and_implements():
     assert ("DataProcessor", "Processor") in _edge_labels(result, "implements")
 
 
+def test_java_generic_parents_include_type_argument_references(tmp_path):
+    source = tmp_path / "GenericParents.java"
+    source.write_text(
+        "class Dependency {}\n"
+        "interface Event {}\n"
+        "class Base<T> {}\n"
+        "interface Handler<T> {}\n"
+        "interface DerivedHandler extends Handler<Event> {}\n"
+        "class Service extends Base<Dependency> implements Handler<Event> {}\n"
+    )
+
+    result = extract_java(source)
+
+    assert ("Service", "Base") in _edge_labels(result, "inherits")
+    assert ("Service", "Handler") in _edge_labels(result, "implements")
+    refs = _edge_labels(result, "references", "generic_arg")
+    assert ("Service", "Dependency") in refs
+    assert ("Service", "Event") in refs
+    assert ("DerivedHandler", "Handler") in _edge_labels(result, "inherits")
+    assert ("DerivedHandler", "Event") in refs
+
+
+def test_java_type_parameters_do_not_emit_references(tmp_path):
+    source = tmp_path / "TypeParameters.java"
+    source.write_text(
+        "class Payload {}\n"
+        "class Base<X> {}\n"
+        "class Box<T> extends Base<T> {\n"
+        "    T value;\n"
+        "    List<T> values;\n"
+        "    <U> U convert(T input, List<U> mapped, List<Payload> retained) {\n"
+        "        return null;\n"
+        "    }\n"
+        "    <V> Box(V value) {}\n"
+        "}\n"
+    )
+
+    result = extract_java(source)
+
+    references = _references(result)
+    assert not [edge for _, target, edge in references if target in {"T", "U", "V"}]
+    assert not [
+        node
+        for node in result["nodes"]
+        if node.get("label") in {"T", "U", "V"} and not node.get("source_file")
+    ]
+    assert ("Box", "Base") in _edge_labels(result, "inherits")
+    assert ("convert", "Payload") in _edge_labels(result, "references", "generic_arg")
+
+
 def test_java_parameter_return_generic_and_attribute_contexts():
     result = extract_java(FIXTURES / "sample.java")
     assert ("build", "HttpClient") in _edge_labels(result, "references", "parameter_type")
     assert ("build", "Result") in _edge_labels(result, "references", "return_type")
     assert ("build", "DataProcessor") in _edge_labels(result, "references", "generic_arg")
     assert ("build", "Override") in _edge_labels(result, "references", "attribute")
+
+
+def test_java_field_type_references_have_field_context(tmp_path):
+    source = tmp_path / "Fields.java"
+    source.write_text(
+        "class PaymentGateway {}\n"
+        "class Handler {}\n"
+        "class CheckoutService {\n"
+        "    PaymentGateway gateway;\n"
+        "    List<Handler> handlers;\n"
+        "}\n"
+    )
+    result = extract_java(source)
+    assert ("CheckoutService", "PaymentGateway") in _edge_labels(
+        result, "references", "field"
+    )
+    assert ("CheckoutService", "Handler") in _edge_labels(
+        result, "references", "generic_arg"
+    )
+
+
+def test_java_record_component_type_references(tmp_path):
+    source = tmp_path / "RecordComponents.java"
+    source.write_text(
+        "class Payload {}\n"
+        "class Item {}\n"
+        "class Attachment {}\n"
+        "record Order(Payload payload, List<Item> items, int count, "
+        "Attachment... attachments) {}\n"
+    )
+
+    result = extract_java(source)
+
+    assert ("Order", "Payload") in _edge_labels(result, "references", "field")
+    assert ("Order", "List") in _edge_labels(result, "references", "field")
+    assert ("Order", "Item") in _edge_labels(result, "references", "generic_arg")
+    assert ("Order", "Attachment") in _edge_labels(result, "references", "field")
+
+
+def test_java_record_components_skip_type_parameters(tmp_path):
+    source = tmp_path / "GenericRecord.java"
+    source.write_text(
+        "class Payload {}\n"
+        "class Box<X> {}\n"
+        "record Batch<T>(T value, Box<T> boxed, Box<Payload> retained) {}\n"
+    )
+
+    result = extract_java(source)
+
+    assert ("Batch", "T") not in _edge_labels(result, "references")
+    assert not [
+        node
+        for node in result["nodes"]
+        if node.get("label") == "T" and not node.get("source_file")
+    ]
+    assert ("Batch", "Box") in _edge_labels(result, "references", "field")
+    assert ("Batch", "Payload") in _edge_labels(result, "references", "generic_arg")
+
+
+def test_java_type_annotations_have_attribute_context(tmp_path):
+    source = tmp_path / "TypeAnnotations.java"
+    source.write_text(
+        '@Service\n'
+        '@Entity(name = "checkout")\n'
+        'class CheckoutService {}\n'
+    )
+
+    result = extract_java(source)
+
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("CheckoutService", "Service") in refs
+    assert ("CheckoutService", "Entity") in refs
+
+
+def test_java_enum_and_annotation_declarations_are_type_nodes(tmp_path):
+    source = tmp_path / "TypeDeclarations.java"
+    source.write_text(
+        "enum PaymentStatus { PENDING, PAID }\n"
+        "@interface Audited {}\n"
+        "class Order { PaymentStatus status; }\n"
+        "@Audited class CheckoutService {}\n"
+    )
+
+    result = extract_java(source)
+
+    assert ("TypeDeclarations.java", "PaymentStatus") in _edge_labels(
+        result, "contains"
+    )
+    assert ("TypeDeclarations.java", "Audited") in _edge_labels(result, "contains")
+    assert ("Order", "PaymentStatus") in _edge_labels(
+        result, "references", "field"
+    )
+    assert ("CheckoutService", "Audited") in _edge_labels(
+        result, "references", "attribute"
+    )
+    definitions = {
+        node["label"]: node
+        for node in result["nodes"]
+        if node.get("label") in {"PaymentStatus", "Audited"}
+    }
+    assert definitions["PaymentStatus"].get("source_file") == str(source)
+    assert definitions["Audited"].get("source_file") == str(source)
 
 
 def test_csharp_field_type_references_have_field_context():
@@ -833,6 +1036,70 @@ def test_objc_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids, f"Dangling source: {e}"
+
+
+def test_objc_resolves_self_method_calls():
+    """`[self speak]` inside Dog.fetch must produce a calls edge. The method-body
+    second pass was dead code for ObjC because the grammar emits a simple selector
+    as `identifier`, not `selector`/`keyword_argument_list` (#1475)."""
+    r = extract_objc(FIXTURES / "sample.m")
+    nid2label = {n["id"]: n["label"] for n in r["nodes"]}
+    calls = [nid2label.get(e["target"]) for e in r["edges"] if e["relation"] == "calls"]
+    assert any(t and "speak" in t for t in calls), calls
+
+
+def test_objc_class_method_labeled_with_plus(tmp_path):
+    """`+ (…)shared` is a class method and must be labeled +shared, not -shared (#1475)."""
+    p = tmp_path / "S.m"
+    p.write_text("@implementation S\n+ (instancetype)shared { return nil; }\n- (void)go { }\n@end\n")
+    labels = {n["label"] for n in extract_objc(p)["nodes"]}
+    assert "+shared" in labels and "-go" in labels
+
+
+def test_objc_compound_selector_call_resolves(tmp_path):
+    """A compound message `[self a:x b:y]` resolves to the compound method def (#1475)."""
+    p = tmp_path / "V.m"
+    p.write_text(
+        "@implementation V\n"
+        "- (void)tableView:(id)tv numberOfRowsInSection:(int)s { }\n"
+        "- (void)go { [self tableView:nil numberOfRowsInSection:0]; }\n"
+        "@end\n"
+    )
+    r = extract_objc(p)
+    nid2label = {n["id"]: n["label"] for n in r["nodes"]}
+    calls = [nid2label.get(e["target"]) for e in r["edges"] if e["relation"] == "calls"]
+    assert any(t and "tableViewnumberOfRowsInSection" in t for t in calls), calls
+
+
+def test_objc_generic_property_type_extracted(tmp_path):
+    """`NSArray<Product *> *` must reference the element type Product (and the
+    container NSArray); the generic wrapper made the type invisible before (#1475)."""
+    p = tmp_path / "M.h"
+    p.write_text("@interface M : NSObject\n@property (strong) NSArray<Product *> *items;\n@end\n")
+    refs = _edge_labels(extract_objc(p), "references", "field")
+    assert ("M", "Product") in refs
+    assert ("M", "NSArray") in refs
+
+
+def test_objc_module_import_edge(tmp_path):
+    """`@import Foundation;` / `@import UIKit.UIView;` produce imports edges (#1475)."""
+    from graphify.extract import _make_id
+    p = tmp_path / "X.m"
+    p.write_text("@import Foundation;\n@import UIKit.UIView;\n@implementation X\n@end\n")
+    targets = {e["target"] for e in extract_objc(p)["edges"] if e["relation"] == "imports"}
+    assert _make_id("Foundation") in targets and _make_id("UIKit") in targets
+
+
+def test_objc_header_dispatch_routes_objc_not_c(tmp_path):
+    """An ObjC `.h` (has @interface) routes to extract_objc; a plain C `.h` stays
+    on extract_c, so C/C++ headers are never hijacked by the sniff (#1475)."""
+    from graphify.extract import _get_extractor, extract_objc as _eo, extract_c as _ec
+    objc_h = tmp_path / "AppDelegate.h"
+    objc_h.write_text("@interface AppDelegate : NSObject <UIApplicationDelegate>\n@end\n")
+    c_h = tmp_path / "util.h"
+    c_h.write_text("#include <stdio.h>\nint add(int a, int b);\nstruct Point { int x; };\n")
+    assert _get_extractor(objc_h) is _eo
+    assert _get_extractor(c_h) is _ec
 
 
 # ---------------------------------------------------------------------------
@@ -1725,7 +1992,7 @@ def test_dmf_no_dangling_edges():
         assert e["target"] in node_ids
 
 
-# -- .NET project files (.sln, .csproj, .razor) -------------------------------
+# -- .NET project files (.sln, .csproj, .xaml, .razor) ------------------------
 
 def test_sln_no_error():
     r = extract_sln(FIXTURES / "sample.sln")
@@ -1767,6 +2034,12 @@ def test_csproj_finds_target_framework():
 def test_csproj_finds_sdk():
     r = extract_csproj(FIXTURES / "sample.csproj")
     assert any("Microsoft.NET.Sdk.Web" in l for l in _labels(r))
+
+def test_xaml_finds_class_and_event_references():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    assert "error" not in r
+    assert "MainWindow" in _labels(r)
+    assert any(e["relation"] == "references" and e.get("context") == "event" for e in r["edges"])
 
 def test_razor_no_error():
     r = extract_razor(FIXTURES / "sample.razor")

@@ -381,9 +381,6 @@ def _make_id(*parts: str) -> str:
     return _shared_make_id(*parts)
 
 
-def _file_stem(path: Path) -> str:
-    """Mirror extract._file_stem: include parent dir name to disambiguate."""
-    parent = path.parent.name
-    if parent and parent not in (".", ""):
-        return f"{parent}.{path.stem}"
-    return path.stem
+# Canonical recipe imported directly (no import cycle: extractors.base imports
+# only graphify.ids), so this can no longer drift from extract._file_stem.
+from graphify.extractors.base import _file_stem  # noqa: E402
