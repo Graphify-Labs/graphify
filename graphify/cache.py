@@ -474,3 +474,44 @@ def save_semantic_cache(
             save_cached(p, result, root, kind="semantic")
             saved += 1
     return saved
+
+
+def cleanup_stale_semantic_entries(
+    live_paths: list[str],
+    root: Path = Path("."),
+) -> int:
+    """Remove orphaned semantic cache entries not matching any live file.
+
+    When a document changes, ``save_semantic_cache`` writes a new
+    ``{hash}.json`` keyed on the updated content, but the old entry lingers
+    forever.  This mirrors the AST-side ``_cleanup_stale_ast_entries`` concept
+    for the semantic cache: given the current detected document set, delete
+    ``cache/semantic/*.json`` whose stem is not in the live hash set.
+
+    The failure mode is benign — deleting a still-live entry just re-extracts
+    that document on the next run (#1527).
+    """
+    sem_dir = cache_dir(root, "semantic")
+    if not sem_dir.is_dir():
+        return 0
+
+    live_hashes: set[str] = set()
+    for fpath in live_paths:
+        p = Path(fpath)
+        if not p.is_absolute():
+            p = Path(root) / p
+        if p.is_file():
+            try:
+                live_hashes.add(file_hash(p, root))
+            except OSError:
+                pass
+
+    removed = 0
+    for entry in sem_dir.glob("*.json"):
+        if entry.stem not in live_hashes:
+            try:
+                entry.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed

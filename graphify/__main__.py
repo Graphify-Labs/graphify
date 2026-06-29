@@ -4546,6 +4546,7 @@ def main() -> None:
         # Semantic extraction on docs/papers/images. Check cache first.
         from graphify.cache import (
             check_semantic_cache as _check_semantic_cache,
+            cleanup_stale_semantic_entries as _cleanup_stale_semantic,
             save_semantic_cache as _save_semantic_cache,
         )
         sem_result: dict = {
@@ -4636,6 +4637,13 @@ def main() -> None:
                 sem_result["hyperedges"].extend(fresh.get("hyperedges", []))
                 sem_result["input_tokens"] += fresh.get("input_tokens", 0)
                 sem_result["output_tokens"] += fresh.get("output_tokens", 0)
+        if semantic_files:
+            try:
+                pruned = _cleanup_stale_semantic(sem_paths_str, root=out_root)
+                if pruned:
+                    print(f"[graphify extract] pruned {pruned} orphaned semantic cache entries", file=sys.stderr)
+            except Exception:
+                pass
         stages.mark("semantic extract")
 
         pg_result: dict = {"nodes": [], "edges": []}
