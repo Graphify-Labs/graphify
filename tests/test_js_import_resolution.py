@@ -885,6 +885,122 @@ def test_tsconfig_alias_none_exist_creates_no_false_edge(tmp_path: Path):
     assert not _has_edge(result, "src/routes/page.ts", "src/lib/utils.ts")
 
 
+# ── #927: wildcard tsconfig path patterns ────────────────────────────────────
+
+
+def test_tsconfig_wildcard_alias_substitutes_captured_path(tmp_path, monkeypatch):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"@*": ["features/*/src/"]},
+            }
+        }),
+    )
+    _write(
+        tmp_path / "features/communicate/documentv2/src/index.ts",
+        "export const FileChipComponent = {}\n",
+    )
+    _write(
+        tmp_path / "src/routes/page.ts",
+        "import { FileChipComponent } from '@communicate/documentv2'\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = extract(
+        [
+            Path("features/communicate/documentv2/src/index.ts"),
+            Path("src/routes/page.ts"),
+        ],
+        cache_root=Path("."),
+    )
+
+    assert _has_edge(
+        result,
+        "src/routes/page.ts",
+        "features/communicate/documentv2/src/index.ts",
+    )
+
+
+def test_tsconfig_wildcard_alias_substitutes_before_suffix(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"@*/interfaces": ["features/*/src/interfaces.ts"]},
+            }
+        }),
+    )
+    target = _write(
+        tmp_path / "features/communicate/src/interfaces.ts",
+        "export interface Message { id: string }\n",
+    )
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import type { Message } from '@communicate/interfaces'\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(
+        result,
+        "src/routes/page.ts",
+        "features/communicate/src/interfaces.ts",
+    )
+
+
+def test_tsconfig_wildcard_alias_prefers_longest_matching_prefix(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {
+                    "@/*": ["fallback/*"],
+                    "@/common/integration/*": ["preferred/*"],
+                },
+            }
+        }),
+    )
+    fallback = _write(
+        tmp_path / "fallback/common/integration/foo.ts",
+        "export const Foo = 1\n",
+    )
+    preferred = _write(tmp_path / "preferred/foo.ts", "export const Foo = 2\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { Foo } from '@/common/integration/foo'\n",
+    )
+
+    result = _extract_for([fallback, preferred, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "preferred/foo.ts")
+    assert not _has_edge(result, "src/routes/page.ts", "fallback/common/integration/foo.ts")
+
+
+def test_tsconfig_exact_alias_still_resolves(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"app-config": ["src/config/index.ts"]},
+            }
+        }),
+    )
+    target = _write(tmp_path / "src/config/index.ts", "export const config = {}\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { config } from 'app-config'\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "src/config/index.ts")
+
+
 # ── #1529: alias/workspace import targets orphaned by the full-path migration ──
 
 

@@ -249,17 +249,18 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
     for alias, targets in paths.items():
         if not targets:
             continue
-        alias_prefix = alias.rstrip("/*")
         # Keep ALL targets in declared order — tsc tries each until one resolves
         # on disk. Discarding the fallbacks (#1531) misresolved/dropped imports
-        # whose file lived at a non-first target. Empty/non-string entries skipped.
-        target_bases = [
-            str(os.path.normpath(paths_base / t.rstrip("/*")))
+        # whose file lived at a non-first target. Preserve wildcard tokens in
+        # both sides so the resolver can substitute the captured segment (#927).
+        # Empty/non-string entries are skipped.
+        target_patterns = [
+            str(os.path.normpath(paths_base / t))
             for t in targets
             if isinstance(t, str) and t
         ]
-        if target_bases:
-            aliases[alias_prefix] = target_bases
+        if target_patterns:
+            aliases[alias] = target_patterns
 
     return aliases
 
@@ -268,8 +269,8 @@ def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     """Walk up from start_dir to find tsconfig.json and return compilerOptions.paths aliases.
 
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
-    Returns a dict mapping alias prefix (e.g. "@") to an ordered list of resolved
-    base dirs (e.g. ["src"]) — tsc tries each in declared order (#1531).
+    Returns a dict mapping alias patterns to ordered resolved target patterns;
+    wildcard tokens remain intact for substitution during resolution (#927).
     Result is cached by tsconfig path string.
     """
     current = start_dir.resolve()
@@ -283,24 +284,67 @@ def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     return {}
 
 
-def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]]) -> "Path | None":
-    """Resolve `raw` against tsconfig path aliases. Try each target in declared
-    order; return the first whose candidate resolves to a real file (tsc parity).
-    If none exist, return the first candidate (no false edge fabricated, prior
-    single-target behavior preserved). Returns a Path or None if no alias matches."""
-    for alias_prefix, alias_bases in aliases.items():
-        if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-            rest = raw[len(alias_prefix):].lstrip("/")
-            first = None
-            for base in alias_bases:
-                cand = Path(os.path.normpath(Path(base) / rest))
-                resolved = _resolve_js_import_path(cand)
-                if resolved.is_file():
-                    return resolved
-                if first is None:
-                    first = cand
-            return first
+def _match_tsconfig_alias(raw: str, pattern: str) -> "tuple[tuple[int, int], str, bool] | None":
+    """Return (specificity, captured text, is_wildcard) when pattern matches raw.
+
+    Exact aliases win first. Wildcard aliases follow TypeScript's longest-prefix
+    rule. The final branch preserves Graphify's existing support for treating a
+    non-wildcard alias as a directory prefix, but only after real wildcard matches.
+    """
+    if "*" in pattern:
+        if pattern.count("*") != 1:
+            return None
+        prefix, suffix = pattern.split("*", 1)
+        if not raw.startswith(prefix) or not raw.endswith(suffix):
+            return None
+        end = len(raw) - len(suffix) if suffix else len(raw)
+        if end <= len(prefix):
+            return None
+        return (1, -len(prefix)), raw[len(prefix):end], True
+
+    if raw == pattern:
+        return (0, -len(pattern)), "", False
+
+    prefix = pattern.rstrip("/")
+    if prefix and raw.startswith(prefix + "/"):
+        return (2, -len(prefix)), raw[len(prefix):].lstrip("/"), False
     return None
+
+
+def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]]) -> "Path | None":
+    """Resolve `raw` against the most specific matching tsconfig alias pattern.
+
+    Within that pattern, try targets in declared order and return the first whose
+    candidate resolves to a real file. If none exist, return the first candidate
+    so existing phantom/external-edge behavior stays unchanged.
+    """
+    best: "tuple[tuple[int, int], str, bool, list[str]] | None" = None
+    for pattern, targets in aliases.items():
+        match = _match_tsconfig_alias(raw, pattern)
+        if match is None:
+            continue
+        specificity, captured, is_wildcard = match
+        if best is None or specificity < best[0]:
+            best = specificity, captured, is_wildcard, targets
+
+    if best is None:
+        return None
+
+    _, captured, is_wildcard, targets = best
+    first = None
+    for target in targets:
+        if is_wildcard:
+            cand = Path(os.path.normpath(target.replace("*", captured)))
+        else:
+            cand = Path(target)
+            if captured:
+                cand = Path(os.path.normpath(cand / captured))
+        resolved = _resolve_js_import_path(cand)
+        if resolved.is_file():
+            return resolved
+        if first is None:
+            first = cand
+    return first
 
 
 def _find_workspace_root(start_dir: Path) -> Path | None:
