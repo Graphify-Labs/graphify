@@ -530,3 +530,37 @@ def test_vendored_vis_js_returns_committed_file_bytes():
     from graphify.export import _vendored_vis_js
     assert _vendored_vis_js() == expected
     assert len(_vendored_vis_js()) > 0
+
+
+def test_emit_vis_js_creates_file_when_missing(tmp_path):
+    from graphify.export import _emit_vis_js, _VIS_NETWORK_FILENAME, _vendored_vis_js
+    target = tmp_path / "graph.html"  # parent dir is what matters here
+    assert not (target.parent / _VIS_NETWORK_FILENAME).exists()
+    _emit_vis_js(target)
+    assert (target.parent / _VIS_NETWORK_FILENAME).exists()
+    assert (target.parent / _VIS_NETWORK_FILENAME).read_bytes() == _vendored_vis_js()
+
+
+def test_emit_vis_js_skips_rewrite_when_bytes_identical(tmp_path):
+    from graphify.export import _emit_vis_js, _VIS_NETWORK_FILENAME, _vendored_vis_js
+    html = tmp_path / "graph.html"
+    _emit_vis_js(html)
+    target = html.parent / _VIS_NETWORK_FILENAME
+    mtime_before = target.stat().st_mtime_ns
+    # Force a tiny clock tick so a no-op write would still register.
+    import time
+    time.sleep(0.01)
+    _emit_vis_js(html)
+    mtime_after = target.stat().st_mtime_ns
+    assert mtime_after == mtime_before
+    assert target.read_bytes() == _vendored_vis_js()
+
+
+def test_emit_vis_js_overwrites_when_vendored_changes(monkeypatch, tmp_path):
+    from graphify import export
+    monkeypatch.setattr(export, "_vendored_vis_js", lambda: b"DIFFERENT-BYTES")
+    from graphify.export import _emit_vis_js, _VIS_NETWORK_FILENAME
+    html = tmp_path / "graph.html"
+    _emit_vis_js(html)
+    target = html.parent / _VIS_NETWORK_FILENAME
+    assert target.read_bytes() == b"DIFFERENT-BYTES"

@@ -46,6 +46,20 @@ def _vendored_vis_js() -> bytes:
     return files("graphify").joinpath("assets", _VIS_NETWORK_FILENAME).read_bytes()
 
 
+def _emit_vis_js(html_path: Path) -> None:
+    """Copy the vendored vis-network.min.js next to html_path if missing or stale.
+
+    Skips the write when the existing file is byte-identical to the vendored
+    copy. The byte-equality short-circuit is what keeps build caches, file
+    watchers, and Obsidian sync from re-processing the file on every run.
+    """
+    target = html_path.parent / _VIS_NETWORK_FILENAME
+    vendored = _vendored_vis_js()
+    if target.exists() and target.read_bytes() == vendored:
+        return
+    target.write_bytes(vendored)
+
+
 def backup_if_protected(out_dir: Path) -> "Path | None":
     """Snapshot graph artifacts to a dated subfolder before an overwrite.
 
