@@ -43,8 +43,11 @@ def main() -> int:
     dist.mkdir(exist_ok=True)
 
     # 1. Resolve the wheel list from pyproject.toml.
-    import tomllib
-    pyproject = tomllib.loads(REPO_ROOT.joinpath("pyproject.toml").read_text("rb" if False else "utf-8"))
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib
+    pyproject = tomllib.loads(REPO_ROOT.joinpath("pyproject.toml").read_text(encoding="utf-8"))
     wheels = pyproject["project"]["optional-dependencies"]["windows-offline"]
     req_file = wheelhouse / "_requirements.txt"
     req_file.write_text("\n".join(wheels) + "\n", encoding="utf-8")
