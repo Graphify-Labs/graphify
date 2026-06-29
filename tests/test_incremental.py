@@ -15,6 +15,7 @@ PYTHON = sys.executable
 # ANTHROPIC_API_KEY / OPENAI_API_KEY / etc. exported does not make a docs extract
 # succeed and break the "no backend" path. CI has none of these set anyway.
 _LLM_ENV_KEYS = (
+    "MINIMAX_API_KEY", "GRAPHIFY_MINIMAX_API_KEY",
     "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
     "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY", "OLLAMA_BASE_URL",
     "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID",
@@ -44,11 +45,12 @@ def test_manifest_written_after_extract(tmp_path):
     """After a full extract run, manifest.json must exist (or run fails before writing it)."""
     docs = _make_docs_corpus(tmp_path)
     r = _run(["extract", str(docs)], tmp_path)
-    # Should fail with no API key — but NOT with a path error
-    assert "no LLM API key" in r.stderr or r.returncode != 0
-    # manifest should NOT exist (run failed before writing)
     manifest = docs / "graphify-out" / "manifest.json"
-    assert not manifest.exists()
+    if r.returncode == 0:
+        assert manifest.exists()
+    else:
+        assert "no LLM API key" in r.stderr
+        assert not manifest.exists()
 
 
 def test_incremental_mode_detected_via_manifest(tmp_path):

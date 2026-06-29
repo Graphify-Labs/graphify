@@ -74,6 +74,8 @@ def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
     """
     if not p:
         return p
+    if not isinstance(p, str):
+        p = str(p)
     p = p.replace("\\", "/")
     if root and os.path.isabs(p):
         try:
@@ -127,6 +129,72 @@ def dedupe_edges(edges: list[dict]) -> list[dict]:
     return out
 
 
+def _canonicalize_extraction_schema(extraction: dict) -> None:
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    dropped_nodes = 0
+    dropped_edges = 0
+    coerced_ids = 0
+
+    for node in extraction.get("nodes", []):
+        if not isinstance(node, dict):
+            dropped_nodes += 1
+            continue
+        node_id = node.get("id")
+        if node_id in (None, ""):
+            dropped_nodes += 1
+            continue
+        if not isinstance(node_id, str):
+            node["id"] = str(node_id)
+            coerced_ids += 1
+        label = node.get("label")
+        if not isinstance(label, str) or not label.strip():
+            node["label"] = node["id"]
+        if "source_file" in node and node.get("source_file") is not None:
+            node["source_file"] = str(node["source_file"])
+        nodes.append(node)
+
+    raw_edges = extraction.get("edges", extraction.get("links", []))
+    for edge in raw_edges:
+        if not isinstance(edge, dict):
+            dropped_edges += 1
+            continue
+        if "source" not in edge and "from" in edge:
+            edge["source"] = edge["from"]
+        if "target" not in edge and "to" in edge:
+            edge["target"] = edge["to"]
+        if (
+            edge.get("source") in (None, "")
+            or edge.get("target") in (None, "")
+            or edge.get("relation") in (None, "")
+        ):
+            dropped_edges += 1
+            continue
+        if not isinstance(edge["source"], str):
+            edge["source"] = str(edge["source"])
+            coerced_ids += 1
+        if not isinstance(edge["target"], str):
+            edge["target"] = str(edge["target"])
+            coerced_ids += 1
+        if not isinstance(edge["relation"], str):
+            edge["relation"] = str(edge["relation"])
+        if edge.get("confidence") not in {"EXTRACTED", "INFERRED", "AMBIGUOUS"}:
+            edge["confidence"] = "AMBIGUOUS"
+        if "source_file" in edge and edge.get("source_file") is not None:
+            edge["source_file"] = str(edge["source_file"])
+        edges.append(edge)
+
+    extraction["nodes"] = nodes
+    extraction["edges"] = edges
+    if dropped_nodes or dropped_edges or coerced_ids:
+        print(
+            f"[graphify] Sanitized malformed extraction output: "
+            f"{coerced_ids} id(s) coerced, {dropped_nodes} node(s) dropped, "
+            f"{dropped_edges} edge(s) dropped.",
+            file=sys.stderr,
+        )
+
+
 def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
     """Build a NetworkX graph from an extraction dict.
 
@@ -139,6 +207,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
     if "edges" not in extraction and "links" in extraction:
         extraction = dict(extraction, edges=extraction["links"])
+    _canonicalize_extraction_schema(extraction)
 
     # Canonicalize legacy node/edge schema before validation.
     for node in extraction.get("nodes", []):

@@ -28,6 +28,17 @@ def test_anthropic_extra_exists():
     assert "anthropic" in extras, "claude backend needs a [anthropic] extra"
     assert any("anthropic" in dep for dep in extras["anthropic"])
 
+def test_minimax_extra_exists():
+    extras = _extras()
+    assert "minimax" in extras, "minimax backend needs a [minimax] extra"
+    assert any("openai" in dep for dep in extras["minimax"])
+
+def test_nim_extra_exists():
+    extras = _extras()
+    assert "nim" in extras, "NVIDIA NIM backend needs a [nim] extra"
+    assert any("openai" in dep for dep in extras["nim"])
+
+
 
 def test_anthropic_in_all_extra():
     extras = _extras()

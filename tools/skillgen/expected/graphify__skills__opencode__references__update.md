@@ -6,6 +6,8 @@ Load this only when the user passed `--update` or `--cluster-only`. A first-time
 
 Use when you've added or modified files since the last run. Only re-extracts changed files - saves tokens and time.
 
+For very large repos under `/media/naray/backup_np_2/github/`, do not run semantic `--update` repeatedly during the day. Let automatic AST indexing keep code workflows fresh, and reserve this full update path for an explicit user request or one daily night-window refresh after 20:00 (03:00-06:00 safest). If `graphify-out/nightly-update-hint.json` exists, treat it as the queue hint for that daily refresh.
+
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json

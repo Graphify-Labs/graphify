@@ -135,12 +135,15 @@ def _code_only_corpus(tmp_path):
 def _clear_backend_keys(monkeypatch):
     """Clear every env var that detect_backend() or _get_backend_api_key() reads."""
     for key in (
+        "MINIMAX_API_KEY", "GRAPHIFY_MINIMAX_API_KEY",
         "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "MOONSHOT_API_KEY",
         # bedrock: presence of any of these is treated as a valid credential
         "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID",
-        # ollama: a set OLLAMA_BASE_URL triggers backend detection
-        "OLLAMA_BASE_URL",
+        # ollama/local policy
+        "OLLAMA_BASE_URL", "OLLAMA_MODEL", "OLLAMA_API_KEY",
+        "GRAPHIFY_OLLAMA_MODEL", "GRAPHIFY_DISABLE_OLLAMA_PRIMARY",
+        "GRAPHIFY_DISABLE_MINIMAX_FALLBACK",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -149,7 +152,7 @@ def test_extract_codeonly_succeeds_without_api_key(monkeypatch, tmp_path):
     """A code-only corpus must run with no LLM API key.
 
     Regression: graphify extract validated a backend upfront and exited 1 with
-    'no LLM API key found' even for a code-only corpus that never calls a model.
+    LLM setup guidance even for a code-only corpus that never calls a model.
     The keyless AST path now runs to a written graph.json (#1122).
     """
     corpus = _code_only_corpus(tmp_path)
@@ -232,6 +235,6 @@ def test_extract_without_key_still_errors_when_docs_present(
         mainmod.main()
     assert exc_info.value.code == 1
     err = capsys.readouterr().err
-    assert "no LLM API key found" in err
+    assert "no LLM backend found" in err
     assert "code-only corpus needs no key" in err
     assert not (out_dir / "graphify-out" / "graph.json").exists()

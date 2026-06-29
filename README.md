@@ -169,6 +169,8 @@ Install only what you need:
 | `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
 | `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
+| `minimax` | MiniMax OpenAI-compatible API (`--backend minimax`) | `uv tool install "graphifyy[minimax]"` |
+| `nim` | NVIDIA NIM / AI Catalog OpenAI-compatible API (`--backend nim`) | `uv tool install "graphifyy[nim]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
 | `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
@@ -304,7 +306,7 @@ See the [full command reference](#full-command-reference) below.
 
 Create a `.graphifyignore` in your project root — same syntax as `.gitignore`, including `!` negation.
 
-**`.gitignore` is respected automatically.** If no `.graphifyignore` is present in a directory, graphify falls back to the `.gitignore` in that directory. If both exist, `.graphifyignore` takes priority. Subdirectory scoping works the same way as git — an ignore file only affects its own subtree.
+**`.gitignore` is respected automatically.** Graphify loads `.gitignore` first, then `.graphifyignore`, so project-wide data/log/vendor exclusions apply and graphify-specific rules can override them with normal last-match-wins semantics. Subdirectory scoping works the same way as git — an ignore file only affects its own subtree.
 
 ```
 # .graphifyignore
@@ -393,23 +395,36 @@ docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
 
 ## Environment variables
 
-These are only needed for **headless / CI extraction** (`graphify extract`). When running via the `/graphify` skill inside your IDE, the model API is provided by your IDE session — no extra keys needed.
+These are only needed for **headless / CI extraction** (`graphify extract`) or when you want the `/graphify` skill to use a direct backend instead of the host assistant's own model. Automatic semantic extraction starts with local Ollama for laptop-safe <=8B-class models, tries the local fallback chain (`qwen2.5-coder:3b` → `gemma3:4b` by default), and uses MiniMax as the final spillover when local chunks are slow, too large, or laptop load is high. NVIDIA NIM remains available only when explicitly selected.
 
 | Variable | Used for | When required |
 |---|---|---|
+| `OLLAMA_BASE_URL` | Ollama local inference URL | optional — default `http://localhost:11434/v1` |
+| `GRAPHIFY_OLLAMA_MODEL` or `OLLAMA_MODEL` | Ollama model name | optional — default `qwen2.5-coder:3b`; must include a size and stay within the <=8B local safety class |
+| `GRAPHIFY_OLLAMA_FALLBACK_MODELS` | Ordered local Ollama fallback models | optional — default `qwen2.5-coder:3b,gemma3:4b`; set `none` to disable local model fallback |
+| `GRAPHIFY_OLLAMA_TOKEN_BUDGET` | Ollama semantic chunk packing cap | optional — default `20000`; keeps prompt + output inside the 32k local context before adaptive retry |
+| `GRAPHIFY_OLLAMA_NUM_CTX` | Override Ollama KV-cache window size | optional — auto-sized by default |
+| `GRAPHIFY_OLLAMA_KEEP_ALIVE` | Time to keep Ollama model loaded | optional — default `30s`; set `0` to unload after each chunk |
+| `GRAPHIFY_OLLAMA_NUM_GPU` | Ollama GPU layer offload target | optional — default `999` to keep the local model on GPU |
+| `GRAPHIFY_OLLAMA_MAIN_GPU` | Ollama GPU index | optional — default `0` |
+| `GRAPHIFY_OLLAMA_NUM_THREAD` | Ollama CPU helper thread cap | optional — default `min(4, CPU/4)` with floor `2`; keeps GPU-fed local runs responsive without stealing daily-driving CPU |
+| `GRAPHIFY_OLLAMA_BALANCE` | Ollama/MiniMax balancing | optional — `auto` (default), `local`, `remote`, or `defer` |
+| `GRAPHIFY_OLLAMA_MINIMAX_MAX_FRACTION` | Cost cap for dynamic MiniMax spillover | optional — default `0.25` |
+| `GRAPHIFY_DISABLE_MINIMAX_FALLBACK` | Disable Ollama→MiniMax cloud fallback | optional — set `1` for strict local-only semantic extraction |
+| `MINIMAX_API_KEY` or `GRAPHIFY_MINIMAX_API_KEY` | MiniMax OpenAI-compatible token-plan fallback | `--backend minimax` or dynamic spill/fallback when Ollama is slow or fails |
+| `GRAPHIFY_MINIMAX_MODEL` or `MINIMAX_MODEL` | MiniMax model override | optional — default `MiniMax-M3` |
+| `NVIDIA_NIM_API_KEY`, `GRAPHIFY_NVIDIA_NIM_API_KEY`, `NVIDIA_API_KEY`, or `NGC_API_KEY` | NVIDIA NIM / AI Catalog backend | explicit `--backend nim` only |
+| `GRAPHIFY_NVIDIA_NIM_MODEL`, `NVIDIA_NIM_MODEL`, or `NIM_MODEL` | NVIDIA NIM model override | optional — default `meta/llama-3.1-8b-instruct` |
+| `NVIDIA_NIM_BASE_URL` or `NIM_BASE_URL` | NVIDIA NIM endpoint override | optional — default `https://integrate.api.nvidia.com/v1` |
 | `ANTHROPIC_API_KEY` | Claude (Anthropic) backend | `--backend claude` |
 | `ANTHROPIC_BASE_URL` | Anthropic-compatible endpoint URL (LiteLLM proxy, gateways, ...) | `--backend claude` (default: `https://api.anthropic.com`) |
 | `ANTHROPIC_MODEL` | Model name for the Claude backend — for custom endpoints, use the model name/alias your server exposes | `--backend claude` (default: `claude-sonnet-4-6`) |
 | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Google Gemini backend | `--backend gemini` |
 | `OPENAI_API_KEY` | OpenAI or OpenAI-compatible APIs | `--backend openai` (local servers accept any non-empty value) |
 | `OPENAI_BASE_URL` | OpenAI-compatible server URL (llama.cpp, vLLM, LM Studio, ...) | `--backend openai` (default: `https://api.openai.com/v1`) |
-| `OPENAI_MODEL` | Model name for the OpenAI backend — for self-hosted servers, use the model name/alias your server exposes (check its `/v1/models` endpoint), e.g. `LFM2.5-8B-A1B-UD-Q4_K_XL` for llama.cpp | `--backend openai` (default: `gpt-4.1-mini`) |
+| `OPENAI_MODEL` | Model name for the OpenAI backend — for self-hosted servers, use the model name/alias your server exposes | `--backend openai` (default: `gpt-4.1-mini`) |
 | `DEEPSEEK_API_KEY` | DeepSeek backend | `--backend deepseek` |
 | `MOONSHOT_API_KEY` | Kimi Code backend | `--backend kimi` |
-| `OLLAMA_BASE_URL` | Ollama local inference URL | `--backend ollama` (default: `http://localhost:11434`) |
-| `OLLAMA_MODEL` | Ollama model name | `--backend ollama` (default: auto-detect) |
-| `GRAPHIFY_OLLAMA_NUM_CTX` | Override Ollama KV-cache window size | optional — auto-sized by default |
-| `GRAPHIFY_OLLAMA_KEEP_ALIVE` | Minutes to keep Ollama model loaded | optional — set `0` to unload after each chunk |
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI Service backend | `--backend azure` |
 | `AZURE_OPENAI_ENDPOINT` | Azure resource endpoint URL | `--backend azure` (required alongside API key) |
 | `AZURE_OPENAI_API_VERSION` | Azure API version override | optional — default `2024-12-01-preview` |
@@ -428,14 +443,18 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
 
+For user-wide MiniMax defaults that work even when a coding agent is launched without your shell environment, put the key in `~/.graphify/credentials.json` as `{"api_keys":{"MINIMAX_API_KEY":"..."}}` and keep that file out of git.
+
+For semantic rebuilds that can wait, run daytime commands with `GRAPHIFY_OLLAMA_BALANCE=defer`; graphify writes `graphify-out/semantic-rebuild-queue.jsonl` with the night-window rebuild hint. Use `graphify update .` immediately for low-load AST indexing, then run queued semantic rebuilds after 20:00 when the laptop is idle (03:00-06:00 remains the safest window).
+
 ---
 
 ## Privacy
 
 - **Code files** — processed locally via tree-sitter. Nothing leaves your machine. A code-only corpus requires no API key — `graphify extract` runs fully offline.
 - **Video / audio** — transcribed locally with faster-whisper. Nothing leaves your machine.
-- **Docs, PDFs, images** — sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
-- **Data residency** — `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). For code with data-residency requirements, use `--backend ollama` (fully local) or pass an explicit `--backend` flag. Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
+- **Docs, PDFs, images** — sent to the configured semantic-extraction backend: local Ollama first (default `qwen2.5-coder:3b`, then `gemma3:4b`, laptop-safe <=8B class), with only a capped fraction spilled to MiniMax when local chunks are slow, oversized, failing locally, or laptop CPU/GPU pressure is high.
+- **Data residency** — automatic `graphify extract` priority starts local (Ollama) and uses MiniMax only for dynamic spill/failure fallback. Ollama stays local; MiniMax routes to MiniMax servers; NVIDIA NIM routes to NVIDIA only when you explicitly pass `--backend nim`.
 - No telemetry, no usage tracking, no analytics.
 - **Query logging** — every `graphify query`, `graphify path`, `graphify explain`, and MCP `query_graph` call is logged to `~/.cache/graphify-queries.log` in JSON Lines format (timestamp, question, corpus, nodes returned, duration). Full subgraph responses are **not** stored by default. Set `GRAPHIFY_QUERY_LOG_DISABLE=1` to opt out, or `GRAPHIFY_QUERY_LOG=/dev/null` to silence without disabling the code path.
 
@@ -571,10 +590,10 @@ graphify devin uninstall
 graphify antigravity install       # .agents/rules + .agents/workflows (Google Antigravity)
 graphify antigravity uninstall
 
-graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
-graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, or claude-cli
+graphify extract ./docs                        # headless LLM extraction; auto: laptop-safe Ollama primary, capped MiniMax spillover
+graphify extract ./docs --backend gemini       # explicit backend: ollama, minimax, nim, gemini, kimi, claude, openai, deepseek, bedrock, or claude-cli
 graphify extract ./docs --backend gemini --model gemini-3.1-pro-preview
-graphify extract ./docs --backend ollama       # local Ollama (set OLLAMA_BASE_URL / OLLAMA_MODEL) - no API key needed for loopback
+graphify extract ./docs --backend ollama       # local Ollama (default qwen2.5-coder:3b) - no API key needed for loopback
 OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_MODEL=my-model graphify extract ./docs --backend openai   # any OpenAI-compatible server (llama.cpp, vLLM, LM Studio)
 ANTHROPIC_BASE_URL=http://localhost:4000 ANTHROPIC_MODEL=my-model graphify extract ./docs --backend claude   # any Anthropic-compatible endpoint (LiteLLM proxy, gateways)
 GRAPHIFY_OLLAMA_NUM_CTX=32768 graphify extract ./docs --backend ollama   # override KV-cache window (auto-sized by default)
@@ -619,7 +638,7 @@ graphify clone https://github.com/karpathy/nanoGPT
 graphify merge-graphs a.json b.json --out merged.json
 graphify --version                                    # print installed version
 graphify watch ./src
-graphify check-update ./src
+graphify check-update ./src           # prints pending semantic/night-window hints; never runs heavy work
 graphify update ./src
 graphify update ./src --no-cluster  # skip reclustering, write raw AST graph only
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
@@ -628,8 +647,7 @@ graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph lo
 graphify cluster-only ./my-project --resolution 1.5            # more, smaller communities
 graphify cluster-only ./my-project --exclude-hubs 99           # exclude p99 degree nodes from partitioning
 graphify cluster-only ./my-project --no-label                  # keep "Community N" placeholders
-graphify cluster-only ./my-project --backend=gemini            # backend for community naming
-graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # specific model
+graphify cluster-only ./my-project --backend=ollama            # backend for community naming
 graphify label ./my-project                                    # (re)name communities with the configured backend
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
 ```

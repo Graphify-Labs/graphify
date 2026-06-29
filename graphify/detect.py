@@ -667,6 +667,8 @@ _SKIP_DIRS = {
     ".next", ".nuxt", ".turbo", ".angular",
     ".idea", ".cache", ".parcel-cache", ".svelte-kit", ".terraform", ".serverless",
     ".graphify",  # graphify's own extraction cache — never index self-generated data
+    ".cursor", ".claude", ".opencode", ".codex", ".codex-research", ".hermes",
+    ".repowise", ".researchclaw_cache", ".serena", ".clawteam", ".aider", ".memu",
     ".worktrees",  # git worktree convention (#947) — sibling checkouts, always redundant
 }
 
@@ -733,14 +735,11 @@ def _find_vcs_root(start: Path) -> Path | None:
 
 
 def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
-    """Read .graphifyignore files and return (anchor_dir, pattern) pairs.
+    """Read .gitignore + .graphifyignore rules and return (anchor_dir, pattern).
 
-    Patterns are returned outer-first so that inner (closer) rules are
-    appended last and win via last-match-wins semantics — matching gitignore
-    behavior exactly.
-
-    Walk ceiling: the nearest VCS root if inside a repo, otherwise the scan
-    root itself (hermetic — no leakage across unrelated sibling projects).
+    .gitignore gives the project owner's broad "not source" signal (datasets,
+    logs, vendored clones). .graphifyignore is appended after it so graphify-
+    specific rules still win by normal last-match-wins semantics.
     """
     root = root.resolve()
     ceiling = _find_vcs_root(root) or root
@@ -757,12 +756,10 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
 
     patterns: list[tuple[Path, str]] = []
     for d in dirs:
-        # Prefer .graphifyignore; fall back to .gitignore so projects that already
-        # maintain a .gitignore get sensible defaults without duplicating it (#945).
-        ignore_file = d / ".graphifyignore"
-        if not ignore_file.exists():
-            ignore_file = d / ".gitignore"
-        if ignore_file.exists():
+        for name in (".gitignore", ".graphifyignore"):
+            ignore_file = d / name
+            if not ignore_file.exists():
+                continue
             for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
                 line = _parse_gitignore_line(raw)
                 if line:
@@ -994,7 +991,7 @@ def _auto_follow_symlinks(root: Path) -> bool:
     return False
 
 
-def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None) -> dict:
+def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, count_content: bool = True) -> dict:
     root = root.resolve()
     if follow_symlinks is None:
         follow_symlinks = _auto_follow_symlinks(root)
@@ -1117,18 +1114,20 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
                 continue
             files[ftype].append(str(p))
-            if ftype != FileType.VIDEO:
+            if count_content and ftype != FileType.VIDEO:
                 total_words += count_words(p)
 
     for ftype in files:
         files[ftype].sort()
 
     total_files = sum(len(v) for v in files.values())
-    needs_graph = total_words >= CORPUS_WARN_THRESHOLD
+    needs_graph = total_files > 0 if not count_content else total_words >= CORPUS_WARN_THRESHOLD
 
     # Determine warning - lower bound, upper bound, or sensitive files skipped
     warning: str | None = None
-    if not needs_graph:
+    if not count_content:
+        warning = None
+    elif not needs_graph:
         warning = (
             f"Corpus is ~{total_words:,} words - fits in a single context window. "
             f"You may not need a graph."

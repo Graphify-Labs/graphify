@@ -11,6 +11,41 @@ from pathlib import Path
 _GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
+_DAILY_UPDATE_HINT = "nightly-update-hint.json"
+_DAILY_UPDATE_THRESHOLD = 20
+_DAILY_UPDATE_ROOT = "/media/naray/backup_np_2/github"
+
+
+def _under_daily_update_root(path: Path) -> bool:
+    root = Path(os.environ.get("GRAPHIFY_DAILY_UPDATE_ROOT", _DAILY_UPDATE_ROOT)).resolve()
+    try:
+        path.resolve().relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _record_daily_update_hint(out_dir: Path, watch_path: Path, changed_paths: list[Path] | None) -> None:
+    """Record a cheap night-window hint for large active repos; never run LLMs here."""
+    if not changed_paths or not _under_daily_update_root(watch_path):
+        return
+    try:
+        threshold = int(os.environ.get("GRAPHIFY_DAILY_UPDATE_CHANGE_THRESHOLD", str(_DAILY_UPDATE_THRESHOLD)))
+    except ValueError:
+        threshold = _DAILY_UPDATE_THRESHOLD
+    if len(changed_paths) < threshold:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "repo": str(watch_path.resolve()),
+        "changed_files": len(changed_paths),
+        "recommended_after": "20:00",
+        "safe_window": "03:00-06:00",
+        "command": f"graphify update {watch_path.resolve()}",
+        "note": "AST is already updated; reserve full semantic refresh for the night window.",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    (out_dir / _DAILY_UPDATE_HINT).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _queue_pending(out_dir: Path, changed_paths: list[Path]) -> None:
@@ -460,7 +495,7 @@ def _rebuild_code(
         from graphify.export import to_json, to_html
         from graphify.security import check_graph_file_size_cap
 
-        detected = detect(watch_path, follow_symlinks=follow_symlinks)
+        detected = detect(watch_path, follow_symlinks=follow_symlinks, count_content=False)
         code_files = [Path(f) for f in detected['files']['code']]
 
         # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
@@ -524,19 +559,18 @@ def _rebuild_code(
                     for p in extract_targets:
                         evict_sources.add(_nsf(str(p), str(project_root)) or str(p))
                 else:
-                    # Full re-extraction: reconcile against current code files to
-                    # evict nodes from files deleted since the last run (#1007).
+                    # Full re-extraction: reconcile against current detected files to
+                    # evict nodes from deleted or newly-ignored sources (#1007).
                     _root_str = str(project_root)
                     current_sources = {
-                        _nsf(str(p.relative_to(project_root)), _root_str)
-                        for p in code_files
-                        if p.is_relative_to(project_root)
+                        _nsf(str(Path(src).relative_to(project_root)), _root_str)
+                        for bucket in detected.get("files", {}).values()
+                        for src in bucket
+                        if Path(src).is_absolute() and Path(src).is_relative_to(project_root)
                     }
                     for n in existing.get("nodes", []):
                         sf = n.get("source_file")
                         if not sf:
-                            continue
-                        if Path(sf).suffix.lower() not in _CODE_EXTENSIONS:
                             continue
                         norm = _nsf(sf, _root_str)
                         if norm not in current_sources:
@@ -548,14 +582,21 @@ def _rebuild_code(
                 # missing from it is stale and must be dropped even if its source
                 # file still exists (a symbol removed from a surviving file, #1116).
                 # Gate on full_rebuild: in incremental mode an AST node from an
-                # unchanged file is legitimately absent from new_ast_ids. Semantic
-                # nodes lack the "_origin" marker, so they are never dropped here —
-                # only by the deleted-file eviction in evict_sources above.
+                # unchanged file is legitimately absent from new_ast_ids.
+                # Semantic nodes are kept only when they still point at a current
+                # source file; sourceless old semantic nodes are stale noise.
                 full_rebuild = changed_paths is None
+                sourceless_stale_ids = {
+                    n["id"] for n in existing.get("nodes", [])
+                    if full_rebuild and not n.get("source_file") and n.get("_origin") != "ast"
+                }
+                if sourceless_stale_ids:
+                    deleted_paths.add("__sourceless_semantic_cleanup__")
                 preserved_nodes = [
                     n for n in existing.get("nodes", [])
                     if n["id"] not in new_ast_ids
                     and not (full_rebuild and n.get("_origin") == "ast")
+                    and n["id"] not in sourceless_stale_ids
                     and (not evict_sources or n.get("source_file") not in evict_sources)
                 ]
                 all_ids = new_ast_ids | {n["id"] for n in preserved_nodes}
@@ -727,6 +768,9 @@ def _rebuild_code(
             save_manifest(detected["files"], kind="ast", root=project_root)
         except Exception:
             pass
+        with contextlib.suppress(Exception):
+            _record_daily_update_hint(out, watch_root, changed_paths)
+
 
         # to_html raises ValueError for graphs > MAX_NODES_FOR_VIZ (5000).
         # Wrap so core outputs (graph.json + GRAPH_REPORT.md) always land.
@@ -778,17 +822,16 @@ def _rebuild_code(
 
 
 def check_update(watch_path: Path) -> bool:
-    """Check for pending semantic update flag and notify the user if set.
-
-    Cron-safe: always returns True so cron jobs do not alarm.
-    Non-code file changes (docs, papers, images) require LLM-backed
-    re-extraction via `/graphify --update` — this function only signals
-    that the update is needed.
-    """
-    flag = Path(watch_path) / _GRAPHIFY_OUT / "needs_update"
+    """Check pending semantic/nightly hints without doing heavy work."""
+    out = Path(watch_path) / _GRAPHIFY_OUT
+    flag = out / "needs_update"
     if flag.exists():
         print(f"[graphify check-update] Pending non-code changes in {watch_path}.")
         print("[graphify check-update] Run `/graphify --update` to apply semantic re-extraction.")
+    hint = out / _DAILY_UPDATE_HINT
+    if hint.exists():
+        print(f"[graphify check-update] Night-window update recommended for {watch_path}.")
+        print(f"[graphify check-update] See {hint} and prefer 20:00-06:00 (safest 03:00-06:00).")
     return True
 
 

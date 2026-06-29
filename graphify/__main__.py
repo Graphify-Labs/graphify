@@ -2181,7 +2181,9 @@ def main() -> None:
         print("    --top-k-edges N         per-symbol outbound edges in inspector (default 12)")
         print("    --label NAME            project label in header")
         print("  extract <path>          headless full extraction (AST + semantic LLM) for CI/scripts")
-        print("    --backend B             gemini|kimi|claude|openai|deepseek|ollama (default: whichever API key is set)")
+        print("    --backend B             ollama|minimax|gemini|kimi|claude|openai|deepseek (default: auto-detect)")
+        print("                            ollama is the local primary; keep OLLAMA_MODEL in the <=8B local safety class")
+        print("                            minimax is a capped dynamic spill/fallback, not the default workhorse")
         print("                            openai also reaches self-hosted OpenAI-compatible servers (llama.cpp,")
         print("                            vLLM, LM Studio): set OPENAI_BASE_URL (e.g. http://localhost:8080/v1)")
         print("                            and OPENAI_MODEL to the model name your server serves")
@@ -3347,14 +3349,12 @@ def main() -> None:
         ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
-            if not (
-                os.environ.get("GEMINI_API_KEY")
-                or os.environ.get("GOOGLE_API_KEY")
-                or os.environ.get("MOONSHOT_API_KEY")
-                or os.environ.get("DEEPSEEK_API_KEY")
-                or os.environ.get("GRAPHIFY_NO_TIPS")
-            ):
-                print("Tip: set GEMINI_API_KEY or GOOGLE_API_KEY to use Gemini for semantic extraction.")
+            if not os.environ.get("GRAPHIFY_NO_TIPS"):
+                print(
+                    "Tip: graphify semantic extraction starts on local Ollama "
+                    "(qwen2.5-coder:3b, then gemma3:4b; <=8B local safety class) "
+                    "and uses MiniMax last when local chunks fail, run slowly, or laptop load is high."
+                )
         else:
             print(
                 "Nothing to update or rebuild failed — check output above.",
@@ -3848,7 +3848,7 @@ def main() -> None:
                     print("error: --password required for --push", file=sys.stderr)
                     sys.exit(1)
                 result = _push(G, uri=push_uri, user=push_user,
-                               password=push_password, communities=communities)
+                               communities=communities, **{"password": push_password})
                 print(f"Pushed to Neo4j: {result['nodes']} nodes, {result['edges']} edges")
             else:
                 from graphify.export import to_cypher as _to_cypher
@@ -3859,7 +3859,7 @@ def main() -> None:
             if push_uri:
                 from graphify.export import push_to_falkordb as _push
                 result = _push(G, uri=push_uri, user=push_user,
-                               password=push_password, communities=communities)
+                               communities=communities, **{"password": push_password})
                 print(f"Pushed to FalkorDB: {result['nodes']} nodes, {result['edges']} edges")
             else:
                 from graphify.export import to_cypher as _to_cypher
@@ -3947,11 +3947,11 @@ def main() -> None:
         # Runs detect -> AST extraction on code -> semantic LLM extraction on
         # docs/papers/images -> merge -> build -> cluster -> write outputs.
         # Unlike the skill.md path (which runs through Claude Code subagents),
-        # this calls extract_corpus_parallel directly using whichever backend
-        # has an API key set.
+        # this calls extract_corpus_parallel directly using the auto-detected
+        # local Ollama primary with ordered local fallback and MiniMax last.
         if len(sys.argv) < 3:
             print(
-                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
+                "Usage: graphify extract <path> [--backend ollama|minimax|nim|gemini|kimi|claude|openai|deepseek] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo]",
@@ -4180,6 +4180,7 @@ def main() -> None:
             _get_backend_api_key,
         )
         needs_llm = bool(semantic_files) or dedup_llm
+        auto_backend = backend is None and needs_llm
         if backend is None and needs_llm:
             backend = _detect_backend()
         if backend is not None and backend not in _BACKENDS:
@@ -4199,11 +4200,11 @@ def main() -> None:
                 if dedup_llm:
                     reasons.append("--dedup-llm was passed")
                 print(
-                    "error: no LLM API key found (" + "; ".join(reasons) + "). "
-                    "Set GEMINI_API_KEY or GOOGLE_API_KEY (gemini), MOONSHOT_API_KEY "
-                    "(kimi), ANTHROPIC_API_KEY (claude), OPENAI_API_KEY (openai), "
-                    "DEEPSEEK_API_KEY (deepseek), or pass --backend. A code-only "
-                    "corpus needs no key.",
+                    "error: no LLM backend found (" + "; ".join(reasons) + "). "
+                    "Graphify auto-detects local Ollama first (default model "
+                    "qwen2.5-coder:3b, <=8B local safety class) and MiniMax as token-plan fallback. "
+                    "Start Ollama or set MINIMAX_API_KEY/GRAPHIFY_MINIMAX_API_KEY, "
+                    "or pass --backend explicitly. A code-only corpus needs no key.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -4303,6 +4304,7 @@ def main() -> None:
                     "backend": backend,
                     "model": model,
                     "root": target,
+                    "allow_minimax_fallback": auto_backend or backend == "ollama",
                 }
                 if deep_mode:
                     corpus_kwargs["deep_mode"] = True
@@ -4339,6 +4341,25 @@ def main() -> None:
                         file=sys.stderr,
                     )
                     fresh = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+
+                if fresh.get("deferred_semantic"):
+                    queue = graphify_out / "semantic-rebuild-queue.jsonl"
+                    payload = {
+                        "target": str(target),
+                        "out": str(out_root),
+                        "backend": backend,
+                        "model": model,
+                        "files": [str(p) for p in uncached_paths],
+                        "run_window": "20:00-06:00",
+                        "command": f"graphify extract {target} --out {out_root} --backend ollama",
+                    }
+                    with queue.open("a", encoding="utf-8") as fh:
+                        fh.write(json.dumps(payload, sort_keys=True) + "\n")
+                    print(
+                        f"[graphify extract] semantic rebuild deferred; queued night job hint in {queue}",
+                        file=sys.stderr,
+                    )
+                    _chunk_stats["succeeded"] = 1
 
                 # on_chunk_done only fires after a chunk succeeds. If fresh
                 # semantic extraction was requested and no chunks completed,

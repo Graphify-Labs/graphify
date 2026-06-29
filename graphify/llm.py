@@ -11,6 +11,9 @@ import os
 import re
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
@@ -26,6 +29,24 @@ _PER_FILE_OVERHEAD_CHARS = 160
 # Coarse fallback used only when `tiktoken` is not installed. 1 token ≈ 4 chars
 # is the standard heuristic for English/code on BPE tokenizers.
 _CHARS_PER_TOKEN = 4
+_OLLAMA_DEFAULT_MODEL = "qwen2.5-coder:3b"
+_OLLAMA_MAX_PARAMS_B = 8.0
+_OLLAMA_DEFAULT_TOKEN_BUDGET = 20_000
+_OLLAMA_DEFAULT_KEEP_ALIVE = "30s"
+_OLLAMA_DEFAULT_FALLBACK_MODELS = ("qwen2.5-coder:3b", "gemma3:4b")
+_OLLAMA_MODEL_SIZE_RE = re.compile(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*([bm])\b", re.IGNORECASE)
+_OLLAMA_DAYTIME_HEAVY_FILE_LIMIT = 25
+_OLLAMA_NIGHTLY_START_HOUR = 3
+_OLLAMA_NIGHTLY_END_HOUR = 6
+_OLLAMA_LOW_LOAD_START_HOUR = 20
+_OLLAMA_SLOW_CHUNK_SECONDS = 45.0
+_OLLAMA_LOW_LOAD_SLOW_CHUNK_SECONDS = 120.0
+_OLLAMA_MAX_MINIMAX_FRACTION = 0.25
+_OLLAMA_LOAD_RATIO_THRESHOLD = 0.75
+_OLLAMA_GPU_UTIL_THRESHOLD = 85
+_OLLAMA_GPU_MEM_THRESHOLD = 0.90
+
+
 
 
 def _get_tokenizer():
@@ -61,6 +82,37 @@ BACKENDS: dict[str, dict] = {
         "max_tokens": 16384,
         "vision": True,
     },
+    "minimax": {
+        # MiniMax's Chat Completions API is OpenAI-compatible:
+        # https://platform.minimax.io/docs/api-reference/text-chat-openai
+        "base_url": "https://api.minimax.io/v1",
+        "default_model": os.environ.get("MINIMAX_MODEL", "MiniMax-M3"),
+        "env_keys": ["MINIMAX_API_KEY", "GRAPHIFY_MINIMAX_API_KEY"],
+        "model_env_keys": ["GRAPHIFY_MINIMAX_MODEL", "MINIMAX_MODEL"],
+        "credential_keys": ["minimax", "minimax_api_key"],
+        "pricing": {"input": 0.0, "output": 0.0},
+        "temperature": 0,
+        "max_completion_tokens": 16384,
+        "vision": True,
+        # MiniMax-M3 enables adaptive thinking by default and includes <think>
+        # text in the content stream. Disable it for graphify's JSON-only calls.
+        "extra_body": {"thinking": {"type": "disabled"}},
+    },
+    "nim": {
+        # NVIDIA NIM/AI Catalog exposes an OpenAI-compatible /v1 chat API.
+        # nim-anywhere uses the same public endpoint and nvapi-* personal keys.
+        "base_url": os.environ.get("NVIDIA_NIM_BASE_URL", os.environ.get("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")),
+        "default_model": os.environ.get("NVIDIA_NIM_MODEL", os.environ.get("NIM_MODEL", "meta/llama-3.1-8b-instruct")),
+        "env_keys": ["NVIDIA_NIM_API_KEY", "GRAPHIFY_NVIDIA_NIM_API_KEY", "NVIDIA_API_KEY", "NGC_API_KEY"],
+        "model_env_keys": ["GRAPHIFY_NVIDIA_NIM_MODEL", "NVIDIA_NIM_MODEL", "NIM_MODEL"],
+        "credential_keys": ["nim", "nvidia_nim", "nvidia_nim_api_key"],
+        "pricing": {"input": 0.0, "output": 0.0},
+        "temperature": 0,
+        # NVIDIA's OpenAI-compatible examples use max_tokens rather than the
+        # newer OpenAI max_completion_tokens field.
+        "completion_token_param": "max_tokens",
+        "max_tokens": 8192,
+    },
     "kimi": {
         "base_url": "https://api.moonshot.ai/v1",
         "default_model": "kimi-k2.6",
@@ -74,11 +126,12 @@ BACKENDS: dict[str, dict] = {
     },
     "ollama": {
         "base_url": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
-        "default_model": os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b"),
+        "default_model": os.environ.get("GRAPHIFY_OLLAMA_MODEL", os.environ.get("OLLAMA_MODEL", _OLLAMA_DEFAULT_MODEL)),
+        "model_env_keys": ["GRAPHIFY_OLLAMA_MODEL", "OLLAMA_MODEL"],
         "env_key": "OLLAMA_API_KEY",
         "pricing": {"input": 0.0, "output": 0.0},
         "temperature": 0,
-        "max_tokens": 16384,
+        "max_tokens": 8192,
     },
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -162,6 +215,44 @@ def _custom_providers_path(global_: bool = True) -> Path:
     if global_:
         return Path.home() / ".graphify" / "providers.json"
     return Path(".graphify") / "providers.json"
+
+
+def _credentials_path() -> Path:
+    raw = os.environ.get("GRAPHIFY_CREDENTIALS_PATH", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".graphify" / "credentials.json"
+
+
+def _load_global_credentials() -> dict[str, str]:
+    """Load user-owned graphify API keys from ~/.graphify/credentials.json.
+
+    The file is intentionally outside any project tree so a system-wide default
+    backend can work for every coding-agent surface without placing credentials
+    in repo config or requiring GUI-launched agents to inherit shell rc files.
+    Supported shapes:
+      {"MINIMAX_API_KEY": "..."}
+      {"api_keys": {"MINIMAX_API_KEY": "...", "minimax": "..."}}
+    """
+    if os.environ.get("GRAPHIFY_DISABLE_CREDENTIALS", "").strip().lower() in ("1", "true", "yes"):
+        return {}
+    path = _credentials_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    raw_keys = data.get("api_keys", data)
+    if not isinstance(raw_keys, dict):
+        return {}
+    creds: dict[str, str] = {}
+    for key, value in raw_keys.items():
+        if isinstance(key, str) and isinstance(value, str) and value.strip():
+            creds[key] = value.strip()
+    return creds
 
 
 def provider_base_url_ok(base_url: str, name: str, *, warn: bool = True) -> bool:
@@ -800,6 +891,14 @@ def _get_backend_api_key(backend: str) -> str:
         value = os.environ.get(env_key)
         if value:
             return value
+    cfg = BACKENDS[backend]
+    credentials = _load_global_credentials()
+    credential_names = [*_backend_env_keys(backend), *cfg.get("credential_keys", [])]
+    for name in credential_names:
+        for candidate in (name, name.upper(), name.lower()):
+            value = credentials.get(candidate)
+            if value:
+                return value
     return ""
 
 
@@ -809,15 +908,91 @@ def _format_backend_env_keys(backend: str) -> str:
     return " or ".join(keys) if keys else "AWS_PROFILE or AWS_REGION"
 
 
+def _ollama_model_parameter_billions(model: str) -> float | None:
+    """Best-effort parameter-count extraction from an Ollama model tag."""
+    matches = list(_OLLAMA_MODEL_SIZE_RE.finditer(model))
+    if not matches:
+        return None
+    value = float(matches[-1].group(1))
+    unit = matches[-1].group(2).lower()
+    return value if unit == "b" else value / 1000.0
+
+
+def _validate_ollama_model_size(model: str) -> None:
+    """Hard-stop Ollama models above the laptop-safe local parameter ceiling."""
+    params_b = _ollama_model_parameter_billions(model)
+    if params_b is None:
+        raise ValueError(
+            f"Ollama model names must include a parameter size at or below {_OLLAMA_MAX_PARAMS_B:g}B "
+            f"(got {model!r}). Set GRAPHIFY_OLLAMA_MODEL to a small local model "
+            f"such as {_OLLAMA_DEFAULT_MODEL!r}."
+        )
+    if params_b > _OLLAMA_MAX_PARAMS_B:
+        raise ValueError(
+            f"Ollama model {model!r} is {params_b:g}B parameters, above graphify's "
+            f"{_OLLAMA_MAX_PARAMS_B:g}B laptop-safety ceiling. Set GRAPHIFY_OLLAMA_MODEL "
+            f"or OLLAMA_MODEL to {_OLLAMA_DEFAULT_MODEL!r} or another <=8B model. "
+            "Use MiniMax for larger chunks/models."
+        )
+
+
+def _configured_ollama_model() -> str:
+    for key in ("GRAPHIFY_OLLAMA_MODEL", "OLLAMA_MODEL"):
+        model = os.environ.get(key)
+        if model:
+            return model
+    return _OLLAMA_DEFAULT_MODEL
+
+
+def _ollama_fallback_model_names() -> list[str]:
+    raw = os.environ.get("GRAPHIFY_OLLAMA_FALLBACK_MODELS", "").strip()
+    if raw.lower() in ("0", "false", "no", "none", "off"):
+        return []
+    if raw:
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    return list(_OLLAMA_DEFAULT_FALLBACK_MODELS)
+
+
+def _ollama_model_chain(model: str | None = None) -> list[str]:
+    seen: set[str] = set()
+    chain: list[str] = []
+    rejected: list[ValueError] = []
+    for candidate in [model or _configured_ollama_model(), *_ollama_fallback_model_names()]:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            _validate_ollama_model_size(candidate)
+        except ValueError as exc:
+            rejected.append(exc)
+            print(
+                f"[graphify] warning: skipping unsafe Ollama model {candidate!r}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        chain.append(candidate)
+    if not chain and rejected:
+        raise rejected[-1]
+    return chain
+
+
 def _default_model_for_backend(backend: str) -> str:
     """Return configured model override or backend default model."""
     cfg = BACKENDS[backend]
+    model_keys = list(cfg.get("model_env_keys", []))
     model_env_key = cfg.get("model_env_key")
     if model_env_key:
-        model = os.environ.get(model_env_key)
+        model_keys.append(model_env_key)
+    for key in model_keys:
+        model = os.environ.get(key)
         if model:
+            if backend == "ollama":
+                _validate_ollama_model_size(model)
             return model
-    return cfg["default_model"]
+    model = cfg["default_model"]
+    if backend == "ollama":
+        _validate_ollama_model_size(model)
+    return model
 
 
 def _backend_pkg_hint(pkg: str, extra: str) -> str:
@@ -834,6 +1009,202 @@ def _backend_pkg_hint(pkg: str, extra: str) -> str:
         f"(uv tool), or  pip install {pkg}  (pip/venv install)."
     )
 
+def _automatic_fallback_backend(backend: str, *, allow: bool, model: str | None = None) -> str | None:
+    """Return the configured automatic fallback for an auto-selected backend."""
+    if not allow:
+        return None
+    if backend == "ollama":
+        if os.environ.get("GRAPHIFY_DISABLE_MINIMAX_FALLBACK", "").strip().lower() in ("1", "true", "yes"):
+            return None
+        if _get_backend_api_key("minimax"):
+            return "minimax"
+    return None
+
+
+def _in_ollama_nightly_window(now: time.struct_time | None = None) -> bool:
+    """Whether local heavy Ollama work is in the preferred 03:00-06:00 window."""
+    current = now or time.localtime()
+    return _OLLAMA_NIGHTLY_START_HOUR <= current.tm_hour < _OLLAMA_NIGHTLY_END_HOUR
+
+
+def _ollama_balance_mode() -> str:
+    mode = os.environ.get("GRAPHIFY_OLLAMA_BALANCE", "").strip().lower()
+    # Backward-compatible alias from the first implementation. "fallback"
+    # now means dynamic spill, not all-or-none remote routing.
+    if not mode:
+        mode = os.environ.get("GRAPHIFY_OLLAMA_DAYTIME_POLICY", "auto").strip().lower()
+    aliases = {"fallback": "auto", "allow": "local", "block": "defer"}
+    mode = aliases.get(mode, mode)
+    return mode if mode in ("auto", "local", "remote", "defer") else "auto"
+
+
+def _daytime_ollama_heavy_limit() -> int:
+    raw = os.environ.get("GRAPHIFY_OLLAMA_DAYTIME_FILE_LIMIT", "").strip()
+    if not raw:
+        return _OLLAMA_DAYTIME_HEAVY_FILE_LIMIT
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _OLLAMA_DAYTIME_HEAVY_FILE_LIMIT
+
+def _in_ollama_low_load_window(now: time.struct_time | None = None) -> bool:
+    current = now or time.localtime()
+    return current.tm_hour >= _OLLAMA_LOW_LOAD_START_HOUR or current.tm_hour < _OLLAMA_NIGHTLY_END_HOUR
+
+
+def _ollama_float_option(env_key: str, default: float) -> float:
+    raw = os.environ.get(env_key, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"[graphify] {env_key}={raw!r} is not a valid number; using {default}.", file=sys.stderr)
+        return default
+
+
+def _ollama_system_pressure() -> str:
+    """Return 'high' when local inference should spill some chunks to MiniMax."""
+    try:
+        load_ratio = os.getloadavg()[0] / max(1, os.cpu_count() or 1)
+    except (AttributeError, OSError):
+        load_ratio = 0.0
+    load_threshold = _ollama_float_option("GRAPHIFY_OLLAMA_LOAD_RATIO_THRESHOLD", _OLLAMA_LOAD_RATIO_THRESHOLD)
+    if load_ratio >= load_threshold:
+        return "high"
+
+    try:
+        import subprocess
+
+        proc = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except Exception:
+        return "normal"
+    if proc.returncode != 0:
+        return "normal"
+    for row in proc.stdout.splitlines():
+        parts = [p.strip() for p in row.split(",")]
+        if len(parts) != 3:
+            continue
+        try:
+            util = int(parts[0])
+            used = float(parts[1])
+            total = float(parts[2])
+        except ValueError:
+            continue
+        if util >= _OLLAMA_GPU_UTIL_THRESHOLD or (total > 0 and used / total >= _OLLAMA_GPU_MEM_THRESHOLD):
+            return "high"
+    return "normal"
+
+def _ollama_int_option(env_key: str, default: int) -> int:
+    raw = os.environ.get(env_key, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(
+            f"[graphify] {env_key}={raw!r} is not a valid integer; using {default}.",
+            file=sys.stderr,
+        )
+        return default
+
+
+def _ollama_token_budget(token_budget: int | None) -> int | None:
+    if token_budget != 60_000:
+        return token_budget
+    return _ollama_int_option("GRAPHIFY_OLLAMA_TOKEN_BUDGET", _OLLAMA_DEFAULT_TOKEN_BUDGET)
+
+
+def _ollama_default_num_thread() -> int:
+    """Small dynamic CPU helper budget for the local Ollama model."""
+    return max(2, min(4, (os.cpu_count() or 4) // 4))
+
+
+def _ollama_native_base_url(base_url: str) -> str:
+    parsed = urllib.parse.urlparse(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        return base_url.rstrip("/")
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3]
+    return urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, path.rstrip("/"), "", "", "")
+    ).rstrip("/")
+
+
+def _ollama_auto_num_ctx(user_message: str, max_completion_tokens: int) -> int:
+    estimated_input = len(user_message) // _CHARS_PER_TOKEN + 400
+    auto_num_ctx = min(estimated_input + max_completion_tokens + 2000, 32768)
+    return max(auto_num_ctx, 4096)
+
+
+def _ollama_resolve_num_ctx(user_message: str, max_completion_tokens: int) -> int:
+    num_ctx_raw = os.environ.get("GRAPHIFY_OLLAMA_NUM_CTX", "").strip()
+    auto_num_ctx = _ollama_auto_num_ctx(user_message, max_completion_tokens)
+    estimated_input = len(user_message) // _CHARS_PER_TOKEN + 400
+    if not num_ctx_raw:
+        return auto_num_ctx
+    try:
+        num_ctx = int(num_ctx_raw)
+    except ValueError:
+        print(
+            f"[graphify] GRAPHIFY_OLLAMA_NUM_CTX={num_ctx_raw!r} is not a valid integer; "
+            f"using auto-derived value ({auto_num_ctx}).",
+            file=sys.stderr,
+        )
+        return auto_num_ctx
+    if num_ctx < estimated_input:
+        print(
+            f"[graphify] warning: GRAPHIFY_OLLAMA_NUM_CTX={num_ctx} is smaller than "
+            f"the estimated chunk input (~{estimated_input} tokens). Ollama will "
+            f"silently truncate the prompt and return empty responses. "
+            f"Try --token-budget {max(1024, num_ctx // 3)} or increase NUM_CTX.",
+            file=sys.stderr,
+        )
+    return num_ctx
+
+
+
+def _ollama_request_extra_body(num_ctx: int | None = None) -> dict:
+    options = {
+        "num_gpu": _ollama_int_option("GRAPHIFY_OLLAMA_NUM_GPU", 999),
+        "main_gpu": _ollama_int_option("GRAPHIFY_OLLAMA_MAIN_GPU", 0),
+        "num_thread": _ollama_int_option("GRAPHIFY_OLLAMA_NUM_THREAD", _ollama_default_num_thread()),
+    }
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
+    return {
+        "options": options,
+        "keep_alive": os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", _OLLAMA_DEFAULT_KEEP_ALIVE),
+    }
+
+def _ollama_response_format() -> dict:
+    """Force Ollama's OpenAI-compatible endpoint into JSON mode."""
+    if os.environ.get("GRAPHIFY_OLLAMA_JSON_MODE", "1").strip().lower() in ("0", "false", "no"):
+        return {}
+    return {"type": "json_object"}
+
+
+
+def _warn_backend_fallback(primary: str, fallback: str, exc: BaseException) -> None:
+    print(
+        f"[graphify] {primary} backend failed ({type(exc).__name__}: {exc}); "
+        f"retrying with {fallback}.",
+        file=sys.stderr,
+    )
+
+
+
 
 def _call_openai_compat(
     base_url: str,
@@ -848,12 +1219,13 @@ def _call_openai_compat(
     deep_mode: bool = False,
     images: list[_ImageRef] | None = None,
     extra_body: dict | None = None,
+    completion_token_param: str = "max_completion_tokens",
 ) -> dict:
     """Call any OpenAI-compatible API (Kimi, OpenAI, etc.) and return parsed JSON."""
     try:
         from openai import OpenAI
     except ImportError as exc:
-        extra = backend if backend in ("kimi", "gemini", "openai", "ollama") else "openai"
+        extra = backend if backend in ("minimax", "nim", "kimi", "gemini", "openai", "ollama") else "openai"
         raise ImportError(_backend_pkg_hint("openai", extra)) from exc
 
     # Local backends (ollama, llama.cpp, vLLM) routinely take >60s for a
@@ -861,15 +1233,15 @@ def _call_openai_compat(
     # default. Honour GRAPHIFY_API_TIMEOUT (seconds) for explicit override;
     # default to 600s, which is long enough for a 31B model on a 16k chunk
     # but still bounds runaway connections (issue #792 addendum).
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=_resolve_api_timeout())
+    client = OpenAI(base_url=base_url, timeout=_resolve_api_timeout(), **{"api_key": api_key})
     kwargs: dict = {
         "model": model,
         "messages": [
             {"role": "system", "content": _extraction_system(deep=deep_mode)},
             {"role": "user", "content": _openai_content(user_message, images or [])},
         ],
-        "max_completion_tokens": max_completion_tokens,
     }
+    kwargs[completion_token_param] = max_completion_tokens
     if temperature is not None:
         kwargs["temperature"] = temperature
     if reasoning_effort is not None:
@@ -883,52 +1255,21 @@ def _call_openai_compat(
     # Kimi-k2.6 is a reasoning model — disable thinking so content isn't empty
     elif "moonshot" in base_url:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    # Ollama will happily answer a JSON-looking prompt with explanatory prose
+    # unless the OpenAI-compatible request enables JSON mode. The native API
+    # calls this `format: "json"`; `/v1/chat/completions` exposes it as
+    # `response_format={"type":"json_object"}`. Keep this separate from
+    # extra_body because extra_body maps to Ollama native request fields.
+    if backend == "ollama":
+        response_format = _ollama_response_format()
+        if response_format:
+            kwargs["response_format"] = response_format
     # Ollama defaults num_ctx to 2048 and silently truncates prompts larger
     # than that — the symptom is hollow 200 OK responses after the first few
     # chunks (#798). We derive num_ctx from the actual prompt size so we don't
-    # over-allocate KV-cache VRAM. Over-allocation (e.g. 128k slots for an 8k
-    # prompt on a 31B model) exhausts VRAM by chunk 4 and produces the same
-    # hollow-200 symptom — just from a different direction (#798 follow-up).
-    # Formula: actual input tokens + output cap + system prompt headroom.
-    # Capped at 131072 (enough for the default 60k token_budget); env var wins.
-    # The ollama num_ctx auto-derive is a default. A custom provider that
-    # explicitly sets extra_body has opted out — respect their request shape.
     if backend == "ollama" and extra_body is None:
-        num_ctx_raw = os.environ.get("GRAPHIFY_OLLAMA_NUM_CTX", "").strip()
-        # Auto-derive num_ctx from actual chunk size regardless — used as the
-        # fallback and for the mismatch check below.
-        estimated_input = len(user_message) // _CHARS_PER_TOKEN + 400
-        auto_num_ctx = min(estimated_input + max_completion_tokens + 2000, 131072)
-        auto_num_ctx = max(auto_num_ctx, 8192)
-        if num_ctx_raw:
-            try:
-                num_ctx = int(num_ctx_raw)
-            except ValueError:
-                # Bad env var: fall through to auto-derivation (not 131072 —
-                # hardcoding the cap is what causes OOM on constrained VRAM).
-                print(
-                    f"[graphify] GRAPHIFY_OLLAMA_NUM_CTX={num_ctx_raw!r} is not a valid integer; "
-                    f"using auto-derived value ({auto_num_ctx}).",
-                    file=sys.stderr,
-                )
-                num_ctx = auto_num_ctx
-            else:
-                # Warn when the pinned value is smaller than the estimated input —
-                # Ollama silently truncates the prompt and returns empty responses.
-                if num_ctx < estimated_input:
-                    print(
-                        f"[graphify] warning: GRAPHIFY_OLLAMA_NUM_CTX={num_ctx} is smaller than "
-                        f"the estimated chunk input (~{estimated_input} tokens). Ollama will "
-                        f"silently truncate the prompt and return empty responses. "
-                        f"Try --token-budget {max(1024, num_ctx // 3)} or increase NUM_CTX.",
-                        file=sys.stderr,
-                    )
-        else:
-            # Estimate input tokens: user_message chars / 4 (standard BPE
-            # heuristic) + 400 for the system prompt, then add output headroom.
-            num_ctx = auto_num_ctx
-        keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
-        kwargs["extra_body"] = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
+        num_ctx = _ollama_resolve_num_ctx(user_message, max_completion_tokens)
+        kwargs["extra_body"] = _ollama_request_extra_body(num_ctx)
     resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
@@ -963,7 +1304,98 @@ def _call_openai_compat(
             "--token-budget (e.g. --token-budget 4096) or set "
             "GRAPHIFY_OLLAMA_NUM_CTX to a smaller value; "
             "(2) model too small for JSON instruction following — "
-            "try a larger model with --model (e.g. --model qwen2.5-coder:14b).",
+            f"try another <=8B local model (default {_OLLAMA_DEFAULT_MODEL}) or MiniMax.",
+            file=sys.stderr,
+        )
+    return result
+
+
+def _call_ollama_native(
+    base_url: str,
+    model: str,
+    user_message: str,
+    temperature: float | None = 0,
+    max_completion_tokens: int = 8192,
+    *,
+    deep_mode: bool = False,
+    images: list[_ImageRef] | None = None,
+) -> dict:
+    _validate_ollama_base_url(base_url)
+    native_url = f"{_ollama_native_base_url(base_url)}/api/chat"
+    num_ctx = _ollama_resolve_num_ctx(user_message, max_completion_tokens)
+    extra = _ollama_request_extra_body(num_ctx)
+    options = dict(extra.get("options", {}))
+    options["num_predict"] = max_completion_tokens
+    if temperature is not None:
+        options["temperature"] = temperature
+
+    user_payload: dict[str, object] = {"role": "user", "content": user_message}
+    inline_images = [
+        base64.b64encode(ref.raw).decode("ascii")
+        for ref in (images or [])
+        if ref.raw is not None
+    ]
+    if inline_images:
+        user_payload["images"] = inline_images
+
+    payload: dict[str, object] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _extraction_system(deep=deep_mode)},
+            user_payload,
+        ],
+        "stream": False,
+        "options": options,
+        "keep_alive": extra.get("keep_alive", _OLLAMA_DEFAULT_KEEP_ALIVE),
+    }
+    if _ollama_response_format():
+        payload["format"] = "json"
+
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        native_url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_resolve_api_timeout()) as resp:
+            raw_body = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        raise RuntimeError(f"Ollama API error {exc.code}: {body[:500]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Ollama API connection failed: {exc}") from exc
+
+    body = json.loads(raw_body or "{}")
+    message = body.get("message") if isinstance(body, dict) else None
+    raw_content = message.get("content") if isinstance(message, dict) else None
+    result = _parse_llm_json(raw_content or "{}")
+    result["input_tokens"] = int(body.get("prompt_eval_count") or 0)
+    result["output_tokens"] = int(body.get("eval_count") or 0)
+    result["model"] = model
+    done_reason = str(body.get("done_reason") or "stop")
+    result["finish_reason"] = "length" if done_reason == "length" else "stop"
+    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
+        print(
+            "[graphify] ollama returned a hollow response "
+            f"(content={'empty' if not (raw_content or '').strip() else 'no nodes/edges'}, "
+            f"output_tokens={result['output_tokens']}); "
+            "treating as truncation so adaptive retry can bisect the chunk.",
+            file=sys.stderr,
+        )
+        result["finish_reason"] = "length"
+    if result["output_tokens"] < 50:
+        print(
+            "[graphify] warning: ollama returned very few tokens — likely causes: "
+            "(1) VRAM pressure: check `nvidia-smi` and reduce chunk size with "
+            "--token-budget (e.g. --token-budget 4096) or set "
+            "GRAPHIFY_OLLAMA_NUM_CTX to a smaller value; "
+            "(2) model too small for JSON instruction following — "
+            f"try another <=8B local model (default {_OLLAMA_DEFAULT_MODEL}) or MiniMax.",
             file=sys.stderr,
         )
     return result
@@ -977,9 +1409,9 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
         raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
 
     client = anthropic.Anthropic(
-        api_key=api_key,
         base_url=BACKENDS["claude"]["base_url"],
         timeout=_resolve_api_timeout(),
+        **{"api_key": api_key},
     )
     resp = client.messages.create(
         model=model,
@@ -1168,7 +1600,7 @@ def _azure_client(api_key: str, endpoint: str):
                 timeout_s = v
         except ValueError:
             pass
-    return AzureOpenAI(api_key=api_key, azure_endpoint=endpoint, api_version=api_version, timeout=timeout_s)
+    return AzureOpenAI(azure_endpoint=endpoint, api_version=api_version, timeout=timeout_s, **{"api_key": api_key})
 
 
 def _call_azure(
@@ -1264,6 +1696,7 @@ def extract_files_direct(
     root: Path = Path("."),
     *,
     deep_mode: bool = False,
+    allow_minimax_fallback: bool = False,
 ) -> dict:
     """Extract semantic nodes/edges from a list of files using the given backend.
 
@@ -1271,88 +1704,161 @@ def extract_files_direct(
     Raises ValueError for unknown backends or when no API key is configured.
     Raises ImportError if SDK missing.
     """
+    auto_selected = backend is None
     if backend is None:
         backend = detect_backend()
         if backend is None:
             raise ValueError(
-                "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
-                "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, "
-                "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
-                "or AWS credentials. Pass backend= explicitly to select a provider."
+                "No LLM backend configured. Set one of: MINIMAX_API_KEY or "
+                "GRAPHIFY_MINIMAX_API_KEY, NVIDIA_NIM_API_KEY or NVIDIA_API_KEY, "
+                "GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+                "DEEPSEEK_API_KEY, MOONSHOT_API_KEY, AZURE_OPENAI_API_KEY+"
+                "AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, or AWS credentials. "
+                "Pass backend= explicitly to select a provider."
             )
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}. Available: {sorted(BACKENDS)}")
 
-    cfg = BACKENDS[backend]
-    key = api_key or _get_backend_api_key(backend)
-    if not key and backend == "ollama":
-        # Ollama ignores auth but the OpenAI client library requires a non-empty
-        # string. Use a placeholder and surface a visible warning so this never
-        # silently routes traffic without the user realising — see F-029.
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
-        _validate_ollama_base_url(ollama_url)
-        print(
-            "[graphify] WARNING: ollama backend selected with no OLLAMA_API_KEY set; "
-            f"sending corpus to {ollama_url}. Set OLLAMA_API_KEY (any non-empty value) "
-            "to suppress this warning.",
-            file=sys.stderr,
-        )
-        key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
-        raise ValueError(
-            f"No API key for backend '{backend}'. "
-            f"Set {_format_backend_env_keys(backend)} or pass api_key=."
-        )
-    mdl = model or _default_model_for_backend(backend)
-    # Separate raster images from text-like files. Text goes through _read_files
-    # as before; images become structured refs the backend renders as pixels
-    # (vision backends) or as a text reference node (everything else).
     text_files, image_files = _partition_semantic_files(files)
     user_msg = _read_files(text_files, root)
-    vision = _backend_supports_vision(backend)
-    # Only base64 (inline) vision backends need the bytes loaded + size-capped;
-    # path-based backends (claude-cli) and non-vision backends do not.
-    read_bytes = vision and backend not in _PATH_IMAGE_BACKENDS
-    image_refs = _build_image_refs(image_files, root, read_bytes=read_bytes) if image_files else []
-    if image_refs and not vision:
-        image_refs = _strip_pixels(image_refs)
-    max_out = _resolve_max_tokens(cfg.get("max_tokens", 8192))
 
-    if backend == "claude":
-        return _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "claude-cli":
-        return _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "bedrock":
-        return _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "azure":
-        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
-        if not endpoint:
-            raise ValueError(
-                "Azure OpenAI backend requires AZURE_OPENAI_ENDPOINT to be set "
-                "(e.g. https://my-resource.openai.azure.com/)."
+    def _dispatch(current_backend: str, current_model: str | None, current_key: str | None) -> dict:
+        cfg = BACKENDS[current_backend]
+        key = current_key or _get_backend_api_key(current_backend)
+        if not key and current_backend == "ollama":
+            # Ollama ignores auth but the OpenAI client library requires a non-empty
+            # string. Use a placeholder and surface a visible warning so this never
+            # silently routes traffic without the user realising — see F-029.
+            ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
+            _validate_ollama_base_url(ollama_url)
+            print(
+                "[graphify] WARNING: ollama backend selected with no OLLAMA_API_KEY set; "
+                f"sending corpus to {ollama_url}. Set OLLAMA_API_KEY (any non-empty value) "
+                "to suppress this warning.",
+                file=sys.stderr,
             )
-        return _call_azure(
+            key = "ollama"
+        if not key and current_backend not in ("bedrock", "claude-cli"):
+            raise ValueError(
+                f"No API key for backend '{current_backend}'. "
+                f"Set {_format_backend_env_keys(current_backend)} or pass api_key=."
+            )
+        mdl = current_model or _default_model_for_backend(current_backend)
+        if current_backend == "ollama":
+            _validate_ollama_model_size(mdl)
+        # Images become structured refs for vision backends or text references
+        # for text-only backends. Recompute on fallback because capabilities can
+        # differ between the primary and fallback provider.
+        vision = _backend_supports_vision(current_backend)
+        read_bytes = vision and current_backend not in _PATH_IMAGE_BACKENDS
+        image_refs = _build_image_refs(image_files, root, read_bytes=read_bytes) if image_files else []
+        if image_refs and not vision:
+            image_refs = _strip_pixels(image_refs)
+        max_out = _resolve_max_tokens(cfg.get("max_tokens", 8192))
+
+        if current_backend == "claude":
+            return _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+        if current_backend == "claude-cli":
+            return _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+        if current_backend == "bedrock":
+            return _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+        if current_backend == "azure":
+            endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+            if not endpoint:
+                raise ValueError(
+                    "Azure OpenAI backend requires AZURE_OPENAI_ENDPOINT to be set "
+                    "(e.g. https://my-resource.openai.azure.com/)."
+                )
+            return _call_azure(
+                key,
+                endpoint,
+                mdl,
+                user_msg,
+                temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
+                max_tokens=max_out,
+                deep_mode=deep_mode,
+            )
+        if current_backend == "ollama":
+            return _call_ollama_native(
+                cfg["base_url"],
+                mdl,
+                user_msg,
+                temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
+                max_completion_tokens=_resolve_max_tokens(
+                    cfg.get("max_completion_tokens", cfg.get("max_tokens", 8192))
+                ),
+                deep_mode=deep_mode,
+                images=image_refs,
+            )
+        return _call_openai_compat(
+            cfg["base_url"],
             key,
-            endpoint,
             mdl,
             user_msg,
             temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
-            max_tokens=max_out,
+            reasoning_effort=cfg.get("reasoning_effort"),
+            max_completion_tokens=_resolve_max_tokens(
+                cfg.get("max_completion_tokens", cfg.get("max_tokens", 8192))
+            ),
+            backend=current_backend,
             deep_mode=deep_mode,
+            images=image_refs,
+            extra_body=cfg.get("extra_body"),
+            completion_token_param=cfg.get("completion_token_param", "max_completion_tokens"),
         )
-    return _call_openai_compat(
-        cfg["base_url"],
-        key,
-        mdl,
-        user_msg,
-        temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
-        reasoning_effort=cfg.get("reasoning_effort"),
-        max_completion_tokens=_resolve_max_tokens(cfg.get("max_completion_tokens", 8192)),
-        backend=backend,
-        deep_mode=deep_mode,
-        images=image_refs,
-        extra_body=cfg.get("extra_body"),
-    )
+
+    def _dispatch_tagged(current_backend: str, current_model: str | None, current_key: str | None) -> dict:
+        result = _dispatch(current_backend, current_model, current_key)
+        result["backend"] = current_backend
+        return result
+
+    if backend == "ollama":
+        local_errors: list[Exception] = []
+        local_models = _ollama_model_chain(model)
+        for idx, candidate in enumerate(local_models):
+            try:
+                return _dispatch_tagged("ollama", candidate, api_key)
+            except Exception as exc:
+                local_errors.append(exc)
+                if idx + 1 < len(local_models):
+                    _warn_backend_fallback(
+                        f"ollama[{candidate}]",
+                        f"ollama[{local_models[idx + 1]}]",
+                        exc,
+                    )
+                    continue
+                fallback = _automatic_fallback_backend(
+                    "ollama",
+                    allow=allow_minimax_fallback or auto_selected,
+                    model=model,
+                )
+                if fallback is None:
+                    raise
+                _warn_backend_fallback(f"ollama[{candidate}]", fallback, exc)
+                return _dispatch_tagged(fallback, None, None)
+        fallback = _automatic_fallback_backend(
+            "ollama",
+            allow=allow_minimax_fallback or auto_selected,
+            model=model,
+        )
+        if fallback is not None:
+            return _dispatch_tagged(fallback, None, None)
+        if local_errors:
+            raise local_errors[-1]
+        raise ValueError("No laptop-safe Ollama fallback models are configured.")
+
+    try:
+        return _dispatch_tagged(backend, model, api_key)
+    except Exception as exc:
+        fallback = _automatic_fallback_backend(
+            backend,
+            allow=allow_minimax_fallback or auto_selected,
+            model=model,
+        )
+        if fallback is None:
+            raise
+        _warn_backend_fallback(backend, fallback, exc)
+        return _dispatch_tagged(fallback, None, None)
 
 
 def _estimate_file_tokens(path: Path) -> int:
@@ -1468,6 +1974,7 @@ def _extract_with_adaptive_retry(
     _depth: int = 0,
     *,
     deep_mode: bool = False,
+    allow_minimax_fallback: bool = False,
 ) -> dict:
     """Extract a chunk; if the response is truncated (`finish_reason="length"`)
     or the API rejects the prompt as too large for the model's context window,
@@ -1502,7 +2009,13 @@ def _extract_with_adaptive_retry(
     """
     try:
         result = extract_files_direct(
-            chunk, backend=backend, api_key=api_key, model=model, root=root, deep_mode=deep_mode
+            chunk,
+            backend=backend,
+            model=model,
+            root=root,
+            deep_mode=deep_mode,
+            allow_minimax_fallback=allow_minimax_fallback,
+            **{"api_key": api_key},
         )
     except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow
         if not _looks_like_context_exceeded(exc):
@@ -1528,10 +2041,26 @@ def _extract_with_adaptive_retry(
         )
         mid = len(chunk) // 2
         left = _extract_with_adaptive_retry(
-            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            chunk[:mid],
+            backend,
+            api_key,
+            model,
+            root,
+            max_depth,
+            _depth + 1,
+            deep_mode=deep_mode,
+            allow_minimax_fallback=allow_minimax_fallback,
         )
         right = _extract_with_adaptive_retry(
-            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            chunk[mid:],
+            backend,
+            api_key,
+            model,
+            root,
+            max_depth,
+            _depth + 1,
+            deep_mode=deep_mode,
+            allow_minimax_fallback=allow_minimax_fallback,
         )
         return {
             "nodes": left.get("nodes", []) + right.get("nodes", []),
@@ -1570,10 +2099,26 @@ def _extract_with_adaptive_retry(
     )
     mid = len(chunk) // 2
     left = _extract_with_adaptive_retry(
-        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+        chunk[:mid],
+        backend,
+        api_key,
+        model,
+        root,
+        max_depth,
+        _depth + 1,
+        deep_mode=deep_mode,
+        allow_minimax_fallback=allow_minimax_fallback,
     )
     right = _extract_with_adaptive_retry(
-        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+        chunk[mid:],
+        backend,
+        api_key,
+        model,
+        root,
+        max_depth,
+        _depth + 1,
+        deep_mode=deep_mode,
+        allow_minimax_fallback=allow_minimax_fallback,
     )
 
     return {
@@ -1602,6 +2147,7 @@ def extract_corpus_parallel(
     max_concurrency: int = 4,
     max_retry_depth: int = 3,
     deep_mode: bool = False,
+    allow_minimax_fallback: bool = False,
 ) -> dict:
     """Extract a corpus in chunks, merging results.
 
@@ -1637,31 +2183,120 @@ def extract_corpus_parallel(
     output_tokens. Failed chunks are logged to stderr and skipped — one bad
     chunk does not abort the run.
     """
+    if backend == "ollama":
+        token_budget = _ollama_token_budget(token_budget)
     if token_budget is not None:
         chunks = _pack_chunks_by_tokens(files, token_budget=token_budget)
     else:
         chunks = [files[i:i + chunk_size] for i in range(0, len(files), chunk_size)]
 
+    total = len(chunks)
+    ollama_balance: dict[str, object] | None = None
+    if backend == "ollama":
+        fallback = _automatic_fallback_backend("ollama", allow=allow_minimax_fallback, model=None)
+        try:
+            mdl = model or _default_model_for_backend("ollama")
+            _validate_ollama_model_size(mdl)
+        except ValueError as exc:
+            if fallback:
+                print(
+                    f"[graphify] local Ollama model is outside the laptop-safe boundary ({exc}); "
+                    "routing semantic chunks to MiniMax.",
+                    file=sys.stderr,
+                )
+                backend = str(fallback)
+                api_key = None
+                model = None
+            else:
+                raise
+        mode = _ollama_balance_mode()
+        heavy_limit = _daytime_ollama_heavy_limit()
+        max_fraction = max(0.0, min(1.0, _ollama_float_option(
+            "GRAPHIFY_OLLAMA_MINIMAX_MAX_FRACTION",
+            _OLLAMA_MAX_MINIMAX_FRACTION,
+        )))
+        remote_cap = 0
+        if backend == "ollama" and fallback and mode != "local" and total > 1 and len(files) >= heavy_limit:
+            remote_cap = total if mode == "remote" else max(1, int(total * max_fraction))
+        slow_seconds = _OLLAMA_LOW_LOAD_SLOW_CHUNK_SECONDS if _in_ollama_low_load_window() else _OLLAMA_SLOW_CHUNK_SECONDS
+        slow_seconds = _ollama_float_option("GRAPHIFY_OLLAMA_SLOW_CHUNK_SECONDS", slow_seconds)
+        if backend == "ollama":
+            ollama_balance = {
+                "fallback": fallback,
+                "mode": mode,
+                "remote_cap": remote_cap,
+                "remote_used": 0,
+                "last_local_seconds": 0.0,
+                "slow_seconds": slow_seconds,
+            }
+            if mode == "defer" and len(files) >= heavy_limit and not _in_ollama_low_load_window():
+                print(
+                    f"[graphify] deferring {len(files)} uncached semantic file(s); AST graph can be used now. "
+                    "Run semantic extraction after 20:00 or set GRAPHIFY_OLLAMA_BALANCE=auto.",
+                    file=sys.stderr,
+                )
+                return {
+                    "nodes": [], "edges": [], "hyperedges": [],
+                    "input_tokens": 0, "output_tokens": 0,
+                    "failed_chunks": 0, "deferred_semantic": True,
+                }
+            if fallback and remote_cap:
+                print(
+                    f"[graphify] dynamic Ollama/MiniMax balance enabled: use local only while responsive, "
+                    f"spill at most {remote_cap}/{total} chunk(s) to MiniMax when local chunks are slow "
+                    "or laptop load is high.",
+                    file=sys.stderr,
+                )
+
     merged: dict = {
         "nodes": [], "edges": [], "hyperedges": [],
         "input_tokens": 0, "output_tokens": 0,
         "failed_chunks": 0,  # count of chunks that raised — loud failure on chunk errors
+        "minimax_chunks": 0,
     }
-    total = len(chunks)
+
+    def _route_for_chunk(idx: int) -> tuple[str, str | None, str | None]:
+        if backend != "ollama" or not ollama_balance:
+            return backend, api_key, model
+        fallback = ollama_balance.get("fallback")
+        remote_cap = int(ollama_balance.get("remote_cap") or 0)
+        remote_used = int(ollama_balance.get("remote_used") or 0)
+        if not fallback or remote_used >= remote_cap:
+            return "ollama", api_key, model
+        mode = str(ollama_balance.get("mode") or "auto")
+        slow = float(ollama_balance.get("last_local_seconds") or 0.0) >= float(ollama_balance.get("slow_seconds") or 0.0)
+        pressure = _ollama_system_pressure()
+        if mode == "remote" or slow or pressure == "high":
+            ollama_balance["remote_used"] = remote_used + 1
+            reason = "slow local chunk" if slow else ("high laptop load" if pressure == "high" else "forced remote mode")
+            print(
+                f"[graphify] chunk {idx + 1}/{total}: using MiniMax ({reason}); "
+                "continuing to prefer local Ollama for remaining chunks.",
+                file=sys.stderr,
+            )
+            return str(fallback), None, None
+        return "ollama", api_key, model
 
     def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
+        run_backend, run_api_key, run_model = _route_for_chunk(idx)
         t0 = time.time()
         try:
             result = _extract_with_adaptive_retry(
                 chunk,
-                backend=backend,
-                api_key=api_key,
-                model=model,
+                backend=run_backend,
+                model=run_model,
                 root=root,
                 max_depth=max_retry_depth,
                 deep_mode=deep_mode,
+                allow_minimax_fallback=allow_minimax_fallback and run_backend == "ollama",
+                **{"api_key": run_api_key},
             )
-            result["elapsed_seconds"] = round(time.time() - t0, 2)
+            elapsed = round(time.time() - t0, 2)
+            result["elapsed_seconds"] = elapsed
+            actual_backend = result.get("backend") or run_backend
+            result["backend"] = actual_backend
+            if ollama_balance is not None and actual_backend == "ollama":
+                ollama_balance["last_local_seconds"] = elapsed
             return idx, result, None
         except Exception as exc:  # noqa: BLE001 — caller-facing surface, log + continue
             return idx, None, exc
@@ -1686,6 +2321,8 @@ def extract_corpus_parallel(
                 merged["failed_chunks"] += 1
                 continue
             assert result is not None
+            if result.get("backend") == "minimax":
+                merged["minimax_chunks"] += 1
             _merge_into(merged, result)
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
@@ -1702,6 +2339,8 @@ def extract_corpus_parallel(
                     merged["failed_chunks"] += 1
                     continue
                 assert result is not None
+                if result.get("backend") == "minimax":
+                    merged["minimax_chunks"] += 1
                 _merge_into(merged, result)
                 if callable(on_chunk_done):
                     on_chunk_done(idx, total, result)
@@ -1758,6 +2397,8 @@ def _call_llm(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
     mdl = model or _default_model_for_backend(backend)
+    if backend == "ollama":
+        _validate_ollama_model_size(mdl)
 
     if backend == "claude":
         try:
@@ -1841,7 +2482,7 @@ def _call_llm(
             raise ValueError("Azure OpenAI returned empty or filtered response")
         return resp.choices[0].message.content or ""
 
-    # OpenAI-compatible (kimi, openai, gemini, ollama)
+    # OpenAI-compatible (minimax, kimi, openai, gemini, ollama, custom providers)
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -1850,8 +2491,8 @@ def _call_llm(
     kwargs: dict = {
         "model": mdl,
         "messages": [{"role": "user", "content": prompt}],
-        "max_completion_tokens": max_tokens,
     }
+    kwargs[cfg.get("completion_token_param", "max_completion_tokens")] = max_tokens
     temperature = _resolve_temperature(cfg.get("temperature", 0), mdl)
     if temperature is not None:
         kwargs["temperature"] = temperature
@@ -1863,7 +2504,16 @@ def _call_llm(
         kwargs["extra_body"] = cfg["extra_body"]
     elif "moonshot" in cfg["base_url"]:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-    resp = client.chat.completions.create(**kwargs)
+    elif backend == "ollama":
+        kwargs["extra_body"] = _ollama_request_extra_body()
+    try:
+        resp = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        fallback = _automatic_fallback_backend(backend, allow=True)
+        if fallback is None:
+            raise
+        _warn_backend_fallback(backend, fallback, exc)
+        return _call_llm(prompt, backend=fallback, max_tokens=max_tokens)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
     return resp.choices[0].message.content or ""
@@ -1952,31 +2602,43 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
 
 
 def detect_backend() -> str | None:
-    """Return the name of whichever backend has an API key set, or None.
+    """Return the preferred backend for unattended graphify LLM work.
 
-    Priority: gemini → kimi → claude → openai → deepseek → azure → bedrock → ollama (last, opt-in).
+    Priority: ollama (local <=8B primary) → minimax (token-plan fallback) →
+    gemini → kimi → claude → openai → deepseek → azure → bedrock → custom
+    providers. NVIDIA NIM remains available by explicit `--backend nim`, but is
+    no longer part of automatic selection or retry fallback on this workstation.
 
-    Ollama is intentionally checked LAST so a paid API key (Anthropic/OpenAI/etc.)
-    is never silently shadowed by an incidental OLLAMA_BASE_URL in the environment
-    — see security finding F-002/F-029. Setting OLLAMA_BASE_URL alongside a paid
-    key now keeps you on the paid backend; remove the paid key (or pass
-    --backend ollama explicitly) to route to the local model.
+    Ollama is selected first even without an API key because the local OpenAI
+    endpoint ignores auth and keeps corpus data on the laptop. Runtime failures
+    fall back to MiniMax when its token-plan key is configured.
     """
-    for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
+    ollama_url = os.environ.get("OLLAMA_BASE_URL", BACKENDS["ollama"].get("base_url", ""))
+    if os.environ.get("GRAPHIFY_DISABLE_OLLAMA_PRIMARY", "").strip().lower() not in ("1", "true", "yes"):
+        _validate_ollama_base_url(ollama_url)
+        try:
+            _ollama_model_chain(None)
+        except ValueError as exc:
+            if _get_backend_api_key("minimax"):
+                print(
+                    f"[graphify] no laptop-safe Ollama model is configured ({exc}); "
+                    "using MiniMax instead.",
+                    file=sys.stderr,
+                )
+                return "minimax"
+            raise
+        return "ollama"
+    for backend in ("minimax", "gemini", "kimi", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
             return backend
     if _get_backend_api_key("azure") and os.environ.get("AZURE_OPENAI_ENDPOINT"):
         return "azure"
     if os.environ.get("AWS_PROFILE") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
         return "bedrock"
-    ollama_url = os.environ.get("OLLAMA_BASE_URL")
-    if ollama_url:
-        _validate_ollama_base_url(ollama_url)
-        return "ollama"
+    builtins = {"minimax", "nim", "gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"}
     for name in BACKENDS:
-        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
-            if _get_backend_api_key(name):
-                return name
+        if name not in builtins and _get_backend_api_key(name):
+            return name
     return None
 
 
@@ -2150,7 +2812,7 @@ def generate_community_labels(
         if not quiet:
             print(
                 "[graphify label] no LLM backend configured; keeping Community N "
-                "placeholders. Set an API key (e.g. GOOGLE_API_KEY) or pass --backend.",
+                "placeholders. Set an API key (e.g. MINIMAX_API_KEY) or pass --backend.",
                 file=sys.stderr,
             )
         return _placeholder_community_labels(communities), "placeholder"

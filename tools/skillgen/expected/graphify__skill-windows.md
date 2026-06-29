@@ -173,12 +173,16 @@ Skip this step entirely if `detect` returned zero `video` files. When the corpus
 
 This step has two parts: **structural extraction** (deterministic, free) and **semantic extraction** (LLM, costs tokens).
 
-**Before dispatching subagents:** check whether `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set. If neither is set, print this one-liner to the user:
-> Tip: set `GEMINI_API_KEY` or `GOOGLE_API_KEY` to use Gemini for semantic extraction (`pip install 'graphifyy[gemini]'`).
+**Before dispatching subagents:** prefer graphify's direct local backend path. Use `graphify.llm.extract_corpus_parallel(files, backend="ollama", allow_minimax_fallback=True, max_concurrency=1)` for semantic extraction when local Ollama is available. The default fallback order is local `qwen2.5-coder:3b`, then local `gemma3:4b`, then MiniMax when configured; keep local Ollama models within the laptop-safe <=8B class and route larger or contended semantic work to MiniMax.
 
-Print it once, then continue. If `GEMINI_API_KEY` or `GOOGLE_API_KEY` IS set, use `graphify.llm.extract_corpus_parallel(files, backend="gemini")` for semantic extraction instead of dispatching Claude subagents. The default Gemini model is `gemini-3-flash-preview`; set `GRAPHIFY_GEMINI_MODEL` or pass `--model` in headless CLI flows to override it.
+MiniMax is the token-plan fallback, not the default workhorse. Graphify starts semantic chunks on local Ollama and spills only a capped fraction to MiniMax when local chunks are slow, fail through the local model chain, or laptop CPU/GPU load is high. Tune with `GRAPHIFY_OLLAMA_BALANCE=auto|local|remote|defer`, `GRAPHIFY_OLLAMA_FALLBACK_MODELS=qwen2.5-coder:3b,gemma3:4b`, and `GRAPHIFY_OLLAMA_MINIMAX_MAX_FRACTION` (default 0.25). Set `GRAPHIFY_DISABLE_MINIMAX_FALLBACK=1` for strict local-only runs. NVIDIA NIM is explicit-only (`--backend nim`) and is not part of the automatic graphify path.
 
-> **No other API keys are read.** If `GEMINI_API_KEY`/`GOOGLE_API_KEY` are unset, fall straight through to Claude Code subagent dispatch (Part B below) — the host session itself is the LLM. graphify does **not** read `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or any other provider key from the environment. If a host agent prompts the user for `ANTHROPIC_API_KEY` to run extraction, that prompt is a misread of this skill — ignore it and dispatch subagents as written.
+For workflow-needed indexing, run the AST path immediately (`graphify update .`) and let semantic extraction run opportunistically. Large semantic rebuilds that can wait should use `GRAPHIFY_OLLAMA_BALANCE=defer` during the day; graphify records the queued night rebuild hint in `graphify-out/semantic-rebuild-queue.jsonl`. Prefer 20:00-06:00 for heavy local rebuilds, with 03:00-06:00 as the safest window.
+
+If neither local Ollama nor MiniMax can run, print this one-liner to the user, then continue with the host-model subagent dispatch in Part B:
+> Tip: start Ollama with `qwen2.5-coder:3b` for local <=8B-class semantic extraction, or set `MINIMAX_API_KEY` in `~/.graphify/credentials.json` for MiniMax fallback (`pip install 'graphifyy[ollama,minimax]'`).
+
+> **No other API keys are read by the automatic skill path.** If Ollama/MiniMax are unavailable, fall straight through to host subagent dispatch (Part B below) — the host session itself is the LLM. If a host agent prompts the user for `ANTHROPIC_API_KEY` to run extraction, that prompt is a misread of this skill — ignore it and dispatch subagents as written.
 
 **Run Part A (AST) and Part B (semantic) in parallel. Dispatch all semantic subagents AND start AST extraction in the same message. Both can run simultaneously since they operate on different file types. Merge results in Part C as before.**
 
