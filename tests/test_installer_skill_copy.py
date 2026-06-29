@@ -101,3 +101,43 @@ def test_copy_skill_skips_cursor_and_gemini(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "cursor" in captured.err
     assert "gemini" in captured.err
+
+
+# --- drift-guard tests: catch future inconsistency between host_probe and skill_copy ---
+
+
+def test_known_hosts_have_skill_body_or_unsupported_marker():
+    """Every host in KNOWN_HOSTS must be either in _BODY_BY_HOST or in the
+    _UNSUPPORTED_IN_OFFLINE_INSTALLER set. Otherwise copy_skill would
+    silently fall through to the Claude bundle for a host whose
+    skill body is not Claude's."""
+    unsupported = skill_copy._UNSUPPORTED_IN_OFFLINE_INSTALLER
+    for host in KNOWN_HOSTS:
+        assert host.name in skill_copy._BODY_BY_HOST or host.name in unsupported, (
+            f"host {host.name!r} is in KNOWN_HOSTS but has no entry in "
+            f"_BODY_BY_HOST and is not in _UNSUPPORTED_IN_OFFLINE_INSTALLER"
+        )
+
+
+def test_references_paths_point_at_existing_directories():
+    """Every _REFS_BY_HOST entry must point at a real references/ subdir
+    of the installed graphify package. A stale path would silently skip
+    the sidecar copy at install time."""
+    for host_name, refs_rel in skill_copy._REFS_BY_HOST.items():
+        # `importlib.resources` is the production reader; we just check
+        # that the package was laid out with the expected directory.
+        # Skip if the package doesn't ship the file at all (Nuitka-compiled
+        # .exe may have a different layout).
+        try:
+            from importlib.resources import files
+            ref_root = files("graphify")
+            for part in refs_rel.split("/"):
+                ref_root = ref_root.joinpath(part)
+            # If we got here, the resource exists. Sanity check it's a dir.
+            assert ref_root.is_dir(), (
+                f"host {host_name!r}: references path {refs_rel!r} "
+                f"is not a directory"
+            )
+        except (FileNotFoundError, ModuleNotFoundError, AttributeError):
+            # Package not laid out as expected; skip.
+            pass
