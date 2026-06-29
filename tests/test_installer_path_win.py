@@ -36,12 +36,24 @@ def test_add_to_user_path_invokes_powershell_with_setx():
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell call only runs on Windows")
 def test_add_to_user_path_is_idempotent():
     """Calling add_to_user_path twice with the same value must not error and
-    must produce the same PowerShell call shape both times."""
+    must produce the same PowerShell call shape both times. The dedup is
+    enforced INSIDE the PowerShell script (via the -notcontains filter), so
+    we also assert that filter is present — otherwise Python can't see
+    whether the second call would actually be a no-op."""
     fake = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
     with patch("graphify.installer.path_win.subprocess.run", fake):
         path_win.add_to_user_path(r"C:\graphify\bin")
         path_win.add_to_user_path(r"C:\graphify\bin")
     assert fake.call_count == 2
+    # Both PS commands must be identical (Python emits the same text twice).
+    cmd0 = fake.call_args_list[0][0][0]
+    cmd1 = fake.call_args_list[1][0][0]
+    assert cmd0 == cmd1
+    # The dedup filter must be in the PS command text — this is what makes
+    # the second invocation a no-op on Windows.
+    command_str = next(a for a in cmd0 if isinstance(a, str) and "SetEnvironmentVariable" in a)
+    assert "-notcontains" in command_str
+    assert r"C:\graphify\bin" in command_str
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell call only runs on Windows")

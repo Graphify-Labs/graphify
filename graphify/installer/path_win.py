@@ -1,12 +1,12 @@
-"""User-level PATH manipulation on Windows.
+r"""User-level PATH manipulation on Windows.
 
-We do NOT use `os.environ` mutation (it doesn't persist beyond the process)
-and we do NOT touch `HKLM\SYSTEM\...` (system PATH requires admin and
-modifies a global setting). Instead we shell out to PowerShell:
+We do NOT use ``os.environ`` mutation (it doesn't persist beyond the process)
+and we do NOT touch ``HKLM\SYSTEM\...`` (system PATH requires admin and
+modifies a global setting). Instead we shell out to PowerShell::
 
     [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
 
-`User` target writes to `HKCU\Environment`, which is what we want. The
+``User`` target writes to ``HKCU\Environment``, which is what we want. The
 new value is the current user PATH with the target path appended (for
 add) or filtered out (for remove).
 """
@@ -43,19 +43,16 @@ def _powershell_set_path(ps_command: str) -> None:
         )
 
 
-def _build_set_command(current: str, new: str) -> str:
+def _build_set_command(new: str) -> str:
     """PowerShell that:
        1. Reads current user Path.
        2. Splits on ';' (registry stores it as a single REG_EXPAND_SZ string).
        3. If `new` is not already present, appends it.
        4. Writes back via SetEnvironmentVariable('Path', ..., 'User').
     """
-    # Escape single quotes for PowerShell single-quoted strings
-    cur = current.replace("'", "''")
     nw = new.replace("'", "''")
     return (
         f"$cur = [Environment]::GetEnvironmentVariable('Path', 'User'); "
-        f"$sep = [IO.Path]::PathSeparator; "
         f"$parts = if ([string]::IsNullOrEmpty($cur)) {{ @() }} else {{ $cur.Split(';') }}; "
         f"if ($parts -notcontains '{nw}') {{ $parts += '{nw}' }}; "
         f"$new = [string]::Join(';', $parts); "
@@ -63,7 +60,7 @@ def _build_set_command(current: str, new: str) -> str:
     )
 
 
-def _build_unset_command(current: str, target: str) -> str:
+def _build_unset_command(target: str) -> str:
     """PowerShell that removes `target` from the user Path and writes back."""
     tgt = target.replace("'", "''")
     return (
@@ -83,15 +80,14 @@ def add_to_user_path(path: str) -> None:
     """
     if sys.platform != "win32":
         return
-    # We don't need to read `current` in Python — the PS command does it.
-    _powershell_set_path(_build_set_command("", path))
+    _powershell_set_path(_build_set_command(path))
 
 
 def remove_from_user_path(path: str) -> None:
     """Remove `path` from the user-level PATH. No-op on non-Windows."""
     if sys.platform != "win32":
         return
-    _powershell_set_path(_build_unset_command("", path))
+    _powershell_set_path(_build_unset_command(path))
 
 
 def current_user_path() -> str:
