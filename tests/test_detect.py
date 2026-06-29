@@ -15,6 +15,10 @@ def test_classify_powershell_module():
     # #1315: .psm1 modules were never indexed (CODE_EXTENSIONS gap).
     assert classify_file(Path("Utils.psm1")) == FileType.CODE
 
+def test_classify_powershell_manifest():
+    # #1331: .psd1 manifests must be classified as CODE so the manifest extractor runs.
+    assert classify_file(Path("MyModule.psd1")) == FileType.CODE
+
 def test_classify_markdown():
     assert classify_file(Path("README.md")) == FileType.DOCUMENT
 
@@ -947,18 +951,38 @@ def test_gitignore_fallback_when_no_graphifyignore(tmp_path):
     assert not any("generated" in f for f in code)
 
 
-def test_graphifyignore_can_override_gitignore(tmp_path):
-    """.gitignore is loaded first; .graphifyignore rules win when they disagree."""
+def test_graphifyignore_and_gitignore_are_merged(tmp_path):
+    """When both exist, their patterns are MERGED — a file excluded only by
+    .gitignore stays excluded even though .graphifyignore says nothing about it
+    (#1363). Previously the presence of a .graphifyignore silently disabled the
+    dir's .gitignore, leaking gitignore-only secrets into the graph."""
     (tmp_path / ".git").mkdir()
-    (tmp_path / ".gitignore").write_text("main.py\n")
-    (tmp_path / ".graphifyignore").write_text("!main.py\nother.py\n")
+    (tmp_path / ".gitignore").write_text("main.py\n")        # gitignore-only exclusion
+    (tmp_path / ".graphifyignore").write_text("other.py\n")  # says nothing about main.py
     (tmp_path / "main.py").write_text("x = 1")
     (tmp_path / "other.py").write_text("x = 2")
+    (tmp_path / "keep.py").write_text("x = 3")
 
     result = detect(tmp_path)
     code = result["files"]["code"]
-    assert any("main.py" in f for f in code)
-    assert not any("other.py" in f for f in code)
+    assert not any("main.py" in f for f in code)   # gitignore STILL applied (merged)
+    assert not any("other.py" in f for f in code)  # graphifyignore applied
+    assert any("keep.py" in f for f in code)       # neither excludes it
+
+
+def test_graphifyignore_negation_overrides_gitignore(tmp_path):
+    """.graphifyignore is evaluated after .gitignore, so a `!` negation in it can
+    re-include a file the .gitignore excluded (last-match-wins, #1363)."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitignore").write_text("*.py\n")           # exclude all .py
+    (tmp_path / ".graphifyignore").write_text("!keep.py\n")  # but rescue keep.py
+    (tmp_path / "main.py").write_text("x = 1")
+    (tmp_path / "keep.py").write_text("x = 2")
+
+    result = detect(tmp_path)
+    code = result["files"]["code"]
+    assert any("keep.py" in f for f in code)      # rescued by graphifyignore negation
+    assert not any("main.py" in f for f in code)  # still excluded
 
 
 # Regression tests for #947 - .worktrees/ skipped and --exclude flag

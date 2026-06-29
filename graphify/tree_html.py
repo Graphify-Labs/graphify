@@ -549,7 +549,7 @@ def emit_html(
 ) -> str:
     # Escape </script> sequences so embedded JSON cannot break out of the
     # <script> tag, and HTML-escape values that land in <title>/<h1>.
-    data_json = json.dumps(tree, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    data_json = json.dumps(tree, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
     return _HTML_TEMPLATE.format(
         title=_html.escape(title),
         header=_html.escape(header),

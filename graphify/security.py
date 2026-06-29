@@ -15,6 +15,8 @@ from typing import Any
 import ipaddress
 import socket
 
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME
+
 _ALLOWED_SCHEMES = {"http", "https"}
 _MAX_FETCH_BYTES = 52_428_800   # 50 MB hard cap for binary downloads
 _MAX_TEXT_BYTES  = 10_485_760   # 10 MB hard cap for HTML / text
@@ -323,11 +325,11 @@ def validate_graph_path(path: str | Path, base: Path | None = None) -> Path:
     if base is None:
         resolved_hint = Path(path).resolve()
         for candidate in [resolved_hint, *resolved_hint.parents]:
-            if candidate.name == "graphify-out":
+            if candidate.name == GRAPHIFY_OUT_NAME:
                 base = candidate
                 break
         if base is None:
-            base = Path("graphify-out").resolve()
+            base = Path(GRAPHIFY_OUT).resolve()
 
     base = base.resolve()
     if not base.exists():

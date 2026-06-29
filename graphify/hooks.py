@@ -99,12 +99,24 @@ try:
         signal.alarm(_timeout)
     _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
     _root = Path('.')
-    _saved = Path('graphify-out/.graphify_root')
+    _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
+    _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8').strip()
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, changed_paths=changed, force=_force)
+    # Refresh the work-memory lessons doc when saved Q&A outcomes exist
+    # (best-effort; never fails the hook).
+    try:
+        _md = (_root / _out) / 'memory'
+        if _md.is_dir() and any(_md.glob('*.md')):
+            from graphify.reflect import reflect as _reflect
+            _gj = (_root / _out) / 'graph.json'
+            _reflect(memory_dir=_md, out_path=(_root / _out) / 'reflections' / 'LESSONS.md',
+                     graph_path=_gj if _gj.exists() else None)
+    except Exception:
+        pass
 except TimeoutError as exc:
     print(f'[graphify hook] {exc}')
     sys.exit(1)
@@ -128,12 +140,24 @@ try:
     # (no changed_paths) is correct here. The flock inside _rebuild_code still
     # prevents pile-ups when commit + checkout fire back-to-back.
     _root = Path('.')
-    _saved = Path('graphify-out/.graphify_root')
+    _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
+    _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8').strip()
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, force=_force)
+    # Refresh the work-memory lessons doc when saved Q&A outcomes exist
+    # (best-effort; never fails the hook).
+    try:
+        _md = (_root / _out) / 'memory'
+        if _md.is_dir() and any(_md.glob('*.md')):
+            from graphify.reflect import reflect as _reflect
+            _gj = (_root / _out) / 'graph.json'
+            _reflect(memory_dir=_md, out_path=(_root / _out) / 'reflections' / 'LESSONS.md',
+                     graph_path=_gj if _gj.exists() else None)
+    except Exception:
+        pass
 except TimeoutError as exc:
     print(f'[graphify] {exc}')
     sys.exit(1)
@@ -284,6 +308,25 @@ def _git_root(path: Path) -> Path | None:
     return None
 
 
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _reject_windows_path(value: str, source: str) -> None:
+    """Raise if a hooks path looks like a Windows absolute path (#1385).
+
+    On POSIX/WSL ``Path("C:\\Users\\...").is_absolute()`` is False, so an absolute
+    Windows hooks path gets joined under the repo root and mkdir'd as a literal
+    junk directory (backslashes and all), while install reports success and the
+    real ``.git/hooks`` gets nothing. Fail loudly instead so the user can fix it.
+    """
+    if _WINDOWS_DRIVE_RE.match(value) or "\\" in value:
+        raise RuntimeError(
+            f"git hooks path from {source} looks like a Windows path: {value!r}. "
+            f"On WSL/POSIX this can't resolve to a real directory. Unset it with "
+            f"`git config --local --unset core.hooksPath`, or set a POSIX path."
+        )
+
+
 def _hooks_dir(root: Path) -> Path:
     """Return the git hooks directory, respecting core.hooksPath if set (e.g. Husky)."""
     try:
@@ -292,6 +335,7 @@ def _hooks_dir(root: Path) -> Path:
         # configparser lowercases option names; git's hooksPath becomes hookspath
         custom = cfg.get("core", "hookspath", fallback="").strip()
         if custom:
+            _reject_windows_path(custom, "core.hooksPath")
             p = Path(custom).expanduser()
             if not p.is_absolute():
                 p = root / p
@@ -331,6 +375,7 @@ def _hooks_dir(root: Path) -> Path:
         # A valid hooks path can never contain newlines or NUL. Their presence
         # means git echoed an unrecognised flag back (old git behaviour).
         if res.returncode == 0 and raw and not any(c in raw for c in ("\n", "\r", "\x00")):
+            _reject_windows_path(raw, "git rev-parse --git-path hooks")
             d = (root / raw).resolve()
             d.mkdir(parents=True, exist_ok=True)
             return d

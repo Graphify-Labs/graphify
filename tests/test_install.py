@@ -599,6 +599,28 @@ def test_opencode_agents_install_writes_plugin(tmp_path):
     assert "tool.execute.before" in plugin.read_text()
 
 
+def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
+    """The bash reminder string must not contain backticks or $(...) (regression test for #1413).
+
+    The plugin prepends `echo "<reminder>" && <cmd>` to the user's bash command.
+    Backticks or $() inside the reminder trigger bash command substitution
+    when the echo runs, which both corrupts tool output and silently executes
+    the very graphify command we are only suggesting.
+    """
+    _agents_install(tmp_path, "opencode")
+    plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
+    body = plugin.read_text()
+    # Extract the echoed reminder string literal between the double-quotes
+    # of the `output.args.command = 'echo "..." && ' +` line.
+    import re
+
+    m = re.search(r'echo "([^"]*)"', body)
+    assert m, "echo reminder not found in plugin body"
+    reminder = m.group(1)
+    assert "`" not in reminder, f"backtick in reminder would trigger command substitution: {reminder!r}"
+    assert "$(" not in reminder, f"$() in reminder would trigger command substitution: {reminder!r}"
+
+
 def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
     """opencode install registers the plugin in .opencode/opencode.json."""
     _agents_install(tmp_path, "opencode")
@@ -970,3 +992,21 @@ def test_uninstall_all_removes_amp_user_skill(tmp_path, monkeypatch):
         main()
 
     assert not skill.exists()
+
+
+def test_hermes_skill_destination_windows_uses_localappdata():
+    """#1403: on Windows, Hermes scans %LOCALAPPDATA%\\hermes\\skills, so the global
+    skill must land there — not ~/.hermes/skills (the POSIX path)."""
+    from graphify.__main__ import _platform_skill_destination
+    with patch("graphify.__main__.platform.system", return_value="Windows"), \
+         patch.dict(os.environ, {"LOCALAPPDATA": str(Path("/tmp/AppDataLocal"))}):
+        dst = _platform_skill_destination("hermes", project=False)
+    assert dst == Path("/tmp/AppDataLocal") / "hermes" / "skills" / "graphify" / "SKILL.md", dst
+
+
+def test_hermes_skill_destination_posix_uses_home():
+    """Non-Windows hermes destination is unchanged (~/.hermes/skills)."""
+    from graphify.__main__ import _platform_skill_destination
+    with patch("graphify.__main__.platform.system", return_value="Linux"):
+        dst = _platform_skill_destination("hermes", project=False)
+    assert str(dst).endswith(".hermes/skills/graphify/SKILL.md"), dst

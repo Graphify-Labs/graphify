@@ -8,6 +8,7 @@ from networkx.readwrite import json_graph
 
 from graphify.build import edge_data
 from graphify.serve import _query_terms
+from graphify.paths import default_graph_json as _default_graph_json
 
 
 _CHARS_PER_TOKEN = 4  # standard approximation
@@ -85,7 +86,7 @@ _SAMPLE_QUESTIONS = [
 
 
 def run_benchmark(
-    graph_path: str = "graphify-out/graph.json",
+    graph_path: str | None = None,
     corpus_words: int | None = None,
     questions: list[str] | None = None,
 ) -> dict:
@@ -98,6 +99,7 @@ def run_benchmark(
 
     Returns dict with: corpus_tokens, avg_query_tokens, reduction_ratio, per_question
     """
+    graph_path = graph_path or _default_graph_json()
     from graphify.security import check_graph_file_size_cap
     check_graph_file_size_cap(Path(graph_path))
     data = json.loads(Path(graph_path).read_text(encoding="utf-8"))

@@ -62,6 +62,36 @@ def test_build_from_json_stores_hyperedges():
     assert G.graph["hyperedges"][0]["id"] == "auth_flow"
 
 
+def test_build_from_json_relativizes_hyperedge_source_file(tmp_path):
+    """build_from_json(root=...) must relativize hyperedge source_file like it
+    already does for nodes and edges. to_json writes G.graph['hyperedges']
+    verbatim and has no root parameter, so an absolute path emitted by a semantic
+    subagent would otherwise leak into graph.json (#1418)."""
+    base = tmp_path.resolve()
+    abs_doc = base / "docs" / "CLAUDE.md"
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "A", "file_type": "document", "source_file": str(abs_doc)},
+        ],
+        "edges": [],
+        "hyperedges": [
+            {
+                "id": "arch",
+                "label": "Architecture",
+                "nodes": ["a"],
+                "relation": "participate_in",
+                "confidence": "INFERRED",
+                "confidence_score": 0.75,
+                "source_file": str(abs_doc),
+            }
+        ],
+    }
+    G = build_from_json(extraction, root=str(base))
+    assert G.graph["hyperedges"][0]["source_file"] == "docs/CLAUDE.md"
+    # Anchor: the node path is relativized the same way (the contract this mirrors).
+    assert G.nodes["a"]["source_file"] == "docs/CLAUDE.md"
+
+
 def test_build_from_json_no_hyperedges():
     extraction = {**SAMPLE_EXTRACTION, "hyperedges": []}
     G = build_from_json(extraction)

@@ -85,3 +85,53 @@ def test_assert_valid_raises_on_errors():
 
 def test_assert_valid_passes_silently():
     assert_valid(VALID)  # should not raise
+
+
+def test_non_hashable_node_id_reported_not_raised():
+    # A malformed LLM extraction can emit a list-valued id. The validator must
+    # report it as an error string (its documented contract) rather than crash
+    # with TypeError: unhashable type on set construction.
+    data = {
+        "nodes": [
+            {"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": ["x", "y"], "label": "B", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [],
+    }
+    errors = validate_extraction(data)
+    assert any("non-hashable id" in e for e in errors)
+
+
+def test_non_hashable_edge_endpoint_reported_not_raised():
+    # A list-valued edge source/target must be reported, not crash the
+    # membership test against the node-id set.
+    data = {
+        "nodes": [
+            {"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "n1", "target": ["n2", "n3"], "relation": "calls",
+             "confidence": "INFERRED", "source_file": "a.py"},
+        ],
+    }
+    errors = validate_extraction(data)
+    assert any("target" in e and "non-hashable" in e for e in errors)
+
+
+def test_non_hashable_node_id_does_not_mask_valid_ids():
+    # The valid node id must still be collected so a legitimately-dangling edge
+    # is still flagged even when a sibling node has a bad id.
+    data = {
+        "nodes": [
+            {"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": {"oops": 1}, "label": "B", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "n1", "target": "ghost", "relation": "calls",
+             "confidence": "EXTRACTED", "source_file": "a.py"},
+        ],
+    }
+    errors = validate_extraction(data)
+    assert any("non-hashable id" in e for e in errors)
+    assert any("target" in e and "ghost" in e for e in errors)

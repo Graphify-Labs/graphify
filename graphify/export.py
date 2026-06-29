@@ -7,6 +7,7 @@ import math
 import os
 import re
 import shutil
+import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -840,6 +841,28 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     return f"{truncated}_{digest}"
 
 
+def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
+    """Map each node_id to a unique note filename, appending a numeric suffix on
+    collision. The collision set is keyed on the lowercased name so two labels
+    differing only by case (e.g. "References" vs "references") still get distinct
+    filenames - on case-insensitive filesystems (macOS/APFS, Windows/NTFS) they
+    would otherwise resolve to one path and silently overwrite each other on disk.
+    The suffixed candidate is itself re-checked, so a generated "base_1" never
+    silently overwrites a node whose literal label is already "base_1"."""
+    node_filenames: dict[str, str] = {}
+    used: set[str] = set()
+    for node_id, data in G.nodes(data=True):
+        base = safe_name(data.get("label", node_id))
+        candidate = base
+        n = 1
+        while candidate.lower() in used:
+            candidate = f"{base}_{n}"
+            n += 1
+        used.add(candidate.lower())
+        node_filenames[node_id] = candidate
+    return node_filenames
+
+
 def to_obsidian(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -858,6 +881,30 @@ def to_obsidian(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
+    # #1506: when the export target is an existing Obsidian vault (a user pointed
+    # --obsidian-dir at one), we must not clobber the user's own notes or their
+    # .obsidian/ config. Track the files graphify owns in a manifest; a pre-existing
+    # file NOT in the manifest is the user's and is never overwritten.
+    _manifest_path = out / ".graphify_obsidian_manifest.json"
+    try:
+        _owned: set[str] = set(json.loads(_manifest_path.read_text(encoding="utf-8")).get("files", []))
+    except (OSError, ValueError):
+        _owned = set()
+    _written: list[str] = []
+    _skipped: list[str] = []
+
+    def _owned_write(rel_name: str, content: str) -> bool:
+        """Write a graphify-owned file, refusing to overwrite a pre-existing file
+        graphify didn't create. Returns True if written."""
+        target = out / rel_name
+        if target.exists() and rel_name not in _owned:
+            _skipped.append(rel_name)
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")  # nosec
+        _written.append(rel_name)
+        return True
+
     node_community = _node_community_map(communities)
 
     # Map node_id → safe filename so wikilinks stay consistent.
@@ -866,18 +913,16 @@ def to_obsidian(
         cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
         # Strip trailing .md/.mdx/.markdown so "CLAUDE.md" doesn't become "CLAUDE.md.md"
         cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        return _cap_filename(cleaned) if cleaned else "unnamed"
+        # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
+        # strip above but is empty once a downstream tool re-slugs on word chars
+        # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
+        # `qmd update`). Require at least one word char; else fall back so we never
+        # emit a "@.md"-style filename. (#1409)
+        if not re.search(r"\w", cleaned, flags=re.UNICODE):
+            return "unnamed"
+        return _cap_filename(cleaned)
 
-    node_filename: dict[str, str] = {}
-    seen_names: dict[str, int] = {}
-    for node_id, data in G.nodes(data=True):
-        base = safe_name(data.get("label", node_id))
-        if base in seen_names:
-            seen_names[base] += 1
-            node_filename[node_id] = f"{base}_{seen_names[base]}"
-        else:
-            seen_names[base] = 0
-            node_filename[node_id] = base
+    node_filename = _dedup_node_filenames(G, safe_name)
 
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
@@ -897,6 +942,7 @@ def to_obsidian(
     }
 
     # Write one .md file per node
+    node_notes_written = 0
     for node_id, data in G.nodes(data=True):
         label = data.get("label", node_id)
         cid = node_community.get(node_id)
@@ -950,7 +996,8 @@ def to_obsidian(
         lines.append(inline_tags)
 
         fname = node_filename[node_id] + ".md"
-        (out / fname).write_text("\n".join(lines), encoding="utf-8")  # nosec
+        if _owned_write(fname, "\n".join(lines)):
+            node_notes_written += 1
 
     # Write one _COMMUNITY_name.md overview note per community
     # Build inter-community edge counts for "Connections to other communities"
@@ -975,13 +1022,33 @@ def to_obsidian(
         }
         return len(neighbor_cids)
 
-    community_notes_written = 0
-    for cid, all_members in communities.items():
-        community_name = (
+    def _community_name(cid) -> str:
+        return (
             community_labels.get(cid, f"Community {cid}")
             if community_labels and cid is not None
             else f"Community {cid}"
         )
+
+    # One case-folded-deduped filename per community, computed once so the note we
+    # write and every [[_COMMUNITY_...]] cross-reference resolve to the same file.
+    # Two community labels differing only by case (e.g. LLM labels "API" vs "Api")
+    # would otherwise overwrite each other on case-insensitive filesystems - and
+    # this path had no dedup at all, so even same-case duplicate labels collided.
+    community_filename: dict = {}
+    used_community: set[str] = set()
+    for cid in communities:
+        base = f"_COMMUNITY_{safe_name(_community_name(cid))}"
+        candidate = base
+        n = 1
+        while candidate.lower() in used_community:
+            candidate = f"{base}_{n}"
+            n += 1
+        used_community.add(candidate.lower())
+        community_filename[cid] = candidate
+
+    community_notes_written = 0
+    for cid, all_members in communities.items():
+        community_name = _community_name(cid)
         # A community's member list can contain ids with no backing node in G
         # (e.g. pruned nodes, stale community assignments from a prior run, or
         # synthesized/merge-artifact ids). Dereferencing those via G.nodes[n] or
@@ -1045,13 +1112,8 @@ def to_obsidian(
         if cross:
             lines.append("## Connections to other communities")
             for other_cid, edge_count in sorted(cross.items(), key=lambda x: -x[1]):
-                other_name = (
-                    community_labels.get(other_cid, f"Community {other_cid}")
-                    if community_labels and other_cid is not None
-                    else f"Community {other_cid}"
-                )
-                other_safe = safe_name(other_name)
-                lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[_COMMUNITY_{other_safe}]]")
+                other_fname = community_filename.get(other_cid) or f"_COMMUNITY_{safe_name(_community_name(other_cid))}"
+                lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[{other_fname}]]")
             lines.append("")
 
         # Top bridge nodes - highest degree nodes that connect to other communities
@@ -1071,14 +1133,14 @@ def to_obsidian(
                     f"{'community' if reach == 1 else 'communities'}"
                 )
 
-        community_safe = safe_name(community_name)
-        fname = f"_COMMUNITY_{community_safe}.md"
-        (out / fname).write_text("\n".join(lines), encoding="utf-8")  # nosec
-        community_notes_written += 1
+        fname = community_filename[cid] + ".md"
+        if _owned_write(fname, "\n".join(lines)):
+            community_notes_written += 1
 
-    # Improvement 4: write .obsidian/graph.json to color nodes by community in graph view
-    obsidian_dir = out / ".obsidian"
-    obsidian_dir.mkdir(exist_ok=True)
+    # Improvement 4: write .obsidian/graph.json to color nodes by community in graph
+    # view — but never clobber an existing .obsidian/graph.json graphify doesn't own
+    # (the user's graph-view settings live there). _owned_write handles that and
+    # creates the .obsidian/ dir only when it actually writes.
     graph_config = {
         "colorGroups": [
             {
@@ -1088,9 +1150,26 @@ def to_obsidian(
             for cid, label in sorted((community_labels or {}).items())
         ]
     }
-    (obsidian_dir / "graph.json").write_text(json.dumps(graph_config, indent=2), encoding="utf-8")  # nosec
+    _owned_write(".obsidian/graph.json", json.dumps(graph_config, indent=2))
 
-    return G.number_of_nodes() + community_notes_written
+    # Persist the manifest of files graphify owns, so a re-run can safely update its
+    # own notes while still refusing to touch the user's. Warn (once, aggregated)
+    # about anything skipped to avoid clobbering a pre-existing file.
+    try:
+        _manifest_path.write_text(json.dumps({"files": sorted(set(_written))}, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    if _skipped:
+        shown = ", ".join(_skipped[:5]) + (f" (+{len(_skipped) - 5} more)" if len(_skipped) > 5 else "")
+        print(
+            f"[graphify] WARNING: skipped {len(_skipped)} pre-existing file(s) graphify "
+            f"did not create, to avoid overwriting your notes: {shown}. "
+            f"Export into an empty directory (or the default graphify-out/obsidian) "
+            f"to get the full vault.",
+            file=sys.stderr,
+        )
+
+    return node_notes_written + community_notes_written
 
 
 def to_canvas(
@@ -1112,20 +1191,25 @@ def to_canvas(
     def safe_name(label: str) -> str:
         cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
         cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        return _cap_filename(cleaned) if cleaned else "unnamed"
+        # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
+        # strip above but is empty once a downstream tool re-slugs on word chars
+        # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
+        # `qmd update`). Require at least one word char; else fall back so we never
+        # emit a "@.md"-style filename. (#1409)
+        if not re.search(r"\w", cleaned, flags=re.UNICODE):
+            return "unnamed"
+        return _cap_filename(cleaned)
 
     # Build node_filenames if not provided (same dedup logic as to_obsidian)
     if node_filenames is None:
-        node_filenames = {}
-        seen_names: dict[str, int] = {}
-        for node_id, data in G.nodes(data=True):
-            base = safe_name(data.get("label", node_id))
-            if base in seen_names:
-                seen_names[base] += 1
-                node_filenames[node_id] = f"{base}_{seen_names[base]}"
-            else:
-                seen_names[base] = 0
-                node_filenames[node_id] = base
+        node_filenames = _dedup_node_filenames(G, safe_name)
+
+    # Fallback: with no community data (e.g. --no-cluster builds or a missing
+    # analysis sidecar) the grid below produces nothing and the canvas is written
+    # as an empty 32-byte shell on an otherwise populated graph. Emit every node
+    # into one synthetic community so the canvas always reflects the graph (#1324).
+    if not communities and G.number_of_nodes() > 0:
+        communities = {0: [str(n) for n in G.nodes()]}
 
     num_communities = len(communities)
     cols = math.ceil(math.sqrt(num_communities)) if num_communities > 0 else 1
@@ -1139,15 +1223,21 @@ def to_canvas(
     group_x_offsets: list[int] = []
     group_y_offsets: list[int] = []
 
-    # Precompute group sizes so we can calculate offsets
+    # Precompute group sizes so we can calculate offsets.
+    # inner_cols is the per-community grid width; the box dimensions AND the node
+    # placement loop below both derive from it, so the cards always fill the box
+    # instead of wrapping into a narrow strip inside an oversized box.
     sorted_cids = sorted(communities.keys())
     group_sizes: dict[int, tuple[int, int]] = {}
+    group_cols: dict[int, int] = {}
     for cid in sorted_cids:
         members = communities[cid]
         n = len(members)
-        w = max(600, 220 * math.ceil(math.sqrt(n)) if n > 0 else 600)
-        h = max(400, 100 * math.ceil(n / 3) + 120 if n > 0 else 400)
+        inner_cols = max(1, math.ceil(math.sqrt(n)))
+        w = max(600, 220 * inner_cols)
+        h = max(400, 100 * math.ceil(n / inner_cols) + 120)
         group_sizes[cid] = (w, h)
+        group_cols[cid] = inner_cols
 
     # Compute cumulative row heights and col widths for grid placement
     # Each grid cell uses the max width/height in its col/row
@@ -1211,11 +1301,13 @@ def to_canvas(
             "color": canvas_color,
         })
 
-        # Node cards inside the group - rows of 3
+        # Node cards inside the group - laid out in the same ceil(sqrt(n))-column
+        # grid the box was sized for (group_cols[cid]), so cards fill the box.
+        inner_cols = group_cols[cid]
         sorted_members = sorted(members, key=lambda n: G.nodes[n].get("label", n))
         for m_idx, node_id in enumerate(sorted_members):
-            col = m_idx % 3
-            row = m_idx // 3
+            col = m_idx % inner_cols
+            row = m_idx // inner_cols
             nx_x = gx + 20 + col * (180 + 20)
             nx_y = gy + 80 + row * (60 + 20)
             fname = node_filenames.get(node_id, safe_name(G.nodes[node_id].get("label", node_id)))
@@ -1382,7 +1474,7 @@ def push_to_falkordb(
         host=parsed.hostname or "localhost",
         port=parsed.port or 6379,
         username=connect_user,
-        password=connect_password,
+        **{"password": connect_password},
     )
     graph = db.select_graph(graph_name)
     nodes_pushed = 0
@@ -1443,6 +1535,15 @@ def to_graphml(
     for _, _, attrs in H.edges(data=True):
         for k in [k for k in attrs if k.startswith("_")]:
             del attrs[k]
+    # nx.write_graphml raises ValueError on None attribute values; replace with "".
+    for node_id in H.nodes():
+        for key, val in list(H.nodes[node_id].items()):
+            if val is None:
+                H.nodes[node_id][key] = ""
+    for u, v in H.edges():
+        for key, val in list(H.edges[u, v].items()):
+            if val is None:
+                H.edges[u, v][key] = ""
     nx.write_graphml(H, output_path)
 
 

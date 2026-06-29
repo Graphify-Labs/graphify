@@ -62,6 +62,46 @@ def test_glob_pattern_nudges(tmp_path):
     assert "graphify query" in out
 
 
+def test_nudges_on_framework_source(tmp_path):
+    """.astro/.vue/.svelte are real source types and must nudge (regression)."""
+    for path in ("src/components/Hero.astro", "src/App.vue", "src/Card.svelte"):
+        out = _run({"file_path": path}, tmp_path, graph=True).stdout
+        assert "graphify query" in out, f"{path} should nudge"
+
+
+def test_astro_glob_nudges(tmp_path):
+    out = _run({"pattern": "**/*.astro"}, tmp_path, graph=True).stdout
+    assert "graphify query" in out
+
+
+def test_silent_on_json_config(tmp_path):
+    """Config files must stay silent: '.json' must not match the '.js' extension."""
+    for path in ("package.json", "tsconfig.json", "data.geojson"):
+        out = _run({"file_path": path}, tmp_path, graph=True).stdout
+        assert out.strip() == "", f"{path} should not nudge"
+
+
+def test_nudges_on_multi_dot_source(tmp_path):
+    """A real trailing extension must win on multi-dot names (the segment split):
+    a.test.tsx -> .tsx (nudge), foo.min.js -> .js (nudge)."""
+    for path in ("src/a.test.tsx", "lib/foo.min.js"):
+        out = _run({"file_path": path}, tmp_path, graph=True).stdout
+        assert "graphify query" in out, f"{path} should nudge"
+
+
+def test_windows_path_nudges(tmp_path):
+    """Backslash-separated paths split on the real final segment, then its ext."""
+    out = _run({"file_path": r"src\components\app.py"}, tmp_path, graph=True).stdout
+    assert "graphify query" in out
+
+
+def test_silent_when_extension_is_on_a_directory_segment(tmp_path):
+    """An extension that sits on a directory component, not the final segment,
+    must not fire: my.ts/file -> tail is 'file' (no dot), silent."""
+    out = _run({"file_path": "my.ts/file"}, tmp_path, graph=True).stdout
+    assert out.strip() == ""
+
+
 def test_fails_open_on_malformed_stdin(tmp_path):
     (tmp_path / "graphify-out").mkdir()
     (tmp_path / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")

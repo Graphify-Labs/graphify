@@ -290,7 +290,10 @@ def test_rebuild_code_evicts_removed_symbol_from_surviving_file(tmp_path):
     # Remove foo() from a.py (keep bar); leave b.py untouched.
     (corpus / "a.py").write_text("def bar(): pass\n", encoding="utf-8")
 
-    assert _rebuild_code(corpus, acquire_lock=False, force=True) is True
+    # No force=True: a symbol removed from a re-extracted file is a legitimate
+    # shrink, so the shrink-guard must let `graphify update` refresh the graph
+    # without --force (the lost node belongs to a rebuilt source).
+    assert _rebuild_code(corpus, acquire_lock=False) is True
     after_data = json.loads(graph_path.read_text(encoding="utf-8"))
     after = labels(after_data)
 
@@ -581,6 +584,36 @@ def test_check_shrink_allows_no_existing_data():
     assert ok is True
 
 
+def test_check_shrink_allows_shrink_within_rebuilt_sources(capsys):
+    """#1116: a symbol removed from a re-extracted file is a legitimate shrink —
+    every lost node belongs to a rebuilt source, so the write proceeds (no --force)."""
+    existing = {"nodes": [
+        {"id": "a", "source_file": "m.py"},
+        {"id": "b", "source_file": "m.py"},
+        {"id": "c", "source_file": "other.py"},
+    ], "links": []}
+    new = {"nodes": [
+        {"id": "a", "source_file": "m.py"},
+        {"id": "c", "source_file": "other.py"},
+    ], "links": []}
+    ok = _check_shrink(False, existing, new, rebuilt_sources={"m.py"})
+    assert ok is True
+    assert "Refusing to overwrite" not in capsys.readouterr().err
+
+
+def test_check_shrink_blocks_shrink_outside_rebuilt_sources(capsys):
+    """The guard's real job is intact: a node lost from a file we did NOT re-extract
+    (the failed-chunk signal) is still refused even with rebuilt_sources set."""
+    existing = {"nodes": [
+        {"id": "a", "source_file": "m.py"},
+        {"id": "z", "source_file": "untouched.py"},
+    ], "links": []}
+    new = {"nodes": [{"id": "a", "source_file": "m.py"}], "links": []}
+    ok = _check_shrink(False, existing, new, rebuilt_sources={"m.py"})
+    assert ok is False
+    assert "Refusing to overwrite" in capsys.readouterr().err
+
+
 def test_check_shrink_allows_growth():
     """new > existing is always fine."""
     ok = _check_shrink(
@@ -681,6 +714,40 @@ def test_rebuild_code_prunes_deleted_file_nodes(tmp_path):
         after_sources = {n.get("source_file") for n in after.get("nodes", [])}
         assert "drop.py" not in after_sources, "deleted file's nodes should be pruned"
         assert "keep.py" in after_sources, "untouched file's nodes should survive"
+    finally:
+        os.chdir(cwd)
+
+
+def test_rebuild_code_accepts_repo_relative_changed_path_for_subdir_root(tmp_path):
+    """#1348: git-hook paths are repo-root-relative even when the graph root is a subdir."""
+    from graphify.watch import _rebuild_code
+
+    src = tmp_path / "src"
+    src.mkdir()
+    app = src / "app.py"
+    app.write_text("def old_name():\n    return 1\n", encoding="utf-8")
+
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        assert _rebuild_code(Path("src"), no_cluster=True, acquire_lock=False) is True
+        graph_path = src / "graphify-out" / "graph.json"
+        before = json.loads(graph_path.read_text(encoding="utf-8"))
+        assert "old_name()" in {n.get("label") for n in before.get("nodes", [])}
+
+        app.write_text("def new_name():\n    return 2\n", encoding="utf-8")
+        assert _rebuild_code(
+            Path("src"),
+            changed_paths=[Path("src/app.py")],
+            no_cluster=True,
+            acquire_lock=False,
+            force=True,
+        ) is True
+
+        after = json.loads(graph_path.read_text(encoding="utf-8"))
+        labels = {n.get("label") for n in after.get("nodes", [])}
+        assert "old_name()" not in labels
+        assert "new_name()" in labels
     finally:
         os.chdir(cwd)
 

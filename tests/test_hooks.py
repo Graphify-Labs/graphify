@@ -301,9 +301,12 @@ def test_rebuild_bodies_are_shell_quote_safe():
 )
 def test_rebuild_bodies_read_graphify_root(name, body):
     """The rebuild must honour the persisted scan root rather than hardcoding the
-    repo top (#1173). Both bodies read graphify-out/.graphify_root and pass the
+    repo top (#1173). Both bodies read <output-dir>/.graphify_root and pass the
     recovered root to _rebuild_code instead of the bare Path('.')."""
-    assert "graphify-out/.graphify_root" in body, f"{name} ignores .graphify_root (#1173)"
+    assert ".graphify_root" in body, f"{name} ignores .graphify_root (#1173)"
+    # The output dir is resolved from GRAPHIFY_OUT at hook-run time, not hardcoded
+    # to graphify-out/, so a renamed output dir is still found (#1423).
+    assert "GRAPHIFY_OUT" in body, f"{name} ignores the GRAPHIFY_OUT override (#1423)"
     # The recovered root is what gets rebuilt, not a hardcoded cwd.
     assert "_rebuild_code(_root" in body, f"{name} does not pass the recovered root"
     # Quote-safe inside the shell-double-quoted launcher: single quotes only.
@@ -333,3 +336,44 @@ def test_installed_hooks_contain_no_nohup(tmp_path):
         text = (repo / ".git" / "hooks" / name).read_text(encoding="utf-8")
         assert "nohup" not in text, f"installed {name} still references nohup"
         assert "start_new_session=True" in text
+
+
+# ── #1385: reject Windows-style hooks paths instead of creating a junk dir ───
+
+def _set_hookspath(repo: Path, value: str) -> None:
+    subprocess.run(["git", "-C", str(repo), "config", "--local", "core.hooksPath", value],
+                   check=True, capture_output=True)
+
+
+@pytest.mark.parametrize("winpath", [
+    r"C:\Users\u\repo\.git\hooks",
+    r"c:/Users/u/.git/hooks",
+    r"D:\hooks",
+    r"some\back\slashed\path",
+])
+def test_windows_hookspath_rejected_no_junk_dir(tmp_path, winpath):
+    """A Windows-style core.hooksPath must raise (loud failure), not silently
+    create a backslash-named junk directory and report success (#1385)."""
+    repo = _make_git_repo(tmp_path)
+    _set_hookspath(repo, winpath)
+    with pytest.raises(RuntimeError, match="Windows path"):
+        install(repo)
+    # no junk directory got created anywhere under the repo
+    junk = [p for p in repo.rglob("*") if "\\" in p.name or p.name.startswith(("C:", "c:", "D:"))]
+    assert junk == [], f"junk dir created: {junk}"
+
+
+def test_posix_custom_hookspath_still_works(tmp_path):
+    """A legitimate POSIX core.hooksPath (Husky-style) must still install."""
+    repo = _make_git_repo(tmp_path)
+    _set_hookspath(repo, ".husky")
+    msg = install(repo)
+    assert "post-commit" in msg
+    assert (repo / ".husky" / "post-commit").exists()
+
+
+def test_default_hooks_dir_unaffected(tmp_path):
+    """No core.hooksPath -> normal .git/hooks install, no rejection."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    assert (repo / ".git" / "hooks" / "post-commit").exists()
