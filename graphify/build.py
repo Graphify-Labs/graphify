@@ -143,6 +143,13 @@ def _canonicalize_extraction_schema(extraction: dict) -> None:
     dropped_edges = 0
     coerced_ids = 0
 
+    def _coerce_scalar_id(value) -> str | None:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        return None
+
     for node in extraction.get("nodes", []):
         if not isinstance(node, dict):
             dropped_nodes += 1
@@ -152,7 +159,11 @@ def _canonicalize_extraction_schema(extraction: dict) -> None:
             dropped_nodes += 1
             continue
         if not isinstance(node_id, str):
-            node["id"] = str(node_id)
+            coerced = _coerce_scalar_id(node_id)
+            if coerced is None:
+                dropped_nodes += 1
+                continue
+            node["id"] = coerced
             coerced_ids += 1
         label = node.get("label")
         if not isinstance(label, str) or not label.strip():
@@ -178,10 +189,18 @@ def _canonicalize_extraction_schema(extraction: dict) -> None:
             dropped_edges += 1
             continue
         if not isinstance(edge["source"], str):
-            edge["source"] = str(edge["source"])
+            source_id = _coerce_scalar_id(edge["source"])
+            if source_id is None:
+                dropped_edges += 1
+                continue
+            edge["source"] = source_id
             coerced_ids += 1
         if not isinstance(edge["target"], str):
-            edge["target"] = str(edge["target"])
+            target_id = _coerce_scalar_id(edge["target"])
+            if target_id is None:
+                dropped_edges += 1
+                continue
+            edge["target"] = target_id
             coerced_ids += 1
         if not isinstance(edge["relation"], str):
             edge["relation"] = str(edge["relation"])

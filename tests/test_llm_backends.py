@@ -298,7 +298,12 @@ def test_openai_compat_backends_resolve_full_output_cap(tmp_path, monkeypatch, b
     source.write_text("# Architecture\n")
     result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
 
-    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+    call_target = (
+        "graphify.llm._call_ollama_native"
+        if backend == "ollama"
+        else "graphify.llm._call_openai_compat"
+    )
+    with patch(call_target, return_value=result) as call:
         llm.extract_files_direct([source], backend=backend, root=tmp_path)
 
     assert call.call_args.kwargs["max_completion_tokens"] == 16384

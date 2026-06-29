@@ -141,7 +141,7 @@ BACKENDS: dict[str, dict] = {
         "env_key": "OLLAMA_API_KEY",
         "pricing": {"input": 0.0, "output": 0.0},
         "temperature": 0,
-        "max_tokens": 8192,
+        "max_tokens": 16384,
     },
     "gemini": {
         # GEMINI_BASE_URL points the backend at any OpenAI-compatible server for

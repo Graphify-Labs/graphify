@@ -864,6 +864,10 @@ def _is_no_api_key_fix_line(line: str) -> bool:
     return "graphify needs no API key" in line
 
 
+def _is_credential_guard_safe_placeholder_line(line: str) -> bool:
+    return "push_to_neo4j(" in line and "NEO4J_PASSWORD" in line
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -878,6 +882,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_zero_node_guard_fix_line,
     _is_manifest_root_fix_line,
     _is_no_api_key_fix_line,
+    _is_credential_guard_safe_placeholder_line,
 )
 
 
