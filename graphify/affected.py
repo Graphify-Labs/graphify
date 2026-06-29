@@ -209,7 +209,13 @@ def load_graph(path: Path) -> nx.Graph:
     import json
     from networkx.readwrite import json_graph
 
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"Cannot read graph file {path}: {exc}. "
+            "Re-run 'graphify extract' to regenerate it."
+        ) from exc
     # Force directed so stored caller→callee direction survives the round-trip;
     # mirrors serve.py and __main__.py (#1174).
     raw = {**raw, "directed": True}

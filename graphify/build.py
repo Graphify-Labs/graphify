@@ -649,7 +649,13 @@ def build_merge(
         # NetworkX round-trip loses direction permanently (#760).
         from graphify.security import check_graph_file_size_cap
         check_graph_file_size_cap(graph_path)
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(graph_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise RuntimeError(
+                f"Cannot read {graph_path} for incremental merge: {exc}. "
+                "Delete the file and run a full rebuild."
+            ) from exc
         links_key = "links" if "links" in data else "edges"
         existing_nodes = list(data.get("nodes", []))
         existing_edges = list(data.get(links_key, []))
