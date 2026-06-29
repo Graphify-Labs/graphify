@@ -2801,7 +2801,7 @@ def _extract_generic(
                                                  context="generic_arg")
 
             # Java-specific: extends (superclass) / implements (interfaces) / interface-extends
-            if config.ts_module == "tree_sitter_java":
+            if config.ts_module in ("tree_sitter_java", "tree_sitter_groovy"):
                 def _emit_java_parent(base_name: str, rel: str, at_line: int) -> None:
                     if not base_name:
                         return

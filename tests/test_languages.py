@@ -1789,6 +1789,35 @@ def test_groovy_no_dangling_edges():
         assert e["source"] in node_ids
 
 
+def test_groovy_extends_edge():
+    """`class X extends Base` must emit an inherits edge.
+
+    tree-sitter-groovy exposes inheritance via the same `superclass` field as
+    tree-sitter-java, but the inheritance handler was gated to Java only, so
+    Groovy extends/implements were silently dropped.
+    """
+    r = extract_groovy(FIXTURES / "sample.groovy")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    found = any(
+        "ExtendedService" in node_by_id.get(e["source"], "")
+        and "SampleService" in node_by_id.get(e["target"], "")
+        for e in r["edges"] if e["relation"] == "inherits"
+    )
+    assert found, "ExtendedService should have inherits edge to SampleService"
+
+
+def test_groovy_implements_edge():
+    """`class X implements Iface` must emit an implements edge."""
+    r = extract_groovy(FIXTURES / "sample.groovy")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    found = any(
+        "ExtendedService" in node_by_id.get(e["source"], "")
+        and "Resettable" in node_by_id.get(e["target"], "")
+        for e in r["edges"] if e["relation"] == "implements"
+    )
+    assert found, "ExtendedService should have implements edge to Resettable"
+
+
 def test_groovy_spock_finds_class():
     r = extract_groovy(FIXTURES / "sample_spock.groovy")
     assert any("SampleSpec" in l for l in _labels(r))
