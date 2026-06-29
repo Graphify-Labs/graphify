@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="store_true")
     sub = parser.add_subparsers(dest="command")
 
-    p_install = sub.add_parser("install", help="install graphify to %LOCALAPPDATA%\\graphify")
+    p_install = sub.add_parser("install", help="install graphify to %%LOCALAPPDATA%%\\graphify")
     p_install.add_argument("--path", help="override install path")
 
     p_uninstall = sub.add_parser("uninstall", help="reverse a previous install")
