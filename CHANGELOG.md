@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: `graphify reflect --annotate-graph` stamps the distilled work-memory verdicts directly onto the graph (#1441 follow-up). Each cited source node gains reserved `learning_status` (`preferred`/`tentative`/`contested`/`dead_end`), `learning_score`, and `learning_uses` attributes, so the lessons that previously lived only in `reflections/LESSONS.md` become first-class, queryable graph data (and surface in every export). The annotations are a deterministic, idempotent function of `graphify-out/memory/` — cleared and re-stamped on each run, never a stored source of truth — so a full rebuild that regenerates `graph.json` (dropping them) is healed by the next reflect, and nothing is silently lost or destructively overwritten. The git post-commit/post-checkout hooks pass it automatically so the graph stays annotated; `learning_*` attributes are excluded from the watch topology-compare so an annotation never forces a needless rebuild. `graphify explain` and `graphify query` (the CLI and the MCP `query_graph` tool) now surface a node's verdict inline — e.g. `Lesson: preferred source (start here)` and `NODE … learning=dead_end` — so saved lessons actually steer the answer instead of sitting unread; the enum-valued status is sanitized like every other field on the MCP output path. Bare `graphify reflect` is unchanged.
+
 ## 0.9.1 (2026-06-28)
 
 - Fix: rate-limited (HTTP 429) extraction chunks are now retried instead of dropped (#1523, thanks @bercedev). The provider SDKs back off and honor `Retry-After`, but the SDK default of 2 retries was too low for strict per-org concurrency/RPM caps (e.g. Moonshot/kimi), so a parallel `extract` 429'd, each chunk logged `chunk N failed`, and was silently lost (incomplete graph + console spam). The OpenAI-compatible, Azure, and Anthropic clients are now built with a higher `max_retries` (default 6, override via `GRAPHIFY_MAX_RETRIES`). For very tight accounts, `--max-concurrency 1` further reduces the concurrency that triggers org-level limits.

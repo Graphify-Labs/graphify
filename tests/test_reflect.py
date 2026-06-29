@@ -710,3 +710,145 @@ def test_dead_ends_and_corrections_dedupe_by_question():
     assert [d["question"] for d in agg["dead_ends"]] == ["ws server?"]
     assert len(agg["corrections"]) == 1
     assert agg["corrections"][0]["correction"] == "SHA-256"  # recency wins
+
+
+# --- graph annotation (`reflect --annotate-graph`) ----------------------------
+
+
+def _write_graph(path: Path, nodes: list[dict]) -> None:
+    """Write a minimal graph.json the way export.to_json does (indent=2, no newline)."""
+    path.write_text(json.dumps({"nodes": nodes, "links": []}, indent=2), encoding="utf-8")
+
+
+def _nodes_by_id(path: Path) -> dict[str, dict]:
+    return {n["id"]: n for n in json.loads(path.read_text(encoding="utf-8"))["nodes"]}
+
+
+def test_annotate_graph_stamps_verdicts_by_label_or_id(tmp_path):
+    """annotate_graph writes learning_* onto cited nodes, matching either the id or the
+    human-readable label, and leaves uncited nodes alone."""
+    from graphify.reflect import annotate_graph
+
+    gp = tmp_path / "graph.json"
+    _write_graph(gp, [
+        {"id": "mod_alpha", "label": "Alpha", "source_file": "a.py"},   # cited by label
+        {"id": "mod_beta", "label": "Beta", "source_file": "b.py"},     # cited by id
+        {"id": "mod_gamma", "label": "Gamma", "source_file": "c.py"},   # contested
+        {"id": "mod_delta", "label": "Delta", "source_file": "d.py"},   # dead end
+        {"id": "mod_zeta", "label": "Zeta", "source_file": "z.py"},     # never cited
+    ])
+    agg = aggregate_lessons([
+        _doc("useful", ["Alpha"]), _doc("useful", ["Alpha"]),          # -> preferred
+        _doc("useful", ["mod_beta"]),                                  # -> tentative (1x)
+        _doc("useful", ["Gamma"]), _doc("dead_end", ["Gamma"]),        # -> contested
+        _doc("dead_end", ["Delta"], question="bad path"),              # -> dead_end
+    ], now=_NOW)
+
+    n_annotated = annotate_graph(gp, agg)
+    assert n_annotated == 4
+
+    nodes = _nodes_by_id(gp)
+    assert nodes["mod_alpha"]["learning_status"] == "preferred"
+    assert nodes["mod_alpha"]["learning_uses"] == 2
+    assert nodes["mod_alpha"]["learning_score"] > 0
+    assert nodes["mod_beta"]["learning_status"] == "tentative"   # matched by id
+    assert nodes["mod_gamma"]["learning_status"] == "contested"
+    assert nodes["mod_delta"]["learning_status"] == "dead_end"
+    assert "learning_score" not in nodes["mod_delta"]            # neg-only: no score exposed
+    assert not any(k.startswith("learning_") for k in nodes["mod_zeta"])
+
+
+def test_annotate_graph_is_idempotent(tmp_path):
+    """Running annotate twice on the same input produces byte-identical output."""
+    from graphify.reflect import annotate_graph
+
+    gp = tmp_path / "graph.json"
+    _write_graph(gp, [{"id": "mod_alpha", "label": "Alpha", "source_file": "a.py"}])
+    agg = aggregate_lessons([_doc("useful", ["Alpha"]), _doc("useful", ["Alpha"])], now=_NOW)
+
+    annotate_graph(gp, agg)
+    first = gp.read_bytes()
+    annotate_graph(gp, agg)
+    assert gp.read_bytes() == first
+
+
+def test_annotate_graph_clears_stale_when_lesson_is_gone(tmp_path):
+    """A re-run whose aggregate no longer cites a node removes its prior learning_*
+    attributes (self-healing) without touching the node's real fields."""
+    from graphify.reflect import annotate_graph
+
+    gp = tmp_path / "graph.json"
+    _write_graph(gp, [{"id": "mod_alpha", "label": "Alpha", "source_file": "a.py"}])
+    annotate_graph(gp, aggregate_lessons(
+        [_doc("useful", ["Alpha"]), _doc("useful", ["Alpha"])], now=_NOW))
+    assert _nodes_by_id(gp)["mod_alpha"]["learning_status"] == "preferred"
+
+    # The lesson is gone (e.g. its memory doc was deleted): annotate with an empty agg.
+    assert annotate_graph(gp, aggregate_lessons([], now=_NOW)) == 0
+    node = _nodes_by_id(gp)["mod_alpha"]
+    assert not any(k.startswith("learning_") for k in node)
+    assert node["source_file"] == "a.py"   # real fields untouched
+
+
+def test_annotate_graph_does_not_match_labelless_nodes_to_a_none_citation(tmp_path):
+    """A node with no label must not be matched by a doc that cited a source literally
+    named "None" — missing id/label keys are never coerced to the string "None"."""
+    from graphify.reflect import annotate_graph
+
+    gp = tmp_path / "graph.json"
+    _write_graph(gp, [
+        {"id": "mod_real", "label": "Real", "source_file": "a.py"},
+        {"id": "mod_nolabel", "source_file": "b.py"},   # no label
+    ])
+    # A (degenerate) memory doc whose source node is the string "None".
+    n = annotate_graph(gp, aggregate_lessons(
+        [_doc("useful", ["None"]), _doc("useful", ["None"])], now=_NOW))
+
+    nodes = _nodes_by_id(gp)
+    assert not any(k.startswith("learning_") for k in nodes["mod_nolabel"])
+    # The "None"-named source is matched honestly: only a node actually id/label "None".
+    assert n == 0
+
+
+def test_annotate_graph_returns_zero_on_non_dict_graph(tmp_path):
+    """A graph.json that isn't a JSON object is left untouched and returns 0, per the
+    best-effort contract — never an AttributeError."""
+    from graphify.reflect import annotate_graph
+
+    gp = tmp_path / "graph.json"
+    gp.write_text("[1, 2, 3]", encoding="utf-8")
+    assert annotate_graph(gp, aggregate_lessons([_doc("useful", ["X"])], now=_NOW)) == 0
+    assert gp.read_text(encoding="utf-8") == "[1, 2, 3]"
+
+
+def test_annotate_graph_no_match_is_byte_identical(tmp_path):
+    """When no node is cited, the graph file is rewritten byte-for-byte (formatting
+    matches to_json), so an annotate pass is a true no-op on an unrelated graph."""
+    from graphify.reflect import annotate_graph
+
+    gp = tmp_path / "graph.json"
+    _write_graph(gp, [{"id": "mod_x", "label": "X", "source_file": "x.py"}])
+    before = gp.read_bytes()
+    assert annotate_graph(gp, aggregate_lessons([_doc("useful", ["Nope"])], now=_NOW)) == 0
+    assert gp.read_bytes() == before
+
+
+def test_reflect_annotate_writes_verdicts_into_real_graph(tmp_path):
+    """End-to-end: reflect(annotate=True) stamps verdicts into a real graph.json built
+    by build_from_json, and records the count in agg['annotated']."""
+    out = _make_graph(tmp_path)
+    gp = out / "graph.json"
+    cited = json.loads(gp.read_text(encoding="utf-8"))["nodes"][0]["label"]
+
+    mem = out / "memory"
+    save_query_result("q1", "a", mem, source_nodes=[cited], outcome="useful")
+    save_query_result("q2", "a", mem, source_nodes=[cited], outcome="useful")
+
+    _, agg = reflect(memory_dir=mem, out_path=out / "reflections" / "LESSONS.md",
+                     graph_path=gp, now=_NOW, annotate=True)
+    assert agg["annotated"] >= 1
+
+    annotated = [n for n in json.loads(gp.read_text(encoding="utf-8"))["nodes"]
+                 if n.get("label") == cited and n.get("learning_status")]
+    assert annotated, f"expected {cited!r} to be annotated"
+    assert annotated[0]["learning_status"] in ("preferred", "tentative")

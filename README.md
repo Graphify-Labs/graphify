@@ -551,6 +551,7 @@ graphify reflect                   # aggregate graphify-out/memory/ outcomes int
 graphify reflect --if-stale        # no-op when LESSONS.md is already newer than every input (cheap to run each session)
 graphify reflect --out docs/LESSONS.md    # write the lessons doc somewhere else
 graphify reflect --graph graphify-out/graph.json  # also group lessons by community
+graphify reflect --annotate-graph  # also stamp per-node verdicts (learning_status/score/uses) into graph.json so lessons are queryable in the graph
 
 graphify uninstall                 # remove from all platforms in one shot
 graphify uninstall --purge         # also delete graphify-out/

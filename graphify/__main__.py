@@ -2294,6 +2294,7 @@ def main() -> None:
         print("    --labels PATH           .graphify_labels.json (optional, auto-detected next to --graph)")
         print("    --half-life-days N      signal weight halves every N days (default 30)")
         print("    --min-corroboration N   distinct useful results to prefer a node (default 2)")
+        print("    --annotate-graph        also stamp per-node verdicts (learning_status/score/uses) into graph.json")
         print("  check-update <path>     check needs_update flag and notify if semantic re-extraction is pending (cron-safe)")
         print("  tree                    emit a D3 v7 collapsible-tree HTML for graph.json")
         print("    --graph PATH            path to graph.json (default graphify-out/graph.json)")
@@ -3013,6 +3014,9 @@ def main() -> None:
         p.add_argument("--if-stale", action="store_true",
                        help="skip when LESSONS.md is already newer than every input "
                             "(e.g. the git hook just refreshed it)")
+        p.add_argument("--annotate-graph", action="store_true",
+                       help="also stamp the per-node verdicts (learning_status/score/uses) "
+                            "into graph.json so the lessons are queryable in the graph")
         opts = p.parse_args(sys.argv[2:])
         from graphify.reflect import reflect as _reflect, lessons_fresh as _lessons_fresh
 
@@ -3044,6 +3048,7 @@ def main() -> None:
                 labels_path=_labels_path,
                 half_life_days=opts.half_life_days,
                 min_corroboration=opts.min_corroboration,
+                annotate=opts.annotate_graph,
             )
             c = agg["counts"]
             print(
@@ -3051,6 +3056,11 @@ def main() -> None:
                 f"({c['useful']} useful, {c['dead_end']} dead ends, "
                 f"{c['corrected']} corrected) -> {out_path}"
             )
+            if opts.annotate_graph:
+                if _gp is None:
+                    print("  (no graph.json found; skipped --annotate-graph)")
+                else:
+                    print(f"  annotated {agg.get('annotated', 0)} node(s) in {_gp}")
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
@@ -3187,6 +3197,23 @@ def main() -> None:
         print(f"  Type:      {d.get('file_type', '')}")
         print(f"  Community: {d.get('community_name') or d.get('community', '')}")
         print(f"  Degree:    {G.degree(nid)}")
+        # Work-memory verdict, when graphify reflect --annotate-graph has stamped one
+        # (#1441): surface the lesson so a saved "preferred source"/"dead end" actually
+        # steers the reader. Absent on un-annotated graphs, so output is unchanged there.
+        _ls = d.get("learning_status")
+        if _ls:
+            _phrasing = {
+                "preferred": "preferred source (start here)",
+                "tentative": "tentative (useful once — verify)",
+                "contested": "contested (mixed signals)",
+                "dead_end": "known dead end (avoid)",
+            }.get(_ls, _ls)
+            _extra = []
+            if d.get("learning_uses"):
+                _extra.append(f"{d['learning_uses']}× useful")
+            if d.get("learning_score") is not None:
+                _extra.append(f"score={d['learning_score']}")
+            print(f"  Lesson:    {_phrasing}" + (f" — {', '.join(_extra)}" if _extra else ""))
         from graphify.build import edge_data
         connections: list[tuple[str, str, dict]] = []  # (direction, neighbor_id, edge_data)
         for nb in G.successors(nid):

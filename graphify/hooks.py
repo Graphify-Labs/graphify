@@ -114,7 +114,7 @@ try:
             from graphify.reflect import reflect as _reflect
             _gj = (_root / _out) / 'graph.json'
             _reflect(memory_dir=_md, out_path=(_root / _out) / 'reflections' / 'LESSONS.md',
-                     graph_path=_gj if _gj.exists() else None)
+                     graph_path=_gj if _gj.exists() else None, annotate=True)
     except Exception:
         pass
 except TimeoutError as exc:
@@ -155,7 +155,7 @@ try:
             from graphify.reflect import reflect as _reflect
             _gj = (_root / _out) / 'graph.json'
             _reflect(memory_dir=_md, out_path=(_root / _out) / 'reflections' / 'LESSONS.md',
-                     graph_path=_gj if _gj.exists() else None)
+                     graph_path=_gj if _gj.exists() else None, annotate=True)
     except Exception:
         pass
 except TimeoutError as exc:

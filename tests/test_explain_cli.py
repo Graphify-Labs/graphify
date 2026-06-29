@@ -80,3 +80,28 @@ def test_explain_source_file_path_prefers_file_level_node(monkeypatch, tmp_path,
     assert "ID:        example_route" in out
     assert f"Source:    {source_file} L1" in out
     assert "Node: GET()" not in out
+
+
+def test_explain_surfaces_work_memory_verdict(monkeypatch, tmp_path, capsys):
+    """A node annotated by `reflect --annotate-graph` shows its learning verdict inline;
+    an un-annotated node shows no Lesson line (so existing output is unchanged)."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "pref", "label": "preferredFn()", "source_file": "a.ts", "community": 0,
+             "learning_status": "preferred", "learning_score": 2.0, "learning_uses": 2},
+            {"id": "plain", "label": "plainFn()", "source_file": "b.ts", "community": 0},
+        ],
+        "links": [{"source": "pref", "target": "plain", "relation": "calls",
+                   "confidence": "EXTRACTED"}],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+
+    out = _run(monkeypatch, p, "preferredFn", capsys)
+    assert "Lesson:" in out
+    assert "preferred source" in out
+    assert "2× useful" in out
+
+    out2 = _run(monkeypatch, p, "plainFn", capsys)
+    assert "Lesson:" not in out2

@@ -513,11 +513,18 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # corpus document can otherwise inject ANSI escapes, fake graphify-out
         # log lines, or prompt-injection markup into the model's context via
         # source_file / source_location / community.
+        # Work-memory verdict (graphify reflect --annotate-graph, #1441), when present:
+        # a query result that hits a "preferred source"/"known dead end" says so inline,
+        # so prior lessons steer the answer. The value is one of four fixed status
+        # strings, but it is sanitized like every other field for the F-010 MCP path.
+        learning = d.get("learning_status")
+        learning_part = f" learning={sanitize_label(str(learning))}" if learning else ""
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
-            f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}]"
+            f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
+            f"{learning_part}]"
         )
         lines.append(line)
     for u, v in edges:

@@ -273,6 +273,17 @@ def _node_community_map(graph_data: dict) -> dict[str, int]:
 def _canonical_graph_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
     canonical.pop("built_at_commit", None)
+    nodes = canonical.get("nodes")
+    if isinstance(nodes, list):
+        # learning_* are derived work-memory annotations (reflect --annotate-graph),
+        # not graph content — drop them (on copies, never the originals) so an
+        # annotation isn't read as a change that forces a no-op rewrite. Mirrors the
+        # learning_* exclusion in _canonical_topology_for_compare.
+        canonical["nodes"] = [
+            {k: v for k, v in node.items() if not k.startswith("learning_")}
+            if isinstance(node, dict) else node
+            for node in nodes
+        ]
     for key in ("nodes", "links", "edges", "hyperedges"):
         if key in canonical and isinstance(canonical[key], list):
             canonical[key] = sorted(
@@ -295,6 +306,11 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
             n = dict(node)
             n.pop("community", None)
             n.pop("norm_label", None)
+            # learning_* are derived work-memory annotations (graphify reflect
+            # --annotate-graph), not structure — like community/norm_label they must
+            # not register as a topology change, or every reflect would force a rebuild.
+            for lk in [k for k in n if k.startswith("learning_")]:
+                n.pop(lk, None)
             norm_nodes.append(n)
         canonical["nodes"] = sorted(
             norm_nodes,

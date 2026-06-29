@@ -929,3 +929,31 @@ def test_merge_changed_paths_dedupes_in_order():
         [Path("a.py")],
     )
     assert [p.as_posix() for p in merged] == ["a.py", "b.py", "c.py"]
+
+
+def test_canonical_topology_ignores_learning_annotations():
+    """learning_* node attributes (graphify reflect --annotate-graph) are derived
+    work-memory annotations, not structure — like community/norm_label they must not
+    register as a topology change, or every reflect would force a needless rebuild."""
+    from graphify.watch import _canonical_topology_for_compare
+
+    base = {"nodes": [{"id": "a", "label": "A", "source_file": "a.py"}], "links": []}
+    annotated = {"nodes": [{"id": "a", "label": "A", "source_file": "a.py",
+                            "learning_status": "preferred", "learning_score": 2.5,
+                            "learning_uses": 3}], "links": []}
+    assert (_canonical_topology_for_compare(base)
+            == _canonical_topology_for_compare(annotated))
+
+
+def test_canonical_graph_compare_ignores_learning_annotations_without_mutating():
+    """The --no-cluster write-gate compare also excludes learning_* — and must do so on
+    copies, never mutating the caller's node dicts."""
+    from graphify.watch import _canonical_graph_for_compare
+
+    base = {"nodes": [{"id": "a", "label": "A"}], "links": []}
+    annotated = {"nodes": [{"id": "a", "label": "A", "learning_status": "dead_end"}],
+                 "links": []}
+    assert (_canonical_graph_for_compare(base)
+            == _canonical_graph_for_compare(annotated))
+    # The original dict still carries its annotation (compare worked on a copy).
+    assert annotated["nodes"][0]["learning_status"] == "dead_end"

@@ -732,3 +732,19 @@ def test_community_header_sanitizes_name():
     out = _community_header(3, "Pay\x00ments\x1b[31m")
     assert out.startswith("Community 3 — ")
     assert "\x00" not in out and "\x1b" not in out
+
+
+def test_subgraph_to_text_surfaces_learning_status():
+    """_subgraph_to_text (shared by the query CLI + MCP tool) appends the work-memory
+    verdict to a node's line when reflect --annotate-graph stamped one; absent otherwise."""
+    G = nx.Graph()
+    G.add_node("n1", label="preferredFn", source_file="a.py", source_location="L1",
+               community=0, learning_status="preferred")
+    G.add_node("n2", label="plainFn", source_file="b.py", source_location="L2", community=0)
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED")
+
+    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    pref_line = next(l for l in text.splitlines() if l.startswith("NODE preferredFn"))
+    plain_line = next(l for l in text.splitlines() if l.startswith("NODE plainFn"))
+    assert "learning=preferred" in pref_line
+    assert "learning=" not in plain_line

@@ -497,6 +497,103 @@ def render_lessons_md(agg: dict[str, Any]) -> str:
     return "\n".join(out).rstrip("\n") + "\n"
 
 
+# --- graph annotation ----------------------------------------------------------
+#
+# The verdicts above live only in LESSONS.md. annotate_graph also stamps them onto
+# the matching graph nodes as reserved ``learning_*`` attributes, so the distilled
+# work-memory signal becomes first-class, queryable graph data (and shows up in any
+# export) instead of a side file. The attributes are a pure, deterministic function of
+# the durable ``memory/`` docs, recomputed every run — never a stored source of truth —
+# so a rebuild that regenerates graph.json (dropping them) is healed by the next reflect.
+
+_LEARNING_PREFIX = "learning_"
+
+
+def _node_verdicts(agg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Flatten the aggregate into one verdict per cited source node.
+
+    Maps each source-node name (as cited in memory docs — a graph id *or* a label) to
+    ``{"status", "score", "uses"}``. preferred / tentative / contested come straight
+    from the scored lists (a node lands in exactly one). A node that only ever appeared
+    in dead-end questions — negative signal, never useful — is marked ``dead_end``;
+    ``setdefault`` keeps a contested node (mixed signals) from being downgraded to it.
+    """
+    verdicts: dict[str, dict[str, Any]] = {}
+    for e in agg.get("preferred", []):
+        verdicts[e["node"]] = {"status": "preferred", "score": e["score"], "uses": e["n"]}
+    for e in agg.get("tentative", []):
+        verdicts[e["node"]] = {"status": "tentative", "score": e["score"], "uses": e["n"]}
+    for e in agg.get("contested", []):
+        verdicts[e["node"]] = {"status": "contested", "score": e["score"], "uses": e["pos"]}
+    for d in agg.get("dead_ends", []):
+        for n in d.get("nodes", []):
+            verdicts.setdefault(n, {"status": "dead_end", "score": None, "uses": 0})
+    return verdicts
+
+
+def annotate_graph(graph_path: Path, agg: dict[str, Any]) -> int:
+    """Stamp the reflected per-node verdicts onto matching nodes in ``graph_path``.
+
+    Writes reserved ``learning_status`` / ``learning_score`` / ``learning_uses``
+    attributes onto every graph node whose id or label is cited as a source in ``agg``.
+    Returns the number of nodes annotated.
+
+    Idempotent and self-healing: every existing ``learning_*`` attribute is cleared
+    first, then re-stamped from ``agg`` — so deleting a lesson removes its annotation and
+    a re-run on the same input is byte-identical. The graph is rewritten with the same
+    formatting :func:`graphify.export.to_json` uses, so when nothing matches the file is
+    unchanged. Best-effort: an unreadable/unwritable or node-less graph is left untouched
+    and returns 0; node count is never changed.
+    """
+    graph_path = Path(graph_path)
+    try:
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    nodes = data.get("nodes")
+    if not isinstance(nodes, list):
+        return 0
+
+    verdicts = _node_verdicts(agg)
+    annotated = 0
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        # Full recompute: drop any prior annotation so a removed/aged-out lesson — or a
+        # stale value carried forward on a preserved node across an incremental rebuild —
+        # leaves nothing behind.
+        for key in [k for k in node if k.startswith(_LEARNING_PREFIX)]:
+            del node[key]
+        # A memory doc cites a node by id or by human-readable label; match either,
+        # preferring the id (labels can collide across files). Only look up keys the
+        # node actually has — coercing a missing id/label to the string "None" would let
+        # a doc that cited a node literally named "None" annotate every label-less node.
+        verdict = None
+        nid = node.get("id")
+        if nid is not None:
+            verdict = verdicts.get(str(nid))
+        if verdict is None and node.get("label") is not None:
+            verdict = verdicts.get(str(node["label"]))
+        if verdict is None:
+            continue
+        node["learning_status"] = verdict["status"]
+        if verdict["score"] is not None:
+            node["learning_score"] = verdict["score"]
+        if verdict["uses"]:
+            node["learning_uses"] = verdict["uses"]
+        annotated += 1
+
+    try:
+        # Match to_json's formatting (indent=2, default ASCII escaping, no trailing
+        # newline) so a no-op annotation rewrites the file byte-for-byte.
+        graph_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError:
+        return 0
+    return annotated
+
+
 # --- orchestrator --------------------------------------------------------------
 
 
@@ -545,11 +642,14 @@ def reflect(memory_dir: Path, out_path: Path,
             now: datetime | None = None,
             half_life_days: float = _DEFAULT_HALF_LIFE_DAYS,
             min_corroboration: int = _DEFAULT_MIN_CORROBORATION,
+            annotate: bool = False,
             ) -> tuple[Path, dict[str, Any]]:
     """Scan ``memory_dir``, write the lessons doc to ``out_path``, return (path, agg).
 
     If ``graph_path`` is given lessons are grouped by community and source nodes no
-    longer in the graph are dropped; otherwise the doc is a single flat section.
+    longer in the graph are dropped; otherwise the doc is a single flat section. When
+    ``annotate`` is set and a graph is in hand, the per-node verdicts are also stamped
+    into graph.json via :func:`annotate_graph` (recorded as ``agg["annotated"]``).
     """
     docs = load_memory_docs(memory_dir)
 
@@ -574,4 +674,6 @@ def reflect(memory_dir: Path, out_path: Path,
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_lessons_md(agg), encoding="utf-8")
+    if annotate and graph_path is not None:
+        agg["annotated"] = annotate_graph(graph_path, agg)
     return out_path, agg
