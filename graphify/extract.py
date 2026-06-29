@@ -356,6 +356,61 @@ def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
     return packages
 
 
+_PACKAGE_EXPORT_CONDITION_PRIORITY = ("source", "import", "module", "default", "require", "types", "svelte")
+
+
+def _package_export_target_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        targets: list[str] = []
+        for item in value:
+            targets.extend(_package_export_target_values(item))
+        return targets
+    if not isinstance(value, dict):
+        return []
+
+    targets: list[str] = []
+    for key in _PACKAGE_EXPORT_CONDITION_PRIORITY:
+        targets.extend(_package_export_target_values(value.get(key)))
+    for key, child in value.items():
+        if key not in _PACKAGE_EXPORT_CONDITION_PRIORITY:
+            targets.extend(_package_export_target_values(child))
+    return targets
+
+
+def _package_exports_candidates(exports: Any, subpath: str) -> list[Path]:
+    if isinstance(exports, str):
+        return [Path(exports)] if not subpath else []
+    if not isinstance(exports, dict):
+        return []
+
+    requested = "." if not subpath else f"./{subpath}"
+    candidates: list[Path] = []
+
+    exact_export = exports.get(requested)
+    for target in _package_export_target_values(exact_export):
+        candidates.append(Path(target))
+
+    if subpath:
+        for export_key, export_value in exports.items():
+            if "*" not in export_key:
+                continue
+            prefix, suffix = export_key.split("*", 1)
+            if not requested.startswith(prefix) or (suffix and not requested.endswith(suffix)):
+                continue
+            replacement_end = len(requested) - len(suffix) if suffix else len(requested)
+            replacement = requested[len(prefix):replacement_end]
+            for target in _package_export_target_values(export_value):
+                candidates.append(Path(target.replace("*", replacement)))
+
+    if not subpath and not candidates:
+        for target in _package_export_target_values(exports):
+            candidates.append(Path(target))
+
+    return candidates
+
+
 def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
     manifest = package_dir / "package.json"
     manifest_data: dict[str, Any] = {}
@@ -364,23 +419,14 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
     except Exception:
         pass
 
-    if subpath:
-        return [package_dir / subpath]
-
-    exports = manifest_data.get("exports")
-    if isinstance(exports, str):
-        return [package_dir / exports]
-    if isinstance(exports, dict):
-        dot_export = exports.get(".")
-        if isinstance(dot_export, str):
-            return [package_dir / dot_export]
-        if isinstance(dot_export, dict):
-            for key in ("types", "import", "default", "svelte"):
-                value = dot_export.get(key)
-                if isinstance(value, str):
-                    return [package_dir / value]
-
     candidates: list[Path] = []
+    exports = manifest_data.get("exports")
+    candidates.extend(package_dir / candidate for candidate in _package_exports_candidates(exports, subpath))
+
+    if subpath:
+        candidates.append(package_dir / subpath)
+        return candidates
+
     for key in ("svelte", "module", "main", "types"):
         value = manifest_data.get(key)
         if isinstance(value, str):
