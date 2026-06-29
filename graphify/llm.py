@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -53,6 +54,9 @@ _OLLAMA_MAX_MINIMAX_FRACTION = 0.25
 _OLLAMA_LOAD_RATIO_THRESHOLD = 0.75
 _OLLAMA_GPU_UTIL_THRESHOLD = 85
 _OLLAMA_GPU_MEM_THRESHOLD = 0.90
+
+_BACKEND_UNAVAILABLE_WARNED: set[str] = set()
+_OPENAI_COMPAT_BACKENDS = {"minimax", "nim", "kimi", "gemini", "openai", "deepseek"}
 
 
 
@@ -1071,6 +1075,33 @@ def _backend_pkg_hint(pkg: str, extra: str) -> str:
         f"(uv tool), or  pip install {pkg}  (pip/venv install)."
     )
 
+
+def _module_available(name: str) -> bool:
+    if name in sys.modules and sys.modules[name] is not None:
+        return True
+    return importlib.util.find_spec(name) is not None
+
+
+def _backend_runtime_unavailable_reason(backend: str) -> str | None:
+    if backend in _OPENAI_COMPAT_BACKENDS and not _module_available("openai"):
+        return _backend_pkg_hint("openai", backend)
+    if backend == "claude" and not _module_available("anthropic"):
+        return _backend_pkg_hint("anthropic", "anthropic")
+    if backend == "bedrock" and not _module_available("boto3"):
+        return "AWS Bedrock extraction requires boto3. Run: pip install graphifyy[bedrock]"
+    return None
+
+
+def _warn_backend_unavailable_once(backend: str, reason: str) -> None:
+    if backend in _BACKEND_UNAVAILABLE_WARNED:
+        return
+    _BACKEND_UNAVAILABLE_WARNED.add(backend)
+    print(
+        f"[graphify] {backend} fallback disabled for this run: {reason}",
+        file=sys.stderr,
+    )
+
+
 def _automatic_fallback_backend(backend: str, *, allow: bool, model: str | None = None) -> str | None:
     """Return the configured automatic fallback for an auto-selected backend."""
     if not allow:
@@ -1079,6 +1110,10 @@ def _automatic_fallback_backend(backend: str, *, allow: bool, model: str | None 
         if os.environ.get("GRAPHIFY_DISABLE_MINIMAX_FALLBACK", "").strip().lower() in ("1", "true", "yes"):
             return None
         if _get_backend_api_key("minimax"):
+            reason = _backend_runtime_unavailable_reason("minimax")
+            if reason:
+                _warn_backend_unavailable_once("minimax", reason)
+                return None
             return "minimax"
     return None
 
@@ -2421,6 +2456,19 @@ def extract_corpus_parallel(
             return str(fallback), None, None
         return "ollama", api_key, model
 
+    def _disable_spill_backend(run_backend: str, exc: Exception) -> None:
+        if ollama_balance is None:
+            return
+        if run_backend == "ollama":
+            return
+        ollama_balance["fallback"] = None
+        ollama_balance["remote_cap"] = 0
+        print(
+            f"[graphify] {run_backend} spill failed ({type(exc).__name__}: {exc}); "
+            "disabling remote spill for this run and retrying the chunk locally.",
+            file=sys.stderr,
+        )
+
     def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
         run_backend, run_api_key, run_model = _route_for_chunk(idx)
         t0 = time.time()
@@ -2443,6 +2491,27 @@ def extract_corpus_parallel(
                 ollama_balance["last_local_seconds"] = elapsed
             return idx, result, None
         except Exception as exc:  # noqa: BLE001 — caller-facing surface, log + continue
+            if backend == "ollama" and run_backend != "ollama" and ollama_balance is not None:
+                _disable_spill_backend(run_backend, exc)
+                retry_t0 = time.time()
+                try:
+                    result = _extract_with_adaptive_retry(
+                        chunk,
+                        backend="ollama",
+                        model=model,
+                        root=root,
+                        max_depth=max_retry_depth,
+                        deep_mode=deep_mode,
+                        allow_minimax_fallback=False,
+                        **{"api_key": api_key},
+                    )
+                    elapsed = round(time.time() - retry_t0, 2)
+                    result["elapsed_seconds"] = elapsed
+                    result["backend"] = result.get("backend") or "ollama"
+                    ollama_balance["last_local_seconds"] = elapsed
+                    return idx, result, None
+                except Exception as local_exc:  # noqa: BLE001 — preserve loud chunk accounting
+                    return idx, None, local_exc
             return idx, None, exc
 
     # Ollama serves one request at a time per loaded model on a single GPU.

@@ -54,6 +54,73 @@ def test_ollama_in_backends():
     assert BACKENDS["ollama"]["pricing"]["output"] == 0.0
     assert "max_tokens" in BACKENDS["ollama"]
 
+
+def test_minimax_fallback_disabled_when_openai_sdk_missing(monkeypatch, capsys):
+    from graphify import llm
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+    monkeypatch.setattr(llm, "_module_available", lambda name: name != "openai")
+    llm._BACKEND_UNAVAILABLE_WARNED.clear()
+
+    assert llm._automatic_fallback_backend("ollama", allow=True) is None
+    err = capsys.readouterr().err
+    assert "minimax fallback disabled" in err.lower()
+    assert "openai" in err.lower()
+
+
+def test_failed_minimax_spill_retries_locally_and_disables_spill(monkeypatch, tmp_path, capsys):
+    from graphify import llm
+
+    for key in (
+        "GRAPHIFY_OLLAMA_BALANCE",
+        "GRAPHIFY_OLLAMA_DAYTIME_FILE_LIMIT",
+        "GRAPHIFY_OLLAMA_MINIMAX_MAX_FRACTION",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_BALANCE", "remote")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_DAYTIME_FILE_LIMIT", "1")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_MINIMAX_MAX_FRACTION", "1")
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+    monkeypatch.setattr(llm, "_backend_runtime_unavailable_reason", lambda backend: None)
+
+    files = []
+    for idx in range(2):
+        path = tmp_path / f"f{idx}.md"
+        path.write_text(f"file {idx}", encoding="utf-8")
+        files.append(path)
+
+    calls = []
+
+    def fake_extract(chunk, **kwargs):
+        backend = kwargs["backend"]
+        calls.append(backend)
+        if backend == "minimax":
+            raise ImportError("missing openai")
+        return {
+            "nodes": [{"id": f"n{len(calls)}", "label": "N", "file_type": "document", "source_file": str(chunk[0])}],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    monkeypatch.setattr(llm, "_extract_with_adaptive_retry", fake_extract)
+
+    result = llm.extract_corpus_parallel(
+        files,
+        backend="ollama",
+        token_budget=None,
+        chunk_size=1,
+        max_concurrency=1,
+        allow_minimax_fallback=True,
+    )
+
+    assert calls == ["minimax", "ollama", "ollama"]
+    assert result["failed_chunks"] == 0
+    assert result["minimax_chunks"] == 0
+    assert len(result["nodes"]) == 2
+    assert "disabling remote spill" in capsys.readouterr().err
+
 def _clear_non_ollama_keys(monkeypatch):
     for key in (
         "MINIMAX_API_KEY", "GRAPHIFY_MINIMAX_API_KEY",

@@ -13303,31 +13303,7 @@ def _extract_parallel(
     """
     import concurrent.futures
 
-    if max_workers is None:
-        # Honour GRAPHIFY_MAX_WORKERS env override; otherwise scale to the
-        # full CPU. The historical `, 8)` cap was a safety bound for laptops
-        # in 2023 — on a 32-thread workstation it costs a 4x slowdown
-        # (issue #792). Capping at len(uncached_work) keeps small jobs
-        # from spawning useless idle workers.
-        env_raw = os.environ.get("GRAPHIFY_MAX_WORKERS", "").strip()
-        env_cap = None
-        if env_raw:
-            try:
-                v = int(env_raw)
-                if v > 0:
-                    env_cap = v
-            except ValueError:
-                pass
-        cpu_cap = env_cap if env_cap is not None else (os.cpu_count() or 4)
-        max_workers = min(cpu_cap, len(uncached_work))
-
-    # Windows ProcessPoolExecutor hard-caps at 61 workers (CPython limitation
-    # tied to WaitForMultipleObjects). Clamp here so every path — auto-compute,
-    # GRAPHIFY_MAX_WORKERS, and --max-workers — stays valid on >61-core boxes
-    # (issue #1298). Guard against 0 from an empty work list.
-    if sys.platform == "win32":
-        max_workers = min(max_workers, 61)
-    max_workers = max(max_workers, 1)
+    max_workers = _resolve_max_workers(max_workers, len(uncached_work))
 
     root_str = str(effective_root)
     work_items = [(idx, str(path), root_str) for idx, path in uncached_work]
@@ -13416,6 +13392,27 @@ def _extract_sequential(
 _PARALLEL_THRESHOLD = 20
 
 
+def _resolve_max_workers(max_workers: int | None, uncached_count: int) -> int:
+    if max_workers is None:
+        env_raw = os.environ.get("GRAPHIFY_MAX_WORKERS", "").strip()
+        env_cap = None
+        if env_raw:
+            try:
+                v = int(env_raw)
+                if v > 0:
+                    env_cap = v
+            except ValueError:
+                pass
+        if env_cap is None:
+            cpu_count = os.cpu_count() or 4
+            env_cap = max(1, min(8, cpu_count // 2))
+        max_workers = min(env_cap, uncached_count)
+
+    if sys.platform == "win32":
+        max_workers = min(max_workers, 61)
+    return max(max_workers, 1)
+
+
 def extract(
     paths: list[Path],
     cache_root: Path | None = None,
@@ -13437,8 +13434,8 @@ def extract(
             subdirectory so the cache stays at ./graphify-out/cache/.
         parallel: if True and there are >= _PARALLEL_THRESHOLD uncached files,
             use ProcessPoolExecutor for multi-core extraction.
-        max_workers: max subprocess count. Defaults to cpu_count (or the
-            value of GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
+        max_workers: max subprocess count. Defaults to half the CPU count
+            capped at 8 (or GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
     """
     paths = [Path(p) for p in paths]
     _check_tree_sitter_version()

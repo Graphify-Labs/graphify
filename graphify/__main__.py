@@ -2313,7 +2313,7 @@ def main() -> None:
         print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
-        print("    --max-workers N         AST extraction subprocess count (default: cpu_count)")
+        print("    --max-workers N         AST extraction subprocess count (default: half CPUs, capped at 8)")
         print("    --token-budget N        per-chunk token cap for semantic extraction (default: 60000)")
         print("    --max-concurrency N     parallel semantic chunks in flight (default: 4; set 1 for local LLMs)")
         print("    --api-timeout S         per-request timeout in seconds for the LLM client (default: 600)")
