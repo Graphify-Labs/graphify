@@ -602,7 +602,30 @@ def test_always_on_roundtrip_is_byte_faithful():
     contracts silently change.
     """
     problems = gen.always_on_roundtrip()
-    assert problems == [], "\n".join(problems)
+    rendered_agents = next(
+        a.content
+        for a in gen.render_always_on()
+        if a.path == "graphify/always_on/agents-md.md"
+    )
+    old_instruction = (
+        "When the user types `/graphify`, invoke the `skill` tool with "
+        '`skill: "graphify"` before doing anything else.'
+    )
+    new_instruction = (
+        "When the user types `/graphify`, use the installed graphify skill or instructions "
+        "before doing anything else."
+    )
+    baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
+    expected_agents_problem = (
+        "always_on/agents-md.md does not reproduce _AGENTS_MD_SECTION byte for byte "
+        f"(rendered {len(rendered_agents)} chars vs baseline {len(baseline_agents)} chars)"
+    )
+
+    assert problems == [expected_agents_problem]
+    assert old_instruction in baseline_agents
+    assert baseline_agents.replace(old_instruction, new_instruction) == rendered_agents
+    assert "`skill` tool" not in rendered_agents
+    assert 'skill: "graphify"' not in rendered_agents
 
 
 def test_extracted_constants_equal_the_packaged_always_on_files():

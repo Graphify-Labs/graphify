@@ -561,6 +561,7 @@ def _git_show(ref: str) -> str:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode != 0:
         raise SystemExit(f"error: could not read {ref}: {result.stderr.strip()}")

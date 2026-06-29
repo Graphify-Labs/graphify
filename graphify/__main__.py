@@ -462,8 +462,8 @@ def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") 
         "\n# graphify\n"
         f"- **graphify** (`{skill_path}`) "
         "- any input to knowledge graph. Trigger: `/graphify`\n"
-        "When the user types `/graphify`, invoke the Skill tool "
-        "with `skill: \"graphify\"` before doing anything else.\n"
+        "When the user types `/graphify`, use the installed graphify skill "
+        "or instructions before doing anything else.\n"
     )
 
 
