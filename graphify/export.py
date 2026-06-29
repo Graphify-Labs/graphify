@@ -36,6 +36,16 @@ _BACKUP_ARTIFACTS = [
 _VIS_NETWORK_FILENAME = "vis-network.min.js"
 
 
+def _vendored_vis_js() -> bytes:
+    """Read the vendored vis-network.min.js from the installed package.
+
+    Uses importlib.resources so it works from an in-repo editable install,
+    a wheel install, and an sdist install alike.
+    """
+    from importlib.resources import files
+    return files("graphify").joinpath("assets", _VIS_NETWORK_FILENAME).read_bytes()
+
+
 def backup_if_protected(out_dir: Path) -> "Path | None":
     """Snapshot graph artifacts to a dated subfolder before an overwrite.
 

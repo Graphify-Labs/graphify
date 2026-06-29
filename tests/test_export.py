@@ -522,3 +522,11 @@ def test_backup_env_disable(tmp_path, monkeypatch):
 def test_vis_network_filename_constant():
     from graphify.export import _VIS_NETWORK_FILENAME
     assert _VIS_NETWORK_FILENAME == "vis-network.min.js"
+
+
+def test_vendored_vis_js_returns_committed_file_bytes():
+    from importlib.resources import files
+    expected = files("graphify").joinpath("assets", "vis-network.min.js").read_bytes()
+    from graphify.export import _vendored_vis_js
+    assert _vendored_vis_js() == expected
+    assert len(_vendored_vis_js()) > 0
