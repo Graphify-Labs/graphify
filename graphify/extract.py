@@ -2752,6 +2752,37 @@ def _extract_generic(
                                             add_edge(class_nid, target, "references", line,
                                                      context="generic_arg")
 
+            # Ruby: `class Dog < Animal` puts the base class in the `superclass`
+            # field (a `<` token followed by a constant or scope_resolution).
+            # There was no Ruby branch, so every Ruby inherits edge was dropped.
+            if config.ts_module == "tree_sitter_ruby":
+                sup = node.child_by_field_name("superclass")
+                if sup is not None:
+                    base = ""
+                    for sub in sup.children:
+                        if sub.type == "constant":
+                            base = _read_text(sub, source)
+                            break
+                        if sub.type == "scope_resolution":
+                            consts = [c for c in sub.children if c.type == "constant"]
+                            if consts:
+                                base = _read_text(consts[-1], source)
+                            break
+                    if base:
+                        base_nid = _make_id(stem, base)
+                        if base_nid not in seen_ids:
+                            base_nid = _make_id(base)
+                            if base_nid not in seen_ids:
+                                nodes.append({
+                                    "id": base_nid,
+                                    "label": base,
+                                    "file_type": "code",
+                                    "source_file": "",
+                                    "source_location": "",
+                                })
+                                seen_ids.add(base_nid)
+                        add_edge(class_nid, base_nid, "inherits", line)
+
             # C#-specific: inheritance / interface implementation via base_list
             if config.ts_module == "tree_sitter_c_sharp":
                 for child in node.children:

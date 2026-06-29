@@ -299,6 +299,22 @@ def test_ruby_finds_function():
     assert any("parse_response" in l for l in _labels(r))
 
 
+def test_ruby_inherits_edge():
+    """`class Sub < Base` must emit an inherits edge.
+
+    Ruby exposes the base class in the `superclass` field, but there was no
+    Ruby branch in the inheritance handler, so the edge was silently dropped.
+    """
+    r = extract_ruby(FIXTURES / "sample.rb")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    found = any(
+        "TimeoutApiClient" in node_by_id.get(e["source"], "")
+        and node_by_id.get(e["target"], "") == "ApiClient"
+        for e in r["edges"] if e["relation"] == "inherits"
+    )
+    assert found, "TimeoutApiClient should have inherits edge to ApiClient"
+
+
 # ── C# ───────────────────────────────────────────────────────────────────────
 
 def test_csharp_no_error():
