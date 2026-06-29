@@ -334,6 +334,50 @@ def test_tsconfig_alias_import_resolves_existing_ts_file(tmp_path: Path):
     assert _has_edge(result, "src/routes/page.ts", "src/lib/types/type-helpers.ts")
 
 
+def test_tsconfig_alias_uses_later_path_target_when_first_is_missing(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"$lib/*": ["generated/*", "src/lib/*"]},
+            }
+        }),
+    )
+    target = _write(tmp_path / "src/lib/types/type-helpers.ts", "export type Helper = string\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import type { Helper } from '$lib/types/type-helpers'\nconst value: Helper = 'x'\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "src/lib/types/type-helpers.ts")
+
+
+def test_tsconfig_alias_prefers_first_existing_path_target(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"$lib/*": ["generated/*", "src/lib/*"]},
+            }
+        }),
+    )
+    preferred = _write(tmp_path / "generated/types/type-helpers.ts", "export type Helper = string\n")
+    fallback = _write(tmp_path / "src/lib/types/type-helpers.ts", "export type Helper = string\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import type { Helper } from '$lib/types/type-helpers'\nconst value: Helper = 'x'\n",
+    )
+
+    result = _extract_for([preferred, fallback, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "generated/types/type-helpers.ts")
+    assert not _has_edge(result, "src/routes/page.ts", "src/lib/types/type-helpers.ts")
+
+
 def test_tsconfig_alias_with_subdirectory_baseurl_resolves_existing_ts_file(tmp_path: Path):
     # `paths` are resolved relative to `baseUrl`, which is commonly a
     # subdirectory in monorepo / NestJS layouts (baseUrl "./src").

@@ -70,7 +70,7 @@ def _file_node_id(rel_path: Path) -> str:
     return _make_id(_file_stem(rel_path))
 
 
-_TSCONFIG_ALIAS_CACHE: dict[str, dict[str, str]] = {}
+_TSCONFIG_ALIAS_CACHE: dict[str, dict[str, tuple[str, ...]]] = {}
 _WORKSPACE_PACKAGE_CACHE: dict[str, dict[str, Path]] = {}
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 _JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".ts", ".tsx", ".vue", ".svelte"}
@@ -177,7 +177,9 @@ def _strip_jsonc(text: str) -> str:
     return stripped
 
 
-def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[str, str]:
+def _read_tsconfig_aliases(
+    tsconfig: Path, base_dir: Path, seen: set
+) -> dict[str, tuple[str, ...]]:
     """Recursively read path aliases from a tsconfig, following extends chains.
 
     Child config paths override parent. Circular extends are detected via seen set.
@@ -205,7 +207,7 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
         print(f"  warning: failed to parse {tsconfig} ({type(e).__name__}: {e})", file=sys.stderr, flush=True)
         return {}
 
-    aliases: dict[str, str] = {}
+    aliases: dict[str, tuple[str, ...]] = {}
     # `extends` may be a string or, since TypeScript 5.0, an array of paths.
     # For an array, parents are processed in order with later entries
     # overriding earlier ones; the extending config (paths below) overrides
@@ -241,20 +243,25 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
     paths_base = base_dir / base_url
     paths = compiler_options.get("paths", {})
     for alias, targets in paths.items():
-        if not targets:
+        if not isinstance(targets, list):
             continue
         alias_prefix = alias.rstrip("/*")
-        target_base = targets[0].rstrip("/*")
-        aliases[alias_prefix] = str(os.path.normpath(paths_base / target_base))
+        target_bases = tuple(
+            str(os.path.normpath(paths_base / target.rstrip("/*")))
+            for target in targets
+            if isinstance(target, str) and target
+        )
+        if target_bases:
+            aliases[alias_prefix] = target_bases
 
     return aliases
 
 
-def _load_tsconfig_aliases(start_dir: Path) -> dict[str, str]:
+def _load_tsconfig_aliases(start_dir: Path) -> dict[str, tuple[str, ...]]:
     """Walk up from start_dir to find tsconfig.json and return compilerOptions.paths aliases.
 
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
-    Returns a dict mapping alias prefix (e.g. "@/") to resolved base dir (e.g. "src/").
+    Returns a dict mapping each alias prefix to its ordered resolved target bases.
     Result is cached by tsconfig path string.
     """
     current = start_dir.resolve()
@@ -406,6 +413,27 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
     return None
 
 
+def _resolve_tsconfig_alias(
+    raw: str, aliases: dict[str, tuple[str, ...]]
+) -> Path | None:
+    """Resolve an import through ordered ``compilerOptions.paths`` targets."""
+    for alias_prefix, alias_bases in aliases.items():
+        if raw != alias_prefix and not raw.startswith(alias_prefix + "/"):
+            continue
+        rest = raw[len(alias_prefix):].lstrip("/")
+        first_candidate: Path | None = None
+        for alias_base in alias_bases:
+            candidate = _resolve_js_import_path(
+                Path(os.path.normpath(Path(alias_base) / rest))
+            )
+            if first_candidate is None:
+                first_candidate = candidate
+            if candidate.is_file():
+                return candidate
+        return first_candidate
+    return None
+
+
 def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> Path | None:
     """Resolve a JS/TS module path or specifier to a local source file.
 
@@ -421,11 +449,9 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
     if raw.startswith("."):
         return _resolve_js_import_path(start_dir / raw)
 
-    aliases = _load_tsconfig_aliases(start_dir)
-    for alias_prefix, alias_base in aliases.items():
-        if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-            rest = raw[len(alias_prefix):].lstrip("/")
-            return _resolve_js_import_path(Path(os.path.normpath(Path(alias_base) / rest)))
+    resolved_alias = _resolve_tsconfig_alias(raw, _load_tsconfig_aliases(start_dir))
+    if resolved_alias is not None:
+        return resolved_alias
 
     return _resolve_workspace_import(raw, start_dir)
 
@@ -4121,12 +4147,7 @@ def extract_svelte(path: Path) -> dict:
                 # Check tsconfig.json path aliases (e.g. "$lib/" -> "src/lib/", "@/" -> "src/")
                 # before treating as external. Mirrors _import_js logic so SvelteKit alias
                 # imports resolve to the same file node IDs the extractor creates (#701).
-                resolved_alias = None
-                for alias_prefix, alias_base in aliases.items():
-                    if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-                        rest = raw[len(alias_prefix):].lstrip("/")
-                        resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
-                        break
+                resolved_alias = _resolve_tsconfig_alias(raw, aliases)
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
                     node_id = _make_id(str(resolved_alias))
@@ -4184,12 +4205,7 @@ def extract_svelte(path: Path) -> dict:
                     node_id = _make_id(str(resolved))
                     stub_source_file = str(resolved)
                 else:
-                    resolved_alias = None
-                    for alias_prefix, alias_base in aliases.items():
-                        if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-                            rest = raw[len(alias_prefix):].lstrip("/")
-                            resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
-                            break
+                    resolved_alias = _resolve_tsconfig_alias(raw, aliases)
                     if resolved_alias is not None:
                         node_id = _make_id(str(resolved_alias))
                         stub_source_file = str(resolved_alias)
@@ -4254,12 +4270,7 @@ def extract_astro(path: Path) -> dict:
                 node_id = _make_id(str(resolved))
                 stub_source_file = str(resolved)
             else:
-                resolved_alias = None
-                for alias_prefix, alias_base in aliases.items():
-                    if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-                        rest = raw[len(alias_prefix):].lstrip("/")
-                        resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
-                        break
+                resolved_alias = _resolve_tsconfig_alias(raw, aliases)
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
                     node_id = _make_id(str(resolved_alias))
@@ -4320,12 +4331,7 @@ def extract_astro(path: Path) -> dict:
                     node_id = _make_id(str(resolved))
                     stub_source_file = str(resolved)
                 else:
-                    resolved_alias = None
-                    for alias_prefix, alias_base in aliases.items():
-                        if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-                            rest = raw[len(alias_prefix):].lstrip("/")
-                            resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
-                            break
+                    resolved_alias = _resolve_tsconfig_alias(raw, aliases)
                     if resolved_alias is not None:
                         node_id = _make_id(str(resolved_alias))
                         stub_source_file = str(resolved_alias)
@@ -4436,12 +4442,7 @@ def extract_vue(path: Path) -> dict:
                 node_id = _make_id(str(resolved))
                 stub_source_file = str(resolved)
             else:
-                resolved_alias = None
-                for alias_prefix, alias_base in aliases.items():
-                    if raw == alias_prefix or raw.startswith(alias_prefix + "/"):
-                        rest = raw[len(alias_prefix):].lstrip("/")
-                        resolved_alias = Path(os.path.normpath(Path(alias_base) / rest))
-                        break
+                resolved_alias = _resolve_tsconfig_alias(raw, aliases)
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
                     node_id = _make_id(str(resolved_alias))
