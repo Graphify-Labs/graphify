@@ -1717,6 +1717,78 @@ def test_ts_local_const_does_not_emit_phantom_node(tmp_path):
     assert "topLevel" in labels, f"module-level TS const 'topLevel' missing: {labels}"
 
 
+def test_ts_constructor_injection_calls_edge(tmp_path):
+    """this.repo.findById() in a class with constructor(private repo: IUserRepository)
+    must produce a calls edge from getUser() to findById() (#1316)."""
+    from graphify.extract import extract
+    repo_ts = tmp_path / "repo.ts"
+    repo_ts.write_text(
+        "export interface IUserRepository {\n"
+        "  findById(id: string): Promise<any>;\n"
+        "  save(user: any): Promise<void>;\n"
+        "}\n"
+    )
+    svc_ts = tmp_path / "service.ts"
+    svc_ts.write_text(
+        "import { IUserRepository } from './repo';\n"
+        "\n"
+        "export class UserService {\n"
+        "  constructor(private repo: IUserRepository) {}\n"
+        "\n"
+        "  getUser(id: string) {\n"
+        "    return this.repo.findById(id);\n"
+        "  }\n"
+        "}\n"
+    )
+    r = extract([repo_ts, svc_ts], cache_root=tmp_path / "cache")
+    edge_triples = {
+        (e["source"], e["relation"], e["target"])
+        for e in r["edges"]
+    }
+    labels_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    label_triples = {
+        (labels_by_id.get(s, s), rel, labels_by_id.get(t, t))
+        for s, rel, t in edge_triples
+    }
+    calls_from_get_user = [
+        (s, rel, t) for s, rel, t in label_triples
+        if "getUser" in s and rel == "calls"
+    ]
+    assert any("findById" in t for _, _, t in calls_from_get_user), (
+        f"expected getUser()->findById() calls edge, got: {calls_from_get_user}"
+    )
+
+
+def test_ts_this_field_receiver_not_same_file_collision(tmp_path):
+    """this.db.query() should NOT match an unrelated query() in the same file (#1316)."""
+    f = tmp_path / "collision.ts"
+    f.write_text(
+        "function query() { return 'global'; }\n"
+        "\n"
+        "export class Service {\n"
+        "  constructor(private db: Database) {}\n"
+        "\n"
+        "  run() {\n"
+        "    return this.db.query();\n"
+        "  }\n"
+        "}\n"
+    )
+    r = extract_js(f)
+    calls_edges = [
+        e for e in r["edges"]
+        if e["relation"] == "calls"
+    ]
+    caller_labels = {n["id"]: n["label"] for n in r["nodes"]}
+    run_to_query = [
+        e for e in calls_edges
+        if "run" in caller_labels.get(e["source"], "")
+        and "query" in caller_labels.get(e["target"], "")
+    ]
+    assert len(run_to_query) == 0, (
+        f"this.db.query() should NOT resolve to bare query() in same file: {run_to_query}"
+    )
+
+
 # ── Markdown ─────────────────────────────────────────────────────────────────
 
 from graphify.extract import extract_markdown

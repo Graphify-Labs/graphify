@@ -2147,6 +2147,7 @@ _JS_CONFIG = LanguageConfig(
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
+    call_accessor_object_field="object",
     function_boundary_types=frozenset({"function_declaration", "arrow_function", "method_definition"}),
     import_handler=_import_js,
 )
@@ -2161,12 +2162,13 @@ _TS_CONFIG = LanguageConfig(
         "enum_declaration",        # named enums
         "type_alias_declaration",  # named type aliases
     }),
-    function_types=frozenset({"function_declaration", "method_definition"}),
+    function_types=frozenset({"function_declaration", "method_definition", "method_signature"}),
     import_types=frozenset({"import_statement", "export_statement"}),
     call_types=frozenset({"call_expression", "new_expression"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
+    call_accessor_object_field="object",
     function_boundary_types=frozenset({"function_declaration", "arrow_function", "method_definition"}),
     import_handler=_import_js,
 )
@@ -2185,6 +2187,7 @@ _TSX_CONFIG = LanguageConfig(
     call_function_field=_TS_CONFIG.call_function_field,
     call_accessor_node_types=_TS_CONFIG.call_accessor_node_types,
     call_accessor_field=_TS_CONFIG.call_accessor_field,
+    call_accessor_object_field=_TS_CONFIG.call_accessor_object_field,
     function_boundary_types=_TS_CONFIG.function_boundary_types,
     import_handler=_TS_CONFIG.import_handler,
 )
@@ -3554,6 +3557,31 @@ def _extract_generic(
                         if target_nid != func_nid:
                             add_edge(func_nid, target_nid, "references", line, context=ctx)
 
+            if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                    and func_name == "constructor"):
+                params_node = node.child_by_field_name("parameters")
+                if params_node is not None:
+                    for p in params_node.children:
+                        if p.type != "required_parameter":
+                            continue
+                        has_modifier = any(
+                            c.type in ("accessibility_modifier", "readonly")
+                            for c in p.children
+                        )
+                        if not has_modifier:
+                            continue
+                        name_n = p.child_by_field_name("pattern")
+                        type_n = p.child_by_field_name("type")
+                        if name_n is None or type_n is None:
+                            continue
+                        pname = _read_text(name_n, source)
+                        for tc in type_n.children:
+                            if tc.type == "type_identifier":
+                                ptype = _read_text(tc, source)
+                                if pname and ptype:
+                                    type_table[pname] = ptype
+                                break
+
             if config.ts_module in ("tree_sitter_c", "tree_sitter_cpp"):
                 collect = (_cpp_collect_type_refs if config.ts_module == "tree_sitter_cpp"
                            else _c_collect_type_refs)
@@ -3745,6 +3773,7 @@ def _extract_generic(
 
             callee_name: str | None = None
             is_member_call: bool = False
+            is_this_field_call: bool = False
             swift_receiver: str | None = None
             member_receiver: str | None = None
 
@@ -3881,10 +3910,20 @@ def _extract_generic(
                             # Capture a simple-identifier receiver (e.g. `ClassName`
                             # in `ClassName.method()`) so cross-file member-call
                             # resolution can resolve qualified class-method calls
-                            # (#1446). Chained receivers (`a.b.method()`) are skipped.
+                            # (#1446). Chained receivers (`a.b.method()`) are skipped
+                            # UNLESS the chain is `this.field.method()` (#1316).
                             obj = func_node.child_by_field_name(config.call_accessor_object_field)
                             if obj is not None and obj.type == "identifier":
                                 member_receiver = _read_text(obj, source)
+                            elif (obj is not None
+                                  and obj.type in config.call_accessor_node_types
+                                  and config.call_accessor_object_field):
+                                inner_obj = obj.child_by_field_name(config.call_accessor_object_field)
+                                if inner_obj is not None and inner_obj.type == "this":
+                                    inner_prop = obj.child_by_field_name(config.call_accessor_field)
+                                    if inner_prop is not None:
+                                        member_receiver = _read_text(inner_prop, source)
+                                        is_this_field_call = True
                     else:
                         # Try reading the node directly (e.g. Java name field is the callee)
                         callee_name = _read_text(func_node, source)
@@ -3896,7 +3935,7 @@ def _extract_generic(
                 # viewset action delegates to a same-named service action — which would
                 # match `tgt_nid == caller_nid` and silently drop the call (#1446). The
                 # captured receiver is resolved later in _resolve_python_member_calls.
-                if is_member_call and member_receiver and member_receiver[:1].isupper():
+                if is_member_call and member_receiver and (member_receiver[:1].isupper() or is_this_field_call):
                     tgt_nid = None
                 else:
                     tgt_nid = label_to_nid.get(callee_name)
@@ -4107,7 +4146,10 @@ def _extract_generic(
     if swift_extensions:
         result["swift_extensions"] = swift_extensions
     if type_table:
-        result["swift_type_table"] = {"path": str_path, "table": type_table}
+        if config.ts_module == "tree_sitter_swift":
+            result["swift_type_table"] = {"path": str_path, "table": type_table}
+        elif config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+            result["ts_type_table"] = {"path": str_path, "table": type_table}
     return result
 
 
@@ -9677,6 +9719,91 @@ def _resolve_python_member_calls(
         })
 
 
+def _resolve_typescript_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve cross-file TS/JS member calls via constructor-injection type tables (#1316).
+
+    ``this.repo.findById()`` drops out in the shared cross-file pass because bare
+    ``findById`` collides across the corpus (god-node guard).  TS constructors with
+    parameter-property modifiers (``private repo: IUserRepository``) produce a
+    per-file type table mapping field names to their declared types.  This pass
+    looks up the receiver field's type, finds a single-definition class/interface
+    owning a method with the callee name, and emits an EXTRACTED ``calls`` edge.
+    """
+    type_table_by_file: dict[str, dict[str, str]] = {}
+    for result in per_file:
+        tt = result.get("ts_type_table")
+        if tt and tt.get("path"):
+            type_table_by_file[tt["path"]] = tt.get("table", {})
+    if not type_table_by_file:
+        return
+
+    def _key(label: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
+
+    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+
+    type_def_nids: dict[str, list[str]] = {}
+    node_by_id: dict[str, dict] = {}
+    for n in all_nodes:
+        node_by_id[n.get("id")] = n
+        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+            type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
+
+    method_index: dict[tuple[str, str], str] = {}
+    for e in all_edges:
+        if e.get("relation") != "method":
+            continue
+        src, tgt = e.get("source"), e.get("target")
+        tnode = node_by_id.get(tgt)
+        if tnode is not None:
+            method_index[(src, _key(tnode.get("label", "")))] = tgt
+
+    all_raw_calls: list[dict] = []
+    for result in per_file:
+        all_raw_calls.extend(result.get("raw_calls", []))
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for rc in all_raw_calls:
+        if not rc.get("is_member_call"):
+            continue
+        receiver = rc.get("receiver")
+        callee = rc.get("callee")
+        caller = rc.get("caller_nid")
+        if not receiver or not callee or not caller:
+            continue
+        if receiver[:1].isupper():
+            type_name = receiver
+        else:
+            type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
+        if not type_name:
+            continue
+        type_defs = type_def_nids.get(_key(type_name), [])
+        if len(type_defs) != 1:
+            continue
+        type_nid = type_defs[0]
+        method_nid = method_index.get((type_nid, _key(callee)))
+        target = method_nid or type_nid
+        relation = "calls" if method_nid else "references"
+        if target == caller or (caller, target) in existing_pairs:
+            continue
+        existing_pairs.add((caller, target))
+        all_edges.append({
+            "source": caller,
+            "target": target,
+            "relation": relation,
+            "context": "call",
+            "confidence": "EXTRACTED",
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 # Register the cross-file, language-specific member-call resolvers into the shared
 # registry (framework lives in graphify.resolver_registry). A new language plugs in
 # by adding one register() call below — no edits to extract()'s body. Order
@@ -9691,6 +9818,9 @@ register_language_resolver(
 # graphify.ruby_resolution; registered here as a second consumer of the framework.
 register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb"}), resolve_ruby_member_calls)
+)
+register_language_resolver(
+    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".js", ".jsx"}), _resolve_typescript_member_calls)
 )
 
 
