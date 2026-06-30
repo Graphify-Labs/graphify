@@ -500,6 +500,123 @@ def test_watch_loads_graphifyignore_once(tmp_path, monkeypatch):
     assert calls["n"] == 1, f"_load_graphifyignore called {calls['n']} times; expected 1"
 
 
+# --- graphify-out hygiene excludes for refresh PRs ---
+
+
+def test_graphify_out_hygiene_excludes_update_existing_configs(tmp_path):
+    """graphify refresh/update should teach existing hygiene tools to skip
+    graphify-out/ without deleting the committed graph artifacts."""
+    from graphify.watch import _ensure_graphify_out_hygiene_excludes
+
+    (tmp_path / ".eslintignore").write_text("node_modules/\n", encoding="utf-8")
+    (tmp_path / ".prettierignore").write_text("dist", encoding="utf-8")
+    (tmp_path / ".dockerignore").write_text("# build context\n.tmp/\n", encoding="utf-8")
+    (tmp_path / ".ecrc").write_text(
+        json.dumps({"Verbose": True, "Exclude": ["vendor/"]}) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".golangci.yml").write_text(
+        "run:\n"
+        "  timeout: 2m\n"
+        "  skip-dirs:\n"
+        "    - ^vendor(/|$)\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph_json = out / "graph.json"
+    manifest_json = out / "manifest.json"
+    graph_json.write_text('{"nodes":[]}\n', encoding="utf-8")
+    manifest_json.write_text('{"files":{}}\n', encoding="utf-8")
+
+    changed = _ensure_graphify_out_hygiene_excludes(tmp_path, out)
+
+    assert {p.name for p in changed} == {
+        ".eslintignore",
+        ".prettierignore",
+        ".dockerignore",
+        ".ecrc",
+        ".golangci.yml",
+    }
+    assert "graphify-out/" in (tmp_path / ".eslintignore").read_text(encoding="utf-8")
+    assert (tmp_path / ".prettierignore").read_text(encoding="utf-8").endswith(
+        "dist\ngraphify-out/\n"
+    )
+    assert "graphify-out/" in (tmp_path / ".dockerignore").read_text(encoding="utf-8")
+    ecrc = json.loads((tmp_path / ".ecrc").read_text(encoding="utf-8"))
+    assert ecrc["Exclude"] == ["vendor/", "graphify-out/"]
+    assert "    - ^graphify-out(/|$)\n" in (tmp_path / ".golangci.yml").read_text(
+        encoding="utf-8"
+    )
+    assert graph_json.read_text(encoding="utf-8") == '{"nodes":[]}\n'
+    assert manifest_json.read_text(encoding="utf-8") == '{"files":{}}\n'
+
+
+def test_graphify_out_hygiene_excludes_are_idempotent(tmp_path):
+    from graphify.watch import _ensure_graphify_out_hygiene_excludes
+
+    (tmp_path / ".prettierignore").write_text("graphify-out/\n", encoding="utf-8")
+    (tmp_path / ".ecrc").write_text(
+        json.dumps({"Exclude": ["graphify-out/"]}) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".golangci.toml").write_text(
+        '[run]\nskip-dirs = ["^graphify-out(/|$)"]\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    before = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in (
+            tmp_path / ".prettierignore",
+            tmp_path / ".ecrc",
+            tmp_path / ".golangci.toml",
+        )
+    }
+
+    changed = _ensure_graphify_out_hygiene_excludes(tmp_path, out)
+
+    assert changed == []
+    after = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in (
+            tmp_path / ".prettierignore",
+            tmp_path / ".ecrc",
+            tmp_path / ".golangci.toml",
+        )
+    }
+    assert after == before
+
+
+def test_graphify_out_hygiene_excludes_use_relative_subdir_graph_root(tmp_path):
+    from graphify.watch import _ensure_graphify_out_hygiene_excludes
+
+    (tmp_path / ".dockerignore").write_text("dist/\n", encoding="utf-8")
+    (tmp_path / ".golangci.yml").write_text("run:\n  timeout: 2m\n", encoding="utf-8")
+    out = tmp_path / "src" / "graphify-out"
+    out.mkdir(parents=True)
+
+    changed = _ensure_graphify_out_hygiene_excludes(tmp_path, out)
+
+    assert {p.name for p in changed} == {".dockerignore", ".golangci.yml"}
+    assert "src/graphify-out/" in (tmp_path / ".dockerignore").read_text(encoding="utf-8")
+    assert "    - ^src/graphify-out(/|$)\n" in (tmp_path / ".golangci.yml").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_graphify_out_hygiene_excludes_do_not_create_config_files(tmp_path):
+    from graphify.watch import _ensure_graphify_out_hygiene_excludes
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+
+    assert _ensure_graphify_out_hygiene_excludes(tmp_path, out) == []
+    assert not (tmp_path / ".prettierignore").exists()
+    assert not (tmp_path / ".ecrc").exists()
+
+
 # --- _check_shrink: silent-corruption guard with explicit-deletion bypass ---
 
 def _shrink_payload(n: int) -> dict:

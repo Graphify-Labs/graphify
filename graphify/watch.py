@@ -198,6 +198,8 @@ from graphify.detect import (
 
 _WATCHED_EXTENSIONS = CODE_EXTENSIONS | DOC_EXTENSIONS | PAPER_EXTENSIONS | IMAGE_EXTENSIONS
 _CODE_EXTENSIONS = CODE_EXTENSIONS
+_LINE_HYGIENE_FILES = (".eslintignore", ".prettierignore", ".dockerignore")
+_GOLANGCI_HYGIENE_FILES = (".golangci.yml", ".golangci.yaml", ".golangci.toml")
 
 
 def _report_root_label(watch_path: Path) -> str:
@@ -212,6 +214,198 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _graphify_out_hygiene_pattern(project_root: Path, out_dir: Path) -> str | None:
+    try:
+        rel = out_dir.resolve().relative_to(project_root.resolve()).as_posix()
+    except ValueError:
+        return None
+    if not rel or rel.startswith(".."):
+        return None
+    return rel.rstrip("/") + "/"
+
+
+def _ignore_entry_matches(value: object, pattern: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    value = value.strip().strip("\"'")
+    if not value or value.startswith("#"):
+        return False
+    return value.strip("/") == pattern.strip("/")
+
+
+def _ensure_line_hygiene_exclude(path: Path, pattern: str) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if any(_ignore_entry_matches(line, pattern) for line in text.splitlines()):
+        return False
+    sep = "" if not text or text.endswith("\n") else "\n"
+    path.write_text(text + sep + pattern + "\n", encoding="utf-8")
+    return True
+
+
+def _ensure_ecrc_hygiene_exclude(path: Path, pattern: str) -> bool:
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw) if raw.strip() else {}
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    existing = data.get("Exclude", [])
+    if existing is None:
+        excludes: list[object] = []
+    elif isinstance(existing, str):
+        excludes = [existing]
+    elif isinstance(existing, list):
+        excludes = list(existing)
+    else:
+        return False
+    if any(_ignore_entry_matches(item, pattern) for item in excludes):
+        return False
+    excludes.append(pattern)
+    data["Exclude"] = excludes
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return True
+
+
+def _append_yaml_list_item(text: str, key: str, item: str) -> str | None:
+    lines = text.splitlines()
+    key_re = re.compile(rf"^(\s*){re.escape(key)}:\s*(?:#.*)?$")
+    for i, line in enumerate(lines):
+        m = key_re.match(line)
+        if not m:
+            continue
+        key_indent = len(m.group(1))
+        insert_at = i + 1
+        item_indent = key_indent + 2
+        j = i + 1
+        while j < len(lines):
+            stripped = lines[j].strip()
+            indent = len(lines[j]) - len(lines[j].lstrip(" "))
+            if stripped and indent <= key_indent:
+                break
+            if stripped.startswith("-"):
+                item_indent = indent
+                insert_at = j + 1
+            j += 1
+        lines.insert(insert_at, " " * item_indent + f"- {item}")
+        return "\n".join(lines) + "\n"
+    return None
+
+
+def _insert_yaml_mapping_child(text: str, parent_key: str, child_lines: list[str]) -> str | None:
+    lines = text.splitlines()
+    parent_re = re.compile(rf"^(\s*){re.escape(parent_key)}:\s*(?:#.*)?$")
+    for i, line in enumerate(lines):
+        m = parent_re.match(line)
+        if not m:
+            continue
+        parent_indent = len(m.group(1))
+        insert_at = i + 1
+        while insert_at < len(lines):
+            stripped = lines[insert_at].strip()
+            indent = len(lines[insert_at]) - len(lines[insert_at].lstrip(" "))
+            if stripped and indent <= parent_indent:
+                break
+            insert_at += 1
+        lines[insert_at:insert_at] = child_lines
+        return "\n".join(lines) + "\n"
+    return None
+
+
+def _ensure_golangci_yaml_hygiene_exclude(path: Path, pattern: str) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if "graphify-out" in text:
+        return False
+
+    updated = _append_yaml_list_item(text, "skip-dirs", pattern)
+    if updated is None:
+        updated = _insert_yaml_mapping_child(
+            text,
+            "run",
+            ["  skip-dirs:", f"    - {pattern}"],
+        )
+    if updated is None:
+        sep = "\n" if text and not text.endswith("\n") else ""
+        updated = text + sep + "\nrun:\n  skip-dirs:\n" + f"    - {pattern}\n"
+    path.write_text(updated, encoding="utf-8")
+    return True
+
+
+def _ensure_golangci_toml_hygiene_exclude(path: Path, pattern: str) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if "graphify-out" in text:
+        return False
+    lines = text.splitlines()
+    run_header = next((i for i, line in enumerate(lines) if line.strip() == "[run]"), None)
+    entry = f'skip-dirs = ["{pattern}"]'
+    if run_header is None:
+        sep = "\n" if text and not text.endswith("\n") else ""
+        path.write_text(text + sep + "\n[run]\n" + entry + "\n", encoding="utf-8")
+        return True
+    insert_at = run_header + 1
+    while insert_at < len(lines) and not lines[insert_at].lstrip().startswith("["):
+        insert_at += 1
+    lines.insert(insert_at, entry)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return True
+
+
+def _golangci_hygiene_pattern(ignore_pattern: str) -> str:
+    rel = ignore_pattern.strip("/")
+    return "^" + rel.replace(".", r"\.") + "(/|$)"
+
+
+def _ensure_golangci_hygiene_exclude(path: Path, ignore_pattern: str) -> bool:
+    pattern = _golangci_hygiene_pattern(ignore_pattern)
+    if path.suffix == ".toml":
+        return _ensure_golangci_toml_hygiene_exclude(path, pattern)
+    return _ensure_golangci_yaml_hygiene_exclude(path, pattern)
+
+
+def _ensure_graphify_out_hygiene_excludes(project_root: Path, out_dir: Path) -> list[Path]:
+    """Add graphify output excludes to existing repo hygiene configs.
+
+    The graph artifacts themselves remain in place and can still be committed.
+    This only keeps generated graphify output from being linted/formatted or
+    copied into Docker build contexts when a repo already uses those tools.
+    """
+    pattern = _graphify_out_hygiene_pattern(project_root, out_dir)
+    if pattern is None:
+        return []
+
+    changed: list[Path] = []
+    for name in _LINE_HYGIENE_FILES:
+        path = project_root / name
+        if path.exists() and _ensure_line_hygiene_exclude(path, pattern):
+            changed.append(path)
+
+    ecrc = project_root / ".ecrc"
+    if ecrc.exists() and _ensure_ecrc_hygiene_exclude(ecrc, pattern):
+        changed.append(ecrc)
+
+    for name in _GOLANGCI_HYGIENE_FILES:
+        path = project_root / name
+        if path.exists() and _ensure_golangci_hygiene_exclude(path, pattern):
+            changed.append(path)
+
+    if changed:
+        rel = ", ".join(p.relative_to(project_root).as_posix() for p in changed)
+        print(f"[graphify watch] Added {pattern} hygiene exclude to {rel}")
+    return changed
 
 
 def _changed_path_candidates(raw: Path, *, change_root: Path, watch_root: Path) -> list[Path]:
@@ -700,6 +894,7 @@ def _rebuild_code(
             rebuilt_sources = {(_nsf(str(p), _rebuilt_root) or str(p)) for p in extract_targets}
         rebuilt_sources |= set(deleted_paths)
         out.mkdir(exist_ok=True)
+        _ensure_graphify_out_hygiene_excludes(project_root, out)
         # Write the user-supplied path rather than the resolved absolute form
         # so a committed ``graphify-out/.graphify_root`` is portable across
         # clones and CI runners (#777). When ``watch_path`` is ``.`` (the
