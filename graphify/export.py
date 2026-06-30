@@ -151,6 +151,8 @@ def _yaml_str(s: str) -> str:
 COMMUNITY_COLORS = [
     "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
     "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
+    "#6366f1", "#ec4899", "#14b8a6", "#f97316", "#84cc16",
+    "#06b6d4", "#d946ef", "#22c55e", "#eab308", "#64748b",
 ]
 
 MAX_NODES_FOR_VIZ = 5_000
@@ -174,287 +176,894 @@ def _viz_node_limit() -> int:
 
 def _html_styles() -> str:
     return """<style>
+  :root {
+    --bg-primary: #07070d;
+    --bg-secondary: #0c0c1a;
+    --surface: rgba(255,255,255,0.04);
+    --surface-hover: rgba(255,255,255,0.08);
+    --surface-active: rgba(255,255,255,0.12);
+    --border: rgba(255,255,255,0.06);
+    --border-hover: rgba(255,255,255,0.12);
+    --text-primary: rgba(255,255,255,0.92);
+    --text-secondary: rgba(255,255,255,0.55);
+    --text-tertiary: rgba(255,255,255,0.30);
+    --accent: #6366f1;
+    --accent-glow: rgba(99,102,241,0.3);
+    --radius: 10px;
+    --radius-sm: 6px;
+    --radius-lg: 16px;
+    --sidebar-w: 340px;
+    --font: -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+    --font-mono: "SF Mono","Fira Code","Cascadia Code",monospace;
+    --transition: 0.2s cubic-bezier(0.4,0,0.2,1);
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
-  #graph { flex: 1; }
-  #sidebar { width: 280px; background: #1a1a2e; border-left: 1px solid #2a2a4e; display: flex; flex-direction: column; overflow: hidden; }
-  #search-wrap { padding: 12px; border-bottom: 1px solid #2a2a4e; }
-  #search { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
-  #search:focus { border-color: #4E79A7; }
-  #search-results { max-height: 140px; overflow-y: auto; padding: 4px 12px; border-bottom: 1px solid #2a2a4e; display: none; }
-  .search-item { padding: 4px 6px; cursor: pointer; border-radius: 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .search-item:hover { background: #2a2a4e; }
-  #info-panel { padding: 14px; border-bottom: 1px solid #2a2a4e; min-height: 140px; }
-  #info-panel h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
-  #info-content { font-size: 13px; color: #ccc; line-height: 1.6; }
-  #info-content .field { margin-bottom: 5px; }
-  #info-content .field b { color: #e0e0e0; }
-  #info-content .empty { color: #555; font-style: italic; }
-  .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #333; }
-  .neighbor-link:hover { background: #2a2a4e; }
-  #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
-  #legend-wrap { flex: 1; overflow-y: auto; padding: 12px; }
-  #legend-wrap h3 { font-size: 13px; color: #aaa; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
-  .legend-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; border-radius: 4px; font-size: 12px; }
-  .legend-item:hover { background: #2a2a4e; padding-left: 4px; }
-  .legend-item.dimmed { opacity: 0.35; }
-  .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg-primary); color: var(--text-primary); font-family: var(--font); -webkit-font-smoothing: antialiased; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+  #app { display: flex; width: 100%; height: 100%; position: relative; }
+  #graph-container { flex: 1; position: relative; overflow: hidden; }
+  #graph-canvas { width: 100%; height: 100%; display: block; }
+
+  #loading-screen {
+    position: fixed; inset: 0; z-index: 9999;
+    background: var(--bg-primary);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    transition: opacity 0.8s ease, visibility 0.8s ease;
+  }
+  #loading-screen.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+  #loading-screen .logo { font-size: 28px; font-weight: 700; letter-spacing: -0.03em; background: linear-gradient(135deg,#6366f1,#a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 24px; }
+  #loading-screen .steps { display: flex; flex-direction: column; gap: 8px; min-width: 240px; }
+  #loading-screen .step { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-secondary); transition: var(--transition); }
+  #loading-screen .step.active { color: var(--text-primary); }
+  #loading-screen .step.done { color: #22c55e; }
+  #loading-screen .step-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; transition: var(--transition); }
+  #loading-screen .step.active .step-dot { box-shadow: 0 0 8px currentColor; }
+  #loading-screen .progress-bar { width: 240px; height: 2px; background: var(--border); border-radius: 2px; margin-top: 20px; overflow: hidden; }
+  #loading-screen .progress-fill { height: 100%; background: linear-gradient(90deg,#6366f1,#a855f7); border-radius: 2px; transition: width 0.5s ease; width: 0%; }
+
+  #sidebar {
+    width: var(--sidebar-w); height: 100%; background: var(--bg-secondary);
+    border-left: 1px solid var(--border); display: flex; flex-direction: column;
+    flex-shrink: 0; position: relative; transition: transform var(--transition), opacity var(--transition);
+    z-index: 100;
+  }
+  #sidebar.collapsed { transform: translateX(100%); opacity: 0; width: 0; overflow: hidden; border: none; }
+  #sidebar-header { padding: 16px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+  #sidebar-header h2 { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
+  #sidebar-close { background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 4px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; transition: var(--transition); }
+  #sidebar-close:hover { background: var(--surface-hover); color: var(--text-primary); }
+
+  #search-wrap { padding: 12px 18px; position: relative; flex-shrink: 0; }
+  #search {
+    width: 100%; background: var(--surface); border: 1px solid var(--border);
+    color: var(--text-primary); padding: 8px 12px 8px 36px; border-radius: var(--radius);
+    font-size: 13px; outline: none; transition: var(--transition); font-family: var(--font);
+  }
+  #search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+  #search::placeholder { color: var(--text-tertiary); }
+  #search-icon { position: absolute; left: 28px; top: 50%; transform: translateY(-50%); color: var(--text-tertiary); pointer-events: none; font-size: 14px; }
+  #search-results {
+    position: absolute; top: 100%; left: 18px; right: 18px; max-height: 280px;
+    background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow-y: auto; display: none; z-index: 50; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .search-item { padding: 8px 12px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 8px; transition: var(--transition); }
+  .search-item:hover { background: var(--surface-hover); }
+  .search-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .search-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .search-item .badge { font-size: 10px; color: var(--text-tertiary); font-family: var(--font-mono); }
+
+  #info-panel { padding: 14px 18px; border-bottom: 1px solid var(--border); min-height: 120px; flex-shrink: 0; }
+  #info-panel h3 { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 10px; font-weight: 600; }
+  #info-content { font-size: 13px; line-height: 1.6; }
+  #info-content .empty { color: var(--text-tertiary); font-style: italic; font-size: 12px; }
+  .info-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; }
+  .info-row .label { color: var(--text-secondary); font-size: 12px; }
+  .info-row .value { color: var(--text-primary); font-size: 12px; font-weight: 500; }
+  .info-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+  .info-tag { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 10px; font-weight: 500; background: var(--surface); color: var(--text-secondary); margin-right: 4px; margin-bottom: 4px; }
+  .neighbor-link { display: flex; align-items: center; gap: 6px; padding: 4px 8px; margin: 2px 0; border-radius: var(--radius-sm); cursor: pointer; font-size: 12px; transition: var(--transition); }
+  .neighbor-link:hover { background: var(--surface-hover); }
+  .neighbor-link .ndot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  #neighbors-list { max-height: 140px; overflow-y: auto; margin-top: 4px; }
+
+  #legend-wrap { flex: 1; overflow-y: auto; padding: 14px 18px; }
+  #legend-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  #legend-header h3 { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; }
+  #legend-controls { display: flex; align-items: center; gap: 6px; }
+  #legend-controls label { display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 11px; color: var(--text-secondary); user-select: none; transition: var(--transition); }
+  #legend-controls label:hover { color: var(--text-primary); }
+  .legend-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid var(--border); border-radius: 3px; background: var(--surface); cursor: pointer; position: relative; flex-shrink: 0; transition: var(--transition); }
+  .legend-cb:checked { background: var(--accent); border-color: var(--accent); }
+  .legend-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  .legend-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; cursor: pointer; border-radius: var(--radius-sm); font-size: 12px; transition: var(--transition); }
+  .legend-item:hover { background: var(--surface-hover); }
+  .legend-item.dimmed { opacity: 0.3; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 6px currentColor; }
   .legend-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .legend-count { color: #666; font-size: 11px; }
-  #stats { padding: 10px 14px; border-top: 1px solid #2a2a4e; font-size: 11px; color: #555; }
-  #legend-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 4px 0; }
-  #legend-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #aaa; user-select: none; }
-  #legend-controls label:hover { color: #e0e0e0; }
-  .legend-cb, #select-all-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid #3a3a5e; border-radius: 3px; background: #0f0f1a; cursor: pointer; position: relative; flex-shrink: 0; }
-  .legend-cb:checked, #select-all-cb:checked { background: #4E79A7; border-color: #4E79A7; }
-  .legend-cb:checked::after, #select-all-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
-  #select-all-cb:indeterminate { background: #4E79A7; border-color: #4E79A7; }
-  #select-all-cb:indeterminate::after { content: ''; position: absolute; left: 2px; top: 5px; width: 8px; height: 2px; background: #fff; border: none; transform: none; }
+  .legend-count { color: var(--text-tertiary); font-size: 11px; font-family: var(--font-mono); }
+
+  #stats { padding: 10px 18px; border-top: 1px solid var(--border); display: flex; gap: 16px; flex-wrap: wrap; flex-shrink: 0; }
+  .stat-item { display: flex; flex-direction: column; align-items: center; min-width: 48px; }
+  .stat-value { font-size: 16px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); letter-spacing: -0.02em; }
+  .stat-label { font-size: 9px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 1px; }
+
+  #toolbar {
+    position: absolute; top: 16px; left: 16px; display: flex; gap: 6px; z-index: 50;
+    background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 4px; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  }
+  .toolbar-btn {
+    background: none; border: none; color: var(--text-secondary); cursor: pointer;
+    padding: 6px 8px; border-radius: var(--radius-sm); font-size: 13px;
+    transition: var(--transition); display: flex; align-items: center; gap: 4px;
+    font-family: var(--font);
+  }
+  .toolbar-btn:hover { background: var(--surface-hover); color: var(--text-primary); }
+  .toolbar-btn.active { background: var(--surface-active); color: var(--accent); }
+  .toolbar-btn .kbd { font-size: 9px; color: var(--text-tertiary); font-family: var(--font-mono); padding: 1px 4px; background: var(--surface); border-radius: 3px; }
+
+  #minimap {
+    position: absolute; bottom: 16px; right: 16px; width: 160px; height: 100px;
+    background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; z-index: 50; cursor: pointer; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  }
+  #minimap canvas { width: 100%; height: 100%; display: block; }
+  #minimap .viewport { position: absolute; border: 1px solid rgba(255,255,255,0.3); border-radius: 2px; pointer-events: none; }
+
+  #context-menu {
+    position: fixed; z-index: 9998; min-width: 180px;
+    background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 4px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); display: none;
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  }
+  .ctx-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; border-radius: var(--radius-sm); font-size: 12px; transition: var(--transition); color: var(--text-secondary); }
+  .ctx-item:hover { background: var(--surface-hover); color: var(--text-primary); }
+  .ctx-separator { height: 1px; background: var(--border); margin: 4px 8px; }
+  .ctx-item .icon { font-size: 14px; width: 18px; text-align: center; }
+  .ctx-item .shortcut { margin-left: auto; color: var(--text-tertiary); font-size: 10px; font-family: var(--font-mono); }
+
+  #toast-container { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 9999; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+  .toast { padding: 8px 16px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 12px; color: var(--text-primary); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); animation: toastIn 0.3s ease, toastOut 0.3s ease 2.5s forwards; pointer-events: auto; }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes toastOut { from { opacity: 1; } to { opacity: 0; } }
+
+  #timeline-bar {
+    position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+    display: none; align-items: center; gap: 10px; z-index: 50;
+    background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 8px 14px; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  }
+  #timeline-bar.visible { display: flex; }
+  .tl-btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 4px; border-radius: 4px; font-size: 16px; transition: var(--transition); display: flex; align-items: center; }
+  .tl-btn:hover { background: var(--surface-hover); color: var(--text-primary); }
+  #timeline-slider { -webkit-appearance: none; width: 200px; height: 4px; background: var(--border); border-radius: 2px; outline: none; }
+  #timeline-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); cursor: pointer; box-shadow: 0 0 8px var(--accent-glow); }
+  #timeline-label { font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); min-width: 60px; text-align: center; }
+
+  #legend-toggle {
+    position: absolute; top: 16px; right: 16px; z-index: 50;
+    background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 8px; cursor: pointer; color: var(--text-secondary); font-size: 16px;
+    transition: var(--transition); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    display: flex; align-items: center; justify-content: center; display: none;
+  }
+  #legend-toggle:hover { background: var(--surface-hover); color: var(--text-primary); }
+
+  @media (max-width: 768px) {
+    #sidebar { position: fixed; right: 0; top: 0; width: 100%; max-width: 340px; box-shadow: -10px 0 40px rgba(0,0,0,0.5); }
+    #legend-toggle { display: flex; }
+    #sidebar.collapsed + #legend-toggle { display: flex; }
+  }
+
+  .badge-node { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 500; background: var(--surface); }
+
+  #focus-mode-indicator { position: absolute; top: 60px; left: 16px; z-index: 50; display: none; font-size: 11px; color: var(--text-secondary); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 12px; align-items: center; gap: 6px; backdrop-filter: blur(20px); }
+  #focus-mode-indicator .btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+  #focus-mode-indicator .btn:hover { background: var(--surface-hover); color: var(--text-primary); }
 </style>"""
 
 
 def _hyperedge_script(hyperedges_json: str) -> str:
-    return f"""<script>
-// Render hyperedges as shaded regions
-const hyperedges = {hyperedges_json};
-// afterDrawing passes ctx already transformed to network coordinate space.
-// Draw node positions raw — no manual pan/zoom/DPR math needed.
-network.on('afterDrawing', function(ctx) {{
-    hyperedges.forEach(h => {{
-        const positions = h.nodes
-            .map(nid => network.getPositions([nid])[nid])
-            .filter(p => p !== undefined);
-        if (positions.length < 2) return;
-        ctx.save();
-        ctx.globalAlpha = 0.12;
-        ctx.fillStyle = '#6366f1';
-        ctx.strokeStyle = '#6366f1';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        // Centroid and expanded hull in network coordinates
-        const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
-        const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
-        const expanded = positions.map(p => ({{
-            x: cx + (p.x - cx) * 1.15,
-            y: cy + (p.y - cy) * 1.15
-        }}));
-        ctx.moveTo(expanded[0].x, expanded[0].y);
-        expanded.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
-        ctx.closePath();
-        ctx.fill();
-        ctx.globalAlpha = 0.4;
-        ctx.stroke();
-        // Label
-        ctx.globalAlpha = 0.8;
-        ctx.fillStyle = '#4f46e5';
-        ctx.font = 'bold 11px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(h.label, cx, cy - 5);
-        ctx.restore();
-    }});
-}});
-</script>"""
+    if hyperedges_json.strip() in ("[]", "null", ""):
+        return ""
+    return f"""
+const RAW_HYPEREDGES = {hyperedges_json};
+"""
 
 
 def _html_script(nodes_json: str, edges_json: str, legend_json: str) -> str:
-    return f"""<script>
-const RAW_NODES = {nodes_json};
-const RAW_EDGES = {edges_json};
-const LEGEND = {legend_json};
+    return """<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+const RAW_NODES = __NODES_JSON__;
+const RAW_EDGES = __EDGES_JSON__;
+const LEGEND = __LEGEND_JSON__;
 
-// HTML-escape helper — prevents XSS when injecting graph data into innerHTML
-function esc(s) {{
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}}
+const CFG = {
+  nodeMinRadius: 2.5, nodeMaxRadius: 14, edgeBaseWidth: 1, edgeMaxWidth: 4,
+  particleCount: 150, floatAmplitude: 0.6, simulationAlpha: 0.3, simulationAlphaMin: 0.01,
+  simulationDecay: 0.02, labelMinScale: 1.8, glowIntensity: 0.6, communityHaloOpacity: 0.06,
+};
 
-// Build vis datasets
-const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
-  id: n.id, label: n.label, color: n.color, size: n.size,
-  font: n.font, title: n.title,
-  _community: n.community, _community_name: n.community_name,
-  _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
-}})));
+const state = {
+  nodes: [], edges: [], nodeMap: new Map(), communities: [], communityColors: new Map(),
+  selectedNode: null, hoveredNode: null, hiddenCommunities: new Set(),
+  simulation: null, transform: d3.zoomIdentity, time: 0, running: true, focusMode: false,
+  particlePositions: [], initialized: false, loadStep: 0,
+};
 
-const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
-  id: i, from: e.from, to: e.to,
-  label: '',
-  title: e.title,
-  dashes: e.dashes,
-  width: e.width,
-  color: e.color,
-  arrows: {{ to: {{ enabled: true, scaleFactor: 0.5 }} }},
-}})));
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function colorAlpha(hex, a) { return hex + Math.round(a*255).toString(16).padStart(2,'0'); }
+function dist(x1,y1,x2,y2) { return Math.hypot(x2-x1,y2-y1); }
+function cross(o,a,b) { return (a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]); }
 
-const container = document.getElementById('graph');
-const network = new vis.Network(container, {{ nodes: nodesDS, edges: edgesDS }}, {{
-  physics: {{
-    enabled: true,
-    solver: 'forceAtlas2Based',
-    forceAtlas2Based: {{
-      gravitationalConstant: -60,
-      centralGravity: 0.005,
-      springLength: 120,
-      springConstant: 0.08,
-      damping: 0.4,
-      avoidOverlap: 0.8,
-    }},
-    stabilization: {{ iterations: 200, fit: true }},
-  }},
-  interaction: {{
-    hover: true,
-    tooltipDelay: 100,
-    hideEdgesOnDrag: true,
-    navigationButtons: false,
-    keyboard: false,
-  }},
-  nodes: {{ shape: 'dot', borderWidth: 1.5 }},
-  edges: {{ smooth: {{ type: 'continuous', roundness: 0.2 }}, selectionWidth: 3 }},
-}});
+function processData() {
+  const maxDeg = Math.max(1, ...RAW_NODES.map(n => n.degree || 1));
+  const legendColorMap = new Map(LEGEND.map(l => [l.cid, l.color]));
+  state.nodes = RAW_NODES.map(n => ({
+    id: n.id, label: n.label, community: n.community,
+    community_name: n.community_name || 'Community ' + n.community,
+    source_file: n.source_file || '', file_type: n.file_type || 'unknown',
+    degree: n.degree || 1,
+    radius: CFG.nodeMinRadius + (CFG.nodeMaxRadius - CFG.nodeMinRadius) * Math.sqrt((n.degree || 1) / maxDeg),
+    color: legendColorMap.get(n.community) || '#64748b',
+    x: (Math.random() - 0.5) * 200, y: (Math.random() - 0.5) * 200, vx: 0, vy: 0, opacity: 0, scale: 0,
+  }));
+  state.nodeMap = new Map(state.nodes.map(n => [n.id, n]));
+  state.edges = RAW_EDGES.map((e, i) => ({
+    source: e.from || e.source, target: e.to || e.target,
+    relation: e.label || e.relation || '', confidence: e.confidence || 'EXTRACTED',
+    weight: e.weight || 1,
+    sourceNode: state.nodeMap.get(e.from || e.source),
+    targetNode: state.nodeMap.get(e.to || e.target),
+    opacity: 0, width: 1,
+  })).filter(e => e.sourceNode && e.targetNode);
 
-network.once('stabilizationIterationsDone', () => {{
-  network.setOptions({{ physics: {{ enabled: false }} }});
-}});
+  const commMap = new Map();
+  state.nodes.forEach(n => {
+    const c = n.community;
+    if (!commMap.has(c)) commMap.set(c, { cid: c, label: n.community_name, color: n.color, nodes: [], count: 0 });
+    commMap.get(c).nodes.push(n);
+    commMap.get(c).count++;
+  });
+  state.communities = Array.from(commMap.values());
+  state.communityColors = new Map(state.communities.map(c => [c.cid, c.color]));
+  state.particlePositions = [];
+  for (let i = 0; i < CFG.particleCount; i++) {
+    const edge = state.edges[Math.floor(Math.random() * state.edges.length)];
+    state.particlePositions.push({ edgeIdx: state.edges.indexOf(edge), t: Math.random(), speed: 0.003 + Math.random() * 0.005 });
+  }
+}
 
-function showInfo(nodeId) {{
-  const n = nodesDS.get(nodeId);
-  if (!n) return;
-  const neighborIds = network.getConnectedNodes(nodeId);
-  const neighborItems = neighborIds.map(nid => {{
-    const nb = nodesDS.get(nid);
-    const color = nb ? nb.color.background : '#555';
-    return `<span class="neighbor-link" style="border-left-color:${{esc(color)}}" onclick="focusNode(${{JSON.stringify(nid)}})">${{esc(nb ? nb.label : nid)}}</span>`;
-  }}).join('');
-  document.getElementById('info-content').innerHTML = `
-    <div class="field"><b>${{esc(n.label)}}</b></div>
-    <div class="field">Type: ${{esc(n._file_type || 'unknown')}}</div>
-    <div class="field">Community: ${{esc(n._community_name)}}</div>
-    <div class="field">Source: ${{esc(n._source_file || '-')}}</div>
-    <div class="field">Degree: ${{n._degree}}</div>
-    ${{neighborIds.length ? `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${{neighborIds.length}})</div><div id="neighbors-list">${{neighborItems}}</div>` : ''}}
-  `;
-}}
+function createSimulation() {
+  const sim = d3.forceSimulation(state.nodes)
+    .force('center', d3.forceCenter(0, 0).strength(0.02))
+    .force('charge', d3.forceManyBody().strength(-80).distanceMax(400))
+    .force('link', d3.forceLink(state.edges).id(d => d.id).distance(60).strength(0.3))
+    .force('collision', d3.forceCollide().radius(d => d.radius * 1.5).strength(0.5))
+    .alpha(1).alphaDecay(0.02)
+    .on('tick', () => { if (!state.simulation) return; render(); })
+    .stop();
+  state.simulation = sim;
+  return sim;
+}
 
-function focusNode(nodeId) {{
-  network.focus(nodeId, {{ scale: 1.4, animation: true }});
-  network.selectNodes([nodeId]);
-  showInfo(nodeId);
-}}
+const canvas = document.createElement('canvas');
+canvas.id = 'graph-canvas';
+document.getElementById('graph-container').appendChild(canvas);
+const ctx = canvas.getContext('2d');
+const minimapCanvas = document.createElement('canvas');
+document.getElementById('minimap').appendChild(minimapCanvas);
+const minimapCtx = minimapCanvas.getContext('2d');
 
-// Track hovered node — hover detection is more reliable than click params
-let hoveredNodeId = null;
-network.on('hoverNode', params => {{
-  hoveredNodeId = params.node;
-  container.style.cursor = 'pointer';
-}});
-network.on('blurNode', () => {{
-  hoveredNodeId = null;
-  container.style.cursor = 'default';
-}});
-container.addEventListener('click', () => {{
-  if (hoveredNodeId !== null) {{
-    showInfo(hoveredNodeId);
-    network.selectNodes([hoveredNodeId]);
-  }}
-}});
-network.on('click', params => {{
-  if (params.nodes.length > 0) {{
-    showInfo(params.nodes[0]);
-  }} else if (hoveredNodeId === null) {{
-    document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
-  }}
-}});
+function resizeCanvas() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
+  canvas.style.width = rect.width + 'px'; canvas.style.height = rect.height + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function resizeMinimap() {
+  const rect = document.getElementById('minimap').getBoundingClientRect();
+  const w = rect.width || 160, h = rect.height || 100;
+  const dpr = window.devicePixelRatio || 1;
+  minimapCanvas.width = w * dpr; minimapCanvas.height = h * dpr;
+  minimapCanvas.style.width = w + 'px'; minimapCanvas.style.height = h + 'px';
+  minimapCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
 
-const searchInput = document.getElementById('search');
-const searchResults = document.getElementById('search-results');
-searchInput.addEventListener('input', () => {{
-  const q = searchInput.value.toLowerCase().trim();
-  searchResults.innerHTML = '';
-  if (!q) {{ searchResults.style.display = 'none'; return; }}
-  const matches = RAW_NODES.filter(n => n.label.toLowerCase().includes(q)).slice(0, 20);
-  if (!matches.length) {{ searchResults.style.display = 'none'; return; }}
-  searchResults.style.display = 'block';
-  matches.forEach(n => {{
-    const el = document.createElement('div');
-    el.className = 'search-item';
-    el.textContent = n.label;
-    el.style.borderLeft = `3px solid ${{n.color.background}}`;
-    el.style.paddingLeft = '8px';
-    el.onclick = () => {{
-      network.focus(n.id, {{ scale: 1.5, animation: true }});
-      network.selectNodes([n.id]);
-      showInfo(n.id);
-      searchResults.style.display = 'none';
-      searchInput.value = '';
-    }};
-    searchResults.appendChild(el);
-  }});
-}});
-document.addEventListener('click', e => {{
-  if (!searchResults.contains(e.target) && e.target !== searchInput)
-    searchResults.style.display = 'none';
-}});
+const zoom = d3.zoom().scaleExtent([0.05, 20]).on('zoom', (event) => {
+  state.transform = event.transform; render(); updateMinimapViewport();
+});
+d3.select(canvas).call(zoom);
 
-const hiddenCommunities = new Set();
+function focusNodeOn(nodeId, scale) {
+  const node = state.nodeMap.get(nodeId);
+  if (!node) return;
+  const cx = canvas.parentElement.clientWidth / 2, cy = canvas.parentElement.clientHeight / 2;
+  const s = scale || 2;
+  const t = d3.zoomIdentity.translate(cx - node.x * s, cy - node.y * s).scale(s);
+  d3.select(canvas).transition().duration(600).ease(d3.easeCubicInOut).call(zoom.transform, t);
+  state.selectedNode = node; showInfo(nodeId);
+}
+function fitGraph() {
+  if (!state.nodes.length) return;
+  const padding = 80; let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  state.nodes.forEach(n => { if (n.x < x0) x0 = n.x; if (n.y < y0) y0 = n.y; if (n.x > x1) x1 = n.x; if (n.y > y1) y1 = n.y; });
+  const dx = x1 - x0 || 1, dy = y1 - y0 || 1;
+  const cw = canvas.parentElement.clientWidth, ch = canvas.parentElement.clientHeight;
+  const s = Math.min((cw - padding * 2) / dx, (ch - padding * 2) / dy);
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const t = d3.zoomIdentity.translate(cw / 2 - cx * s, ch / 2 - cy * s).scale(s);
+  d3.select(canvas).transition().duration(800).ease(d3.easeCubicInOut).call(zoom.transform, t);
+}
+function resetView() {
+  d3.select(canvas).transition().duration(600).ease(d3.easeCubicInOut).call(zoom.transform, d3.zoomIdentity);
+  state.focusMode = false; document.getElementById('focus-mode-indicator').style.display = 'none';
+}
 
-const selectAllCb = document.getElementById('select-all-cb');
+const quadtree = d3.quadtree();
+function rebuildQuadtree() {
+  quadtree.removeAll();
+  state.nodes.forEach(n => { if (!state.hiddenCommunities.has(n.community)) quadtree.add(n); });
+}
+function findNodeAt(mx, my) {
+  const t = state.transform, gx = (mx - t.x) / t.k, gy = (my - t.y) / t.k;
+  const threshold = Math.max(8 / t.k, 3); let best = null, bestD = Infinity;
+  quadtree.visit((node, x0, y0, x1, y1) => {
+    if (!node.length) {
+      const n = node.data;
+      if (n) { const d = dist(gx, gy, n.x, n.y); if (d < threshold + n.radius && d < bestD) { best = n; bestD = d; } }
+      return true;
+    }
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    return (gx - cx) * (gx - cx) + (gy - cy) * (gy - cy) > (threshold + (x1 - x0)) * (threshold + (y1 - y0));
+  });
+  return best;
+}
 
-function updateSelectAllState() {{
-  const total = LEGEND.length;
-  const hidden = hiddenCommunities.size;
-  selectAllCb.checked = hidden === 0;
-  selectAllCb.indeterminate = hidden > 0 && hidden < total;
-}}
+function render() {
+  if (!state.initialized || !state.nodes.length) return;
+  const cw = canvas.parentElement.clientWidth, ch = canvas.parentElement.clientHeight;
+  ctx.clearRect(0, 0, cw, ch); ctx.save();
+  ctx.translate(state.transform.x, state.transform.y);
+  ctx.scale(state.transform.k, state.transform.k);
+  drawCommunityHalos(ctx); drawEdges(ctx); drawNodes(ctx);
+  drawEdgeParticles(ctx); drawLabels(ctx); drawHyperedges(ctx);
+  ctx.restore(); drawMinimap();
+}
 
-function toggleAllCommunities(hide) {{
-  document.querySelectorAll('.legend-item').forEach(item => {{
-    hide ? item.classList.add('dimmed') : item.classList.remove('dimmed');
-  }});
-  document.querySelectorAll('.legend-cb').forEach(cb => {{
-    cb.checked = !hide;
-  }});
-  LEGEND.forEach(c => {{
-    if (hide) hiddenCommunities.add(c.cid); else hiddenCommunities.delete(c.cid);
-  }});
-  const updates = RAW_NODES.map(n => ({{ id: n.id, hidden: hide }}));
-  nodesDS.update(updates);
+function drawCommunityHalos(ctx) {
+  const scale = state.transform.k;
+  if (scale < 0.3) return;
+  state.communities.forEach(comm => {
+    if (state.hiddenCommunities.has(comm.cid) || comm.nodes.length < 3) return;
+    const pts = comm.nodes.map(n => [n.x, n.y]);
+    const sorted = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    if (sorted[0][0] === sorted[sorted.length-1][0] && sorted[0][1] === sorted[sorted.length-1][1]) return;
+    const lower = [], upper = [];
+    for (const p of sorted) { while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop(); lower.push(p); }
+    for (let i = sorted.length-1; i >= 0; i--) { const p = sorted[i]; while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop(); upper.push(p); }
+    lower.pop(); upper.pop(); const hull = lower.concat(upper);
+    if (hull.length < 3) return;
+    ctx.save(); ctx.globalAlpha = CFG.communityHaloOpacity * Math.min(1, scale / 1.5);
+    ctx.fillStyle = comm.color; ctx.beginPath(); ctx.moveTo(hull[0][0], hull[0][1]);
+    for (let i = 1; i < hull.length; i++) ctx.lineTo(hull[i][0], hull[i][1]);
+    ctx.closePath(); ctx.fill(); ctx.restore();
+  });
+}
+
+function drawEdges(ctx) {
+  const scale = state.transform.k, cw = canvas.parentElement.clientWidth, ch = canvas.parentElement.clientHeight;
+  state.edges.forEach(e => {
+    if (state.hiddenCommunities.has(e.sourceNode.community) || state.hiddenCommunities.has(e.targetNode.community)) return;
+    const sn = e.sourceNode, tn = e.targetNode, sx = sn.x, sy = sn.y, tx = tn.x, ty = tn.y;
+    const mx = (sx+tx)/2, my = (sy+ty)/2;
+    const vx = mx - state.transform.x/state.transform.k, vy = my - state.transform.y/state.transform.k;
+    const hw = cw/(2*state.transform.k)+50, hh = ch/(2*state.transform.k)+50;
+    if (Math.abs(vx) > hw || Math.abs(vy) > hh) return;
+    const w = (CFG.edgeBaseWidth + e.weight * 0.5) * Math.min(1, scale * 0.8);
+    const fade = Math.min(1, scale * 2); let alpha = 0.15 * fade * e.opacity;
+    if (state.hoveredNode) {
+      if (sn.id === state.hoveredNode.id || tn.id === state.hoveredNode.id) alpha = 0.5 * fade;
+      else alpha *= 0.15;
+    }
+    ctx.save(); ctx.globalAlpha = alpha;
+    ctx.strokeStyle = state.communityColors.get(e.sourceNode.community) || '#64748b';
+    ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty); ctx.stroke(); ctx.restore();
+  });
+}
+
+function drawNodes(ctx) {
+  const scale = state.transform.k;
+  state.nodes.forEach(n => {
+    if (state.hiddenCommunities.has(n.community)) return;
+    const fl = CFG.floatAmplitude * Math.sin(state.time * 0.001 + n.x * 0.01 + n.y * 0.01);
+    const x = n.x + fl, y = n.y + fl * 0.7;
+    const r = n.radius * n.scale * Math.min(1, scale * 0.5 + 0.5);
+    if (n.opacity < 0.01 || r < 0.5) return;
+    const isHovered = state.hoveredNode && state.hoveredNode.id === n.id;
+    const isSelected = state.selectedNode && state.selectedNode.id === n.id;
+    const glow = isHovered ? 1 : isSelected ? 0.8 : 0.3;
+    ctx.save(); ctx.globalAlpha = n.opacity;
+    if (scale > 0.3) {
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, r * 4);
+      grad.addColorStop(0, colorAlpha(n.color, 0.3 * glow));
+      grad.addColorStop(1, colorAlpha(n.color, 0));
+      ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(x, y, r * 4, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.shadowColor = n.color; ctx.shadowBlur = isHovered ? 20 : isSelected ? 15 : 8;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = isHovered ? '#fff' : n.color; ctx.fill();
+    ctx.shadowBlur = 0;
+    const inner = ctx.createRadialGradient(x - r*0.3, y - r*0.3, 0, x, y, r);
+    inner.addColorStop(0, 'rgba(255,255,255,0.4)'); inner.addColorStop(0.5, 'rgba(255,255,255,0.1)'); inner.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = inner; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    if (isSelected || isHovered) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x, y, r + 1.5, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
+  });
+}
+
+function drawEdgeParticles(ctx) {
+  const scale = state.transform.k;
+  if (scale < 0.5 || !state.edges.length) return;
+  ctx.save();
+  state.particlePositions.forEach(p => {
+    const edge = state.edges[p.edgeIdx];
+    if (!edge || state.hiddenCommunities.has(edge.sourceNode.community) || state.hiddenCommunities.has(edge.targetNode.community)) return;
+    const t = p.t, x = edge.sourceNode.x + (edge.targetNode.x - edge.sourceNode.x) * t;
+    const y = edge.sourceNode.y + (edge.targetNode.y - edge.sourceNode.y) * t;
+    const size = 2 * Math.min(1, scale);
+    const grad = ctx.createRadialGradient(x, y, 0, x, y, size * 3);
+    grad.addColorStop(0, colorAlpha(edge.sourceNode.color, 0.6));
+    grad.addColorStop(1, colorAlpha(edge.sourceNode.color, 0));
+    ctx.fillStyle = grad; ctx.globalAlpha = 0.6;
+    ctx.beginPath(); ctx.arc(x, y, size * 3, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.9; ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(x, y, size * 0.5, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.restore();
+}
+
+function drawLabels(ctx) {
+  const scale = state.transform.k;
+  if (scale < CFG.labelMinScale * 0.5) return;
+  ctx.save();
+  const fontSize = Math.min(12, Math.max(8, 12 * scale / CFG.labelMinScale));
+  ctx.font = fontSize + 'px system-ui, -apple-system, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  state.nodes.forEach(n => {
+    if (state.hiddenCommunities.has(n.community) || n.opacity < 0.3) return;
+    const fl = CFG.floatAmplitude * Math.sin(state.time * 0.001 + n.x * 0.01 + n.y * 0.01);
+    const x = n.x + fl, y = n.y + fl * 0.7;
+    const isHovered = state.hoveredNode && state.hoveredNode.id === n.id;
+    const isSelected = state.selectedNode && state.selectedNode.id === n.id;
+    if (!isHovered && !isSelected && scale <= CFG.labelMinScale) return;
+    const alpha = Math.min(1, n.opacity * (isHovered ? 1 : (scale - CFG.labelMinScale * 0.5) / (CFG.labelMinScale * 0.5)));
+    if (alpha < 0.1) return;
+    ctx.globalAlpha = alpha;
+    const yOff = n.radius * n.scale * Math.min(1, scale * 0.5 + 0.5) + fontSize + 2;
+    const tw = ctx.measureText(n.label).width;
+    ctx.fillStyle = 'rgba(7,7,13,0.7)'; const pad = 4, rx = 3, bw = tw + pad * 2, bh = fontSize + pad;
+    const bx = x - bw/2, by = y + yOff - bh/2;
+    ctx.beginPath(); ctx.moveTo(bx+rx, by); ctx.lineTo(bx+bw-rx, by);
+    ctx.quadraticCurveTo(bx+bw, by, bx+bw, by+rx); ctx.lineTo(bx+bw, by+bh-rx);
+    ctx.quadraticCurveTo(bx+bw, by+bh, bx+bw-rx, by+bh); ctx.lineTo(bx+rx, by+bh);
+    ctx.quadraticCurveTo(bx, by+bh, bx, by+bh-rx); ctx.lineTo(bx, by+rx);
+    ctx.quadraticCurveTo(bx, by, bx+rx, by); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = isHovered ? '#fff' : 'rgba(255,255,255,0.85)';
+    ctx.fillText(n.label, x, y + yOff);
+  });
+  ctx.restore();
+}
+
+function drawHyperedges(ctx) {
+  if (!window.RAW_HYPEREDGES || !RAW_HYPEREDGES.length) return;
+  RAW_HYPEREDGES.forEach(h => {
+    const positions = h.nodes.map(nid => { const n = state.nodeMap.get(nid); return n ? [n.x, n.y] : null; }).filter(p => p);
+    if (positions.length < 2) return;
+    const cx = positions.reduce((s,p) => s+p[0],0)/positions.length;
+    const cy = positions.reduce((s,p) => s+p[1],0)/positions.length;
+    const expanded = positions.map(p => [cx+(p[0]-cx)*1.15, cy+(p[1]-cy)*1.15]);
+    ctx.save(); ctx.globalAlpha = 0.08; ctx.fillStyle = '#6366f1'; ctx.strokeStyle = '#6366f1'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(expanded[0][0], expanded[0][1]);
+    expanded.slice(1).forEach(p => ctx.lineTo(p[0], p[1])); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 0.3; ctx.stroke(); ctx.globalAlpha = 0.7;
+    ctx.fillStyle = '#8b5cf6'; ctx.font = 'bold 10px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.fillText(h.label || '', cx, cy - 6); ctx.restore();
+  });
+}
+
+function drawMinimap() {
+  const rect = document.getElementById('minimap').getBoundingClientRect();
+  const mw = rect.width, mh = rect.height;
+  if (mw === 0 || mh === 0) return;
+  minimapCtx.clearRect(0, 0, mw, mh);
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  state.nodes.forEach(n => { if (n.x<x0) x0=n.x; if (n.y<y0) y0=n.y; if (n.x>x1) x1=n.x; if (n.y>y1) y1=n.y; });
+  const gx=x0-10,gy=y0-10,gw=(x1-x0)+20||1,gh=(y1-y0)+20||1;
+  const sc = Math.min(mw/gw, mh/gh);
+  const ox = (mw - gw*sc)/2, oy = (mh - gh*sc)/2;
+  state.nodes.forEach(n => {
+    if (state.hiddenCommunities.has(n.community)) return;
+    const x = ox + (n.x - gx) * sc, y = oy + (n.y - gy) * sc;
+    minimapCtx.fillStyle = n.color; minimapCtx.globalAlpha = 0.6;
+    minimapCtx.beginPath(); minimapCtx.arc(x, y, Math.max(1, n.radius * 0.5 * sc), 0, Math.PI * 2); minimapCtx.fill();
+  });
+  minimapCtx.globalAlpha = 1;
+  const t = state.transform;
+  const vx = ox + (-t.x/t.k - gx) * sc, vy = oy + (-t.y/t.k - gy) * sc;
+  const vw = (canvas.parentElement.clientWidth / t.k) * sc, vh = (canvas.parentElement.clientHeight / t.k) * sc;
+  minimapCtx.strokeStyle = 'rgba(255,255,255,0.4)'; minimapCtx.lineWidth = 1;
+  minimapCtx.strokeRect(vx, vy, vw, vh);
+}
+function updateMinimapViewport() {
+  const el = document.getElementById('minimap');
+  const rect = el.getBoundingClientRect(); const mw = rect.width, mh = rect.height;
+  if (mw === 0 || mh === 0) return;
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  state.nodes.forEach(n => { if (n.x<x0) x0=n.x; if (n.y<y0) y0=n.y; if (n.x>x1) x1=n.x; if (n.y>y1) y1=n.y; });
+  const sc = Math.min(mw/((x1-x0)+20||1), mh/((y1-y0)+20||1));
+  const ox = (mw - ((x1-x0)+20) * sc)/2, oy = (mh - ((y1-y0)+20) * sc)/2;
+  const t = state.transform;
+  const vx = ox + (-t.x/t.k - (x0-10)) * sc, vy = oy + (-t.y/t.k - (y0-10)) * sc;
+  const vw = (canvas.parentElement.clientWidth / t.k) * sc, vh = (canvas.parentElement.clientHeight / t.k) * sc;
+  const vp = el.querySelector('.viewport') || document.createElement('div');
+  vp.className = 'viewport'; vp.style.cssText = 'left:'+vx+'px;top:'+vy+'px;width:'+vw+'px;height:'+vh+'px;';
+  if (!el.querySelector('.viewport')) el.appendChild(vp);
+}
+
+let mouseX = 0, mouseY = 0;
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = e.clientX - rect.left; mouseY = e.clientY - rect.top;
+  const node = findNodeAt(mouseX, mouseY);
+  if (node !== state.hoveredNode) {
+    state.hoveredNode = node; canvas.style.cursor = node ? 'pointer' : 'default';
+    if (node) highlightConnected(node.id); else clearHighlight();
+    render();
+  }
+});
+canvas.addEventListener('mouseleave', () => { state.hoveredNode = null; canvas.style.cursor = 'default'; clearHighlight(); render(); });
+canvas.addEventListener('click', (e) => {
+  if (e.detail === 2) return;
+  const rect = canvas.getBoundingClientRect();
+  const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
+  if (node) { state.selectedNode = node; showInfo(node.id); render(); }
+  else { state.selectedNode = null; document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>'; }
+});
+canvas.addEventListener('dblclick', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
+  if (node) { focusNodeOn(node.id, 2.5); document.getElementById('focus-mode-indicator').style.display = 'flex'; state.focusMode = true; }
+});
+
+function highlightConnected(nodeId) {
+  const connected = new Set();
+  state.edges.forEach(e => { if (e.sourceNode.id === nodeId) connected.add(e.targetNode.id); if (e.targetNode.id === nodeId) connected.add(e.sourceNode.id); });
+  state.nodes.forEach(n => { n._dimmed = (n.id !== nodeId && !connected.has(n.id)); });
+}
+function clearHighlight() { state.nodes.forEach(n => n._dimmed = false); }
+
+function buildCommunityList() {
+  const el = document.getElementById('legend'); el.innerHTML = '';
+  state.communities.forEach(comm => {
+    const item = document.createElement('div'); item.className = 'legend-item';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.className = 'legend-cb';
+    cb.checked = !state.hiddenCommunities.has(comm.cid);
+    cb.addEventListener('change', () => {
+      if (cb.checked) state.hiddenCommunities.delete(comm.cid); else state.hiddenCommunities.add(comm.cid);
+      item.classList.toggle('dimmed', !cb.checked); rebuildQuadtree(); updateSelectAllState(); render();
+    });
+    item.innerHTML = '<div class="legend-dot" style="background:'+comm.color+';color:'+comm.color+'"></div><span class="legend-label">'+comm.label+'</span><span class="legend-count">'+comm.count+'</span>';
+    item.prepend(cb);
+    item.addEventListener('click', (e) => { if (e.target !== cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); } });
+    el.appendChild(item);
+  });
   updateSelectAllState();
-}}
+}
+function updateSelectAllState() {
+  const total = state.communities.length, hidden = state.hiddenCommunities.size;
+  const cb = document.getElementById('select-all-cb'); cb.checked = hidden === 0; cb.indeterminate = hidden > 0 && hidden < total;
+}
+function toggleAllCommunities(hide) {
+  document.querySelectorAll('.legend-item').forEach(item => item.classList.toggle('dimmed', hide));
+  document.querySelectorAll('.legend-cb').forEach(cb => cb.checked = !hide);
+  state.communities.forEach(c => { if (hide) state.hiddenCommunities.add(c.cid); else state.hiddenCommunities.delete(c.cid); });
+  rebuildQuadtree(); updateSelectAllState(); render();
+}
 
-const legendEl = document.getElementById('legend');
-LEGEND.forEach(c => {{
-  const item = document.createElement('div');
-  item.className = 'legend-item';
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.className = 'legend-cb';
-  cb.checked = true;
-  cb.addEventListener('change', (e) => {{
-    e.stopPropagation();
-    if (cb.checked) {{
-      hiddenCommunities.delete(c.cid);
-      item.classList.remove('dimmed');
-    }} else {{
-      hiddenCommunities.add(c.cid);
-      item.classList.add('dimmed');
-    }}
-    const updates = RAW_NODES
-      .filter(n => n.community === c.cid)
-      .map(n => ({{ id: n.id, hidden: !cb.checked }}));
-    nodesDS.update(updates);
-    updateSelectAllState();
-  }});
-  item.innerHTML = `<div class="legend-dot" style="background:${{c.color}}"></div>
-    <span class="legend-label">${{c.label}}</span>
-    <span class="legend-count">${{c.count}}</span>`;
-  item.prepend(cb);
-  item.onclick = (e) => {{
-    if (e.target === cb) return;
-    cb.checked = !cb.checked;
-    cb.dispatchEvent(new Event('change'));
-  }};
-  legendEl.appendChild(item);
-}});
-</script>"""
+function setupSearch() {
+  const input = document.getElementById('search'), results = document.getElementById('search-results');
+  input.addEventListener('input', () => {
+    const q = input.value.toLowerCase().trim(); results.innerHTML = '';
+    if (!q) { results.style.display = 'none'; return; }
+    const matches = state.nodes.filter(n => n.label.toLowerCase().includes(q)).slice(0, 20);
+    if (!matches.length) { results.style.display = 'none'; return; }
+    results.style.display = 'block';
+    matches.forEach(n => {
+      const el = document.createElement('div'); el.className = 'search-item';
+      el.innerHTML = '<span class="dot" style="background:'+n.color+'"></span><span class="name">'+esc(n.label)+'</span><span class="badge">'+n.file_type+'</span>';
+      el.addEventListener('click', () => { focusNodeOn(n.id, 2.5); state.selectedNode = n; results.style.display = 'none'; input.value = ''; render(); });
+      results.appendChild(el);
+    });
+  });
+  document.addEventListener('click', (e) => { if (!results.contains(e.target) && e.target !== input) results.style.display = 'none'; });
+}
+
+function showInfo(nodeId) {
+  const n = state.nodeMap.get(nodeId); if (!n) return;
+  const neighborItems = [];
+  state.edges.forEach(e => {
+    let nb = null;
+    if (e.sourceNode.id === nodeId) nb = e.targetNode;
+    if (e.targetNode.id === nodeId) nb = e.sourceNode;
+    if (nb) neighborItems.push('<div class="neighbor-link" data-id="'+esc(nb.id)+'"><span class="ndot" style="background:'+nb.color+'"></span>'+esc(nb.label)+'<span style="color:var(--text-tertiary);font-size:10px;margin-left:auto">'+e.relation+'</span></div>');
+  });
+  const relCount = neighborItems.length;
+  const neighborsHtml = relCount ? '<div style="margin-top:8px;color:var(--text-tertiary);font-size:10px;text-transform:uppercase;letter-spacing:0.08em">Connected Nodes</div><div id="neighbors-list">'+neighborItems.join('')+'</div>' : '';
+  document.getElementById('info-content').innerHTML = '<div class="info-title">'+esc(n.label)+'</div><div><span class="info-tag">'+n.file_type+'</span><span class="info-tag" style="background:'+n.color+'20;color:'+n.color+'">'+n.community_name+'</span></div><div class="info-row"><span class="label">File</span><span class="value">'+esc(n.source_file||'-')+'</span></div><div class="info-row"><span class="label">Degree</span><span class="value">'+n.degree+'</span></div><div class="info-row"><span class="label">Relationships</span><span class="value">'+relCount+'</span></div>'+neighborsHtml;
+  document.querySelectorAll('.neighbor-link').forEach(el => {
+    el.addEventListener('click', () => { const id = el.dataset.id; focusNodeOn(id, 2); state.selectedNode = state.nodeMap.get(id); render(); });
+  });
+}
+
+let statsAnimated = false;
+function animateStats() {
+  if (statsAnimated) return; statsAnimated = true;
+  const counts = {
+    nodes: state.nodes.length, edges: state.edges.length,
+    communities: state.communities.length,
+    files: new Set(state.nodes.filter(n => n.file_type === 'code').map(n => n.source_file)).size,
+    types: new Set(state.nodes.map(n => n.file_type)).size,
+  };
+  Object.entries(counts).forEach(([key, target]) => {
+    const el = document.getElementById('stat-' + key); if (!el) return;
+    const duration = 1200, start = performance.now();
+    function update() {
+      const t = Math.min(1, (performance.now() - start) / duration);
+      el.textContent = Math.floor((1 - Math.pow(1 - t, 3)) * target);
+      if (t < 1) requestAnimationFrame(update); else el.textContent = target;
+    }
+    update();
+  });
+}
+
+function setupTimeline() {
+  const bar = document.getElementById('timeline-bar'), playBtn = document.getElementById('tl-play');
+  const slider = document.getElementById('timeline-slider'), label = document.getElementById('timeline-label');
+  let playing = false, animId = null;
+  playBtn.addEventListener('click', () => { playing = !playing; playBtn.textContent = playing ? '\u23F8' : '\u25B6'; if (playing) animateTimeline(); });
+  slider.addEventListener('input', () => { const t = parseFloat(slider.value); label.textContent = Math.round(t*100)+'%'; setTimelineProgress(t); });
+  function animateTimeline() {
+    if (!playing) return;
+    const val = parseFloat(slider.value) + 0.005;
+    if (val >= 1) { playing = false; playBtn.textContent = '\u21BB'; slider.value = 1; label.textContent = '100%'; setTimelineProgress(1); return; }
+    slider.value = val; label.textContent = Math.round(val*100)+'%'; setTimelineProgress(val);
+    animId = requestAnimationFrame(animateTimeline);
+  }
+  function setTimelineProgress(t) {
+    state.nodes.forEach((n, i) => { n.opacity = Math.min(1, (t * state.nodes.length - i + 10) / 10); n.scale = Math.min(1, (t * state.nodes.length - i + 5) / 5); });
+    state.edges.forEach((e, i) => { e.opacity = Math.min(1, (t * state.edges.length - i + 5) / 5); });
+    render();
+  }
+  window.showTimeline = () => { bar.classList.add('visible'); };
+  window.hideTimeline = () => { bar.classList.remove('visible'); playing = false; if (animId) cancelAnimationFrame(animId); };
+}
+
+const SHORTCUTS = {
+  'f': () => fitGraph(), 'r': () => resetView(), 's': () => document.getElementById('search').focus(),
+  'Escape': () => { resetView(); document.getElementById('search').blur(); document.getElementById('search-results').style.display = 'none'; },
+  't': () => document.getElementById('timeline-bar').classList.toggle('visible'),
+  'b': () => document.getElementById('sidebar').classList.toggle('collapsed'),
+  'p': () => exportPNG(),
+  '?': () => showShortcuts(),
+};
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'F11') { e.preventDefault(); toggleFullscreen(); return; }
+  const key = e.key === ' ' ? 'Space' : e.key;
+  const combo = e.ctrlKey ? 'ctrl+'+key.toLowerCase() : key.toLowerCase();
+  if (SHORTCUTS[combo]) { e.preventDefault(); SHORTCUTS[combo](); }
+});
+function showShortcuts() {
+  const items = [['F','Fit graph'],['R','Reset view'],['S','Search'],['Esc','Reset & close'],['T','Toggle timeline'],['B','Toggle sidebar'],['F11','Fullscreen'],['P','Export PNG'],['?','Show shortcuts']];
+  const html = '<div style="min-width:200px"><div style="font-weight:600;margin-bottom:8px;font-size:13px">Keyboard Shortcuts</div>'+items.map(([k,d]) => '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px"><span>'+d+'</span><span style="color:var(--text-tertiary);font-family:var(--font-mono)">'+k+'</span></div>').join('')+'</div>';
+  showToast(html, 5000);
+}
+
+function showContextMenu(e, node) {
+  const menu = document.getElementById('context-menu');
+  const items = node ? [
+    ['\u25C9', 'Focus node', function() { focusNodeOn(node.id, 2.5); }],
+    ['\u229E', 'Fit to node', function() { focusNodeOn(node.id, 2.5); }],
+    null,
+    ['\u2B07', 'Export PNG', exportPNG],
+    ['📄', 'Export SVG', exportSVG],
+  ] : [
+    ['\u229E', 'Fit graph', fitGraph],
+    ['\u27F2', 'Reset view', resetView],
+    ['\u26F6', 'Fullscreen', toggleFullscreen],
+    null,
+    ['\u2B07', 'Export PNG', exportPNG],
+    ['📄', 'Export SVG', exportSVG],
+    null,
+    ['\u2600', 'Toggle theme', toggleTheme],
+  ];
+  menu.innerHTML = items.map(item => {
+    if (!item) return '<div class="ctx-separator"></div>';
+    return '<div class="ctx-item"><span class="icon">'+item[0]+'</span>'+item[1]+'</div>';
+  }).join('');
+  menu.style.display = 'block';
+  menu.style.left = Math.min(e.clientX, window.innerWidth - 200) + 'px';
+  menu.style.top = Math.min(e.clientY, window.innerHeight - 200) + 'px';
+  Array.from(menu.querySelectorAll('.ctx-item')).forEach((el, i) => {
+    const realIdx = items.filter(Boolean).length <= i ? -1 : items.filter(item => item !== null).indexOf(items.filter(item => item !== null)[i]);
+    const item = items.filter(item => item !== null)[i];
+    if (item) el.addEventListener('click', function() { menu.style.display = 'none'; item[2](); });
+  });
+  document.addEventListener('click', function handler() { menu.style.display = 'none'; document.removeEventListener('click', handler); }, { once: true });
+}
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
+  showContextMenu(e, node);
+});
+
+function toggleTheme() {
+  const root = document.documentElement;
+  const isDark = root.style.getPropertyValue('--bg-primary') !== '#ffffff';
+  if (isDark) {
+    root.style.setProperty('--bg-primary', '#ffffff'); root.style.setProperty('--bg-secondary', '#f8f8fb');
+    root.style.setProperty('--surface','rgba(0,0,0,0.03)'); root.style.setProperty('--surface-hover','rgba(0,0,0,0.06)'); root.style.setProperty('--surface-active','rgba(0,0,0,0.1)');
+    root.style.setProperty('--border','rgba(0,0,0,0.08)'); root.style.setProperty('--border-hover','rgba(0,0,0,0.15)');
+    root.style.setProperty('--text-primary','rgba(0,0,0,0.92)'); root.style.setProperty('--text-secondary','rgba(0,0,0,0.55)'); root.style.setProperty('--text-tertiary','rgba(0,0,0,0.30)');
+    canvas.style.background = '#ffffff'; showToast('Light theme');
+  } else {
+    root.style.setProperty('--bg-primary','#07070d'); root.style.setProperty('--bg-secondary','#0c0c1a');
+    root.style.setProperty('--surface','rgba(255,255,255,0.04)'); root.style.setProperty('--surface-hover','rgba(255,255,255,0.08)'); root.style.setProperty('--surface-active','rgba(255,255,255,0.12)');
+    root.style.setProperty('--border','rgba(255,255,255,0.06)'); root.style.setProperty('--border-hover','rgba(255,255,255,0.12)');
+    root.style.setProperty('--text-primary','rgba(255,255,255,0.92)'); root.style.setProperty('--text-secondary','rgba(255,255,255,0.55)'); root.style.setProperty('--text-tertiary','rgba(255,255,255,0.30)');
+    canvas.style.background = '#07070d'; showToast('Dark theme');
+  }
+}
+
+function showToast(msg, duration) {
+  const container = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = msg;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), duration || 3000);
+}
+
+function exportPNG() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.width / dpr, h = canvas.height / dpr;
+  const offscreen = document.createElement('canvas');
+  offscreen.width = canvas.width; offscreen.height = canvas.height;
+  const offCtx = offscreen.getContext('2d');
+  offCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  offCtx.fillStyle = '#07070d'; offCtx.fillRect(0, 0, w, h);
+  offCtx.save();
+  offCtx.translate(state.transform.x, state.transform.y);
+  offCtx.scale(state.transform.k, state.transform.k);
+  state.edges.forEach(e => {
+    if (state.hiddenCommunities.has(e.sourceNode.community)) return;
+    offCtx.globalAlpha = 0.2;
+    const col = state.communityColors.get(e.sourceNode.community) || '#64748b';
+    offCtx.strokeStyle = col; offCtx.lineWidth = 1;
+    offCtx.beginPath(); offCtx.moveTo(e.sourceNode.x, e.sourceNode.y); offCtx.lineTo(e.targetNode.x, e.targetNode.y); offCtx.stroke();
+  });
+  state.nodes.forEach(n => {
+    if (state.hiddenCommunities.has(n.community)) return;
+    offCtx.globalAlpha = n.opacity; offCtx.fillStyle = n.color;
+    offCtx.beginPath(); offCtx.arc(n.x, n.y, n.radius * n.scale, 0, Math.PI * 2); offCtx.fill();
+  });
+  offCtx.restore();
+  const link = document.createElement('a');
+  link.download = 'graphify-export.png'; link.href = offscreen.toDataURL('image/png'); link.click();
+  showToast('Exported PNG');
+}
+
+function exportSVG() {
+  let svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="-500 -500 1000 1000">';
+  state.edges.forEach(e => {
+    if (state.hiddenCommunities.has(e.sourceNode.community)) return;
+    const col = state.communityColors.get(e.sourceNode.community) || '#64748b';
+    svg += '<line x1="'+e.sourceNode.x+'" y1="'+e.sourceNode.y+'" x2="'+e.targetNode.x+'" y2="'+e.targetNode.y+'" stroke="'+col+'" opacity="0.15" stroke-width="0.5"/>';
+  });
+  state.nodes.forEach(n => {
+    if (state.hiddenCommunities.has(n.community)) return;
+    svg += '<circle cx="'+n.x+'" cy="'+n.y+'" r="'+(n.radius * n.scale)+'" fill="'+n.color+'" opacity="'+n.opacity+'"/>';
+  });
+  svg += '</svg>';
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const link = document.createElement('a');
+  link.download = 'graphify-export.svg'; link.href = URL.createObjectURL(blob); link.click();
+  URL.revokeObjectURL(link.href);
+  showToast('Exported SVG');
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen();
+}
+
+function setQuality(level) {
+  if (level === 'low') { CFG.particleCount = 0; CFG.glowIntensity = 0; CFG.communityHaloOpacity = 0; }
+  else if (level === 'medium') { CFG.particleCount = 50; CFG.glowIntensity = 0.3; CFG.communityHaloOpacity = 0.03; }
+  else { CFG.particleCount = 150; CFG.glowIntensity = 0.6; CFG.communityHaloOpacity = 0.06; }
+  showToast('Quality: '+level);
+}
+
+function setLoadStep(n) {
+  state.loadStep = n;
+  const steps = document.querySelectorAll('.step');
+  steps.forEach((s, i) => {
+    s.classList.remove('active', 'done');
+    if (i < n) s.classList.add('done');
+    else if (i === n) s.classList.add('active');
+  });
+  document.querySelector('.progress-fill').style.width = (n / 7) * 100 + '%';
+}
+
+function animate(time) {
+  if (!state.running) return;
+  state.time = time;
+  if (CFG.particleCount > 0) {
+    state.particlePositions.forEach(p => {
+      p.t += p.speed;
+      if (p.t > 1) {
+        p.t = 0;
+        const edge = state.edges[Math.floor(Math.random() * state.edges.length)];
+        if (edge) p.edgeIdx = state.edges.indexOf(edge);
+      }
+    });
+  }
+  render();
+  requestAnimationFrame(animate);
+}
+
+function init() {
+  setLoadStep(0);
+  setTimeout(() => {
+    setLoadStep(1); processData();
+    setLoadStep(2); createSimulation();
+    setLoadStep(3); resizeCanvas(); resizeMinimap(); rebuildQuadtree();
+    setLoadStep(4); buildCommunityList(); setupSearch(); setupTimeline();
+    setLoadStep(5);
+    state.simulation.restart();
+    let stabilized = false;
+    state.simulation.on('end', () => {
+      if (stabilized) return; stabilized = true;
+      setLoadStep(6); state.initialized = true;
+      state.nodes.forEach((n, i) => { setTimeout(() => { n.opacity = 1; n.scale = 1; }, i * 8); });
+      state.edges.forEach((e, i) => { setTimeout(() => { e.opacity = 1; }, i * 4 + 200); });
+      setTimeout(() => {
+        setLoadStep(7); fitGraph(); animateStats();
+        setTimeout(() => { document.getElementById('loading-screen').classList.add('hidden'); }, 500);
+      }, state.nodes.length * 8 + 400);
+      requestAnimationFrame(animate);
+    });
+    setTimeout(() => { if (state.simulation) state.simulation.alphaTarget(0).stop(); }, 4000);
+  }, 300);
+}
+
+window.addEventListener('resize', () => { resizeCanvas(); resizeMinimap(); render(); });
+window.addEventListener('load', init);
+window.fitGraph = fitGraph; window.resetView = resetView;
+window.toggleFullscreen = toggleFullscreen; window.exportPNG = exportPNG;
+window.exportSVG = exportSVG; window.toggleAllCommunities = toggleAllCommunities;
+window.focusNodeOn = focusNodeOn; window.showInfo = showInfo; window.setQuality = setQuality;
+</script>""".replace('__NODES_JSON__', nodes_json).replace('__EDGES_JSON__', edges_json).replace('__LEGEND_JSON__', legend_json)
 
 
 _CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.5, "AMBIGUOUS": 0.2}
@@ -730,13 +1339,10 @@ def to_html(
         vis_nodes.append({
             "id": node_id,
             "label": label,
-            "color": {"background": color, "border": color, "highlight": {"background": "#ffffff", "border": color}},
-            "size": round(size, 1),
-            "font": {"size": font_size, "color": "#ffffff"},
-            "title": _html.escape(label),
             "community": cid,
             "community_name": sanitize_label((community_labels or {}).get(cid, f"Community {cid}")),
             "source_file": sanitize_label(str(data.get("source_file") or "")),
+            "source_location": sanitize_label(str(data.get("source_location", "") or "")),
             "file_type": data.get("file_type", ""),
             "degree": deg,
         })
@@ -754,17 +1360,18 @@ def to_html(
         vis_edges.append({
             "from": true_src,
             "to": true_tgt,
-            "label": relation,
-            "title": _html.escape(f"{relation} [{confidence}]"),
-            "dashes": confidence != "EXTRACTED",
-            "width": 2 if confidence == "EXTRACTED" else 1,
-            "color": {"opacity": 0.7 if confidence == "EXTRACTED" else 0.35},
+            "relation": relation,
             "confidence": confidence,
+            "weight": data.get("weight", 1.0),
         })
 
     # Build community legend data
     legend_data = []
-    for cid in sorted((community_labels or {}).keys()):
+    all_cids = set()
+    for n in vis_nodes:
+        if n["community"] is not None:
+            all_cids.add(n["community"])
+    for cid in sorted(all_cids):
         color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
         lbl = _html.escape(sanitize_label((community_labels or {}).get(cid, f"Community {cid}")))
         n = member_counts.get(cid, len(communities.get(cid, []))) if member_counts else len(communities.get(cid, []))
@@ -781,35 +1388,100 @@ def to_html(
     title = _html.escape(sanitize_label(str(output_path)))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
 
+    file_type_counts = Counter(n.get("file_type", "unknown") for n in vis_nodes)
+    stats_data = {
+        "nodes": G.number_of_nodes(),
+        "edges": G.number_of_edges(),
+        "communities": len(communities),
+        "files": len({n.get("source_file", "") for n in vis_nodes if n.get("source_file")}),
+        "types": len(file_type_counts),
+    }
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>graphify - {title}</title>
-<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"
-        integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
-        crossorigin="anonymous"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>graphify — knowledge graph</title>
 {_html_styles()}
 </head>
 <body>
-<div id="graph"></div>
-<div id="sidebar">
-  <div id="search-wrap">
-    <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
-    <div id="search-results"></div>
-  </div>
-  <div id="info-panel">
-    <h3>Node Info</h3>
-    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
-  </div>
-  <div id="legend-wrap">
-    <h3>Communities</h3>
-    <div id="legend-controls">
-      <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
+<div id="app">
+
+  <div id="loading-screen">
+    <div class="logo">graphify</div>
+    <div class="steps">
+      <div class="step active"><span class="step-dot"></span> Loading graph data</div>
+      <div class="step"><span class="step-dot"></span> Processing nodes & edges</div>
+      <div class="step"><span class="step-dot"></span> Running physics simulation</div>
+      <div class="step"><span class="step-dot"></span> Building visualization</div>
+      <div class="step"><span class="step-dot"></span> Preparing UI components</div>
+      <div class="step"><span class="step-dot"></span> Stabilizing layout</div>
+      <div class="step"><span class="step-dot"></span> Animating entrance</div>
+      <div class="step"><span class="step-dot"></span> Ready</div>
     </div>
-    <div id="legend"></div>
+    <div class="progress-bar"><div class="progress-fill"></div></div>
   </div>
-  <div id="stats">{stats}</div>
+
+  <div id="graph-container">
+    <div id="toolbar">
+      <button class="toolbar-btn" onclick="fitGraph()" title="Fit graph [F]">⊞ <span class="kbd">F</span></button>
+      <button class="toolbar-btn" onclick="resetView()" title="Reset view [R]">⟲ <span class="kbd">R</span></button>
+      <button class="toolbar-btn" onclick="toggleFullscreen()" title="Fullscreen [F11]">⛶ <span class="kbd">F11</span></button>
+      <button class="toolbar-btn" onclick="exportPNG()" title="Export PNG [P]">⬇ <span class="kbd">P</span></button>
+      <button class="toolbar-btn" onclick="document.getElementById('sidebar').classList.toggle('collapsed')" title="Toggle sidebar [B]">☰ <span class="kbd">B</span></button>
+    </div>
+
+    <div id="focus-mode-indicator">
+      Focus mode
+      <button class="btn" onclick="resetView()">Exit</button>
+    </div>
+
+    <div id="minimap"></div>
+
+    <div id="timeline-bar">
+      <button class="tl-btn" id="tl-play" title="Play/Pause">▶</button>
+      <input type="range" id="timeline-slider" min="0" max="1" step="0.001" value="0">
+      <span id="timeline-label">0%</span>
+      <button class="tl-btn" onclick="hideTimeline()" title="Close">✕</button>
+    </div>
+
+    <div id="toast-container"></div>
+  </div>
+
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <h2>Knowledge Graph</h2>
+      <button id="sidebar-close" onclick="this.closest('#sidebar').classList.add('collapsed')">✕</button>
+    </div>
+    <div id="search-wrap">
+      <span id="search-icon">⌕</span>
+      <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
+      <div id="search-results"></div>
+    </div>
+    <div id="info-panel">
+      <h3>Node Info</h3>
+      <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+    </div>
+    <div id="legend-wrap">
+      <div id="legend-header">
+        <h3>Communities</h3>
+        <div id="legend-controls">
+          <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">All</label>
+        </div>
+      </div>
+      <div id="legend"></div>
+    </div>
+    <div id="stats">
+      <div class="stat-item"><span class="stat-value" id="stat-nodes">0</span><span class="stat-label">Nodes</span></div>
+      <div class="stat-item"><span class="stat-value" id="stat-edges">0</span><span class="stat-label">Edges</span></div>
+      <div class="stat-item"><span class="stat-value" id="stat-communities">0</span><span class="stat-label">Communities</span></div>
+      <div class="stat-item"><span class="stat-value" id="stat-files">0</span><span class="stat-label">Files</span></div>
+      <div class="stat-item"><span class="stat-value" id="stat-types">0</span><span class="stat-label">Types</span></div>
+    </div>
+  </div>
+
+  <div id="context-menu"></div>
 </div>
 {_html_script(nodes_json, edges_json, legend_json)}
 {_hyperedge_script(hyperedges_json)}
