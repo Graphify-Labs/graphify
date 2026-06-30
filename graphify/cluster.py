@@ -4,7 +4,6 @@ import contextlib
 import inspect
 import io
 import json
-import sys
 import networkx as nx
 
 
@@ -16,7 +15,10 @@ def _suppress_output():
     Windows (see issue #19). Redirecting stdout/stderr to devnull during
     the call prevents this without losing any graphify output.
     """
-    return contextlib.redirect_stdout(io.StringIO())
+    stack = contextlib.ExitStack()
+    stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+    stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+    return stack
 
 
 def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
@@ -56,13 +58,8 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
             kwargs["resolution"] = resolution
         # Suppress graspologic output to prevent ANSI escape codes from
         # corrupting PowerShell 5.1 scroll buffer (issue #19)
-        old_stderr = sys.stderr
-        try:
-            sys.stderr = io.StringIO()
-            with _suppress_output():
-                result = leiden(stable, **kwargs)
-        finally:
-            sys.stderr = old_stderr
+        with _suppress_output():
+            result = leiden(stable, **kwargs)
         return result
     except ImportError:
         pass
