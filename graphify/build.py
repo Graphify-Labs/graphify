@@ -53,6 +53,56 @@ _FILE_TYPE_SYNONYMS = {
 }
 
 
+# Hyperedge member lists are canonically keyed `nodes` (see graphify/llm.py
+# extraction spec), but LLM/subagent drift and externally-supplied graph.json
+# sometimes emit `members` or `node_ids`. _normalize_hyperedge_members folds
+# those aliases into `nodes` at ingest so every downstream consumer reads one
+# canonical key — mirroring the `from`/`to` edge-endpoint tolerance below.
+_HE_MEMBER_ALIASES = ("members", "node_ids")
+
+
+def _normalize_hyperedge_members(he: object) -> None:
+    """Canonicalize a hyperedge's member list onto the `nodes` key, in place.
+
+    If `nodes` is already a list it wins (canonical), and only stray alias keys
+    are dropped. Otherwise the first alias (`members`, then `node_ids`) that is a
+    list is moved to `nodes`, deduped preserving order, with a single stderr
+    WARNING naming the hyperedge id and alias used. Leftover alias keys are
+    always removed so downstream code never re-reads them.
+    """
+    if not isinstance(he, dict):
+        return
+    if not isinstance(he.get("nodes"), list):
+        for alias in _HE_MEMBER_ALIASES:
+            val = he.get(alias)
+            if isinstance(val, list):
+                seen: set = set()
+                deduped: list = []
+                for ref in val:
+                    try:
+                        is_dupe = ref in seen
+                    except TypeError:
+                        is_dupe = False  # unhashable ref: keep it, validator flags it
+                    if is_dupe:
+                        continue
+                    try:
+                        seen.add(ref)
+                    except TypeError:
+                        pass
+                    deduped.append(ref)
+                he["nodes"] = deduped
+                print(
+                    f"[graphify] WARNING: hyperedge "
+                    f"'{he.get('id', '?')}' uses field '{alias}' instead of "
+                    f"'nodes'; normalizing.",
+                    file=sys.stderr,
+                )
+                break
+    # Drop any leftover alias keys regardless of which branch ran above.
+    for alias in _HE_MEMBER_ALIASES:
+        he.pop(alias, None)
+
+
 def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
     """Normalize path separators and relativize absolute paths.
 
@@ -278,6 +328,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         ft = node.get("file_type", "")
         if ft and ft not in {"code", "document", "paper", "image", "rationale", "concept"}:
             node["file_type"] = _FILE_TYPE_SYNONYMS.get(ft, "concept")
+
+    # Canonicalize hyperedge member lists (#1561): producers sometimes key the
+    # member list `members`/`node_ids` instead of `nodes`. Fold aliases onto
+    # `nodes` here — BEFORE validation and the semantic-rekey loop below — so
+    # every downstream consumer (rekey, source_file relativize, to_json) reads
+    # one canonical key, the same way edge endpoints alias from/to at build.
+    for he in extraction.get("hyperedges", []) or []:
+        _normalize_hyperedge_members(he)
 
     errors = validate_extraction(extraction)
     # Dangling edges (stdlib/external imports) are expected - only warn about real schema errors.

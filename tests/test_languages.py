@@ -2582,3 +2582,168 @@ def test_systemverilog_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e}"
         assert e["target"] in node_ids, f"dangling target: {e}"
+
+
+# ── Header/impl class merge + .h routing (#1547 C++, #1556 ObjC/Swift) ─────────
+from graphify.extract import (
+    extract as _extract_corpus,
+    _get_extractor,
+    _is_cpp_header,
+    _is_objc_header,
+)
+
+
+def _corpus(*relpaths):
+    """Run the full extract() pipeline on fixture files (absolute, resolved
+    paths so the per-file id-remap behaves like real usage), no shared cache."""
+    import tempfile
+    paths = [(FIXTURES / rp).resolve() for rp in relpaths]
+    with tempfile.TemporaryDirectory() as td:
+        return _extract_corpus(paths, cache_root=Path(td))
+
+
+def _nodes_with_label(r, label):
+    return [n for n in r["nodes"] if n["label"] == label]
+
+
+def _assert_no_dangling(r):
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in ids, f"dangling source: {e}"
+        assert e["target"] in ids, f"dangling target: {e}"
+
+
+# --- #1547: C++ paired header/impl --------------------------------------------
+
+def test_cpp_header_routes_to_cpp_extractor():
+    """A `.h` with a C++ class must route to extract_cpp, not extract_c (which has
+    no class_specifier and would drop the class entirely)."""
+    p = (FIXTURES / "cpp_paired" / "Foo.h").resolve()
+    assert _get_extractor(p).__name__ == "extract_cpp"
+    assert _is_cpp_header(p)
+
+
+def test_plain_c_header_stays_on_c_extractor():
+    """A plain C header (no C++ signal) must keep its extract_c routing."""
+    p = (FIXTURES / "cpp_samedir" / "plain.h").resolve()
+    assert not _is_cpp_header(p)
+    assert _get_extractor(p).__name__ == "extract_c"
+
+
+def test_cpp_paired_single_class_node():
+    """Foo.h (class) + Foo.cpp (Foo::bar def) + Main.cpp must yield exactly ONE
+    Foo class node — not a foo_h + foo_cpp pair, and no junk `class` stub."""
+    r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
+    foos = _nodes_with_label(r, "Foo")
+    assert len(foos) == 1, f"expected one Foo, got {[n['id'] for n in foos]}"
+    assert not _nodes_with_label(r, "class"), "no sourceless `class` stub should exist"
+    assert not _nodes_with_label(r, "foo_foo")
+
+
+def test_cpp_paired_method_decl_and_def_are_one_node():
+    """`void bar();` in Foo.h and `void Foo::bar() {}` in Foo.cpp must collapse to
+    ONE method node owned by the single Foo class."""
+    r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
+    foo = _nodes_with_label(r, "Foo")[0]["id"]
+    method_targets = {
+        e["target"] for e in r["edges"]
+        if e["source"] == foo and e["relation"] in ("method", "defines", "contains")
+    }
+    bar_nodes = [n for n in r["nodes"] if n["id"] in method_targets and n["label"] in ("bar", "Foo::bar()")]
+    # There must be exactly one node representing bar (decl and def merged).
+    bar_ids = {n["id"] for n in r["nodes"] if n["label"] in ("bar", "Foo::bar()")}
+    assert len(bar_ids) == 1, f"bar decl/def should be one node, got {bar_ids}"
+    assert bar_nodes, "the merged bar node should be a member of Foo"
+
+
+def test_cpp_paired_includes_resolve_to_real_header():
+    """Foo.cpp and Main.cpp `#include "Foo.h"` must resolve to the real Foo.h file
+    node (no dangling import)."""
+    r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
+    ids = {n["id"] for n in r["nodes"]}
+    foo_h = _nodes_with_label(r, "Foo.h")[0]["id"]
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert len(imports) >= 2
+    for e in imports:
+        assert e["target"] in ids, f"dangling import target: {e}"
+    assert any(e["target"] == foo_h for e in imports), "includes should target Foo.h"
+
+
+def test_cpp_paired_no_dangling_edges():
+    r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
+    _assert_no_dangling(r)
+
+
+# --- #1556: ObjC paired header/impl + bridging header -------------------------
+
+def test_objc_header_with_import_routes_to_objc():
+    """A bridging header that is only `#import "X.h"` (no @interface) must route to
+    extract_objc; extract_c parses `#import` as preproc_call and drops the edge."""
+    p = (FIXTURES / "objc_mixed" / "Bridging-Header.h").resolve()
+    assert _is_objc_header(p)
+    assert _get_extractor(p).__name__ == "extract_objc"
+
+
+def test_objc_paired_single_class_methods_not_duplicated():
+    """Widget.h (@interface) + Widget.m (@implementation) -> ONE Widget class node
+    with its methods present once each."""
+    r = _corpus("objc_mixed/Widget.h", "objc_mixed/Widget.m")
+    widgets = _nodes_with_label(r, "Widget")
+    assert len(widgets) == 1, f"expected one Widget, got {[n['id'] for n in widgets]}"
+    render = _nodes_with_label(r, "-render")
+    refresh = _nodes_with_label(r, "-refresh")
+    assert len(render) == 1, f"-render duplicated: {render}"
+    assert len(refresh) == 1, f"-refresh duplicated: {refresh}"
+
+
+def test_objc_bridging_header_not_isolated():
+    """A bridging header of only `#import "Widget.h"` must produce an imports edge
+    to the real Widget.h node (not be an isolated node)."""
+    r = _corpus("objc_mixed/Widget.h", "objc_mixed/Widget.m", "objc_mixed/Bridging-Header.h")
+    bridge = _nodes_with_label(r, "Bridging-Header.h")[0]["id"]
+    widget_h = _nodes_with_label(r, "Widget.h")[0]["id"]
+    out = [e for e in r["edges"] if e["source"] == bridge and e["relation"] == "imports"]
+    assert out, "bridging header should emit an imports edge"
+    assert any(e["target"] == widget_h for e in out), "bridging import should target Widget.h"
+
+
+def test_objc_paired_no_dangling_edges():
+    r = _corpus("objc_mixed/Widget.h", "objc_mixed/Widget.m", "objc_mixed/Bridging-Header.h")
+    _assert_no_dangling(r)
+
+
+# --- #1556: Swift extension folds onto canonical ObjC class -------------------
+
+def test_swift_extension_folds_onto_objc_class():
+    """`extension Widget` in Swift over an ObjC `Widget` must fold onto the single
+    canonical Widget node, with its members anchored there."""
+    r = _corpus("objc_mixed/Widget.h", "objc_mixed/Widget.m", "objc_mixed/WidgetExtras.swift")
+    widgets = _nodes_with_label(r, "Widget")
+    assert len(widgets) == 1, f"expected one Widget, got {[n['id'] for n in widgets]}"
+    wid = widgets[0]["id"]
+    method_targets = {e["target"] for e in r["edges"] if e["relation"] == "method" and e["source"] == wid}
+    labels = {n["label"] for n in r["nodes"] if n["id"] in method_targets}
+    assert any("describe" in l for l in labels), f"Swift extension method should anchor on Widget, got {labels}"
+    _assert_no_dangling(r)
+
+
+# --- god-node guard negatives -------------------------------------------------
+
+def test_decldef_merge_does_not_merge_across_directories():
+    """Two unrelated `class Logger` in DIFFERENT directories (each its own .h/.cpp)
+    must NOT merge — assert TWO distinct Logger nodes."""
+    r = _corpus(
+        "cpp_logger/a/Logger.h", "cpp_logger/a/Logger.cpp",
+        "cpp_logger/b/Logger.h", "cpp_logger/b/Logger.cpp",
+    )
+    loggers = _nodes_with_label(r, "Logger")
+    assert len(loggers) == 2, f"cross-dir Loggers must stay distinct, got {[n['id'] for n in loggers]}"
+    assert len({n["id"] for n in loggers}) == 2
+
+
+def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
+    """Two same-named `class Dup` in the SAME dir but different base stems
+    (Alpha.h, Beta.h) must stay distinct (no unique header/impl sibling pair)."""
+    r = _corpus("cpp_samedir/Alpha.h", "cpp_samedir/Beta.h")
+    dups = _nodes_with_label(r, "Dup")
+    assert len(dups) == 2, f"same-dir distinct Dups must stay distinct, got {[n['id'] for n in dups]}"

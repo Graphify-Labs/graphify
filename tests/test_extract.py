@@ -558,6 +558,91 @@ def test_cross_file_calls_skip_ambiguous_duplicate_labels(tmp_path):
     )
 
 
+def test_cross_file_call_survives_same_named_test_mock(tmp_path):
+    """A real cross-file call must NOT be erased by a same-named test mock.
+
+    src/caller.py calls save(); src/service.py defines the real save(); a test
+    mock save() lives in tests/test_service.py. Before #1553 the ambiguous-name
+    god-node guard dropped the edge entirely. Now the non-test tie-breaker keeps
+    exactly one caller->save edge pointing at the SRC definition.
+    """
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+    (src / "service.py").write_text("def save():\n    return 'real'\n")
+    (src / "caller.py").write_text("def run():\n    save()\n")
+    (tests / "test_service.py").write_text("def save():\n    return 'mock'\n")
+
+    result = extract(
+        [src / "caller.py", src / "service.py", tests / "test_service.py"],
+        cache_root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    save_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "save()"
+    ]
+    assert len(save_calls) == 1, f"expected exactly one run->save edge, got {save_calls}"
+    target_sf = (nodes[save_calls[0]["target"]].get("source_file") or "")
+    assert "service.py" in target_sf and "test_service.py" not in target_sf, target_sf
+
+
+def test_cross_file_call_god_node_guard_two_real_defs(tmp_path):
+    """Two genuine NON-test defs of the same name + one caller => ZERO edges.
+
+    Proves #543/#1219 is not reopened by the #1553 tie-breakers: with no test
+    candidate to drop and no proximity winner, the guard still bails.
+    """
+    pkg_a = tmp_path / "a"
+    pkg_b = tmp_path / "b"
+    pkg_c = tmp_path / "c"
+    for d in (pkg_a, pkg_b, pkg_c):
+        d.mkdir()
+    (pkg_a / "svc.py").write_text("def save():\n    return 'a'\n")
+    (pkg_b / "svc.py").write_text("def save():\n    return 'b'\n")
+    (pkg_c / "caller.py").write_text("def run():\n    save()\n")
+
+    result = extract(
+        [pkg_c / "caller.py", pkg_a / "svc.py", pkg_b / "svc.py"],
+        cache_root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    save_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "save()"
+    ]
+    assert save_calls == [], f"god-node guard must bail, got {save_calls}"
+
+
+def test_cross_file_call_survives_many_test_mocks(tmp_path):
+    """One src def + many same-named test stubs + caller => exactly one src edge."""
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+    (src / "service.py").write_text("def save():\n    return 'real'\n")
+    (src / "caller.py").write_text("def run():\n    save()\n")
+    for i in range(5):
+        (tests / f"thing{i}_test.py").write_text("def save():\n    return 'mock'\n")
+
+    paths = [src / "caller.py", src / "service.py"] + sorted(tests.glob("*_test.py"))
+    result = extract(paths, cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    save_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "save()"
+    ]
+    assert len(save_calls) == 1, f"expected one run->save edge, got {save_calls}"
+    assert "service.py" in (nodes[save_calls[0]["target"]].get("source_file") or "")
+
+
 def test_extract_generic_surfaces_tree_sitter_version_mismatch_hint(monkeypatch):
     """When Language() raises TypeError (e.g. old tree-sitter binding meets a
     new tree-sitter API), the error message should point users at the upgrade

@@ -679,7 +679,7 @@ def to_html(
             if raw_hyperedges:
                 remapped = []
                 for he in raw_hyperedges:
-                    he_members = he.get("nodes") or he.get("members") or []
+                    he_members = he.get("nodes", [])
                     comm_ids, seen = [], set()
                     for nid in he_members:
                         c = node_to_community.get(nid)

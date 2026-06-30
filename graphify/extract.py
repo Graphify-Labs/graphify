@@ -37,6 +37,7 @@ from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
+from graphify.paths import disambiguate_ambiguous_candidates
 
 _RECURSION_LIMIT = 10_000
 
@@ -1913,9 +1914,15 @@ def _get_cpp_func_name(node, source: bytes) -> str | None:
     if node.type in ("field_identifier", "destructor_name", "operator_name"):
         return _read_text(node, source)
     if node.type == "qualified_identifier":
-        name_node = node.child_by_field_name("name")
-        if name_node:
-            return _read_text(name_node, source)
+        # An out-of-class DEFINITION (`void Foo::bar() {}`) carries a
+        # qualified_identifier declarator. Retaining the `Foo::` qualifier makes
+        # _make_id(stem, "Foo::bar") normalize to the same id as the in-class
+        # member _make_id(class_nid, "bar"), so the decl in Foo.h and the def in
+        # Foo.cpp resolve to ONE method node instead of two (#1547). The full
+        # qualified text also handles nested scopes (`A::B::bar`). Free functions
+        # never have a qualified_identifier here, so their bare-name ids are
+        # unchanged; only qualified definitions shift onto their owning class.
+        return _read_text(node, source)
     decl = node.child_by_field_name("declarator")
     if decl:
         return _get_cpp_func_name(decl, source)
@@ -9576,6 +9583,144 @@ def _resolve_cross_file_imports(
     return new_edges
 
 
+# Header / implementation file-extension pairing for the decl/def class merge.
+_DECLDEF_HEADER_SUFFIXES = frozenset({".h", ".hpp", ".hh", ".hxx"})
+_DECLDEF_IMPL_SUFFIXES = frozenset({".m", ".mm", ".cpp", ".cc", ".cxx", ".c"})
+
+
+def _decldef_class_stem(source_file: str) -> tuple[str, str] | None:
+    """Return ``(dir, base_stem)`` for a header/impl source file, else None.
+
+    The base stem strips an ObjC category suffix (``Foo+Cat.m`` -> ``Foo``) so a
+    category implementation pairs with its ``Foo.h`` declaration. Files with an
+    extension that is neither a header nor an impl extension return None and are
+    never considered for the merge.
+    """
+    if not source_file:
+        return None
+    p = Path(source_file)
+    suffix = p.suffix.lower()
+    if suffix not in _DECLDEF_HEADER_SUFFIXES and suffix not in _DECLDEF_IMPL_SUFFIXES:
+        return None
+    stem = p.stem.split("+", 1)[0]  # ObjC category: Foo+Cat -> Foo
+    if not stem:
+        return None
+    return (str(p.parent), stem)
+
+
+def _merge_decl_def_classes(
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Merge a class (and its methods) declared in a header with its definition in
+    a sibling impl file into ONE node, for C/C++/ObjC (#1547, #1556).
+
+    A class declared in ``Foo.h`` (``class Foo`` / ``@interface Foo``) and defined
+    in the sibling ``Foo.cpp`` / ``Foo.m`` (``@implementation Foo``, plus — after
+    the C++ qualified-name fix — out-of-class method definitions ``Foo::bar``)
+    produces TWO nodes per symbol. Both are keyed off the file *stem*, and
+    ``_file_stem`` drops the extension, so the header symbol and its impl
+    counterpart get the IDENTICAL id and differ only in ``source_file`` and label
+    (the C++ def label is ``Foo::bar()`` vs the decl's ``bar``; the ObjC impl class
+    label equals the interface's). Left alone, ``_disambiguate_colliding_node_ids``
+    SPLITS those id-collisions apart by path, fragmenting one class into two def
+    nodes — which then trips every resolver's single-definition god-node guard
+    (``len(defs) != 1`` -> bail), cascading into lost .h<->.m/.cpp linkage and dead
+    cross-file calls.
+
+    This pass runs BEFORE disambiguation and collapses each such id-collision to
+    ONE node — the header (declaration) variant, consistent with the #1475
+    header_remaps direction — so disambiguation sees a single source_file per id
+    and leaves it alone, and the downstream resolvers see ONE definition. Because
+    the colliding nodes already share an id, no edge re-pointing is needed: every
+    edge that referenced the impl symbol already points at the surviving id. We
+    only drop the redundant duplicate node and prefer the header's label.
+
+    GOD-NODE GUARDS (false merges are the main risk):
+
+      * Collapse fires ONLY when every node in an id-collision group comes from a
+        SIBLING header/impl set — same directory, same base stem (ObjC categories
+        ``Foo+Cat.m`` compare by the stem before ``+``), header extension paired
+        with impl extension — AND the group contains exactly ONE header file.
+      * Two unrelated ``class Logger`` in DIFFERENT directories never collide on id
+        (the id embeds the full file stem / directory path), so they are never
+        grouped and never merge. Two same-named classes in the SAME directory but
+        different base stems likewise key to different ids. Any id-collision that
+        is NOT a clean single-header sibling set is left untouched for
+        disambiguation to split (the conservative default).
+
+    The class and its method/field members fold in together: members are keyed
+    ``_make_id(class_id, name)`` (ObjC) or, for an out-of-class C++ definition,
+    ``_make_id(stem, "Foo::bar")`` which normalizes to the same id as the in-class
+    member ``_make_id(class_id, "bar")``. So every decl/def member pair is itself an
+    id-collision across the same sibling file set and collapses by the same rule.
+    """
+    # Group every code node by id, recording the distinct source files involved.
+    by_id: dict[str, list[dict]] = {}
+    for n in all_nodes:
+        if n.get("file_type") != "code":
+            continue
+        nid = n.get("id")
+        sf = str(n.get("source_file", ""))
+        if not isinstance(nid, str) or not nid or not sf:
+            continue
+        by_id.setdefault(nid, []).append(n)
+
+    # Identify, per surviving id, which node to keep (header preferred). We can't
+    # mutate all_nodes mid-scan, so collect a set of node object ids to drop.
+    drop_objs: set[int] = set()
+    for nid, group in by_id.items():
+        if len(group) < 2:
+            continue
+        # The distinct source files of this collision must form a clean sibling
+        # header/impl set with exactly one header. Each file must parse as a
+        # header/impl file (others -> bail), share one directory + base stem.
+        sibling_keys: set[tuple[str, str]] = set()
+        headers: list[dict] = []
+        ok = True
+        for node in group:
+            sf = str(node.get("source_file", ""))
+            ds = _decldef_class_stem(sf)
+            if ds is None:
+                ok = False
+                break
+            sibling_keys.add(ds)
+            if Path(sf).suffix.lower() in _DECLDEF_HEADER_SUFFIXES:
+                headers.append(node)
+        if not ok:
+            continue
+        # All from one (dir, base_stem) sibling family, with a UNIQUE header.
+        if len(sibling_keys) != 1 or len(headers) != 1:
+            continue
+        keeper = headers[0]
+        for node in group:
+            if node is not keeper:
+                drop_objs.add(id(node))
+
+    if not drop_objs:
+        return
+
+    # Drop the redundant duplicate nodes. The surviving (header) node keeps its
+    # own label/source_file; edges are unchanged because the id is identical. Then
+    # de-dup any now-identical edges (e.g. the impl file's `contains`/`method`
+    # edge that duplicates the header's after the collapse).
+    all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
+
+    seen_keys: set[tuple] = set()
+    rewritten: list[dict] = []
+    for e in all_edges:
+        src = e.get("source")
+        tgt = e.get("target")
+        if src == tgt:
+            continue
+        k = (src, tgt, e.get("relation"), e.get("context"))
+        if k in seen_keys:
+            continue
+        seen_keys.add(k)
+        rewritten.append(e)
+    all_edges[:] = rewritten
+
+
 def _merge_swift_extensions(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -13717,7 +13862,14 @@ _DISPATCH: dict[str, Any] = {
 # belongs to extract_objc, not extract_c). `@property` is deliberately excluded: it
 # doubles as a Doxygen comment command and ObjC properties only ever live inside an
 # @interface/@protocol anyway, so the stronger directives already cover them.
-_OBJC_HEADER_MARKERS = (b"@interface", b"@protocol", b"@implementation", b"@import")
+#
+# `#import` is included because an ObjC *bridging* header is often nothing but
+# `#import "X.h"` lines with no @interface (#1556). Routed to extract_c it parses
+# `#import` as a `preproc_call` (not `preproc_include`), so every import edge is
+# dropped and the header is isolated. `#import` is an ObjC-only directive (illegal
+# in C and C++), so this won't hijack genuine C/C++ headers, and extract_objc
+# resolves quoted imports via _resolve_c_include_path.
+_OBJC_HEADER_MARKERS = (b"@interface", b"@protocol", b"@implementation", b"@import", b"#import")
 
 
 def _is_objc_header(path: Path) -> bool:
@@ -13733,6 +13885,35 @@ def _is_objc_header(path: Path) -> bool:
     except OSError:
         return False
     return any(marker in head for marker in _OBJC_HEADER_MARKERS)
+
+
+# C++-only signals. None of these are valid in a plain C header, so finding one
+# in a `.h` is a high-confidence signal the header is C++ (#1547). The C grammar
+# has no class_specifier, so a `class Foo { ... };` header routed to extract_c
+# loses the class and its method prototypes (a junk `foo_foo` node + a sourceless
+# `class` stub); routing to extract_cpp recovers the real type. Kept CONSERVATIVE:
+# a plain C header with none of these stays on extract_c. ObjC sniffing keeps
+# priority (an ObjC header can legitimately contain `::`/`class` inside an inline
+# C++ block when compiled as Objective-C++).
+_CPP_HEADER_MARKERS = (
+    b"class ", b"namespace ", b"template", b"::",
+    b"public:", b"private:", b"protected:",
+)
+
+
+def _is_cpp_header(path: Path) -> bool:
+    """Whether a `.h` file is C++ rather than plain C (#1547).
+
+    Mirrors `_is_objc_header`: sniffs for a C++-only token. Used only to reroute
+    a `.h` from extract_c to extract_cpp when no ObjC marker is present (ObjC has
+    priority). Conservative by construction — a plain C header matches nothing
+    here and keeps its existing extract_c routing.
+    """
+    try:
+        head = path.read_bytes()[:256 * 1024]
+    except OSError:
+        return False
+    return any(marker in head for marker in _CPP_HEADER_MARKERS)
 
 
 def _get_extractor(path: Path) -> Any | None:
@@ -13751,8 +13932,15 @@ def _get_extractor(path: Path) -> Any | None:
         return extract_package_manifest
     # `.h` is C/C++/ObjC-ambiguous; route Objective-C headers to extract_objc
     # (the suffix map sends `.h` to extract_c, which can't read @interface etc.).
-    if path.suffix == ".h" and _is_objc_header(path):
-        return extract_objc
+    # ObjC sniffing has priority over the C++ sniff: an Objective-C++ header can
+    # contain both `@interface` and inline C++ (`::`), and it must parse as ObjC.
+    if path.suffix == ".h":
+        if _is_objc_header(path):
+            return extract_objc
+        # A C++ class header routed to extract_c loses the class entirely (the C
+        # grammar has no class_specifier). Reroute to extract_cpp (#1547).
+        if _is_cpp_header(path):
+            return extract_cpp
     return _DISPATCH.get(path.suffix)
 
 
@@ -14025,6 +14213,14 @@ def extract(
 
     _augment_symbol_resolution_edges(paths, all_nodes, all_edges, root)
 
+    # Merge a header-declared class (and its methods) with its sibling-impl
+    # definition into ONE node (C/C++/ObjC #1547/#1556). Runs BEFORE the id-remap
+    # below: a header symbol and its impl counterpart share an id only while both
+    # still carry the raw file-stem prefix; the per-file prefix remap then diverges
+    # them (foo_h vs foo_cpp), so the collapse must happen first. Collapsing here
+    # also means disambiguation sees one source_file per id and won't split them.
+    _merge_decl_def_classes(all_nodes, all_edges)
+
     # Remap file node IDs from absolute-path-derived to the canonical
     # {parent_dir}_{stem} spec form so (a) graph.json edge endpoints are stable
     # across machines (#502) and (b) AST file nodes match the IDs semantic
@@ -14214,10 +14410,15 @@ def extract(
     # "did the caller's file import the callee's file?"
     # Use relativized paths to match how file node IDs were remapped above (#502).
     nid_to_file_nid: dict[str, str] = {}
+    # nid -> raw source_file string, for the ambiguous-name tie-breakers below
+    # (test/non-test classification + path proximity). Kept separate from the
+    # file-node-id map because tie-breaking compares the actual file paths.
+    nid_to_source_file: dict[str, str] = {}
     for n in all_nodes:
         sf = n.get("source_file")
         if not sf:
             continue
+        nid_to_source_file[n["id"]] = str(sf)
         sf_path = Path(sf)
         try:
             sf_rel = sf_path.relative_to(root) if sf_path.is_absolute() else sf_path
@@ -14269,6 +14470,7 @@ def extract(
             symbol_matches = [c for c in candidates if c in imported_symbols]
             if len(symbol_matches) == 1:
                 tgt = symbol_matches[0]
+                has_import_evidence = True
             else:
                 module_matches = [
                     c for c in candidates
@@ -14276,9 +14478,22 @@ def extract(
                 ]
                 if len(module_matches) == 1:
                     tgt = module_matches[0]
+                    has_import_evidence = True
                 else:
-                    continue
-            has_import_evidence = True
+                    # No unique import evidence. Instead of dropping the edge
+                    # outright (which let a single same-named test mock erase the
+                    # real call graph, #1553), apply the shared god-node
+                    # tie-breakers (non-test preference, then path proximity).
+                    # Resolve only if exactly one candidate survives; otherwise
+                    # the #543/#1219 guard still holds and we skip.
+                    tgt = disambiguate_ambiguous_candidates(
+                        candidates,
+                        {c: nid_to_source_file.get(c, "") for c in candidates},
+                        rc.get("source_file", ""),
+                    )
+                    if tgt is None:
+                        continue
+                    has_import_evidence = False
         if tgt != caller and (caller, tgt) not in existing_pairs:
             existing_pairs.add((caller, tgt))
             # Promote to EXTRACTED when there's a direct import edge from the
