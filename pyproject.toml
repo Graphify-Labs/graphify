@@ -80,6 +80,7 @@ all = ["mcp", "starlette>=1.3.1", "neo4j", "falkordb", "pypdf>=6.12.0", "markdow
 [project.scripts]
 graphify = "graphify.__main__:main"
 graphify-mcp = "graphify.serve:_main"
+graphify-live = "graphify.cli:main"
 
 [dependency-groups]
 dev = [

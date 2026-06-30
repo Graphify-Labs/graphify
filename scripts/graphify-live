@@ -1,0 +1,2 @@
+#!/bin/bash
+PYTHONPATH="$(dirname "$(dirname "$0")")" exec python3 -m graphify.cli "$@"
