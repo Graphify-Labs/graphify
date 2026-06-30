@@ -29,10 +29,14 @@ from graphify.extractors.base import (  # noqa: F401
     _read_text,
 )
 from graphify.extractors.blade import extract_blade  # noqa: F401
-from graphify.extractors.csharp import _resolve_csharp_type_references
+from graphify.extractors.csharp import (
+    _resolve_cross_file_csharp_imports,
+    _resolve_csharp_type_references,
+)
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
+from graphify.security import sanitize_metadata
 
 _RECURSION_LIMIT = 10_000
 
@@ -74,6 +78,11 @@ def _file_node_id(rel_path: Path) -> str:
     ID semantic subagents generate, or AST and semantic extraction split a file
     into two disconnected ghost nodes (#1033)."""
     return _make_id(_file_stem(rel_path))
+
+
+def _csharp_namespace_id(dotted_name: str) -> str:
+    digest = hashlib.sha1(dotted_name.encode("utf-8")).hexdigest()[:16]
+    return f"csharp_namespace:{digest}"
 
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
@@ -713,22 +722,67 @@ def _csharp_classify_base(name: str, interface_names: set[str]) -> str:
     return "inherits"
 
 
-def _csharp_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
-    """Walk a C# type expression; append (name, role) tuples (role is 'type' or 'generic_arg')."""
+_CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS = frozenset({
+    "class_declaration",
+    "interface_declaration",
+    "record_declaration",
+    "struct_declaration",
+    "method_declaration",
+})
+
+
+def _csharp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
+    """Return C# type-parameter names visible from ``node``."""
+    names: set[str] = set()
+    scope = node
+    while scope is not None:
+        if scope.type in _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS:
+            for child in scope.children:
+                if child.type != "type_parameter_list":
+                    continue
+                for param in child.children:
+                    if param.type == "type_parameter":
+                        name_node = next(
+                            (sub for sub in param.children if sub.type == "identifier"),
+                            None,
+                        )
+                        if name_node is not None:
+                            name = _read_text(name_node, source)
+                            if name:
+                                names.add(name)
+                    elif param.type == "identifier":
+                        name = _read_text(param, source)
+                        if name:
+                            names.add(name)
+        scope = scope.parent
+    return frozenset(names)
+
+
+def _csharp_collect_type_refs(
+    node,
+    source: bytes,
+    generic: bool,
+    out: list[tuple[str, str, bool, str]],
+    skip: frozenset[str] | None = None,
+) -> None:
+    """Walk a C# type expression; append (name, role, qualified, qualifier) tuples."""
     if node is None:
         return
+    if skip is None:
+        skip = _csharp_type_parameters_in_scope(node, source)
     t = node.type
     if t == "predefined_type":
         return
     if t == "identifier":
         name = _read_text(node, source)
-        if name:
-            out.append((name, "generic_arg" if generic else "type"))
+        if name and name not in skip:
+            out.append((name, "generic_arg" if generic else "type", False, ""))
         return
     if t == "qualified_name":
-        text = _read_text(node, source).rsplit(".", 1)[-1]
-        if text:
-            out.append((text, "generic_arg" if generic else "type"))
+        prefix, _, text = _read_text(node, source).rpartition(".")
+        text = text.split("<", 1)[0]
+        if text and text not in skip:
+            out.append((text, "generic_arg" if generic else "type", True, prefix))
         return
     if t == "generic_name":
         name_child = node.child_by_field_name("name")
@@ -738,29 +792,31 @@ def _csharp_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
                     name_child = sub
                     break
         if name_child is not None:
-            name = _read_text(name_child, source)
-            if name:
-                out.append((name, "generic_arg" if generic else "type"))
+            qualified = name_child.type == "qualified_name"
+            prefix, _, name = _read_text(name_child, source).rpartition(".")
+            if name and name not in skip:
+                out.append((name, "generic_arg" if generic else "type", qualified, prefix if qualified else ""))
         for sub in node.children:
             if sub.type == "type_argument_list":
                 for arg in sub.children:
                     if arg.is_named:
-                        _csharp_collect_type_refs(arg, source, True, out)
+                        _csharp_collect_type_refs(arg, source, True, out, skip)
         return
     if t in ("nullable_type", "array_type", "pointer_type", "ref_type"):
         for c in node.children:
             if c.is_named:
-                _csharp_collect_type_refs(c, source, generic, out)
+                _csharp_collect_type_refs(c, source, generic, out, skip)
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _csharp_collect_type_refs(c, source, generic, out)
+                _csharp_collect_type_refs(c, source, generic, out, skip)
 
 
-def _csharp_attribute_names(method_node, source: bytes) -> list[str]:
+def _csharp_attribute_names(method_node, source: bytes) -> list[tuple[str, bool, str]]:
     """Collect attribute names from a C# method/declaration's attribute_list children."""
-    names: list[str] = []
+    names: list[tuple[str, bool, str]] = []
+    skip = _csharp_type_parameters_in_scope(method_node, source)
     for child in method_node.children:
         if child.type != "attribute_list":
             continue
@@ -774,9 +830,10 @@ def _csharp_attribute_names(method_node, source: bytes) -> list[str]:
                         name_node = sub
                         break
             if name_node is not None:
-                text = _read_text(name_node, source).rsplit(".", 1)[-1]
-                if text:
-                    names.append(text)
+                qualified = name_node.type == "qualified_name"
+                prefix, _, text = _read_text(name_node, source).rpartition(".")
+                if text and text not in skip:
+                    names.append((text, qualified, prefix if qualified else ""))
     return names
 
 
@@ -1425,7 +1482,7 @@ def _find_body(node, config: LanguageConfig):
 
 # ── Import handlers ───────────────────────────────────────────────────────────
 
-def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     t = node.type
     if t == "import_statement":
         for child in node.children:
@@ -1488,7 +1545,7 @@ def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | Non
     return _make_id(module_name), None
 
 
-def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     is_reexport = node.type == "export_statement"
     # Only handle export_statement if it has a `from` clause (re-export).
     # Pure exports like `export const x = 1` or `export { localVar }` have no source module.
@@ -1637,7 +1694,7 @@ def _dynamic_import_js(node, source: bytes, caller_nid: str, str_path: str, edge
     return True
 
 
-def _import_java(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+def _import_java(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     def _walk_scoped(n) -> str:
         parts: list[str] = []
         cur = n
@@ -1690,7 +1747,7 @@ def _resolve_c_include_path(raw: str, str_path: str) -> "Path | None":
     return None
 
 
-def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     for child in node.children:
         if child.type in ("string_literal", "system_lib_string", "string"):
             raw = _read_text(child, source).strip('"<> ')
@@ -1727,27 +1784,38 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
             break
 
 
-def _import_csharp(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
-    for child in node.children:
-        if child.type in ("qualified_name", "identifier", "name_equals"):
-            raw = _read_text(child, source)
-            module_name = raw.split(".")[-1].strip()
-            if module_name:
-                tgt_nid = _make_id(module_name)
-                edges.append({
-                    "source": file_nid,
-                    "target": tgt_nid,
-                    "relation": "imports",
-                    "context": "import",
-                    "confidence": "EXTRACTED",
-                    "source_file": str_path,
-                    "source_location": f"L{node.start_point[0] + 1}",
-                    "weight": 1.0,
-                })
-            break
+def _import_csharp(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+    text = _read_text(node, source).strip().rstrip(";")
+    if text.startswith("global "):
+        text = text[len("global "):].strip()
+    if not text.startswith("using"):
+        return
+    body = text[len("using"):].strip()
+    using_kind, alias, target_fqn = "namespace", None, body
+    if body.startswith("static "):
+        using_kind, target_fqn = "static", body[len("static "):].strip()
+    elif "=" in body:
+        lhs, rhs = body.split("=", 1)
+        using_kind, alias, target_fqn = "alias", lhs.strip(), rhs.strip()
+    if not target_fqn:
+        return
+    edges.append({
+        "source": file_nid,
+        "target": _make_id(target_fqn),
+        "relation": "imports",
+        "context": "import",
+        "confidence": "EXTRACTED",
+        "source_file": str_path,
+        "source_location": f"L{node.start_point[0] + 1}",
+        "weight": 1.0,
+        "metadata": sanitize_metadata({k: v for k, v in
+            {"using_kind": using_kind, "alias": alias, "target_fqn": target_fqn,
+             "scope_kind": "namespace" if scope_stack else "file",
+             "scope_id": scope_stack[-1] if scope_stack else None}.items() if v is not None}),
+    })
 
 
-def _import_kotlin(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+def _import_kotlin(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     path_node = node.child_by_field_name("path")
     if path_node:
         raw = _read_text(path_node, source)
@@ -1783,7 +1851,7 @@ def _import_kotlin(node, source: bytes, file_nid: str, stem: str, edges: list, s
             break
 
 
-def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     for child in node.children:
         if child.type in ("stable_id", "identifier"):
             raw = _read_text(child, source)
@@ -1803,7 +1871,7 @@ def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, st
             break
 
 
-def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     for child in node.children:
         if child.type in ("qualified_name", "name", "identifier"):
             raw = _read_text(child, source)
@@ -2129,23 +2197,56 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
 
 # ── C# extra walk for namespace declarations ──────────────────────────────────
 
+def _csharp_namespace_name(node, source: bytes) -> str:
+    name_node = node.child_by_field_name("name")
+    if name_node is not None:
+        return _read_text(name_node, source).strip()
+    for child in node.children:
+        if child.type in ("identifier", "qualified_name"):
+            return _read_text(child, source).strip()
+    return ""
+
+
 def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                        nodes: list, edges: list, seen_ids: set, function_bodies: list,
                        parent_class_nid: str | None, add_node_fn, add_edge_fn,
-                       walk_fn) -> bool:
-    """Handle namespace_declaration for C#. Returns True if handled."""
+                       walk_fn, namespace_stack: list[str], scope_stack: list[str]) -> bool:
+    """Handle namespace declarations for C#. Returns True if handled."""
     if node.type == "namespace_declaration":
-        name_node = node.child_by_field_name("name")
-        if name_node:
-            ns_name = _read_text(name_node, source)
-            ns_nid = _make_id(stem, ns_name)
+        ns_name = _csharp_namespace_name(node, source)
+        pushed = False
+        if ns_name:
+            namespace_stack.append(ns_name)
+            scope_stack.append(f"s{node.start_byte}")
+            pushed = True
+            ns_label = ".".join(namespace_stack)
+            ns_nid = _csharp_namespace_id(ns_label)
             line = node.start_point[0] + 1
-            add_node_fn(ns_nid, ns_name, line)
+            add_node_fn(ns_nid, ns_label, line, node_type="namespace", metadata={"kind": "csharp_namespace"})
             add_edge_fn(file_nid, ns_nid, "contains", line)
         body = node.child_by_field_name("body")
         if body:
-            for child in body.children:
-                walk_fn(child, parent_class_nid)
+            try:
+                for child in body.children:
+                    walk_fn(child, parent_class_nid)
+            finally:
+                if pushed:
+                    namespace_stack.pop()
+                    scope_stack.pop()
+        elif pushed:
+            namespace_stack.pop()
+            scope_stack.pop()
+        return True
+    if node.type == "file_scoped_namespace_declaration":
+        ns_name = _csharp_namespace_name(node, source)
+        if ns_name:
+            namespace_stack.append(ns_name)
+            scope_stack.append(f"s{node.start_byte}")
+            ns_label = ".".join(namespace_stack)
+            ns_nid = _csharp_namespace_id(ns_label)
+            line = node.start_point[0] + 1
+            add_node_fn(ns_nid, ns_label, line, node_type="namespace", metadata={"kind": "csharp_namespace"})
+            add_edge_fn(file_nid, ns_nid, "contains", line)
         return True
     return False
 
@@ -2424,7 +2525,7 @@ def _resolve_lua_import_target(raw_module: str, str_path: str) -> str:
     return _make_id(raw_module)
 
 
-def _import_lua(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> None:
+def _import_lua(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     """Extract require('module') from Lua variable_declaration nodes."""
     text = _read_text(node, source)
     import re
@@ -2464,7 +2565,7 @@ _LUA_CONFIG = LanguageConfig(
 )
 
 
-def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str) -> list[tuple[str, str]]:
+def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> list[tuple[str, str]]:
     """Emit module-level ``imports`` edges and report the imported modules.
 
     A Swift ``import CoreKit`` names a module, not a file path, so — unlike the
@@ -2493,24 +2594,28 @@ def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, st
     return modules
 
 
-def _read_csharp_type_name(node, source: bytes) -> str | None:
-    """Resolve a readable C# type name from a field/type node."""
+def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
+    """Resolve a C# type name, whether it was qualified, and its qualifier prefix."""
     if node is None:
         return None
     if node.type in ("identifier", "predefined_type"):
-        return _read_text(node, source)
+        return (_read_text(node, source), False, "")
     if node.type == "qualified_name":
-        return _read_text(node, source).split(".")[-1]
+        prefix, _, tail = _read_text(node, source).rpartition(".")
+        tail = tail.split("<", 1)[0]
+        return (tail, True, prefix)
     if node.type == "generic_name":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
-            return _read_text(name_node, source)
+            qualified = name_node.type == "qualified_name"
+            prefix, _, tail = _read_text(name_node, source).rpartition(".")
+            return (tail, qualified, prefix if qualified else "")
     for child in node.children:
         if not child.is_named:
             continue
-        name = _read_csharp_type_name(child, source)
-        if name:
-            return name
+        result = _read_csharp_type_name(child, source)
+        if result:
+            return result
     return None
 
 
@@ -2634,6 +2739,8 @@ def _extract_generic(
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
+    namespace_stack: list[str] = []
+    scope_stack: list[str] = []
     function_bodies: list[tuple[str, object]] = []
     pending_listen_edges: list[tuple[str, str, int]] = []
     # tree-sitter-swift parses both `class Foo` and `extension Foo` as
@@ -2659,20 +2766,33 @@ def _extract_generic(
     if config.ts_module == "tree_sitter_swift":
         swift_protocol_names, swift_class_names = _swift_pre_scan(root, source)
 
-    def add_node(nid: str, label: str, line: int) -> None:
-        if nid not in seen_ids:
-            seen_ids.add(nid)
-            nodes.append({
-                "id": nid,
-                "label": label,
-                "file_type": "code",
-                "source_file": str_path,
-                "source_location": f"L{line}",
-            })
+    def add_node(nid: str, label: str, line: int, *, node_type: str | None = None,
+                 metadata: dict | None = None) -> None:
+        if nid in seen_ids:
+            return
+        seen_ids.add(nid)
+        merged = dict(metadata or {})
+        if namespace_stack:
+            merged.setdefault("namespace", ".".join(namespace_stack))
+        if scope_stack and node_type != "namespace":
+            merged.setdefault("scope_chain", list(scope_stack))
+        node = {
+            "id": nid,
+            "label": label,
+            "file_type": "code",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+        }
+        if node_type:
+            node["type"] = node_type
+        if merged:
+            node["metadata"] = sanitize_metadata(merged)
+        nodes.append(node)
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
-                 context: str | None = None) -> None:
+                 context: str | None = None,
+                 metadata: dict | None = None) -> None:
         edge = {
             "source": src,
             "target": tgt,
@@ -2684,10 +2804,12 @@ def _extract_generic(
         }
         if context:
             edge["context"] = context
+        if metadata:
+            edge["metadata"] = sanitize_metadata(metadata)
         edges.append(edge)
 
     def ensure_named_node(name: str, line: int) -> str:
-        nid = _make_id(stem, name)
+        nid = _make_id(stem, ".".join(namespace_stack), name)
         if nid in seen_ids:
             return nid
         nid = _make_id(name)
@@ -2719,7 +2841,7 @@ def _extract_generic(
         # Import types
         if t in config.import_types:
             if config.import_handler:
-                imported_modules = config.import_handler(node, source, file_nid, stem, edges, str_path)
+                imported_modules = config.import_handler(node, source, file_nid, stem, edges, str_path, scope_stack)
                 # Module-level import handlers (Swift) name a module, not a file
                 # path, so there is no pre-existing node to anchor the edge to.
                 # They return (id, label) pairs for which we materialize a
@@ -2763,9 +2885,12 @@ def _extract_generic(
             if not name_node:
                 return
             class_name = _read_text(name_node, source)
-            class_nid = _make_id(stem, class_name)
+            class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
             line = node.start_point[0] + 1
-            add_node(class_nid, class_name, line)
+            metadata = None
+            if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
+                metadata = {"is_nested_type": True}
+            add_node(class_nid, class_name, line, metadata=metadata)
             add_edge(file_nid, class_nid, "contains", line)
 
             if config.ts_module == "tree_sitter_swift" and any(
@@ -2949,25 +3074,20 @@ def _extract_generic(
 
             # C#-specific: inheritance / interface implementation via base_list
             if config.ts_module == "tree_sitter_c_sharp":
+                csharp_type_params = _csharp_type_parameters_in_scope(node, source)
                 for child in node.children:
                     if child.type != "base_list":
                         continue
                     for sub in child.children:
                         if sub.type not in ("identifier", "generic_name", "qualified_name"):
                             continue
-                        if sub.type == "generic_name":
-                            name_child = sub.child_by_field_name("name")
-                            base = (
-                                _read_text(name_child, source) if name_child
-                                else _read_text(sub.children[0], source)
-                            )
-                        elif sub.type == "qualified_name":
-                            base = _read_text(sub, source).rsplit(".", 1)[-1]
-                        else:
-                            base = _read_text(sub, source)
-                        if not base:
+                        base_info = _read_csharp_type_name(sub, source)
+                        if base_info is None:
                             continue
-                        base_nid = _make_id(stem, base)
+                        base, qualified, qualifier = base_info
+                        if not base or base in csharp_type_params:
+                            continue
+                        base_nid = _make_id(stem, ".".join(namespace_stack), base)
                         if base_nid not in seen_ids:
                             base_nid = _make_id(base)
                             if base_nid not in seen_ids:
@@ -2980,7 +3100,12 @@ def _extract_generic(
                                 })
                                 seen_ids.add(base_nid)
                         relation = _csharp_classify_base(base, csharp_interface_names)
-                        add_edge(class_nid, base_nid, relation, line)
+                        metadata = {"ref_token": base}
+                        if qualified:
+                            metadata["qualified"] = True
+                        if qualifier:
+                            metadata["ref_qualifier"] = qualifier
+                        add_edge(class_nid, base_nid, relation, line, metadata=metadata)
                         if sub.type == "generic_name":
                             for tal in sub.children:
                                 if tal.type != "type_argument_list":
@@ -2988,12 +3113,19 @@ def _extract_generic(
                                 for arg in tal.children:
                                     if not arg.is_named:
                                         continue
-                                    refs: list[tuple[str, str]] = []
-                                    _csharp_collect_type_refs(arg, source, True, refs)
-                                    for ref_name, _role in refs:
+                                    refs: list[tuple[str, str, bool, str]] = []
+                                    _csharp_collect_type_refs(
+                                        arg, source, True, refs, csharp_type_params
+                                    )
+                                    for ref_name, _role, ref_qualified, ref_qualifier in refs:
                                         target = ensure_named_node(ref_name, line)
+                                        metadata = {"ref_token": ref_name}
+                                        if ref_qualified:
+                                            metadata["qualified"] = True
+                                        if ref_qualifier:
+                                            metadata["ref_qualifier"] = ref_qualifier
                                         add_edge(class_nid, target, "references", line,
-                                                 context="generic_arg")
+                                                 context="generic_arg", metadata=metadata)
 
             # Java-specific: extends (superclass) / implements (interfaces) / interface-extends
             if config.ts_module == "tree_sitter_java":
@@ -3251,11 +3383,22 @@ def _extract_generic(
                         type_node = child.child_by_field_name("type")
                         if type_node is not None:
                             break
-            type_name = _read_csharp_type_name(type_node, source)
-            if type_name:
+            type_info = _read_csharp_type_name(type_node, source)
+            if type_info:
+                type_name, qualified, qualifier = type_info
+                csharp_type_params = _csharp_type_parameters_in_scope(
+                    type_node if type_node is not None else node, source
+                )
+                if not type_name or type_name in csharp_type_params:
+                    return
                 line = node.start_point[0] + 1
+                metadata = {"ref_token": type_name}
+                if qualified:
+                    metadata["qualified"] = True
+                if qualifier:
+                    metadata["ref_qualifier"] = qualifier
                 add_edge(parent_class_nid, ensure_named_node(type_name, line),
-                         "references", line, context="field")
+                         "references", line, context="field", metadata=metadata)
             return
 
         if (config.ts_module == "tree_sitter_java"
@@ -3450,32 +3593,55 @@ def _extract_generic(
                             )
 
             if config.ts_module == "tree_sitter_c_sharp":
+                csharp_type_params = _csharp_type_parameters_in_scope(node, source)
                 params_node = node.child_by_field_name("parameters")
                 if params_node is not None:
                     for p in params_node.children:
                         if p.type != "parameter":
                             continue
                         type_node = p.child_by_field_name("type")
-                        refs: list[tuple[str, str]] = []
-                        _csharp_collect_type_refs(type_node, source, False, refs)
-                        for ref_name, role in refs:
+                        refs: list[tuple[str, str, bool, str]] = []
+                        _csharp_collect_type_refs(
+                            type_node, source, False, refs, csharp_type_params
+                        )
+                        for ref_name, role, qualified, qualifier in refs:
                             ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
                             target_nid = ensure_named_node(ref_name, line)
                             if target_nid != func_nid:
-                                add_edge(func_nid, target_nid, "references", line, context=ctx)
+                                metadata = {"ref_token": ref_name}
+                                if qualified:
+                                    metadata["qualified"] = True
+                                if qualifier:
+                                    metadata["ref_qualifier"] = qualifier
+                                add_edge(func_nid, target_nid, "references", line,
+                                         context=ctx, metadata=metadata)
                 return_node = node.child_by_field_name("returns")
                 if return_node is not None:
-                    refs = []
-                    _csharp_collect_type_refs(return_node, source, False, refs)
-                    for ref_name, role in refs:
+                    refs: list[tuple[str, str, bool, str]] = []
+                    _csharp_collect_type_refs(
+                        return_node, source, False, refs, csharp_type_params
+                    )
+                    for ref_name, role, qualified, qualifier in refs:
                         ctx = "generic_arg" if role == "generic_arg" else "return_type"
                         target_nid = ensure_named_node(ref_name, line)
                         if target_nid != func_nid:
-                            add_edge(func_nid, target_nid, "references", line, context=ctx)
-                for attr_name in _csharp_attribute_names(node, source):
+                            metadata = {"ref_token": ref_name}
+                            if qualified:
+                                metadata["qualified"] = True
+                            if qualifier:
+                                metadata["ref_qualifier"] = qualifier
+                            add_edge(func_nid, target_nid, "references", line,
+                                     context=ctx, metadata=metadata)
+                for attr_name, qualified, qualifier in _csharp_attribute_names(node, source):
                     target_nid = ensure_named_node(attr_name, line)
                     if target_nid != func_nid:
-                        add_edge(func_nid, target_nid, "references", line, context="attribute")
+                        metadata = {"ref_token": attr_name}
+                        if qualified:
+                            metadata["qualified"] = True
+                        if qualifier:
+                            metadata["ref_qualifier"] = qualifier
+                        add_edge(func_nid, target_nid, "references", line,
+                                 context="attribute", metadata=metadata)
 
             if config.ts_module == "tree_sitter_java":
                 params_node = node.child_by_field_name("parameters")
@@ -3743,7 +3909,8 @@ def _extract_generic(
         if config.ts_module == "tree_sitter_c_sharp":
             if _csharp_extra_walk(node, source, file_nid, stem, str_path,
                                    nodes, edges, seen_ids, function_bodies,
-                                   parent_class_nid, add_node, add_edge, walk):
+                                   parent_class_nid, add_node, add_edge, walk,
+                                   namespace_stack, scope_stack):
                 return
 
         if config.ts_module == "tree_sitter_swift":
@@ -3776,6 +3943,8 @@ def _extract_generic(
     label_to_nid: dict[str, str] = {}     # case-sensitive (Ruby, C#, Java, Kotlin, etc.)
     label_to_nid_ci: dict[str, str] = {}  # case-insensitive (PHP functions/classes)
     for n in nodes:
+        if n.get("type") == "namespace":
+            continue
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")
         label_to_nid[normalised] = n["id"]
@@ -7912,7 +8081,7 @@ def _disambiguate_colliding_node_ids(
     """
     by_id: dict[str, list[dict]] = {}
     for node in nodes:
-        if node.get("type") == "module":
+        if node.get("type") in ("module", "namespace"):
             continue
         nid = node.get("id")
         if isinstance(nid, str) and nid:
@@ -8019,12 +8188,57 @@ def _disambiguate_colliding_node_ids(
             raw_call["caller_nid"] = unambiguous_remaps[str(raw_call["caller_nid"])]
 
 
+def _canonicalize_csharp_namespace_nodes(all_nodes: list[dict], all_edges: list[dict]) -> None:
+    """Collapse duplicate C# namespace node entries to one canonical node per label."""
+    by_label: dict[str, list[dict]] = {}
+    for node in all_nodes:
+        if node.get("type") != "namespace":
+            continue
+        label = node.get("label")
+        if isinstance(label, str):
+            by_label.setdefault(label, []).append(node)
+
+    remap: dict[str, str] = {}
+    drop_node_ids: set[int] = set()
+    for group in by_label.values():
+        if len(group) < 2:
+            continue
+        canonical = sorted(
+            group,
+            key=lambda node: (
+                str(node.get("source_file") or ""),
+                str(node.get("source_location") or ""),
+                str(node.get("id") or ""),
+            ),
+        )[0]
+        canonical_id = canonical.get("id")
+        for node in group:
+            if node is canonical:
+                continue
+            drop_node_ids.add(id(node))
+            dup_id = node.get("id")
+            if isinstance(dup_id, str) and isinstance(canonical_id, str):
+                remap[dup_id] = canonical_id
+
+    if remap:
+        for edge in all_edges:
+            if edge.get("source") in remap:
+                edge["source"] = remap[str(edge["source"])]
+            if edge.get("target") in remap:
+                edge["target"] = remap[str(edge["target"])]
+
+    if drop_node_ids:
+        all_nodes[:] = [node for node in all_nodes if id(node) not in drop_node_ids]
+
+
 def _node_label_key(node: dict) -> str:
     label = str(node.get("label", "")).strip()
     return re.sub(r"[^a-zA-Z0-9]+", "", label).lower()
 
 
 def _is_type_like_definition(node: dict) -> bool:
+    if node.get("type") == "namespace":
+        return False
     label = str(node.get("label", "")).strip()
     if not label:
         return False
@@ -8051,7 +8265,6 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         stubs.append(node)
 
     remap: dict[str, str] = {}
-    drop_ids: set[str] = set()
     for stub in stubs:
         stub_id = str(stub.get("id", ""))
         if not stub_id:
@@ -8062,17 +8275,36 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         target_id = candidates[0].get("id")
         if isinstance(target_id, str) and target_id and target_id != stub_id:
             remap[stub_id] = target_id
-            drop_ids.add(stub_id)
 
     if not remap:
         return
 
+    by_id = {node.get("id"): node for node in nodes if node.get("id")}
+    csharp_scoped_relations = {"inherits", "implements", "references", "imports"}
     for edge in edges:
-        if edge.get("source") in remap:
-            edge["source"] = remap[str(edge["source"])]
-        if edge.get("target") in remap:
-            edge["target"] = remap[str(edge["target"])]
+        is_csharp_scoped_edge = (
+            str(edge.get("source_file", "")).endswith(".cs")
+            and edge.get("relation") in csharp_scoped_relations
+        )
+        source = edge.get("source")
+        if source in remap:
+            remapped_source = remap[str(source)]
+            if not (
+                is_csharp_scoped_edge
+                and str(by_id.get(remapped_source, {}).get("source_file", "")).endswith(".cs")
+            ):
+                edge["source"] = remapped_source
+        target = edge.get("target")
+        if target in remap:
+            remapped_target = remap[str(target)]
+            if not (
+                is_csharp_scoped_edge
+                and str(by_id.get(remapped_target, {}).get("source_file", "")).endswith(".cs")
+            ):
+                edge["target"] = remapped_target
 
+    referenced = {x for e in edges for x in (e.get("source"), e.get("target"))}
+    drop_ids = {stub_id for stub_id in remap if stub_id not in referenced}
     nodes[:] = [node for node in nodes if node.get("id") not in drop_ids]
 
 
@@ -13897,6 +14129,7 @@ def extract(
 
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
+    _canonicalize_csharp_namespace_nodes(all_nodes, all_edges)
     _rewire_unique_stub_nodes(all_nodes, all_edges)
 
     # Add cross-file class-level edges (Python only - uses Python parser internally)
@@ -13938,6 +14171,11 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# type-reference resolution failed, skipping: %s", exc)
+        try:
+            _resolve_cross_file_csharp_imports(cs_results, cs_paths, all_nodes, all_edges)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("C# cross-file import resolution failed, skipping: %s", exc)
 
     # Cross-file call resolution for all languages
     # Each extractor saved unresolved calls in raw_calls. Now that we have all
@@ -13950,7 +14188,7 @@ def extract(
     # identifiers, and they were polluting matches for short names — #563).
     global_label_to_nids: dict[str, list[str]] = {}
     for n in all_nodes:
-        if n.get("file_type") == "rationale":
+        if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")
