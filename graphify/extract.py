@@ -4397,6 +4397,20 @@ def _extract_generic(
                 if el.type == "identifier":
                     yield el
 
+    def _python_ref_value_idents(value_node):
+        """Identifiers on the VALUE side of an assignment RHS or a return: a bare name
+        (`cb = handler`, `return handler`) or the elements of a bare unpack
+        (`a, b = f, g`). A collection LITERAL on the RHS (`cb = [f]`, `cb = (f, g)`) is a
+        dispatch table reached by the normal recursion, so it is not handled here."""
+        if value_node is None:
+            return
+        if value_node.type == "identifier":
+            yield value_node
+        elif value_node.type == "expression_list":
+            for ch in value_node.children:
+                if ch.type == "identifier":
+                    yield ch
+
     def _php_class_const_scope(n) -> str | None:
         scope = n.child_by_field_name("scope")
         if scope is None:
@@ -4828,6 +4842,21 @@ def _extract_generic(
             for ident in _js_dispatch_value_idents(node):
                 _emit_indirect_ref(ident, caller_nid, enclosing_locals, "collection")
 
+        # Assignment / return references (#1566 slice 2): a function bound to a name
+        # (cb = handler) or returned from a factory (return handler) is an indirect
+        # dependency of the enclosing function. The VALUE side only -- the assignment
+        # TARGET is a new local binding, not a reference -- so the shared shadow guard
+        # still holds (a param/local named on the RHS is the local, not the module fn).
+        if config.ts_module == "tree_sitter_python" and node.type == "assignment":
+            enclosing_locals = local_bound_names.get(caller_nid, frozenset())
+            for ident in _python_ref_value_idents(node.child_by_field_name("right")):
+                _emit_indirect_ref(ident, caller_nid, enclosing_locals, "assignment")
+        elif config.ts_module == "tree_sitter_python" and node.type == "return_statement":
+            enclosing_locals = local_bound_names.get(caller_nid, frozenset())
+            value = next((c for c in node.children if c.is_named), None)
+            for ident in _python_ref_value_idents(value):
+                _emit_indirect_ref(ident, caller_nid, enclosing_locals, "return")
+
         for child in node.children:
             walk_calls(child, caller_nid)
 
@@ -4889,6 +4918,10 @@ def _extract_generic(
             if n.type in ("dictionary", "list", "set", "tuple"):
                 for ident in _python_dispatch_value_idents(n):
                     _emit_indirect_ref(ident, file_nid, module_bound, "collection")
+            elif n.type == "assignment":
+                # Module-level alias / re-export: CALLBACK = handler
+                for ident in _python_ref_value_idents(n.child_by_field_name("right")):
+                    _emit_indirect_ref(ident, file_nid, module_bound, "assignment")
             for c in n.children:
                 _scan_module_dispatch(c)
 
