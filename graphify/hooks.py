@@ -1,6 +1,7 @@
 # git hook integration - install/uninstall graphify post-commit and post-checkout hooks
 from __future__ import annotations
 import configparser
+import os
 import re
 import sys
 from pathlib import Path
@@ -224,6 +225,13 @@ _HOOK_SCRIPT = """\
 # churn run-to-run. Pinning it makes graphify-out reproducible.
 export PYTHONHASHSEED=0
 
+# Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
+# and agent shells. Keep hook-triggered rebuilds sequential by default there;
+# explicit GRAPHIFY_MAX_WORKERS still wins for users who want parallelism.
+if [ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]; then
+    export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"
+fi
+
 # Skip during rebase/merge/cherry-pick to avoid blocking --continue with unstaged changes
 GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
 [ -d "$GIT_DIR/rebase-merge" ] && exit 0
@@ -268,6 +276,13 @@ _CHECKOUT_SCRIPT = """\
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
 # churn run-to-run. Pinning it makes graphify-out reproducible.
 export PYTHONHASHSEED=0
+
+# Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
+# and agent shells. Keep hook-triggered rebuilds sequential by default there;
+# explicit GRAPHIFY_MAX_WORKERS still wins for users who want parallelism.
+if [ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]; then
+    export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"
+fi
 
 PREV_HEAD=$1
 NEW_HEAD=$2
@@ -319,6 +334,8 @@ def _reject_windows_path(value: str, source: str) -> None:
     junk directory (backslashes and all), while install reports success and the
     real ``.git/hooks`` gets nothing. Fail loudly instead so the user can fix it.
     """
+    if os.name == "nt":
+        return
     if _WINDOWS_DRIVE_RE.match(value) or "\\" in value:
         raise RuntimeError(
             f"git hooks path from {source} looks like a Windows path: {value!r}. "
