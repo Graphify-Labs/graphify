@@ -11,6 +11,7 @@ import networkx as nx
 
 DEFAULT_AFFECTED_RELATIONS = (
     "calls",
+    "indirect_call",
     "references",
     "imports",
     "imports_from",

@@ -4314,6 +4314,44 @@ def _extract_generic(
                         rc_entry["lang"] = "cpp"
                     raw_calls.append(rc_entry)
 
+            # Indirect dispatch: a function passed BY NAME as a call argument
+            # (executor.submit(fn), Thread(target=fn), map(fn, xs)) is a real dependency
+            # the callee-only scan above can't see. Emit it as a distinct `indirect_call`
+            # relation so strict `calls` queries stay precise while affected/blast-radius
+            # picks up the edge. Python only for now; dispatch via dict literals, getattr
+            # or decorators lives in other AST nodes and is left to a follow-up.
+            if config.ts_module == "tree_sitter_python":
+                args_node = node.child_by_field_name("arguments")
+                if args_node is not None:
+                    for arg in args_node.children:
+                        if arg.type == "identifier":
+                            ident = arg
+                        elif arg.type == "keyword_argument":
+                            ident = arg.child_by_field_name("value")
+                        else:
+                            continue
+                        if ident is None or ident.type != "identifier":
+                            continue
+                        ref_nid = label_to_nid.get(_read_text(ident, source))
+                        if not ref_nid or ref_nid == caller_nid:
+                            continue
+                        if (caller_nid, ref_nid) in seen_call_pairs:
+                            continue  # already a direct call to this target
+                        marker = (caller_nid, ref_nid, "indirect_call")
+                        if marker in seen_call_pairs:
+                            continue
+                        seen_call_pairs.add(marker)
+                        edges.append({
+                            "source": caller_nid,
+                            "target": ref_nid,
+                            "relation": "indirect_call",
+                            "context": "argument",
+                            "confidence": "INFERRED",
+                            "source_file": str_path,
+                            "source_location": f"L{ident.start_point[0] + 1}",
+                            "weight": 1.0,
+                        })
+
             # Helper function calls: config('foo.bar') → uses_config edge to "foo"
             if (callee_name and callee_name in config.helper_fn_names):
                 args_node = node.child_by_field_name("arguments")
