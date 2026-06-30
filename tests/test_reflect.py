@@ -837,6 +837,67 @@ def test_loader_marks_entry_stale_when_source_file_changes(tmp_path):
     assert after["auth_login"]["stale"] is True
 
 
+def test_fingerprint_resolves_relative_source_file_under_project_root(tmp_path):
+    """Real graphs store ``source_file`` RELATIVE to the project root (the
+    "no absolute paths in output" contract, #555/#932), with graph.json in the
+    output dir one level below it. The fingerprint must resolve that relative
+    path against the project root — not against graph.json's own ``graphify-out/``
+    directory — or the file is never found, the stored fingerprint stays empty,
+    and every node reads as permanently stale on a freshly built graph.
+
+    Regression: the prior stale test passed only because it used an *absolute*
+    ``source_file``, which skips the relative-path join entirely.
+    """
+    out = tmp_path / "graphify-out"
+    # Source file at the PROJECT ROOT; the node cites it by a project-relative path.
+    (tmp_path / "auth.py").write_text("def login(): pass\n", encoding="utf-8")
+    _overlay_graph(out, [
+        {"id": "auth_login", "label": "login()", "source_file": "auth.py", "community": 0},
+    ])
+    mem = out / "memory"
+    _write_raw_doc(mem, "a.md", "2026-05-01", outcome="useful", nodes=["login()"])
+    _write_raw_doc(mem, "b.md", "2026-05-10", outcome="useful", nodes=["login()"])
+    reflect(mem, out / "reflections" / "LESSONS.md",
+            graph_path=out / "graph.json", now=_NOW)
+
+    # The relative path must actually be resolved + fingerprinted, not left empty.
+    sidecar = json.loads((out / LEARNING_SIDECAR_NAME).read_text(encoding="utf-8"))
+    assert sidecar["nodes"]["auth_login"]["code_fingerprint"], \
+        "relative source_file must be fingerprinted (regression: empty => always stale)"
+
+    # An unedited file reads as fresh; a real edit flips it to stale.
+    fresh = load_learning_overlay(out / "graph.json")
+    assert fresh["auth_login"]["stale"] is False
+    (tmp_path / "auth.py").write_text("def login(): return 1  # changed\n", encoding="utf-8")
+    after = load_learning_overlay(out / "graph.json")
+    assert after["auth_login"]["stale"] is True
+
+
+def test_fingerprint_honours_graphify_root_marker(tmp_path):
+    """When ``<output-dir>/.graphify_root`` records the project root (the marker
+    the git hooks write and trust), a relative ``source_file`` resolves against it
+    — covering a custom/absolute ``GRAPHIFY_OUT`` where the output dir is not a
+    child of the project root."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    (proj / "auth.py").write_text("def login(): pass\n", encoding="utf-8")
+    # Output dir deliberately NOT under the project root.
+    out = tmp_path / "elsewhere-out"
+    _overlay_graph(out, [
+        {"id": "auth_login", "label": "login()", "source_file": "auth.py", "community": 0},
+    ])
+    (out / ".graphify_root").write_text(str(proj), encoding="utf-8")
+    mem = out / "memory"
+    _write_raw_doc(mem, "a.md", "2026-05-01", outcome="useful", nodes=["login()"])
+    _write_raw_doc(mem, "b.md", "2026-05-10", outcome="useful", nodes=["login()"])
+    reflect(mem, out / "reflections" / "LESSONS.md",
+            graph_path=out / "graph.json", now=_NOW)
+
+    sidecar = json.loads((out / LEARNING_SIDECAR_NAME).read_text(encoding="utf-8"))
+    assert sidecar["nodes"]["auth_login"]["code_fingerprint"]
+    assert load_learning_overlay(out / "graph.json")["auth_login"]["stale"] is False
+
+
 def test_provenance_capped_to_five_most_recent(tmp_path):
     """A node cited by >5 useful results keeps exactly the 5 most-recent in
     provenance (recent-first)."""

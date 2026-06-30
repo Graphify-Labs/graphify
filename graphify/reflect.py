@@ -664,6 +664,39 @@ def _resolve_canonical_id(cited: str, id_set: dict[str, str],
     return None
 
 
+def _source_root(graph_path: Path) -> Path:
+    """Directory that node ``source_file`` paths are resolved against.
+
+    ``source_file`` is stored **relative to the project root** (the "no absolute
+    paths in output" contract, #555/#932) — NOT relative to ``graph.json``'s own
+    directory. graph.json lives in the output dir (``graphify-out/``), one level
+    below the project root, so joining a relative ``source_file`` onto
+    ``graph_path.parent`` looks one directory too deep: the file is never found,
+    the stored fingerprint stays empty, and every node is flagged stale even on a
+    freshly built graph.
+
+    Resolved in order:
+      1. the absolute path recorded in ``<output-dir>/.graphify_root`` (the same
+         marker the git hooks trust; also correct when ``GRAPHIFY_OUT`` is an
+         absolute/elsewhere override),
+      2. the parent of the output dir when graph.json sits inside it,
+      3. graph.json's own directory (flat layouts; an absolute ``source_file``
+         resolves regardless of root).
+    """
+    graph_path = Path(graph_path)
+    out_dir = graph_path.parent
+    try:
+        recorded = (out_dir / ".graphify_root").read_text(encoding="utf-8").strip()
+        if recorded:
+            return Path(recorded)
+    except (OSError, ValueError):
+        pass  # unreadable or non-UTF-8 marker -> fall through (best-effort)
+    from graphify.paths import GRAPHIFY_OUT_NAME
+    if out_dir.name == GRAPHIFY_OUT_NAME:
+        return out_dir.parent
+    return out_dir
+
+
 def _code_fingerprint(node: dict[str, Any] | None, root: Path) -> str:
     """File-level content hash of the node's ``source_file``, or '' if unavailable.
 
@@ -718,7 +751,7 @@ def build_learning_overlay(agg: dict[str, Any], graph_path: Path,
         now = now.replace(tzinfo=timezone.utc)
 
     graph_path = Path(graph_path)
-    root = graph_path.parent
+    root = _source_root(graph_path)
     id_set, label_to_ids, node_by_id = _build_id_label_maps(graph_path)
     prov_map = agg.get("_node_provenance", {})
 
@@ -804,7 +837,7 @@ def load_learning_overlay(graph_path: Path) -> dict[str, dict[str, Any]]:
     nodes = data.get("nodes")
     if not isinstance(nodes, dict):
         return {}
-    root = Path(graph_path).parent
+    root = _source_root(Path(graph_path))
     out: dict[str, dict[str, Any]] = {}
     for nid, entry in nodes.items():
         if not isinstance(entry, dict):
