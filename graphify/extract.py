@@ -4180,6 +4180,60 @@ def _extract_generic(
             return None
         return _read_text(scope, source)
 
+    _PY_COLLECTION_TYPES = ("dictionary", "list", "set", "tuple")
+
+    def _collection_value_idents(coll):
+        # Function-value items of a collection literal: dict -> each pair's `value`;
+        # list/set/tuple -> each element. Identifiers only.
+        if coll.type == "dictionary":
+            for ch in coll.children:
+                if ch.type == "pair":
+                    v = ch.child_by_field_name("value")
+                    if v is not None and v.type == "identifier":
+                        yield v
+        else:
+            for ch in coll.children:
+                if ch.type == "identifier":
+                    yield ch
+
+    def _emit_collection_dispatch(coll, owner_nid: str, enclosing_locals) -> None:
+        # Dispatch tables: a function referenced as a value inside a collection literal
+        # (ROUTES = {"x": handler}, HOOKS = [on_start]). Same guards as the call-argument
+        # case -- skip a param/local shadow, resolve only to a callable def -- under the
+        # distinct INFERRED `indirect_call` relation so strict `calls` stays precise.
+        for ident in _collection_value_idents(coll):
+            name = _read_text(ident, source)
+            if name in enclosing_locals or name in ("self", "cls"):
+                continue
+            ref_nid = label_to_nid.get(name)
+            if ref_nid is None:
+                # Defined in another file -> defer to the cross-file resolver (same
+                # single-definition + callable-target guard as the argument case).
+                raw_calls.append({
+                    "caller_nid": owner_nid,
+                    "callee": name,
+                    "is_member_call": False,
+                    "indirect": True,
+                    "source_file": str_path,
+                    "source_location": f"L{ident.start_point[0] + 1}",
+                })
+                continue
+            if ref_nid == owner_nid or ref_nid not in callable_def_nids:
+                continue
+            if (owner_nid, ref_nid) in seen_call_pairs or (owner_nid, ref_nid) in seen_indirect_pairs:
+                continue
+            seen_indirect_pairs.add((owner_nid, ref_nid))
+            edges.append({
+                "source": owner_nid,
+                "target": ref_nid,
+                "relation": "indirect_call",
+                "context": "collection",
+                "confidence": "INFERRED",
+                "source_file": str_path,
+                "source_location": f"L{ident.start_point[0] + 1}",
+                "weight": 1.0,
+            })
+
     def walk_calls(node, caller_nid: str) -> None:
         if node.type in config.function_boundary_types:
             return
@@ -4618,6 +4672,11 @@ def _extract_generic(
                             "weight": 1.0,
                         })
 
+        # Dispatch tables INSIDE a function body (owner = enclosing function; its
+        # params/locals are the shadow set).
+        if config.ts_module == "tree_sitter_python" and node.type in _PY_COLLECTION_TYPES:
+            _emit_collection_dispatch(node, caller_nid, local_bound_names.get(caller_nid, frozenset()))
+
         for child in node.children:
             walk_calls(child, caller_nid)
 
@@ -4641,6 +4700,22 @@ def _extract_generic(
     # seen_call_pairs, so a closure inside an initializer is not double-walked.
     for owner_nid, init_node in initializer_nodes:
         walk_calls(init_node, owner_nid)
+
+    # Module-level dispatch tables: a function referenced inside a collection literal at
+    # module scope (ROUTES = {"x": handler}) -- the common registry idiom. Walk the
+    # top-level statements only (stop at any def; function/class bodies are owned by
+    # walk_calls / their own nid) and attribute the reference to the file node. No
+    # param/local shadow at module scope, and a module-level rebind is dataflow (out of
+    # scope), so the callable-target guard alone keeps it sound.
+    if config.ts_module == "tree_sitter_python":
+        def _walk_module_dispatch(n) -> None:
+            if n.type in ("function_definition", "class_definition", "decorated_definition"):
+                return
+            if n.type in _PY_COLLECTION_TYPES:
+                _emit_collection_dispatch(n, file_nid, frozenset())
+            for ch in n.children:
+                _walk_module_dispatch(ch)
+        _walk_module_dispatch(root)
 
     # ── Event listener pass ───────────────────────────────────────────────────
     seen_listen_pairs: set[tuple[str, str]] = set()
