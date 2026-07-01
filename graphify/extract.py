@@ -7281,19 +7281,39 @@ def extract_julia(path: Path) -> dict:
         # Using / Import
         if t in ("using_statement", "import_statement"):
             line = node.start_point[0] + 1
+
+            def _julia_mod_name(n):
+                # identifier (`Foo`), scoped_identifier (`Base.Threads`), or
+                # import_path (relative `..Sibling`) -> the module name. Only bare
+                # identifiers were handled, so qualified/relative imports — and the
+                # scoped package of a `selected_import` — were silently dropped.
+                if n.type == "import_path":
+                    ids = [c for c in n.children if c.type == "identifier"]
+                    return _read_text(ids[-1], source) if ids else None
+                if n.type in ("identifier", "scoped_identifier"):
+                    return _read_text(n, source)
+                return None
+
+            def _emit_import(name):
+                if not name:
+                    return
+                imp_nid = _make_id(name)
+                add_node(imp_nid, name, line)
+                add_edge(scope_nid, imp_nid, "imports", line, context="import")
+
             for child in node.children:
-                if child.type == "identifier":
-                    mod_name = _read_text(child, source)
-                    imp_nid = _make_id(mod_name)
-                    add_node(imp_nid, mod_name, line)
-                    add_edge(scope_nid, imp_nid, "imports", line, context="import")
+                if child.type in ("identifier", "scoped_identifier", "import_path"):
+                    _emit_import(_julia_mod_name(child))
                 elif child.type == "selected_import":
-                    identifiers = [c for c in child.children if c.type == "identifier"]
-                    if identifiers:
-                        pkg_name = _read_text(identifiers[0], source)
-                        pkg_nid = _make_id(pkg_name)
-                        add_node(pkg_nid, pkg_name, line)
-                        add_edge(scope_nid, pkg_nid, "imports", line, context="import")
+                    # `import Base.Threads: nthreads` — the package (first named
+                    # child) may itself be a scoped_identifier/import_path.
+                    pkg = next(
+                        (c for c in child.children
+                         if c.type in ("identifier", "scoped_identifier", "import_path")),
+                        None,
+                    )
+                    if pkg is not None:
+                        _emit_import(_julia_mod_name(pkg))
             return
 
         for child in node.children:

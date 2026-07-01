@@ -1429,6 +1429,20 @@ def test_julia_import_edges_have_import_context():
     assert all(e.get("context") == "import" for e in import_edges)
 
 
+def test_julia_qualified_and_relative_imports():
+    """Qualified (`using Base.Threads`) and relative (`using ..Mod`) imports
+    must emit edges.
+
+    The handler only matched bare identifiers, so scoped_identifier and
+    import_path forms — and the scoped package of a selected_import — were
+    silently dropped.
+    """
+    r = extract_julia(FIXTURES / "sample.jl")
+    targets = [e["target"] for e in r["edges"] if e["relation"] == "imports"]
+    assert any("base_threads" in t for t in targets), "qualified import Base.Threads missing"
+    assert any("parentmodule" in t for t in targets), "relative import ParentModule missing"
+
+
 def test_julia_finds_inherits():
     r = extract_julia(FIXTURES / "sample.jl")
     inherits = [e for e in r["edges"] if e["relation"] == "inherits"]
