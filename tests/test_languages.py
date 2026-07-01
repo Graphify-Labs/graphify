@@ -655,6 +655,11 @@ def test_scala_val_definition_field_context():
     assert ("HttpClient", "Config") in _edge_labels(r, "references", "field")
 
 
+def test_scala_var_definition_field_context():
+    r = extract_scala(FIXTURES / "sample.scala")
+    assert ("HttpClient", "BaseClient") in _edge_labels(r, "references", "field")
+
+
 def test_scala_method_return_type_context():
     r = extract_scala(FIXTURES / "sample.scala")
     assert ("create", "HttpClient") in _edge_labels(r, "references", "return_type")

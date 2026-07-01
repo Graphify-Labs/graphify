@@ -3868,7 +3868,7 @@ def _extract_generic(
             return
 
         if (config.ts_module == "tree_sitter_scala"
-                and t == "val_definition"
+                and t in ("val_definition", "var_definition")
                 and parent_class_nid):
             type_node = node.child_by_field_name("type")
             if type_node is not None:
