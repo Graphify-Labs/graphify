@@ -1514,6 +1514,24 @@ def test_fortran_finds_calls():
     assert len(call_edges) >= 1
 
 
+def test_fortran_finds_function_call():
+    """`y = f(x)` function invocations must emit a calls edge.
+
+    Function calls are `call_expression` (not `subroutine_call`); that node was
+    never handled, so every function-to-function call was dropped. The callee is
+    resolved against defined procedures so array indexing (`arr(i)`) can't
+    fabricate a spurious edge.
+    """
+    r = extract_fortran(FIXTURES / "sample.f90")
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    found = any(
+        "report" in labels.get(e["source"], "")
+        and "double_val" in labels.get(e["target"], "")
+        for e in r["edges"] if e["relation"] == "calls"
+    )
+    assert found, "report() should have a calls edge to double_val()"
+
+
 def test_fortran_case_insensitive_names():
     r = extract_fortran(FIXTURES / "sample.f90")
     labels = [n["label"] for n in r["nodes"]]

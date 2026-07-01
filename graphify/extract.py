@@ -7503,6 +7503,19 @@ def extract_fortran(path: Path) -> dict:
                 target_nid = _make_id(stem, callee)
                 add_edge(scope_nid, target_nid, "calls", node.start_point[0] + 1,
                          confidence="EXTRACTED", context="call")
+        # x = compute(args) — function invocations are `call_expression`, which
+        # shares Fortran's `name(...)` syntax with array indexing. Only emit a
+        # call edge when the callee resolves to a procedure defined in this file
+        # (an array variable produces no matching node), so array accesses can't
+        # fabricate spurious `calls` edges.
+        elif t == "call_expression":
+            name_node = next((c for c in node.children if c.type == "identifier"), None)
+            if name_node:
+                callee = _read_text(name_node, source).lower()
+                target_nid = _make_id(stem, callee)
+                if target_nid in seen_ids and target_nid != scope_nid:
+                    add_edge(scope_nid, target_nid, "calls", node.start_point[0] + 1,
+                             confidence="EXTRACTED", context="call")
         for child in node.children:
             walk_calls(child, scope_nid)
 

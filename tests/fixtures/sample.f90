@@ -43,6 +43,19 @@ contains
     print *, "Area =", area
   end subroutine print_area
 
+  function double_val(x) result(y)
+    real, intent(in) :: x
+    real :: y
+    y = x * 2.0
+  end function double_val
+
+  subroutine report(radius)
+    real, intent(in) :: radius
+    real :: scaled
+    scaled = double_val(radius)
+    print *, scaled
+  end subroutine report
+
 end module geometry
 
 
