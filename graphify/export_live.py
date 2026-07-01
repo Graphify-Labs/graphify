@@ -377,11 +377,16 @@ const RAW_HYPEREDGES = {hyperedges_json};
 
 
 def _html_script(nodes_json: str, edges_json: str, legend_json: str) -> str:
-    return """<script src="https://d3js.org/d3.v7.min.js"></script>
+    return """<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script>
 const RAW_NODES = __NODES_JSON__;
 const RAW_EDGES = __EDGES_JSON__;
 const LEGEND = __LEGEND_JSON__;
+
+if (typeof d3 === 'undefined') {
+  document.getElementById('loading-screen').innerHTML = '<div style="text-align:center;padding:40px;color:#ef4444;"><h2>Failed to load D3.js</h2><p>Your browser may be blocking the CDN script. Try opening this file via a local HTTP server:</p><pre style="background:#1e293b;padding:12px;border-radius:6px;color:#e2e8f0;margin:16px auto;max-width:500px;font-size:13px;">python -m http.server 8080<br># then open http://localhost:8080/graph.html</pre></div>';
+  throw new Error('D3.js not loaded');
+}
 
 const CFG = {
   nodeMinRadius: 2.5, nodeMaxRadius: 14, edgeBaseWidth: 1, edgeMaxWidth: 4,
@@ -433,9 +438,11 @@ function processData() {
   state.communities = Array.from(commMap.values());
   state.communityColors = new Map(state.communities.map(c => [c.cid, c.color]));
   state.particlePositions = [];
-  for (let i = 0; i < CFG.particleCount; i++) {
-    const edge = state.edges[Math.floor(Math.random() * state.edges.length)];
-    state.particlePositions.push({ edgeIdx: state.edges.indexOf(edge), t: Math.random(), speed: 0.003 + Math.random() * 0.005 });
+  if (state.edges.length > 0) {
+    for (let i = 0; i < CFG.particleCount; i++) {
+      const edge = state.edges[Math.floor(Math.random() * state.edges.length)];
+      state.particlePositions.push({ edgeIdx: state.edges.indexOf(edge), t: Math.random(), speed: 0.003 + Math.random() * 0.005 });
+    }
   }
 }
 
@@ -454,10 +461,13 @@ function createSimulation() {
 
 const canvas = document.createElement('canvas');
 canvas.id = 'graph-canvas';
-document.getElementById('graph-container').appendChild(canvas);
+const graphContainer = document.getElementById('graph-container');
+if (!graphContainer) throw new Error('Graph container not found');
+graphContainer.appendChild(canvas);
 const ctx = canvas.getContext('2d');
 const minimapCanvas = document.createElement('canvas');
-document.getElementById('minimap').appendChild(minimapCanvas);
+const minimapEl = document.getElementById('minimap');
+if (minimapEl) minimapEl.appendChild(minimapCanvas);
 const minimapCtx = minimapCanvas.getContext('2d');
 
 function resizeCanvas() {
@@ -515,6 +525,7 @@ function findNodeAt(mx, my) {
   const t = state.transform, gx = (mx - t.x) / t.k, gy = (my - t.y) / t.k;
   const threshold = Math.max(8 / t.k, 3); let best = null, bestD = Infinity;
   quadtree.visit((node, x0, y0, x1, y1) => {
+    if (!node) return true;
     if (!node.length) {
       const n = node.data;
       if (n) { const d = dist(gx, gy, n.x, n.y); if (d < threshold + n.radius && d < bestD) { best = n; bestD = d; } }
