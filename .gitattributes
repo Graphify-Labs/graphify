@@ -4,3 +4,19 @@
 worked/**/*.html linguist-vendored=true
 graphify-out/**/*.html linguist-vendored=true
 *.html linguist-detectable=false
+
+# Normalize line endings
+* text=auto
+
+# Scripts always get LF
+*.sh text eol=lf
+*.py text eol=lf
+
+# Windows batch files always get CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files
+*.pdf binary
+*.png binary
+*.jpg binary
