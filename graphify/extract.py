@@ -6637,7 +6637,11 @@ def _augment_systemverilog_semantics(
             body,
             flags=re.DOTALL,
         )
-        for field in re.finditer(r"^\s*([A-Za-z_]\w*(?:\s*#\s*\([^;]+?\))?)\s+\w+\s*;", body_without_functions, re.MULTILINE):
+        # Optional leading class-property qualifiers (rand/local/protected/etc.)
+        # must be consumed: otherwise a qualified field like `rand Config x;`
+        # (three tokens) fails the `<type> <name>;` shape and its type reference
+        # is silently dropped.
+        for field in re.finditer(r"^\s*(?:(?:rand|randc|local|protected|static|const|automatic|var)\s+)*([A-Za-z_]\w*(?:\s*#\s*\([^;]+?\))?)\s+\w+\s*;", body_without_functions, re.MULTILINE):
             # Count to the start of the type token (group 1), not the match
             # start: `^\s*` consumes the leading newline(s), so field.start()
             # would resolve to the class's line instead of the field's.

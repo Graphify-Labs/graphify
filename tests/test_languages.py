@@ -2637,6 +2637,18 @@ def test_systemverilog_field_parameter_return_and_generic_contexts():
     assert ("build", "Payload") in _edge_labels(r, "references", "generic_arg")
 
 
+def test_systemverilog_qualified_field_references():
+    """Class properties with leading qualifiers (rand/local/protected/etc.) must
+    still emit `references` field edges. The field regex only matched unqualified
+    `<type> <name>;` declarations, so `rand Config x;` (three tokens) failed to
+    match and its type reference was silently dropped.
+    """
+    r = extract_verilog(FIXTURES / "sample.sv")
+    field_refs = _edge_labels(r, "references", "field")
+    assert ("DataProcessor", "Config") in field_refs, "rand-qualified field dropped"
+    assert ("DataProcessor", "BaseProcessor") in field_refs, "protected-qualified field dropped"
+
+
 def test_systemverilog_does_not_emit_type_parameter_refs():
     r = extract_verilog(FIXTURES / "sample.sv")
     assert ("Result", "T") not in _edge_labels(r, "references", "field")
