@@ -18,6 +18,8 @@ def _log_path() -> Path | None:
     override = os.environ.get("GRAPHIFY_QUERY_LOG", "").strip()
     if override:
         return Path(override).expanduser()
+    if os.environ.get("GRAPHIFY_QUERY_LOG_ENABLE", "").lower() not in ("1", "true", "yes"):
+        return None
     return Path.home() / ".cache" / "graphify-queries.log"
 
 

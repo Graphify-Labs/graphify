@@ -142,7 +142,8 @@ _QUERY_REFERENCE = "references/query/default.md"
 _QUERY_STUB = "query-stub/default.md"
 # The hooks reference is host-flavored. Most hosts read CLAUDE.md and wire
 # always-on via `graphify claude install` (the shared body). The agents-md hosts
-# (trae, trae-cn, amp) read AGENTS.md and wire it via `graphify <host> install`.
+# (codex, trae, trae-cn, amp) read AGENTS.md and wire it via
+# `graphify <host> install`.
 # The agents-md fragment is a per-host template: the install/uninstall commands,
 # the host display name, the heading suffix, and the PreToolUse caveat are slots
 # filled from _AGENTS_MD_HOOKS per host. trae carries the v8 caveat that Trae does
@@ -166,6 +167,13 @@ _TRAE_PRETOOLUSE_NOTE = (
     "the graph needs refreshing.\n"
 )
 _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
+    "codex": {
+        "heading_suffix": " (Codex)",
+        "host_display": "Codex",
+        "install_block": "graphify codex install --project",
+        "uninstall_block": "graphify codex uninstall --project  # remove the section",
+        "pretooluse_note": "\nThis also writes `.codex/hooks.json` so Codex can trigger graphify's update hook from project-local configuration.\n",
+    },
     "trae": {
         "heading_suffix": " (Trae)",
         "host_display": "Trae",
@@ -229,6 +237,12 @@ SHARED_INTRO_ALLOWLIST: frozenset[str] = frozenset({
 })
 
 _CONSOLIDATION_ALLOWLIST: dict[str, frozenset[str]] = {
+    # Codex moved from CLAUDE.md-flavored hooks to AGENTS.md + .codex/hooks.json.
+    # The old heading is intentionally replaced by the Codex-specific AGENTS.md
+    # hooks reference; the reference itself is guarded by dedicated tests.
+    "codex": frozenset({
+        "## For native CLAUDE.md integration",
+    }),
     # kilo's terse v8 step/part/section headings, renamed/re-leveled by the
     # shared lean core. Content is preserved under the core's richer headings
     # (Step 4 build/cluster/analyze, Step 5 label, Step 6 HTML, Step 9 report)

@@ -1,4 +1,6 @@
 """Tests for graphify/cache.py."""
+import os
+
 import pytest
 from pathlib import Path
 from graphify.cache import file_hash, cache_dir, load_cached, save_cached, cached_files, clear_cache, _body_content
@@ -32,6 +34,33 @@ def test_file_hash_changes(tmp_path):
     f1.write_text("content one")
     f2.write_text("content two")
     assert file_hash(f1) != file_hash(f2)
+
+
+def test_file_hash_same_size_same_mtime_change_misses_stat_fastpath(tmp_path):
+    """A same-size rewrite must not reuse the old hash when mtime is unchanged."""
+    f = tmp_path / "doc.md"
+    f.write_text("# A\n\nContent A.\n")
+    h1 = file_hash(f, tmp_path)
+    st = f.stat()
+
+    f.write_text("# B\n\nContent B.\n")
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+    assert file_hash(f, tmp_path) != h1
+
+
+def test_file_hash_stat_fastpath_is_root_scoped(tmp_path):
+    """The stat cache key must include root because file_hash hashes relpath."""
+    repo = tmp_path / "repo"
+    sub = repo / "sub"
+    sub.mkdir(parents=True)
+    f = sub / "module.py"
+    f.write_text("print('same bytes')\n")
+
+    repo_hash = file_hash(f, repo)
+    sub_hash = file_hash(f, sub)
+
+    assert repo_hash != sub_hash
 
 
 def test_cache_roundtrip(tmp_file, cache_root):

@@ -50,6 +50,27 @@ def test_install_codex(tmp_path):
     assert (tmp_path / ".codex" / "skills" / "graphify" / "SKILL.md").exists()
 
 
+def test_install_does_not_stamp_other_platform_skills_current(tmp_path):
+    from graphify.__main__ import install
+
+    codex_skill = tmp_path / ".codex" / "skills" / "graphify" / "SKILL.md"
+    codex_skill.parent.mkdir(parents=True)
+    codex_skill.write_text("old codex skill", encoding="utf-8")
+    version_file = codex_skill.parent / ".graphify_version"
+    version_file.write_text("0.1.0", encoding="utf-8")
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(tmp_path)
+        with patch("graphify.__main__.Path.home", return_value=tmp_path):
+            install(platform="claude")
+    finally:
+        os.chdir(old_cwd)
+
+    assert codex_skill.read_text(encoding="utf-8") == "old codex skill"
+    assert version_file.read_text(encoding="utf-8") == "0.1.0"
+
+
 def test_install_opencode(tmp_path):
     _install(tmp_path, "opencode")
     assert (

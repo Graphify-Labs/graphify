@@ -591,6 +591,7 @@ def mermaid_init(scale: float, direction: str = "LR") -> str:
     scale = max(0.65, min(float(scale or 1.0), 1.8))
     config = {
         "theme": "dark",
+        "securityLevel": "strict",
         "themeVariables": {
             "fontSize": f"{round(15 * scale, 1)}px",
             "fontFamily": "Segoe UI, system-ui, sans-serif",
@@ -603,7 +604,7 @@ def mermaid_init(scale: float, direction: str = "LR") -> str:
             "textColor": "#e2e8f0",
         },
         "flowchart": {
-            "htmlLabels": True,
+            "htmlLabels": False,
             "curve": "basis",
             "nodeSpacing": round(48 * scale),
             "rankSpacing": round(64 * scale),
@@ -1811,8 +1812,8 @@ def write_callflow_html(
   const mermaidConfig = {
     startOnLoad: false,
     theme: 'dark',
-    securityLevel: 'loose',
-    flowchart: { htmlLabels: true, useMaxWidth: true },
+    securityLevel: 'strict',
+    flowchart: { htmlLabels: false, useMaxWidth: true },
     themeVariables: {
       primaryColor: '#1e293b',
       primaryTextColor: '#e2e8f0',

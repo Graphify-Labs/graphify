@@ -103,6 +103,44 @@ def _normalize_hyperedge_members(he: object) -> None:
         he.pop(alias, None)
 
 
+def _remap_hyperedge_members(
+    hyperedges: list,
+    remap: dict,
+    *,
+    allow_normalized: bool = False,
+) -> None:
+    """Apply node-id remaps to hyperedge member lists in place.
+
+    Edges are rewired through the dedup and graph-build remap tables; hyperedges
+    are graph metadata, so they need the same treatment or they retain dangling
+    member IDs after the canonical node has won.
+    """
+    if not remap:
+        return
+    for he in hyperedges or []:
+        _normalize_hyperedge_members(he)
+        if not isinstance(he, dict) or not isinstance(he.get("nodes"), list):
+            continue
+        remapped: list = []
+        seen: set = set()
+        for ref in he["nodes"]:
+            mapped = ref
+            try:
+                mapped = remap.get(ref, ref)
+            except TypeError:
+                pass
+            if mapped is ref and allow_normalized and isinstance(ref, str):
+                mapped = remap.get(_normalize_id(ref), ref)
+            try:
+                if mapped in seen:
+                    continue
+                seen.add(mapped)
+            except TypeError:
+                pass
+            remapped.append(mapped)
+        he["nodes"] = remapped
+
+
 def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
     """Normalize path separators and relativize absolute paths.
 
@@ -519,6 +557,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             alias = old_stem + suffix
             norm_to_id.setdefault(_normalize_id(alias), nid)
             norm_to_id.setdefault(alias, nid)
+    _remap_hyperedge_members(
+        extraction.get("hyperedges", []) or [],
+        norm_to_id,
+        allow_normalized=True,
+    )
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
@@ -656,10 +699,12 @@ def build(
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
     if dedup and combined["nodes"]:
-        combined["nodes"], combined["edges"] = deduplicate_entities(
+        combined["nodes"], combined["edges"], remap = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
             dedup_llm_backend=dedup_llm_backend,
+            return_remap=True,
         )
+        _remap_hyperedge_members(combined["hyperedges"], remap)
     return build_from_json(combined, directed=directed, root=root)
 
 

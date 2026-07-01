@@ -83,15 +83,16 @@ def _body_content(content: bytes) -> bytes:
     return text[closer.start() + 3:].encode()
 
 
-# Stat-based index: maps absolute path → {size, mtime_ns, hash}.
-# Loaded once per process, flushed via atexit. Skips full file reads when
-# size+mtime_ns are unchanged — same trade-off as make(1).
-# Correctness risks: `touch` causes a harmless extra re-hash; same-size edits
-# within NFS second-resolution mtime have a 1-second window (same as make).
+# Stat-based index: maps root+absolute path → {size, mtime_ns, ctime_ns, hash}.
+# Loaded once per process, flushed via atexit. By default this is advisory only:
+# metadata is not a correctness proof on every filesystem, so file_hash still
+# reads the file. Set GRAPHIFY_TRUST_STAT_CACHE=1 to re-enable the legacy
+# metadata fastpath in controlled environments.
 # Use `graphify extract --force` to bypass when needed.
 _stat_index: dict[str, dict] = {}
 _stat_index_root: Path | None = None
 _stat_index_dirty: bool = False
+_stat_index_registered: bool = False
 
 
 def _stat_index_file(root: Path) -> Path:
@@ -101,10 +102,13 @@ def _stat_index_file(root: Path) -> Path:
 
 
 def _ensure_stat_index(root: Path) -> None:
-    global _stat_index, _stat_index_root, _stat_index_dirty
-    if _stat_index_root is not None:
+    global _stat_index, _stat_index_root, _stat_index_dirty, _stat_index_registered
+    resolved_root = Path(root).resolve()
+    if _stat_index_root == resolved_root:
         return
-    _stat_index_root = Path(root).resolve()
+    if _stat_index_root is not None:
+        _flush_stat_index()
+    _stat_index_root = resolved_root
     p = _stat_index_file(_stat_index_root)
     if p.exists():
         try:
@@ -113,7 +117,10 @@ def _ensure_stat_index(root: Path) -> None:
             _stat_index = {}
     else:
         _stat_index = {}
-    atexit.register(_flush_stat_index)
+    _stat_index_dirty = False
+    if not _stat_index_registered:
+        atexit.register(_flush_stat_index)
+        _stat_index_registered = True
 
 
 def _flush_stat_index() -> None:
@@ -153,12 +160,17 @@ def _normalize_path(path: Path) -> Path:
     return Path(os.path.normcase(s))
 
 
+def _stat_cache_key(path: Path, root: Path) -> str:
+    """Key stat fastpath by both path and root because the hash includes relpath."""
+    return f"{Path(root).resolve()}\0{Path(path).resolve()}"
+
+
 def file_hash(path: Path, root: Path = Path(".")) -> str:
     """SHA256 of file contents + path relative to root.
 
-    Uses a stat-based fastpath (size + mtime_ns) to skip full reads when the
-    file hasn't changed. Falls through to full SHA256 on first encounter or
-    when stat changes. Index is flushed atomically at process exit.
+    Reads file contents for correctness. A stat index is still maintained for
+    callers that explicitly opt into the legacy metadata fastpath with
+    GRAPHIFY_TRUST_STAT_CACHE=1. Index is flushed atomically at process exit.
 
     Using a relative path (not absolute) makes cache entries portable across
     machines and checkout directories, so shared caches and CI work correctly.
@@ -174,14 +186,21 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
         raise IsADirectoryError(f"file_hash requires a file, got: {p}")
 
     _ensure_stat_index(root)
-    abs_key = str(p.resolve())
+    stat_key = _stat_cache_key(p, root)
     st: "os.stat_result | None" = None
     try:
         st = p.stat()
-        entry = _stat_index.get(abs_key)
-        if (entry
+        entry = _stat_index.get(stat_key)
+        trust_stat_cache = os.environ.get("GRAPHIFY_TRUST_STAT_CACHE", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if (trust_stat_cache
+                and entry
                 and entry.get("size") == st.st_size
-                and entry.get("mtime_ns") == st.st_mtime_ns):
+                and entry.get("mtime_ns") == st.st_mtime_ns
+                and entry.get("ctime_ns") == st.st_ctime_ns):
             return entry["hash"]
     except OSError:
         pass
@@ -199,7 +218,12 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
     digest = h.hexdigest()
 
     if st is not None:
-        _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "hash": digest}
+        _stat_index[stat_key] = {
+            "size": st.st_size,
+            "mtime_ns": st.st_mtime_ns,
+            "ctime_ns": st.st_ctime_ns,
+            "hash": digest,
+        }
         _stat_index_dirty = True
 
     return digest

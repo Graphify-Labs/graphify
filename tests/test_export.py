@@ -6,6 +6,7 @@ from pathlib import Path
 from graphify.build import build_from_json
 from graphify.cluster import cluster
 from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
+from graphify.tree_html import emit_html
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -117,6 +118,25 @@ def test_to_html_contains_visjs():
         assert "vis-network" in content
 
 
+def test_to_html_has_mobile_viewport_and_layout_rule():
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out))
+        content = out.read_text()
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in content
+    assert "@media (max-width: 720px)" in content
+    assert "#sidebar { width: 100%; height: 44dvh;" in content
+
+
+def test_tree_html_has_mobile_viewport_and_layout_rule():
+    html = emit_html({"name": "root", "children": []}, title="Tree", header="Tree")
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in html
+    assert "@media (max-width: 720px)" in html
+    assert "width: calc(100vw - 24px);" in html
+
+
 def test_to_html_pins_visjs_version_with_sri():
     """vis-network script tag must use a pinned versioned URL with a sha384
     Subresource Integrity hash and crossorigin=anonymous. Without this,
@@ -189,6 +209,45 @@ def _vis_nodes_from_html(content: str) -> list:
     m = re.search(r"const RAW_NODES = (\[.*?\]);", content, re.DOTALL)
     assert m, "RAW_NODES not found in HTML"
     return json.loads(m.group(1).replace("<\\/", "</"))
+
+
+def _vis_edges_from_html(content: str) -> list:
+    m = re.search(r"const RAW_EDGES = (\[.*?\]);", content, re.DOTALL)
+    assert m, "RAW_EDGES not found in HTML"
+    return json.loads(m.group(1).replace("<\\/", "</"))
+
+
+def _hyperedges_from_html(content: str) -> list:
+    m = re.search(r"const hyperedges = (\[.*?\]);", content, re.DOTALL)
+    assert m, "hyperedges not found in HTML"
+    return json.loads(m.group(1).replace("<\\/", "</"))
+
+
+def test_to_html_sanitizes_edge_and_hyperedge_metadata():
+    G = make_graph()
+    communities = cluster(G)
+    u, v = next(iter(G.edges()))
+    G.edges[u, v]["relation"] = "calls\x00</script>"
+    G.edges[u, v]["confidence"] = "EXTRACTED\x1f"
+    G.graph["hyperedges"] = [
+        {
+            "id": "h\x00",
+            "label": "Flow</script>\x1f",
+            "relation": "participates\x00",
+            "nodes": [u, v],
+        }
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out))
+        content = out.read_text()
+
+    assert "\x00" not in content
+    assert "\x1f" not in content
+    assert "Flow<\\/script>" in content
+    assert _vis_edges_from_html(content)[0]["label"] == "calls</script>"
+    assert _hyperedges_from_html(content)[0]["label"] == "Flow</script>"
 
 
 def test_to_html_annotated_node_gets_learning_status_and_ring():

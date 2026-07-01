@@ -171,10 +171,12 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     Reads the leading digits of each dot-segment, so pre/post-release suffixes
     (``1.0.0rc1``) compare by their numeric core. A non-numeric or empty segment
     becomes 0, so a malformed stamp degrades to a conservative comparison rather
-    than raising.
+    than raising. PEP 440 local versions (``+local``) sort after their public
+    version, matching packaging.version for the install-warning direction check.
     """
+    base, plus, _local = str(version).partition("+")
     parts: list[int] = []
-    for segment in str(version).split("."):
+    for segment in base.split("."):
         digits = ""
         for ch in segment:
             if ch.isdigit():
@@ -182,6 +184,8 @@ def _version_tuple(version: str) -> tuple[int, ...]:
             else:
                 break
         parts.append(int(digits) if digits else 0)
+    if plus:
+        parts.append(1)
     return tuple(parts)
 
 
@@ -802,12 +806,8 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if platform == "opencode":
         _install_opencode_plugin(project_dir if project else Path("."))
 
-    # Refresh version stamps in all other previously-installed skill dirs so
-    # stale-version warnings don't fire for platforms not explicitly re-installed.
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
-    else:
-        _refresh_all_version_stamps()
 
     print()
     print("Done. Open your AI coding assistant and type:")
@@ -3093,6 +3093,7 @@ def main() -> None:
             )
             sys.exit(1)
         from graphify.serve import _score_nodes
+        from graphify.security import sanitize_label as _sl
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -3120,10 +3121,10 @@ def main() -> None:
         src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
         if not src_scored:
-            print(f"No node matching '{source_label}' found.", file=sys.stderr)
+            print(f"No node matching '{_sl(source_label)}' found.", file=sys.stderr)
             sys.exit(1)
         if not tgt_scored:
-            print(f"No node matching '{target_label}' found.", file=sys.stderr)
+            print(f"No node matching '{_sl(target_label)}' found.", file=sys.stderr)
             sys.exit(1)
         src_nid, tgt_nid = src_scored[0][1], tgt_scored[0][1]
         # Ambiguity guard: when both queries resolve to the same node, the
@@ -3131,8 +3132,8 @@ def main() -> None:
         # caller wanted (see bug #828).
         if src_nid == tgt_nid:
             print(
-                f"'{source_label}' and '{target_label}' both resolved to the same "
-                f"node '{src_nid}'. Use a more specific label or the exact node ID.",
+                f"'{_sl(source_label)}' and '{_sl(target_label)}' both resolved to the same "
+                f"node '{_sl(src_nid)}'. Use a more specific label or the exact node ID.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -3148,7 +3149,7 @@ def main() -> None:
         try:
             path_nodes = _nx.shortest_path(G.to_undirected(as_view=True), src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
-            print(f"No path found between '{source_label}' and '{target_label}'.")
+            print(f"No path found between '{_sl(source_label)}' and '{_sl(target_label)}'.")
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
@@ -3162,15 +3163,16 @@ def main() -> None:
             else:
                 edata = edge_data(G, v, u)
                 forward = False
-            rel = edata.get("relation", "")
-            conf = edata.get("confidence", "")
+            rel = _sl(str(edata.get("relation", "")))
+            conf = _sl(str(edata.get("confidence", "")))
             conf_str = f" [{conf}]" if conf else ""
             if i == 0:
-                segments.append(G.nodes[u].get("label", u))
+                segments.append(_sl(G.nodes[u].get("label", u)))
+            v_label = _sl(G.nodes[v].get("label", v))
             if forward:
-                segments.append(f"--{rel}{conf_str}--> {G.nodes[v].get('label', v)}")
+                segments.append(f"--{rel}{conf_str}--> {v_label}")
             else:
-                segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
+                segments.append(f"<--{rel}{conf_str}-- {v_label}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
         from graphify import querylog
         querylog.log_query(
@@ -3185,6 +3187,7 @@ def main() -> None:
             print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _find_node
+        from graphify.security import sanitize_label as _sl
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -3209,17 +3212,19 @@ def main() -> None:
             G = json_graph.node_link_graph(_raw)
         matches = _find_node(G, label)
         if not matches:
-            print(f"No node matching '{label}' found.")
+            print(f"No node matching '{_sl(label)}' found.")
             sys.exit(0)
         nid = matches[0]
         d = G.nodes[nid]
-        print(f"Node: {d.get('label', nid)}")
-        print(f"  ID:        {nid}")
-        print(
-            f"  Source:    {d.get('source_file', '')} {d.get('source_location', '')}".rstrip()
-        )
-        print(f"  Type:      {d.get('file_type', '')}")
-        print(f"  Community: {d.get('community_name') or d.get('community', '')}")
+        print(f"Node: {_sl(d.get('label', nid))}")
+        print(f"  ID:        {_sl(nid)}")
+        source_info = (
+            f"{_sl(str(d.get('source_file', '')))} "
+            f"{_sl(str(d.get('source_location', '')))}"
+        ).rstrip()
+        print(f"  Source:    {source_info}")
+        print(f"  Type:      {_sl(str(d.get('file_type', '')))}")
+        print(f"  Community: {_sl(str(d.get('community_name') or d.get('community', '')))}")
         # Work-memory overlay: a derived experiential hint from `graphify reflect`,
         # merged in display-only from the .graphify_learning.json sidecar next to
         # graph.json. No line when the node has no overlay entry.
@@ -3255,10 +3260,10 @@ def main() -> None:
             print(f"\nConnections ({len(connections)}):")
             connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
             for direction, nb, edata in connections[:20]:
-                rel = edata.get("relation", "")
-                conf = edata.get("confidence", "")
+                rel = _sl(str(edata.get("relation", "")))
+                conf = _sl(str(edata.get("confidence", "")))
                 arrow = "-->" if direction == "out" else "<--"
-                print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]")
+                print(f"  {arrow} {_sl(G.nodes[nb].get('label', nb))} [{rel}] [{conf}]")
             if len(connections) > 20:
                 print(f"  ... and {len(connections) - 20} more")
         from graphify import querylog

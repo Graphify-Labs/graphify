@@ -71,6 +71,28 @@ def test_log_query_appends(tmp_path, monkeypatch):
 # opt-out / opt-in
 # ---------------------------------------------------------------------------
 
+def test_default_log_path_requires_opt_in(tmp_path, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG", raising=False)
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_ENABLE", raising=False)
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    log_query(kind="query", question="secret question", corpus="/private/graph.json")
+
+    assert not (tmp_path / ".cache" / "graphify-queries.log").exists()
+
+
+def test_default_log_path_enabled_by_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG", raising=False)
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG_ENABLE", "1")
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    log_query(kind="query", question="q", corpus="/g.json")
+
+    assert (tmp_path / ".cache" / "graphify-queries.log").exists()
+
+
 def test_disable_env(tmp_path, monkeypatch):
     log_file = tmp_path / "q.log"
     monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(log_file))

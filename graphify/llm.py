@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html as _html
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from graphify.file_slice import (
     read_slice_text,
     unit_path,
 )
+from graphify.security import sanitize_label
 
 # `_read_files` truncates each file at this many characters before joining into
 # the user message. Token estimates use the same cap so packing matches reality.
@@ -475,6 +477,13 @@ def _neutralise_injection_sentinels(text: str) -> str:
     return _INJECTION_SENTINELS.sub(lambda m: m.group(0)[0] + "​" + m.group(0)[1:], text)
 
 
+def _prompt_safe_scalar(value: object) -> str:
+    """Escape one untrusted scalar for prompt metadata slots."""
+    safe = _neutralise_injection_sentinels(str(value))
+    safe = safe.replace("\r", "\\r").replace("\n", "\\n")
+    return _html.escape(safe, quote=True)
+
+
 def _wrap_untrusted(rel: str, content: str) -> str:
     """Wrap one file's content in a labelled, hash-stamped untrusted-data block.
 
@@ -484,8 +493,9 @@ def _wrap_untrusted(rel: str, content: str) -> str:
     """
     sha = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
     safe = _neutralise_injection_sentinels(content)
+    safe_rel = _prompt_safe_scalar(rel)
     return (
-        f'<untrusted_source path="{rel}" sha256="{sha}">\n'
+        f'<untrusted_source path="{safe_rel}" sha256="{sha}">\n'
         f"{safe}\n"
         f"</untrusted_source>"
     )
@@ -683,9 +693,9 @@ def _image_notes(refs: list[_ImageRef], *, with_paths: bool = False) -> str:
         "and edges to any code/doc nodes the image clearly references.",
     ]
     for i, r in enumerate(refs, 1):
-        note = f"[image {i}] source_file: {r.rel}"
+        note = f"[image {i}] source_file: {_prompt_safe_scalar(r.rel)}"
         if with_paths:
-            note += f"  path: {r.path}"
+            note += f"  path: {_prompt_safe_scalar(r.path)}"
         if r.raw is None and not with_paths:
             note += " (not shown: unreadable or exceeds size limit)"
         lines.append(note)
@@ -2162,14 +2172,15 @@ def _community_label_lines(G, communities, gods, max_communities, top_k):
         seen: set[str] = set()
         for nid in ranked:
             label = str(G.nodes[nid].get("label", nid)) if nid in G.nodes else str(nid)
-            label = label.strip().strip("()")[:_LABEL_MAXLEN]
+            label = sanitize_label(label.strip().strip("()"))[:_LABEL_MAXLEN]
             if label and label.lower() not in seen:
                 seen.add(label.lower())
                 names.append(label)
             if len(names) >= top_k:
                 break
         if names:
-            lines.append(f"Community {cid}: {', '.join(names)}")
+            names_json = json.dumps(names, ensure_ascii=False)
+            lines.append(f"Community {cid}: {names_json}")
             labeled_cids.append(int(cid))
     return lines, labeled_cids
 
@@ -2191,7 +2202,7 @@ def _parse_label_response(text: str, labeled_cids: list[int]) -> dict[int, str]:
         if name is None:
             name = data.get(cid)
         if isinstance(name, str) and name.strip():
-            out[cid] = name.strip()
+            out[cid] = sanitize_label(name.strip())
     return out
 
 
