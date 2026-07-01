@@ -136,7 +136,7 @@ def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
     Common terms like 'error' or 'exception' that match hundreds of nodes get
     low weights; rare identifiers like 'FooBarService' get high weights.
     Cache is stored on the graph object itself so it auto-invalidates when
-    _maybe_reload() replaces G with a new object.
+    a hot-reload replaces G with a new object.
     """
     cache: dict[str, float] = G.graph.setdefault("_idf_cache", {})
     N = G.number_of_nodes() or 1
@@ -188,7 +188,7 @@ def _node_search_text(data: dict, nid: str) -> str:
 def _get_trigram_index(G: nx.Graph) -> dict:
     """Lazily build and cache a trigram -> node-position postings map on the graph.
 
-    Cached on `G.graph` so it auto-invalidates when _maybe_reload() swaps in a
+    Cached on `G.graph` so it auto-invalidates when a hot-reload swaps in a
     fresh graph object, exactly like `_idf_cache`. `set_cache` memoizes per-trigram
     id-sets across queries within one graph generation.
     """
@@ -715,56 +715,81 @@ def _build_server(graph_path: str):
     except ImportError as e:
         raise ImportError('mcp not installed. Run: pip install "graphifyy[mcp]"') from e
 
-    G = _load_graph(graph_path)
-    communities = _communities_from_graph(G)
-    # Build the trigram query index eagerly so the first query doesn't pay the
-    # one-time build (a few seconds on a large graph). serve exists to answer
-    # queries, so absorbing the cost at startup beats spiking a random first
-    # request; it's cached on G.graph, so queries just reuse it.
-    _get_trigram_index(G)
+    from graphify import paths as _paths
 
-    # Hot-reload state: mtime+size key lets us detect graph.json changes without
-    # polling. Initialised from the file stat at startup so the first tool call
-    # never triggers a redundant reload.
-    _reload_lock = threading.Lock()
-    try:
-        _s = Path(graph_path).stat()
-        _reload_state: dict = {"mtime_ns": _s.st_mtime_ns, "size": _s.st_size}
-    except FileNotFoundError:
-        _reload_state = {"mtime_ns": 0, "size": -1}
+    # Per-graph context cache: resolved graph.json path -> {key, G, communities}.
+    # The server's default graph is just the first entry; a tool call carrying a
+    # project_path adds its own. Routing every graph through one cache means the
+    # eager trigram index and the mtime+size hot-reload behave identically for
+    # the default graph and for any project graph.
+    _default_graph_path = graph_path
+    _ctx_lock = threading.Lock()
+    _ctx_cache: dict[str, dict] = {}
 
-    def _maybe_reload() -> None:
-        nonlocal G, communities
+    def _load_ctx(path: str):
+        """Return (G, communities) for a graph.json path, reusing a cached
+        context until the file's (mtime, size) changes and then transparently
+        rebuilding it. Unlike ``_load_graph`` it never exits the process on a
+        missing/corrupt file — it raises, so a bad project_path surfaces as a
+        tool error instead of killing a server that is happily serving other
+        projects."""
         try:
-            s = Path(graph_path).stat()
+            s = Path(path).stat()
             key = (s.st_mtime_ns, s.st_size)
         except FileNotFoundError:
-            return
-        if key == (_reload_state["mtime_ns"], _reload_state["size"]):
-            return
-        with _reload_lock:
+            raise FileNotFoundError(f"graph.json not found: {path}")
+        ent = _ctx_cache.get(path)
+        if ent is not None and ent["key"] == key:
+            return ent["G"], ent["communities"]
+        with _ctx_lock:
+            ent = _ctx_cache.get(path)
+            if ent is not None and ent["key"] == key:
+                return ent["G"], ent["communities"]  # another thread built it
             try:
-                s = Path(graph_path).stat()
-                key = (s.st_mtime_ns, s.st_size)
-            except FileNotFoundError:
-                return
-            if key == (_reload_state["mtime_ns"], _reload_state["size"]):
-                return  # another thread already reloaded
-            try:
-                new_G = _load_graph(graph_path)
-            except SystemExit:
-                return  # keep serving stale graph on transient read error
-            _get_trigram_index(new_G)  # warm before exposing, so the first
-            # post-reload query is fast too (same rationale as startup)
-            G = new_G
-            communities = _communities_from_graph(new_G)
-            _reload_state["mtime_ns"], _reload_state["size"] = key
+                new_G = _load_graph(path)
+            except SystemExit as e:  # _load_graph exits on missing/corrupt file
+                raise RuntimeError(f"could not load graph.json at {path}") from e
+            # Warm the trigram index before exposing the graph so the first query
+            # against it is fast (same rationale as the original startup warm-up).
+            _get_trigram_index(new_G)
+            comm = _communities_from_graph(new_G)
+            _ctx_cache[path] = {"key": key, "G": new_G, "communities": comm}
+            return new_G, comm
+
+    def _resolve_graph_path(project_path) -> str:
+        """Map an optional project_path to a concrete graph.json path. ``None``
+        keeps the server's default graph (backward-compatible); a project_path
+        resolves to ``<project_path>/<GRAPHIFY_OUT>/graph.json``, honouring the
+        GRAPHIFY_OUT override so worktree/shared-output setups keep working."""
+        if not project_path:
+            return _default_graph_path
+        return str(Path(project_path) / _paths.GRAPHIFY_OUT / "graph.json")
+
+    # Active per-request context, rebound by _select_graph() and read by the tool
+    # handlers below. No lock needed on the hot path: _select_graph and the
+    # handler run in one synchronous stretch of each call_tool coroutine (no
+    # await between them), so a concurrent call never observes a half-applied
+    # swap.
+    active_graph_path = _default_graph_path
+    try:
+        G, communities = _load_ctx(_default_graph_path)
+    except (FileNotFoundError, RuntimeError):
+        # No default graph at startup → run as a pure multi-project server. Tools
+        # then require project_path; a call without one gets a clear error rather
+        # than the process refusing to start (which is what _load_graph would do).
+        G, communities = None, {}
+
+    def _select_graph(project_path) -> None:
+        nonlocal G, communities, active_graph_path
+        path = _resolve_graph_path(project_path)
+        G, communities = _load_ctx(path)
+        active_graph_path = path
 
     server = Server("graphify")
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
-        return [
+        _tools = [
             types.Tool(
                 name="query_graph",
                 description="Search the knowledge graph using BFS or DFS. Returns relevant nodes and edges as text context.",
@@ -885,6 +910,20 @@ def _build_server(graph_path: str):
                 },
             ),
         ]
+        # Multi-project support: every tool accepts an optional project_path.
+        # Injected here (rather than repeated in 11 literal schemas) so the set
+        # stays in lockstep as tools are added. Omitting it keeps the historical
+        # single-graph behaviour, so this is purely additive for existing callers.
+        for _t in _tools:
+            _t.inputSchema.setdefault("properties", {})["project_path"] = {
+                "type": "string",
+                "description": (
+                    "Absolute path to a project directory containing "
+                    "graphify-out/graph.json. Optional — defaults to the graph "
+                    "this server was started with."
+                ),
+            }
+        return _tools
 
     def _tool_query_graph(arguments: dict) -> str:
         import time as _time
@@ -906,7 +945,7 @@ def _build_server(graph_path: str):
         querylog.log_query(
             kind="mcp_query",
             question=question,
-            corpus=str(graph_path),
+            corpus=str(active_graph_path),
             result=result,
             mode=mode,
             depth=depth,
@@ -1149,7 +1188,7 @@ def _build_server(graph_path: str):
     }
 
     def _load_community_labels() -> dict[int, str]:
-        labels_path = Path(graph_path).parent / ".graphify_labels.json"
+        labels_path = Path(active_graph_path).parent / ".graphify_labels.json"
         if labels_path.exists():
             try:
                 return {int(k): v for k, v in json.loads(labels_path.read_text(encoding="utf-8")).items()}
@@ -1170,10 +1209,10 @@ def _build_server(graph_path: str):
 
     @server.read_resource()
     async def read_resource(uri: AnyUrl) -> str:
-        _maybe_reload()
+        _select_graph(None)  # resources read the server's default graph
         uri_str = str(uri)
         if uri_str == "graphify://report":
-            report_path = Path(graph_path).parent / "GRAPH_REPORT.md"
+            report_path = Path(active_graph_path).parent / "GRAPH_REPORT.md"
             if report_path.exists():
                 return report_path.read_text(encoding="utf-8")
             return "GRAPH_REPORT.md not found. Run graphify extract first."
@@ -1222,11 +1261,13 @@ def _build_server(graph_path: str):
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-        _maybe_reload()
+        arguments = dict(arguments or {})
+        project_path = arguments.pop("project_path", None)
         handler = _handlers.get(name)
         if not handler:
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
         try:
+            _select_graph(project_path)  # bind G/communities to the target graph
             return [types.TextContent(type="text", text=handler(arguments))]
         except Exception as exc:
             return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
