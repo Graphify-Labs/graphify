@@ -459,16 +459,25 @@ function createSimulation() {
   return sim;
 }
 
-const canvas = document.createElement('canvas');
-canvas.id = 'graph-canvas';
-const graphContainer = document.getElementById('graph-container');
-if (!graphContainer) throw new Error('Graph container not found');
-graphContainer.appendChild(canvas);
-const ctx = canvas.getContext('2d');
-const minimapCanvas = document.createElement('canvas');
-const minimapEl = document.getElementById('minimap');
-if (minimapEl) minimapEl.appendChild(minimapCanvas);
-const minimapCtx = minimapCanvas.getContext('2d');
+let canvas, ctx, minimapCanvas, minimapCtx, zoom, quadtree;
+
+function setupDOM() {
+  canvas = document.createElement('canvas');
+  canvas.id = 'graph-canvas';
+  const graphContainer = document.getElementById('graph-container');
+  if (!graphContainer) throw new Error('Graph container not found');
+  graphContainer.appendChild(canvas);
+  ctx = canvas.getContext('2d');
+  minimapCanvas = document.createElement('canvas');
+  const minimapEl = document.getElementById('minimap');
+  if (minimapEl) minimapEl.appendChild(minimapCanvas);
+  minimapCtx = minimapCanvas.getContext('2d');
+  zoom = d3.zoom().scaleExtent([0.05, 20]).on('zoom', (event) => {
+    state.transform = event.transform; render(); updateMinimapViewport();
+  });
+  d3.select(canvas).call(zoom);
+  quadtree = d3.quadtree();
+}
 
 function resizeCanvas() {
   const rect = canvas.parentElement.getBoundingClientRect();
@@ -485,11 +494,6 @@ function resizeMinimap() {
   minimapCanvas.style.width = w + 'px'; minimapCanvas.style.height = h + 'px';
   minimapCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
-
-const zoom = d3.zoom().scaleExtent([0.05, 20]).on('zoom', (event) => {
-  state.transform = event.transform; render(); updateMinimapViewport();
-});
-d3.select(canvas).call(zoom);
 
 function focusNodeOn(nodeId, scale) {
   const node = state.nodeMap.get(nodeId);
@@ -516,7 +520,6 @@ function resetView() {
   state.focusMode = false; document.getElementById('focus-mode-indicator').style.display = 'none';
 }
 
-const quadtree = d3.quadtree();
 function rebuildQuadtree() {
   quadtree.removeAll();
   state.nodes.forEach(n => { if (!state.hiddenCommunities.has(n.community)) quadtree.add(n); });
@@ -1044,6 +1047,12 @@ function animate(time) {
 }
 
 function init() {
+  try {
+    setupDOM();
+  } catch (e) {
+    document.getElementById('loading-screen').innerHTML = '<div style="text-align:center;padding:40px;color:#ef4444;"><h2>Failed to initialize</h2><p style="font-family:monospace;font-size:13px;background:#1e293b;padding:12px;border-radius:6px;color:#e2e8f0;">' + esc(e.message) + '</p><p>Try opening via HTTP server: <code style="background:#1e293b;padding:3px 8px;border-radius:4px;color:#e2e8f0;">python -m http.server 8080</code></p></div>';
+    return;
+  }
   setLoadStep(0);
   setTimeout(() => {
     setLoadStep(1); processData();
