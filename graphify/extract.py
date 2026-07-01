@@ -2598,16 +2598,37 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
 
 def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                       nodes: list, edges: list, seen_ids: set, function_bodies: list,
-                      parent_class_nid: str | None, add_node_fn, add_edge_fn) -> bool:
+                      parent_class_nid: str | None, add_node_fn, add_edge_fn,
+                      ensure_named_node_fn) -> bool:
     """Handle enum_entry for Swift. Returns True if handled."""
     if node.type == "enum_entry" and parent_class_nid:
+        line = node.start_point[0] + 1
         for child in node.children:
             if child.type == "simple_identifier":
                 case_name = _read_text(child, source)
                 case_nid = _make_id(parent_class_nid, case_name)
-                line = node.start_point[0] + 1
                 add_node_fn(case_nid, case_name, line)
                 add_edge_fn(parent_class_nid, case_nid, "case_of", line)
+        # Associated-value types nest as `enum_type_parameters -> user_type ->
+        # type_identifier` (a sibling of the case-name simple_identifier). The
+        # case-name loop above never descends into them, so `case started(Session)`
+        # used to drop the Event -> Session reference entirely. Mirror the Swift
+        # property/parameter emit style: collect the type refs and emit a
+        # `references` edge from the ENUM node to each collected type.
+        for child in node.children:
+            if child.type != "enum_type_parameters":
+                continue
+            for grand in child.children:
+                if not grand.is_named:
+                    continue
+                refs: list[tuple[str, str]] = []
+                _swift_collect_type_refs(grand, source, False, refs)
+                for ref_name, role in refs:
+                    ctx = "generic_arg" if role == "generic_arg" else "type"
+                    target_nid = ensure_named_node_fn(ref_name, line)
+                    if target_nid != parent_class_nid:
+                        add_edge_fn(parent_class_nid, target_nid, "references",
+                                    line, context=ctx)
         return True
     return False
 
@@ -4307,7 +4328,8 @@ def _extract_generic(
         if config.ts_module == "tree_sitter_swift":
             if _swift_extra_walk(node, source, file_nid, stem, str_path,
                                   nodes, edges, seen_ids, function_bodies,
-                                  parent_class_nid, add_node, add_edge):
+                                  parent_class_nid, add_node, add_edge,
+                                  ensure_named_node):
                 return
 
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the

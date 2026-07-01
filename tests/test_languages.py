@@ -865,6 +865,10 @@ def test_swift_enum_cases_have_case_of_edge():
     case_edges = [e for e in r["edges"] if e["relation"] == "case_of"]
     assert len(case_edges) >= 2
 
+def test_swift_enum_associated_value_type_emits_references():
+    r = extract_swift(FIXTURES / "sample.swift")
+    assert ("NetworkError", "Config") in _edge_labels(r, "references", "type")
+
 def test_swift_finds_deinit():
     r = extract_swift(FIXTURES / "sample.swift")
     assert any("deinit" in l for l in _labels(r))
