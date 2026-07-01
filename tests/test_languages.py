@@ -975,6 +975,23 @@ def test_elixir_import_edges_have_import_context():
     assert import_edges
     assert all(e.get("context") == "import" for e in import_edges)
 
+
+def test_elixir_multi_alias_expands():
+    """`alias Foo.{Bar, Baz}` must emit one imports edge per expanded module.
+
+    The brace form is a `dot` node with a trailing `tuple`; the single-alias
+    handler only matched a bare `alias` child, so every multi-alias import was
+    silently dropped.
+    """
+    r = extract_elixir(FIXTURES / "sample.ex")
+    import_segs = [
+        e["target"].rsplit("_", 1)[-1]
+        for e in r["edges"] if e["relation"] == "imports"
+    ]
+    # from `alias MyApp.Schemas.{Account, Token}`
+    assert "account" in import_segs, "MyApp.Schemas.Account import missing"
+    assert "token" in import_segs, "MyApp.Schemas.Token import missing"
+
 def test_elixir_finds_calls():
     r = extract_elixir(FIXTURES / "sample.ex")
     calls = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "calls"}
