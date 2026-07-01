@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "sh7RQX2Zpe8=",
+  "success": true,
+  "projectFilePath": "d:\\Private\\graphify\\tests\\fixtures\\xaml_viewmodel\\App.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\ASUS VIVOBOOK\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.28\\microsoft.netcore.app.ref.8.0.28.nupkg.sha512",
+    "C:\\Users\\ASUS VIVOBOOK\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.28\\microsoft.windowsdesktop.app.ref.8.0.28.nupkg.sha512",
+    "C:\\Users\\ASUS VIVOBOOK\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.28\\microsoft.aspnetcore.app.ref.8.0.28.nupkg.sha512"
+  ],
+  "logs": []
+}
