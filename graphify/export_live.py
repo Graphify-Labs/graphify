@@ -575,7 +575,7 @@ function resetView() {
 }
 
 function rebuildQuadtree() {
-  quadtree.removeAll();
+  quadtree = d3.quadtree().x(d => d.x).y(d => d.y);
   state.nodes.forEach(n => { if (!state.hiddenCommunities.has(n.community)) quadtree.add(n); });
 }
 function findNodeAt(mx, my) {
