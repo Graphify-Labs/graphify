@@ -261,3 +261,72 @@ def test_decorated_method_node_id_is_class_qualified(tmp_path):
                 f"rationale node {r_id} for ``.{decorated_name}()`` is orphaned "
                 f"(degree 0) after build_from_json"
             )
+
+
+# ── JS/TS rationale + doc-reference extraction ────────────────────────────────
+
+
+def _write_ts(tmp_path: Path, code: str) -> Path:
+    p = tmp_path / "sample.ts"
+    p.write_text(textwrap.dedent(code))
+    return p
+
+
+def test_js_rationale_comment_extracted(tmp_path):
+    from graphify.extract import extract_js
+    path = _write_ts(tmp_path, '''
+        // NOTE: must run before compile() or the linker will fail
+        export function build(): void {}
+    ''')
+    result = extract_js(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert any("NOTE" in n["label"] for n in rationale)
+
+
+def test_js_block_comment_rationale_extracted(tmp_path):
+    from graphify.extract import extract_js
+    path = _write_ts(tmp_path, '''
+        /**
+         * WHY: retries are capped because the upstream rate-limits at 10 rps.
+         */
+        export function fetchData(): void {}
+    ''')
+    result = extract_js(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert any("rate-limits" in n["label"] for n in rationale)
+
+
+def test_js_adr_reference_extracted(tmp_path):
+    from graphify.extract import extract_js
+    path = _write_ts(tmp_path, '''
+        // Gateway pattern per ADR-0002; provider selection per ADR-0015.
+        export function route(): void {}
+    ''')
+    result = extract_js(path)
+    refs = [n for n in result["nodes"] if n.get("file_type") == "doc_ref"]
+    labels = {n["label"] for n in refs}
+    assert "ADR-0002" in labels and "ADR-0015" in labels
+    cites = [e for e in result["edges"] if e.get("relation") == "cites"]
+    assert len(cites) == 2
+
+
+def test_js_adr_reference_normalized_and_deduped(tmp_path):
+    from graphify.extract import extract_js
+    path = _write_ts(tmp_path, '''
+        // See ADR-11 for the trust boundary.
+        // ADR 0011 also governs the injection containment below.
+        export function guard(): void {}
+    ''')
+    result = extract_js(path)
+    refs = [n for n in result["nodes"] if n.get("file_type") == "doc_ref"]
+    assert [n["label"] for n in refs] == ["ADR-0011"]
+
+
+def test_js_adr_in_string_literal_not_extracted(tmp_path):
+    from graphify.extract import extract_js
+    path = _write_ts(tmp_path, '''
+        export const banner = "compliant with ADR-0099";
+    ''')
+    result = extract_js(path)
+    refs = [n for n in result["nodes"] if n.get("file_type") == "doc_ref"]
+    assert refs == []
