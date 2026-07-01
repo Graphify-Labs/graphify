@@ -376,15 +376,32 @@ const RAW_HYPEREDGES = {hyperedges_json};
 """
 
 
+def _d3_source() -> str:
+    """Read the embedded D3.js library from the package static directory."""
+    pkg_dir = Path(__file__).resolve().parent
+    d3_path = pkg_dir / "static" / "d3.min.js"
+    if d3_path.exists():
+        return d3_path.read_text(encoding="utf-8")
+    # fallback: try relative to assets
+    fallback = pkg_dir.parent / "static" / "d3.min.js"
+    if fallback.exists():
+        return fallback.read_text(encoding="utf-8")
+    raise FileNotFoundError(
+        f"D3.js library not found at {d3_path}. "
+        "Reinstall the package or run: "
+        "curl -sL https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js -o graphify/static/d3.min.js"
+    )
+
+
 def _html_script(nodes_json: str, edges_json: str, legend_json: str) -> str:
-    return """<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+    return """<script>__D3_SOURCE__</script>
 <script>
 const RAW_NODES = __NODES_JSON__;
 const RAW_EDGES = __EDGES_JSON__;
 const LEGEND = __LEGEND_JSON__;
 
 if (typeof d3 === 'undefined') {
-  document.getElementById('loading-screen').innerHTML = '<div style="text-align:center;padding:40px;color:#ef4444;"><h2>Failed to load D3.js</h2><p>Your browser may be blocking the CDN script. Try opening this file via a local HTTP server:</p><pre style="background:#1e293b;padding:12px;border-radius:6px;color:#e2e8f0;margin:16px auto;max-width:500px;font-size:13px;">python -m http.server 8080<br># then open http://localhost:8080/graph.html</pre></div>';
+  document.getElementById('loading-screen').innerHTML = '<div style="text-align:center;padding:40px;color:#ef4444;"><h2>Failed to load D3.js</h2><p>Reinstall graphify or check that the D3 library is bundled correctly.</p></div>';
   throw new Error('D3.js not loaded');
 }
 
@@ -1082,7 +1099,7 @@ window.fitGraph = fitGraph; window.resetView = resetView;
 window.toggleFullscreen = toggleFullscreen; window.exportPNG = exportPNG;
 window.exportSVG = exportSVG; window.toggleAllCommunities = toggleAllCommunities;
 window.focusNodeOn = focusNodeOn; window.showInfo = showInfo; window.setQuality = setQuality;
-</script>""".replace('__NODES_JSON__', nodes_json).replace('__EDGES_JSON__', edges_json).replace('__LEGEND_JSON__', legend_json)
+</script>""".replace('__D3_SOURCE__', _d3_source()).replace('__NODES_JSON__', nodes_json).replace('__EDGES_JSON__', edges_json).replace('__LEGEND_JSON__', legend_json)
 
 
 _CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.5, "AMBIGUOUS": 0.2}
