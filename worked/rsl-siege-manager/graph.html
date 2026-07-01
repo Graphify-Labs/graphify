@@ -291,6 +291,7 @@ const CFG = {
   nodeMinRadius: 2.5, nodeMaxRadius: 14, edgeBaseWidth: 1, edgeMaxWidth: 4,
   particleCount: 150, floatAmplitude: 0.6, simulationAlpha: 0.3, simulationAlphaMin: 0.01,
   simulationDecay: 0.02, labelMinScale: 1.8, glowIntensity: 0.6, communityHaloOpacity: 0.06,
+  sparkleCount: 30, rippleDuration: 1200, nebulaSpeed: 0.00003, pulseSpeed: 0.002,
 };
 
 const state = {
@@ -298,7 +299,18 @@ const state = {
   selectedNode: null, hoveredNode: null, hiddenCommunities: new Set(),
   simulation: null, transform: d3.zoomIdentity, time: 0, running: true, focusMode: false,
   particlePositions: [], initialized: false, loadStep: 0,
+  ripples: [], sparkles: [],
 };
+
+const STARS = Array.from({length: 300}, () => ({
+  x: Math.random() * 4000 - 2000, y: Math.random() * 4000 - 2000,
+  r: Math.random() * 1.8 + 0.3, a: Math.random() * 0.5 + 0.1,
+  phase: Math.random() * Math.PI * 2, speed: 0.00004 + Math.random() * 0.00006,
+}));
+
+function addRipple(x, y, color, intensity) {
+  state.ripples.push({ x, y, color, intensity: intensity || 1, start: state.time, duration: CFG.rippleDuration });
+}
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function colorAlpha(hex, a) { return hex + Math.round(a*255).toString(16).padStart(2,'0'); }
@@ -383,7 +395,9 @@ function setupDOM() {
     mouseX = e.clientX - rect.left; mouseY = e.clientY - rect.top;
     const node = findNodeAt(mouseX, mouseY);
     if (node !== state.hoveredNode) {
+      const prev = state.hoveredNode;
       state.hoveredNode = node; canvas.style.cursor = node ? 'pointer' : 'default';
+      if (prev) addRipple(prev.x, prev.y, prev.color, 0.4);
       if (node) highlightConnected(node.id); else clearHighlight();
       render();
     }
@@ -392,14 +406,23 @@ function setupDOM() {
   canvas.addEventListener('click', (e) => {
     if (e.detail === 2) return;
     const rect = canvas.getBoundingClientRect();
-    const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
-    if (node) { state.selectedNode = node; showInfo(node.id); render(); }
-    else { state.selectedNode = null; document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>'; }
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const node = findNodeAt(mx, my);
+    if (node) {
+      state.selectedNode = node; showInfo(node.id);
+      addRipple(node.x, node.y, node.color, 1.5);
+      render();
+    } else {
+      state.selectedNode = null; document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
+    }
   });
   canvas.addEventListener('dblclick', (e) => {
     const rect = canvas.getBoundingClientRect();
     const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
-    if (node) { focusNodeOn(node.id, 2.5); document.getElementById('focus-mode-indicator').style.display = 'flex'; state.focusMode = true; }
+    if (node) {
+      focusNodeOn(node.id, 2.5); document.getElementById('focus-mode-indicator').style.display = 'flex'; state.focusMode = true;
+      addRipple(node.x, node.y, '#fff', 2);
+    }
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'F11') { e.preventDefault(); toggleFullscreen(); return; }
@@ -476,14 +499,44 @@ function findNodeAt(mx, my) {
   return best;
 }
 
+function drawBackground(ctx, cw, ch) {
+  const t = state.time * CFG.nebulaSpeed;
+  const clouds = [
+    { x: cw * 0.3 + Math.sin(t * 0.7) * cw * 0.12, y: ch * 0.4 + Math.cos(t * 0.5) * ch * 0.1, r: Math.max(cw, ch) * 0.6, c: 'rgba(20,5,50,0.5)' },
+    { x: cw * 0.7 + Math.sin(t * 0.9 + 1.2) * cw * 0.08, y: ch * 0.6 + Math.cos(t * 0.6 + 1.2) * ch * 0.08, r: Math.max(cw, ch) * 0.5, c: 'rgba(5,15,40,0.5)' },
+    { x: cw * 0.5 + Math.sin(t * 0.3 + 2.5) * cw * 0.14, y: ch * 0.5 + Math.cos(t * 0.4 + 2.5) * ch * 0.12, r: Math.max(cw, ch) * 0.45, c: 'rgba(30,5,60,0.4)' },
+  ];
+  ctx.save();
+  ctx.fillStyle = '#07070d'; ctx.fillRect(0, 0, cw, ch);
+  clouds.forEach(c => {
+    const grad = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.r);
+    grad.addColorStop(0, c.c); grad.addColorStop(1, 'rgba(7,7,13,0)');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, cw, ch);
+  });
+  const st = t * 1.5;
+  STARS.forEach((s, i) => {
+    const twinkle = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(st + s.phase));
+    const sx = ((cw * 0.5 + s.x * 0.3 + i * 137.5) % cw + cw) % cw;
+    const sy = ((ch * 0.5 + s.y * 0.3 + i * 97.3) % ch + ch) % ch;
+    ctx.globalAlpha = s.a * twinkle * 0.6;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(sx, sy, s.r * 0.5, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = s.a * twinkle * 0.15;
+    ctx.beginPath(); ctx.arc(sx, sy, s.r * 2, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.restore();
+}
+
 function render() {
   if (!state.initialized || !state.nodes.length) return;
   const cw = canvas.parentElement.clientWidth, ch = canvas.parentElement.clientHeight;
-  ctx.clearRect(0, 0, cw, ch); ctx.save();
+  ctx.clearRect(0, 0, cw, ch);
+  drawBackground(ctx, cw, ch);
+  ctx.save();
   ctx.translate(state.transform.x, state.transform.y);
   ctx.scale(state.transform.k, state.transform.k);
-  drawCommunityHalos(ctx); drawEdges(ctx); drawNodes(ctx);
-  drawEdgeParticles(ctx); drawLabels(ctx); drawHyperedges(ctx);
+  drawCommunityHalos(ctx); drawRipples(ctx); drawEdges(ctx); drawNodes(ctx);
+  drawEdgeParticles(ctx); drawSparkles(ctx); drawLabels(ctx); drawHyperedges(ctx);
   ctx.restore(); drawMinimap();
 }
 
@@ -507,8 +560,28 @@ function drawCommunityHalos(ctx) {
   });
 }
 
+function drawRipples(ctx) {
+  state.ripples = state.ripples.filter(r => {
+    const elapsed = state.time - r.start;
+    if (elapsed > r.duration) return false;
+    const progress = elapsed / r.duration;
+    const radius = progress * 150 * r.intensity;
+    const alpha = (1 - progress) * 0.4;
+    ctx.save(); ctx.globalAlpha = alpha;
+    ctx.strokeStyle = r.color;
+    ctx.lineWidth = 2 * (1 - progress) + 0.5;
+    ctx.beginPath(); ctx.arc(r.x, r.y, radius, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = alpha * 0.3;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(r.x, r.y, radius * 0.7, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    return true;
+  });
+}
+
 function drawEdges(ctx) {
   const scale = state.transform.k, cw = canvas.parentElement.clientWidth, ch = canvas.parentElement.clientHeight;
+  const t = state.time * 0.00008;
   state.edges.forEach(e => {
     if (state.hiddenCommunities.has(e.sourceNode.community) || state.hiddenCommunities.has(e.targetNode.community)) return;
     const sn = e.sourceNode, tn = e.targetNode, sx = sn.x, sy = sn.y, tx = tn.x, ty = tn.y;
@@ -522,9 +595,23 @@ function drawEdges(ctx) {
       if (sn.id === state.hoveredNode.id || tn.id === state.hoveredNode.id) alpha = 0.5 * fade;
       else alpha *= 0.15;
     }
+    const color = state.communityColors.get(e.sourceNode.community) || '#64748b';
     ctx.save(); ctx.globalAlpha = alpha;
-    ctx.strokeStyle = state.communityColors.get(e.sourceNode.community) || '#64748b';
-    ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty); ctx.stroke(); ctx.restore();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(tx, ty); ctx.stroke();
+    if (scale > 0.6 && alpha > 0.05) {
+      const pulse = 0.5 + 0.5 * Math.sin(state.time * CFG.pulseSpeed + sn.id.length);
+      const da = 150 / Math.max(1, Math.sqrt((tx-sx)*(tx-sx)+(ty-sy)*(ty-sy)));
+      for (let i = 0; i < 3; i++) {
+        const p = ((t + i / 3 + sn.id.length * 0.01) % 1);
+        const px = sx + (tx - sx) * p, py = sy + (ty - sy) * p;
+        const pa = Math.sin(p * Math.PI) * 0.4 * pulse;
+        ctx.globalAlpha = pa * alpha * 2;
+        ctx.fillStyle = color;
+        ctx.beginPath(); ctx.arc(px, py, w * 0.8, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.restore();
   });
 }
 
@@ -557,6 +644,14 @@ function drawNodes(ctx) {
       ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(x, y, r + 1.5, 0, Math.PI * 2); ctx.stroke();
     }
+    const pulse = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(state.time * CFG.pulseSpeed + n.id.length * 0.3));
+    ctx.globalAlpha = n.opacity * pulse * 0.25;
+    ctx.strokeStyle = colorAlpha(n.color, 0.8);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, r + 3 + pulse * 5, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = n.opacity * pulse * 0.12;
+    ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.arc(x, y, r + 6 + pulse * 8, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
   });
 }
@@ -578,6 +673,29 @@ function drawEdgeParticles(ctx) {
     ctx.beginPath(); ctx.arc(x, y, size * 3, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 0.9; ctx.fillStyle = '#fff';
     ctx.beginPath(); ctx.arc(x, y, size * 0.5, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.restore();
+}
+
+function drawSparkles(ctx) {
+  const scale = state.transform.k;
+  if (scale < 0.4 || !state.sparkles.length) return;
+  ctx.save();
+  state.sparkles.forEach(s => {
+    const progress = (state.time - s.start) / s.duration;
+    if (progress > 1) return;
+    const alpha = Math.sin(progress * Math.PI) * s.intensity;
+    const px = s.x, py = s.y;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#fff';
+    const sz = s.size * scale;
+    ctx.beginPath(); ctx.arc(px, py, sz, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = alpha * 0.3;
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, sz * 4);
+    grad.addColorStop(0, colorAlpha(s.color, 0.6));
+    grad.addColorStop(1, colorAlpha(s.color, 0));
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(px, py, sz * 4, 0, Math.PI * 2); ctx.fill();
   });
   ctx.restore();
 }
@@ -910,9 +1028,9 @@ function toggleFullscreen() {
 }
 
 function setQuality(level) {
-  if (level === 'low') { CFG.particleCount = 0; CFG.glowIntensity = 0; CFG.communityHaloOpacity = 0; }
-  else if (level === 'medium') { CFG.particleCount = 50; CFG.glowIntensity = 0.3; CFG.communityHaloOpacity = 0.03; }
-  else { CFG.particleCount = 150; CFG.glowIntensity = 0.6; CFG.communityHaloOpacity = 0.06; }
+  if (level === 'low') { CFG.particleCount = 0; CFG.glowIntensity = 0; CFG.communityHaloOpacity = 0; CFG.sparkleCount = 0; }
+  else if (level === 'medium') { CFG.particleCount = 50; CFG.glowIntensity = 0.3; CFG.communityHaloOpacity = 0.03; CFG.sparkleCount = 10; }
+  else { CFG.particleCount = 150; CFG.glowIntensity = 0.6; CFG.communityHaloOpacity = 0.06; CFG.sparkleCount = 30; }
   showToast('Quality: '+level);
 }
 
@@ -940,6 +1058,20 @@ function animate(time) {
       }
     });
   }
+  if (state.sparkles.length < CFG.sparkleCount && state.nodes.length > 0 && Math.random() < 0.3) {
+    const n = state.nodes[Math.floor(Math.random() * state.nodes.length)];
+    if (n && n.opacity > 0.5 && !state.hiddenCommunities.has(n.community)) {
+      const fl = CFG.floatAmplitude * Math.sin(time * 0.001 + n.x * 0.01 + n.y * 0.01);
+      state.sparkles.push({
+        x: n.x + fl + (Math.random() - 0.5) * n.radius * 3,
+        y: n.y + fl * 0.7 + (Math.random() - 0.5) * n.radius * 3,
+        color: n.color, size: Math.random() * 2 + 1,
+        start: time, duration: 800 + Math.random() * 600,
+        intensity: Math.random() * 0.5 + 0.3,
+      });
+    }
+  }
+  state.sparkles = state.sparkles.filter(s => (time - s.start) < s.duration);
   render();
   requestAnimationFrame(animate);
 }
