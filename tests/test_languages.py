@@ -463,7 +463,9 @@ def test_java_record_component_type_references(tmp_path):
     result = extract_java(source)
 
     assert ("Order", "Payload") in _edge_labels(result, "references", "field")
-    assert ("Order", "List") in _edge_labels(result, "references", "field")
+    # `List` is a java.util library type: skipped as noise, so only its user-type
+    # generic argument (`Item`) survives, not the container itself.
+    assert ("Order", "List") not in _edge_labels(result, "references")
     assert ("Order", "Item") in _edge_labels(result, "references", "generic_arg")
     assert ("Order", "Attachment") in _edge_labels(result, "references", "field")
 
