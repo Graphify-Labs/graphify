@@ -477,6 +477,43 @@ function setupDOM() {
   });
   d3.select(canvas).call(zoom);
   quadtree = d3.quadtree();
+
+  mouseX = 0; mouseY = 0;
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left; mouseY = e.clientY - rect.top;
+    const node = findNodeAt(mouseX, mouseY);
+    if (node !== state.hoveredNode) {
+      state.hoveredNode = node; canvas.style.cursor = node ? 'pointer' : 'default';
+      if (node) highlightConnected(node.id); else clearHighlight();
+      render();
+    }
+  });
+  canvas.addEventListener('mouseleave', () => { state.hoveredNode = null; canvas.style.cursor = 'default'; clearHighlight(); render(); });
+  canvas.addEventListener('click', (e) => {
+    if (e.detail === 2) return;
+    const rect = canvas.getBoundingClientRect();
+    const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
+    if (node) { state.selectedNode = node; showInfo(node.id); render(); }
+    else { state.selectedNode = null; document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>'; }
+  });
+  canvas.addEventListener('dblclick', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
+    if (node) { focusNodeOn(node.id, 2.5); document.getElementById('focus-mode-indicator').style.display = 'flex'; state.focusMode = true; }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'F11') { e.preventDefault(); toggleFullscreen(); return; }
+    const key = e.key === ' ' ? 'Space' : e.key;
+    const combo = e.ctrlKey ? 'ctrl+'+key.toLowerCase() : key.toLowerCase();
+    if (SHORTCUTS[combo]) { e.preventDefault(); SHORTCUTS[combo](); }
+  });
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
+    showContextMenu(e, node);
+  });
 }
 
 function resizeCanvas() {
@@ -734,31 +771,6 @@ function updateMinimapViewport() {
   if (!el.querySelector('.viewport')) el.appendChild(vp);
 }
 
-let mouseX = 0, mouseY = 0;
-canvas.addEventListener('mousemove', (e) => {
-  const rect = canvas.getBoundingClientRect();
-  mouseX = e.clientX - rect.left; mouseY = e.clientY - rect.top;
-  const node = findNodeAt(mouseX, mouseY);
-  if (node !== state.hoveredNode) {
-    state.hoveredNode = node; canvas.style.cursor = node ? 'pointer' : 'default';
-    if (node) highlightConnected(node.id); else clearHighlight();
-    render();
-  }
-});
-canvas.addEventListener('mouseleave', () => { state.hoveredNode = null; canvas.style.cursor = 'default'; clearHighlight(); render(); });
-canvas.addEventListener('click', (e) => {
-  if (e.detail === 2) return;
-  const rect = canvas.getBoundingClientRect();
-  const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
-  if (node) { state.selectedNode = node; showInfo(node.id); render(); }
-  else { state.selectedNode = null; document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>'; }
-});
-canvas.addEventListener('dblclick', (e) => {
-  const rect = canvas.getBoundingClientRect();
-  const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
-  if (node) { focusNodeOn(node.id, 2.5); document.getElementById('focus-mode-indicator').style.display = 'flex'; state.focusMode = true; }
-});
-
 function highlightConnected(nodeId) {
   const connected = new Set();
   state.edges.forEach(e => { if (e.sourceNode.id === nodeId) connected.add(e.targetNode.id); if (e.targetNode.id === nodeId) connected.add(e.sourceNode.id); });
@@ -880,12 +892,6 @@ const SHORTCUTS = {
   'p': () => exportPNG(),
   '?': () => showShortcuts(),
 };
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'F11') { e.preventDefault(); toggleFullscreen(); return; }
-  const key = e.key === ' ' ? 'Space' : e.key;
-  const combo = e.ctrlKey ? 'ctrl+'+key.toLowerCase() : key.toLowerCase();
-  if (SHORTCUTS[combo]) { e.preventDefault(); SHORTCUTS[combo](); }
-});
 function showShortcuts() {
   const items = [['F','Fit graph'],['R','Reset view'],['S','Search'],['Esc','Reset & close'],['T','Toggle timeline'],['B','Toggle sidebar'],['F11','Fullscreen'],['P','Export PNG'],['?','Show shortcuts']];
   const html = '<div style="min-width:200px"><div style="font-weight:600;margin-bottom:8px;font-size:13px">Keyboard Shortcuts</div>'+items.map(([k,d]) => '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px"><span>'+d+'</span><span style="color:var(--text-tertiary);font-family:var(--font-mono)">'+k+'</span></div>').join('')+'</div>';
@@ -924,13 +930,6 @@ function showContextMenu(e, node) {
   });
   document.addEventListener('click', function handler() { menu.style.display = 'none'; document.removeEventListener('click', handler); }, { once: true });
 }
-canvas.addEventListener('contextmenu', (e) => {
-  e.preventDefault();
-  const rect = canvas.getBoundingClientRect();
-  const node = findNodeAt(e.clientX - rect.left, e.clientY - rect.top);
-  showContextMenu(e, node);
-});
-
 function toggleTheme() {
   const root = document.documentElement;
   const isDark = root.style.getPropertyValue('--bg-primary') !== '#ffffff';
