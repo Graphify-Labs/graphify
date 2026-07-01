@@ -4328,22 +4328,17 @@ def _extract_generic(
     # receiver_type so the cross-file pass resolves `var.method` by type (#ruby).
     ruby_var_types: dict[str, dict[str, str | None]] = {}
 
-    def _emit_indirect_ref(ident, scope_nid: str, enclosing_locals, context: str) -> None:
-        """A function referenced BY NAME — passed as a call argument, or listed as a
-        value in a dispatch table — is an indirect dependency of ``scope_nid``. Emit
-        it as a distinct INFERRED ``indirect_call`` (kept out of the precise ``calls``
-        relation) only when the name resolves to a real callable and is NOT shadowed
-        by a parameter / local binding. A callback defined in another file is deferred
-        to the cross-file resolver via an ``indirect`` raw_call carrying its context.
-        Language-agnostic; shared by the call-argument and dispatch-table capture
-        paths for Python and JS/TS (#1565, #1566).
+    def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
+                               context: str) -> None:
+        """Resolve a name that is referenced AS A VALUE to a real callable def and emit
+        one INFERRED ``indirect_call`` edge — deferring an unknown / foreign name to the
+        cross-file resolver, which applies the single-definition god-node guard and the
+        GLOBAL callable-target check. The name is already extracted; scope filtering is
+        the CALLER's job: an identifier reference must reject param/local shadows (a bare
+        name IS a binding — see ``_emit_indirect_ref``), whereas a ``getattr(obj, "x")``
+        string names an ATTRIBUTE and is never shadowed by a local, so that path passes
+        the name straight through. ``loc_node`` supplies the source line.
         """
-        if ident is None or ident.type not in ("identifier", "shorthand_property_identifier"):
-            return
-        ident_name = _read_text(ident, source)
-        # shadowing: a param / local binding names a local value, not the module fn
-        if ident_name in enclosing_locals or ident_name in ("self", "cls"):
-            return
         ref_nid = label_to_nid.get(ident_name)
         # Defer to the cross-file resolver when the name is not defined in this file
         # (`from .h import fn`), or resolves to an import-surfaced FOREIGN symbol whose
@@ -4361,7 +4356,7 @@ def _extract_generic(
                 "indirect": True,
                 "context": context,
                 "source_file": str_path,
-                "source_location": f"L{ident.start_point[0] + 1}",
+                "source_location": f"L{loc_node.start_point[0] + 1}",
             })
             return
         if ref_nid == scope_nid or ref_nid not in callable_def_nids:
@@ -4378,9 +4373,27 @@ def _extract_generic(
             "context": context,
             "confidence": "INFERRED",
             "source_file": str_path,
-            "source_location": f"L{ident.start_point[0] + 1}",
+            "source_location": f"L{loc_node.start_point[0] + 1}",
             "weight": 1.0,
         })
+
+    def _emit_indirect_ref(ident, scope_nid: str, enclosing_locals, context: str) -> None:
+        """A function referenced BY NAME — passed as a call argument, or listed as a
+        value in a dispatch table — is an indirect dependency of ``scope_nid``. Emit
+        it as a distinct INFERRED ``indirect_call`` (kept out of the precise ``calls``
+        relation) only when the name resolves to a real callable and is NOT shadowed
+        by a parameter / local binding. A callback defined in another file is deferred
+        to the cross-file resolver via an ``indirect`` raw_call carrying its context.
+        Language-agnostic; shared by the call-argument and dispatch-table capture
+        paths for Python and JS/TS (#1565, #1566).
+        """
+        if ident is None or ident.type not in ("identifier", "shorthand_property_identifier"):
+            return
+        ident_name = _read_text(ident, source)
+        # shadowing: a param / local binding names a local value, not the module fn
+        if ident_name in enclosing_locals or ident_name in ("self", "cls"):
+            return
+        _emit_indirect_by_name(ident_name, ident, scope_nid, context)
 
     def _python_dispatch_value_idents(coll_node):
         """Yield the identifier value-nodes of a dict/list/set/tuple literal that are
@@ -4410,6 +4423,37 @@ def _extract_generic(
             for ch in value_node.children:
                 if ch.type == "identifier":
                     yield ch
+
+    def _getattr_ref_name(call_node):
+        """If ``call_node`` is a builtin ``getattr(obj, "name"[, default])`` whose name
+        argument is a PLAIN string literal, return ``(name, string_node)``: the string
+        names an attribute looked up by that exact name, so it resolves to a callable
+        def of the same label. A dynamic name — a variable, an f-string, a concatenation,
+        any expression — is not statically resolvable and yields ``None`` (no edge is
+        manufactured), as do the 1-arg form and ``obj.getattr(...)`` (a method, not the
+        builtin). Unlike an identifier, a string is an attribute name and is never
+        shadowed by a param/local, so callers resolve it without the shadow guard.
+        """
+        fn = call_node.child_by_field_name("function")
+        if fn is None or fn.type != "identifier" or _read_text(fn, source) != "getattr":
+            return None
+        args = call_node.child_by_field_name("arguments")
+        if args is None:
+            return None
+        positional = [c for c in args.children
+                      if c.is_named and c.type not in ("keyword_argument", "comment")]
+        if len(positional) < 2:
+            return None
+        name_node = positional[1]
+        if name_node.type != "string" or any(
+            ch.type == "interpolation" for ch in name_node.children
+        ):
+            return None  # variable, f-string, concatenation, or expression — dynamic
+        content = next(
+            (ch for ch in name_node.children if ch.type == "string_content"), None)
+        if content is None:
+            return None  # empty string "" — no attribute name
+        return _read_text(content, source), name_node
 
     def _php_class_const_scope(n) -> str | None:
         scope = n.child_by_field_name("scope")
@@ -4689,6 +4733,15 @@ def _extract_generic(
                             _emit_indirect_ref(
                                 arg.child_by_field_name("value"),
                                 caller_nid, enclosing_locals, "argument")
+                # Reflective dispatch: getattr(obj, "handler") names a callable by
+                # string literal (#1566 slice 3). The string is an ATTRIBUTE name, not
+                # an identifier binding, so it is never shadowed by a param/local — it
+                # resolves straight to the callable, bypassing the identifier shadow
+                # guard. A dynamic name (getattr(obj, name)) is unresolvable → no edge.
+                getattr_ref = _getattr_ref_name(node)
+                if getattr_ref is not None:
+                    ref_name, loc = getattr_ref
+                    _emit_indirect_by_name(ref_name, loc, caller_nid, "getattr")
             elif config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
                 # JS/TS: a callback passed by name (`arr.map(fn)`, `setTimeout(fn)`,
                 # `el.addEventListener("x", fn)`). Positional identifier args only —
@@ -4922,6 +4975,13 @@ def _extract_generic(
                 # Module-level alias / re-export: CALLBACK = handler
                 for ident in _python_ref_value_idents(n.child_by_field_name("right")):
                     _emit_indirect_ref(ident, file_nid, module_bound, "assignment")
+            elif n.type == "call":
+                # Module-level reflective dispatch: HANDLER = getattr(mod, "handler")
+                # (#1566 slice 3). Attributed to the file node, like a module table.
+                getattr_ref = _getattr_ref_name(n)
+                if getattr_ref is not None:
+                    ref_name, loc = getattr_ref
+                    _emit_indirect_by_name(ref_name, loc, file_nid, "getattr")
             for c in n.children:
                 _scan_module_dispatch(c)
 
