@@ -1059,6 +1059,16 @@ def test_objc_splits_inherits_and_implements():
     assert ("Animal", "SampleDelegate") in _edge_labels(r, "implements")
 
 
+def test_objc_protocol_adopts_protocol():
+    """`@protocol Derived <Base>` must emit an implements edge Derived->Base.
+    Protocol-on-protocol adoption nests under a protocol_reference_list node
+    (distinct from the parameterized_arguments node used by @interface
+    adoption), so the edge was previously dropped. Protocol nodes are labeled
+    `<Name>`, so the edge reads (<Derived>, <Base>)."""
+    r = extract_objc(FIXTURES / "sample.m")
+    assert ("<Derived>", "<Base>") in _edge_labels(r, "implements")
+
+
 def test_objc_property_type_context():
     r = extract_objc(FIXTURES / "sample.m")
     assert ("Animal", "NSString") in _edge_labels(r, "references", "field")

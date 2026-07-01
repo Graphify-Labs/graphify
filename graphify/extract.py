@@ -11609,6 +11609,18 @@ def extract_objc(path: Path) -> dict:
                 proto_nid = _make_id(stem, name)
                 add_node(proto_nid, f"<{name}>", line)
                 add_edge(file_nid, proto_nid, "contains", line)
+                # Adopted protocols: `@protocol Derived <Base, Other>`. These
+                # nest under a protocol_reference_list node (distinct from the
+                # parameterized_arguments node used by @interface adoption), so
+                # they were never emitted. Emit an `implements` edge for each,
+                # matching how @interface protocol adoption is handled.
+                for child in node.children:
+                    if child.type == "protocol_reference_list":
+                        for sub in child.children:
+                            if sub.type == "identifier":
+                                base_nid = ensure_named_node(_read(sub), line)
+                                if base_nid != proto_nid:
+                                    add_edge(proto_nid, base_nid, "implements", line)
                 for child in node.children:
                     walk(child, proto_nid)
             return
