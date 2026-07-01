@@ -262,7 +262,20 @@ def test_trigram_index_cached_and_rebuilt_per_graph():
 
 
 def test_query_terms_strips_search_punctuation():
-    assert _query_terms("what calls extract?") == ["what", "calls", "extract"]
+    # "what" is a question stopword (dropped); punctuation is still stripped from "extract?".
+    assert _query_terms("what calls extract?") == ["calls", "extract"]
+
+
+def test_query_terms_drops_question_stopwords():
+    # Natural-language question words are dropped so content words drive seeding:
+    # "how does the frontier cache work" must reduce to the content terms, or it
+    # seeds on "how"/"the"/"work" (which prefix-match prose labels) instead.
+    assert _query_terms("how does the frontier cache work") == ["frontier", "cache"]
+
+
+def test_query_terms_all_stopwords_falls_back_to_unfiltered():
+    # An all-stopword query keeps its terms rather than seeding on nothing.
+    assert _query_terms("how does it work") == ["how", "does", "work"]
 
 
 def test_query_terms_filters_only_short_english_terms(monkeypatch):

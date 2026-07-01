@@ -107,8 +107,29 @@ def _is_searchable(term: str) -> bool:
     return True
 
 
+# English question/filler words dropped from query terms so content words drive
+# BFS seeding. Without this, "how does the frontier cache work" seeds on "how"/
+# "the"/"work" (which prefix-match prose labels like "Working Principles" at 100x)
+# instead of "frontier"/"cache", and lands in the wrong part of the graph. Applied
+# to query terms only — node text is never filtered, so a symbol literally named
+# `work` stays findable via explain/path. `work`/`works`/`working` are included
+# because "how does X work" / "how X works" is the most common question phrasing.
+_QUERY_STOPWORDS = frozenset({
+    "how", "what", "why", "when", "where", "which", "who", "whom", "whose",
+    "does", "did", "is", "are", "was", "were", "be", "been", "being",
+    "can", "could", "should", "would", "will", "shall", "may", "might", "must",
+    "has", "have", "had", "the", "and", "but", "not", "for", "from", "with",
+    "without", "into", "onto", "off", "that", "this", "these", "those", "there",
+    "here", "its", "their", "them", "they", "about", "any", "all", "some",
+    "work", "works", "working",
+})
+
+
 def _query_terms(question: str) -> list[str]:
-    """Split a query into searchable terms, segmenting Chinese text."""
+    """Split a query into searchable terms, segmenting Chinese text, then drop
+    English question/filler words (`_QUERY_STOPWORDS`) so content words drive
+    seeding. Falls back to the unfiltered terms if the query is all stopwords, so
+    a question like "how does it work" still seeds on something."""
     terms: list[str] = []
     for raw in question.split():
         if _has_chinese(raw):
@@ -121,7 +142,8 @@ def _query_terms(question: str) -> list[str]:
             for tok in re.findall(r"\w+", raw.lower()):
                 if _is_searchable(tok):
                     terms.append(tok)
-    return terms
+    content = [t for t in terms if t not in _QUERY_STOPWORDS]
+    return content or terms
 
 
 _EXACT_MATCH_BONUS = 1000.0
