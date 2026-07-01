@@ -8143,6 +8143,45 @@ def extract_rust(path: Path) -> dict:
                                 if tgt != item_nid:
                                     add_edge(item_nid, tgt, "references",
                                              field.start_point[0] + 1, context=ctx)
+                if t == "enum_item":
+                    # Variant payload types nest under enum_variant_list ->
+                    # enum_variant -> ordered_field_declaration_list (tuple variant,
+                    # `Click(Logger)`) | field_declaration_list (struct variant,
+                    # `Resize { size: Dim }`). Neither was traversed, so every
+                    # enum-variant type reference was silently dropped.
+                    _TYPE_NODES = ("type_identifier", "generic_type",
+                                   "scoped_type_identifier", "reference_type",
+                                   "primitive_type", "tuple_type", "array_type")
+
+                    def _emit_enum_type(type_node, at_line):
+                        if type_node is None:
+                            return
+                        refs2: list[tuple[str, str]] = []
+                        _rust_collect_type_refs(type_node, source, False, refs2)
+                        for ref_name, role in refs2:
+                            ctx = "generic_arg" if role == "generic_arg" else "field"
+                            tgt = ensure_named_node(ref_name, at_line)
+                            if tgt != item_nid:
+                                add_edge(item_nid, tgt, "references", at_line, context=ctx)
+
+                    for c in node.children:
+                        if c.type != "enum_variant_list":
+                            continue
+                        for variant in c.children:
+                            if variant.type != "enum_variant":
+                                continue
+                            vline = variant.start_point[0] + 1
+                            for vc in variant.children:
+                                if vc.type == "ordered_field_declaration_list":
+                                    for tc in vc.children:
+                                        if tc.type in _TYPE_NODES:
+                                            _emit_enum_type(tc, vline)
+                                elif vc.type == "field_declaration_list":
+                                    for field in vc.children:
+                                        if field.type != "field_declaration":
+                                            continue
+                                        type_node = field.child_by_field_name("type")
+                                        _emit_enum_type(type_node, field.start_point[0] + 1)
             return
 
         if t == "impl_item":
