@@ -4069,8 +4069,14 @@ def _extract_generic(
                         break
                 if params_container is not None:
                     for p in params_container.children:
-                        if p.type != "simple_parameter":
+                        # PHP 8 constructor property promotion (`__construct(private
+                        # Repo $repo)`) parses the promoted param as
+                        # property_promotion_parameter, not simple_parameter. Its
+                        # type sits in the same direct named child shape, so accept
+                        # both here; a promoted param is additionally a class field.
+                        if p.type not in ("simple_parameter", "property_promotion_parameter"):
                             continue
+                        is_promoted = p.type == "property_promotion_parameter"
                         type_node = None
                         for sub in p.children:
                             if sub.type in ("named_type", "primitive_type", "nullable_type",
@@ -4084,6 +4090,13 @@ def _extract_generic(
                             target_nid = ensure_named_node(ref_name, line)
                             if target_nid != func_nid:
                                 add_edge(func_nid, target_nid, "references", line, context=ctx)
+                            # A promoted param declares a real class field; mirror
+                            # the property_declaration field-context edge so the
+                            # type is discoverable as a class field too.
+                            if is_promoted and parent_class_nid and target_nid != parent_class_nid:
+                                fctx = "generic_arg" if role == "generic_arg" else "field"
+                                add_edge(parent_class_nid, target_nid, "references",
+                                         line, context=fctx)
                 return_node = _php_method_return_type_node(node)
                 if return_node is not None:
                     refs = []

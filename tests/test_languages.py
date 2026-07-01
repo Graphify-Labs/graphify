@@ -772,6 +772,16 @@ def test_php_property_parameter_and_return_contexts():
     assert ("run", "Result") in _edge_labels(r, "references", "return_type")
 
 
+def test_php_constructor_property_promotion_contexts():
+    # PHP 8 constructor property promotion: a promoted param is both a
+    # constructor parameter (parameter_type) and a class field (field).
+    r = extract_php(FIXTURES / "sample.php")
+    assert ("Service", "Result") in _edge_labels(r, "references", "field")
+    assert ("__construct", "Result") in _edge_labels(r, "references", "parameter_type")
+    # A non-promoted param must not leak a field edge onto the class.
+    assert ("Service", "string") not in _edge_labels(r, "references", "field")
+
+
 # ── Swift ────────────────────────────────────────────────────────────────────
 
 def test_swift_no_error():
