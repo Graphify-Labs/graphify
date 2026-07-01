@@ -8160,6 +8160,27 @@ def extract_rust(path: Path) -> dict:
                                 if tgt != item_nid:
                                     add_edge(item_nid, tgt, "references",
                                              field.start_point[0] + 1, context=ctx)
+                    # Tuple structs (`struct Wrapper(pub Logger, Config);`) nest their
+                    # positional field types directly under ordered_field_declaration_list
+                    # with no field_declaration wrapper -- the same shape handled for tuple
+                    # enum variants below. Without this branch these field type references
+                    # are silently dropped.
+                    for c in node.children:
+                        if c.type != "ordered_field_declaration_list":
+                            continue
+                        fline = c.start_point[0] + 1
+                        for tc in c.children:
+                            if tc.type not in ("type_identifier", "generic_type",
+                                               "scoped_type_identifier", "reference_type",
+                                               "primitive_type", "tuple_type", "array_type"):
+                                continue
+                            refs = []
+                            _rust_collect_type_refs(tc, source, False, refs)
+                            for ref_name, role in refs:
+                                ctx = "generic_arg" if role == "generic_arg" else "field"
+                                tgt = ensure_named_node(ref_name, fline)
+                                if tgt != item_nid:
+                                    add_edge(item_nid, tgt, "references", fline, context=ctx)
                 if t == "enum_item":
                     # Variant payload types nest under enum_variant_list ->
                     # enum_variant -> ordered_field_declaration_list (tuple variant,
