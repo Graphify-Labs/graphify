@@ -3559,17 +3559,20 @@ def main() -> None:
         else:
             # No labels file yet (or `graphify label` forced a refresh). When run
             # standalone there is no orchestrating agent to do skill.md Step 5, so
-            # auto-name communities with the configured backend rather than leave
-            # "Community N" (#1097). Degrades to placeholders if no backend/on error.
+            # auto-name communities rather than leave "Community N" (#1097).
+            from graphify.cluster import label_communities_by_hub
             from graphify.llm import generate_community_labels
             print("Labeling communities...")
-            # The final labels (LLM or placeholder fallback) are persisted to
-            # .graphify_labels.json by the unconditional write below.
+            # Deterministic, LLM-free base labels: name each community after its
+            # highest-degree hub, so the report is readable even with no backend
+            # (previously bare "Community N"). A configured LLM backend overrides these
+            # with richer names below; its no-backend placeholder fallback does NOT.
+            hub_labels = label_communities_by_hub(G, communities)
             label_communities_input = communities
-            labels = {}
+            labels = dict(hub_labels)
             if missing_only:
                 labels = {
-                    cid: existing_labels.get(cid, f"Community {cid}")
+                    cid: existing_labels.get(cid, hub_labels[cid])
                     for cid in communities
                 }
                 label_communities_input = {
@@ -3581,7 +3584,13 @@ def main() -> None:
                 G, label_communities_input, backend=label_backend, model=label_model, gods=gods,
                 max_concurrency=label_max_concurrency, batch_size=label_batch_size,
             )
-            labels.update(generated_labels)
+            # Only let the LLM OVERRIDE where it produced a real name — its no-backend
+            # fallback returns "Community {cid}" placeholders, which must not clobber
+            # the deterministic hub labels.
+            labels.update({
+                cid: v for cid, v in generated_labels.items()
+                if v and v != f"Community {cid}"
+            })
         stages.mark("label")
         questions = suggest_questions(G, communities, labels)
         tokens = {"input": 0, "output": 0}

@@ -83,6 +83,33 @@ _COHESION_SPLIT_THRESHOLD = 0.05 # re-split communities with cohesion below this
 _COHESION_SPLIT_MIN_SIZE = 50    # only cohesion-split if community has at least this many nodes
 
 
+def label_communities_by_hub(
+    G: nx.Graph, communities: dict[int, list[str]]
+) -> dict[int, str]:
+    """Deterministic, LLM-free community labels: name each community after its
+    highest-degree member — the structural hub — so a report reads ``auth`` /
+    ``log_action`` instead of ``Community 70``. Degree is measured on the full graph
+    ``G``; ties break by node id for run-to-run stability. A community whose members
+    are all absent from ``G`` falls back to ``Community {cid}``.
+
+    Used as the default (no-backend) labeler; an LLM naming pass, when configured,
+    overrides these with richer names.
+    """
+    labels: dict[int, str] = {}
+    for cid, members in communities.items():
+        present = [n for n in members if n in G]
+        if not present:
+            labels[cid] = f"Community {cid}"
+            continue
+        # highest degree wins; ties broken by node id (ascending) for determinism
+        hub = min(present, key=lambda n: (-G.degree(n), str(n)))
+        name = str(G.nodes[hub].get("label") or hub).strip()
+        if name.endswith("()"):
+            name = name[:-2]
+        labels[cid] = name or f"Community {cid}"
+    return labels
+
+
 def cluster(
     G: nx.Graph,
     resolution: float = 1.0,
