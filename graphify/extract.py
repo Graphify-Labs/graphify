@@ -3668,6 +3668,7 @@ def _extract_generic(
                         continue
                     for sub in child.children:
                         base = ""
+                        template_args_node = None
                         if sub.type == "type_identifier":
                             base = _read_text(sub, source)
                         elif sub.type == "qualified_identifier":
@@ -3679,6 +3680,12 @@ def _extract_generic(
                         elif sub.type == "template_type":
                             tname = sub.child_by_field_name("name")
                             base = _read_text(tname, source) if tname else _read_text(sub, source)
+                            # The base's template_argument_list carries generic
+                            # type arguments (class Car : public Base<Dep>). The
+                            # Java handler (_emit_java_parent_type) emits these as
+                            # generic_arg references; C++ dropped them because we
+                            # only emitted the `inherits` edge on the base name.
+                            template_args_node = sub.child_by_field_name("arguments")
                         else:
                             continue
                         if not base:
@@ -3696,6 +3703,19 @@ def _extract_generic(
                                 })
                                 seen_ids.add(base_nid)
                         add_edge(class_nid, base_nid, "inherits", line)
+                        # Emit a generic_arg reference for each type argument on the
+                        # base (Base<Dep> -> Car references Dep). _cpp_collect_type_refs
+                        # handles nested/qualified args (Base<std::vector<Dep>>) too.
+                        if template_args_node is not None:
+                            arg_refs: list[tuple[str, str]] = []
+                            for arg in template_args_node.children:
+                                if arg.is_named:
+                                    _cpp_collect_type_refs(arg, source, True, arg_refs)
+                            for ref_name, _role in arg_refs:
+                                target_nid = ensure_named_node(ref_name, line)
+                                if target_nid != class_nid:
+                                    add_edge(class_nid, target_nid, "references",
+                                             line, context="generic_arg")
 
             # Find body and recurse
             body = _find_body(node, config)

@@ -227,6 +227,15 @@ def test_cpp_struct_inherits_edge():
     assert found, "RetryingHttpClient (struct) should have inherits edge to HttpClient"
 
 
+def test_cpp_generic_parents_include_type_argument_references():
+    """`class PooledClient : public Connection<HttpClient>` must emit the inherits
+    edge to Connection AND a generic_arg reference to the HttpClient type argument,
+    matching the Java base-class behaviour (_emit_java_parent_type)."""
+    r = extract_cpp(FIXTURES / "sample.cpp")
+    assert ("PooledClient", "Connection") in _edge_labels(r, "inherits")
+    assert ("PooledClient", "HttpClient") in _edge_labels(r, "references", "generic_arg")
+
+
 # ── CUDA ──────────────────────────────────────────────────────────────────────
 # CUDA is a C++ superset, so .cu/.cuh route through the C++ (tree-sitter-cpp)
 # extractor. These tests guard that __global__/__device__ kernels, host
