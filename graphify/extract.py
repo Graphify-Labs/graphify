@@ -3786,6 +3786,35 @@ def _extract_generic(
                          "references", line, context="field", metadata=metadata)
             return
 
+        if (config.ts_module == "tree_sitter_c_sharp"
+                and t == "property_declaration"
+                and parent_class_nid):
+            # C# auto-properties (`public Widget Main { get; set; }`) are the
+            # idiomatic way to declare state, yet only field_declaration was
+            # handled — so property types produced no references edge. Unlike a
+            # field, a property exposes its type on the node directly (no
+            # variable_declaration wrapper), so read it straight off the `type`
+            # field. Use _csharp_collect_type_refs (like the Java/PHP/Kotlin
+            # siblings) so `List<Widget>` yields both the List field ref and the
+            # Widget generic_arg ref.
+            type_node = node.child_by_field_name("type")
+            if type_node is not None:
+                line = node.start_point[0] + 1
+                refs: list[tuple[str, str, bool, str]] = []
+                _csharp_collect_type_refs(type_node, source, False, refs)
+                for ref_name, role, qualified, qualifier in refs:
+                    ctx = "generic_arg" if role == "generic_arg" else "field"
+                    target_nid = ensure_named_node(ref_name, line)
+                    if target_nid != parent_class_nid:
+                        metadata = {"ref_token": ref_name}
+                        if qualified:
+                            metadata["qualified"] = True
+                        if qualifier:
+                            metadata["ref_qualifier"] = qualifier
+                        add_edge(parent_class_nid, target_nid, "references",
+                                 line, context=ctx, metadata=metadata)
+            return
+
         if (config.ts_module == "tree_sitter_java"
                 and t == "field_declaration"
                 and parent_class_nid):

@@ -542,6 +542,17 @@ def test_csharp_field_type_references_have_field_context():
     ), "DataProcessor field declarations should reference HttpClient with field context"
 
 
+def test_csharp_property_type_references_have_field_context():
+    r = extract_csharp(FIXTURES / "sample.cs")
+    field_refs = _edge_labels(r, "references", "field")
+    # `public Processor Owner { get; set; }` — property type -> field ref.
+    assert ("DataProcessor", "Processor") in field_refs
+    # `public List<Processor> Workers { get; set; }` — the List container -> field.
+    assert ("DataProcessor", "List") in field_refs
+    # ...and the generic argument -> generic_arg.
+    assert ("DataProcessor", "Processor") in _edge_labels(r, "references", "generic_arg")
+
+
 def test_csharp_call_edges_have_call_context():
     r = extract_csharp(FIXTURES / "sample.cs")
     node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
