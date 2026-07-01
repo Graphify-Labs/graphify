@@ -21,9 +21,18 @@ _PYTHON_DETECT = """\
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs).
 # _PINNED was recorded at hook-install time; tried first so the hook works even
 # when the graphify launcher is not on PATH (common in GUI clients and CI).
+#
+# Probes check availability with importlib.util.find_spec instead of importing
+# the package: a probe that imports graphify wholesale executes the full package
+# import (10s+ cold on machines with AV-scanned or large site-packages) and used
+# to run up to FOUR times synchronously, stalling every commit before the
+# detached launch even started. find_spec locates the package without executing
+# it, so each probe costs interpreter startup only. The detached rebuild still
+# fails loudly in the log if the package is broken under that interpreter.
+_GFY_PROBE="import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('graphify') else 1)"
 GRAPHIFY_PYTHON=""
 _PINNED='__PINNED_PYTHON__'
-if [ -n "$_PINNED" ] && [ -x "$_PINNED" ] && "$_PINNED" -c "import graphify" 2>/dev/null; then
+if [ -n "$_PINNED" ] && [ -x "$_PINNED" ] && "$_PINNED" -c "$_GFY_PROBE" 2>/dev/null; then
     GRAPHIFY_PYTHON="$_PINNED"
 fi
 # Second probe: read graphify-out/.graphify_python (written by the skill and
@@ -35,18 +44,34 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         case "$_FROM_FILE" in
             *[!a-zA-Z0-9/_.@:\\-]*) _FROM_FILE="" ;;  # allowlist (covers Windows paths)
         esac
-        if [ -n "$_FROM_FILE" ] && [ -x "$_FROM_FILE" ] && "$_FROM_FILE" -c "import graphify" 2>/dev/null; then
+        if [ -n "$_FROM_FILE" ] && [ -x "$_FROM_FILE" ] && "$_FROM_FILE" -c "$_GFY_PROBE" 2>/dev/null; then
             GRAPHIFY_PYTHON="$_FROM_FILE"
         fi
     fi
 fi
-# Third probe: resolve via the graphify launcher on PATH (shebang probe).
+# Third probe: resolve via the graphify launcher on PATH.
 if [ -z "$GRAPHIFY_PYTHON" ]; then
     GRAPHIFY_BIN=$(command -v graphify 2>/dev/null)
     if [ -n "$GRAPHIFY_BIN" ]; then
+        # Windows pip layout: Scripts/graphify(.exe) sits beside ..\\python.exe
+        # (or .\\python.exe inside a venv's Scripts dir). NOTE: command -v may
+        # return the launcher path WITHOUT the .exe suffix, so this cannot key
+        # on the extension.
+        _GFY_BINDIR=$(dirname "$GRAPHIFY_BIN")
+        if [ -x "$_GFY_BINDIR/../python.exe" ] && "$_GFY_BINDIR/../python.exe" -c "$_GFY_PROBE" 2>/dev/null; then
+            GRAPHIFY_PYTHON="$_GFY_BINDIR/../python.exe"
+        elif [ -x "$_GFY_BINDIR/python.exe" ] && "$_GFY_BINDIR/python.exe" -c "$_GFY_PROBE" 2>/dev/null; then
+            GRAPHIFY_PYTHON="$_GFY_BINDIR/python.exe"
+        fi
+    fi
+    if [ -z "$GRAPHIFY_PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
+        # POSIX launcher: parse the shebang. head -c + tr strip NUL bytes first —
+        # when the launcher is a Windows binary reached without its .exe suffix,
+        # a raw `head -1` reads binary into the command substitution and the
+        # shell warns about ignored null bytes on every commit.
         case "$GRAPHIFY_BIN" in
             *.exe) _SHEBANG="" ;;
-            *)     _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | sed 's/^#![[:space:]]*//') ;;
+            *)     _SHEBANG=$(head -c 256 "$GRAPHIFY_BIN" 2>/dev/null | tr -d '\\000' | head -n 1 | sed 's/^#![[:space:]]*//') ;;
         esac
         case "$_SHEBANG" in
             */env\\ *) GRAPHIFY_PYTHON="${_SHEBANG#*/env }" ;;
@@ -57,16 +82,16 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         case "$GRAPHIFY_PYTHON" in
             *[!a-zA-Z0-9/_.@-]*) GRAPHIFY_PYTHON="" ;;
         esac
-        if [ -n "$GRAPHIFY_PYTHON" ] && ! "$GRAPHIFY_PYTHON" -c "import graphify" 2>/dev/null; then
+        if [ -n "$GRAPHIFY_PYTHON" ] && ! "$GRAPHIFY_PYTHON" -c "$_GFY_PROBE" 2>/dev/null; then
             GRAPHIFY_PYTHON=""
         fi
     fi
 fi
 # Last resort: try python3 / python (works for system/venv installs on PATH).
 if [ -z "$GRAPHIFY_PYTHON" ]; then
-    if command -v python3 >/dev/null 2>&1 && python3 -c "import graphify" 2>/dev/null; then
+    if command -v python3 >/dev/null 2>&1 && python3 -c "$_GFY_PROBE" 2>/dev/null; then
         GRAPHIFY_PYTHON="python3"
-    elif command -v python >/dev/null 2>&1 && python -c "import graphify" 2>/dev/null; then
+    elif command -v python >/dev/null 2>&1 && python -c "$_GFY_PROBE" 2>/dev/null; then
         GRAPHIFY_PYTHON="python"
     else
         echo "[graphify hook] could not locate a Python with graphify installed. Add the graphify bin dir to PATH or re-run 'graphify hook install' from the env where graphify lives." >&2
@@ -233,7 +258,9 @@ if [ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]; then
 fi
 
 # Skip during rebase/merge/cherry-pick to avoid blocking --continue with unstaged changes
-GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
+# git exports GIT_DIR to hooks; the rev-parse fallback only runs when invoked by
+# hand (each git exec costs 1s+ on AV-scanned Windows machines).
+GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ -d "$GIT_DIR/rebase-merge" ] && exit 0
 [ -d "$GIT_DIR/rebase-apply" ] && exit 0
 [ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
@@ -299,7 +326,9 @@ if [ ! -d "graphify-out" ]; then
 fi
 
 # Skip during rebase/merge/cherry-pick
-GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
+# git exports GIT_DIR to hooks; the rev-parse fallback only runs when invoked by
+# hand (each git exec costs 1s+ on AV-scanned Windows machines).
+GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ -d "$GIT_DIR/rebase-merge" ] && exit 0
 [ -d "$GIT_DIR/rebase-apply" ] && exit 0
 [ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0

@@ -268,7 +268,7 @@ def _launcher_payload(script: str) -> str:
 
     The launcher is the only `-c` invocation whose body begins with
     `import os, subprocess, sys` (the interpreter-detection probes in
-    _PYTHON_DETECT use `-c "import graphify"`)."""
+    _PYTHON_DETECT use `-c "$_GFY_PROBE"`)."""
     m = re.search(r'-c "(import os, subprocess, sys.*?)"\n', script, re.DOTALL)
     assert m, "launcher payload not found"
     return m.group(1)
@@ -387,3 +387,46 @@ def test_default_hooks_dir_unaffected(tmp_path):
     repo = _make_git_repo(tmp_path)
     install(repo)
     assert (repo / ".git" / "hooks" / "post-commit").exists()
+
+
+# ── foreground hook cost: probes must be cheap and quiet ─────────────────────
+
+def test_probes_use_find_spec_not_full_import():
+    """`python -c "import graphify"` executes the FULL package import — 10s+ on a
+    cold cache or AV-scanned site-packages — and could run up to four times
+    synchronously before the detached launch even started, so every commit
+    stalled for tens of seconds. Probes must locate the package with
+    importlib.util.find_spec (no execution); the detached rebuild still reports
+    a broken install loudly in its log."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert '-c "import graphify"' not in _PYTHON_DETECT, (
+        "interpreter probe still imports the full package in the hook foreground"
+    )
+    assert "find_spec" in _PYTHON_DETECT
+
+
+def test_shebang_read_is_null_byte_safe():
+    """On Windows, `command -v graphify` can return the launcher path WITHOUT its
+    .exe suffix, so the `*.exe)` guard misses and the shebang probe reads a
+    BINARY: the shell then warns 'ignored null byte in input' on every commit and
+    the extracted garbage always falls through to the slow fallbacks. The read
+    must strip NULs before the command substitution sees them."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert "tr -d '\\000'" in _PYTHON_DETECT, "shebang read is not NUL-safe"
+
+
+def test_probe_prefers_sibling_python_exe_on_windows_layouts():
+    """pip on Windows puts Scripts/graphify(.exe) beside ..\\python.exe (or
+    .\\python.exe in a venv). Resolving that directly beats shebang-parsing a
+    binary launcher — and works whether or not command -v kept the suffix."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert "/../python.exe" in _PYTHON_DETECT
+    assert "/python.exe" in _PYTHON_DETECT
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_reuse_git_dir_from_env(name, script):
+    """git exports GIT_DIR to hooks, so the rev-parse fallback should only run
+    when the script is invoked by hand — each extra git exec costs 1s+ on
+    AV-scanned Windows machines and lands in the commit's foreground."""
+    assert "GIT_DIR=${GIT_DIR:-" in script, f"{name} always re-runs git rev-parse"
