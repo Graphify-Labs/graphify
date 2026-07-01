@@ -70,32 +70,42 @@ def test_swift_cross_file_member_calls_resolve(tmp_path: Path):
     assert (".go()", "calls", ".method()") in edges        # Singleton.shared.method()
 
 
-def test_swift_cross_file_member_calls_are_inferred_and_resolve_to_real_nodes(tmp_path: Path):
-    # The new edges must be INFERRED (type inference, not an explicit import) and
-    # land on real definition nodes so build_from_json keeps them.
+def test_swift_cross_file_member_calls_have_correct_confidence_and_resolve(tmp_path: Path):
+    # Instance calls typed via local inference (vm.update(), self.svc.fetch()) are
+    # INFERRED; type-qualified static calls (SessionType.staticMethod(),
+    # Singleton.shared.method()) name the receiver type explicitly in source, so
+    # they are EXTRACTED, matching the Python qualified-class-method pass (#1533).
+    # All must land on real definition nodes so build_from_json keeps them.
     files = _issue_fixture(tmp_path / "src")
     result = extract(files, cache_root=tmp_path / "cache")
 
     node_ids = {n["id"] for n in result["nodes"]}
     src_by_id = {n["id"]: n.get("source_file") for n in result["nodes"]}
 
-    member_targets = {".update()", ".fetch()", ".staticMethod()", ".method()"}
-    seen_targets: set[str] = set()
+    inferred_targets = {".update()", ".fetch()"}
+    extracted_targets = {".staticMethod()", ".method()"}
+    seen_inferred: set[str] = set()
+    seen_extracted: set[str] = set()
     for e in result["edges"]:
         tgt_label = _label(result, e["target"])
-        if e.get("relation") == "calls" and tgt_label in member_targets:
-            assert e["confidence"] == "INFERRED"
-            assert e["confidence_score"] == 0.8
-            assert e["target"] in node_ids
-            assert src_by_id.get(e["target"])  # resolved to a real, source-backed def
-            seen_targets.add(tgt_label)
-    assert seen_targets == member_targets
+        if e.get("relation") != "calls":
+            continue
+        if tgt_label in inferred_targets:
+            assert e["confidence"] == "INFERRED" and e["confidence_score"] == 0.8
+            assert e["target"] in node_ids and src_by_id.get(e["target"])
+            seen_inferred.add(tgt_label)
+        elif tgt_label in extracted_targets:
+            assert e["confidence"] == "EXTRACTED" and e["confidence_score"] == 1.0
+            assert e["target"] in node_ids and src_by_id.get(e["target"])
+            seen_extracted.add(tgt_label)
+    assert seen_inferred == inferred_targets
+    assert seen_extracted == extracted_targets
 
     # Edges survive graph construction (no dangling targets pruned).
     g = build_from_json(result)
     surviving = sum(
         1 for _, _, d in g.edges(data=True)
-        if d.get("confidence") == "INFERRED" and d.get("relation") == "calls"
+        if d.get("relation") == "calls" and d.get("confidence") in ("INFERRED", "EXTRACTED")
     )
     assert surviving >= 5
 

@@ -407,6 +407,44 @@ def clear_cache(root: Path = Path(".")) -> None:
                 f.unlink()
 
 
+def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
+    """Remove orphaned semantic cache entries, returning the count pruned.
+
+    The semantic cache is content-hash-keyed (``{file_hash}.json`` under
+    ``cache/semantic/``) and deliberately UNVERSIONED — entries are produced by
+    the LLM from file contents, so invalidating them on every release would
+    re-bill extraction. Because it is unversioned it is also never swept by the
+    AST version-cleanup, so every content change or file deletion leaves a
+    permanent orphan entry that accumulates unbounded.
+
+    This sweeps ``cache/semantic/*.json`` and deletes any entry whose stem (the
+    content hash) is not in ``live_hashes`` — the hashes of the current live
+    document set. ``*.tmp`` atomic-write temporaries are skipped, and only this
+    directory is touched (never ``cache/ast/**`` or anything else). The
+    unversioned design is preserved: we prune by liveness, not by version.
+
+    Best-effort, mirroring :func:`_cleanup_stale_ast_entries`: each unlink is
+    wrapped in ``try/except OSError`` and a failure is ignored. The worst-case
+    failure mode is benign — a surviving orphan costs only one re-extraction of
+    one doc on a future run, never incorrect output.
+    """
+    _out = Path(_GRAPHIFY_OUT)
+    base = _out if _out.is_absolute() else Path(root).resolve() / _out
+    semantic_dir = base / "cache" / "semantic"
+    if not semantic_dir.is_dir():
+        return 0
+    pruned = 0
+    for entry in semantic_dir.glob("*.json"):
+        if entry.stem in live_hashes:
+            continue
+        try:
+            entry.unlink()
+            pruned += 1
+        except OSError:
+            pass
+    return pruned
+
+
 def check_semantic_cache(
     files: list[str],
     root: Path = Path("."),

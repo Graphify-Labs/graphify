@@ -121,6 +121,34 @@ def test_lean_core_runs_default_pipeline_with_zero_references():
         assert needed in core, f"lean core is missing default-pipeline content: {needed!r}"
 
 
+def test_extraction_states_no_api_key_required_for_every_host():
+    """Regression for #1461: every skill body that describes Step 3 extraction must
+    state up front that no API key is required, tell the agent never to prompt for or
+    block on one, and give a terminal-only (non-subagent) fallback.
+
+    Hermes (and the other AGENTS.md hosts) run the CLI directly and can't dispatch
+    subagents; the old text framed the no-key path only as 'dispatch subagents as
+    written', so those agents looped for minutes insisting on a missing API key.
+    """
+    platforms = gen.load_platforms()
+    arts = gen.render_all(platforms)
+    bodies = [a for a in arts
+              if "### Step 3 - Extract entities and relationships" in a.content]
+    assert bodies, "no rendered skill body contains the Step 3 extraction section"
+    for a in bodies:
+        assert "graphify needs no API key" in a.content, a.path
+        assert "Never ask the user for one, and never block on one." in a.content, a.path
+        # the no-key fallback must not be framed *only* around subagent dispatch
+        assert "cannot dispatch subagents" in a.content, a.path
+        # where a host prints the GEMINI key tip, the clarity must precede it (be
+        # hoisted) rather than sit buried after the key check (aider/devin print no
+        # tip — they are the model themselves — so the check only applies if present)
+        tip = "Tip: set `GEMINI_API_KEY`"
+        if tip in a.content:
+            assert a.content.index("graphify needs no API key") < a.content.index(tip), \
+                f"{a.path}: no-key clarity is not hoisted above the GEMINI tip"
+
+
 def test_references_contain_no_core_pipeline_content():
     """No reference fragment may duplicate the core build pipeline."""
     _, refs = _claude_artifacts()
@@ -573,8 +601,36 @@ def test_always_on_roundtrip_is_byte_faithful():
     graphify.__main__, so the packaged markdown must round-trip exactly or those
     contracts silently change.
     """
+    # The guard passes with zero problems: every always-on block reproduces its
+    # frozen baseline, with the agents-md block allowed exactly the #1530
+    # sanctioned substitution recorded in gen.ALWAYS_ON_SANCTIONED_EDITS.
     problems = gen.always_on_roundtrip()
-    assert problems == [], "\n".join(problems)
+    assert problems == []
+
+    rendered_agents = next(
+        a.content
+        for a in gen.render_always_on()
+        if a.path == "graphify/always_on/agents-md.md"
+    )
+    old_instruction = (
+        "When the user types `/graphify`, invoke the `skill` tool with "
+        '`skill: "graphify"` before doing anything else.'
+    )
+    new_instruction = (
+        "When the user types `/graphify`, use the installed graphify skill or instructions "
+        "before doing anything else."
+    )
+    # The sanctioned-edit registry holds exactly this single old->new substitution.
+    assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
+        (old_instruction, new_instruction),
+    )
+    baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
+    # The ONLY divergence from the frozen baseline is the sanctioned sentence —
+    # any other byte drift would have surfaced as a problem above.
+    assert old_instruction in baseline_agents
+    assert baseline_agents.replace(old_instruction, new_instruction) == rendered_agents
+    assert "`skill` tool" not in rendered_agents
+    assert 'skill: "graphify"' not in rendered_agents
 
 
 def test_extracted_constants_equal_the_packaged_always_on_files():

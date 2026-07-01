@@ -123,6 +123,106 @@ def test_cross_file_type_annotation_refs_resolve_to_single_node(tmp_path):
     assert "_py" not in thing_nodes[0]["id"], thing_nodes[0]["id"]
 
 
+def test_go_cross_file_type_refs_resolve_to_single_node(tmp_path):
+    """#1402 (Go): the sourceless-stub fix landed in six extractors but the Go copy
+    of ``ensure_named_node`` was missed, so a Go type defined once but referenced via
+    parameter/return types in N sibling files produced 1+N phantom duplicate nodes
+    with the referencing file's path (extension and all) baked into the id
+    (e.g. ``pkg_a_go_thing``). Same-package references must resolve to the single
+    canonical type node instead."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "thing.go").write_text(
+        "package pkg\n\ntype Thing struct{}\n\nfunc (t Thing) Run() int { return 1 }\n",
+        encoding="utf-8",
+    )
+    (pkg / "a.go").write_text(
+        "package pkg\n\nfunc UseA(obj Thing) Thing { return obj }\n", encoding="utf-8"
+    )
+    (pkg / "b.go").write_text(
+        "package pkg\n\nfunc UseB(obj Thing) Thing { return obj }\n", encoding="utf-8"
+    )
+
+    result = extract([pkg / "thing.go", pkg / "a.go", pkg / "b.go"], cache_root=tmp_path)
+
+    thing_nodes = [n for n in result["nodes"] if n["label"] == "Thing"]
+    assert len(thing_nodes) == 1, [n["id"] for n in thing_nodes]
+    # The phantom signature is the referencing file's path (with .go extension)
+    # baked into the id — must not appear.
+    assert "_go" not in thing_nodes[0]["id"], thing_nodes[0]["id"]
+
+
+def test_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
+    """#1462: imported stdlib/type stubs with the same label are distinct uses
+    when there is no single project definition to rewire onto. They need the
+    referencing file as a disambiguator while still keeping ``source_file`` empty
+    so real project definitions can be rewired by #1402."""
+    first = tmp_path / "pkg/a.py"
+    second = tmp_path / "pkg/b.py"
+    first.parent.mkdir(parents=True)
+    first.write_text("from pathlib import Path\ndef use_a(p: Path):\n    return p\n", encoding="utf-8")
+    second.write_text("from pathlib import Path\ndef use_b(p: Path):\n    return p\n", encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+    path_nodes = [node for node in result["nodes"] if node["label"] == "Path"]
+
+    assert len(path_nodes) == 2
+    assert len({node["id"] for node in path_nodes}) == 2
+    assert all(not node.get("source_file") for node in path_nodes)
+
+
+def test_origin_file_is_not_serialized_into_extract_output(tmp_path):
+    """origin_file is an internal disambiguation hint (#1462) consumed only by the
+    colliding-id pass during extraction. It must not survive into the returned nodes
+    (and thus graph.json), where it would ship as an absolute, machine-specific path —
+    the "no absolute paths in output" contract (#555, #932). Disambiguation still keys
+    on it first, so the two same-label cross-file stubs stay distinct."""
+    first = tmp_path / "pkg/a.py"
+    second = tmp_path / "pkg/b.py"
+    first.parent.mkdir(parents=True)
+    first.write_text("from pathlib import Path\ndef use_a(p: Path):\n    return p\n", encoding="utf-8")
+    second.write_text("from pathlib import Path\ndef use_b(p: Path):\n    return p\n", encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+
+    # The internal field is gone from every node...
+    assert all("origin_file" not in node for node in result["nodes"])
+    # ...so no node leaks the absolute sandbox path that origin_file used to carry.
+    leaked = [
+        (node.get("id"), key, value)
+        for node in result["nodes"]
+        for key, value in node.items()
+        if isinstance(value, str) and str(tmp_path) in value
+    ]
+    assert not leaked, f"absolute paths leaked into nodes: {leaked}"
+    # ...yet the colliding-id pass still kept the two cross-file stubs distinct.
+    path_nodes = [node for node in result["nodes"] if node["label"] == "Path"]
+    assert len(path_nodes) == 2
+    assert len({node["id"] for node in path_nodes}) == 2
+
+
+def test_go_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
+    """#1462 (dedicated extractors): the imported-type-stub disambiguation (the
+    ``origin_file`` key) landed only in the generic extractor, so the six dedicated
+    extractors (Go, Rust, Julia, Fortran, PowerShell, ObjC) still collapsed same-label
+    cross-file stubs into one conflated bare-id node — a false cross-package link.
+    They must stay distinct per file while keeping ``source_file`` empty so the #1402
+    rewire still collapses them onto a real definition when one exists."""
+    first = tmp_path / "a/use_a.go"
+    second = tmp_path / "b/use_b.go"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text('package a\n\nimport "ext"\n\nfunc UseA(w ext.Widget) {}\n', encoding="utf-8")
+    second.write_text('package b\n\nimport "ext"\n\nfunc UseB(w ext.Widget) {}\n', encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+    widget_nodes = [node for node in result["nodes"] if node["label"] == "Widget"]
+
+    assert len(widget_nodes) == 2
+    assert len({node["id"] for node in widget_nodes}) == 2
+    assert all(not node.get("source_file") for node in widget_nodes)
+
+
 def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_path):
     first = tmp_path / "apps/api/Program.cs"
     second = tmp_path / "tools/api/Program.cs"
@@ -456,6 +556,91 @@ def test_cross_file_calls_skip_ambiguous_duplicate_labels(tmp_path):
         nodes[e["source"]]["label"] == "run()" and nodes[e["target"]]["label"] == "log()"
         for e in calls
     )
+
+
+def test_cross_file_call_survives_same_named_test_mock(tmp_path):
+    """A real cross-file call must NOT be erased by a same-named test mock.
+
+    src/caller.py calls save(); src/service.py defines the real save(); a test
+    mock save() lives in tests/test_service.py. Before #1553 the ambiguous-name
+    god-node guard dropped the edge entirely. Now the non-test tie-breaker keeps
+    exactly one caller->save edge pointing at the SRC definition.
+    """
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+    (src / "service.py").write_text("def save():\n    return 'real'\n")
+    (src / "caller.py").write_text("def run():\n    save()\n")
+    (tests / "test_service.py").write_text("def save():\n    return 'mock'\n")
+
+    result = extract(
+        [src / "caller.py", src / "service.py", tests / "test_service.py"],
+        cache_root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    save_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "save()"
+    ]
+    assert len(save_calls) == 1, f"expected exactly one run->save edge, got {save_calls}"
+    target_sf = (nodes[save_calls[0]["target"]].get("source_file") or "")
+    assert "service.py" in target_sf and "test_service.py" not in target_sf, target_sf
+
+
+def test_cross_file_call_god_node_guard_two_real_defs(tmp_path):
+    """Two genuine NON-test defs of the same name + one caller => ZERO edges.
+
+    Proves #543/#1219 is not reopened by the #1553 tie-breakers: with no test
+    candidate to drop and no proximity winner, the guard still bails.
+    """
+    pkg_a = tmp_path / "a"
+    pkg_b = tmp_path / "b"
+    pkg_c = tmp_path / "c"
+    for d in (pkg_a, pkg_b, pkg_c):
+        d.mkdir()
+    (pkg_a / "svc.py").write_text("def save():\n    return 'a'\n")
+    (pkg_b / "svc.py").write_text("def save():\n    return 'b'\n")
+    (pkg_c / "caller.py").write_text("def run():\n    save()\n")
+
+    result = extract(
+        [pkg_c / "caller.py", pkg_a / "svc.py", pkg_b / "svc.py"],
+        cache_root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    save_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "save()"
+    ]
+    assert save_calls == [], f"god-node guard must bail, got {save_calls}"
+
+
+def test_cross_file_call_survives_many_test_mocks(tmp_path):
+    """One src def + many same-named test stubs + caller => exactly one src edge."""
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+    (src / "service.py").write_text("def save():\n    return 'real'\n")
+    (src / "caller.py").write_text("def run():\n    save()\n")
+    for i in range(5):
+        (tests / f"thing{i}_test.py").write_text("def save():\n    return 'mock'\n")
+
+    paths = [src / "caller.py", src / "service.py"] + sorted(tests.glob("*_test.py"))
+    result = extract(paths, cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    save_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "save()"
+    ]
+    assert len(save_calls) == 1, f"expected one run->save edge, got {save_calls}"
+    assert "service.py" in (nodes[save_calls[0]["target"]].get("source_file") or "")
 
 
 def test_extract_generic_surfaces_tree_sitter_version_mismatch_hint(monkeypatch):
@@ -978,11 +1163,22 @@ def test_extract_bash_no_dangling_edges():
 
 
 def test_extract_bash_skip_builtins_in_calls():
+    from graphify.extract import _file_stem, _make_id
+
     result = extract_bash(FIXTURES / "sample.sh")
     builtins = {"echo", "cd", "set", "export", "local", "mkdir", "if", "then"}
-    call_targets = {e["target"] for e in result["edges"] if e["relation"] == "calls"}
+    # The file-stem prefix is now the full repo-relative path, which can embed a
+    # builtin as a substring (e.g. "graphify" contains "if"). Compare against the
+    # call's SYMBOL NAME — the id with its file-stem prefix stripped — so the
+    # check tests the actual callee, not the path it lives in.
+    prefix = _make_id(_file_stem(FIXTURES / "sample.sh")) + "_"
+    call_names = {
+        t[len(prefix):] if t.startswith(prefix) else t
+        for e in result["edges"] if e["relation"] == "calls"
+        for t in [e["target"]]
+    }
     for b in builtins:
-        assert not any(b in t for t in call_targets), f"Builtin '{b}' appeared as calls target"
+        assert b not in call_names, f"Builtin '{b}' appeared as calls target"
 
 
 def test_extract_bash_missing_grammar_returns_error():
@@ -1408,9 +1604,9 @@ def test_dart_child_node_ids_are_stem_based(tmp_path):
 
     result = extract_dart(src_file)
 
-    stem = _file_stem(src_file)  # -> "mydir.sample"
-    expected_class_nid = _make_id(stem, "MyClass")   # -> "mydir_sample_myclass"
-    expected_func_nid  = _make_id(stem, "myFunc")    # -> "mydir_sample_myfunc"
+    stem = _file_stem(src_file)  # -> full-path form, e.g. ".../mydir/sample"
+    expected_class_nid = _make_id(stem, "MyClass")   # -> ..._mydir_sample_myclass
+    expected_func_nid  = _make_id(stem, "myFunc")    # -> ..._mydir_sample_myfunc
 
     node_ids = {n["id"] for n in result["nodes"]}
 
@@ -1423,14 +1619,50 @@ def test_dart_child_node_ids_are_stem_based(tmp_path):
         "extract_dart may still be using str(path) instead of _file_stem(path)."
     )
 
-    # Sanity-check: no child node ID should contain any path separator fragment.
+    # Sanity-check: no child node ID should contain a raw path separator; every
+    # child must share the normalized file-stem prefix (slashes collapsed to _).
     file_nid = next(n["id"] for n in result["nodes"] if n.get("label") == src_file.name)
+    norm_stem = _make_id(stem)
     for node in result["nodes"]:
         if node["id"] == file_nid:
             continue
-        assert "_" + stem.replace(".", "_") in node["id"] or node["id"].startswith(stem.replace(".", "_")), (
-            f"Child node ID '{node['id']}' does not start with the expected stem prefix '{stem}'. "
+        assert "/" not in node["id"]
+        assert node["id"].startswith(norm_stem), (
+            f"Child node ID '{node['id']}' does not start with the expected stem prefix '{norm_stem}'. "
             "This suggests an absolute path is still leaking into the ID."
         )
 
 
+
+
+def test_separator_collision_paths_get_distinct_ids(tmp_path):
+    """#1522: two distinct paths whose only difference is a separator-vs-punctuation
+    swap (foo/bar_baz.py vs foo_bar/baz.py) normalize to the same stem; the
+    disambiguation pass now salts the colliders with a stable path hash so they
+    stay distinct instead of silently merging."""
+    a = tmp_path / "foo/bar_baz.py"
+    b = tmp_path / "foo_bar/baz.py"
+    a.parent.mkdir(parents=True)
+    b.parent.mkdir(parents=True)
+    a.write_text("class Widget:\n    pass\n")
+    b.write_text("class Gadget:\n    pass\n")
+
+    result = extract([a, b], cache_root=tmp_path)
+    # file-level nodes are labeled with the filename; both files must survive as
+    # distinct nodes (no silent separator-collision merge)
+    file_nodes = [n for n in result["nodes"] if str(n.get("label", "")).endswith(".py")]
+    assert len(file_nodes) == 2
+    assert len({n["id"] for n in file_nodes}) == 2, [n["id"] for n in file_nodes]
+
+
+def test_non_colliding_path_id_is_not_salted(tmp_path):
+    """The collision hash must touch only actual colliders — a path with no collision
+    keeps its plain full-path stem id (no hash suffix)."""
+    from graphify.extractors.base import _file_stem
+    from graphify.ids import make_id
+    p = tmp_path / "src/auth/session.py"
+    p.parent.mkdir(parents=True)
+    p.write_text("class Session:\n    pass\n")
+    result = extract([p], cache_root=tmp_path)
+    file_id = next(n["id"] for n in result["nodes"] if n.get("source_location") == "L1")
+    assert file_id == make_id(_file_stem(Path("src/auth/session.py"))) == "src_auth_session"

@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="https://www.ycombinator.com/companies/graphify"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
+  <a href="https://discord.gg/598Ad9zQZ"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://safishamsi.gumroad.com/l/qetvlo"><img src="https://img.shields.io/badge/Book-The%20Memory%20Layer-2ea44f?style=flat&logo=gitbook&logoColor=white" alt="The Memory Layer"/></a>
   <a href="https://github.com/safishamsi/graphify/actions/workflows/ci.yml"><img src="https://github.com/safishamsi/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
@@ -82,7 +83,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 **Step 1 — install the package:**
 
 ```bash
-# Recommended (uv puts graphify on PATH automatically):
+# Recommended (isolated env; if 'graphify' isn't found after, run: uv tool update-shell):
 uv tool install graphifyy
 
 # Alternatives:
@@ -115,7 +116,9 @@ for example `graphify claude install --project` or `graphify codex install --pro
 
 > **PowerShell note:** Use `graphify .` not `/graphify .` — the leading slash is a path separator in PowerShell.
 
-> **`graphify: command not found`?** Use `uv tool install graphifyy` or `pipx install graphifyy` — both put the CLI on PATH automatically. With plain `pip`, add `~/.local/bin` (Linux) or `~/Library/Python/3.x/bin` (Mac) to your PATH, or run `python -m graphify`.
+> **`graphify: command not found`?** `uv tool install` / `pipx install` put the `graphify` command in their tool bin dir (`~/.local/bin`). If your shell can't find it right after install — common on a fresh macOS + zsh setup — that dir isn't on your `PATH` yet: run `uv tool update-shell` (or `pipx ensurepath`), then open a new terminal. With plain `pip`, add `~/.local/bin` (Linux) or `~/Library/Python/3.x/bin` (Mac) to your PATH, or run `python -m graphify`.
+
+> **Running with `uvx` / `uv tool run` instead of installing?** Name the package, not the command: `uvx --from graphifyy graphify install`. Plain `uvx graphify …` fails (`No solution found … no versions of graphify`) because `uv tool run` reads the first word as a *package*, and the package is `graphifyy` — the `graphify` command lives inside it.
 
 > **Avoid `pip install` on Mac/Windows** if possible. The skill resolves Python at runtime from `graphify-out/.graphify_python`; if that points to a different environment than where `pip` installed the package, you'll get `ModuleNotFoundError: No module named 'graphify'`. `uv tool install` and `pipx install` isolate the package in their own env and avoid this entirely.
 
@@ -242,7 +245,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 
 | Type | Extensions |
 |------|-----------|
-| Code (36 tree-sitter grammars) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .cu .cuh .rb .cs .kt .scala .php .swift .lua .luau .zig .ps1 .psm1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`; CUDA `.cu`/`.cuh` reuse the C++ grammar) |
+| Code (36 tree-sitter grammars) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .cu .cuh .metal .rb .cs .kt .scala .php .swift .lua .luau .zig .ps1 .psm1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`; CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
 | Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
@@ -423,6 +426,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
 | `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, and Anthropic SDK backends (default: 600) | optional — also `--api-timeout` flag |
+| `GRAPHIFY_MAX_RETRIES` | How many times to retry a rate-limited (429) request before giving up (default: 6; honors `Retry-After`) | optional — raise for strict per-org limits (e.g. kimi); `0` disables |
 | `GRAPHIFY_FORCE` | Force graph rebuild even with fewer nodes | optional — also `--force` flag |
 | `GRAPHIFY_GOOGLE_WORKSPACE` | Auto-enable Google Workspace export | optional — set to `1` |
 | `GRAPHIFY_TRIAGE_BACKEND` | Backend for `graphify prs --triage` | optional — auto-detected from available keys |
@@ -448,14 +452,17 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 
 ## Troubleshooting
 
-**`graphify: command not found` after `pip install graphifyy`**
-pip installs scripts to a user bin directory that may not be on your PATH. Fix:
-- macOS: add `~/Library/Python/3.x/bin` to your PATH in `~/.zshrc`
-- Linux: add `~/.local/bin` to your PATH in `~/.bashrc`
-- Or use `uv tool install graphifyy` / `pipx install graphifyy` — both manage PATH automatically.
+**`graphify: command not found` after installing**
+The CLI is installed but its bin directory isn't on your shell's `PATH`. Pick the fix for how you installed:
+- **uv** (`uv tool install graphifyy`): the command lands in uv's tool bin dir (`~/.local/bin`), which a fresh macOS/zsh setup often doesn't have on `PATH`. Run `uv tool update-shell`, then open a new terminal. (Find the dir with `uv tool dir --bin`.)
+- **pipx** (`pipx install graphifyy`): run `pipx ensurepath`, then open a new terminal.
+- **pip** (`pip install graphifyy`): pip installs scripts to a user bin dir that may not be on `PATH` — add `~/Library/Python/3.x/bin` (macOS) or `~/.local/bin` (Linux) to your `PATH` in `~/.zshrc`/`~/.bashrc`, or just run `python -m graphify`.
+
+**`uvx graphify …` or `uv tool run graphify …` fails to resolve `graphify`**
+The PyPI package is `graphifyy`; `graphify` is only the command it provides. `uv tool run` treats the first word as a *package name*, so it looks for a package called `graphify` and reports `No solution found … no versions of graphify`. Name the package explicitly: `uvx --from graphifyy graphify install` (same as `uv tool run --from graphifyy graphify install`). Or `uv tool install graphifyy` once and then call `graphify` directly.
 
 **`python -m graphify` works but `graphify` command doesn't**
-Your shell's PATH doesn't include the Python scripts directory. Use `uv` or `pipx` instead of plain `pip`.
+Your shell's `PATH` doesn't include the bin directory the command was installed to. Prefer `uv tool install` / `pipx install` over plain `pip`, then run `uv tool update-shell` / `pipx ensurepath` and open a new terminal (see the install notes above).
 
 **`/graphify .` causes "path not recognized" in PowerShell**
 PowerShell treats a leading `/` as a path separator. Use `graphify .` (no slash) on Windows.
@@ -519,6 +526,7 @@ graphify install  # overwrites the skill file
 /graphify ./raw --cluster-only     # rerun clustering on existing graph
 /graphify ./raw --no-viz           # skip HTML visualization
 /graphify ./raw --obsidian         # generate Obsidian vault
+/graphify ./raw --obsidian --obsidian-dir ~/vault  # write into an existing vault (never overwrites your own notes or .obsidian config)
 /graphify ./raw --wiki             # build agent-crawlable markdown wiki
 /graphify ./raw --svg              # export graph.svg
 /graphify ./raw --graphml          # export for Gephi / yEd
@@ -542,7 +550,9 @@ graphify save-result --question "Q" --answer "A" --nodes Foo Bar --outcome usefu
 graphify reflect                   # aggregate graphify-out/memory/ outcomes into reflections/LESSONS.md
 graphify reflect --if-stale        # no-op when LESSONS.md is already newer than every input (cheap to run each session)
 graphify reflect --out docs/LESSONS.md    # write the lessons doc somewhere else
-graphify reflect --graph graphify-out/graph.json  # also group lessons by community
+graphify reflect --graph graphify-out/graph.json  # group lessons by community + write the work-memory overlay (.graphify_learning.json)
+                                   # the overlay tags nodes preferred/tentative/contested (recency-weighted, with provenance);
+                                   # graphify explain / query then show a "Lesson:" hint, flagged "code changed — re-verify" when the source moved on
 
 graphify uninstall                 # remove from all platforms in one shot
 graphify uninstall --purge         # also delete graphify-out/
@@ -612,6 +622,7 @@ graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow lo
 graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides via gws before extraction
 graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
 graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
+graphify extract ./docs --timing               # print per-stage wall-clock timings to stderr (also works on cluster-only)
 graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
 graphify extract ./docs --global --as myrepo   # extract and register into the cross-project global graph
@@ -622,7 +633,7 @@ graphify export callflow-html --max-sections 8      # cap generated architecture
 graphify export callflow-html --output docs/arch.html
 graphify export callflow-html ./some-repo/graphify-out
 
-graphify global add graphify-out/graph.json myrepo   # register a project graph into ~/.graphify/global.json
+graphify global add graphify-out/graph.json --as myrepo   # register a project graph into ~/.graphify/global-graph.json
 graphify global remove myrepo                         # remove a project from the global graph
 graphify global list                                  # show all registered repos + node/edge counts
 graphify global path                                  # print path to the global graph file

@@ -1,0 +1,12 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Window.Resources>
+        <Binding x:Key="TaxBinding" Path="Invoice.Tax" Converter="{StaticResource TaxConverter}" />
+    </Window.Resources>
+    <StackPanel x:Name="RootPanel">
+        <TextBlock x:Name="UserText" Text="{Binding User.Name}" />
+        <TextBlock x:Name="TotalText" Text="{Binding Path=Order.Total, Converter={StaticResource MoneyConverter}}" />
+        <Button x:Name="SaveButton" Command="{Binding SaveCommand}" />
+        <TextBlock x:Name="ModeText" Text="{Binding Mode=TwoWay}" />
+    </StackPanel>
+</Window>

@@ -114,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/safishamsi/graphify/v3/graphify/ski
 
 ```
 - **graphify** (`~/.claude/skills/graphify/SKILL.md`) - any input to knowledge graph. Trigger: `/graphify`
-When the user types `/graphify`, invoke the Skill tool with `skill: "graphify"` before doing anything else.
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
 ```
 
 </details>
