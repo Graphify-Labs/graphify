@@ -641,9 +641,40 @@ def _rebuild_code(
                     and (not evict_sources or n.get("source_file") not in evict_sources)
                 ]
                 all_ids = new_ast_ids | {n["id"] for n in preserved_nodes}
+                # An edge is OWNED by the file it was extracted from (its
+                # source_file). When that file is re-extracted, its prior edges must
+                # not be carried forward — the fresh extraction re-emits whichever
+                # ones still exist. Preserving by endpoint membership alone keeps a
+                # removed import's edge alive forever whenever both endpoint nodes
+                # survive (e.g. `a` no longer imports from `b`, but both `a` and `b`
+                # are still present), producing phantom circular dependencies
+                # (#1521). So drop preserved edges whose source_file was re-extracted
+                # this run (or deleted). Unlike the node-level evict set, this MUST
+                # cover the full-rebuild case too — there every file is re-extracted
+                # but `evict_sources` only lists deleted files, so a removed import
+                # in a surviving file would never be pruned. Edges with no
+                # source_file, or owned by a file that was NOT re-extracted, are
+                # kept exactly as before, so cross-file edges that merely point at a
+                # re-extracted file (#1402 sourceless stubs / cross-file rewire) are
+                # not over-pruned — only edges the re-extracted file itself produced.
+                edge_evict_sources: set[str] = set(evict_sources)
+                for p in extract_targets:
+                    for _root in (project_root, watch_root):
+                        edge_evict_sources.add(_nsf(str(p), str(_root)) or str(p))
+                def _edge_evicted(e: dict) -> bool:
+                    if not edge_evict_sources:
+                        return False
+                    sf = e.get("source_file")
+                    if not sf:
+                        return False
+                    if sf in edge_evict_sources:
+                        return True
+                    norm = _nsf(sf, str(project_root))
+                    return bool(norm) and norm in edge_evict_sources
                 preserved_edges = [
                     e for e in existing.get("links", existing.get("edges", []))
                     if e.get("source") in all_ids and e.get("target") in all_ids
+                    and not _edge_evicted(e)
                 ]
                 result = {
                     "nodes": result["nodes"] + preserved_nodes,
@@ -772,13 +803,17 @@ def _rebuild_code(
         except Exception:
             raw = {}
             labels = {}
-        for cid in communities:
-            if cid not in labels:
-                labels[cid] = "Community " + str(cid)
+        missing = {cid: members for cid, members in communities.items() if cid not in labels}
+        if missing:
+            # Deterministic hub name (highest-degree member) beats a bare "Community N"
+            # placeholder for any community without a saved label.
+            from graphify.cluster import label_communities_by_hub
+            labels.update(label_communities_by_hub(G, missing))
         questions = suggest_questions(G, communities, labels)
+        from graphify.report import load_learning_for_report as _llfr
         report = generate(G, communities, cohesion, labels, gods, surprises, detection,
                           {"input": 0, "output": 0}, report_root, suggested_questions=questions,
-                          built_at_commit=commit)
+                          built_at_commit=commit, learning=_llfr(out / "graph.json"))
         report_path = out / "GRAPH_REPORT.md"
         labels_json = json.dumps({str(k): v for k, v in sorted(labels.items())}, ensure_ascii=False, indent=2) + "\n"
         graph_tmp = out / ".graph.tmp.json"

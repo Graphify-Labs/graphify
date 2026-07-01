@@ -35,8 +35,17 @@ from pathlib import Path
 from typing import Any
 
 from graphify.ingest import OUTCOMES
+from graphify.paths import GRAPHIFY_OUT_NAME
 
 _UNCATEGORIZED = "Uncategorized"
+
+# Derived experiential layer written alongside graph.json (a SIDECAR, kept
+# separate from the durable structural truth in graph.json — no learning_*
+# fields are ever stamped into the graph itself). Read-surface annotations are
+# merged in at display time from this file.
+LEARNING_SIDECAR_NAME = ".graphify_learning.json"
+_LEARNING_SCHEMA_VERSION = 1
+_PROVENANCE_CAP = 5  # most-recent (question, date, outcome) entries per node
 
 # Scoring defaults (both exposed as CLI flags).
 _DEFAULT_HALF_LIFE_DAYS = 30.0   # a signal's weight halves every 30 days
@@ -289,13 +298,18 @@ def _empty_bucket() -> dict[str, Any]:
         "node_neg": Counter(),
         # node -> most recent event date seen (for the contested verdict line)
         "node_last": {},
+        # node -> list of (date, question, outcome) for useful/corrected citations.
+        # Feeds the sidecar overlay's per-node provenance; never read by LESSONS.md,
+        # so it doesn't touch the aggregate's public shape.
+        "node_provenance": {},
         "dead_ends": [],
         "corrections": [],
     }
 
 
 def _record_node(bucket: dict[str, Any], node: str, sign: int,
-                 weight: float, date: str) -> None:
+                 weight: float, date: str, *, outcome: str | None = None,
+                 question: str = "") -> None:
     bucket["node_score"][node] = bucket["node_score"].get(node, 0.0) + sign * weight
     if sign > 0:
         bucket["node_pos"][node] += 1
@@ -303,6 +317,11 @@ def _record_node(bucket: dict[str, Any], node: str, sign: int,
         bucket["node_neg"][node] += 1
     if date > bucket["node_last"].get(node, ""):
         bucket["node_last"][node] = date
+    # Provenance: only useful/corrected events are recorded (the experiential
+    # trail an agent cares about — what cited this node, and how it turned out).
+    if outcome in ("useful", "corrected"):
+        bucket["node_provenance"].setdefault(node, []).append(
+            (date, question, outcome))
 
 
 def _finalize_sources(bucket: dict[str, Any],
@@ -382,7 +401,8 @@ def aggregate_lessons(docs: list[dict[str, Any]],
             target["counts"][outcome if outcome in OUTCOMES else "unmarked"] += 1
             if sign:
                 for n in nodes:
-                    _record_node(target, n, sign, weight, date)
+                    _record_node(target, n, sign, weight, date,
+                                 outcome=outcome, question=doc.get("question", ""))
             if outcome == "dead_end":
                 target["dead_ends"].append(
                     {"question": doc.get("question", ""), "nodes": nodes, "date": date})
@@ -411,6 +431,10 @@ def aggregate_lessons(docs: list[dict[str, Any]],
         "dead_ends": _dedupe_by_question(overall["dead_ends"]),
         "corrections": _dedupe_by_question(overall["corrections"]),
         "by_community": community_out,
+        # Private: per-node (date, question, outcome) trail for the sidecar
+        # overlay's provenance. Underscore-prefixed and not rendered by
+        # render_lessons_md, so the public aggregate shape is unchanged.
+        "_node_provenance": overall["node_provenance"],
     }
 
 
@@ -501,9 +525,11 @@ def render_lessons_md(agg: dict[str, Any]) -> str:
 
 
 def lessons_fresh(out_path: Path, memory_dir: Path,
-                  graph_path: Path | None = None) -> bool:
+                  graph_path: Path | None = None,
+                  analysis_path: Path | None = None,
+                  labels_path: Path | None = None) -> bool:
     """True if ``out_path`` exists and is at least as new as every input that
-    feeds it (the memory docs, and the graph when one is used).
+    feeds it (the memory docs, and the graph/sidecars when one is used).
 
     Lets ``graphify reflect --if-stale`` skip a redundant run — e.g. when the git
     post-commit hook just regenerated ``LESSONS.md`` and an agent then runs reflect
@@ -524,8 +550,10 @@ def lessons_fresh(out_path: Path, memory_dir: Path,
                 newest = max(newest, f.stat().st_mtime)
             except OSError:
                 pass
-    if graph_path is not None:
-        gp = Path(graph_path)
+    for input_path in (graph_path, analysis_path, labels_path):
+        if input_path is None:
+            continue
+        gp = Path(input_path)
         try:
             newest = max(newest, gp.stat().st_mtime)
         except OSError:
@@ -570,4 +598,285 @@ def reflect(memory_dir: Path, out_path: Path,
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_lessons_md(agg), encoding="utf-8")
+
+    # Also project a derived experiential sidecar next to graph.json when a graph
+    # is in hand. Best-effort: a sidecar failure must never break LESSONS.md.
+    if graph_path is not None:
+        try:
+            write_learning_sidecar(agg, Path(graph_path), now=now)
+        except Exception:
+            pass
+
     return out_path, agg
+
+
+# --- work-memory overlay sidecar ------------------------------------------------
+#
+# A derived, experiential projection of the reflect aggregate, written next to
+# graph.json as ``.graphify_learning.json``. It carries which nodes have proven
+# preferred/tentative/contested, a code fingerprint for staleness detection, and
+# a short provenance trail. graph.json (durable structural truth) is never
+# touched — read surfaces merge this overlay in only at display time.
+
+
+def _build_id_label_maps(graph_path: Path) -> tuple[dict[str, str], dict[str, list[str]],
+                                                    dict[str, dict[str, Any]]]:
+    """From graph.json build:
+
+    - ``id_set``: id -> id (every node id, so an id-form citation resolves to itself)
+    - ``label_to_ids``: label -> [ids] (so a label-form citation can be resolved,
+      and ambiguity — one label, many ids — can be detected and skipped)
+    - ``node_by_id``: id -> node dict (for source_file lookup)
+
+    Best-effort; an unreadable/garbage graph yields empty maps.
+    """
+    id_set: dict[str, str] = {}
+    label_to_ids: dict[str, list[str]] = {}
+    node_by_id: dict[str, dict[str, Any]] = {}
+    try:
+        data = json.loads(Path(graph_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return id_set, label_to_ids, node_by_id
+    for n in data.get("nodes", []):
+        if not isinstance(n, dict) or n.get("id") is None:
+            continue
+        nid = str(n["id"])
+        id_set[nid] = nid
+        node_by_id[nid] = n
+        label = n.get("label")
+        if label is not None:
+            label_to_ids.setdefault(str(label), []).append(nid)
+    return id_set, label_to_ids, node_by_id
+
+
+def _resolve_canonical_id(cited: str, id_set: dict[str, str],
+                          label_to_ids: dict[str, list[str]]) -> str | None:
+    """Resolve a cited node (a label OR an id) to a single canonical node id.
+
+    Returns None if the citation is unresolved (stale — gone from the graph) or
+    ambiguous (a label shared by >1 node id). Such citations can't be displayed
+    against a single node, so the caller skips them.
+    """
+    if cited in id_set:
+        return id_set[cited]
+    ids = label_to_ids.get(cited)
+    if ids and len(ids) == 1:
+        return ids[0]
+    return None
+
+
+def _resolve_source_path(src: str, graph_path: Path) -> Path | None:
+    """Locate a node's ``source_file`` on disk, returning an existing file or None.
+
+    ``source_file`` is stored relative to the PROJECT root, but graph.json may
+    live in ``<root>/graphify-out/`` (so its own dir is not the root) or directly
+    at the root (``extract --out .``). Resolve the root in the most-likely order
+    and return the first candidate where the file actually exists, so a defeated
+    heuristic or a stale marker can never strand the file (every node would then
+    look "changed"). The same search runs at write and read time, so the writer
+    and reader resolve to the same file.
+
+    Order: the committed ``.graphify_root`` marker (#686/#1423 — authoritative for
+    an absolute/elsewhere ``GRAPHIFY_OUT`` override); then the layout-appropriate
+    root *first* — graph.json's parent's parent for the ``graphify-out`` layout,
+    or graph.json's own dir for a flat layout — which avoids matching a same-named
+    file one directory up; then the other of the two; then the cwd.
+    """
+    if not src:
+        return None
+    p = Path(src)
+    if p.is_absolute():
+        return p if p.is_file() else None
+    gp = Path(graph_path)
+    out_dir = gp.parent
+    candidates: list[Path] = []
+    try:
+        recorded = (out_dir / ".graphify_root").read_text(encoding="utf-8").strip()
+        if recorded:
+            candidates.append(Path(recorded))
+    except (OSError, ValueError):
+        pass  # unreadable/non-UTF-8 marker -> fall through (best-effort)
+    # Layout-appropriate root first (precision), then the other (robustness).
+    if out_dir.name == GRAPHIFY_OUT_NAME:
+        candidates += [out_dir.parent, out_dir]
+    else:
+        candidates += [out_dir, out_dir.parent]
+    candidates.append(Path("."))
+    seen: set[str] = set()
+    for base in candidates:
+        key = str(base)
+        if key in seen:
+            continue
+        seen.add(key)
+        cand = base / p
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _content_hash(path: Path) -> str:
+    """SHA256 of file CONTENT only (no path mixed in), so the fingerprint is
+    independent of which root resolved the file — write and read agree, and a
+    committed sidecar stays valid across machines/checkouts."""
+    import hashlib
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _code_fingerprint(node: dict[str, Any] | None, graph_path: Path) -> str:
+    """Content hash of the node's ``source_file``, or '' if unavailable.
+
+    Coarse on purpose — a file-level hash over-flags (any edit to the file marks
+    every node in it stale) rather than under-flags, which is the safe direction
+    for a "re-verify" hint.
+    """
+    if not node:
+        return ""
+    sp = _resolve_source_path(node.get("source_file") or "", graph_path)
+    return _content_hash(sp) if sp is not None else ""
+
+
+def _provenance_for(node: str, prov_map: dict[str, list],
+                    fallback_outcome: str) -> list[dict[str, str]]:
+    """Most-recent-first, capped provenance entries for a node.
+
+    ``prov_map`` is the aggregate's private per-node (date, question, outcome)
+    trail. ``fallback_outcome`` covers an entry with no recorded trail (shouldn't
+    happen for preferred/tentative/contested, which all have ≥1 positive event).
+    """
+    events = prov_map.get(node, [])
+    # Sort recent-first; (date desc, then question for a stable tiebreak).
+    ordered = sorted(events, key=lambda e: (e[0], e[1]), reverse=True)
+    out: list[dict[str, str]] = []
+    for date, question, outcome in ordered[:_PROVENANCE_CAP]:
+        out.append({"q": question, "date": date, "outcome": outcome})
+    return out
+
+
+def build_learning_overlay(agg: dict[str, Any], graph_path: Path,
+                           *, now: datetime | None = None) -> dict[str, Any]:
+    """Project the reflect aggregate into the sidecar's ``{version, generated_at,
+    nodes}`` structure, keyed by canonical node id.
+
+    Built from preferred + tentative + contested (NOT dead_ends — those stay
+    query-scoped, surfaced only in the report). Citations that don't resolve to
+    exactly one node id are skipped.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    graph_path = Path(graph_path)
+    id_set, label_to_ids, node_by_id = _build_id_label_maps(graph_path)
+    prov_map = agg.get("_node_provenance", {})
+
+    # id -> entry; a canonical id can be cited under both its id and label form,
+    # but the aggregate dedups per node string, so collisions here are benign and
+    # resolved deterministically by iteration order (preferred, tentative, contested).
+    nodes_out: dict[str, dict[str, Any]] = {}
+
+    def _add(entry_src: dict[str, Any], status: str) -> None:
+        cited = entry_src["node"]
+        cid = _resolve_canonical_id(cited, id_set, label_to_ids)
+        if cid is None:
+            return  # ambiguous or stale — can't display against a single node
+        if cid in nodes_out:
+            return  # first status wins (preferred > tentative > contested order)
+        node = node_by_id.get(cid)
+        out: dict[str, Any] = {
+            "status": status,
+            "score": entry_src["score"],
+            "uses": entry_src.get("n", entry_src.get("pos", 0)),
+            "last": entry_src.get("last", ""),
+            "label": str(node.get("label", cited)) if node else str(cited),
+            "source_file": str(node.get("source_file") or "") if node else "",
+            "code_fingerprint": _code_fingerprint(node, graph_path),
+            "provenance": _provenance_for(cited, prov_map, status),
+        }
+        if status == "contested":
+            out["verdict"] = entry_src.get("verdict", "even")
+            out["neg"] = entry_src.get("neg", 0)
+        else:
+            # preferred/tentative carry no contested verdict; derive `last` from
+            # provenance if the finalizer didn't (positive-only buckets do track it
+            # via node_last for contested only).
+            if not out["last"] and out["provenance"]:
+                out["last"] = out["provenance"][0]["date"]
+        nodes_out[cid] = out
+
+    for e in agg.get("preferred", []):
+        _add(e, "preferred")
+    for e in agg.get("tentative", []):
+        _add(e, "tentative")
+    for e in agg.get("contested", []):
+        _add(e, "contested")
+
+    return {
+        "version": _LEARNING_SCHEMA_VERSION,
+        "generated_at": now.isoformat(),
+        "nodes": nodes_out,
+    }
+
+
+def write_learning_sidecar(agg: dict[str, Any], graph_path: Path,
+                           *, now: datetime | None = None) -> Path:
+    """Write ``.graphify_learning.json`` next to ``graph_path`` deterministically.
+
+    Sorted keys + indent=2 so re-runs on identical input (and a fixed ``now``)
+    are byte-identical. Returns the sidecar path.
+    """
+    overlay = build_learning_overlay(agg, graph_path, now=now)
+    sidecar = Path(graph_path).parent / LEARNING_SIDECAR_NAME
+    sidecar.write_text(
+        json.dumps(overlay, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return sidecar
+
+
+def load_learning_overlay(graph_path: Path) -> dict[str, dict[str, Any]]:
+    """Load the sidecar next to ``graph_path`` and return ``{node_id -> entry}``
+    with a recomputed ``stale: bool`` per entry. Best-effort -> {} on any error.
+
+    Staleness: recompute ``file_hash(source_file)`` and compare to the entry's
+    stored ``code_fingerprint``. Matching fingerprints -> not stale. Differing,
+    missing-but-recomputable, or a vanished file -> stale (the safe, over-flagging
+    direction). An entry with no stored fingerprint AND no current file is not
+    marked stale (nothing to re-verify).
+    """
+    sidecar = Path(graph_path).parent / LEARNING_SIDECAR_NAME
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    nodes = data.get("nodes")
+    if not isinstance(nodes, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for nid, entry in nodes.items():
+        if not isinstance(entry, dict):
+            continue
+        merged = dict(entry)
+        merged["stale"] = _is_stale(entry, graph_path)
+        out[str(nid)] = merged
+    return out
+
+
+def _is_stale(entry: dict[str, Any], graph_path: Path) -> bool:
+    """True if the node's source file changed (or vanished) since the fingerprint
+    was taken. Uses the same file resolution + content hash as the writer, so a
+    freshly-written verdict on unchanged code is never spuriously stale."""
+    src = entry.get("source_file", "")
+    if not src:
+        # No file to track — nothing to re-verify.
+        return False
+    sp = _resolve_source_path(src, graph_path)
+    if sp is None:
+        return True  # file gone / unfindable — re-verify
+    stored = entry.get("code_fingerprint", "")
+    if not stored:
+        return True  # had a file but never fingerprinted it -> can't trust -> stale
+    return _content_hash(sp) != stored

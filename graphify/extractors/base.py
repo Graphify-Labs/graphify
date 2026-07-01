@@ -37,10 +37,22 @@ def _make_id(*parts: str) -> str:
 
 
 def _file_stem(path: Path) -> str:
-    parent = path.parent.name
-    if parent and parent not in (".", ""):
-        return f"{parent}.{path.stem}"
-    return path.stem
+    """Stem used as the node-ID prefix for a file and its symbols.
+
+    The full path (extension dropped) is preserved as path segments; ``make_id``
+    later collapses the separators to underscores. Using every segment — not just
+    the immediate parent dir (#1504) — means same-named files in different
+    directories get distinct IDs instead of colliding into one
+    last-writer-wins node:
+
+        docs/v1/api/README.md -> docs/v1/api/README -> docs_v1_api_readme
+        docs/v2/api/README.md -> docs/v2/api/README -> docs_v2_api_readme
+
+    Top-level files keep a bare stem (``setup.py`` -> ``setup``). When passed an
+    absolute path the whole path is encoded; the extract() id-remap post-pass
+    re-derives the canonical repo-relative form from ``source_file`` so the on-disk
+    location can't leak into the persisted IDs (#502)."""
+    return path.with_suffix("").as_posix()
 
 
 def _read_text(node, source: bytes) -> str:

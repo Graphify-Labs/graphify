@@ -14,6 +14,7 @@ import json
 from graphify.__main__ import (
     _SETTINGS_HOOK,
     _READ_SETTINGS_HOOK,
+    _skill_registration,
     _CLAUDE_MD_SECTION,
     _AGENTS_MD_SECTION,
     _GEMINI_MD_SECTION,
@@ -125,6 +126,19 @@ def test_report_is_still_referenced_as_fallback():
 def test_agents_section_does_not_skip_dirty_graph_output():
     assert "Dirty graphify-out/ files are expected" in _AGENTS_MD_SECTION
     assert "not a reason to skip graphify" in _AGENTS_MD_SECTION
+
+
+def test_agents_section_uses_generic_graphify_instruction():
+    assert "`skill` tool" not in _AGENTS_MD_SECTION
+    assert 'skill: "graphify"' not in _AGENTS_MD_SECTION
+    assert "use the installed graphify skill" in _AGENTS_MD_SECTION
+
+
+def test_skill_registration_uses_host_generic_instruction():
+    reg = _skill_registration()
+    assert 'skill: "graphify"' not in reg
+    assert "Skill tool" not in reg
+    assert "use the installed graphify skill or instructions" in reg
 
 
 def test_how_it_works_clarifies_code_only_semantic_extraction():

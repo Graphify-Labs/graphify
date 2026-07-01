@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.8.48"
+version = "0.9.4"
 description = "AI coding assistant skill (Claude Code, CodeBuddy, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Devin CLI, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -95,7 +95,6 @@ dev = [
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.13",
-    "safety>=3.7.0",
     "setuptools>=82.0.1",
     "wheel>=0.47.0",
     "tomli>=2.0 ; python_version < '3.11'",
@@ -108,7 +107,7 @@ dev = [
 package = true
 
 [tool.setuptools]
-packages = ["graphify"]
+packages = ["graphify", "graphify.extractors"]
 include-package-data = false
 
 [tool.setuptools.package-data]

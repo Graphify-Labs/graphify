@@ -254,6 +254,15 @@ def test_hooks_use_cross_platform_detach(name, script):
     assert "0x00000200" in script, f"{name} missing CREATE_NEW_PROCESS_GROUP flag"
 
 
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_limit_windows_workers_by_default(name, script):
+    """Git for Windows/MSYS hooks can expose fragile pipe handles to spawned
+    ProcessPoolExecutor children. Hook-triggered rebuilds should default to one
+    worker there, while still allowing explicit user overrides."""
+    assert '[ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]' in script
+    assert 'export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"' in script
+
+
 def _launcher_payload(script: str) -> str:
     """Extract the `python -c "<payload>"` the hook hands to GRAPHIFY_PYTHON.
 
@@ -351,9 +360,10 @@ def _set_hookspath(repo: Path, value: str) -> None:
     r"D:\hooks",
     r"some\back\slashed\path",
 ])
-def test_windows_hookspath_rejected_no_junk_dir(tmp_path, winpath):
+def test_windows_hookspath_rejected_no_junk_dir_on_posix(tmp_path, monkeypatch, winpath):
     """A Windows-style core.hooksPath must raise (loud failure), not silently
-    create a backslash-named junk directory and report success (#1385)."""
+    create a backslash-named junk directory and report success on POSIX/WSL (#1385)."""
+    monkeypatch.setattr("graphify.hooks.os.name", "posix")
     repo = _make_git_repo(tmp_path)
     _set_hookspath(repo, winpath)
     with pytest.raises(RuntimeError, match="Windows path"):

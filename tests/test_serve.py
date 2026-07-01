@@ -165,13 +165,14 @@ def test_trigrams_basic():
 def test_node_search_text_includes_all_matched_fields():
     G = _make_big_graph()
     text = _node_search_text(G.nodes["punct"], "punct")
-    # norm_label, the tokenized label (label_tokens), nid, and source are all present,
-    # NUL-separated so trigrams can't span fields.
+    # norm_label, tokenized label, nid, raw source, and tokenized source are all
+    # present, NUL-separated so trigrams can't span fields.
     parts = text.split("\x00")
     assert parts[0] == "foo.bar:baz"          # norm_label (punctuation kept)
     assert parts[1] == "foo bar baz"          # label_tokens (tokenized)
     assert parts[2] == "punct"                # nid
     assert parts[3] == "pkg/foobar.py"        # source_file
+    assert parts[4] == "pkg foobar py"        # source_file tokens
 
 
 def test_trigram_candidates_fast_path_fires_for_rare_term():
@@ -225,6 +226,30 @@ def test_find_node_label_tokens_branch_covered_by_index():
     # must surface this node as a candidate, or the prefilter would silently drop it.
     G = _make_big_graph()
     assert _find_node(G, "Foo Bar Baz") == ["punct"]
+
+
+def test_find_node_source_file_path_prefers_file_level_node():
+    G = _make_big_graph()
+    source_file = "app/api/example/route.ts"
+    # Insert the function node first to prove source-file lookup reorders the
+    # file-level node ahead of other nodes from the same file.
+    G.add_node(
+        "example_route_get",
+        label="GET()",
+        source_file=source_file,
+        source_location="L42",
+    )
+    G.add_node(
+        "example_route",
+        label="route.ts",
+        source_file=source_file,
+        source_location="L1",
+    )
+
+    matches = _find_node(G, source_file)
+
+    assert matches[0] == "example_route"
+    assert "example_route_get" in matches
 
 
 def test_trigram_index_cached_and_rebuilt_per_graph():
@@ -352,6 +377,54 @@ def test_subgraph_to_text_includes_edge_context():
     G = _make_graph()
     text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
     assert "context=call" in text
+
+
+# --- work-memory overlay annotation on NODE lines -----------------------------
+
+def test_subgraph_to_text_annotates_node_with_learning_status():
+    """An annotated node gets a `learning=<status>` suffix inside its NODE
+    bracket; an un-annotated node gets none."""
+    G = _make_graph()
+    G.graph["_learning_overlay"] = {
+        "n1": {"status": "preferred", "stale": False},
+    }
+    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    lines = {l.split()[1]: l for l in text.splitlines() if l.startswith("NODE ")}
+    assert "learning=preferred]" in lines["extract"]
+    assert "learning=" not in lines["cluster"]  # un-annotated node
+
+
+def test_subgraph_to_text_marks_stale_status():
+    G = _make_graph()
+    G.graph["_learning_overlay"] = {"n1": {"status": "contested", "stale": True}}
+    text = _subgraph_to_text(G, {"n1"}, [])
+    assert "learning=contested:stale]" in text
+
+
+def test_subgraph_to_text_learning_suffix_counts_against_budget():
+    """The learning= suffix is part of the NODE line BEFORE the budget cut, so it
+    is included in the char_budget accounting (a budget tight enough to fit the
+    bare line but not the suffixed line forces truncation)."""
+    G = _make_graph()
+    bare = _subgraph_to_text(G, {"n1", "n2", "n3"}, [])
+    # token_budget chosen so the un-annotated render fits without truncation...
+    budget = (len(bare) // 3) + 1
+    assert "truncated" not in _subgraph_to_text(G, {"n1", "n2", "n3"}, [],
+                                                token_budget=budget)
+    # ...but once every node carries a learning= suffix, the same budget overflows.
+    G.graph["_learning_overlay"] = {
+        n: {"status": "preferred", "stale": False} for n in ("n1", "n2", "n3")
+    }
+    annotated = _subgraph_to_text(G, {"n1", "n2", "n3"}, [], token_budget=budget)
+    assert "learning=preferred" in annotated
+    assert "truncated" in annotated
+
+
+def test_subgraph_to_text_no_overlay_is_unchanged():
+    """With no overlay on the graph, NODE lines carry no learning= suffix."""
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    assert "learning=" not in text
 
 
 def test_query_graph_text_explicit_context_filter_changes_traversal():
