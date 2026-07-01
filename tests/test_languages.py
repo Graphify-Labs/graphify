@@ -1626,6 +1626,13 @@ def test_powershell_finds_class_and_method():
     assert any("Transform" in l for l in labels)
 
 
+def test_powershell_class_base_type_emits_inherits_edge():
+    # `class Circle : Shape` — the base type after ':' was previously dropped
+    # because the handler only read the first simple_name (the class name).
+    r = extract_powershell(FIXTURES / "sample.ps1")
+    assert ("Circle", "Shape") in _edge_labels(r, "inherits")
+
+
 def test_powershell_property_field_type_context():
     r = extract_powershell(FIXTURES / "sample.ps1")
     assert ("DataProcessor", "string") in _edge_labels(r, "references", "field")

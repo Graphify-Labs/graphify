@@ -8495,6 +8495,22 @@ def extract_powershell(path: Path) -> dict:
                 class_nid = _make_id(stem, class_name)
                 add_node(class_nid, class_name, line)
                 add_edge(file_nid, class_nid, "contains", line)
+                # Base type(s) after ':'. PowerShell has no syntactic base vs
+                # interface split, so (matching the C# convention) treat the
+                # first base as the superclass (inherits) and the rest as
+                # interfaces (implements). Bases are the simple_name children
+                # after the ':' token.
+                colon_seen = False
+                base_index = 0
+                for child in node.children:
+                    if child.type == ":":
+                        colon_seen = True
+                    elif colon_seen and child.type == "simple_name":
+                        base_nid = ensure_named_node(_read_text(child, source), line)
+                        if base_nid != class_nid:
+                            rel = "inherits" if base_index == 0 else "implements"
+                            add_edge(class_nid, base_nid, rel, line)
+                        base_index += 1
                 for child in node.children:
                     walk(child, parent_class_nid=class_nid)
             return
