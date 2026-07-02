@@ -72,6 +72,11 @@ those are per-project artifacts and you can delete them yourself if desired.
 - All 14 host skill bodies and `references/` sidecars (Claude, Codex,
   OpenCode, Kilo, Aider, Copilot, CodeBuddy, Kiro, Droid, Trae, Hermes,
   Pi, OpenClaw, Antigravity, etc.).
+- **15 community skills under the `gf-` namespace** (14 superpowers + `gf-llm-wiki`).
+  Installed alongside `graphify/` in each host's skill directory and
+  immediately discoverable — trigger via `/gf-brainstorming`,
+  `/gf-writing-plans`, etc. The `gf-` prefix guarantees no collision with a
+  user's separately installed superpowers plugin. See `graphify/bundled_skills/README.md`.
 
 **Not bundled** (you'll get a clear error if you try to use them): PDF
 extraction, Office files, video transcription, Neo4j / FalkorDB direct
