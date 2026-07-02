@@ -3357,6 +3357,12 @@ def _extract_generic(
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
             add_edge(file_nid, class_nid, "contains", line)
 
+            # TS/JS decorators on the class and its members (@Component, @Injectable,
+            # @Input, @Inject, @Entity, …). Decorators live only in class subtrees.
+            if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+                _ts_emit_decorator_edges(node, class_nid, stem, source,
+                                         ensure_named_node, add_edge)
+
             if config.ts_module == "tree_sitter_swift" and any(
                 c.type == "extension" for c in node.children
             ):
@@ -9901,6 +9907,125 @@ _JS_PRIMITIVE_TYPES = frozenset({
     "string", "number", "boolean", "any", "unknown", "void", "never",
     "object", "null", "undefined", "bigint", "symbol", "this",
 })
+
+
+def _ts_decorator_name(deco_node, source: bytes) -> str | None:
+    """Return the head symbol of a TS `decorator` node.
+
+    `@Injectable` -> the identifier; `@Component({...})` / `@Input()` -> the
+    `function` of the call_expression; `@ng.Component()` / `@core.Injectable` ->
+    the `property` of the member_expression (the imported symbol, not the
+    namespace alias).
+    """
+    for child in deco_node.children:
+        if not child.is_named:
+            continue
+        target = child
+        if target.type == "call_expression":
+            target = target.child_by_field_name("function") or target
+        if target.type == "member_expression":
+            prop = target.child_by_field_name("property")
+            return _read_text(prop, source) if prop else None
+        if target.type == "identifier":
+            return _read_text(target, source)
+        return None
+    return None
+
+
+def _ts_method_name(method_node, source: bytes) -> str | None:
+    """Name of a `method_definition`, matching the id the function-types branch
+    builds (`_make_id(class_nid, name)`)."""
+    name_node = method_node.child_by_field_name("name")
+    return _read_text(name_node, source) if name_node else None
+
+
+def _ts_descendant_decorators(node) -> list:
+    """Collect `decorator` nodes under `node` (e.g. parameter decorators inside a
+    method's formal_parameters, or a field's own decorator), without crossing into
+    a nested class or a nested method, which own their own decorators."""
+    out: list = []
+
+    def rec(n, top: bool) -> None:
+        for child in n.children:
+            ct = child.type
+            if ct == "decorator":
+                out.append(child)
+            elif ct in ("class_declaration", "abstract_class_declaration"):
+                continue
+            elif ct == "method_definition" and not top:
+                continue
+            else:
+                rec(child, False)
+
+    rec(node, True)
+    return out
+
+
+def _ts_emit_decorator_edges(class_node, class_nid: str, stem: str, source: bytes,
+                             ensure_named_node, add_edge) -> None:
+    """Emit `references` edges (context="decorator") from a class and its members
+    to the symbols of the TS decorators applied to them.
+
+    Decorators only occur on classes, class members, and parameters, so a single
+    pass over the class declaration covers them. Members that are graph nodes
+    (methods, incl. the constructor) own their decorators and their parameter
+    decorators; members that are not nodes (fields, parameters) attribute to the
+    enclosing class. Targets go through `ensure_named_node`, so a decorator
+    imported from another module (the common case — `@Component` from
+    `@angular/core`) becomes a sourceless stub the corpus rewire collapses onto
+    the real definition.
+    """
+    def emit(deco_node, owner_nid: str) -> None:
+        name = _ts_decorator_name(deco_node, source)
+        if not name:
+            return
+        line = deco_node.start_point[0] + 1
+        target = ensure_named_node(name, line)
+        if target != owner_nid:
+            add_edge(owner_nid, target, "references", line, context="decorator")
+
+    # Class-level decorators: direct children of the class node (`@Deco class C`),
+    # plus — when exported (`@Deco export class C`) — the decorators that sit on
+    # the wrapping export_statement, before the class.
+    for child in class_node.children:
+        if child.type == "decorator":
+            emit(child, class_nid)
+    parent = class_node.parent
+    if parent is not None and parent.type == "export_statement":
+        for child in parent.children:
+            if child.type == "decorator":
+                emit(child, class_nid)
+            elif child.type in ("class_declaration", "abstract_class_declaration"):
+                break
+
+    # Member decorators inside the class body.
+    body = next((c for c in class_node.children if c.type == "class_body"), None)
+    if body is None:
+        return
+    for member in body.children:
+        mt = member.type
+        if mt == "decorator":
+            # A method decorator is a sibling preceding the method; skip past any
+            # stacked decorators to find it.
+            owner = class_nid
+            sib = member.next_named_sibling
+            while sib is not None and sib.type == "decorator":
+                sib = sib.next_named_sibling
+            if sib is not None and sib.type == "method_definition":
+                mname = _ts_method_name(sib, source)
+                if mname:
+                    owner = _make_id(class_nid, mname)
+            emit(member, owner)
+        elif mt == "method_definition":
+            mname = _ts_method_name(member, source)
+            m_nid = _make_id(class_nid, mname) if mname else class_nid
+            for deco in _ts_descendant_decorators(member):
+                emit(deco, m_nid)
+        else:
+            # Fields / accessors: the member is not a node, so attribute its
+            # decorators (e.g. `@Input()`, `@Column()`) to the class.
+            for deco in _ts_descendant_decorators(member):
+                emit(deco, class_nid)
 
 
 def _ts_heritage_clause_entries(clause_node, source: bytes) -> list[str]:
