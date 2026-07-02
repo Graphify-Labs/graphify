@@ -3088,7 +3088,7 @@ def main() -> None:
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
-                'Usage: graphify path "<source>" "<target>" [--graph path]',
+                'Usage: graphify path "<source>" "<target>" [--graph path] [--force]',
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -3100,6 +3100,7 @@ def main() -> None:
         target_label = sys.argv[3]
         graph_path = _default_graph_path()
         args = sys.argv[4:]
+        force_pick = "--force" in args
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
@@ -3125,7 +3126,46 @@ def main() -> None:
         if not tgt_scored:
             print(f"No node matching '{target_label}' found.", file=sys.stderr)
             sys.exit(1)
-        src_nid, tgt_nid = src_scored[0][1], tgt_scored[0][1]
+        # Ambiguity guard (#1614, port of #1613's explain fix): `path` used to
+        # only *warn* (stderr) on a close top-vs-runner-up score gap and then
+        # silently proceed with scored[0] regardless — the exact same
+        # silently-wrong-with-no-actionable-signal failure #1445/#1613 fixed
+        # elsewhere. Confirmed live: `path "filterRegistry" "useMediaLookups"`
+        # has `filterRegistry.ts` (degree 21, the real module) and
+        # `filterRegistry.test.ts` (degree 8) tied at the exact same score —
+        # a real ambiguity that a stable sort tiebreak happened to resolve
+        # "correctly" this time, silently, with nothing to say it might not
+        # next time. Same degree-dominance escape hatch as #1613: a close
+        # score gap isn't a real tie when one candidate's degree dominates
+        # (e.g. a real symbol vs. an unrelated low-degree substring hit).
+        def _resolve_endpoint(name: str, scored: list[tuple[float, str]]) -> str | None:
+            top_score, top_nid = scored[0]
+            if len(scored) < 2 or force_pick:
+                return top_nid
+            runner_score, runner_nid = scored[1]
+            if top_score > 0 and G.degree(runner_nid) <= G.degree(top_nid) * 0.34:
+                return top_nid
+            if top_score <= 0 or (top_score - runner_score) / top_score >= 0.10:
+                return top_nid
+            close = [(s, nid) for s, nid in scored if top_score > 0 and (top_score - s) / top_score < 0.10]
+            print(f"Ambiguous: {len(close)} nodes match '{name}' equally closely (top score {top_score:g}).")
+            print("Pick one and re-run with a more specific term (e.g. the full source path\n"
+                  "or a qualifying word), or pass --force to use the top match anyway:\n")
+            for i, (s, cand) in enumerate(close[:15], start=1):
+                cd = G.nodes[cand]
+                loc = f" {cd.get('source_location', '')}" if cd.get("source_location") else ""
+                print(
+                    f"  {i}. {cd.get('label', cand)} "
+                    f"[src={cd.get('source_file', '')}{loc} degree={G.degree(cand)} score={s:g}]"
+                )
+            if len(close) > 15:
+                print(f"  ... and {len(close) - 15} more")
+            return None
+
+        src_nid = _resolve_endpoint(source_label, src_scored)
+        tgt_nid = _resolve_endpoint(target_label, tgt_scored)
+        if src_nid is None or tgt_nid is None:
+            sys.exit(0)
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
@@ -3136,15 +3176,6 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        for _name, _scored in (("source", src_scored), ("target", tgt_scored)):
-            if len(_scored) >= 2:
-                _top, _runner = _scored[0][0], _scored[1][0]
-                if _top > 0 and (_top - _runner) / _top < 0.10:
-                    print(
-                        f"warning: {_name} match was ambiguous "
-                        f"(top score {_top:g}, runner-up {_runner:g})",
-                        file=sys.stderr,
-                    )
         try:
             path_nodes = _nx.shortest_path(G.to_undirected(as_view=True), src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
