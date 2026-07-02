@@ -1,0 +1,22 @@
+Bundled under graphify (graphify/bundled_skills/superpowers/)
+
+Upstream:    superpowers-dev
+Copyright:   2025 Jesse Vincent
+License:     MIT (see ./LICENSE)
+Source:      https://github.com/superpowers-dev/superpowers-dev
+
+Renamed for the graphify offline installer:
+  brainstorming                  -> gf-brainstorming
+  writing-plans                  -> gf-writing-plans
+  subagent-driven-development    -> gf-subagent-driven-development
+  test-driven-development        -> gf-test-driven-development
+  systematic-debugging           -> gf-systematic-debugging
+  using-git-worktrees            -> gf-using-git-worktrees
+  requesting-code-review         -> gf-requesting-code-review
+  receiving-code-review          -> gf-receiving-code-review
+  executing-plans                -> gf-executing-plans
+  finishing-a-development-branch -> gf-finishing-a-development-branch
+  dispatching-parallel-agents    -> gf-dispatching-parallel-agents
+  using-superpowers              -> gf-using-superpowers
+  verification-before-completion -> gf-verification-before-completion
+  writing-skills                 -> gf-writing-skills
