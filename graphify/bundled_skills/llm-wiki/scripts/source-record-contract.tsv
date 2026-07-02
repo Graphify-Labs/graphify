@@ -1,0 +1,10 @@
+field_name	requiredness	filled_by	value_rule
+source_id	required	router	必须匹配 source-registry.tsv 中的 source_id
+source_label	required	router	必须匹配 source-registry.tsv 中的 source_label
+source_category	required	router	必须匹配 source-registry.tsv 中的 source_category
+input_mode	required	caller_or_router	只能是 url / file / text / asset
+raw_dir	required	router	必须是 raw/ 下的相对目录
+original_ref	required	caller	保存原始 URL、文件路径或用户粘贴说明
+ingest_text	required	adapter_or_user	进入主线前必须是非空文本
+adapter_name	required_may_be_empty	router_or_adapter	核心主线和手动入口留空；外挂来源写实际 adapter 名称
+fallback_hint	required	router	必须给出用户可执行的手动回退提示
