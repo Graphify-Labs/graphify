@@ -1140,14 +1140,23 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
             "https://claude.ai/code and run `claude` once to authenticate."
         )
 
-    # Use --system-prompt (replaces) instead of --append-system-prompt (adds
-    # to Claude Code's default coding-agent prompt). The default prompt
-    # pushes the model towards markdown + prose explanations, which conflict
-    # with the "raw JSON only" extraction instruction and cause ~30-50% of
-    # responses to come back wrapped in ```json fences or prefixed with a
-    # preamble — both of which fail the strict json.loads in _parse_llm_json.
-    # Replacing the default prompt eliminates the conflict at the source.
-    # Side benefit: cache-creation tokens per call drop ~19% in practice.
+    # Deliver the extraction instructions in the USER turn rather than via
+    # --system-prompt. Newer Claude Code CLIs (>= ~2.1) do not treat a
+    # --system-prompt as the sole authority: they still layer in the local
+    # coding-agent context (CLAUDE.md/AGENTS.md in cwd, skills, MCP) and, when
+    # the user turn is only a raw file dump with no request, reply
+    # conversationally ("I see the file, but there's no actual request
+    # attached — what would you like me to do with it?"). That prose parses to
+    # zero nodes/edges, so _response_is_hollow flags it as truncation and the
+    # adaptive-retry path bisects the chunk indefinitely, never converging and
+    # never writing graph.json (verified against Claude Code 2.1.197).
+    #
+    # Putting the full extraction schema plus an explicit imperative in the
+    # user turn — and dropping --system-prompt — makes the CLI emit the JSON
+    # object directly. The <untrusted_source> guardrails in _extraction_system
+    # still apply because the schema text is carried verbatim; only its
+    # delivery channel changes.
+    #
     # When images are present, append the Read-the-paths instruction and
     # allowlist each containing directory so the CLI's Read tool can open them.
     add_dir_args: list[str] = []
@@ -1160,12 +1169,19 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
                 seen_dirs.add(d)
                 add_dir_args.extend(["--add-dir", d])
 
+    combined_message = (
+        _extraction_system(deep=deep_mode)
+        + "\n\n---\n"
+        + "Now extract the knowledge graph from the following source file(s) "
+        + "and output ONLY the JSON object described above. No prose, no "
+        + "preamble, no markdown fences.\n\n"
+        + user_message
+    )
     cli_args = [
         claude_cmd, "-p",
         "--output-format", "json",
         "--no-session-persistence",
         *add_dir_args,
-        "--system-prompt", _extraction_system(deep=deep_mode),
     ]
     # claude-cli defaults to Opus, which is overkill for the structured-JSON
     # extraction graphify performs. GRAPHIFY_CLAUDE_CLI_MODEL=haiku (or
@@ -1177,7 +1193,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
         cli_args.extend(["--model", cli_model])
     proc = subprocess.run(
         cli_args,
-        input=user_message,
+        input=combined_message,
         capture_output=True,
         text=True,
         encoding="utf-8",  # Force UTF-8 — prevents UnicodeEncodeError on Windows cp1252
