@@ -80,6 +80,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 > **Official package:** The PyPI package is `graphifyy` (double-y). Other `graphify*` packages on PyPI are not affiliated. The CLI command is still `graphify`.
 
+> **Offline / restricted network?** If `pip` / `uv` / `pipx` can't reach PyPI (corporate networks, air-gapped Windows machines), grab `graphify-installer.exe` from the [latest GitHub release](https://github.com/safishamsi/graphify/releases/latest). It's a single `.exe` with the Python runtime + `graphify` + all default extras bundled — no Python, no pip, no network at install time. It writes `%LOCALAPPDATA%\graphify\bin` to user PATH and drops `SKILL.md` into the detected AI-coding host's skill directory. See the [offline installer guide](docs/operations/offline-installer.md) for what's inside and the SmartScreen caveat.
+
 **Step 1 — install the package:**
 
 ```bash

@@ -41,6 +41,8 @@ pip install graphifyy && graphify install
 
 > PyPI 包当前暂时叫 `graphifyy`，因为 `graphify` 这个名字还在回收中。CLI 命令和 skill 命令仍然都是 `graphify`。
 
+> **离线 / 内网环境？** 如果你的机器无法访问 PyPI（公司内网、air-gapped Windows），可以直接从 [GitHub release 页](https://github.com/safishamsi/graphify/releases/latest) 下载 `graphify-installer.exe` —— 单个 .exe 自带 Python 运行时 + graphify + 所有默认 extra，安装时无需 Python、无需 pip、无需联网。它会自动把 `%LOCALAPPDATA%\graphify\bin` 加到用户 PATH，并把 `SKILL.md` 写入检测到的 AI 助手的 skill 目录。详见[离线安装器指南](docs/operations/offline-installer.md)。
+
 ### 平台支持
 
 | 平台 | 安装命令 |
