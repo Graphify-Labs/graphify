@@ -1,0 +1,99 @@
+name: Build offline Windows installer
+
+# Builds the three offline .exe artifacts (graphify-installer.exe,
+# graphify.exe, graphify-mcp.exe) on a windows-latest runner and attaches
+# them to the GitHub Release that triggered this run. Falls back to a
+# workflow artifact when triggered via workflow_dispatch.
+#
+# Why a dedicated workflow: tools/build_windows_installer.sh is run manually
+# today. This CI job makes the offline installer a real release artifact so
+# it ships every time we tag a release, instead of being a manual side
+# process.
+#
+# Trigger: a published release, OR a manual run from the Actions tab. The
+# `release` trigger is the one that auto-attaches to the release page;
+# `workflow_dispatch` is for ad-hoc testing and just uploads an artifact.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    permissions:
+      # softprops/action-gh-release needs write to attach assets to the
+      # published release. workflow_dispatch uploads as artifact instead.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.10"
+
+      # pyproject.toml's dev group already pins nuitka/ordered-set/zstandard
+      # (and tomli for Python <3.11). --frozen keeps CI from churning
+      # uv.lock as a side effect of `uv sync`.
+      - name: Install Nuitka build deps
+        run: uv sync --frozen --group dev
+
+      # Nuitka needs a C compiler on Windows. windows-latest ships Visual
+      # Studio 2022 Build Tools with the C++ workload; cl.exe isn't on PATH
+      # by default but Nuitka's --msvc=latest (the default on Windows)
+      # discovers it via vswhere. This step just fails fast with a clear
+      # message if the toolchain isn't where we expect it, instead of
+      # spending 20+ minutes on a Nuitka run that then dies on cl.exe.
+      - name: Verify MSVC toolchain
+        shell: bash
+        run: |
+          MSVC_DIR="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC"
+          if [ ! -d "$MSVC_DIR" ]; then
+            MSVC_DIR="/c/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC"
+          fi
+          if [ ! -d "$MSVC_DIR" ]; then
+            echo "::error::MSVC 2022 Build Tools not found in expected paths."
+            echo "Nuitka compilation needs cl.exe; aborting before the long build."
+            exit 1
+          fi
+          echo "==> MSVC found at $MSVC_DIR"
+
+      # The build script is .sh — GitHub Actions defaults to PowerShell on
+      # windows-latest, which doesn't have `set -euo pipefail` or `mkdir -p`.
+      # Pin the shell to bash explicitly.
+      - name: Build the offline installer
+        shell: bash
+        run: tools/build_windows_installer.sh
+
+      - name: List build artifacts
+        shell: bash
+        run: |
+          ls -la dist/
+          for f in dist/*.exe; do
+            echo "==> $f: $(du -h "$f" | cut -f1)"
+          done
+
+      - name: Upload to GitHub release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/graphify-installer.exe
+            dist/graphify.exe
+            dist/graphify-mcp.exe
+
+      # Manual runs (workflow_dispatch) don't have a release to attach to,
+      # so fall back to a 7-day artifact that the maintainer can download
+      # from the Actions run page.
+      - name: Upload as workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphify-windows-installer
+          path: |
+            dist/graphify-installer.exe
+            dist/graphify.exe
+            dist/graphify-mcp.exe
+          retention-days: 7
