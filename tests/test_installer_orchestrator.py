@@ -81,6 +81,76 @@ def test_install_with_no_hosts_still_succeeds(tmp_path, monkeypatch):
     assert m.hosts == []
 
 
+def test_install_writes_gf_bundled_skills(tmp_path, monkeypatch):
+    """Offline installer must write all 15 bundled (gf-*) skills per detected host.
+
+    copy_bundled_skills is called from install() after copy_skill — verifies the
+    wiring from Task 4.1 actually places the bundled skills on disk.
+    """
+    from graphify.installer.host_probe import KNOWN_HOSTS
+    claude_host = next(h for h in KNOWN_HOSTS if h.name == "claude")
+
+    monkeypatch.setattr(
+        "graphify.installer.detect_hosts", lambda *, root=None: [claude_host]
+    )
+    monkeypatch.setattr("graphify.installer.path_win.add_to_user_path", lambda p: None)
+
+    # Fake the per-host body so copy_skill has something to read; copy_bundled_skills
+    # reads from the real package (since package_root defaults to None → importlib).
+    monkeypatch.setattr(
+        "graphify.installer.skill_copy._pick_skill_body", lambda h: "# claude stub\n"
+    )
+
+    run_install(
+        install_path=tmp_path / "install",
+        user_root=tmp_path,
+        version="0.9.1",
+        manifest_target=tmp_path / "install" / ".graphify_install.json",
+    )
+
+    # The 15 bundled skills land under <user_root>/.claude/skills/gf-*/
+    bundled_root = tmp_path / ".claude" / "skills"
+    # Spot-check: brainstorming (superpowers, no references sidecar)
+    assert (bundled_root / "gf-brainstorming" / "SKILL.md").exists()
+    # Spot-check: llm-wiki SKILL.md is present (the only has_references=True skill)
+    llm_wiki_dir = bundled_root / "gf-llm-wiki"
+    assert (llm_wiki_dir / "SKILL.md").exists()
+    # Spot-check: a third superpowers skill (different from brainstorming)
+    assert (bundled_root / "gf-writing-plans" / "SKILL.md").exists()
+
+
+def test_install_skips_gf_skills_for_unsupported_host(tmp_path, monkeypatch, capsys):
+    """copy_bundled_skills returns [] for cursor/gemini → no gf-* dirs leak.
+
+    cursor and gemini need format adapters (v2 work); the offline installer must
+    not write SKILL.md into their trees even if detected.
+    """
+    from graphify.installer.host_probe import KNOWN_HOSTS
+    cursor_host = next(h for h in KNOWN_HOSTS if h.name == "cursor")
+
+    monkeypatch.setattr(
+        "graphify.installer.detect_hosts", lambda *, root=None: [cursor_host]
+    )
+    monkeypatch.setattr("graphify.installer.path_win.add_to_user_path", lambda p: None)
+    monkeypatch.setattr(
+        "graphify.installer.skill_copy._pick_skill_body", lambda h: "# cursor stub\n"
+    )
+
+    run_install(
+        install_path=tmp_path / "install",
+        user_root=tmp_path,
+        version="0.9.1",
+        manifest_target=tmp_path / "install" / ".graphify_install.json",
+    )
+
+    # No gf-* skill dir should be created under .cursor/
+    cursor_root = tmp_path / ".cursor"
+    if cursor_root.exists():
+        # Either no .cursor dir at all, or no gf-* inside it
+        gf_dirs = list(cursor_root.rglob("gf-*"))
+        assert not gf_dirs, f"unsupported host should not get gf-* skills, found: {gf_dirs}"
+
+
 def test_uninstall_removes_manifest_and_skill_dirs(tmp_path, monkeypatch):
     # Set up an existing install.
     claude_host = next(
