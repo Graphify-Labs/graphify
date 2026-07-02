@@ -94,3 +94,29 @@ class TestSupportsHost:
     @pytest.mark.parametrize("host_name", ["cursor", "gemini"])
     def test_skips_format_incompatible_hosts(self, host_name):
         assert supports_host(host_name) is False
+
+
+class TestBundledSkillsFrontmatter:
+    """Each SKILL.md's frontmatter `name:` must equal BundledSkill.name."""
+
+    def test_all_skills_have_valid_yaml_frontmatter(self, package_root: Path):
+        import yaml
+        for s in all_bundled():
+            text = (package_root / s.source_subpath).read_text(encoding="utf-8")
+            assert text.startswith("---\n"), f"{s.source_subpath}: no frontmatter"
+            end = text.find("\n---", 4)
+            assert end > 0, f"{s.source_subpath}: unterminated frontmatter"
+            fm = yaml.safe_load(text[4:end])
+            assert isinstance(fm, dict), f"{s.source_subpath}: frontmatter not a YAML mapping"
+            assert "name" in fm, f"{s.source_subpath}: missing `name` field"
+            assert "description" in fm, f"{s.source_subpath}: missing `description` field"
+
+    def test_frontmatter_name_matches_registry(self, package_root: Path):
+        import yaml
+        for s in all_bundled():
+            text = (package_root / s.source_subpath).read_text(encoding="utf-8")
+            end = text.find("\n---", 4)
+            fm = yaml.safe_load(text[4:end])
+            assert fm["name"] == s.name, (
+                f"{s.source_subpath}: frontmatter name `{fm['name']}` != registry `{s.name}`"
+            )
