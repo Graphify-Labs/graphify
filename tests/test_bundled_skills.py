@@ -47,3 +47,33 @@ class TestBundledSkillsRegistry:
 
     def test_superpowers_license_present(self, package_root: Path):
         assert (package_root / "bundled_skills" / "superpowers" / "LICENSE").exists()
+
+
+class TestBundledSkillDir:
+    """`bundled_skill_dir()` must produce the right path per host."""
+
+    @pytest.mark.parametrize("host_name,expected_suffix", [
+        ("claude",      ".claude/skills/gf-brainstorming"),
+        ("codex",       ".codex/skills/gf-brainstorming"),
+        ("aider",       ".aider/gf-brainstorming"),                # no skills/ parent
+        ("pi",          ".pi/agent/skills/gf-brainstorming"),     # extra agent/ prefix
+        ("mobilecoder", ".mobilecoder/skills/gf-brainstorming"),
+    ])
+    def test_path_for_supported_hosts(self, tmp_path, host_name, expected_suffix):
+        host = next(h for h in KNOWN_HOSTS if h.name == host_name)
+        result = bundled_skill_dir(host, "gf-brainstorming", root=tmp_path)
+        assert str(result).endswith(expected_suffix), (
+            f"got {result}, expected suffix {expected_suffix}"
+        )
+
+    def test_unknown_skill_name_still_works(self, tmp_path):
+        """Function takes any name, not just registered ones."""
+        host = next(h for h in KNOWN_HOSTS if h.name == "claude")
+        result = bundled_skill_dir(host, "gf-anything-future", root=tmp_path)
+        assert result == tmp_path / ".claude" / "skills" / "gf-anything-future"
+
+    def test_cursor_subpath_falls_back_to_skills_layout(self, tmp_path):
+        """cursor has subpath `rules` (not ending in graphify) → defensive fallback."""
+        host = next(h for h in KNOWN_HOSTS if h.name == "cursor")
+        result = bundled_skill_dir(host, "gf-brainstorming", root=tmp_path)
+        assert result == tmp_path / ".cursor" / "skills" / "gf-brainstorming"
