@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Optional
 
 from graphify.installer.host_probe import Host, host_skill_dir
+from graphify.installer.bundled_skills import (
+    all_bundled,
+    bundled_skill_dir,
+    supports_host,
+)
 
 # Hosts detected on the user's machine but NOT supported by the offline
 # installer. Their real install path is via `graphify install <host>` (which
@@ -143,3 +148,81 @@ def copy_skill(
             shutil.copytree(src_refs, dst_refs)
 
     return out_dir
+
+
+def copy_bundled_skills(
+    host: Host,
+    *,
+    root: Path,
+    package_root: Optional[Path] = None,
+) -> list[Path]:
+    """Install all bundled (gf-*) skills for `host` under `root`.
+
+    For each `BundledSkill`:
+      - Compute target dir via `bundled_skill_dir(host, skill.name, root=root)`.
+      - Read SKILL.md body from `package_root / skill.source_subpath` (or
+        `importlib.resources` if `package_root is None`).
+      - `target_dir.mkdir(parents=True, exist_ok=True)` and write the body.
+      - If `skill.has_references`, also copy a `references/` sidecar.
+
+    Always-overwrite semantics: any pre-existing file is replaced. The
+    `gf-` namespace prefix ensures this never collides with a user's
+    separately-installed plugin.
+    """
+    if not supports_host(host.name):
+        return []
+
+    written: list[Path] = []
+    for skill in all_bundled():
+        target_dir = bundled_skill_dir(host, skill.name, root=root)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # Read body.
+        if package_root is not None:
+            src = package_root / skill.source_subpath
+            body = src.read_text(encoding="utf-8") if src.exists() else ""
+        else:
+            try:
+                body = files("graphify").joinpath(*skill.source_subpath.split("/")).read_text(encoding="utf-8")
+            except (FileNotFoundError, ModuleNotFoundError, TypeError):
+                body = ""
+
+        if not body:
+            import sys
+            print(
+                f"[graphify-installer] warn: bundled skill `{skill.name}` "
+                f"body missing at `{skill.source_subpath}`; skipping",
+                file=sys.stderr,
+            )
+            continue
+
+        target = target_dir / "SKILL.md"
+        target.write_text(body, encoding="utf-8")
+        written.append(target)
+
+        # Optional references/ sidecar.
+        if skill.has_references:
+            refs_rel = (Path(skill.source_subpath).parent / "references").as_posix()
+            if package_root is not None:
+                src_refs = package_root / refs_rel
+            else:
+                from importlib.resources import as_file
+                try:
+                    ref_resource = files("graphify").joinpath(*refs_rel.split("/"))
+                    with as_file(ref_resource) as p:
+                        src_refs = p
+                except (FileNotFoundError, ModuleNotFoundError, TypeError):
+                    src_refs = None
+            if src_refs is not None and src_refs.exists():
+                dst_refs = target_dir / "references"
+                if dst_refs.exists():
+                    shutil.rmtree(dst_refs)
+                shutil.copytree(src_refs, dst_refs)
+
+    if written:
+        print(
+            f"[graphify-installer] installed {len(written)} bundled skills for "
+            f"{host.name}: {', '.join(p.parent.name for p in written)}",
+            flush=True,
+        )
+    return written
