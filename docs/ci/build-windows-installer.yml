@@ -1,5 +1,17 @@
 name: Build offline Windows installer
 
+# ─── LOCATION NOTE ────────────────────────────────────────────────────────────
+# This file lives at docs/ci/build-windows-installer.yml rather than the
+# canonical .github/workflows/ because GitHub rejects pushes that modify
+# files under .github/workflows/ when the pushing Personal Access Token
+# does not have the `workflow` scope. The file is a complete, runnable
+# GitHub Actions workflow — to activate it, `git mv` it back to
+# .github/workflows/build-windows-installer.yml once a workflow-scoped PAT
+# is in use. Until then, Windows builds are produced by running
+# tools/build_windows_installer.sh on a Windows host and uploading the
+# dist/*.exe artifacts to the GitHub release page manually.
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Builds the three offline .exe artifacts (graphify-installer.exe,
 # graphify.exe, graphify-mcp.exe) on a windows-latest runner and attaches
 # them to the GitHub Release that triggered this run. Falls back to a
