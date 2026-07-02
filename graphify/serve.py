@@ -539,11 +539,31 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(
+    G: nx.Graph,
+    nodes: set[str],
+    edges: list[tuple],
+    token_budget: int = 2000,
+    *,
+    seeds: list[str] | None = None,
+    scores: "list[tuple[float, str]] | dict[str, float] | None" = None,
+) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
-    seeds: exact-match nodes rendered first before the degree-sorted expansion,
-    so the queried symbol always appears at the top of the output.
+    seeds: exact-match nodes rendered first before the ranked expansion, so the
+    queried symbol always appears at the top of the output.
+
+    scores (#1612): the same per-node query-relevance scores `_score_nodes`
+    computed to pick seeds (a `_score_nodes`-shaped list, or an equivalent
+    dict), reused here to rank the *non-seed* expansion too. Without this, a
+    BFS/DFS neighborhood is entirely un-ranked structural noise: a node that
+    matched none of the query's terms but happens to be the most-imported file
+    in the whole corpus (test setup, DB schema, DI container, ...) sorts above
+    a node that matched a query term but has an ordinary degree, since the
+    fallback is pure degree-sort. `_score_nodes` only returns nodes with
+    score > 0 (some term overlap), so a node absent from `scores` falls back
+    to degree exactly like today when `scores` is omitted — this is
+    strictly additive, never worse than the pre-#1612 ordering.
     """
     char_budget = token_budget * 3
     lines = []
@@ -551,8 +571,17 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     # Empty when no sidecar exists, so un-annotated output stays byte-identical.
     overlay = getattr(G, "graph", {}).get("_learning_overlay", {}) or {}
     seed_set = set(seeds or [])
+    score_map: dict[str, float] = (
+        dict(scores) if isinstance(scores, dict)
+        else {nid: s for s, nid in scores} if scores
+        else {}
+    )
     ordered = [n for n in (seeds or []) if n in nodes] + \
-              sorted(nodes - seed_set, key=lambda n: G.degree(n), reverse=True)
+              sorted(
+                  nodes - seed_set,
+                  key=lambda n: (score_map.get(n, 0.0), G.degree(n)),
+                  reverse=True,
+              )
     for nid in ordered:
         d = G.nodes[nid]
         # Every LLM-derived field passes through sanitize_label before being
@@ -629,7 +658,18 @@ def _query_graph_text(
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget)
+    # seeds=start_nodes (#1612): _subgraph_to_text has always supported rendering
+    # the traversal's actual seed nodes first, before the generic degree-sorted
+    # expansion — but this was the only call site, and it never passed seeds,
+    # so every `graphify query` result silently fell back to pure degree-sort:
+    # whichever nodes happen to be the most-imported/highest-degree in the
+    # WHOLE graph led the output regardless of relevance to the question, and
+    # the nodes the traversal actually seeded from (the ones _pick_seeds and
+    # #1445's per-term guarantee worked to select) could be buried arbitrarily
+    # far down or truncated out by the token budget entirely.
+    return header + _subgraph_to_text(
+        traversal_graph, nodes, edges, token_budget, seeds=start_nodes, scores=scored,
+    )
 
 
 def _find_node(G: nx.Graph, label: str) -> list[str]:

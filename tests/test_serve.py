@@ -427,6 +427,79 @@ def test_subgraph_to_text_no_overlay_is_unchanged():
     assert "learning=" not in text
 
 
+# --- #1612: non-seed node ordering ranks by query relevance, not raw degree ---
+
+def _hub_graph() -> nx.Graph:
+    """A relevant-but-ordinary-degree node vs. a high-degree unrelated hub, both
+    one hop from a seed — reproduces the "generic infra node leads the output"
+    shape seen against a real repo (vitest.ts/schema.ts/container.ts outranking
+    the actually-relevant match)."""
+    G = nx.Graph()
+    G.add_node("seed", label="IdentityResolutionJob", source_file="identityResolutionJob.ts", community=0)
+    G.add_node("relevant", label="identityJobFactory", source_file="identityJobFactory.ts", community=0)
+    G.add_node("hub", label="config", source_file="config.ts", community=1)
+    G.add_edge("seed", "relevant", relation="imports")
+    G.add_edge("seed", "hub", relation="imports")
+    # Give "hub" a much higher raw degree than "relevant", unrelated to the query.
+    for i in range(10):
+        nid = f"hub_dep_{i}"
+        G.add_node(nid, label=f"dep{i}", source_file=f"dep{i}.ts", community=2)
+        G.add_edge("hub", nid, relation="imports")
+    return G
+
+
+def test_subgraph_to_text_without_scores_falls_back_to_degree_sort_unchanged():
+    """No scores passed (pre-#1612 call shape) must reproduce the exact old
+    ordering — pure degree-sort — so this is strictly additive, never a
+    behavior change for existing callers that don't opt in."""
+    G = _hub_graph()
+    nodes = {"seed", "relevant", "hub"}
+    text = _subgraph_to_text(G, nodes, [], seeds=["seed"])
+    hub_pos = text.index("NODE config")
+    relevant_pos = text.index("NODE identityJobFactory")
+    assert hub_pos < relevant_pos, "hub (degree 11) must still outrank relevant (degree 1) without scores"
+
+
+def test_subgraph_to_text_with_scores_ranks_relevant_node_above_higher_degree_hub():
+    G = _hub_graph()
+    nodes = {"seed", "relevant", "hub"}
+    # "relevant" matched a query term (nonzero score); "hub" matched nothing
+    # (absent from scores, exactly what _score_nodes returns for a non-match).
+    scores = [(42.0, "relevant")]
+    text = _subgraph_to_text(G, nodes, [], seeds=["seed"], scores=scores)
+    hub_pos = text.index("NODE config")
+    relevant_pos = text.index("NODE identityJobFactory")
+    assert relevant_pos < hub_pos, (
+        "a node that matched a query term must outrank a higher-degree node "
+        "that matched nothing, once scores are supplied"
+    )
+
+
+def test_subgraph_to_text_accepts_scores_as_dict_or_score_nid_list():
+    G = _hub_graph()
+    nodes = {"seed", "relevant", "hub"}
+    as_list = _subgraph_to_text(G, nodes, [], seeds=["seed"], scores=[(42.0, "relevant")])
+    as_dict = _subgraph_to_text(G, nodes, [], seeds=["seed"], scores={"relevant": 42.0})
+    assert as_list == as_dict
+
+
+def test_query_graph_text_ranks_relevant_neighbor_above_unrelated_hub():
+    """End-to-end: _query_graph_text must pass its own computed scores through
+    to _subgraph_to_text (#1612), not just seeds — this is the actual call
+    site the standalone _subgraph_to_text tests above cannot cover."""
+    G = _hub_graph()
+    # Seed from "IdentityResolutionJob" (exact match on the "seed" node) so BFS
+    # depth=1 reaches both "relevant" and "hub" as one-hop neighbors — the
+    # actual query term ("job factory") only partially overlaps "relevant"'s
+    # label, giving it a real but non-dominant score, same shape as the
+    # original repo repro (query term overlaps a neighbor's label, not the
+    # seed's).
+    text = _query_graph_text(G, "IdentityResolutionJob job factory", mode="bfs", depth=1)
+    hub_pos = text.index("NODE config")
+    relevant_pos = text.index("NODE identityJobFactory")
+    assert relevant_pos < hub_pos
+
+
 def test_query_graph_text_explicit_context_filter_changes_traversal():
     G = _make_graph()
     text = _query_graph_text(G, "extract", mode="bfs", depth=2, token_budget=2000, context_filters=["call"])
