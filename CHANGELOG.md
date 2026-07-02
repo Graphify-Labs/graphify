@@ -4,7 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
-- Feat: Haxe (`.hx`) language support via `tree-sitter-haxe`. Extracts classes, interfaces, enums, enum abstracts, typedefs, and functions. Includes a fallback pass for files where the grammar emits scattered tokens instead of declaration nodes. Install with `pip install "graphifyy[haxe]"`.
+- Feat: Haxe (`.hx`) language support via `tree-sitter-haxe`. Extracts classes, interfaces, enums, enum abstracts, typedefs, and functions. Includes a fallback pass for files where the grammar emits scattered tokens instead of declaration nodes. `tree-sitter-haxe` has no PyPI release, so there is no `graphifyy` extra for it — install with `pip install git+https://github.com/masquepublishing/tree-sitter-haxe.git`.
 
 ## 0.9.5 (2026-07-02)
 

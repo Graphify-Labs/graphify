@@ -2915,7 +2915,7 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
 
 _needs_haxe = pytest.mark.skipif(
     _ilu.find_spec("tree_sitter_haxe") is None,
-    reason="tree-sitter-haxe not installed (optional [haxe] extra)",
+    reason="tree-sitter-haxe not installed (no PyPI release; see README)",
 )
 
 @_needs_haxe

@@ -186,6 +186,16 @@ Install only what you need:
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
 | `all` | Everything above | `uv tool install "graphifyy[all]"` |
 
+Haxe is not in this table: `tree-sitter-haxe` has no PyPI release (upstream
+`vantreeseba/tree-sitter-haxe` hasn't cut one), and PyPI rejects any package
+upload whose metadata contains a direct URL/VCS dependency — so it can't be
+declared as a `graphifyy` extra without blocking every future release of this
+package. Install the patched fork manually to enable `.hx` support:
+
+```bash
+pip install git+https://github.com/masquepublishing/tree-sitter-haxe.git
+```
+
 ---
 
 ## Make your assistant always use the graph
@@ -246,7 +256,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | Type | Extensions |
 |------|-----------|
 | Code (37 tree-sitter grammars) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .cu .cuh .metal .rb .cs .kt .scala .php .swift .lua .luau .zig .ps1 .psm1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`; CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
-| Haxe | `.hx` (requires `uv tool install graphifyy[haxe]`; classes, interfaces, enums, enum abstracts, typedefs, functions) |
+| Haxe | `.hx` (requires `pip install git+https://github.com/masquepublishing/tree-sitter-haxe.git`; not a PyPI package, so no `graphifyy` extra exists for it — see below; classes, interfaces, enums, enum abstracts, typedefs, functions) |
 | Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
