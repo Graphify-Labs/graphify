@@ -3182,14 +3182,15 @@ def main() -> None:
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: graphify explain "<node>" [--graph path] [--force]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _find_node
+        from graphify.serve import _find_node_tiers
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
         args = sys.argv[3:]
+        force_pick = "--force" in args
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
@@ -3207,11 +3208,97 @@ def main() -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
-        matches = _find_node(G, label)
+        source_exact, exact, prefix, substring, source_exact_resolved = _find_node_tiers(G, label)
+        matches = source_exact + exact + prefix + substring
         if not matches:
             print(f"No node matching '{label}' found.")
             sys.exit(0)
-        nid = matches[0]
+        # Ambiguity guard (#1613): the top precedence tier that produced any
+        # candidates is what `matches[0]` would silently commit to. Picking one
+        # of several equally-valid ties with no signal is exactly the failure
+        # mode #1445 fixed for `query`'s seeding — `explain` had the identical
+        # bug in its own resolution step, just never wired to surface it. A
+        # single term (unlike `query`'s multi-term case) has no other terms to
+        # diversify across, so the fix here is to show every tied candidate
+        # instead of guessing, rather than to pick a "better" one — degree
+        # alone does not reliably distinguish them (e.g. two same-degree
+        # same-tier nodes with genuinely different meanings). Exception: a
+        # multi-entry source_exact tier that source_exact_resolved already
+        # deliberately picked a winner from (the file-level-node heuristic,
+        # #853-adjacent) is not a raw tie — don't re-flag it as ambiguous.
+        top_tier = source_exact or exact or prefix or substring
+        is_resolved_source_tier = top_tier is source_exact and source_exact_resolved
+        # Degree-dominance escape hatch: a same-tier "tie" isn't a real tie when
+        # one candidate's degree dwarfs the rest — e.g. a DI container type
+        # (degree 31, the real definition) versus the same name re-appearing as
+        # a per-file parameter type annotation in a couple of handlers (degree
+        # 4-5 each). Mirrors `path`'s existing top-vs-runner-up gap check
+        # (__main__.py, `warning: {name} match was ambiguous`) rather than
+        # inventing a new heuristic — same idea, applied to degree instead of
+        # score. Below this ratio the runner-up is close enough that guessing
+        # is exactly the failure this fix exists to avoid.
+        dominant_nid = None
+        if len(top_tier) > 1:
+            degrees = sorted(top_tier, key=lambda n: G.degree(n), reverse=True)
+            top_deg, runner_deg = G.degree(degrees[0]), G.degree(degrees[1])
+            if top_deg > 0 and runner_deg <= top_deg * 0.34:
+                dominant_nid = degrees[0]
+        same_tier_ambiguous = len(top_tier) > 1 and not is_resolved_source_tier and dominant_nid is None
+        # Precedence-collapse case (repro: `explain "genres"`, #1613): the top
+        # tier can have exactly ONE match yet still be the wrong pick — tier
+        # precedence (exact beats prefix beats substring) means a single
+        # incidental exact match on an unrelated, weakly-connected node (a
+        # Storybook literal, a fixture constant) fully hides a much more
+        # relevant prefix/substring match one tier down, with nothing to
+        # signal it. `_pick_seeds`/#1445 solved the analogous multi-term
+        # version of this by guaranteeing every term's candidates get
+        # considered rather than letting one exact match starve the rest;
+        # the single-term version here is: don't let a *weakly connected*
+        # lone exact match fully suppress the next tier when one exists.
+        # Cheap, low-risk heuristic — degree <= 1 — deliberately does not
+        # fire for well-connected exact matches (e.g. `explain "Cradle"`,
+        # degree 32, resolves exactly as before).
+        next_tier = (
+            (exact or prefix or substring) if top_tier is source_exact else
+            (prefix or substring) if top_tier is exact else
+            substring if top_tier is prefix else
+            None
+        )
+        precedence_collapse = (
+            len(top_tier) == 1 and not is_resolved_source_tier
+            and next_tier and G.degree(top_tier[0]) <= 1
+        )
+        if (same_tier_ambiguous or precedence_collapse) and not force_pick:
+            shown = top_tier + (next_tier[:14] if precedence_collapse else [])
+            if precedence_collapse:
+                print(
+                    f"Ambiguous: the closest match for '{label}' is weakly connected "
+                    f"(degree {G.degree(top_tier[0])}) — showing it plus related candidates."
+                )
+            else:
+                print(f"Ambiguous: {len(top_tier)} nodes match '{label}' equally closely.")
+            print("Pick one and re-run with a more specific term (e.g. the full source path\n"
+                  "or a qualifying word), or pass --force to show the first match anyway:\n")
+            for i, cand in enumerate(shown[:15], start=1):
+                cd = G.nodes[cand]
+                loc = f" {cd.get('source_location', '')}" if cd.get("source_location") else ""
+                print(
+                    f"  {i}. {cd.get('label', cand)} "
+                    f"[src={cd.get('source_file', '')}{loc} degree={G.degree(cand)}]"
+                )
+            if len(shown) > 15:
+                print(f"  ... and {len(shown) - 15} more")
+            from graphify import querylog
+            querylog.log_query(
+                kind="explain", question=label, corpus=str(gp),
+                nodes_returned=len(shown),
+            )
+            sys.exit(0)
+        # Prefer the degree-dominant winner over raw match order (#1613) — the
+        # dominance check above only excuses the tier from the ambiguity
+        # prompt; it doesn't guarantee `matches[0]` happens to already be that
+        # winner, since tier order is trigram/iteration order, not degree order.
+        nid = dominant_nid if dominant_nid is not None else matches[0]
         d = G.nodes[nid]
         print(f"Node: {d.get('label', nid)}")
         print(f"  ID:        {nid}")

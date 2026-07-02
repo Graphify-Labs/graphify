@@ -672,16 +672,26 @@ def _query_graph_text(
     )
 
 
-def _find_node(G: nx.Graph, label: str) -> list[str]:
-    """Return node IDs whose label or ID matches the search term (diacritic-insensitive).
+def _find_node_tiers(
+    G: nx.Graph, label: str,
+) -> tuple[list[str], list[str], list[str], list[str], bool]:
+    """Return (source_exact, exact, prefix, substring, source_exact_resolved) for `label`.
 
-    Results are ordered by precedence: exact source-file path match first, then
-    exact (label/ID) match, then prefix match, then substring match. Node-ID exact
-    matches are grouped with label exact matches.
+    Same matching logic as `_find_node`, but callers that need to know *how many*
+    candidates tied in the top precedence tier — to detect ambiguity rather than
+    silently picking the first one — should use this instead of the flattened
+    list (#1613; see `explain`'s disambiguation in __main__.py).
+
+    `source_exact_resolved` is True when `source_exact` has more than one entry
+    but a pre-existing heuristic (the file-level node — source_location "L1" with
+    a label matching the queried path's basename — among several same-file
+    matches, #the-original-source-exact-preference-fix) already picked a single
+    unambiguous winner and moved it to the front. Callers must not treat that
+    case as ambiguous: it was deliberately resolved, not left as a raw tie.
     """
     term = " ".join(_search_tokens(label))
     if not term:
-        return []
+        return [], [], [], [], False
     source_exact: list[str] = []
     exact: list[str] = []
     prefix: list[str] = []
@@ -713,6 +723,7 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
         elif term in norm_label or term in label_tokens:
             substring.append(nid)
 
+    source_exact_resolved = False
     if source_exact:
         query_basename = _strip_diacritics(Path(label).name).lower()
         preferred = [
@@ -724,7 +735,19 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
         ]
         if len(preferred) == 1:
             source_exact = preferred + [nid for nid in source_exact if nid != preferred[0]]
+            source_exact_resolved = len(source_exact) > 1
 
+    return source_exact, exact, prefix, substring, source_exact_resolved
+
+
+def _find_node(G: nx.Graph, label: str) -> list[str]:
+    """Return node IDs whose label or ID matches the search term (diacritic-insensitive).
+
+    Results are ordered by precedence: exact source-file path match first, then
+    exact (label/ID) match, then prefix match, then substring match. Node-ID exact
+    matches are grouped with label exact matches.
+    """
+    source_exact, exact, prefix, substring, _resolved = _find_node_tiers(G, label)
     return source_exact + exact + prefix + substring
 
 
