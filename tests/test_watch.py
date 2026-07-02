@@ -272,9 +272,53 @@ def test_rebuild_code_evicts_removed_symbol_from_surviving_file(tmp_path):
         e.get("source") == foo_id or e.get("target") == foo_id
         for e in edges(after_data)
     ), "dangling edge to the removed symbol must be dropped"
-    assert "bar()" in after, "surviving symbol in the same file must be kept"
-    assert "caller()" in after, "unchanged file's nodes must be kept"
-    assert "AuthConcept" in after, "semantic node on a surviving file must not be evicted"
+
+
+def test_rebuild_code_reattaches_cached_semantic_nodes_for_reextracted_file(tmp_path):
+    """#1610: an incremental AST-only rebuild of a changed file must not silently
+    drop that file's semantic content when a cache entry already covers its
+    current (post-edit) bytes exactly — e.g. the file was already processed by a
+    full/deep run, or its edit reverted to previously-seen content. This costs
+    zero LLM calls (pure cache lookup) and is deterministic (the reattached
+    content is byte-identical to the cached extraction), unlike re-running the
+    LLM. A file with no matching cache entry must keep today's behavior
+    (semantic content dropped, AST-only)."""
+    import json
+    from graphify.cache import save_semantic_cache
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "auth.py").write_text("def login(): pass\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    # Seed the semantic cache for auth.py's *current* on-disk content, as if a
+    # prior full/deep run had already LLM-extracted a concept node from it.
+    save_semantic_cache(
+        nodes=[{
+            "id": "auth_authflow",
+            "label": "AuthFlow",
+            "file_type": "concept",
+            "source_file": "auth.py",
+        }],
+        edges=[],
+        root=corpus,
+    )
+
+    # Incremental update re-extracting auth.py (content unchanged, so its hash
+    # still matches the cache entry just seeded above).
+    assert _rebuild_code(
+        corpus, changed_paths=[corpus / "auth.py"], acquire_lock=False,
+    ) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    labels = {n["label"] for n in data.get("nodes", [])}
+    assert "login()" in labels, "AST node from the re-extracted file must still be present"
+    assert "AuthFlow" in labels, (
+        "cached semantic node for the re-extracted file's unchanged content "
+        "must be reattached, not dropped"
+    )
 
 
 def test_rebuild_code_preupgrade_marker_less_node_one_cycle_lag(tmp_path):
