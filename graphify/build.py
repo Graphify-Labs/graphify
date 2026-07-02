@@ -577,7 +577,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             _LANG_FAMILY: dict[str, str] = {
                 ".py": "py", ".pyi": "py",
                 ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js",
-                ".ts": "js", ".tsx": "js",
+                ".ts": "js", ".tsx": "js", ".mts": "js", ".cts": "js",
                 ".go": "go", ".rs": "rs",
                 ".java": "jvm", ".kt": "jvm", ".scala": "jvm", ".groovy": "jvm",
                 # C, C++, and ObjC interoperate within one compilation unit: a method

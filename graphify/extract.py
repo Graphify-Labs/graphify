@@ -89,8 +89,8 @@ def _csharp_namespace_id(dotted_name: str) -> str:
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 _WORKSPACE_PACKAGE_CACHE: dict[str, dict[str, Path]] = {}
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
-_JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".ts", ".tsx", ".vue", ".svelte"}
-_JS_RESOLVE_EXTS = (".ts", ".tsx", ".svelte", ".js", ".jsx", ".mjs")
+_JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte"}
+_JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs")
 _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.jsx", "index.mjs")
 
 
@@ -5297,10 +5297,10 @@ def extract_python(path: Path) -> dict:
 
 
 def extract_js(path: Path) -> dict:
-    """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx file."""
+    """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
     if path.suffix == ".tsx":
         config = _TSX_CONFIG
-    elif path.suffix == ".ts":
+    elif path.suffix in (".ts", ".mts", ".cts"):
         config = _TS_CONFIG
     else:
         config = _JS_CONFIG
@@ -9588,7 +9588,7 @@ def _parse_js_tree(path: Path):
             source = masked.encode("utf-8")
         else:
             source = path.read_bytes()
-        use_ts = path.suffix in (".ts", ".tsx") or (
+        use_ts = path.suffix in (".ts", ".tsx", ".mts", ".cts") or (
             path.suffix == ".vue" and vue_lang not in ("js", "jsx")
         )
         if use_ts:
@@ -11465,7 +11465,7 @@ register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb"}), resolve_ruby_member_calls)
 )
 register_language_resolver(
-    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".js", ".jsx"}), _resolve_typescript_member_calls)
+    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
 )
 # C++ (#1547) and ObjC (#1556) receiver-typed member-call resolution. `.h` is in
 # both suffix sets because it routes to extract_cpp or extract_objc by content; the
@@ -14989,6 +14989,8 @@ _DISPATCH: dict[str, Any] = {
     ".mjs": extract_js,
     ".ts": extract_js,
     ".tsx": extract_js,
+    ".mts": extract_js,
+    ".cts": extract_js,
     ".go": extract_go,
     ".rs": extract_rust,
     ".java": extract_java,
