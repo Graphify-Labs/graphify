@@ -171,7 +171,7 @@ For any code files detected, run AST extraction in parallel with Part B subagent
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.extract import collect_files, extract
+from graphify.extract import collect_files, extract, _get_extractor
 from pathlib import Path
 import json
 
@@ -179,20 +179,26 @@ code_files = []
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
 for f in detect.get('files', {}).get('code', []):
     code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
+for f in detect.get('files', {}).get('document', []):
+    p = Path(f)
+    if _get_extractor(p) is not None:
+        code_files.append(p)
 
 if code_files:
     result = extract(code_files, cache_root=Path('INPUT_PATH'))
     Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-    print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
+    node_count = len(result['nodes'])
+    edge_count = len(result['edges'])
+    print(f'AST: {node_count} nodes, {edge_count} edges')
 else:
     Path('graphify-out/.graphify_ast.json').write_text(json.dumps({'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}, ensure_ascii=False), encoding=\"utf-8\")
-    print('No code files - skipping AST extraction')
+    print('No structurally extractable files - skipping AST extraction')
 "
 ```
 
 #### Part B - Semantic extraction (parallel subagents)
 
-**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input (it reads `.graphify_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
+**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input (it reads `graphify-out/.graphify_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -229,7 +235,7 @@ all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'
 cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH')
 
 # Always (re)write the cache file: write hits, else DELETE any leftover from a prior
-# run so Part C never merges a stale .graphify_cached.json (#1392).
+# run so Part C never merges a stale graphify-out/.graphify_cached.json (#1392).
 if cached_nodes or cached_edges or cached_hyperedges:
     Path('graphify-out/.graphify_cached.json').write_text(json.dumps({'nodes': cached_nodes, 'edges': cached_edges, 'hyperedges': cached_hyperedges}, ensure_ascii=False), encoding=\"utf-8\")
 else:
@@ -273,7 +279,7 @@ Wait for all subagents. For each result:
 
 If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
 
-Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
+Merge all chunk files into `graphify-out/.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json, glob
@@ -347,32 +353,16 @@ Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.gra
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
+from graphify.pipeline import finalize_extraction_files
 from pathlib import Path
 
-ast = json.loads(Path('graphify-out/.graphify_ast.json').read_text(encoding=\"utf-8\"))
-sem = json.loads(Path('graphify-out/.graphify_semantic.json').read_text(encoding=\"utf-8\"))
-
-# Merge: AST nodes first, semantic nodes deduplicated by id
-seen = {n['id'] for n in ast['nodes']}
-merged_nodes = list(ast['nodes'])
-for n in sem['nodes']:
-    if n['id'] not in seen:
-        merged_nodes.append(n)
-        seen.add(n['id'])
-
-merged_edges = ast['edges'] + sem['edges']
-merged_hyperedges = sem.get('hyperedges', [])
-merged = {
-    'nodes': merged_nodes,
-    'edges': merged_edges,
-    'hyperedges': merged_hyperedges,
-    'input_tokens': sem.get('input_tokens', 0),
-    'output_tokens': sem.get('output_tokens', 0),
-}
-Path('graphify-out/.graphify_extract.json').write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-total = len(merged_nodes)
-edges = len(merged_edges)
-print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(sem[\"nodes\"])} semantic)')
+merged, lsp_summary, stats = finalize_extraction_files(
+    root=Path('INPUT_PATH'),
+    graphify_out=Path('graphify-out'),
+)
+print(f'Combined: {stats[\"nodes\"]} nodes, {stats[\"edges\"]} edges')
+if lsp_summary.get('hooks_enabled'):
+    print(f'LSP hooks: {len(lsp_summary.get(\"hooks\", []))} hook(s), {lsp_summary.get(\"merged_edges\", 0)} edge(s)')
 "
 ```
 
@@ -528,7 +518,7 @@ graphify export html  # auto-aggregates to community view if graph > 5000 nodes
 
 ### Steps 6b-8 - Wiki, Neo4j, FalkorDB, SVG, GraphML, MCP, benchmark (only on their flags)
 
-These run only when their flag is present (`--wiki`, `--neo4j`/`--neo4j-push`, `--falkordb`/`--falkordb-push`, `--svg`, `--graphml`, `--mcp`) or, for the token-reduction benchmark, when `total_words` exceeds 5,000. A default run with no export flags skips all of them. See `references/exports.md` for each one. Run any `--wiki` export before Step 9 cleanup so `.graphify_labels.json` is still available.
+These run only when their flag is present (`--wiki`, `--neo4j`/`--neo4j-push`, `--falkordb`/`--falkordb-push`, `--svg`, `--graphml`, `--mcp`) or, for the token-reduction benchmark, when `total_words` exceeds 5,000. A default run with no export flags skips all of them. See `references/exports.md` for each one. Run any `--wiki` export before Step 9 cleanup so `graphify-out/.graphify_labels.json` is still available.
 
 ---
 
@@ -575,7 +565,7 @@ print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
 print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
 "
 rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json
-find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
+find graphify-out -maxdepth 1 -path 'graphify-out/.graphify_chunk_*.json' -delete 2>/dev/null
 rm -f graphify-out/.needs_update 2>/dev/null || true
 ```
 
@@ -614,7 +604,7 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 ## Interpreter guard for subcommands
 
-Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `.graphify_python` exists. If it's missing (e.g. user deleted `graphify-out/`), re-resolve the interpreter first:
+Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `graphify-out/.graphify_python` exists. If it's missing (e.g. user deleted `graphify-out/`), re-resolve the interpreter first:
 
 ```bash
 if [ ! -f graphify-out/.graphify_python ]; then

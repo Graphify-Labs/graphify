@@ -237,7 +237,7 @@ def _changed_path_candidates(raw: Path, *, change_root: Path, watch_root: Path) 
 
 
 def _relativize_source_files(payload: dict, root: Path) -> None:
-    for bucket in ("nodes", "edges", "hyperedges"):
+    for bucket in ("nodes", "edges", "hyperedges", "unresolved_calls"):
         for item in payload.get(bucket, []):
             source = item.get("source_file")
             if not source:
@@ -448,6 +448,7 @@ def _rebuild_code(
     Returns True on success, False on error or skipped-due-to-lock.
     """
     out = watch_path / _GRAPHIFY_OUT
+    out_abs = out.resolve()
     if acquire_lock:
         # #1059: incremental (changed_paths is not None) hooks must not drop
         # their change set when another rebuild is already running. Queue
@@ -511,6 +512,12 @@ def _rebuild_code(
         from graphify.report import generate
         from graphify.export import to_json, to_html
         from graphify.security import check_graph_file_size_cap
+        from graphify.pipeline import (
+            finalize_extraction_for_build,
+            merge_update_payload,
+            source_keys_from_paths,
+            source_keys_from_payload,
+        )
 
         detected = detect(watch_path, follow_symlinks=follow_symlinks)
         code_files = [Path(f) for f in detected['files']['code']]
@@ -582,6 +589,16 @@ def _rebuild_code(
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
         }
+        evict_sources: set[str] = set(deleted_paths)
+        if changed_paths is not None:
+            for p in extract_targets:
+                try:
+                    evict_sources.add(str(p.relative_to(project_root)))
+                except ValueError:
+                    evict_sources.add(str(p))
+        rebuilt_sources = source_keys_from_paths(list(extract_targets), project_root)
+        _relativize_source_files(result, project_root)
+        rebuilt_sources.update(source_keys_from_payload(result, project_root))
 
         # Preserve semantic nodes/edges from a previous full run.
         # AST-only rebuild replaces nodes for changed files; everything else is kept.
@@ -598,9 +615,7 @@ def _rebuild_code(
                 check_graph_file_size_cap(existing_graph)
                 existing = json.loads(existing_graph.read_text(encoding="utf-8"))
                 existing_graph_data = existing
-                new_ast_ids = {n["id"] for n in result["nodes"]}
                 _relativize_source_files(existing, project_root)
-                evict_sources: set[str] = set(deleted_paths)
                 if changed_paths is not None:
                     for p in extract_targets:
                         for root in (project_root, watch_root):
@@ -625,64 +640,14 @@ def _rebuild_code(
                             evict_sources.add(sf)
                             evict_sources.add(norm)
                             deleted_paths.add(norm)
-                # On a full re-extraction every code file is re-extracted, so
-                # new_ast_ids is the complete current AST set. Any AST-marked node
-                # missing from it is stale and must be dropped even if its source
-                # file still exists (a symbol removed from a surviving file, #1116).
-                # Gate on full_rebuild: in incremental mode an AST node from an
-                # unchanged file is legitimately absent from new_ast_ids. Semantic
-                # nodes lack the "_origin" marker, so they are never dropped here —
-                # only by the deleted-file eviction in evict_sources above.
-                full_rebuild = changed_paths is None
-                preserved_nodes = [
-                    n for n in existing.get("nodes", [])
-                    if n["id"] not in new_ast_ids
-                    and not (full_rebuild and n.get("_origin") == "ast")
-                    and (not evict_sources or n.get("source_file") not in evict_sources)
-                ]
-                all_ids = new_ast_ids | {n["id"] for n in preserved_nodes}
-                # An edge is OWNED by the file it was extracted from (its
-                # source_file). When that file is re-extracted, its prior edges must
-                # not be carried forward — the fresh extraction re-emits whichever
-                # ones still exist. Preserving by endpoint membership alone keeps a
-                # removed import's edge alive forever whenever both endpoint nodes
-                # survive (e.g. `a` no longer imports from `b`, but both `a` and `b`
-                # are still present), producing phantom circular dependencies
-                # (#1521). So drop preserved edges whose source_file was re-extracted
-                # this run (or deleted). Unlike the node-level evict set, this MUST
-                # cover the full-rebuild case too — there every file is re-extracted
-                # but `evict_sources` only lists deleted files, so a removed import
-                # in a surviving file would never be pruned. Edges with no
-                # source_file, or owned by a file that was NOT re-extracted, are
-                # kept exactly as before, so cross-file edges that merely point at a
-                # re-extracted file (#1402 sourceless stubs / cross-file rewire) are
-                # not over-pruned — only edges the re-extracted file itself produced.
-                edge_evict_sources: set[str] = set(evict_sources)
-                for p in extract_targets:
-                    for _root in (project_root, watch_root):
-                        edge_evict_sources.add(_nsf(str(p), str(_root)) or str(p))
-                def _edge_evicted(e: dict) -> bool:
-                    if not edge_evict_sources:
-                        return False
-                    sf = e.get("source_file")
-                    if not sf:
-                        return False
-                    if sf in edge_evict_sources:
-                        return True
-                    norm = _nsf(sf, str(project_root))
-                    return bool(norm) and norm in edge_evict_sources
-                preserved_edges = [
-                    e for e in existing.get("links", existing.get("edges", []))
-                    if e.get("source") in all_ids and e.get("target") in all_ids
-                    and not _edge_evicted(e)
-                ]
-                result = {
-                    "nodes": result["nodes"] + preserved_nodes,
-                    "edges": result["edges"] + preserved_edges,
-                    "hyperedges": existing.get("hyperedges", []),
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                }
+                result = merge_update_payload(
+                    existing,
+                    result,
+                    evict_sources=evict_sources,
+                    rebuilt_sources=rebuilt_sources,
+                    root=project_root,
+                    full_rebuild=changed_paths is None,
+                )
             except Exception:
                 pass  # corrupt graph.json - proceed with AST-only
 
@@ -706,6 +671,24 @@ def _rebuild_code(
         # common case for ``graphify update``), this writes ``.`` and the
         # subsequent re-run resolves it against the caller's CWD.
         (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
+
+        try:
+            result, lsp_summary = finalize_extraction_for_build(
+                result,
+                root=project_root,
+                graphify_out=out_abs,
+                source_files=extract_targets,
+                evict_sources=evict_sources if changed_paths is not None else None,
+            )
+        except Exception as exc:
+            from graphify.ast_lsp import without_unresolved_calls
+
+            print(f"[graphify watch] warning: LSP enrichment failed: {exc}", file=sys.stderr)
+            result = without_unresolved_calls(result)
+            lsp_summary = None
+        if lsp_summary is not None:
+            for line in lsp_summary.log_lines("[graphify watch]"):
+                print(line)
 
         if no_cluster:
             # Normalise to "links" key so schema is consistent with the full clustered path.
