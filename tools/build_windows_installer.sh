@@ -60,6 +60,19 @@ $PYTHON -m venv "$VENV"
     graphifyy \
     >/dev/null
 
+# 3.5 Pre-flight: confirm bundled_skills made it into the installed package.
+# If a snapshot file is missing, this fails the build loudly instead of
+# shipping a graphify.exe that's silently missing skills.
+echo "==> Pre-flight: verifying bundled_skills in installed package..."
+"$VENV/Scripts/python.exe" -c "
+from importlib.resources import files
+sp = files('graphify') / 'bundled_skills' / 'superpowers'
+n = sum(1 for p in sp.iterdir() if p.is_dir())
+assert n == 14, f'expected 14 superpowers skill dirs, got {n}'
+assert (files('graphify') / 'bundled_skills' / 'llm-wiki' / 'SKILL.md').is_file(), 'llm-wiki SKILL.md missing'
+print(f'==> Pre-flight OK: {n} superpowers + llm-wiki present')
+"
+
 # 4. Run Nuitka three times in the offline venv.
 echo "==> Compiling graphify.exe (Nuitka)..."
 "$VENV/Scripts/python.exe" -m nuitka \
