@@ -1787,12 +1787,23 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                 return
 
     resolved_path: "Path | None" = None
+    module_string = None
     for child in node.children:
         if child.type == "string":
-            raw = _read_text(child, source).strip("'\"` ")
-            resolved = _resolve_js_import_target(raw, str_path)
-            if resolved is None:
-                break
+            module_string = child
+            break
+        if child.type == "import_require_clause":
+            # TS import-equals form: `import x = require("./m")`. The module
+            # string sits inside the clause, not on the import_statement
+            # itself, so the direct-child scan above never sees it.
+            module_string = next(
+                (sub for sub in child.children if sub.type == "string"), None
+            )
+            break
+    if module_string is not None:
+        raw = _read_text(module_string, source).strip("'\"` ")
+        resolved = _resolve_js_import_target(raw, str_path)
+        if resolved is not None:
             tgt_nid, resolved_path = resolved
             edges.append({
                 "source": file_nid,
@@ -1804,7 +1815,6 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                 "source_location": f"L{node.start_point[0] + 1}",
                 "weight": 1.0,
             })
-            break
 
     # Emit symbol-level edges for named imports/re-exports from local/aliased files.
     # e.g. `import { Foo, type Bar } from './bar'` → file → Foo, file → Bar (EXTRACTED)
