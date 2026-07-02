@@ -199,3 +199,21 @@ class TestCopyBundledSkills:
         (target_dir / "SKILL.md").write_text("# OLD USER CONTENT — should be replaced", encoding="utf-8")
         copy_bundled_skills(host, root=tmp_path / "home", package_root=pkg)
         assert "# OLD USER CONTENT" not in (target_dir / "SKILL.md").read_text(encoding="utf-8")
+
+
+class TestBundledSkillsInInstalledPackage:
+    """Verify bundled_skills is accessible via importlib.resources after install."""
+
+    def test_superpowers_skills_listed(self):
+        import importlib.resources
+        root = importlib.resources.files("graphify") / "bundled_skills" / "superpowers"
+        skill_dirs = sorted(
+            p.name for p in root.iterdir()
+            if p.is_dir()
+        )
+        assert len(skill_dirs) >= 14, f"got {len(skill_dirs)}: {skill_dirs}"
+
+    def test_llm_wiki_present(self):
+        import importlib.resources
+        root = importlib.resources.files("graphify") / "bundled_skills" / "llm-wiki"
+        assert (root / "SKILL.md").is_file()
