@@ -1,5 +1,5 @@
 graphify
-Copyright 2024-...
+Copyright 2024-2026
 
 This product includes software developed by third parties:
 
@@ -15,6 +15,9 @@ unchanged). See graphify/bundled_skills/README.md.
 ────────────────────────────────────────────────────────────
 llm-wiki
 Bundled under: graphify/bundled_skills/llm-wiki/
-Copyright:     project-local skill
-License:       see graphify/bundled_skills/llm-wiki/LICENSE (vendored deps carry their own LICENSE-*.txt under deps/)
+Copyright:     graphify contributors (project-local skill)
+License:       MIT — no top-level LICENSE file ships with this snapshot;
+               vendored dependencies under deps/ each carry their own
+               LICENSE-*.txt
+Source:        project-local (see graphify/bundled_skills/README.md)
 ────────────────────────────────────────────────────────────
