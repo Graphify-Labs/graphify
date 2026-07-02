@@ -137,6 +137,7 @@ dev = [
     "pyright>=1.1.409",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
+    "pyyaml>=6.0",
     "ruff>=0.15.13",
     "safety>=3.7.0",
     "setuptools>=82.0.1",
