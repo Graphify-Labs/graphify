@@ -176,6 +176,8 @@ graphify = [
     "bundled_skills/**/*.ps1",
     "bundled_skills/**/*.js",
     "bundled_skills/**/*.tsv",
+    "bundled_skills/**/LICENSE*",
+    "bundled_skills/**/NOTICE*",
 ]
 
 [tool.pytest.ini_options]
