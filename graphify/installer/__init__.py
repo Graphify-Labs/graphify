@@ -37,8 +37,9 @@ def install(
     Steps:
     1. Probe `user_root` for installed hosts.
     2. Copy each host's SKILL.md (+ references/) into the host's skill dir.
-    3. Register `install_path / bin` on the user-level PATH.
-    4. Write the install manifest.
+    3. Copy the 15 bundled (gf-*) skills into each host's skill tree.
+    4. Register `install_path / bin` on the user-level PATH.
+    5. Write the install manifest.
     """
     hosts = detect_hosts(root=user_root)
     skill_dirs: List[str] = []
@@ -52,6 +53,15 @@ def install(
             print(
                 f"[graphify-installer] warn: failed to install skill for "
                 f"{host.name}: {exc}",
+                file=sys.stderr,
+            )
+
+        try:
+            skill_copy.copy_bundled_skills(host, root=user_root)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[graphify-installer] warn: failed to install bundled skills "
+                f"for {host.name}: {exc}",
                 file=sys.stderr,
             )
 
