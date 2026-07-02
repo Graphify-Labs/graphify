@@ -178,6 +178,10 @@ graphify = [
     "bundled_skills/**/*.tsv",
     "bundled_skills/**/LICENSE*",
     "bundled_skills/**/NOTICE*",
+    "bundled_skills/**/*.ts",
+    "bundled_skills/**/*.py",
+    "bundled_skills/**/*.json",
+    "bundled_skills/**/*.html",
 ]
 
 [tool.pytest.ini_options]
