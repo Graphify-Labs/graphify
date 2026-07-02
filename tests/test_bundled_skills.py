@@ -120,3 +120,82 @@ class TestBundledSkillsFrontmatter:
             assert fm["name"] == s.name, (
                 f"{s.source_subpath}: frontmatter name `{fm['name']}` != registry `{s.name}`"
             )
+
+
+class TestCopyBundledSkills:
+    """`copy_bundled_skills()` writes SKILL.md for each supported host."""
+
+    def _setup_fake_package(self, tmp_path: Path) -> Path:
+        """Build a minimal graphify/ package dir under tmp_path with the
+        15 bundled SKILL.md files. Mirrors the real layout.
+        """
+        pkg = tmp_path / "graphify"
+        for s in all_bundled():
+            f = pkg / s.source_subpath
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(
+                f"---\nname: {s.name}\ndescription: stub\n---\n# {s.name}\n",
+                encoding="utf-8",
+            )
+        # Superpowers LICENSE for the registry's structural test
+        (pkg / "bundled_skills" / "superpowers" / "LICENSE").write_text(
+            "MIT\n", encoding="utf-8"
+        )
+        # llm-wiki references/ sidecar
+        (pkg / "bundled_skills" / "llm-wiki" / "references").mkdir(parents=True, exist_ok=True)
+        (pkg / "bundled_skills" / "llm-wiki" / "references" / "x.md").write_text(
+            "ref\n", encoding="utf-8"
+        )
+        return pkg
+
+    @pytest.mark.parametrize("host_name", ["claude", "codex", "opencode", "kilo",
+                                            "aider", "pi", "claw", "droid",
+                                            "vscode", "amp", "agents"])
+    def test_writes_skills_for_supported_hosts(self, tmp_path, host_name):
+        from graphify.installer.skill_copy import copy_bundled_skills
+        pkg = self._setup_fake_package(tmp_path / "pkg")
+        host = next(h for h in KNOWN_HOSTS if h.name == host_name)
+        copy_bundled_skills(host, root=tmp_path / "home", package_root=pkg)
+        target = bundled_skill_dir(host, "gf-brainstorming", root=tmp_path / "home")
+        assert (target / "SKILL.md").exists(), f"missing {target}/SKILL.md"
+
+    def test_writes_llm_wiki_references_sidecar(self, tmp_path):
+        """gf-llm-wiki has has_references=True → references/ must be copied."""
+        from graphify.installer.skill_copy import copy_bundled_skills
+        pkg = self._setup_fake_package(tmp_path / "pkg")
+        host = next(h for h in KNOWN_HOSTS if h.name == "claude")
+        copy_bundled_skills(host, root=tmp_path / "home", package_root=pkg)
+        target = bundled_skill_dir(host, "gf-llm-wiki", root=tmp_path / "home")
+        assert (target / "SKILL.md").exists()
+        assert (target / "references" / "x.md").exists()
+
+    def test_does_not_write_references_for_superpowers(self, tmp_path):
+        """gf-brainstorming has has_references=False → no references/ written."""
+        from graphify.installer.skill_copy import copy_bundled_skills
+        pkg = self._setup_fake_package(tmp_path / "pkg")
+        host = next(h for h in KNOWN_HOSTS if h.name == "claude")
+        copy_bundled_skills(host, root=tmp_path / "home", package_root=pkg)
+        target = bundled_skill_dir(host, "gf-brainstorming", root=tmp_path / "home")
+        assert not (target / "references").exists()
+
+    @pytest.mark.parametrize("host_name", ["cursor", "gemini"])
+    def test_skips_unsupported_hosts(self, tmp_path, host_name):
+        from graphify.installer.skill_copy import copy_bundled_skills
+        pkg = self._setup_fake_package(tmp_path / "pkg")
+        host = next(h for h in KNOWN_HOSTS if h.name == host_name)
+        copy_bundled_skills(host, root=tmp_path / "home", package_root=pkg)
+        # Nothing under the host marker should have any SKILL.md
+        marker = tmp_path / "home" / host.marker
+        if marker.exists():
+            assert not any(marker.rglob("SKILL.md"))
+
+    def test_always_overwrites_existing(self, tmp_path):
+        """Always-overwrite semantics: any pre-existing SKILL.md is replaced."""
+        from graphify.installer.skill_copy import copy_bundled_skills
+        pkg = self._setup_fake_package(tmp_path / "pkg")
+        host = next(h for h in KNOWN_HOSTS if h.name == "claude")
+        target_dir = bundled_skill_dir(host, "gf-brainstorming", root=tmp_path / "home")
+        target_dir.mkdir(parents=True)
+        (target_dir / "SKILL.md").write_text("# OLD USER CONTENT — should be replaced", encoding="utf-8")
+        copy_bundled_skills(host, root=tmp_path / "home", package_root=pkg)
+        assert "# OLD USER CONTENT" not in (target_dir / "SKILL.md").read_text(encoding="utf-8")
