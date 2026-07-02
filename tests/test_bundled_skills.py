@@ -77,3 +77,20 @@ class TestBundledSkillDir:
         host = next(h for h in KNOWN_HOSTS if h.name == "cursor")
         result = bundled_skill_dir(host, "gf-brainstorming", root=tmp_path)
         assert result == tmp_path / ".cursor" / "skills" / "gf-brainstorming"
+
+
+class TestSupportsHost:
+    """`supports_host()` returns False for cursor/gemini, True otherwise."""
+
+    @pytest.mark.parametrize("host_name", ["claude", "codex", "opencode", "kilo",
+                                            "aider", "copilot", "claw", "droid",
+                                            "trae", "kiro", "pi", "vscode", "amp",
+                                            "agents", "antigravity",
+                                            "codebuddy", "hermes", "trae-cn",
+                                            "mobilecoder"])
+    def test_supports_common_hosts(self, host_name):
+        assert supports_host(host_name) is True
+
+    @pytest.mark.parametrize("host_name", ["cursor", "gemini"])
+    def test_skips_format_incompatible_hosts(self, host_name):
+        assert supports_host(host_name) is False
