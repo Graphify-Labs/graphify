@@ -19,10 +19,19 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 PYTHON="${PYTHON:-python}"
-WHEELHOUSE="$REPO_ROOT/wheelhouse-windows"
+# Wheelhouse is keyed by the Python version the build is running on so that
+# cached wheels from a previous build (e.g. cp310 from an older windows-2022
+# image) are never silently reused for a different interpreter (e.g. cp312
+# on the current windows-2022 image, which has 3.12.10 on PATH). Mixing
+# wheels from two interpreters in one --find-links dir is what makes
+# `pip install --no-index` fail with
+#   "ERROR: Could not find a version that satisfies the requirement ... (from versions: none)"
+# even though the wheel file is on disk.
+PY_VERSION="$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")"
+WHEELHOUSE="$REPO_ROOT/wheelhouse-windows-cp${PY_VERSION}"
 DIST="$REPO_ROOT/dist"
 
-echo "==> Python: $($PYTHON --version)"
+echo "==> Python: $($PYTHON --version) (cp${PY_VERSION})"
 echo "==> Wheelhouse: $WHEELHOUSE"
 echo "==> Output:     $DIST"
 
@@ -49,9 +58,13 @@ with open('pyproject.toml', 'rb') as f:
 print('\n'.join(data['project']['optional-dependencies']['windows-offline']))
 " > "$WHEEL_REQ"
 
+# Pull the target interpreter version dynamically. Hard-coding
+# `--python-version 3.10` here while the venv below is built from whatever
+# `python` resolves to (e.g. 3.12 on the current windows-2022 runner) yields
+# a wheelhouse the venv's pip cannot use.
 $PYTHON -m pip download \
     --dest "$WHEELHOUSE" \
-    --python-version 3.10 \
+    --python-version "$PY_VERSION" \
     --platform win_amd64 \
     --platform py3-none-any \
     --no-deps \
