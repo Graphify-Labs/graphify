@@ -42,11 +42,14 @@ TMP_EMBED="$(mktemp -t py-embed.XXXXXX).zip"
 trap 'rm -f "$TMP_EMBED"' EXIT
 echo "==> Downloading Python ${PY_VERSION} embeddable..."
 curl -fsSL -o "$TMP_EMBED" "$EMBED_URL"
-unzip -q "$TMP_EMBED" -d "$BUILD/python"
+unzip -qo "$TMP_EMBED" -d "$BUILD/python"
 
 # 2. Enable site-packages in _pth
 _PTH="$(find "$BUILD/python" -maxdepth 1 -name 'python*._pth' | head -n1)"
 [[ -n "$_PTH" ]] || { echo "error: no ._pth file found in python/"; exit 1; }
+# The embeddable ._pth ships with CRLF line endings (Windows origin). Strip CRs
+# first so the sed pattern matches the full line content cleanly.
+tr -d '\r' < "$_PTH" > "${_PTH}.tmp" && mv "${_PTH}.tmp" "$_PTH"
 sed -i.bak 's/^#import site$/import site/' "$_PTH"
 rm -f "${_PTH}.bak"
 
