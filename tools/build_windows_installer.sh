@@ -66,20 +66,31 @@ print('\n'.join(data['project']['optional-dependencies']['windows-offline']))
 #   "No module named nuitka". Add it here so it lands in the same cache.
 # Bump the pin to match the dev group (>=4.1).
 echo 'nuitka>=4.1' >> "$WHEEL_REQ"
+# `nuitka`'s required transitive dep. Without it, Nuitka's first import in
+# the offline venv fails with No-module-named-ordered-set.
+echo 'ordered-set>=4.1' >> "$WHEEL_REQ"
+# Optional for Nuitka but listed in the dev group; pulling it in makes the
+# onefile output compressed (without it Nuitka falls back to an uncompressed
+# onefile blob, ~30% larger).
+echo 'zstandard>=0.18' >> "$WHEEL_REQ"
 
 # Pull the target interpreter version dynamically. Hard-coding
 # `--python-version 3.10` here while the venv below is built from whatever
 # `python` resolves to (e.g. 3.12 on the current windows-2022 runner) yields
 # a wheelhouse the venv's pip cannot use.
 #
-# Drop --no-deps so pip follows transitives (e.g. nuitka -> ordered-set).
-# With --no-deps the offline venv would install graphifyy + nuitka but miss
-# ordered-set, and Nuitka's first import would No-module-named-ordered-set.
+# Keep --no-deps. With --python-version/--platform restricted, pip refuses
+# to *also* follow transitives (the pass would have to assume unconstrained
+# binary availability); the only way pip lets you resolve transitives under
+# those flags is --only-binary=:all:, which is stricter than we want. So
+# the build-tool deps (nuitka, ordered-set, zstandard) are listed explicitly
+# in $WHEEL_REQ above.
 $PYTHON -m pip download \
     --dest "$WHEELHOUSE" \
     --python-version "$PY_VERSION" \
     --platform win_amd64 \
     --platform py3-none-any \
+    --no-deps \
     --requirement "$WHEEL_REQ"
 
 # 2. Install graphify itself as a wheel (so Nuitka finds the package).
