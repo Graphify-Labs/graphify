@@ -152,11 +152,11 @@ $PYTHON -m venv "$VENV"
 #   FATAL: Error, failed to locate module 'anthropic' that you asked to include.
 #
 # (1) The local graphifyy wheel — pinned to the file path, so pip cannot
-#     "upgrade" to a different version off PyPI. --no-deps keeps pip from
-#     re-resolving the dependency graph (the wheelhouse already has every
-#     runtime wheel we want, and we install them explicitly next).
+#     "upgrade" to a different version off PyPI. Without --no-deps, pip
+#     walks the wheel's `dependencies` (networkx, numpy, rapidfuzz,
+#     tree-sitter-*) and resolves each from the wheelhouse.
 echo "==> Installing local graphifyy wheel into venv..."
-"$VENV/Scripts/python.exe" -m pip install --no-deps \
+"$VENV/Scripts/python.exe" -m pip install \
     --find-links "$WHEELHOUSE" \
     "$WHEELHOUSE"/graphifyy-*.whl \
     >/dev/null
