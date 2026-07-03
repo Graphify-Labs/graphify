@@ -2106,6 +2106,55 @@ def _swift_local_var_types(body_node, source: bytes, table: dict[str, str]) -> N
             stack.append(c)
 
 
+def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
+    """Add TS/JS receiver bindings to ``table`` (name -> TypeName), for member-call
+    resolution beyond the constructor-injected `this.field` case (#1630):
+
+      * local ``const/let/var x = new Foo()`` -> ``x: Foo`` (Pattern A);
+      * a type-annotated parameter ``(svc: Svc)`` -> ``svc: Svc`` (Pattern B), so a
+        call on the param — including inside a returned closure — resolves.
+
+    File-scoped, first-binding-wins (merged into the constructor-injection table,
+    which is populated first and therefore wins on a name clash). Only a bare
+    ``type_identifier`` (a single class/interface name) is recorded — an array,
+    union, generic, qualified, or predefined type is skipped (precision over
+    recall, matching the receiver-typed resolvers for Swift/C#/C++)."""
+    def _bare_type_ident(type_annotation):
+        # type_annotation -> ": T"; accept only a single type_identifier child.
+        idents = [c for c in type_annotation.children if c.type == "type_identifier"]
+        others = [c for c in type_annotation.children
+                  if c.is_named and c.type not in ("type_identifier",)]
+        if len(idents) == 1 and not others:
+            return _read_text(idents[0], source)
+        return None
+
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        t = n.type
+        if t == "variable_declarator":
+            name_n = n.child_by_field_name("name")
+            value = n.child_by_field_name("value")
+            if (name_n is not None and name_n.type == "identifier"
+                    and value is not None and value.type == "new_expression"):
+                ctor = value.child_by_field_name("constructor")
+                if ctor is not None and ctor.type in ("identifier", "type_identifier"):
+                    name = _read_text(name_n, source)
+                    tname = _read_text(ctor, source)
+                    if name and tname and name not in table:
+                        table[name] = tname
+        elif t == "required_parameter" or t == "optional_parameter":
+            pat = n.child_by_field_name("pattern")
+            ann = n.child_by_field_name("type")
+            if pat is not None and pat.type == "identifier" and ann is not None:
+                tname = _bare_type_ident(ann)
+                name = _read_text(pat, source)
+                if name and tname and name not in table:
+                    table[name] = tname
+        for c in n.children:
+            stack.append(c)
+
+
 def _objc_local_var_types(body_node, source: bytes, table: dict[str, str]) -> None:
     """Collect ``var -> ClassName`` from ObjC local declarations (``Foo *f = ...;``)
     in a method body, for receiver typing in the cross-file message-send pass
@@ -4373,8 +4422,23 @@ def _extract_generic(
             return None
         return _read_text(scope, source)
 
+    _tracked_body_ids: set[int] = set()
+    _JS_CLOSURE_TYPES = ("arrow_function", "function_expression")
+
     def walk_calls(node, caller_nid: str) -> None:
         if node.type in config.function_boundary_types:
+            # JS/TS: an inline/returned closure not separately tracked in
+            # function_bodies would otherwise drop its calls at this boundary.
+            # Descend into it with the enclosing caller so `return () =>
+            # svc.doThing()` links to the caller (#1630). Tracked closures
+            # (const-assigned arrows) are walked with their own nid — skip to
+            # avoid double-counting.
+            if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                    and node.type in _JS_CLOSURE_TYPES):
+                body = node.child_by_field_name("body")
+                if body is not None and id(body) not in _tracked_body_ids:
+                    for child in node.children:
+                        walk_calls(child, caller_nid)
             return
 
         if node.type in config.call_types:
@@ -4843,6 +4907,14 @@ def _extract_generic(
         for _caller_nid, body_node in function_bodies:
             _swift_local_var_types(body_node, source, type_table)
 
+    # JS/TS: bodies already walked with their own caller_nid (const-assigned
+    # arrows, methods). An INLINE/returned arrow or function-expression that is
+    # NOT separately tracked (e.g. `return () => svc.doThing()`) is otherwise
+    # skipped at the arrow boundary in walk_calls, losing its calls — so let
+    # walk_calls descend into such untracked closures with the enclosing caller
+    # (#1630 Pattern B). Guarding on the tracked set prevents double-walking.
+    _tracked_body_ids.update(id(b) for _, b in function_bodies)
+
     for caller_nid, body_node in function_bodies:
         walk_calls(body_node, caller_nid)
 
@@ -4949,6 +5021,13 @@ def _extract_generic(
                 n["_callable"] = True
     if swift_extensions:
         result["swift_extensions"] = swift_extensions
+    # TS/JS: augment the constructor-injection type table with local `new`
+    # bindings and type-annotated parameters, so `const s = new Svc(); s.m()` and
+    # a call on a typed param (incl. inside a closure) resolve (#1630). The
+    # constructor-injection entries are populated during the walk above and win on
+    # a name clash (first-binding-wins in the helper).
+    if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+        _ts_receiver_type_table(root, source, type_table)
     if type_table:
         if config.ts_module == "tree_sitter_swift":
             result["swift_type_table"] = {"path": str_path, "table": type_table}
