@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -603,3 +604,125 @@ def test_backup_env_disable(tmp_path, monkeypatch):
     (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
     (tmp_path / ".graphify_semantic_marker").write_text("{}")
     assert backup_if_protected(tmp_path) is None
+
+
+# --- staleness chokepoint: every graph.json writer must stamp via
+# stamp_graph_metadata, and check_staleness must use the recorded indexed
+# repo root rather than inferring it from the graph file's own location ---
+
+
+def test_to_json_stamps_generated_at_and_indexed_repo_root(tmp_path):
+    """to_json (the clustered writer) records both generated_at and, when the
+    caller passes indexed_repo_root, the resolved indexed repo root."""
+    G = make_graph()
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    repo_root = tmp_path / "somewhere-else"
+    repo_root.mkdir()
+    to_json(G, communities, str(out), indexed_repo_root=repo_root)
+    data = json.loads(out.read_text())
+    assert "generated_at" in data
+    assert data["indexed_repo_root"] == str(repo_root.resolve())
+
+
+def test_to_json_omits_indexed_repo_root_when_not_given(tmp_path):
+    """Without an explicit indexed_repo_root, to_json still stamps generated_at
+    but doesn't fabricate a root (legacy-graph shape stays legacy)."""
+    G = make_graph()
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    to_json(G, communities, str(out))
+    data = json.loads(out.read_text())
+    assert "generated_at" in data
+    assert "indexed_repo_root" not in data
+
+
+def _init_repo_with_one_commit(repo_dir: Path) -> None:
+    import subprocess
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(repo_dir)], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True)
+    (repo_dir / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "a.py"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "init"], check=True)
+
+
+def _last_commit_iso(repo_dir: Path) -> str:
+    import subprocess
+    r = subprocess.run(
+        ["git", "-C", str(repo_dir), "log", "-1", "--format=%cI"],
+        capture_output=True, text=True, check=True,
+    )
+    return r.stdout.strip()
+
+
+def _advance_repo(repo_dir: Path) -> None:
+    """Commit again with an explicit committer date safely past the repo's
+    current HEAD, so ordering doesn't depend on git's 1-second timestamp
+    resolution racing the test's wall-clock stamp."""
+    import subprocess
+    from datetime import datetime, timedelta, timezone
+    current = datetime.fromisoformat(_last_commit_iso(repo_dir))
+    later = (current + timedelta(seconds=5)).isoformat()
+    (repo_dir / "a.py").write_text("def a():\n    return 2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "a.py"], check=True)
+    env = {**os.environ, "GIT_AUTHOR_DATE": later, "GIT_COMMITTER_DATE": later}
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True, env=env)
+
+
+def test_check_staleness_uses_recorded_root_for_out_elsewhere_graph(tmp_path):
+    """#2 repro: a graph.json written via `--out <elsewhere>` (unrelated to the
+    indexed repo by directory structure) must still warn once the indexed repo
+    advances, because the root was recorded IN the graph at write time rather
+    than inferred from the graph file's own location."""
+    from graphify.export import check_staleness
+
+    repo_dir = tmp_path / "repo"
+    _init_repo_with_one_commit(repo_dir)
+
+    # graph.json lives in a completely unrelated directory - inferring the
+    # root from graph_path's location (parent.parent) would resolve to
+    # tmp_path itself, which is not a git repo at all.
+    elsewhere = tmp_path / "elsewhere" / "nested"
+    elsewhere.mkdir(parents=True)
+    graph_path = elsewhere / "graph.json"
+
+    from datetime import datetime, timezone
+    stamp = datetime.now(timezone.utc).isoformat()
+    raw = {"generated_at": stamp, "indexed_repo_root": str(repo_dir.resolve())}
+    graph_path.write_text(json.dumps(raw))
+
+    # Not stale yet - graph was just generated, repo hasn't moved since.
+    assert check_staleness(raw, graph_path) is None
+
+    _advance_repo(repo_dir)
+    warning = check_staleness(raw, graph_path)
+    assert warning is not None
+    assert "stale" in warning
+
+
+def test_check_staleness_legacy_graph_without_recorded_root_cannot_detect_out_elsewhere(tmp_path):
+    """Documents the pre-fix limitation for LEGACY graphs (no indexed_repo_root):
+    location-based inference is the only option left, and for an --out-elsewhere
+    graph it resolves to a non-repo directory, so staleness silently can't be
+    determined (no false positive, no false negative - just "can't tell")."""
+    from graphify.export import check_staleness
+
+    repo_dir = tmp_path / "repo"
+    _init_repo_with_one_commit(repo_dir)
+
+    elsewhere = tmp_path / "elsewhere" / "nested"
+    elsewhere.mkdir(parents=True)
+    graph_path = elsewhere / "graph.json"
+
+    from datetime import datetime, timezone
+    stamp = datetime.now(timezone.utc).isoformat()
+    raw = {"generated_at": stamp}  # no indexed_repo_root - legacy shape
+    graph_path.write_text(json.dumps(raw))
+
+    _advance_repo(repo_dir)
+    # location-based fallback resolves to `elsewhere` (parent.parent of
+    # graph_path), which isn't a git repo, so git fails and the check
+    # abstains rather than warning.
+    assert check_staleness(raw, graph_path) is None

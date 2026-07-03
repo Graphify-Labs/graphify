@@ -1,6 +1,8 @@
 """Tests for `graphify extract` CLI dispatch path in graphify.__main__."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import graphify.__main__ as mainmod
@@ -265,3 +267,34 @@ def test_extract_timing_flag_emits_stage_timings(monkeypatch, tmp_path, capsys):
         mainmod.main()
     assert exc2.value.code == 0
     assert "graphify timing" not in capsys.readouterr().err
+
+
+def test_extract_no_cluster_stamps_generated_at_and_indexed_repo_root(monkeypatch, tmp_path):
+    """#1 repro: the --no-cluster raw writer (extract path, __main__.py) must stamp
+    graph.json exactly like the clustered to_json() writer does - generated_at plus
+    the indexed repo root - so check_staleness can detect a stale graph regardless
+    of which extract mode produced it or where --out placed it."""
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "a.py").write_text("def a():\n    return 1\n")
+    out_dir = tmp_path / "external-out"
+
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(code), "--no-cluster", "--out", str(out_dir)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code == 0
+
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    assert graph_path.exists()
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert "generated_at" in data, (
+        "--no-cluster extract must stamp generated_at just like the clustered writer"
+    )
+    assert data.get("indexed_repo_root") == str(code.resolve()), (
+        '--no-cluster extract must record the indexed repo root (the scanned "code" '
+        "dir), not wherever --out happens to point"
+    )

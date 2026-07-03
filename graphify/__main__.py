@@ -2898,6 +2898,13 @@ def main() -> None:
             if "links" not in _raw and "edges" in _raw:
                 _raw = dict(_raw, links=_raw["edges"])
             try:
+                from graphify.export import check_staleness
+                _stale_warning = check_staleness(_raw, gp)
+                if _stale_warning:
+                    print(_stale_warning, file=sys.stderr)
+            except Exception:
+                pass  # staleness check is diagnostic-only, never blocks a query
+            try:
                 G = json_graph.node_link_graph(_raw, edges="links")
             except TypeError:
                 G = json_graph.node_link_graph(_raw)
@@ -3666,7 +3673,7 @@ def main() -> None:
             json.dumps(analysis, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        to_json(G, communities, str(out / "graph.json"), community_labels=labels)
+        to_json(G, communities, str(out / "graph.json"), community_labels=labels, indexed_repo_root=watch_path)
         labels_path.write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding="utf-8")
         # Membership signatures beside the labels so a later cluster-only can detect
         # which communities changed and avoid reusing a stale label (see reuse above).
@@ -3860,7 +3867,7 @@ def main() -> None:
             except TypeError:
                 return _jg.node_link_graph(data), data
         try:
-            G_cur, _ = _load_graph(_current_path)
+            G_cur, _data_cur = _load_graph(_current_path)
             G_oth, _ = _load_graph(_other_path)
         except Exception as exc:
             print(f"[graphify merge-driver] error loading graphs: {exc}", file=sys.stderr)
@@ -3877,6 +3884,29 @@ def main() -> None:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
             out_data = _jg.node_link_data(merged)
+        # Stamp before writing (d1692f4's chokepoint) so a merged graph.json
+        # still carries a fresh generated_at/built_at_commit for check_staleness.
+        # There's no single "indexed root" argument here — git invokes merge
+        # drivers with (base, current, other) as throwaway temp file paths, not
+        # the real graphify-out/graph.json location, so _current_path's parent
+        # dir can't be used the way _infer_merge_root normally would. Instead,
+        # resolve the actual repo root git is merging in: git runs merge
+        # drivers with cwd set to the top of the work tree, so `rev-parse
+        # --show-toplevel` from here IS the indexed repo root. Fall back to
+        # whatever root the current side was already stamped with, then to cwd.
+        import subprocess as _sp
+        try:
+            _mr = _sp.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=3,
+            )
+            _merge_repo_root = _mr.stdout.strip() if _mr.returncode == 0 and _mr.stdout.strip() else None
+        except Exception:
+            _merge_repo_root = None
+        if not _merge_repo_root:
+            _merge_repo_root = _data_cur.get("indexed_repo_root") or str(Path.cwd())
+        from graphify.export import stamp_graph_metadata as _stamp_graph_metadata
+        _stamp_graph_metadata(out_data, indexed_repo_root=_merge_repo_root)
         Path(_current_path).write_text(json.dumps(out_data, indent=2), encoding="utf-8")
         sys.exit(0)
 
@@ -4907,6 +4937,8 @@ def main() -> None:
                         _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
                     )
             _backup(graphify_out)
+            from graphify.export import stamp_graph_metadata as _stamp_graph_metadata
+            _stamp_graph_metadata(merged, indexed_repo_root=target)
             graph_json_path.write_text(
                 json.dumps(merged, indent=2), encoding="utf-8"
             )
@@ -4991,7 +5023,7 @@ def main() -> None:
 
         from graphify.export import backup_if_protected as _backup
         _backup(graphify_out)
-        _to_json(G, communities, str(graph_json_path), force=True)
+        _to_json(G, communities, str(graph_json_path), force=True, indexed_repo_root=target)
         stages.mark("export")
         if merged.get("output_tokens", 0) > 0:
             (graphify_out / ".graphify_semantic_marker").write_text(

@@ -721,6 +721,38 @@ def test_rebuild_code_accepts_repo_relative_changed_path_for_subdir_root(tmp_pat
         os.chdir(cwd)
 
 
+def test_rebuild_code_no_cluster_stamps_generated_at_and_indexed_repo_root(tmp_path):
+    """#1 repro (second writer site): the --no-cluster raw writer in the UPDATE
+    path (watch.py's _rebuild_code) must stamp graph.json exactly like to_json()
+    does, on both the first write and a subsequent re-write, so check_staleness
+    can detect a stale graph produced by `graphify update --no-cluster`."""
+    from graphify.watch import _rebuild_code
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(project, no_cluster=True, acquire_lock=False) is True
+    graph_path = project / "graphify-out" / "graph.json"
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert "generated_at" in before, (
+        "--no-cluster update must stamp generated_at just like the clustered writer"
+    )
+    assert before.get("indexed_repo_root") == str(project.resolve()), (
+        "--no-cluster update must record the indexed repo root"
+    )
+
+    # A second update (new content, forced) must re-stamp too - not just the
+    # first write of a fresh graph.
+    (project / "a.py").write_text("def a():\n    return 2\n", encoding="utf-8")
+    assert _rebuild_code(
+        project, no_cluster=True, acquire_lock=False, force=True,
+    ) is True
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert "generated_at" in after
+    assert after.get("indexed_repo_root") == str(project.resolve())
+
+
 # --- #1059: pending-changes queue prevents commit drops under lock contention ---
 
 
