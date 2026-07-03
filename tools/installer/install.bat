@@ -12,6 +12,7 @@ if %ERRORLEVEL% == 0 (
     set "NEED_PATH=1"
     if not exist "%PYTHON%" (
         echo ERROR: python not found, check python\ subdirectory
+        pause
         exit /b 1
     )
     echo [1/4] Using embedded Python: %PYTHON%
@@ -31,6 +32,7 @@ echo [3/4] Installing graphifyy (~30-60 sec)...
     graphifyy
 if errorlevel 1 (
     echo ERROR: pip install graphifyy failed
+    pause
     exit /b 1
 )
 
@@ -53,4 +55,5 @@ if "%NEED_PATH%"=="1" (
 
 echo.
 echo [OK] Install complete. Open a new cmd window to use graphify.
+pause
 endlocal

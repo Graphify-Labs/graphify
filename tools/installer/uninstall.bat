@@ -15,4 +15,5 @@ cd /d "%~dp0\.."
 rmdir /s /q "%~dp0." 2>nul
 echo.
 echo [OK] Uninstall complete.
+pause
 endlocal
