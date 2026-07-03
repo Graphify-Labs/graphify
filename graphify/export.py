@@ -9,7 +9,7 @@ import re
 import shutil
 import sys
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -482,6 +482,57 @@ def _git_head() -> str | None:
         return None
 
 
+def check_staleness(raw: dict, graph_path: Path) -> str | None:
+    """Return a one-line stale-graph warning if graph.json is out of date, else None.
+
+    "Out of date" means the on-disk graph.json predates the last git commit of
+    the repo it indexes. Missing/unreadable stamps (graphs built by an older
+    graphify version) also warn, telling the caller to regenerate. Never
+    raises — any failure resolving the repo root or running git is treated as
+    "can't tell", not an error, so this is safe to call outside a git repo.
+    """
+    generated_at = raw.get("generated_at")
+    if not generated_at:
+        return (
+            f"[graphify] warning: {graph_path} has no generation timestamp "
+            "(built by an older graphify version) - no stamp, regenerate with `graphify .`"
+        )
+    try:
+        stamp = datetime.fromisoformat(generated_at)
+    except (TypeError, ValueError):
+        return (
+            f"[graphify] warning: {graph_path} has an unreadable generation "
+            "timestamp - no stamp, regenerate with `graphify .`"
+        )
+
+    import subprocess as _sp
+    from graphify.build import _infer_merge_root
+    repo_root = _infer_merge_root(graph_path)
+    if repo_root is None:
+        return None  # can't resolve the indexed root - nothing to compare against
+    try:
+        r = _sp.run(
+            ["git", "-C", str(repo_root), "log", "-1", "--format=%cI"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return None  # git not available - nothing to compare against
+    if r.returncode != 0 or not r.stdout.strip():
+        return None  # not a git repo (or no commits yet)
+    try:
+        last_commit = datetime.fromisoformat(r.stdout.strip())
+    except ValueError:
+        return None
+
+    if last_commit > stamp:
+        return (
+            f"[graphify] warning: graph.json was generated {generated_at} but "
+            f"the indexed repo's last commit is {r.stdout.strip()} - graph is "
+            "stale, run `graphify .` (or `graphify update`) to refresh"
+        )
+    return None
+
+
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
@@ -537,6 +588,7 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     commit = built_at_commit if built_at_commit is not None else _git_head()
     if commit:
         data["built_at_commit"] = commit
+    data["generated_at"] = datetime.now(timezone.utc).isoformat()
     with open(output_path, "w", encoding="utf-8") as f:  # nosec
         json.dump(data, f, indent=2)
     return True

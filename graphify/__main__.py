@@ -2898,6 +2898,13 @@ def main() -> None:
             if "links" not in _raw and "edges" in _raw:
                 _raw = dict(_raw, links=_raw["edges"])
             try:
+                from graphify.export import check_staleness
+                _stale_warning = check_staleness(_raw, gp)
+                if _stale_warning:
+                    print(_stale_warning, file=sys.stderr)
+            except Exception:
+                pass  # staleness check is diagnostic-only, never blocks a query
+            try:
                 G = json_graph.node_link_graph(_raw, edges="links")
             except TypeError:
                 G = json_graph.node_link_graph(_raw)
