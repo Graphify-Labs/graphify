@@ -23,15 +23,73 @@ from .ruby_resolution import resolve_ruby_member_calls
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.extractors.base import (  # noqa: F401
+    LanguageConfig,
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
     _make_id,
     _read_text,
 )
 from graphify.extractors.blade import extract_blade  # noqa: F401
-from graphify.extractors.csharp import (
+from graphify.extractors.csharp import (  # noqa: F401
+    _canonicalize_csharp_namespace_nodes,
+    _csharp_base_identifier,
+    _csharp_preserve_scoped_stub_rewire,
+    _is_cs_file,
+    _metadata,
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
+    build_csharp_name_resolver,
+)
+from graphify.extractors.csharp_extract import (  # noqa: F401
+    _csharp_namespace_id,
+    _CSHARP_SCOPE_NODES,
+    _CSHARP_TYPE_DECLARATION_NODES,
+    _CSHARP_PARAMETER_LIST_NODES,
+    _CSHARP_CALLABLE_PARAMETER_OWNER_NODES,
+    _csharp_scope_chain,
+    _csharp_scope_id,
+    _CSHARP_BINDING_PATTERN_NODES,
+    _csharp_designator_names,
+    _bare_type_node,
+    _csharp_declared_bare_type,
+    _csharp_parameter_scope_owner,
+    _csharp_parameter_is_callable_scoped,
+    _build_csharp_type_table,
+    _build_csharp_var_call_inits,
+    _csharp_unique_sorted,
+    _csharp_shadow_bucket,
+    _csharp_add_shadow,
+    _csharp_first_child,
+    _csharp_enclosing_scope_id,
+    _csharp_first_identifier_child,
+    _csharp_names_from_variable_declaration,
+    _csharp_direct_member_names,
+    _csharp_direct_member_types,
+    _build_csharp_shadow_names,
+    _csharp_pre_scan_interfaces,
+    _csharp_classify_base,
+    _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS,
+    _csharp_type_parameters_in_scope,
+    _csharp_collect_type_refs,
+    _csharp_attribute_names,
+    _csharp_import_target_kind,
+    _import_csharp,
+    _csharp_namespace_name,
+    _csharp_extra_walk,
+    _CSHARP_CONFIG,
+    _read_csharp_type_name,
+    csharp_base_list_facts,
+    csharp_class_member_metadata,
+    csharp_field_type_ref_facts,
+    csharp_file_facts,
+    csharp_invocation_callee,
+    csharp_method_reference_facts,
+    csharp_property_type_ref_facts,
+)
+from graphify.extractors.csharp_resolve import (  # noqa: F401
+    _is_placeholder_node,
+    _lookup_type_table,
+    _resolve_csharp_member_calls,
 )
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
@@ -79,11 +137,6 @@ def _file_node_id(rel_path: Path) -> str:
     ID semantic subagents generate, or AST and semantic extraction split a file
     into two disconnected ghost nodes (#1033)."""
     return _make_id(_file_stem(rel_path))
-
-
-def _csharp_namespace_id(dotted_name: str) -> str:
-    digest = hashlib.sha1(dotted_name.encode("utf-8")).hexdigest()[:16]
-    return f"csharp_namespace:{digest}"
 
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
@@ -575,52 +628,6 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
     return _resolve_workspace_import(raw, start_dir)
 
 
-# ── LanguageConfig dataclass ─────────────────────────────────────────────────
-
-@dataclass
-class LanguageConfig:
-    ts_module: str                                   # e.g. "tree_sitter_python"
-    ts_language_fn: str = "language"                 # attr to call: e.g. tslang.language()
-
-    class_types: frozenset = frozenset()
-    function_types: frozenset = frozenset()
-    import_types: frozenset = frozenset()
-    call_types: frozenset = frozenset()
-    static_prop_types: frozenset = frozenset()
-    helper_fn_names: frozenset = frozenset()
-    container_bind_methods: frozenset = frozenset()
-    event_listener_properties: frozenset = frozenset()
-
-    # Name extraction
-    name_field: str = "name"
-    name_fallback_child_types: tuple = ()
-
-    # Body detection
-    body_field: str = "body"
-    body_fallback_child_types: tuple = ()   # e.g. ("declaration_list", "compound_statement")
-
-    # Call name extraction
-    call_function_field: str = "function"           # field on call node for callee
-    call_accessor_node_types: frozenset = frozenset()  # member/attribute nodes
-    call_accessor_field: str = "attribute"          # field on accessor for method name
-    call_accessor_object_field: str = ""            # field on accessor for the receiver/object
-
-    # Stop recursion at these types in walk_calls
-    function_boundary_types: frozenset = frozenset()
-
-    # Import handler: called for import nodes instead of generic handling
-    import_handler: Callable | None = None
-
-    # Optional custom name resolver for functions (C, C++ declarator unwrapping)
-    resolve_function_name_fn: Callable | None = None
-
-    # Extra label formatting for functions: if True, functions get "name()" label
-    function_label_parens: bool = True
-
-    # Extra walk hook called after generic dispatch (for JS arrow functions, C# namespaces, etc.)
-    extra_walk_fn: Callable | None = None
-
-
 # ── Generic helpers ───────────────────────────────────────────────────────────
 
 
@@ -696,146 +703,6 @@ def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
         for c in node.children:
             if c.is_named:
                 _python_collect_type_refs(c, source, generic, out)
-
-
-def _csharp_pre_scan_interfaces(root_node, source: bytes) -> set[str]:
-    """Return names declared as `interface` in this C# compilation unit."""
-    out: set[str] = set()
-    stack = [root_node]
-    while stack:
-        n = stack.pop()
-        if n.type == "interface_declaration":
-            name_node = n.child_by_field_name("name")
-            if name_node is not None:
-                text = _read_text(name_node, source)
-                if text:
-                    out.add(text)
-        stack.extend(n.children)
-    return out
-
-
-def _csharp_classify_base(name: str, interface_names: set[str]) -> str:
-    """`implements` if the base name is an interface (declared or by I-prefix convention), else `inherits`."""
-    if name in interface_names:
-        return "implements"
-    if len(name) >= 2 and name[0] == "I" and name[1].isupper():
-        return "implements"
-    return "inherits"
-
-
-_CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS = frozenset({
-    "class_declaration",
-    "interface_declaration",
-    "record_declaration",
-    "struct_declaration",
-    "method_declaration",
-})
-
-
-def _csharp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
-    """Return C# type-parameter names visible from ``node``."""
-    names: set[str] = set()
-    scope = node
-    while scope is not None:
-        if scope.type in _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS:
-            for child in scope.children:
-                if child.type != "type_parameter_list":
-                    continue
-                for param in child.children:
-                    if param.type == "type_parameter":
-                        name_node = next(
-                            (sub for sub in param.children if sub.type == "identifier"),
-                            None,
-                        )
-                        if name_node is not None:
-                            name = _read_text(name_node, source)
-                            if name:
-                                names.add(name)
-                    elif param.type == "identifier":
-                        name = _read_text(param, source)
-                        if name:
-                            names.add(name)
-        scope = scope.parent
-    return frozenset(names)
-
-
-def _csharp_collect_type_refs(
-    node,
-    source: bytes,
-    generic: bool,
-    out: list[tuple[str, str, bool, str]],
-    skip: frozenset[str] | None = None,
-) -> None:
-    """Walk a C# type expression; append (name, role, qualified, qualifier) tuples."""
-    if node is None:
-        return
-    if skip is None:
-        skip = _csharp_type_parameters_in_scope(node, source)
-    t = node.type
-    if t == "predefined_type":
-        return
-    if t == "identifier":
-        name = _read_text(node, source)
-        if name and name not in skip:
-            out.append((name, "generic_arg" if generic else "type", False, ""))
-        return
-    if t == "qualified_name":
-        prefix, _, text = _read_text(node, source).rpartition(".")
-        text = text.split("<", 1)[0]
-        if text and text not in skip:
-            out.append((text, "generic_arg" if generic else "type", True, prefix))
-        return
-    if t == "generic_name":
-        name_child = node.child_by_field_name("name")
-        if name_child is None:
-            for sub in node.children:
-                if sub.type == "identifier":
-                    name_child = sub
-                    break
-        if name_child is not None:
-            qualified = name_child.type == "qualified_name"
-            prefix, _, name = _read_text(name_child, source).rpartition(".")
-            if name and name not in skip:
-                out.append((name, "generic_arg" if generic else "type", qualified, prefix if qualified else ""))
-        for sub in node.children:
-            if sub.type == "type_argument_list":
-                for arg in sub.children:
-                    if arg.is_named:
-                        _csharp_collect_type_refs(arg, source, True, out, skip)
-        return
-    if t in ("nullable_type", "array_type", "pointer_type", "ref_type"):
-        for c in node.children:
-            if c.is_named:
-                _csharp_collect_type_refs(c, source, generic, out, skip)
-        return
-    if node.is_named:
-        for c in node.children:
-            if c.is_named:
-                _csharp_collect_type_refs(c, source, generic, out, skip)
-
-
-def _csharp_attribute_names(method_node, source: bytes) -> list[tuple[str, bool, str]]:
-    """Collect attribute names from a C# method/declaration's attribute_list children."""
-    names: list[tuple[str, bool, str]] = []
-    skip = _csharp_type_parameters_in_scope(method_node, source)
-    for child in method_node.children:
-        if child.type != "attribute_list":
-            continue
-        for attr in child.children:
-            if attr.type != "attribute":
-                continue
-            name_node = attr.child_by_field_name("name")
-            if name_node is None:
-                for sub in attr.children:
-                    if sub.type in ("identifier", "qualified_name"):
-                        name_node = sub
-                        break
-            if name_node is not None:
-                qualified = name_node.type == "qualified_name"
-                prefix, _, text = _read_text(name_node, source).rpartition(".")
-                if text and text not in skip:
-                    names.append((text, qualified, prefix if qualified else ""))
-    return names
 
 
 _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS = frozenset({
@@ -2023,37 +1890,6 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
             break
 
 
-def _import_csharp(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
-    text = _read_text(node, source).strip().rstrip(";")
-    if text.startswith("global "):
-        text = text[len("global "):].strip()
-    if not text.startswith("using"):
-        return
-    body = text[len("using"):].strip()
-    using_kind, alias, target_fqn = "namespace", None, body
-    if body.startswith("static "):
-        using_kind, target_fqn = "static", body[len("static "):].strip()
-    elif "=" in body:
-        lhs, rhs = body.split("=", 1)
-        using_kind, alias, target_fqn = "alias", lhs.strip(), rhs.strip()
-    if not target_fqn:
-        return
-    edges.append({
-        "source": file_nid,
-        "target": _make_id(target_fqn),
-        "relation": "imports",
-        "context": "import",
-        "confidence": "EXTRACTED",
-        "source_file": str_path,
-        "source_location": f"L{node.start_point[0] + 1}",
-        "weight": 1.0,
-        "metadata": sanitize_metadata({k: v for k, v in
-            {"using_kind": using_kind, "alias": alias, "target_fqn": target_fqn,
-             "scope_kind": "namespace" if scope_stack else "file",
-             "scope_id": scope_stack[-1] if scope_stack else None}.items() if v is not None}),
-    })
-
-
 def _import_kotlin(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     path_node = node.child_by_field_name("path")
     if path_node:
@@ -2268,76 +2104,6 @@ def _swift_local_var_types(body_node, source: bytes, table: dict[str, str]) -> N
                 table[name] = prop_type
         for c in n.children:
             stack.append(c)
-
-
-def _csharp_member_type_table(root, source: bytes) -> dict[str, str]:
-    """Collect ``name -> TypeName`` for C# receiver typing (#1609): class fields,
-    properties, method parameters, and local variable declarations.
-
-    File-scoped, first-binding-wins (like the C++ table): a field declared once at
-    class scope is visible to every method's `field.Method()`, and a param/local
-    shadowing the same name is a conservative approximation graphify already accepts
-    for receiver typing. Only a resolvable, non-`var` type name is recorded; `var`
-    without a `new T()` initializer, and predefined/lower-cased primitives, are
-    skipped (precision over recall — an untypable receiver is left for the resolver
-    to drop rather than guess). `var v = new T()` is typed from the object-creation.
-    """
-    table: dict[str, str] = {}
-
-    def _typed(type_node) -> str | None:
-        info = _read_csharp_type_name(type_node, source)
-        if not info:
-            return None
-        name = info[0]
-        # A genuine C# class name is Pascal-cased; skip predefined primitives
-        # (int/bool/string) which never own a resolvable method definition here.
-        return name if name and name[:1].isupper() else None
-
-    def _decl_names(var_decl):
-        for c in var_decl.children:
-            if c.type == "variable_declarator":
-                nm = c.child_by_field_name("name") or next(
-                    (g for g in c.children if g.type == "identifier"), None)
-                if nm is not None:
-                    yield _read_text(nm, source), c
-
-    def _new_type(declarator) -> str | None:
-        # `var v = new Server()` — recover the type from the object_creation_expression.
-        for g in declarator.children:
-            if g.type == "object_creation_expression":
-                return _typed(g.child_by_field_name("type"))
-        return None
-
-    stack = [root]
-    while stack:
-        n = stack.pop()
-        t = n.type
-        if t in ("field_declaration", "local_declaration_statement"):
-            vd = next((c for c in n.children if c.type == "variable_declaration"), None)
-            if vd is not None:
-                type_node = vd.child_by_field_name("type")
-                declared = _typed(type_node)
-                for name, decl in _decl_names(vd):
-                    resolved = declared or _new_type(decl)
-                    if name and resolved and name not in table:
-                        table[name] = resolved
-        elif t == "property_declaration":
-            nm = n.child_by_field_name("name")
-            resolved = _typed(n.child_by_field_name("type"))
-            if nm is not None and resolved:
-                pname = _read_text(nm, source)
-                if pname not in table:
-                    table[pname] = resolved
-        elif t == "parameter":
-            nm = n.child_by_field_name("name")
-            resolved = _typed(n.child_by_field_name("type"))
-            if nm is not None and resolved:
-                pname = _read_text(nm, source)
-                if pname not in table:
-                    table[pname] = resolved
-        for c in n.children:
-            stack.append(c)
-    return table
 
 
 def _objc_local_var_types(body_node, source: bytes, table: dict[str, str]) -> None:
@@ -2707,62 +2473,6 @@ def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
     return False
 
 
-# ── C# extra walk for namespace declarations ──────────────────────────────────
-
-def _csharp_namespace_name(node, source: bytes) -> str:
-    name_node = node.child_by_field_name("name")
-    if name_node is not None:
-        return _read_text(name_node, source).strip()
-    for child in node.children:
-        if child.type in ("identifier", "qualified_name"):
-            return _read_text(child, source).strip()
-    return ""
-
-
-def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
-                       nodes: list, edges: list, seen_ids: set, function_bodies: list,
-                       parent_class_nid: str | None, add_node_fn, add_edge_fn,
-                       walk_fn, namespace_stack: list[str], scope_stack: list[str]) -> bool:
-    """Handle namespace declarations for C#. Returns True if handled."""
-    if node.type == "namespace_declaration":
-        ns_name = _csharp_namespace_name(node, source)
-        pushed = False
-        if ns_name:
-            namespace_stack.append(ns_name)
-            scope_stack.append(f"s{node.start_byte}")
-            pushed = True
-            ns_label = ".".join(namespace_stack)
-            ns_nid = _csharp_namespace_id(ns_label)
-            line = node.start_point[0] + 1
-            add_node_fn(ns_nid, ns_label, line, node_type="namespace", metadata={"kind": "csharp_namespace"})
-            add_edge_fn(file_nid, ns_nid, "contains", line)
-        body = node.child_by_field_name("body")
-        if body:
-            try:
-                for child in body.children:
-                    walk_fn(child, parent_class_nid)
-            finally:
-                if pushed:
-                    namespace_stack.pop()
-                    scope_stack.pop()
-        elif pushed:
-            namespace_stack.pop()
-            scope_stack.pop()
-        return True
-    if node.type == "file_scoped_namespace_declaration":
-        ns_name = _csharp_namespace_name(node, source)
-        if ns_name:
-            namespace_stack.append(ns_name)
-            scope_stack.append(f"s{node.start_byte}")
-            ns_label = ".".join(namespace_stack)
-            ns_nid = _csharp_namespace_id(ns_label)
-            line = node.start_point[0] + 1
-            add_node_fn(ns_nid, ns_label, line, node_type="namespace", metadata={"kind": "csharp_namespace"})
-            add_edge_fn(file_nid, ns_nid, "contains", line)
-        return True
-    return False
-
-
 # ── Swift extra walk for enum cases ──────────────────────────────────────────
 
 def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
@@ -2945,26 +2655,6 @@ _RUBY_CONFIG = LanguageConfig(
     function_boundary_types=frozenset({"method", "singleton_method"}),
 )
 
-_CSHARP_CONFIG = LanguageConfig(
-    ts_module="tree_sitter_c_sharp",
-    class_types=frozenset({
-        "class_declaration",
-        "interface_declaration",
-        "enum_declaration",
-        "struct_declaration",
-        "record_declaration",
-    }),
-    function_types=frozenset({"method_declaration"}),
-    import_types=frozenset({"using_directive"}),
-    call_types=frozenset({"invocation_expression"}),
-    call_function_field="function",
-    call_accessor_node_types=frozenset({"member_access_expression"}),
-    call_accessor_field="name",
-    body_fallback_child_types=("declaration_list",),
-    function_boundary_types=frozenset({"method_declaration"}),
-    import_handler=_import_csharp,
-)
-
 _KOTLIN_CONFIG = LanguageConfig(
     ts_module="tree_sitter_kotlin",
     class_types=frozenset({"class_declaration", "object_declaration"}),
@@ -3125,31 +2815,6 @@ def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, st
             modules.append((tgt_nid, raw))
             break
     return modules
-
-
-def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
-    """Resolve a C# type name, whether it was qualified, and its qualifier prefix."""
-    if node is None:
-        return None
-    if node.type in ("identifier", "predefined_type"):
-        return (_read_text(node, source), False, "")
-    if node.type == "qualified_name":
-        prefix, _, tail = _read_text(node, source).rpartition(".")
-        tail = tail.split("<", 1)[0]
-        return (tail, True, prefix)
-    if node.type == "generic_name":
-        name_node = node.child_by_field_name("name")
-        if name_node is not None:
-            qualified = name_node.type == "qualified_name"
-            prefix, _, tail = _read_text(name_node, source).rpartition(".")
-            return (tail, qualified, prefix if qualified else "")
-    for child in node.children:
-        if not child.is_named:
-            continue
-        result = _read_csharp_type_name(child, source)
-        if result:
-            return result
-    return None
 
 
 _SWIFT_CONFIG = LanguageConfig(
@@ -3431,11 +3096,13 @@ def _extract_generic(
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
             line = node.start_point[0] + 1
             metadata = None
-            if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
-                metadata = {"is_nested_type": True}
+            if config.ts_module == "tree_sitter_c_sharp":
+                metadata = csharp_class_member_metadata(node, source, parent_class_nid)
             add_node(class_nid, class_name, line, metadata=metadata)
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
             add_edge(file_nid, class_nid, "contains", line)
+            if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
+                add_edge(parent_class_nid, class_nid, "contains", line, context="nested_type")
 
             # TS/JS decorators on the class and its members (@Component, @Injectable,
             # @Input, @Inject, @Entity, …). Decorators live only in class subtrees.
@@ -3656,57 +3323,36 @@ def _extract_generic(
             # C#-specific: inheritance / interface implementation via base_list
             if config.ts_module == "tree_sitter_c_sharp":
                 csharp_type_params = _csharp_type_parameters_in_scope(node, source)
-                for child in node.children:
-                    if child.type != "base_list":
-                        continue
-                    for sub in child.children:
-                        if sub.type not in ("identifier", "generic_name", "qualified_name"):
-                            continue
-                        base_info = _read_csharp_type_name(sub, source)
-                        if base_info is None:
-                            continue
-                        base, qualified, qualifier = base_info
-                        if not base or base in csharp_type_params:
-                            continue
-                        base_nid = _make_id(stem, ".".join(namespace_stack), base)
+                for base, qualified, qualifier, relation, generic_refs in csharp_base_list_facts(
+                    node, source, csharp_interface_names, csharp_type_params
+                ):
+                    base_nid = _make_id(stem, ".".join(namespace_stack), base)
+                    if base_nid not in seen_ids:
+                        base_nid = _make_id(base)
                         if base_nid not in seen_ids:
-                            base_nid = _make_id(base)
-                            if base_nid not in seen_ids:
-                                nodes.append({
-                                    "id": base_nid,
-                                    "label": base,
-                                    "file_type": "code",
-                                    "source_file": "",
-                                    "source_location": "",
-                                })
-                                seen_ids.add(base_nid)
-                        relation = _csharp_classify_base(base, csharp_interface_names)
-                        metadata = {"ref_token": base}
-                        if qualified:
+                            nodes.append({
+                                "id": base_nid,
+                                "label": base,
+                                "file_type": "code",
+                                "source_file": "",
+                                "source_location": "",
+                            })
+                            seen_ids.add(base_nid)
+                    metadata = {"ref_token": base}
+                    if qualified:
+                        metadata["qualified"] = True
+                    if qualifier:
+                        metadata["ref_qualifier"] = qualifier
+                    add_edge(class_nid, base_nid, relation, line, metadata=metadata)
+                    for ref_name, ref_qualified, ref_qualifier in generic_refs:
+                        target = ensure_named_node(ref_name, line)
+                        metadata = {"ref_token": ref_name}
+                        if ref_qualified:
                             metadata["qualified"] = True
-                        if qualifier:
-                            metadata["ref_qualifier"] = qualifier
-                        add_edge(class_nid, base_nid, relation, line, metadata=metadata)
-                        if sub.type == "generic_name":
-                            for tal in sub.children:
-                                if tal.type != "type_argument_list":
-                                    continue
-                                for arg in tal.children:
-                                    if not arg.is_named:
-                                        continue
-                                    refs: list[tuple[str, str, bool, str]] = []
-                                    _csharp_collect_type_refs(
-                                        arg, source, True, refs, csharp_type_params
-                                    )
-                                    for ref_name, _role, ref_qualified, ref_qualifier in refs:
-                                        target = ensure_named_node(ref_name, line)
-                                        metadata = {"ref_token": ref_name}
-                                        if ref_qualified:
-                                            metadata["qualified"] = True
-                                        if ref_qualifier:
-                                            metadata["ref_qualifier"] = ref_qualifier
-                                        add_edge(class_nid, target, "references", line,
-                                                 context="generic_arg", metadata=metadata)
+                        if ref_qualifier:
+                            metadata["ref_qualifier"] = ref_qualifier
+                        add_edge(class_nid, target, "references", line,
+                                 context="generic_arg", metadata=metadata)
 
             # Java-specific: extends (superclass) / implements (interfaces) / interface-extends
             if config.ts_module in ("tree_sitter_java", "tree_sitter_groovy"):
@@ -3977,29 +3623,15 @@ def _extract_generic(
         if (config.ts_module == "tree_sitter_c_sharp"
                 and t == "field_declaration"
                 and parent_class_nid):
-            type_node = node.child_by_field_name("type")
-            if type_node is None:
-                for child in node.children:
-                    if child.type == "variable_declaration":
-                        type_node = child.child_by_field_name("type")
-                        if type_node is not None:
-                            break
-            type_info = _read_csharp_type_name(type_node, source)
-            if type_info:
-                type_name, qualified, qualifier = type_info
-                csharp_type_params = _csharp_type_parameters_in_scope(
-                    type_node if type_node is not None else node, source
-                )
-                if not type_name or type_name in csharp_type_params:
-                    return
-                line = node.start_point[0] + 1
-                metadata = {"ref_token": type_name}
+            line = node.start_point[0] + 1
+            for ref_name, context, qualified, qualifier in csharp_field_type_ref_facts(node, source):
+                metadata = {"ref_token": ref_name}
                 if qualified:
                     metadata["qualified"] = True
                 if qualifier:
                     metadata["ref_qualifier"] = qualifier
-                add_edge(parent_class_nid, ensure_named_node(type_name, line),
-                         "references", line, context="field", metadata=metadata)
+                add_edge(parent_class_nid, ensure_named_node(ref_name, line),
+                         "references", line, context=context, metadata=metadata)
             return
 
         if (config.ts_module == "tree_sitter_c_sharp"
@@ -4013,22 +3645,17 @@ def _extract_generic(
             # field. Use _csharp_collect_type_refs (like the Java/PHP/Kotlin
             # siblings) so `List<Widget>` yields both the List field ref and the
             # Widget generic_arg ref.
-            type_node = node.child_by_field_name("type")
-            if type_node is not None:
-                line = node.start_point[0] + 1
-                refs: list[tuple[str, str, bool, str]] = []
-                _csharp_collect_type_refs(type_node, source, False, refs)
-                for ref_name, role, qualified, qualifier in refs:
-                    ctx = "generic_arg" if role == "generic_arg" else "field"
-                    target_nid = ensure_named_node(ref_name, line)
-                    if target_nid != parent_class_nid:
-                        metadata = {"ref_token": ref_name}
-                        if qualified:
-                            metadata["qualified"] = True
-                        if qualifier:
-                            metadata["ref_qualifier"] = qualifier
-                        add_edge(parent_class_nid, target_nid, "references",
-                                 line, context=ctx, metadata=metadata)
+            line = node.start_point[0] + 1
+            for ref_name, context, qualified, qualifier in csharp_property_type_ref_facts(node, source):
+                target_nid = ensure_named_node(ref_name, line)
+                if target_nid != parent_class_nid:
+                    metadata = {"ref_token": ref_name}
+                    if qualified:
+                        metadata["qualified"] = True
+                    if qualifier:
+                        metadata["ref_qualifier"] = qualifier
+                    add_edge(parent_class_nid, target_nid, "references",
+                             line, context=context, metadata=metadata)
             return
 
         if (config.ts_module == "tree_sitter_java"
@@ -4204,13 +3831,23 @@ def _extract_generic(
                 return
 
             line = node.start_point[0] + 1
+            func_metadata = None
+            if config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration":
+                func_metadata = {
+                    "csharp_return_type": _csharp_declared_bare_type(
+                        node.child_by_field_name("returns"),
+                        node,
+                        source,
+                    )
+                }
+
             if parent_class_nid:
                 func_nid = _make_id(parent_class_nid, func_name)
-                add_node(func_nid, f".{func_name}()", line)
+                add_node(func_nid, f".{func_name}()", line, metadata=func_metadata)
                 add_edge(parent_class_nid, func_nid, "method", line)
             else:
                 func_nid = _make_id(stem, func_name)
-                add_node(func_nid, f"{func_name}()", line)
+                add_node(func_nid, f"{func_name}()", line, metadata=func_metadata)
                 add_edge(file_nid, func_nid, "contains", line)
             callable_def_nids.add(func_nid)  # function / method def is callable
             if config.ts_module == "tree_sitter_python":
@@ -4240,55 +3877,16 @@ def _extract_generic(
                             )
 
             if config.ts_module == "tree_sitter_c_sharp":
-                csharp_type_params = _csharp_type_parameters_in_scope(node, source)
-                params_node = node.child_by_field_name("parameters")
-                if params_node is not None:
-                    for p in params_node.children:
-                        if p.type != "parameter":
-                            continue
-                        type_node = p.child_by_field_name("type")
-                        refs: list[tuple[str, str, bool, str]] = []
-                        _csharp_collect_type_refs(
-                            type_node, source, False, refs, csharp_type_params
-                        )
-                        for ref_name, role, qualified, qualifier in refs:
-                            ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
-                            target_nid = ensure_named_node(ref_name, line)
-                            if target_nid != func_nid:
-                                metadata = {"ref_token": ref_name}
-                                if qualified:
-                                    metadata["qualified"] = True
-                                if qualifier:
-                                    metadata["ref_qualifier"] = qualifier
-                                add_edge(func_nid, target_nid, "references", line,
-                                         context=ctx, metadata=metadata)
-                return_node = node.child_by_field_name("returns")
-                if return_node is not None:
-                    refs: list[tuple[str, str, bool, str]] = []
-                    _csharp_collect_type_refs(
-                        return_node, source, False, refs, csharp_type_params
-                    )
-                    for ref_name, role, qualified, qualifier in refs:
-                        ctx = "generic_arg" if role == "generic_arg" else "return_type"
-                        target_nid = ensure_named_node(ref_name, line)
-                        if target_nid != func_nid:
-                            metadata = {"ref_token": ref_name}
-                            if qualified:
-                                metadata["qualified"] = True
-                            if qualifier:
-                                metadata["ref_qualifier"] = qualifier
-                            add_edge(func_nid, target_nid, "references", line,
-                                     context=ctx, metadata=metadata)
-                for attr_name, qualified, qualifier in _csharp_attribute_names(node, source):
-                    target_nid = ensure_named_node(attr_name, line)
+                for ref_name, context, qualified, qualifier in csharp_method_reference_facts(node, source):
+                    target_nid = ensure_named_node(ref_name, line)
                     if target_nid != func_nid:
-                        metadata = {"ref_token": attr_name}
+                        metadata = {"ref_token": ref_name}
                         if qualified:
                             metadata["qualified"] = True
                         if qualifier:
                             metadata["ref_qualifier"] = qualifier
                         add_edge(func_nid, target_nid, "references", line,
-                                 context="attribute", metadata=metadata)
+                                 context=context, metadata=metadata)
 
             if config.ts_module == "tree_sitter_java":
                 params_node = node.child_by_field_name("parameters")
@@ -4846,45 +4444,11 @@ def _extract_generic(
                                     callee_name = _read_text(child, source)
                                     break
             elif config.ts_module == "tree_sitter_c_sharp" and node.type == "invocation_expression":
-                # C#: the invoked function is the `function` field. A member call
-                # `recv.Method(...)` is a member_access_expression (receiver in its
-                # `expression` field, method in `name`). Capture a simple-identifier
-                # or `this` receiver + set is_member_call so the receiver-typed
-                # resolver (_resolve_csharp_member_calls) can bind it to the
-                # receiver's declared type. Without this the bare method name matched
-                # any same-named method in the corpus, silently mis-resolving
-                # `_server.Save()` to an unrelated `Cache.Save()` (#1609).
-                fn_node = node.child_by_field_name("function")
-                if fn_node is not None and fn_node.type == "member_access_expression":
-                    mname = fn_node.child_by_field_name("name")
-                    recv = fn_node.child_by_field_name("expression")
-                    if mname is not None:
-                        callee_name = _read_text(mname, source)
-                        is_member_call = True
-                        if recv is not None and recv.type == "identifier":
-                            member_receiver = _read_text(recv, source)
-                        elif recv is not None and recv.type == "this_expression":
-                            member_receiver = "this"
-                elif fn_node is not None and fn_node.type == "identifier":
-                    callee_name = _read_text(fn_node, source)
-                else:
-                    # Fallback: original name-field / first-named-child scan.
-                    name_node = node.child_by_field_name("name")
-                    if name_node:
-                        callee_name = _read_text(name_node, source)
-                    else:
-                        for child in node.children:
-                            if child.is_named:
-                                raw = _read_text(child, source)
-                                if "." in raw:
-                                    callee_name = raw.split(".")[-1]
-                                    is_member_call = True
-                                    parts = raw.split(".")
-                                    if len(parts) == 2 and parts[0]:
-                                        member_receiver = parts[0]
-                                else:
-                                    callee_name = raw
-                                break
+                # C#: the callee is the `function` field. For `obj.Method()` it is a
+                # member_access_expression (expression=receiver, name=member); capture the
+                # receiver so the member-call resolver can type it (L2). Force is_member_call
+                # so the same-file bare-name fast path is suppressed below (tgt_nid=None).
+                callee_name, is_member_call, member_receiver = csharp_invocation_callee(node, source)
             elif config.ts_module == "tree_sitter_php":
                 # PHP: distinguish call expression subtypes
                 if node.type == "function_call_expression":
@@ -4998,17 +4562,10 @@ def _extract_generic(
                 # viewset action delegates to a same-named service action — which would
                 # match `tgt_nid == caller_nid` and silently drop the call (#1446). The
                 # captured receiver is resolved later in _resolve_python_member_calls.
-                # C#: ANY member call with a captured receiver defers to the
-                # receiver-typed resolver — a bare method-name match ignores the
-                # receiver's declared type and mis-binds to an unrelated same-named
-                # method (#1609). The receiver may be lowercase (`_server.Save()`),
-                # so this is broader than the capitalized/this-field Python rule.
-                _csharp_defer = (
+                if is_member_call and member_receiver is not None and (
                     config.ts_module == "tree_sitter_c_sharp"
-                    and is_member_call and member_receiver
-                )
-                if is_member_call and member_receiver and (
-                    member_receiver[:1].isupper() or is_this_field_call or _csharp_defer
+                    or member_receiver[:1].isupper()
+                    or is_this_field_call
                 ):
                     tgt_nid = None
                 else:
@@ -5038,6 +4595,10 @@ def _extract_generic(
                         "source_location": f"L{node.start_point[0] + 1}",
                         "receiver": swift_receiver or member_receiver,
                     }
+                    if config.ts_module == "tree_sitter_c_sharp":
+                        rc_entry["lang"] = "csharp"
+                        rc_entry["scope_chain"] = _csharp_scope_chain(node)
+                        rc_entry["call_byte"] = node.start_byte
                     # Ruby: attach the receiver's inferred type from the method's
                     # local `var = Const.new` bindings, when unambiguously known.
                     if member_receiver and config.ts_module == "tree_sitter_ruby":
@@ -5050,9 +4611,9 @@ def _extract_generic(
                     # suffix sets, so a source_file suffix alone can't separate them.
                     if config.ts_module == "tree_sitter_cpp":
                         rc_entry["lang"] = "cpp"
-                    # C#: tag the raw_call so _resolve_csharp_member_calls claims it
-                    # and types the receiver against the file's field/param/local
-                    # type table (#1609).
+                    # C#: tag the raw_call so the C# member-call resolver claims it
+                    # and types the receiver (declared locals/fields/params/static/
+                    # method-return vars) against the per-file type table.
                     if config.ts_module == "tree_sitter_c_sharp":
                         rc_entry["lang"] = "csharp"
                     raw_calls.append(rc_entry)
@@ -5395,13 +4956,8 @@ def _extract_generic(
             result["ts_type_table"] = {"path": str_path, "table": type_table}
         elif config.ts_module == "tree_sitter_cpp":
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
-    # C#: a file-wide receiver type table (field/property/param/local -> Type) for
-    # _resolve_csharp_member_calls (#1609). Built from the whole tree, not just
-    # function bodies, so class-level fields/properties are in scope for every method.
     if config.ts_module == "tree_sitter_c_sharp":
-        cs_table = _csharp_member_type_table(root, source)
-        if cs_table:
-            result["csharp_type_table"] = {"path": str_path, "table": cs_table}
+        result.update(csharp_file_facts(root, source, str_path))
     return result
 
 
@@ -6055,9 +5611,22 @@ def extract_ruby(path: Path) -> dict:
     return _extract_generic(path, _RUBY_CONFIG)
 
 
-def extract_csharp(path: Path) -> dict:
-    """Extract C# type declarations, methods, namespaces, and usings from a .cs file."""
+def _extract_csharp_file(path: Path) -> dict:
+    """Extract raw C# type declarations, methods, namespaces, and usings from a .cs file."""
     return _extract_generic(path, _CSHARP_CONFIG)
+
+
+def extract_csharp(path: Path) -> dict:
+    """Extract C# type declarations, methods, namespaces, usings, and member calls from a .cs file."""
+    result = _extract_csharp_file(path)
+    if not isinstance(result, dict) or result.get("error"):
+        return result
+    nodes = result.get("nodes")
+    edges = result.get("edges")
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        return result
+    run_language_resolvers([path], [result], nodes, edges)
+    return result
 
 
 def extract_apex(path: Path) -> dict:
@@ -9338,49 +8907,6 @@ def _disambiguate_colliding_node_ids(
             raw_call["caller_nid"] = unambiguous_remaps[str(raw_call["caller_nid"])]
 
 
-def _canonicalize_csharp_namespace_nodes(all_nodes: list[dict], all_edges: list[dict]) -> None:
-    """Collapse duplicate C# namespace node entries to one canonical node per label."""
-    by_label: dict[str, list[dict]] = {}
-    for node in all_nodes:
-        if node.get("type") != "namespace":
-            continue
-        label = node.get("label")
-        if isinstance(label, str):
-            by_label.setdefault(label, []).append(node)
-
-    remap: dict[str, str] = {}
-    drop_node_ids: set[int] = set()
-    for group in by_label.values():
-        if len(group) < 2:
-            continue
-        canonical = sorted(
-            group,
-            key=lambda node: (
-                str(node.get("source_file") or ""),
-                str(node.get("source_location") or ""),
-                str(node.get("id") or ""),
-            ),
-        )[0]
-        canonical_id = canonical.get("id")
-        for node in group:
-            if node is canonical:
-                continue
-            drop_node_ids.add(id(node))
-            dup_id = node.get("id")
-            if isinstance(dup_id, str) and isinstance(canonical_id, str):
-                remap[dup_id] = canonical_id
-
-    if remap:
-        for edge in all_edges:
-            if edge.get("source") in remap:
-                edge["source"] = remap[str(edge["source"])]
-            if edge.get("target") in remap:
-                edge["target"] = remap[str(edge["target"])]
-
-    if drop_node_ids:
-        all_nodes[:] = [node for node in all_nodes if id(node) not in drop_node_ids]
-
-
 # Languages whose identifiers are case-insensitive, so cross-file name resolution
 # may fold case. Everywhere else, case is semantic (`Path` the class vs `PATH` the
 # env var are distinct) and folding manufactures false edges / super-hubs (#1581).
@@ -9460,27 +8986,16 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         return
 
     by_id = {node.get("id"): node for node in nodes if node.get("id")}
-    csharp_scoped_relations = {"inherits", "implements", "references", "imports"}
     for edge in edges:
-        is_csharp_scoped_edge = (
-            str(edge.get("source_file", "")).endswith(".cs")
-            and edge.get("relation") in csharp_scoped_relations
-        )
         source = edge.get("source")
         if source in remap:
             remapped_source = remap[str(source)]
-            if not (
-                is_csharp_scoped_edge
-                and str(by_id.get(remapped_source, {}).get("source_file", "")).endswith(".cs")
-            ):
+            if not _csharp_preserve_scoped_stub_rewire(edge, remapped_source, by_id):
                 edge["source"] = remapped_source
         target = edge.get("target")
         if target in remap:
             remapped_target = remap[str(target)]
-            if not (
-                is_csharp_scoped_edge
-                and str(by_id.get(remapped_target, {}).get("source_file", "")).endswith(".cs")
-            ):
+            if not _csharp_preserve_scoped_stub_rewire(edge, remapped_target, by_id):
                 edge["target"] = remapped_target
 
     referenced = {x for e in edges for x in (e.get("source"), e.get("target"))}
@@ -11707,120 +11222,6 @@ def _resolve_cpp_member_calls(
         })
 
 
-def _resolve_csharp_member_calls(
-    per_file: list[dict],
-    all_nodes: list[dict],
-    all_edges: list[dict],
-) -> None:
-    """Resolve C# member calls (``recv.Method()``) to the receiver's declared type
-    (#1609).
-
-    The shared cross-file pass drops every ``is_member_call`` because a bare method
-    name collides across the corpus — and for C# an in-file bare match silently
-    mis-bound ``_server.Save()`` to an unrelated ``Cache.Save()``. The C# extractor
-    now records each member call's receiver plus a per-file ``name -> Type`` table
-    (``csharp_type_table``) of fields/properties/params/locals. This pass types the
-    receiver, then emits an edge ONLY when that type resolves to exactly ONE
-    definition (the god-node guard); an untypable receiver is skipped (no guess).
-
-    Receiver typing, by precision tier:
-      * ``this.M()`` — receiver is the caller's own enclosing class -> EXTRACTED.
-      * ``Type.M()`` (capitalized) — the type is named explicitly in source -> EXTRACTED.
-      * ``recv.M()`` — ``recv`` typed via the file's field/param/local table -> INFERRED.
-
-    Must run after id-disambiguation so node ids and caller_nids are final.
-    """
-    type_table_by_file: dict[str, dict[str, str]] = {}
-    for result in per_file:
-        tt = result.get("csharp_type_table")
-        if tt and tt.get("path"):
-            type_table_by_file[tt["path"]] = tt.get("table", {})
-
-    def _key(label: str) -> str:
-        return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
-
-    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
-
-    type_def_nids: dict[str, list[str]] = {}
-    node_by_id: dict[str, dict] = {}
-    for n in all_nodes:
-        node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
-            type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
-
-    # (type_node_id, method_key) -> method_node_id, and caller -> enclosing type.
-    # C# owns its methods via `method` edges.
-    method_index: dict[tuple[str, str], str] = {}
-    enclosing_type: dict[str, str] = {}
-    for e in all_edges:
-        if e.get("relation") != "method":
-            continue
-        src, tgt = e.get("source"), e.get("target")
-        tnode = node_by_id.get(tgt)
-        if tnode is None:
-            continue
-        enclosing_type.setdefault(tgt, src)
-        method_index[(src, _key(tnode.get("label", "")))] = tgt
-
-    all_raw_calls: list[dict] = []
-    for result in per_file:
-        all_raw_calls.extend(result.get("raw_calls", []))
-
-    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
-    for rc in all_raw_calls:
-        if rc.get("lang") != "csharp" or not rc.get("is_member_call"):
-            continue
-        receiver = rc.get("receiver")
-        callee = rc.get("callee")
-        caller = rc.get("caller_nid")
-        if not receiver or not callee or not caller:
-            continue
-        src_file = rc.get("source_file", "")
-        if receiver == "this":
-            type_nid = enclosing_type.get(caller)
-            if not type_nid:
-                continue
-            type_qualified = True
-        elif receiver[:1].isupper():
-            # Type.M() — the type is named explicitly (also covers a Pascal-cased
-            # local whose name equals its type, resolved via the table below if the
-            # explicit-type lookup misses).
-            type_defs = type_def_nids.get(_key(receiver), [])
-            if len(type_defs) != 1:
-                type_name = type_table_by_file.get(src_file, {}).get(receiver)
-                type_defs = type_def_nids.get(_key(type_name), []) if type_name else []
-                if len(type_defs) != 1:
-                    continue
-            type_nid = type_defs[0]
-            type_qualified = True
-        else:
-            type_name = type_table_by_file.get(src_file, {}).get(receiver)
-            if not type_name:
-                continue
-            type_defs = type_def_nids.get(_key(type_name), [])
-            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
-            type_qualified = False
-        method_nid = method_index.get((type_nid, _key(callee)))
-        if not method_nid:
-            continue  # receiver typed, but the type has no such method — skip
-        if method_nid == caller or (caller, method_nid) in existing_pairs:
-            continue
-        existing_pairs.add((caller, method_nid))
-        all_edges.append({
-            "source": caller,
-            "target": method_nid,
-            "relation": "calls",
-            "context": "call",
-            "confidence": "EXTRACTED" if type_qualified else "INFERRED",
-            "confidence_score": 1.0 if type_qualified else 0.8,
-            "source_file": src_file,
-            "source_location": rc.get("source_location"),
-            "weight": 1.0,
-        })
-
-
 def _resolve_objc_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -11966,8 +11367,6 @@ register_language_resolver(
         _resolve_objc_member_calls,
     )
 )
-# C# receiver-typed member-call resolution (#1609): `field/param/local.Method()`
-# bound to the receiver's declared type instead of a bare same-named match.
 register_language_resolver(
     LanguageResolver("csharp_member_calls", frozenset({".cs"}), _resolve_csharp_member_calls)
 )
@@ -14094,7 +13493,7 @@ def _xaml_codebehind_symbols(
     codebehind = _xaml_codebehind_path(path)
     if not codebehind:
         return None, {}, []
-    result = extract_csharp(codebehind)
+    result = _extract_csharp_file(codebehind)
     if result.get("error"):
         return None, {}, []
 
@@ -14253,7 +13652,7 @@ def _xaml_csharp_class_nodes(path: Path) -> dict[str, list[dict]]:
             continue
         if patterns and _is_ignored(cs_path, root, patterns, _cache=ignore_cache):
             continue
-        result = extract_csharp(cs_path)
+        result = _extract_csharp_file(cs_path)
         if result.get("error"):
             continue
         for node in result.get("nodes", []):
@@ -15493,7 +14892,7 @@ _DISPATCH: dict[str, Any] = {
     ".cuh": extract_cpp,
     ".metal": extract_cpp,
     ".rb": extract_ruby,
-    ".cs": extract_csharp,
+    ".cs": _extract_csharp_file,
     ".kt": extract_kotlin,
     ".kts": extract_kotlin,
     ".scala": extract_scala,

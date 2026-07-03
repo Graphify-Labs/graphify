@@ -12,12 +12,38 @@ written so an AI agent can execute it in a single session.
 | zig | yes |
 | elixir | yes |
 | razor | yes |
-| (40 more in extract.py) | no |
+| csharp | partial — helpers + cross-file resolver split into `extractors/csharp*.py`; config-driven `extract_csharp` entry stays (see Middle path) |
+| (39 more in extract.py) | no |
 
 Note: config-driven extractors (python, js, java, c, cpp, ruby, csharp,
 kotlin, scala, php, lua, swift, groovy) depend on the shared
-`_extract_generic` core (~1,300 lines). Do NOT port them one-by-one; the core
-must move first as its own coordinated batch. Pick a bespoke extractor.
+`_extract_generic` core (~1,300 lines). Do NOT move the config-driven
+`extract_<lang>` ENTRY POINT one-by-one; the core must move first as its own
+coordinated batch. Pick a bespoke extractor for a full port.
+
+### Middle path (config-driven helper split — the C# pattern)
+
+Even for a config-driven language you can give it a real module home *before* the
+`_extract_generic` batch: split the language-specific **helpers** (per-file
+binding / type-table / shadow model, type references, imports) and the cross-file
+**member-call resolver** into their own modules — see `extractors/csharp_extract.py`,
+`extractors/csharp_resolve.py`, and `extractors/csharp.py` — facade-re-exported
+from `extract.py`, while the thin `extract_<lang>` → `_extract_generic` entry
+point stays inline. Guardrails:
+
+- **Prove the split is behavior-preserving** with a normalized node/edge snapshot
+  over BOTH the single-file `extract_<lang>` and the multi-file `extract` entry
+  points (order-preserving — a list-sorting canonical hides a fact-order
+  regression).
+- **Lift shared config** (`LanguageConfig`) to `base.py`; keep the import
+  direction `extract.py -> extractors/` (never import `graphify.extract` here).
+- Only pull C#-only logic out of `_extract_generic` where the helper **returns
+  facts** and the core keeps emission (no `add_node`/`add_edge`/`nodes`/`seen_ids`
+  threaded in) — otherwise leave a thin inline hook.
+
+Unlike a verbatim entry-point port, a middle-path split may ship alongside a
+feature (e.g. the C# member-call resolver) with its own tests; the snapshot +
+full suite are the preservation proof.
 
 ## Invariants (non-negotiable)
 

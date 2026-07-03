@@ -15,6 +15,32 @@ def _node_by_id(result: dict, nid: str) -> dict | None:
     return next((n for n in result["nodes"] if n.get("id") == nid), None)
 
 
+def _parse_csharp_root(source: bytes):
+    from tree_sitter import Language, Parser
+    import tree_sitter_c_sharp
+
+    parser = Parser(Language(tree_sitter_c_sharp.language()))
+    return parser.parse(source).root_node
+
+
+def _walk_tree(node):
+    yield node
+    for child in node.children:
+        yield from _walk_tree(child)
+
+
+def _edge_labels(result: dict, relation: str, context: str | None = None) -> set[tuple[str, str]]:
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    pairs = set()
+    for edge in result["edges"]:
+        if edge.get("relation") != relation:
+            continue
+        if context is not None and edge.get("context") != context:
+            continue
+        pairs.add((labels.get(edge["source"], edge["source"]), labels.get(edge["target"], edge["target"])))
+    return pairs
+
+
 def _targets(result: dict, relation: str, label: str) -> list[dict]:
     out = []
     for e in result["edges"]:
@@ -226,6 +252,55 @@ def test_csharp_import_edges_carry_using_kind(tmp_path: Path):
     assert ("alias", "Game.Core.Damage", "X") in imports, imports
 
 
+def test_csharp_file_facts_helper_and_extern_alias_import(tmp_path: Path):
+    from graphify.extractors import csharp_extract
+
+    helper = getattr(csharp_extract, "csharp_file_facts", None)
+    assert callable(helper), "expected the C# file fact assembly helper to be extracted"
+
+    source = (
+        b"extern alias Legacy;\n"
+        b"class Foo { public void Bar() {} }\n"
+        b"class Z {\n"
+        b"    void M() {\n"
+        b"        Foo x = new Foo();\n"
+        b"        x.Bar();\n"
+        b"    }\n"
+        b"}\n"
+    )
+    facts = helper(_parse_csharp_root(source), source, "a.cs")
+    assert set(facts) == {"csharp_type_table", "csharp_shadow_names", "csharp_var_call_inits"}
+    assert facts["csharp_type_table"]["path"] == "a.cs"
+    assert facts["csharp_shadow_names"]["path"] == "a.cs"
+    assert facts["csharp_var_call_inits"]["path"] == "a.cs"
+    assert facts["csharp_var_call_inits"]["inits"] == []
+    assert facts["csharp_var_call_inits"]["poisoned"] == []
+    # The helper must carry the real per-file binding SCOPES, not just the keys:
+    # the typed local `Foo x` must land in the type table and the shadow values,
+    # so a helper returning empty/wrong scopes would fail here.
+    tt_bindings = {
+        (name, typ)
+        for entries in facts["csharp_type_table"]["scopes"].values()
+        for (name, typ, _byte) in entries
+    }
+    assert ("x", "Foo") in tt_bindings, tt_bindings
+    shadow_values = {
+        value
+        for bucket in facts["csharp_shadow_names"]["scopes"].values()
+        for value in bucket.get("values", [])
+    }
+    assert "x" in shadow_values, shadow_values
+
+    f = _write(tmp_path / "a.cs", source.decode("utf-8"))
+    result = extract([f], cache_root=tmp_path)
+    imports = {
+        (e["metadata"].get("using_kind"), e["metadata"].get("target_fqn"), e["metadata"].get("alias"))
+        for e in result["edges"]
+        if e.get("relation") == "imports" and e.get("metadata")
+    }
+    assert ("extern_alias", "Legacy", "Legacy") in imports, imports
+
+
 def test_csharp_import_edges_resolve_internal_namespace_and_alias(tmp_path: Path):
     core = _write(
         tmp_path / "core.cs",
@@ -272,6 +347,31 @@ def test_csharp_import_edges_resolve_internal_namespace_and_alias(tmp_path: Path
         n for n in result["nodes"]
         if not n.get("source_file") and n.get("label") in {"Game.Core", "Game.Core.Damage"}
     ]
+
+
+def test_csharp_generic_base_list_helper_and_generic_arg_reference(tmp_path: Path):
+    from graphify.extractors import csharp_extract
+
+    helper = getattr(csharp_extract, "csharp_base_list_facts", None)
+    assert callable(helper), "expected the C# base-list parser to be extracted"
+
+    source = (
+        b"namespace N { class Dep {} class Base<T> {} "
+        b"class Derived : Base<Dep> {} }"
+    )
+    derived = next(
+        node for node in _walk_tree(_parse_csharp_root(source))
+        if node.type == "class_declaration"
+        and any(child.type == "identifier" and source[child.start_byte:child.end_byte] == b"Derived" for child in node.children)
+    )
+    assert helper(derived, source, set(), frozenset()) == [
+        ("Base", False, "", "inherits", [("Dep", False, "")])
+    ]
+
+    f = _write(tmp_path / "a.cs", source.decode("utf-8"))
+    result = extract([f], cache_root=tmp_path)
+    assert ("Derived", "Base") in _edge_labels(result, "inherits")
+    assert ("Derived", "Dep") in _edge_labels(result, "references", "generic_arg")
 
 
 def test_csharp_qualified_base_ref_is_flagged(tmp_path: Path):
