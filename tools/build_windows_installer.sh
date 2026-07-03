@@ -137,9 +137,19 @@ echo "==> Building offline venv..."
 VENV="$REPO_ROOT/.venv-offline-build"
 rm -rf "$VENV"
 $PYTHON -m venv "$VENV"
+# Install the full [windows-offline] extra, not just bare `graphifyy`.
+# The bare `graphifyy` `dependencies` only pulls the code-only runtime
+# (networkx, numpy, rapidfuzz, tree-sitter-*) — `anthropic`, `mcp`,
+# `starlette`, `graspologic`, `matplotlib`, `watchdog`, `tree-sitter-sql`,
+# `tree-sitter-hcl`, `jieba` all live in optional-dependencies
+# (and are exactly what the .exe needs bundled at runtime). The Nuitka
+# command lines below use --include-module=anthropic etc. for static
+# inclusion, but Nuitka still imports each module to compile it, and
+# `failed to locate module 'anthropic' that you asked to include` means
+# the module was not importable from the venv.
 "$VENV/Scripts/python.exe" -m pip install \
     --find-links "$WHEELHOUSE" \
-    graphifyy \
+    "graphifyy[windows-offline]" \
     nuitka \
     >/dev/null
 
