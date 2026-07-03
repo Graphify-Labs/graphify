@@ -95,7 +95,7 @@ def test_uninstall_platform_agents_removes_user_global_skill(tmp_path):
 
     _run(cwd, ["uninstall"], home)
     assert not skill.exists()
-    # The now-empty skill tree is walked away.
+    # The now-empty skill tree is walked away (bundled skills also removed).
     assert not (home / ".agents" / "skills").exists()
 
 

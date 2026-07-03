@@ -1,19 +1,38 @@
 @echo off
 setlocal
 
-set "PYTHON=%~dp0python\python.exe"
-if not exist "%PYTHON%" set "PYTHON=python"
+rem -- Detect Python (same logic as install.bat: prefer system, fall back to embedded) --
+where python >nul 2>nul
+if %ERRORLEVEL% == 0 (
+    set "PYTHON=python"
+    echo Using system python
+) else (
+    set "PYTHON=%~dp0python\python.exe"
+    if not exist "%PYTHON%" (
+        echo ERROR: python not found, check python\ subdirectory
+        pause
+        exit /b 1
+    )
+    echo Using embedded Python: %PYTHON%
+)
 
-echo [1/3] Uninstalling SKILL.md...
-"%PYTHON%" -m graphify uninstall claude
-
-echo [2/3] Uninstalling graphifyy...
-"%PYTHON%" -m pip uninstall -y graphifyy
-
-echo [3/3] Removing install directory...
-cd /d "%~dp0\.."
-rmdir /s /q "%~dp0." 2>nul
 echo.
-echo [OK] Uninstall complete.
+echo [1/2] Uninstalling SKILL.md and bundled skills (all platforms)...
+"%PYTHON%" -m graphify uninstall
+if errorlevel 1 (
+    echo WARNING: graphify uninstall had errors (may already be uninstalled)
+    pause
+)
+
+echo.
+echo [2/2] Uninstalling graphifyy package...
+"%PYTHON%" -m pip uninstall -y graphifyy
+if errorlevel 1 (
+    echo WARNING: pip uninstall graphifyy failed (may already be uninstalled)
+    pause
+)
+
+echo.
+echo [OK] Uninstall complete. Installer files kept for future use.
 pause
 endlocal

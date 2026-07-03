@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -336,6 +337,20 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
     return skill_dst
 
 
+def _uninstall_bundled_skills(skills_dir: Path) -> int:
+    """Remove bundled (gf-* and code-pipeline) skills from *skills_dir*.
+
+    Returns the number of removed skill directories.
+    """
+    removed = 0
+    for skill in _BUNDLED_SKILLS:
+        skill_dir = skills_dir / skill.name
+        if skill_dir.exists():
+            shutil.rmtree(skill_dir)
+            removed += 1
+    return removed
+
+
 def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> bool:
     """Remove a platform skill file and its version stamp without touching other scopes."""
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
@@ -352,7 +367,15 @@ def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir
     if refs_dir.exists():
         shutil.rmtree(refs_dir)
         removed = True
-    for d in (skill_dst.parent, skill_dst.parent.parent, skill_dst.parent.parent.parent):
+
+    # Remove bundled (gf-* and code-pipeline) skills from the same skills/
+    # parent dir so the walk-up below can collapse the now-empty tree.
+    skills_dir = skill_dst.parent.parent
+    n = _uninstall_bundled_skills(skills_dir)
+    if n:
+        removed = True
+
+    for d in (skill_dst.parent, skills_dir, skills_dir.parent):
         try:
             d.rmdir()
         except OSError:
@@ -696,6 +719,80 @@ def _print_banner() -> None:
         pass
 
 
+# -- Bundled skills ----------------------------------------------------------
+# Skills shipped inside the graphify package and installed alongside the
+# platform SKILL.md.  The ``gf-`` prefix prevents collisions with user-installed
+# plugins (e.g. a superpowers plugin at ``~/.claude/skills/brainstorming/``).
+# ``code-pipeline`` is the sole exception — it does NOT carry the prefix.
+
+
+@dataclass
+class _BundledSkill:
+    """A skill bundled with graphify for offline installation."""
+
+    name: str  # install name (gf- prefixed except for code-pipeline)
+    source_subpath: str  # relative to the graphify package root
+    has_references: bool  # copy a references/ sidecar alongside SKILL.md
+
+
+_BUNDLED_SKILLS: tuple[_BundledSkill, ...] = (
+    # 14 superpowers skills (MIT, Jesse Vincent & contributors)
+    _BundledSkill("gf-brainstorming",                  "bundled_skills/superpowers/brainstorming/SKILL.md",                  False),
+    _BundledSkill("gf-writing-plans",                  "bundled_skills/superpowers/writing-plans/SKILL.md",                  False),
+    _BundledSkill("gf-subagent-driven-development",    "bundled_skills/superpowers/subagent-driven-development/SKILL.md",    False),
+    _BundledSkill("gf-test-driven-development",        "bundled_skills/superpowers/test-driven-development/SKILL.md",        False),
+    _BundledSkill("gf-systematic-debugging",           "bundled_skills/superpowers/systematic-debugging/SKILL.md",           False),
+    _BundledSkill("gf-using-git-worktrees",            "bundled_skills/superpowers/using-git-worktrees/SKILL.md",            False),
+    _BundledSkill("gf-requesting-code-review",         "bundled_skills/superpowers/requesting-code-review/SKILL.md",         False),
+    _BundledSkill("gf-receiving-code-review",          "bundled_skills/superpowers/receiving-code-review/SKILL.md",          False),
+    _BundledSkill("gf-executing-plans",                "bundled_skills/superpowers/executing-plans/SKILL.md",                False),
+    _BundledSkill("gf-finishing-a-development-branch", "bundled_skills/superpowers/finishing-a-development-branch/SKILL.md", False),
+    _BundledSkill("gf-dispatching-parallel-agents",    "bundled_skills/superpowers/dispatching-parallel-agents/SKILL.md",    False),
+    _BundledSkill("gf-using-superpowers",              "bundled_skills/superpowers/using-superpowers/SKILL.md",              False),
+    _BundledSkill("gf-verification-before-completion", "bundled_skills/superpowers/verification-before-completion/SKILL.md", False),
+    _BundledSkill("gf-writing-skills",                 "bundled_skills/superpowers/writing-skills/SKILL.md",                 False),
+    # llm-wiki (project-local, MIT)
+    _BundledSkill("gf-llm-wiki",                       "bundled_skills/llm-wiki/SKILL.md",                                   False),
+    # code-pipeline: user-facing entry point, no gf- prefix (no collision risk)
+    _BundledSkill("code-pipeline",                     "bundled_skills/code-pipeline/SKILL.md",                              False),
+)
+
+
+def _install_bundled_skills(skills_dir: Path) -> None:
+    """Copy bundled (gf-*) skills into *skills_dir*.
+
+    Always-overwrite: existing ``gf-*`` directories are replaced so the
+    installer is idempotent.  Never touches non-``gf-`` directories (except
+    ``code-pipeline``).
+    """
+    pkg_root = Path(__file__).parent
+    installed = 0
+
+    for skill in _BUNDLED_SKILLS:
+        src = pkg_root / skill.source_subpath
+        if not src.exists():
+            print(f"  (skip) {skill.name}: source not found in package", file=sys.stderr)
+            continue
+
+        dst_dir = skills_dir / skill.name
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, dst_dir / "SKILL.md")
+
+        # Optional references/ sidecar.
+        if skill.has_references:
+            refs_src = pkg_root / Path(skill.source_subpath).parent / "references"
+            if refs_src.is_dir():
+                refs_dst = dst_dir / "references"
+                if refs_dst.exists():
+                    shutil.rmtree(refs_dst)
+                shutil.copytree(refs_src, refs_dst)
+
+        installed += 1
+
+    if installed:
+        print(f"  bundled skills    ->  {installed} installed ({skills_dir})")
+
+
 def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
     _print_banner()
     platform = _canonical_platform(platform)
@@ -718,6 +815,9 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     cfg = _PLATFORM_CONFIG[platform]
     project_dir = project_dir or Path(".")
     skill_dst = _copy_skill_file(platform, project=project, project_dir=project_dir)
+
+    # Install bundled (gf-*) skills alongside the platform SKILL.md.
+    _install_bundled_skills(skill_dst.parent.parent)
 
     if platform == "kilo":
         # Kilo Code also supports a native /graphify command file.
@@ -1755,6 +1855,55 @@ def _project_install(platform_name: str, project_dir: Path | None = None) -> Non
         install(platform=platform_name, project=True, project_dir=project_dir)
 
 
+def _global_uninstall(platform_name: str, *, purge: bool = False) -> None:
+    """Remove a single platform's user-scoped skill and config files."""
+    _print_banner()
+    platform_name = _canonical_platform(platform_name)
+    if platform_name in ("claude", "windows"):
+        claude_uninstall()
+    elif platform_name == "gemini":
+        gemini_uninstall()
+    elif platform_name == "cursor":
+        _cursor_uninstall(Path("."))
+    elif platform_name == "codebuddy":
+        codebuddy_uninstall()
+    elif platform_name == "vscode":
+        vscode_uninstall()
+    elif platform_name == "kiro":
+        _kiro_uninstall(Path("."))
+    elif platform_name == "antigravity":
+        _antigravity_uninstall(Path("."))
+    elif platform_name == "amp":
+        _amp_uninstall()
+    elif platform_name == "agents":
+        _agents_platform_uninstall()
+    elif platform_name in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "copilot", "pi", "kimi"):
+        _remove_skill_file(platform_name)
+        _agents_uninstall(Path("."), platform=platform_name)
+        if platform_name == "codex":
+            _uninstall_codex_hook(Path("."))
+        if platform_name == "opencode":
+            _uninstall_opencode_plugin(Path("."))
+    elif platform_name == "devin":
+        _remove_skill_file("devin")
+        _devin_rules_uninstall(Path("."))
+    elif platform_name == "kilo":
+        _remove_skill_file("kilo")
+        _uninstall_kilo_plugin(Path("."))
+    else:
+        _remove_skill_file(platform_name)
+
+    if purge:
+        out = Path(".") / _GRAPHIFY_OUT
+        if out.exists():
+            shutil.rmtree(out)
+            print(f"\n  {_GRAPHIFY_OUT}/  ->  deleted (--purge)")
+        else:
+            print(f"\n  {_GRAPHIFY_OUT}/  ->  not found (nothing to purge)")
+
+    print("\nDone. Run 'pip uninstall graphifyy' to remove the package itself.")
+
+
 def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> None:
     """Remove project-scoped platform skill/config files only."""
     project_dir = project_dir or Path(".")
@@ -1977,6 +2126,12 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     _remove_skill_file("agents")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
+    _uninstall_kilo_plugin(pd)
+
+    # Remove SKILL.md + bundled skills for every platform not covered above.
+    # (Defensive: _remove_skill_file is a no-op if the file is already gone.)
+    for platform_name in _PLATFORM_CONFIG:
+        _remove_skill_file(platform_name)
 
     # Git hook
     try:
@@ -2490,7 +2645,10 @@ def main() -> None:
             else:
                 _project_uninstall_all(Path("."))
         else:
-            uninstall_all(purge=purge)
+            if selected_platform:
+                _global_uninstall(selected_platform, purge=purge)
+            else:
+                uninstall_all(purge=purge)
     elif cmd == "claude":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd == "install":

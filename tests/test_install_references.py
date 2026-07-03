@@ -130,7 +130,7 @@ def test_uninstall_removes_references_then_walks_dirs(tmp_path, fake_bundle):
 
     assert removed
     assert not skill_dir.exists()
-    # The 3-level walk collapsed the now-empty skill dirs.
+    # The 3-level walk collapsed the now-empty skill dirs (bundled skills also removed).
     assert not (tmp_path / ".claude" / "skills").exists()
 
 

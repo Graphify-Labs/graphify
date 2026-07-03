@@ -86,7 +86,6 @@ After the loop, update `_BUNDLED` and re-run the test suite.
 
 ## Uninstall behavior
 
-`graphify-installer.exe uninstall` does **not** remove `gf-*` skills from
-`~/.claude/skills/`. Once a bundled skill lands on the user's machine it
-belongs to them; removing it on uninstall would surprise users who customized
-the files. The installer also does not touch any non-`gf-` skill directories.
+`graphify uninstall` removes bundled (`gf-*` and `code-pipeline`) skills
+alongside the platform SKILL.md. The entire skills tree is walked away when
+empty. If you've customized a bundled skill, back it up before uninstalling.
