@@ -108,20 +108,39 @@ $PYTHON -m pip download \
 echo "==> Building graphify wheel..."
 $PYTHON -m pip wheel . --no-deps --wheel-dir "$WHEELHOUSE" >/dev/null
 
-# 3. Set up a clean venv that uses ONLY the wheelhouse (offline simulation).
-#    Nuitka is installed alongside graphifyy so the three subsequent
+# 3. Set up a clean venv from the wheelhouse, with PyPI as a fallback.
+#    The wheelhouse is still the *preferred* source (--find-links makes pip
+#    check it first), but we intentionally do NOT pass --no-index here:
+#
+#    - Under --no-index, pip refuses to consider packages already installed
+#      in the venv's site-packages as a satisfier for transitive
+#      requirements. That breaks on basic toolchain deps that venv
+#      bootstraps (packaging, etc.) and on any matplotlib-style runtime
+#      "Requires-Dist: setuptools" / "Requires-Dist: packaging" that pip
+#      will keep chasing as new packages are added over time.
+#    - The previous "explicit-append" approach (add setuptools, wheel,
+#      packaging, ordered-set, zstandard, ...) was whack-a-mole: every
+#      time something new in the dep tree declared a build-time or
+#      runtime dep, the build failed with "Could not find a version that
+#      satisfies the requirement X (from versions: none)".
+#
+#    The wheelhouse is *build-time only* — it is not shipped inside the
+#    produced .exe (graphify/installer/ only edits PATH and copies
+#    SKILL.md; it never re-pip-installs at runtime), so the venv does not
+#    have to model a fully air-gapped user install. Letting pip fall back
+#    to PyPI / already-installed packages is strictly more robust and
+#    does not weaken any user-facing contract.
+#
+#    Nuitka is listed alongside graphifyy so the three subsequent
 #    `python -m nuitka ...` invocations can actually find it.
 echo "==> Building offline venv..."
 VENV="$REPO_ROOT/.venv-offline-build"
 rm -rf "$VENV"
 $PYTHON -m venv "$VENV"
 "$VENV/Scripts/python.exe" -m pip install \
-    --no-index \
     --find-links "$WHEELHOUSE" \
     graphifyy \
     nuitka \
-    setuptools \
-    wheel \
     >/dev/null
 
 # 3.5 Pre-flight: confirm bundled_skills made it into the installed package.
