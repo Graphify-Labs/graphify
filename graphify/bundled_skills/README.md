@@ -56,11 +56,8 @@ allowlist so future skill additions cannot accidentally bypass the convention.
    `tests/test_bundled_skills.py::test_every_entry_has_gf_prefix` only if your
    skill has a documented reason to skip the `gf-` prefix, the way
    `code-pipeline` does.)
-3. Add the new directory to the `_BUNDLED` registry in
-   `graphify/installer/bundled_skills.py` so the installer copies it.
-4. Add a test case to `tests/test_bundled_skills.py` covering install +
-   uninstall + overwrite behavior. Bump the registry count assertions
-   (e.g. `test_count_is_*`, `test_superpowers_count_is_*`).
+3. (Registry step removed -- the installer package has been deleted.)
+4. (Testing step removed -- the installer package has been deleted.)
 5. Update `LICENSE` and `NOTICE` if the skill originates from a third party.
    For project-local skills, add a NOTICE entry citing graphify contributors.
 
