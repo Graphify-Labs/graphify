@@ -2205,7 +2205,7 @@ def main() -> None:
     # Skip during install/uninstall (hook writes trigger a fresh check anyway).
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
-    _silent_cmds = {"install", "uninstall", "self-install", "self-uninstall", "hook-check"}
+    _silent_cmds = {"install", "uninstall", "hook-check"}
     if not any(arg in _silent_cmds for arg in sys.argv):
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
@@ -2224,10 +2224,6 @@ def main() -> None:
         print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
-        print("  self-install            offline Windows installer: deploy graphify to %LOCALAPPDATA%\\graphify")
-        print("    --path DIR             override install path (default: %LOCALAPPDATA%\\graphify)")
-        print("    --no-path              skip user-PATH registration")
-        print("  self-uninstall          reverse a self-install: remove skill dirs, drop PATH, delete install dir")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  explain \"X\"             plain-language explanation of a node and its neighbors")
@@ -2412,7 +2408,7 @@ def main() -> None:
     # (e.g. "cursor install --help" was silently installing into Cursor, #821).
     # Exempt: free-text commands (user string may contain these tokens), and
     # "install"/"uninstall" which have their own per-subcommand help handlers.
-    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall", "self-install", "self-uninstall"}
+    _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}
     if cmd not in _FREE_TEXT_CMDS and any(a in {"-h", "--help", "-?"} for a in sys.argv[2:]):
         print(f"Run 'graphify --help' for full usage.")
         return
@@ -2495,55 +2491,6 @@ def main() -> None:
                 _project_uninstall_all(Path("."))
         else:
             uninstall_all(purge=purge)
-    elif cmd == "self-install":
-        from graphify.installer import install as _self_install
-        from graphify.installer.manifest import manifest_path as _default_manifest
-        args = sys.argv[2:]
-        target_path = None
-        skip_path = False
-        i = 0
-        while i < len(args):
-            a = args[i]
-            if a == "--path":
-                if i + 1 >= len(args):
-                    print("error: --path requires a value", file=sys.stderr)
-                    sys.exit(1)
-                target_path = Path(args[i + 1])
-                i += 2
-            elif a == "--no-path":
-                skip_path = True
-                i += 1
-            elif a in ("-h", "--help"):
-                print("Usage: graphify self-install [--path DIR] [--no-path]")
-                return
-            else:
-                print(f"error: unknown self-install option '{a}'", file=sys.stderr)
-                sys.exit(1)
-        install_dir = target_path or _default_manifest().parent
-        from graphify.installer import path_win as _pw
-        if skip_path:
-            # Patch the orchestrator's path_win.add_to_user_path to a no-op for this call.
-            import graphify.installer as _inst
-            orig = _inst.path_win.add_to_user_path
-            _inst.path_win.add_to_user_path = lambda p: None  # type: ignore[assignment]
-            try:
-                _self_install(
-                    install_path=install_dir,
-                    user_root=Path.home(),
-                    version=__version__,
-                )
-            finally:
-                _inst.path_win.add_to_user_path = orig  # type: ignore[assignment]
-        else:
-            _self_install(
-                install_path=install_dir,
-                user_root=Path.home(),
-                version=__version__,
-            )
-    elif cmd == "self-uninstall":
-        from graphify.installer import uninstall as _self_uninstall
-        from graphify.installer.manifest import manifest_path as _default_manifest
-        _self_uninstall(manifest_file=_default_manifest())
     elif cmd == "claude":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd == "install":
