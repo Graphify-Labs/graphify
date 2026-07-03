@@ -26,6 +26,7 @@ echo [2/4] Using PyPI proxy: %PIP_INDEX_URL%
 rem -- 3. Install graphifyy --
 echo [3/4] Installing graphifyy (~30-60 sec)...
 "%PYTHON%" -m pip install ^
+    --upgrade ^
     --index-url "%PIP_INDEX_URL%" ^
     --trusted-host "%PIP_TRUSTED_HOST%" ^
     --timeout <INTERNAL_TIMEOUT> ^
