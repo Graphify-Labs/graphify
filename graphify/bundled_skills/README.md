@@ -10,6 +10,7 @@ Skills here are copied into `~/.claude/skills/` at install time.
 |---------------|---------------------------------|---------|-------------------------|-----------------------------------------|
 | `superpowers/`| upstream `superpowers-dev` repo | MIT     | Jesse Vincent (and contributors) | 14 SKILL.md files (bundled subset)     |
 | `llm-wiki/`   | project-local                   | MIT     | graphify contributors    | 1 skill + templates, scripts, platforms |
+| `code-pipeline/` | project-local                | MIT     | graphify contributors    | 1 skill — feature-lifecycle orchestrator |
 
 ## The `gf-` rename convention
 
@@ -37,15 +38,31 @@ Why the prefix:
 - **Provenance marker**: a `gf-` prefix on a slash-command signals "shipped by
   graphify" to anyone reading the conversation transcript.
 
+### Exception: `code-pipeline`
+
+`code-pipeline` is the only bundled skill that does **not** carry the `gf-`
+prefix. It is the user-facing entry point of the graphify workflow (slash-
+command `/code-pipeline`), and `code-pipeline` does not collide with any
+upstream superpowers skill name, so the prefix is unnecessary. The structural
+test `test_every_entry_has_gf_prefix` keeps `code-pipeline` on an explicit
+allowlist so future skill additions cannot accidentally bypass the convention.
+
 ## Adding a new bundled skill
 
-1. Create a directory under the right provider (`superpowers/` or `llm-wiki/`).
+1. Create a directory under the right provider (`superpowers/`, `llm-wiki/`,
+   or a new project-local provider if it doesn't fit either category).
 2. Drop in a `SKILL.md` whose frontmatter sets `name: gf-<your-skill>`.
+   (Add a new entry to the `allowed_no_prefix` set in
+   `tests/test_bundled_skills.py::test_every_entry_has_gf_prefix` only if your
+   skill has a documented reason to skip the `gf-` prefix, the way
+   `code-pipeline` does.)
 3. Add the new directory to the `_BUNDLED` registry in
-   `graphify/_bundled_skills.py` so the installer copies it.
+   `graphify/installer/bundled_skills.py` so the installer copies it.
 4. Add a test case to `tests/test_bundled_skills.py` covering install +
-   uninstall + overwrite behavior.
+   uninstall + overwrite behavior. Bump the registry count assertions
+   (e.g. `test_count_is_*`, `test_superpowers_count_is_*`).
 5. Update `LICENSE` and `NOTICE` if the skill originates from a third party.
+   For project-local skills, add a NOTICE entry citing graphify contributors.
 
 ## Syncing from upstream superpowers
 

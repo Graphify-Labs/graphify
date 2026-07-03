@@ -23,19 +23,25 @@ from graphify.installer.host_probe import KNOWN_HOSTS, host_skill_dir
 class TestBundledSkillsRegistry:
     """Structural checks on the _BUNDLED tuple — fast, catches regressions."""
 
-    def test_count_is_15(self):
-        assert len(all_bundled()) == 15
+    def test_count_is_16(self):
+        assert len(all_bundled()) == 16
 
     def test_names_unique(self):
         names = [s.name for s in all_bundled()]
         assert len(names) == len(set(names))
 
     def test_superpowers_count_is_14(self):
-        sp = [s for s in all_bundled() if s.name != "gf-llm-wiki"]
+        sp = [s for s in all_bundled() if s.name not in {"gf-llm-wiki", "code-pipeline"}]
         assert len(sp) == 14
 
     def test_every_entry_has_gf_prefix(self):
+        # `code-pipeline` is an explicit exception to the gf- prefix convention
+        # (orchestrator skill; the graphify ecosystem already reserves plain
+        # `graphify` for the CLI, so a plain orchestrator name is acceptable).
+        allowed_no_prefix = {"code-pipeline"}
         for s in all_bundled():
+            if s.name in allowed_no_prefix:
+                continue
             assert s.name.startswith("gf-"), f"{s.name} missing gf- prefix"
 
     def test_all_source_files_exist(self, package_root: Path):
@@ -127,7 +133,7 @@ class TestCopyBundledSkills:
 
     def _setup_fake_package(self, tmp_path: Path) -> Path:
         """Build a minimal graphify/ package dir under tmp_path with the
-        15 bundled SKILL.md files. Mirrors the real layout.
+        16 bundled SKILL.md files. Mirrors the real layout.
         """
         pkg = tmp_path / "graphify"
         for s in all_bundled():
@@ -158,6 +164,27 @@ class TestCopyBundledSkills:
         copy_bundled_skills(host, root=tmp_path / "home", package_root=pkg)
         target = bundled_skill_dir(host, "gf-brainstorming", root=tmp_path / "home")
         assert (target / "SKILL.md").exists(), f"missing {target}/SKILL.md"
+
+    @pytest.mark.parametrize("host_name", ["claude", "codex", "opencode", "kilo",
+                                            "aider", "pi", "claw", "droid",
+                                            "vscode", "amp", "agents"])
+    def test_writes_code_pipeline_for_supported_hosts(self, tmp_path, host_name):
+        """code-pipeline must be copied to every supported host's skills dir."""
+        from graphify.installer.skill_copy import copy_bundled_skills
+        pkg = self._setup_fake_package(tmp_path / "pkg")
+        host = next(h for h in KNOWN_HOSTS if h.name == host_name)
+        copy_bundled_skills(host, root=tmp_path / "home", package_root=pkg)
+        target = bundled_skill_dir(host, "code-pipeline", root=tmp_path / "home")
+        assert (target / "SKILL.md").exists(), f"missing {target}/SKILL.md"
+
+    def test_code_pipeline_has_no_references_sidecar(self, tmp_path):
+        """code-pipeline has has_references=False → no references/ written."""
+        from graphify.installer.skill_copy import copy_bundled_skills
+        pkg = self._setup_fake_package(tmp_path / "pkg")
+        host = next(h for h in KNOWN_HOSTS if h.name == "claude")
+        copy_bundled_skills(host, root=tmp_path / "home", package_root=pkg)
+        target = bundled_skill_dir(host, "code-pipeline", root=tmp_path / "home")
+        assert not (target / "references").exists()
 
     def test_writes_llm_wiki_references_sidecar(self, tmp_path):
         """gf-llm-wiki has has_references=True → references/ must be copied."""

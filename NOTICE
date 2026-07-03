@@ -21,3 +21,9 @@ License:       MIT — no top-level LICENSE file ships with this snapshot;
                LICENSE-*.txt
 Source:        project-local (see graphify/bundled_skills/README.md)
 ────────────────────────────────────────────────────────────
+code-pipeline
+Bundled under: graphify/bundled_skills/code-pipeline/
+Copyright:     graphify contributors (project-local skill)
+License:       MIT — same terms as the graphify project LICENSE
+Source:        project-local (see graphify/bundled_skills/README.md)
+────────────────────────────────────────────────────────────

@@ -51,6 +51,8 @@ _BUNDLED: tuple[BundledSkill, ...] = (
     BundledSkill("gf-writing-skills",                 "bundled_skills/superpowers/writing-skills/SKILL.md",                 False),
     # llm-wiki (project-local) — see ./llm-wiki/LICENSE
     BundledSkill("gf-llm-wiki",                       "bundled_skills/llm-wiki/SKILL.md",                                   True),
+    # code-pipeline (project-local) — feature-lifecycle orchestrator
+    BundledSkill("code-pipeline",                  "bundled_skills/code-pipeline/SKILL.md",                              False),
 )
 
 
