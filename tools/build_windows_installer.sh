@@ -58,16 +58,28 @@ with open('pyproject.toml', 'rb') as f:
 print('\n'.join(data['project']['optional-dependencies']['windows-offline']))
 " > "$WHEEL_REQ"
 
+# The offline venv below runs Nuitka, but `windows-offline` is the runtime
+# extra (graphifyy + 38 runtime wheels) and intentionally does not list
+# `nuitka` — Nuitka lives in the `dev` group. The venv is built with
+# `--no-index --find-links "$WHEELHOUSE"`, so anything not pulled into
+# the wheelhouse is unimportable, and the build then dies with
+#   "No module named nuitka". Add it here so it lands in the same cache.
+# Bump the pin to match the dev group (>=4.1).
+echo 'nuitka>=4.1' >> "$WHEEL_REQ"
+
 # Pull the target interpreter version dynamically. Hard-coding
 # `--python-version 3.10` here while the venv below is built from whatever
 # `python` resolves to (e.g. 3.12 on the current windows-2022 runner) yields
 # a wheelhouse the venv's pip cannot use.
+#
+# Drop --no-deps so pip follows transitives (e.g. nuitka -> ordered-set).
+# With --no-deps the offline venv would install graphifyy + nuitka but miss
+# ordered-set, and Nuitka's first import would No-module-named-ordered-set.
 $PYTHON -m pip download \
     --dest "$WHEELHOUSE" \
     --python-version "$PY_VERSION" \
     --platform win_amd64 \
     --platform py3-none-any \
-    --no-deps \
     --requirement "$WHEEL_REQ"
 
 # 2. Install graphify itself as a wheel (so Nuitka finds the package).
@@ -75,6 +87,8 @@ echo "==> Building graphify wheel..."
 $PYTHON -m pip wheel . --no-deps --wheel-dir "$WHEELHOUSE" >/dev/null
 
 # 3. Set up a clean venv that uses ONLY the wheelhouse (offline simulation).
+#    Nuitka is installed alongside graphifyy so the three subsequent
+#    `python -m nuitka ...` invocations can actually find it.
 echo "==> Building offline venv..."
 VENV="$REPO_ROOT/.venv-offline-build"
 rm -rf "$VENV"
@@ -83,6 +97,7 @@ $PYTHON -m venv "$VENV"
     --no-index \
     --find-links "$WHEELHOUSE" \
     graphifyy \
+    nuitka \
     >/dev/null
 
 # 3.5 Pre-flight: confirm bundled_skills made it into the installed package.
