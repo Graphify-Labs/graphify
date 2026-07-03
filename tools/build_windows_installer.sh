@@ -205,6 +205,15 @@ print(f'==> Pre-flight OK: {n} superpowers + llm-wiki present')
 "
 
 # 4. Run Nuitka three times in the offline venv.
+#    Pipe "Yes" into stdin so Nuitka auto-accepts its first-run prompt
+#    to download Dependency Walker (depends.exe) into the user cache. CI
+#    is non-interactive, so without the pipe Nuitka defaults to "no" and
+#    refuses to proceed with `FATAL: Nuitka does not work in
+#    '--mode=standalone' or '--mode=onefile' on Windows without
+#    dependency walker.`
+#    The pipestatus failure on `printf` is ignored (printf always
+#    succeeds; we are only feeding the yes-answer to Nuitka's stdin).
+NUITKA_YES="$(printf 'Yes\n')"
 echo "==> Compiling graphify.exe (Nuitka)..."
 "$VENV/Scripts/python.exe" -m nuitka \
     --standalone --onefile \
@@ -219,7 +228,8 @@ echo "==> Compiling graphify.exe (Nuitka)..."
     --include-module=tree_sitter,tree_sitter_python,tree_sitter_javascript,tree_sitter_typescript,tree_sitter_go,tree_sitter_rust,tree_sitter_java,tree_sitter_groovy,tree_sitter_c,tree_sitter_cpp,tree_sitter_ruby,tree_sitter_c_sharp,tree_sitter_kotlin,tree_sitter_scala,tree_sitter_php,tree_sitter_swift,tree_sitter_lua,tree_sitter_zig,tree_sitter_powershell,tree_sitter_elixir,tree_sitter_objc,tree_sitter_julia,tree_sitter_verilog,tree_sitter_fortran,tree_sitter_bash,tree_sitter_json \
     --include-module=matplotlib,watchdog,tree_sitter_sql,tree_sitter_hcl,jieba \
     --output-filename=graphify.exe \
-    graphify/__main__.py
+    graphify/__main__.py \
+    < <(printf 'Yes\n')
 
 echo "==> Compiling graphify-mcp.exe (Nuitka)..."
 "$VENV/Scripts/python.exe" -m nuitka \
@@ -235,7 +245,8 @@ echo "==> Compiling graphify-mcp.exe (Nuitka)..."
     --include-module=tree_sitter,tree_sitter_python,tree_sitter_javascript,tree_sitter_typescript,tree_sitter_go,tree_sitter_rust,tree_sitter_java,tree_sitter_groovy,tree_sitter_c,tree_sitter_cpp,tree_sitter_ruby,tree_sitter_c_sharp,tree_sitter_kotlin,tree_sitter_scala,tree_sitter_php,tree_sitter_swift,tree_sitter_lua,tree_sitter_zig,tree_sitter_powershell,tree_sitter_elixir,tree_sitter_objc,tree_sitter_julia,tree_sitter_verilog,tree_sitter_fortran,tree_sitter_bash,tree_sitter_json \
     --include-module=matplotlib,watchdog,tree_sitter_sql,tree_sitter_hcl,jieba \
     --output-filename=graphify-mcp.exe \
-    graphify/serve.py
+    graphify/serve.py \
+    < <(printf 'Yes\n')
 
 echo "==> Compiling graphify-installer.exe (Nuitka)..."
 "$VENV/Scripts/python.exe" -m nuitka \
@@ -246,7 +257,8 @@ echo "==> Compiling graphify-installer.exe (Nuitka)..."
     --include-package-data=graphify \
     --include-module=graphify.installer \
     --output-filename=graphify-installer.exe \
-    tools/installer_main.py
+    tools/installer_main.py \
+    < <(printf 'Yes\n')
 
 # 5. Collect artifacts.
 echo "==> Collecting artifacts..."
