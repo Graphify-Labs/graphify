@@ -29,13 +29,17 @@ echo "==> Output:     $DIST"
 # 1. Download Windows wheels for every default-bundled dep (one-time).
 echo "==> Resolving wheels..."
 mkdir -p "$WHEELHOUSE"
-$PYTHON -m pip download \
-    --dest "$WHEELHOUSE" \
-    --python-version 3.10 \
-    --platform win_amd64 \
-    --platform py3-none-any \
-    --no-deps \
-    --requirement <($PYTHON -c "
+
+# Emit the dependency list to a real temp file rather than relying on bash
+# process substitution (`<($PYTHON ...)`). Process substitution produces a
+# /proc/<pid>/fd/NN path that pip cannot open when the script runs under
+# Git Bash on Windows (no /proc filesystem in MSYS), so `pip download
+# --requirement <(...)` fails with
+# "Could not open requirements file: [Errno 2] No such file or directory:
+# '/proc/<pid>/fd/NN'".
+WHEEL_REQ="$(mktemp -t graphify-wheel-req.XXXXXX)"
+trap 'rm -f "$WHEEL_REQ"' EXIT
+$PYTHON -c "
 try:
     import tomllib
 except ImportError:
@@ -43,7 +47,15 @@ except ImportError:
 with open('pyproject.toml', 'rb') as f:
     data = tomllib.load(f)
 print('\n'.join(data['project']['optional-dependencies']['windows-offline']))
-")
+" > "$WHEEL_REQ"
+
+$PYTHON -m pip download \
+    --dest "$WHEELHOUSE" \
+    --python-version 3.10 \
+    --platform win_amd64 \
+    --platform py3-none-any \
+    --no-deps \
+    --requirement "$WHEEL_REQ"
 
 # 2. Install graphify itself as a wheel (so Nuitka finds the package).
 echo "==> Building graphify wheel..."
