@@ -137,19 +137,57 @@ echo "==> Building offline venv..."
 VENV="$REPO_ROOT/.venv-offline-build"
 rm -rf "$VENV"
 $PYTHON -m venv "$VENV"
-# Install the full [windows-offline] extra, not just bare `graphifyy`.
-# The bare `graphifyy` `dependencies` only pulls the code-only runtime
-# (networkx, numpy, rapidfuzz, tree-sitter-*) — `anthropic`, `mcp`,
-# `starlette`, `graspologic`, `matplotlib`, `watchdog`, `tree-sitter-sql`,
-# `tree-sitter-hcl`, `jieba` all live in optional-dependencies
-# (and are exactly what the .exe needs bundled at runtime). The Nuitka
-# command lines below use --include-module=anthropic etc. for static
-# inclusion, but Nuitka still imports each module to compile it, and
-# `failed to locate module 'anthropic' that you asked to include` means
-# the module was not importable from the venv.
+
+# Install the local graphifyy wheel by exact file path, then the runtime
+# packages the .exe needs bundled, then Nuitka. Three separate pip calls
+# instead of one `pip install graphifyy[windows-offline] nuitka` because
+# that one-liner makes pip re-resolve graphifyy itself — and pip picks the
+# highest available version, which on PyPI is currently 0.9.5, while the
+# wheel we just built is 0.9.1. The 0.9.5 release does not declare a
+# `windows-offline` extra in its METADATA, so pip prints
+#   WARNING: graphifyy 0.9.5 does not provide the extra 'windows-offline'
+# and silently drops every package the extra would have pulled in. The
+# venv ends up without anthropic / mcp / starlette / graspologic /
+# matplotlib / etc., and the very first Nuitka compile then dies with
+#   FATAL: Error, failed to locate module 'anthropic' that you asked to include.
+#
+# (1) The local graphifyy wheel — pinned to the file path, so pip cannot
+#     "upgrade" to a different version off PyPI. --no-deps keeps pip from
+#     re-resolving the dependency graph (the wheelhouse already has every
+#     runtime wheel we want, and we install them explicitly next).
+echo "==> Installing local graphifyy wheel into venv..."
+"$VENV/Scripts/python.exe" -m pip install --no-deps \
+    --find-links "$WHEELHOUSE" \
+    "$WHEELHOUSE"/graphifyy-*.whl \
+    >/dev/null
+
+# (2) The packages the [windows-offline] extra declares, listed explicitly
+#     so we never need to consult graphifyy's METADATA again. The set here
+#     is exactly the contents of [project.optional-dependencies.windows-offline]
+#     in pyproject.toml, minus the code-only deps that `graphifyy` already
+#     pulled in (networkx, numpy, rapidfuzz, tree-sitter-*). When the extra
+#     is updated, update this list to match.
+#     graspologic has a `python_version < '3.13'` marker, so it is
+#     installed on the cp312 venv (true) but would be skipped on cp313+.
+echo "==> Installing bundled runtime packages into venv..."
 "$VENV/Scripts/python.exe" -m pip install \
     --find-links "$WHEELHOUSE" \
-    "graphifyy[windows-offline]" \
+    anthropic \
+    "starlette>=1.3.1" \
+    mcp \
+    graspologic \
+    tree-sitter-sql \
+    tree-sitter-hcl \
+    jieba \
+    watchdog \
+    matplotlib \
+    >/dev/null
+
+# (3) Nuitka itself, against the wheelhouse copy so the offline venv
+#     is self-contained.
+echo "==> Installing Nuitka into venv..."
+"$VENV/Scripts/python.exe" -m pip install --no-deps \
+    --find-links "$WHEELHOUSE" \
     nuitka \
     >/dev/null
 
