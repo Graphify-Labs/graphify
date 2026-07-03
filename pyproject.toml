@@ -75,9 +75,10 @@ sql = ["tree-sitter-sql"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-# Documentation-only: lists every wheel the offline Windows installer bundles.
-# This is NOT installed at runtime; it exists so readers of pyproject.toml can
-# see at a glance what `graphify-installer.exe` contains.
+# Runtime extras group: the code-only dependency set that internal-PyPI-proxy
+# users typically want when installing `graphifyy[windows-offline]`. The zip
+# offline installer no longer bundles these locally — it pulls them from
+# http://192.168.21.14:25000/pypi/repository/pypi-all/simple at install time.
 windows-offline = [
     "networkx>=3.4",
     "numpy>=1.21",
