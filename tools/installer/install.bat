@@ -1,56 +1,56 @@
 @echo off
 setlocal
 
-rem ── 1. 探测 Python ──
+rem -- 1. Detect Python --
 set "NEED_PATH=0"
 where python >nul 2>nul
 if %ERRORLEVEL% == 0 (
     set "PYTHON=python"
-    echo [1/4] 使用系统已有的 python
+    echo [1/4] Using system python
 ) else (
     set "PYTHON=%~dp0python\python.exe"
     set "NEED_PATH=1"
     if not exist "%PYTHON%" (
-        echo 错误: 未找到 python，请确认 python\ 子目录完整
+        echo ERROR: python not found, check python\ subdirectory
         exit /b 1
     )
-    echo [1/4] 使用内嵌 Python: %PYTHON%
+    echo [1/4] Using embedded Python: %PYTHON%
 )
 
-rem ── 2. 配置内网 PyPI 代理 ──
+rem -- 2. Configure PyPI proxy --
 set "PIP_INDEX_URL=<INTERNAL_PYPI_PROXY>"
 set "PIP_TRUSTED_HOST=<INTERNAL_TRUSTED_HOST>"
-echo [2/4] 使用内网 PyPI 代理: %PIP_INDEX_URL%
+echo [2/4] Using PyPI proxy: %PIP_INDEX_URL%
 
-rem ── 3. 安装 graphifyy ──
-echo [3/4] 安装 graphifyy（约 30-60 秒）...
+rem -- 3. Install graphifyy --
+echo [3/4] Installing graphifyy (~30-60 sec)...
 "%PYTHON%" -m pip install ^
     --index-url "%PIP_INDEX_URL%" ^
     --trusted-host "%PIP_TRUSTED_HOST%" ^
     --timeout <INTERNAL_TIMEOUT> ^
     graphifyy
 if errorlevel 1 (
-    echo 错误: pip install graphifyy 失败
+    echo ERROR: pip install graphifyy failed
     exit /b 1
 )
 
-rem ── 4. 部署 SKILL.md ──
-echo [4/4] 部署 SKILL.md 到 Claude Code...
+rem -- 4. Deploy SKILL.md --
+echo [4/4] Deploying SKILL.md to Claude Code...
 "%PYTHON%" -m graphify install claude
 if errorlevel 1 (
-    echo 警告: SKILL.md 部署失败，但 graphifyy 已安装
+    echo WARNING: SKILL.md deploy failed, but graphifyy is installed
 )
 
-rem ── 5. 注册 PATH（仅内嵌 Python 场景） ──
+rem -- 5. Register PATH (embedded Python only) --
 if "%NEED_PATH%"=="1" (
-    echo [5/5] 注册 PATH...
+    echo [5/5] Registering PATH...
     setx PATH "%PATH%;%~dp0python\Scripts" >nul
     if errorlevel 1 (
-        echo 警告: PATH 注册失败，请手动将以下路径添加到用户 PATH:
+        echo WARNING: PATH registration failed, add this path to user PATH manually:
         echo   %~dp0python\Scripts
     )
 )
 
 echo.
-echo ✓ 安装完成。新开一个 cmd 窗口即可使用 graphify 命令。
+echo [OK] Install complete. Open a new cmd window to use graphify.
 endlocal

@@ -21,9 +21,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$REPO_ROOT/build/zip-installer"
 DIST="$REPO_ROOT/dist"
+CACHE="$REPO_ROOT/build/cache"
 
 PY_VERSION="${PY_VERSION:-3.12.10}"
-EMBED_URL="https://www.python.org/ftp/python/${PY_VERSION}/python-${PY_VERSION}-embed-amd64.zip"
+EMBED_ZIP="python-${PY_VERSION}-embed-amd64.zip"
+EMBED_URL="https://www.python.org/ftp/python/${PY_VERSION}/${EMBED_ZIP}"
 
 INTERNAL_PYPI_PROXY="${INTERNAL_PYPI_PROXY:-http://192.168.21.14:25000/pypi/repository/pypi-all/simple}"
 INTERNAL_TRUSTED_HOST="${INTERNAL_TRUSTED_HOST:-192.168.21.14}"
@@ -35,14 +37,17 @@ for f in tools/installer/install.bat tools/installer/uninstall.bat docs/offline-
 done
 
 rm -rf "$BUILD"
-mkdir -p "$BUILD/python" "$DIST"
+mkdir -p "$BUILD/python" "$DIST" "$CACHE"
 
-# 1. Download and extract Python embeddable
-TMP_EMBED="$(mktemp -t py-embed.XXXXXX).zip"
-trap 'rm -f "$TMP_EMBED"' EXIT
-echo "==> Downloading Python ${PY_VERSION} embeddable..."
-curl -fsSL -o "$TMP_EMBED" "$EMBED_URL"
-unzip -qo "$TMP_EMBED" -d "$BUILD/python"
+# 1. Download (if needed) and extract Python embeddable
+CACHED_ZIP="$CACHE/$EMBED_ZIP"
+if [[ -f "$CACHED_ZIP" ]]; then
+    echo "==> Using cached Python ${PY_VERSION} embeddable ($CACHED_ZIP)"
+else
+    echo "==> Downloading Python ${PY_VERSION} embeddable..."
+    curl -fsSL -o "$CACHED_ZIP" "$EMBED_URL"
+fi
+unzip -qo "$CACHED_ZIP" -d "$BUILD/python"
 
 # 2. Enable site-packages in _pth
 _PTH="$(find "$BUILD/python" -maxdepth 1 -name 'python*._pth' | head -n1)"
