@@ -1,0 +1,39 @@
+name: Build offline zip installer
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the offline zip installer
+        env:
+          INTERNAL_PYPI_PROXY: ${{ secrets.INTERNAL_PYPI_PROXY }}
+          INTERNAL_TRUSTED_HOST: ${{ secrets.INTERNAL_TRUSTED_HOST }}
+          INTERNAL_TIMEOUT: ${{ secrets.INTERNAL_TIMEOUT }}
+        run: tools/build_zip_installer.sh
+
+      - name: Smoke test the zip
+        run: bash tests/tools/test_build_zip_installer.sh
+
+      - name: Attach zip to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/graphify-offline-installer.zip
+
+      - name: Upload artifact (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphify-offline-installer
+          path: dist/graphify-offline-installer.zip
