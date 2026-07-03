@@ -58,19 +58,28 @@ jobs:
       # discovers it via vswhere. This step just fails fast with a clear
       # message if the toolchain isn't where we expect it, instead of
       # spending 20+ minutes on a Nuitka run that then dies on cl.exe.
+      # Discover MSVC via vswhere.exe (pre-installed on every windows-* runner)
+      # instead of hard-coding a SKU path. windows-2022/2025 ship Visual Studio
+      # Enterprise 2022 under C:\Program Files\Microsoft Visual Studio\2022\Enterprise,
+      # not BuildTools, so the previous hard-coded BuildTools path failed there.
+      # This step still fails fast (instead of burning 20+ minutes on a Nuitka
+      # run that then dies on cl.exe) but covers Enterprise / Community /
+      # BuildTools / Professional uniformly.
       - name: Verify MSVC toolchain
         shell: bash
         run: |
-          MSVC_DIR="/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC"
-          if [ ! -d "$MSVC_DIR" ]; then
-            MSVC_DIR="/c/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC"
-          fi
-          if [ ! -d "$MSVC_DIR" ]; then
-            echo "::error::MSVC 2022 Build Tools not found in expected paths."
+          if ! command -v vswhere.exe >/dev/null 2>&1; then
+            echo "::error::vswhere.exe not found on PATH."
             echo "Nuitka compilation needs cl.exe; aborting before the long build."
             exit 1
           fi
-          echo "==> MSVC found at $MSVC_DIR"
+          VS_INSTALL="$(vswhere.exe -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)"
+          if [ -z "$VS_INSTALL" ] || [ ! -d "$VS_INSTALL/VC/Tools/MSVC" ]; then
+            echo "::error::No Visual Studio installation with the C++ x86/x64 workload was found."
+            echo "Nuitka compilation needs cl.exe; aborting before the long build."
+            exit 1
+          fi
+          echo "==> MSVC found at $VS_INSTALL/VC/Tools/MSVC"
 
       # The build script is .sh — GitHub Actions defaults to PowerShell on
       # windows-latest, which doesn't have `set -euo pipefail` or `mkdir -p`.
