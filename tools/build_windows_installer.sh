@@ -73,6 +73,17 @@ echo 'ordered-set>=4.1' >> "$WHEEL_REQ"
 # onefile output compressed (without it Nuitka falls back to an uncompressed
 # onefile blob, ~30% larger).
 echo 'zstandard>=0.18' >> "$WHEEL_REQ"
+# matplotlib's wheel METADATA declares `Requires-Dist: setuptools`, so the
+# offline venv install pulls setuptools in transitively. Under
+# `--no-index --find-links "$WHEELHOUSE"` pip does not fall back to whatever
+# setuptools happens to be in the venv's site-packages, so without a wheel
+# in the wheelhouse the install dies with
+#   "ERROR: Could not find a version that satisfies the requirement
+#    setuptools>=42 (from versions: none)".
+# `wheel` is also pulled in for PEP 517 build isolation even when we are
+# installing prebuilt wheels.
+echo 'setuptools>=68' >> "$WHEEL_REQ"
+echo 'wheel>=0.40' >> "$WHEEL_REQ"
 
 # Pull the target interpreter version dynamically. Hard-coding
 # `--python-version 3.10` here while the venv below is built from whatever
@@ -109,6 +120,8 @@ $PYTHON -m venv "$VENV"
     --find-links "$WHEELHOUSE" \
     graphifyy \
     nuitka \
+    setuptools \
+    wheel \
     >/dev/null
 
 # 3.5 Pre-flight: confirm bundled_skills made it into the installed package.
