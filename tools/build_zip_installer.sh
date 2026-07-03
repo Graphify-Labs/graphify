@@ -58,12 +58,17 @@ tr -d '\r' < "$_PTH" > "${_PTH}.tmp" && mv "${_PTH}.tmp" "$_PTH"
 sed -i.bak 's/^#import site$/import site/' "$_PTH"
 rm -f "${_PTH}.bak"
 
-# 3. Copy scripts and README
+# 3. Build graphify wheel (pure Python, platform-independent)
+echo "==> Building graphify wheel..."
+mkdir -p "$BUILD/wheels"
+uv run python -m build --wheel --outdir "$BUILD/wheels"
+
+# 4. Copy scripts and README
 cp "$REPO_ROOT/tools/installer/install.bat"   "$BUILD/"
 cp "$REPO_ROOT/tools/installer/uninstall.bat" "$BUILD/"
 cp "$REPO_ROOT/docs/offline-installer-README.txt" "$BUILD/README.txt"
 
-# 4. Substitute placeholders in install.bat
+# 5. Substitute placeholders in install.bat
 sed -i.bak \
     -e "s|<INTERNAL_PYPI_PROXY>|${INTERNAL_PYPI_PROXY}|g" \
     -e "s|<INTERNAL_TRUSTED_HOST>|${INTERNAL_TRUSTED_HOST}|g" \
@@ -71,13 +76,13 @@ sed -i.bak \
     "$BUILD/install.bat"
 rm -f "$BUILD/install.bat.bak"
 
-# 5. Package
+# 6. Package
 OUT="$DIST/graphify-offline-installer.zip"
 rm -f "$OUT"
 cd "$BUILD"
 zip -r "$OUT" . >/dev/null
 cd - >/dev/null
 
-# 6. Report
+# 7. Report
 SIZE_MB=$(du -m "$OUT" | cut -f1)
 echo "==> Done: $OUT (${SIZE_MB} MB)"

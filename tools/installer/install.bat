@@ -30,7 +30,7 @@ echo [3/4] Installing graphifyy (~30-60 sec)...
     --index-url "%PIP_INDEX_URL%" ^
     --trusted-host "%PIP_TRUSTED_HOST%" ^
     --timeout <INTERNAL_TIMEOUT> ^
-    graphifyy
+    "%~dp0wheels\graphifyy-*.whl"
 if errorlevel 1 (
     echo ERROR: pip install graphifyy failed
     pause
