@@ -258,6 +258,11 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
         rel = Path(sf_norm)
         if rel.is_absolute():
             continue  # can't relativize (no/failed root) — leave id untouched
+        if not rel.name:
+            # source_file equals the scan root, so _norm_source_file relativized it
+            # to Path('.') — a project-level node with no per-file identity to remap.
+            # Leave its id untouched (and avoid _file_stem's empty-name crash, #1618).
+            continue
         new_stem = make_id(_file_stem(rel))
         if not new_stem:
             continue
@@ -305,6 +310,8 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
         rel = Path(_norm_source_file(str(sf), _r) or str(sf))
         if rel.is_absolute():
             continue
+        if not rel.name:
+            continue  # source_file == scan root -> Path('.'), no file stem (#1618)
         new_stem = make_id(_file_stem(rel))
         if not new_stem:
             continue
@@ -577,7 +584,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             _LANG_FAMILY: dict[str, str] = {
                 ".py": "py", ".pyi": "py",
                 ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js",
-                ".ts": "js", ".tsx": "js",
+                ".ts": "js", ".tsx": "js", ".mts": "js", ".cts": "js",
                 ".go": "go", ".rs": "rs",
                 ".java": "jvm", ".kt": "jvm", ".scala": "jvm", ".groovy": "jvm",
                 # C, C++, and ObjC interoperate within one compilation unit: a method

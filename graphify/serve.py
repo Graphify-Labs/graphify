@@ -348,13 +348,36 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     return scored
 
 
-def _pick_seeds(scored: list[tuple[float, str]], max_k: int = 3, gap_ratio: float = 0.2) -> list[str]:
+def _pick_seeds(
+    scored: list[tuple[float, str]],
+    max_k: int = 3,
+    gap_ratio: float = 0.2,
+    *,
+    G: "nx.Graph | None" = None,
+    terms: list[str] | None = None,
+) -> list[str]:
     """Select BFS seed nodes, stopping when score drops too far below the top.
 
     Prevents high-frequency noise terms (error, exception) from stealing seed
     slots from a dominant identifier match. When FooBarService scores 1000 and
     error nodes score 1.0, only FooBarService is seeded — the score gap is 99.9%
     which is well above the 20% threshold that would allow additional seeds.
+
+    That same gap_ratio cutoff has a failure mode on multi-term natural-language
+    queries: if one term happens to hit an EXACT label match on a node that is
+    otherwise unrelated to the query's intent (e.g. a common word that is also
+    used as an unrelated identifier or field name elsewhere in the corpus), it
+    can outscore every SUBSTRING match on the query's other, actually-relevant
+    terms by ~1000x (see `_EXACT_MATCH_BONUS` vs. `_SUBSTRING_MATCH_BONUS`).
+    The 20%-gap cutoff then silently discards all of those substring-tier
+    seeds, so the BFS traversal only ever explores the neighborhood of the one
+    unrelated exact match — see #1445.
+
+    When `G` and `terms` are supplied, this guarantees at least one seed per
+    distinct query term that has any match at all, so one term's incidental
+    collision cannot starve out the others. Ties within a term are broken by
+    graph degree (structural centrality), so an isolated incidental match
+    doesn't out-rank a real, well-connected hub for that term.
     """
     if not scored:
         return []
@@ -364,6 +387,18 @@ def _pick_seeds(scored: list[tuple[float, str]], max_k: int = 3, gap_ratio: floa
         if seeds and score < top_score * gap_ratio:
             break
         seeds.append(nid)
+
+    if G is not None and terms:
+        norm_terms = sorted({tok for t in terms for tok in _search_tokens(t)})
+        for term in norm_terms:
+            term_scored = _score_nodes(G, [term])
+            if not term_scored:
+                continue
+            best_score = term_scored[0][0]
+            tied = [nid for s, nid in term_scored if s == best_score]
+            best_nid = max(tied, key=lambda n: G.degree(n)) if len(tied) > 1 else term_scored[0][1]
+            if best_nid not in seeds:
+                seeds.append(best_nid)
     return seeds
 
 
@@ -602,7 +637,7 @@ def _query_graph_text(
 ) -> str:
     terms = _query_terms(question)
     scored = _score_nodes(G, terms)
-    start_nodes = _pick_seeds(scored)
+    start_nodes = _pick_seeds(scored, G=G, terms=terms)
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)

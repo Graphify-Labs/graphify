@@ -27,7 +27,7 @@ class FileType(str, Enum):
 
 _MANIFEST_PATH = str(out_path("manifest.json"))
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.hx'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.hx'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -991,14 +991,11 @@ def _could_contain_included_path(path: Path, root: Path, patterns: list[tuple[Pa
 
 
 def _auto_follow_symlinks(root: Path) -> bool:
-    """Auto-detect: ``True`` if ``root`` has any direct symlinked child.
+    """Return whether ``root`` has any direct symlinked child.
 
-    Allows "fake working dir" patterns (e.g. a folder full of symlinks pointing
-    at scattered source dirs across the user's machine) to work transparently
-    without the caller having to know to pass ``follow_symlinks=True``.
-
-    Override is always possible by passing an explicit ``follow_symlinks=True``
-    or ``follow_symlinks=False`` to :func:`detect` / :func:`detect_incremental`.
+    Kept for callers that import the private helper, but detection no longer
+    enables symlink following automatically. Following symlinks is now an
+    explicit opt-in, and out-of-root symlink targets are never indexed.
     """
     try:
         for p in root.iterdir():
@@ -1009,10 +1006,19 @@ def _auto_follow_symlinks(root: Path) -> bool:
     return False
 
 
+def _resolves_under_root(path: Path, root: Path) -> bool:
+    """True when ``path`` resolves to a target inside ``root``."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None) -> dict:
     root = root.resolve()
     if follow_symlinks is None:
-        follow_symlinks = _auto_follow_symlinks(root)
+        follow_symlinks = False
     google_workspace = google_workspace_enabled() if google_workspace is None else google_workspace
     files: dict[FileType, list[str]] = {
         FileType.CODE: [],
@@ -1072,6 +1078,15 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if not _is_noise_dir(d, dp)
                     and not _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache)
                 ]
+                if follow_symlinks:
+                    safe_dirs: list[str] = []
+                    for d in dirnames:
+                        child = dp / d
+                        if child.is_symlink() and not _resolves_under_root(child, root):
+                            skipped_sensitive.append(str(child) + " [symlink target outside scan root]")
+                            continue
+                        safe_dirs.append(d)
+                    dirnames[:] = safe_dirs
             for fname in filenames:
                 if fname in _SKIP_FILES:
                     continue
@@ -1092,6 +1107,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             if str(p).startswith(str(converted_dir)):
                 continue
         if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
+            continue
+        if not _resolves_under_root(p, root):
+            skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
@@ -1363,11 +1381,10 @@ def detect_incremental(
     Backwards compatible with legacy manifests storing plain float mtime values
     or {mtime, hash} dicts (treated as ast_hash only; semantic_hash = miss).
 
-    The ``follow_symlinks`` flag is forwarded to :func:`detect` so corpora that
-    rely on symlinked sub-trees (e.g. a ``state_of_truth/`` symlink pointing to a
-    directory outside the scan root) are scanned consistently between full and
-    incremental runs. ``None`` (default) means auto-detect: ``True`` when ``root``
-    contains at least one direct symlinked child, ``False`` otherwise.
+    The ``follow_symlinks`` flag is forwarded to :func:`detect` so in-root
+    symlinked sub-trees are scanned consistently between full and incremental
+    runs. ``None`` (default) does not follow symlinked directories; callers must
+    opt in explicitly, and resolved targets outside the scan root are skipped.
     """
     full = detect(root, follow_symlinks=follow_symlinks, google_workspace=google_workspace, extra_excludes=extra_excludes)
     # Pass ``root`` so a manifest written with relative keys (post-#777) is

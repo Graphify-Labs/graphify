@@ -51,7 +51,14 @@ def _file_stem(path: Path) -> str:
     Top-level files keep a bare stem (``setup.py`` -> ``setup``). When passed an
     absolute path the whole path is encoded; the extract() id-remap post-pass
     re-derives the canonical repo-relative form from ``source_file`` so the on-disk
-    location can't leak into the persisted IDs (#502)."""
+    location can't leak into the persisted IDs (#502).
+
+    Returns "" for a path with no name (``Path('.')`` — a source_file that equals
+    the scan root, so it has no per-file stem). Guarding here keeps
+    ``path.with_suffix("")`` from raising ``ValueError: '.' has an empty name`` and
+    protects every caller, not just ``_semantic_id_remap`` (#1618)."""
+    if not path.name:
+        return ""
     return path.with_suffix("").as_posix()
 
 

@@ -236,37 +236,32 @@ def test_detect_handles_circular_symlinks(tmp_path):
     assert any("main.py" in f for f in result["files"]["code"])
 
 
-def test_detect_auto_detects_direct_symlink_child(tmp_path):
-    """When ``root`` has a direct symlinked child, default (None) follows symlinks
-    so the user does not have to know to pass follow_symlinks=True for "fake
-    working dir" patterns (folder of symlinks pointing at scattered sources)."""
+def test_detect_default_does_not_auto_follow_direct_symlink_child(tmp_path):
+    """Symlink directory following is explicit opt-in."""
     real_dir = tmp_path / "real_lib"
     real_dir.mkdir()
     (real_dir / "util.py").write_text("x = 1")
     (tmp_path / "linked_lib").symlink_to(real_dir)
 
-    # Default (no kwarg): auto-detect → follows because of linked_lib symlink
     result = detect(tmp_path)
-    assert any("linked_lib" in f for f in result["files"]["code"])
+    assert any("real_lib" in f for f in result["files"]["code"])
+    assert not any("linked_lib" in f for f in result["files"]["code"])
 
 
 def test_detect_default_does_not_follow_when_no_symlinks(tmp_path):
-    """When ``root`` has no direct symlinks, the auto-detect default stays False
-    (legacy behaviour preserved for ordinary scans)."""
+    """Ordinary scans still walk normal directories by default."""
     (tmp_path / "main.py").write_text("x = 1")
     sub = tmp_path / "sub"
     sub.mkdir()
     (sub / "other.py").write_text("y = 2")
 
-    # Smoke: no symlinks anywhere → auto-detect returns False, scan succeeds
     result = detect(tmp_path)
     assert any("main.py" in f for f in result["files"]["code"])
     assert any("other.py" in f for f in result["files"]["code"])
 
 
 def test_detect_explicit_false_overrides_auto_detect(tmp_path):
-    """An explicit follow_symlinks=False overrides the auto-detect, even when
-    root contains symlinks. Lets callers opt out of the new behaviour."""
+    """An explicit follow_symlinks=False skips symlinked directories."""
     real_dir = tmp_path / "real_lib"
     real_dir.mkdir()
     (real_dir / "util.py").write_text("x = 1")
@@ -275,6 +270,34 @@ def test_detect_explicit_false_overrides_auto_detect(tmp_path):
     # Explicit False overrides auto-detect; symlink contents must NOT appear.
     result = detect(tmp_path, follow_symlinks=False)
     assert not any("linked_lib" in f for f in result["files"]["code"])
+
+
+def test_detect_skips_out_of_root_symlinked_directory_even_when_following(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("token = 'outside'")
+    (root / "linked_secret").symlink_to(outside)
+
+    result = detect(root, follow_symlinks=True)
+
+    assert not any("linked_secret" in f for f in result["files"]["code"])
+    assert any("symlink target outside scan root" in item for item in result["skipped_sensitive"])
+
+
+def test_detect_skips_out_of_root_symlinked_file_by_default(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("token = 'outside'")
+    (root / "secret_link.py").symlink_to(outside / "secret.py")
+
+    result = detect(root)
+
+    assert not any("secret_link.py" in f for f in result["files"]["code"])
+    assert any("symlink target outside scan root" in item for item in result["skipped_sensitive"])
 
 
 def test_detect_incremental_propagates_follow_symlinks(tmp_path, monkeypatch):

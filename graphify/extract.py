@@ -89,8 +89,8 @@ def _csharp_namespace_id(dotted_name: str) -> str:
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 _WORKSPACE_PACKAGE_CACHE: dict[str, dict[str, Path]] = {}
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
-_JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".ts", ".tsx", ".vue", ".svelte"}
-_JS_RESOLVE_EXTS = (".ts", ".tsx", ".svelte", ".js", ".jsx", ".mjs")
+_JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte"}
+_JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs")
 _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.jsx", "index.mjs")
 
 
@@ -1787,12 +1787,23 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                 return
 
     resolved_path: "Path | None" = None
+    module_string = None
     for child in node.children:
         if child.type == "string":
-            raw = _read_text(child, source).strip("'\"` ")
-            resolved = _resolve_js_import_target(raw, str_path)
-            if resolved is None:
-                break
+            module_string = child
+            break
+        if child.type == "import_require_clause":
+            # TS import-equals form: `import x = require("./m")`. The module
+            # string sits inside the clause, not on the import_statement
+            # itself, so the direct-child scan above never sees it.
+            module_string = next(
+                (sub for sub in child.children if sub.type == "string"), None
+            )
+            break
+    if module_string is not None:
+        raw = _read_text(module_string, source).strip("'\"` ")
+        resolved = _resolve_js_import_target(raw, str_path)
+        if resolved is not None:
             tgt_nid, resolved_path = resolved
             edges.append({
                 "source": file_nid,
@@ -1804,7 +1815,6 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                 "source_location": f"L{node.start_point[0] + 1}",
                 "weight": 1.0,
             })
-            break
 
     # Emit symbol-level edges for named imports/re-exports from local/aliased files.
     # e.g. `import { Foo, type Bar } from './bar'` → file → Foo, file → Bar (EXTRACTED)
@@ -2260,6 +2270,125 @@ def _swift_local_var_types(body_node, source: bytes, table: dict[str, str]) -> N
             stack.append(c)
 
 
+def _csharp_member_type_table(root, source: bytes) -> dict[str, str]:
+    """Collect ``name -> TypeName`` for C# receiver typing (#1609): class fields,
+    properties, method parameters, and local variable declarations.
+
+    File-scoped, first-binding-wins (like the C++ table): a field declared once at
+    class scope is visible to every method's `field.Method()`, and a param/local
+    shadowing the same name is a conservative approximation graphify already accepts
+    for receiver typing. Only a resolvable, non-`var` type name is recorded; `var`
+    without a `new T()` initializer, and predefined/lower-cased primitives, are
+    skipped (precision over recall — an untypable receiver is left for the resolver
+    to drop rather than guess). `var v = new T()` is typed from the object-creation.
+    """
+    table: dict[str, str] = {}
+
+    def _typed(type_node) -> str | None:
+        info = _read_csharp_type_name(type_node, source)
+        if not info:
+            return None
+        name = info[0]
+        # A genuine C# class name is Pascal-cased; skip predefined primitives
+        # (int/bool/string) which never own a resolvable method definition here.
+        return name if name and name[:1].isupper() else None
+
+    def _decl_names(var_decl):
+        for c in var_decl.children:
+            if c.type == "variable_declarator":
+                nm = c.child_by_field_name("name") or next(
+                    (g for g in c.children if g.type == "identifier"), None)
+                if nm is not None:
+                    yield _read_text(nm, source), c
+
+    def _new_type(declarator) -> str | None:
+        # `var v = new Server()` — recover the type from the object_creation_expression.
+        for g in declarator.children:
+            if g.type == "object_creation_expression":
+                return _typed(g.child_by_field_name("type"))
+        return None
+
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        t = n.type
+        if t in ("field_declaration", "local_declaration_statement"):
+            vd = next((c for c in n.children if c.type == "variable_declaration"), None)
+            if vd is not None:
+                type_node = vd.child_by_field_name("type")
+                declared = _typed(type_node)
+                for name, decl in _decl_names(vd):
+                    resolved = declared or _new_type(decl)
+                    if name and resolved and name not in table:
+                        table[name] = resolved
+        elif t == "property_declaration":
+            nm = n.child_by_field_name("name")
+            resolved = _typed(n.child_by_field_name("type"))
+            if nm is not None and resolved:
+                pname = _read_text(nm, source)
+                if pname not in table:
+                    table[pname] = resolved
+        elif t == "parameter":
+            nm = n.child_by_field_name("name")
+            resolved = _typed(n.child_by_field_name("type"))
+            if nm is not None and resolved:
+                pname = _read_text(nm, source)
+                if pname not in table:
+                    table[pname] = resolved
+        for c in n.children:
+            stack.append(c)
+    return table
+
+
+def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
+    """Add TS/JS receiver bindings to ``table`` (name -> TypeName), for member-call
+    resolution beyond the constructor-injected `this.field` case (#1630):
+
+      * local ``const/let/var x = new Foo()`` -> ``x: Foo`` (Pattern A);
+      * a type-annotated parameter ``(svc: Svc)`` -> ``svc: Svc`` (Pattern B), so a
+        call on the param — including inside a returned closure — resolves.
+
+    File-scoped, first-binding-wins (merged into the constructor-injection table,
+    which is populated first and therefore wins on a name clash). Only a bare
+    ``type_identifier`` (a single class/interface name) is recorded — an array,
+    union, generic, qualified, or predefined type is skipped (precision over
+    recall, matching the receiver-typed resolvers for Swift/C#/C++)."""
+    def _bare_type_ident(type_annotation):
+        # type_annotation -> ": T"; accept only a single type_identifier child.
+        idents = [c for c in type_annotation.children if c.type == "type_identifier"]
+        others = [c for c in type_annotation.children
+                  if c.is_named and c.type not in ("type_identifier",)]
+        if len(idents) == 1 and not others:
+            return _read_text(idents[0], source)
+        return None
+
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        t = n.type
+        if t == "variable_declarator":
+            name_n = n.child_by_field_name("name")
+            value = n.child_by_field_name("value")
+            if (name_n is not None and name_n.type == "identifier"
+                    and value is not None and value.type == "new_expression"):
+                ctor = value.child_by_field_name("constructor")
+                if ctor is not None and ctor.type in ("identifier", "type_identifier"):
+                    name = _read_text(name_n, source)
+                    tname = _read_text(ctor, source)
+                    if name and tname and name not in table:
+                        table[name] = tname
+        elif t == "required_parameter" or t == "optional_parameter":
+            pat = n.child_by_field_name("pattern")
+            ann = n.child_by_field_name("type")
+            if pat is not None and pat.type == "identifier" and ann is not None:
+                tname = _bare_type_ident(ann)
+                name = _read_text(pat, source)
+                if name and tname and name not in table:
+                    table[name] = tname
+        for c in n.children:
+            stack.append(c)
+
+
 def _objc_local_var_types(body_node, source: bytes, table: dict[str, str]) -> None:
     """Collect ``var -> ClassName`` from ObjC local declarations (``Foo *f = ...;``)
     in a method body, for receiver typing in the cross-file message-send pass
@@ -2396,7 +2525,7 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
 # Node types whose value is a callable, for the JS/TS assignment / class-field
 # / function-expression forms below. Older tree-sitter-javascript grammars
 # label a function expression `function`; current ones use `function_expression`.
-_JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function"})
+_JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function", "generator_function"})
 
 
 def _js_member_assignment_target(left, source: bytes):
@@ -2577,6 +2706,56 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
     return False
 
 
+# ── TS extra walk for namespace / module declarations ─────────────────────────
+
+def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                   nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                   parent_class_nid: str | None, add_node_fn, add_edge_fn,
+                   walk_fn) -> bool:
+    """Emit a container node for a TS `namespace`/`module` declaration.
+
+    `namespace Foo {}` parses as `internal_module` (with `name`/`body` fields);
+    `module Bar {}` and ambient `declare module "pkg" {}` parse as a named
+    `module` node that exposes no fields, so its name and body are found
+    positionally. Without this the container was never a node — its members were
+    still reached by the default recurse but lost their namespace context. The
+    members stay file-contained (parity with C#'s `_csharp_extra_walk`); the
+    namespace becomes a sibling marker node so it is queryable. Returns True if
+    handled.
+
+    The guard requires `is_named` because the anonymous `module` keyword token
+    shares the `module` type string and would otherwise match here.
+    """
+    if node.is_named and node.type in ("internal_module", "module"):
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            for child in node.children:
+                if child.is_named and child.type in (
+                        "identifier", "nested_identifier", "string"):
+                    name_node = child
+                    break
+        body = node.child_by_field_name("body")
+        if body is None:
+            for child in node.children:
+                if child.type == "statement_block":
+                    body = child
+                    break
+        if name_node is not None:
+            ns_name = _read_text(name_node, source)
+            if name_node.type == "string":
+                ns_name = ns_name.strip("'\"`")
+            if ns_name:
+                ns_nid = _make_id(stem, ns_name)
+                line = node.start_point[0] + 1
+                add_node_fn(ns_nid, ns_name, line)
+                add_edge_fn(file_nid, ns_nid, "contains", line)
+        if body is not None:
+            for child in body.children:
+                walk_fn(child, parent_class_nid)
+        return True
+    return False
+
+
 # ── C# extra walk for namespace declarations ──────────────────────────────────
 
 def _csharp_namespace_name(node, source: bytes) -> str:
@@ -2691,14 +2870,14 @@ _PYTHON_CONFIG = LanguageConfig(
 _JS_CONFIG = LanguageConfig(
     ts_module="tree_sitter_javascript",
     class_types=frozenset({"class_declaration"}),
-    function_types=frozenset({"function_declaration", "method_definition"}),
+    function_types=frozenset({"function_declaration", "generator_function_declaration", "method_definition"}),
     import_types=frozenset({"import_statement", "export_statement"}),
     call_types=frozenset({"call_expression", "new_expression"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
     call_accessor_object_field="object",
-    function_boundary_types=frozenset({"function_declaration", "arrow_function", "method_definition"}),
+    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition"}),
     import_handler=_import_js,
 )
 
@@ -2712,14 +2891,14 @@ _TS_CONFIG = LanguageConfig(
         "enum_declaration",        # named enums
         "type_alias_declaration",  # named type aliases
     }),
-    function_types=frozenset({"function_declaration", "method_definition", "method_signature"}),
+    function_types=frozenset({"function_declaration", "generator_function_declaration", "method_definition", "method_signature"}),
     import_types=frozenset({"import_statement", "export_statement"}),
     call_types=frozenset({"call_expression", "new_expression"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
     call_accessor_object_field="object",
-    function_boundary_types=frozenset({"function_declaration", "arrow_function", "method_definition"}),
+    function_boundary_types=frozenset({"function_declaration", "generator_function_declaration", "arrow_function", "method_definition"}),
     import_handler=_import_js,
 )
 
@@ -3306,6 +3485,12 @@ def _extract_generic(
             add_node(class_nid, class_name, line, metadata=metadata)
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
             add_edge(file_nid, class_nid, "contains", line)
+
+            # TS/JS decorators on the class and its members (@Component, @Injectable,
+            # @Input, @Inject, @Entity, …). Decorators live only in class subtrees.
+            if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+                _ts_emit_decorator_edges(node, class_nid, stem, source,
+                                         ensure_named_node, add_edge)
 
             if config.ts_module == "tree_sitter_swift" and any(
                 c.type == "extension" for c in node.children
@@ -4431,6 +4616,13 @@ def _extract_generic(
                               callable_def_nids, local_bound_names):
                 return
 
+        # TS namespace / module containers (internal_module, module)
+        if config.ts_module == "tree_sitter_typescript":
+            if _ts_extra_walk(node, source, file_nid, stem, str_path,
+                              nodes, edges, seen_ids, function_bodies,
+                              parent_class_nid, add_node, add_edge, walk):
+                return
+
         if config.ts_module == "tree_sitter_c_sharp":
             if _csharp_extra_walk(node, source, file_nid, stem, str_path,
                                    nodes, edges, seen_ids, function_bodies,
@@ -4632,8 +4824,23 @@ def _extract_generic(
             return None
         return _read_text(scope, source)
 
+    _tracked_body_ids: set[int] = set()
+    _JS_CLOSURE_TYPES = ("arrow_function", "function_expression")
+
     def walk_calls(node, caller_nid: str) -> None:
         if node.type in config.function_boundary_types:
+            # JS/TS: an inline/returned closure not separately tracked in
+            # function_bodies would otherwise drop its calls at this boundary.
+            # Descend into it with the enclosing caller so `return () =>
+            # svc.doThing()` links to the caller (#1630). Tracked closures
+            # (const-assigned arrows) are walked with their own nid — skip to
+            # avoid double-counting.
+            if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                    and node.type in _JS_CLOSURE_TYPES):
+                body = node.child_by_field_name("body")
+                if body is not None and id(body) not in _tracked_body_ids:
+                    for child in node.children:
+                        walk_calls(child, caller_nid)
             return
 
         if node.type in config.call_types:
@@ -4703,20 +4910,45 @@ def _extract_generic(
                                     callee_name = _read_text(child, source)
                                     break
             elif config.ts_module == "tree_sitter_c_sharp" and node.type == "invocation_expression":
-                # C#: try name field, then first named child
-                name_node = node.child_by_field_name("name")
-                if name_node:
-                    callee_name = _read_text(name_node, source)
+                # C#: the invoked function is the `function` field. A member call
+                # `recv.Method(...)` is a member_access_expression (receiver in its
+                # `expression` field, method in `name`). Capture a simple-identifier
+                # or `this` receiver + set is_member_call so the receiver-typed
+                # resolver (_resolve_csharp_member_calls) can bind it to the
+                # receiver's declared type. Without this the bare method name matched
+                # any same-named method in the corpus, silently mis-resolving
+                # `_server.Save()` to an unrelated `Cache.Save()` (#1609).
+                fn_node = node.child_by_field_name("function")
+                if fn_node is not None and fn_node.type == "member_access_expression":
+                    mname = fn_node.child_by_field_name("name")
+                    recv = fn_node.child_by_field_name("expression")
+                    if mname is not None:
+                        callee_name = _read_text(mname, source)
+                        is_member_call = True
+                        if recv is not None and recv.type == "identifier":
+                            member_receiver = _read_text(recv, source)
+                        elif recv is not None and recv.type == "this_expression":
+                            member_receiver = "this"
+                elif fn_node is not None and fn_node.type == "identifier":
+                    callee_name = _read_text(fn_node, source)
                 else:
-                    for child in node.children:
-                        if child.is_named:
-                            raw = _read_text(child, source)
-                            if "." in raw:
-                                callee_name = raw.split(".")[-1]
-                                is_member_call = True
-                            else:
-                                callee_name = raw
-                            break
+                    # Fallback: original name-field / first-named-child scan.
+                    name_node = node.child_by_field_name("name")
+                    if name_node:
+                        callee_name = _read_text(name_node, source)
+                    else:
+                        for child in node.children:
+                            if child.is_named:
+                                raw = _read_text(child, source)
+                                if "." in raw:
+                                    callee_name = raw.split(".")[-1]
+                                    is_member_call = True
+                                    parts = raw.split(".")
+                                    if len(parts) == 2 and parts[0]:
+                                        member_receiver = parts[0]
+                                else:
+                                    callee_name = raw
+                                break
             elif config.ts_module == "tree_sitter_php":
                 # PHP: distinguish call expression subtypes
                 if node.type == "function_call_expression":
@@ -4830,7 +5062,18 @@ def _extract_generic(
                 # viewset action delegates to a same-named service action — which would
                 # match `tgt_nid == caller_nid` and silently drop the call (#1446). The
                 # captured receiver is resolved later in _resolve_python_member_calls.
-                if is_member_call and member_receiver and (member_receiver[:1].isupper() or is_this_field_call):
+                # C#: ANY member call with a captured receiver defers to the
+                # receiver-typed resolver — a bare method-name match ignores the
+                # receiver's declared type and mis-binds to an unrelated same-named
+                # method (#1609). The receiver may be lowercase (`_server.Save()`),
+                # so this is broader than the capitalized/this-field Python rule.
+                _csharp_defer = (
+                    config.ts_module == "tree_sitter_c_sharp"
+                    and is_member_call and member_receiver
+                )
+                if is_member_call and member_receiver and (
+                    member_receiver[:1].isupper() or is_this_field_call or _csharp_defer
+                ):
                     tgt_nid = None
                 else:
                     tgt_nid = label_to_nid.get(callee_name)
@@ -4871,6 +5114,11 @@ def _extract_generic(
                     # suffix sets, so a source_file suffix alone can't separate them.
                     if config.ts_module == "tree_sitter_cpp":
                         rc_entry["lang"] = "cpp"
+                    # C#: tag the raw_call so _resolve_csharp_member_calls claims it
+                    # and types the receiver against the file's field/param/local
+                    # type table (#1609).
+                    if config.ts_module == "tree_sitter_c_sharp":
+                        rc_entry["lang"] = "csharp"
                     raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -5098,6 +5346,14 @@ def _extract_generic(
         for _caller_nid, body_node in function_bodies:
             _swift_local_var_types(body_node, source, type_table)
 
+    # JS/TS: bodies already walked with their own caller_nid (const-assigned
+    # arrows, methods). An INLINE/returned arrow or function-expression that is
+    # NOT separately tracked (e.g. `return () => svc.doThing()`) is otherwise
+    # skipped at the arrow boundary in walk_calls, losing its calls — so let
+    # walk_calls descend into such untracked closures with the enclosing caller
+    # (#1630 Pattern B). Guarding on the tracked set prevents double-walking.
+    _tracked_body_ids.update(id(b) for _, b in function_bodies)
+
     for caller_nid, body_node in function_bodies:
         walk_calls(body_node, caller_nid)
 
@@ -5204,6 +5460,13 @@ def _extract_generic(
                 n["_callable"] = True
     if swift_extensions:
         result["swift_extensions"] = swift_extensions
+    # TS/JS: augment the constructor-injection type table with local `new`
+    # bindings and type-annotated parameters, so `const s = new Svc(); s.m()` and
+    # a call on a typed param (incl. inside a closure) resolve (#1630). The
+    # constructor-injection entries are populated during the walk above and win on
+    # a name clash (first-binding-wins in the helper).
+    if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+        _ts_receiver_type_table(root, source, type_table)
     if type_table:
         if config.ts_module == "tree_sitter_swift":
             result["swift_type_table"] = {"path": str_path, "table": type_table}
@@ -5211,6 +5474,13 @@ def _extract_generic(
             result["ts_type_table"] = {"path": str_path, "table": type_table}
         elif config.ts_module == "tree_sitter_cpp":
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
+    # C#: a file-wide receiver type table (field/property/param/local -> Type) for
+    # _resolve_csharp_member_calls (#1609). Built from the whole tree, not just
+    # function bodies, so class-level fields/properties are in scope for every method.
+    if config.ts_module == "tree_sitter_c_sharp":
+        cs_table = _csharp_member_type_table(root, source)
+        if cs_table:
+            result["csharp_type_table"] = {"path": str_path, "table": cs_table}
     return result
 
 
@@ -5355,10 +5625,10 @@ def extract_python(path: Path) -> dict:
 
 
 def extract_js(path: Path) -> dict:
-    """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx file."""
+    """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
     if path.suffix == ".tsx":
         config = _TSX_CONFIG
-    elif path.suffix == ".ts":
+    elif path.suffix in (".ts", ".mts", ".cts"):
         config = _TS_CONFIG
     else:
         config = _JS_CONFIG
@@ -9646,7 +9916,7 @@ def _parse_js_tree(path: Path):
             source = masked.encode("utf-8")
         else:
             source = path.read_bytes()
-        use_ts = path.suffix in (".ts", ".tsx") or (
+        use_ts = path.suffix in (".ts", ".tsx", ".mts", ".cts") or (
             path.suffix == ".vue" and vue_lang not in ("js", "jsx")
         )
         if use_ts:
@@ -9844,6 +10114,125 @@ _JS_PRIMITIVE_TYPES = frozenset({
     "string", "number", "boolean", "any", "unknown", "void", "never",
     "object", "null", "undefined", "bigint", "symbol", "this",
 })
+
+
+def _ts_decorator_name(deco_node, source: bytes) -> str | None:
+    """Return the head symbol of a TS `decorator` node.
+
+    `@Injectable` -> the identifier; `@Component({...})` / `@Input()` -> the
+    `function` of the call_expression; `@ng.Component()` / `@core.Injectable` ->
+    the `property` of the member_expression (the imported symbol, not the
+    namespace alias).
+    """
+    for child in deco_node.children:
+        if not child.is_named:
+            continue
+        target = child
+        if target.type == "call_expression":
+            target = target.child_by_field_name("function") or target
+        if target.type == "member_expression":
+            prop = target.child_by_field_name("property")
+            return _read_text(prop, source) if prop else None
+        if target.type == "identifier":
+            return _read_text(target, source)
+        return None
+    return None
+
+
+def _ts_method_name(method_node, source: bytes) -> str | None:
+    """Name of a `method_definition`, matching the id the function-types branch
+    builds (`_make_id(class_nid, name)`)."""
+    name_node = method_node.child_by_field_name("name")
+    return _read_text(name_node, source) if name_node else None
+
+
+def _ts_descendant_decorators(node) -> list:
+    """Collect `decorator` nodes under `node` (e.g. parameter decorators inside a
+    method's formal_parameters, or a field's own decorator), without crossing into
+    a nested class or a nested method, which own their own decorators."""
+    out: list = []
+
+    def rec(n, top: bool) -> None:
+        for child in n.children:
+            ct = child.type
+            if ct == "decorator":
+                out.append(child)
+            elif ct in ("class_declaration", "abstract_class_declaration"):
+                continue
+            elif ct == "method_definition" and not top:
+                continue
+            else:
+                rec(child, False)
+
+    rec(node, True)
+    return out
+
+
+def _ts_emit_decorator_edges(class_node, class_nid: str, stem: str, source: bytes,
+                             ensure_named_node, add_edge) -> None:
+    """Emit `references` edges (context="decorator") from a class and its members
+    to the symbols of the TS decorators applied to them.
+
+    Decorators only occur on classes, class members, and parameters, so a single
+    pass over the class declaration covers them. Members that are graph nodes
+    (methods, incl. the constructor) own their decorators and their parameter
+    decorators; members that are not nodes (fields, parameters) attribute to the
+    enclosing class. Targets go through `ensure_named_node`, so a decorator
+    imported from another module (the common case — `@Component` from
+    `@angular/core`) becomes a sourceless stub the corpus rewire collapses onto
+    the real definition.
+    """
+    def emit(deco_node, owner_nid: str) -> None:
+        name = _ts_decorator_name(deco_node, source)
+        if not name:
+            return
+        line = deco_node.start_point[0] + 1
+        target = ensure_named_node(name, line)
+        if target != owner_nid:
+            add_edge(owner_nid, target, "references", line, context="decorator")
+
+    # Class-level decorators: direct children of the class node (`@Deco class C`),
+    # plus — when exported (`@Deco export class C`) — the decorators that sit on
+    # the wrapping export_statement, before the class.
+    for child in class_node.children:
+        if child.type == "decorator":
+            emit(child, class_nid)
+    parent = class_node.parent
+    if parent is not None and parent.type == "export_statement":
+        for child in parent.children:
+            if child.type == "decorator":
+                emit(child, class_nid)
+            elif child.type in ("class_declaration", "abstract_class_declaration"):
+                break
+
+    # Member decorators inside the class body.
+    body = next((c for c in class_node.children if c.type == "class_body"), None)
+    if body is None:
+        return
+    for member in body.children:
+        mt = member.type
+        if mt == "decorator":
+            # A method decorator is a sibling preceding the method; skip past any
+            # stacked decorators to find it.
+            owner = class_nid
+            sib = member.next_named_sibling
+            while sib is not None and sib.type == "decorator":
+                sib = sib.next_named_sibling
+            if sib is not None and sib.type == "method_definition":
+                mname = _ts_method_name(sib, source)
+                if mname:
+                    owner = _make_id(class_nid, mname)
+            emit(member, owner)
+        elif mt == "method_definition":
+            mname = _ts_method_name(member, source)
+            m_nid = _make_id(class_nid, mname) if mname else class_nid
+            for deco in _ts_descendant_decorators(member):
+                emit(deco, m_nid)
+        else:
+            # Fields / accessors: the member is not a node, so attribute its
+            # decorators (e.g. `@Input()`, `@Column()`) to the class.
+            for deco in _ts_descendant_decorators(member):
+                emit(deco, class_nid)
 
 
 def _ts_heritage_clause_entries(clause_node, source: bytes) -> list[str]:
@@ -11397,6 +11786,120 @@ def _resolve_cpp_member_calls(
         })
 
 
+def _resolve_csharp_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve C# member calls (``recv.Method()``) to the receiver's declared type
+    (#1609).
+
+    The shared cross-file pass drops every ``is_member_call`` because a bare method
+    name collides across the corpus — and for C# an in-file bare match silently
+    mis-bound ``_server.Save()`` to an unrelated ``Cache.Save()``. The C# extractor
+    now records each member call's receiver plus a per-file ``name -> Type`` table
+    (``csharp_type_table``) of fields/properties/params/locals. This pass types the
+    receiver, then emits an edge ONLY when that type resolves to exactly ONE
+    definition (the god-node guard); an untypable receiver is skipped (no guess).
+
+    Receiver typing, by precision tier:
+      * ``this.M()`` — receiver is the caller's own enclosing class -> EXTRACTED.
+      * ``Type.M()`` (capitalized) — the type is named explicitly in source -> EXTRACTED.
+      * ``recv.M()`` — ``recv`` typed via the file's field/param/local table -> INFERRED.
+
+    Must run after id-disambiguation so node ids and caller_nids are final.
+    """
+    type_table_by_file: dict[str, dict[str, str]] = {}
+    for result in per_file:
+        tt = result.get("csharp_type_table")
+        if tt and tt.get("path"):
+            type_table_by_file[tt["path"]] = tt.get("table", {})
+
+    def _key(label: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
+
+    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+
+    type_def_nids: dict[str, list[str]] = {}
+    node_by_id: dict[str, dict] = {}
+    for n in all_nodes:
+        node_by_id[n.get("id")] = n
+        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+            type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
+
+    # (type_node_id, method_key) -> method_node_id, and caller -> enclosing type.
+    # C# owns its methods via `method` edges.
+    method_index: dict[tuple[str, str], str] = {}
+    enclosing_type: dict[str, str] = {}
+    for e in all_edges:
+        if e.get("relation") != "method":
+            continue
+        src, tgt = e.get("source"), e.get("target")
+        tnode = node_by_id.get(tgt)
+        if tnode is None:
+            continue
+        enclosing_type.setdefault(tgt, src)
+        method_index[(src, _key(tnode.get("label", "")))] = tgt
+
+    all_raw_calls: list[dict] = []
+    for result in per_file:
+        all_raw_calls.extend(result.get("raw_calls", []))
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for rc in all_raw_calls:
+        if rc.get("lang") != "csharp" or not rc.get("is_member_call"):
+            continue
+        receiver = rc.get("receiver")
+        callee = rc.get("callee")
+        caller = rc.get("caller_nid")
+        if not receiver or not callee or not caller:
+            continue
+        src_file = rc.get("source_file", "")
+        if receiver == "this":
+            type_nid = enclosing_type.get(caller)
+            if not type_nid:
+                continue
+            type_qualified = True
+        elif receiver[:1].isupper():
+            # Type.M() — the type is named explicitly (also covers a Pascal-cased
+            # local whose name equals its type, resolved via the table below if the
+            # explicit-type lookup misses).
+            type_defs = type_def_nids.get(_key(receiver), [])
+            if len(type_defs) != 1:
+                type_name = type_table_by_file.get(src_file, {}).get(receiver)
+                type_defs = type_def_nids.get(_key(type_name), []) if type_name else []
+                if len(type_defs) != 1:
+                    continue
+            type_nid = type_defs[0]
+            type_qualified = True
+        else:
+            type_name = type_table_by_file.get(src_file, {}).get(receiver)
+            if not type_name:
+                continue
+            type_defs = type_def_nids.get(_key(type_name), [])
+            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+                continue
+            type_nid = type_defs[0]
+            type_qualified = False
+        method_nid = method_index.get((type_nid, _key(callee)))
+        if not method_nid:
+            continue  # receiver typed, but the type has no such method — skip
+        if method_nid == caller or (caller, method_nid) in existing_pairs:
+            continue
+        existing_pairs.add((caller, method_nid))
+        all_edges.append({
+            "source": caller,
+            "target": method_nid,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED" if type_qualified else "INFERRED",
+            "confidence_score": 1.0 if type_qualified else 0.8,
+            "source_file": src_file,
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 def _resolve_objc_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -11523,7 +12026,7 @@ register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb"}), resolve_ruby_member_calls)
 )
 register_language_resolver(
-    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".js", ".jsx"}), _resolve_typescript_member_calls)
+    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
 )
 # C++ (#1547) and ObjC (#1556) receiver-typed member-call resolution. `.h` is in
 # both suffix sets because it routes to extract_cpp or extract_objc by content; the
@@ -11541,6 +12044,11 @@ register_language_resolver(
         frozenset({".m", ".mm", ".h"}),
         _resolve_objc_member_calls,
     )
+)
+# C# receiver-typed member-call resolution (#1609): `field/param/local.Method()`
+# bound to the receiver's declared type instead of a bare same-named match.
+register_language_resolver(
+    LanguageResolver("csharp_member_calls", frozenset({".cs"}), _resolve_csharp_member_calls)
 )
 
 
@@ -15389,6 +15897,8 @@ _DISPATCH: dict[str, Any] = {
     ".mjs": extract_js,
     ".ts": extract_js,
     ".tsx": extract_js,
+    ".mts": extract_js,
+    ".cts": extract_js,
     ".go": extract_go,
     ".rs": extract_rust,
     ".java": extract_java,
@@ -16237,8 +16747,10 @@ def extract(
 
 
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
+    containment_root = root if root is not None else target
+    from graphify.detect import _resolves_under_root
     if target.is_file():
-        return [target]
+        return [target] if _resolves_under_root(target, containment_root) else []
     _EXTENSIONS = set(_DISPATCH.keys())
     from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
     ignore_root = root if root is not None else target
@@ -16269,7 +16781,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             ]
             for fname in filenames:
                 p = dp / fname
-                if p.suffix in _EXTENSIONS and not _ignored(p):
+                if p.suffix in _EXTENSIONS and not _ignored(p) and _resolves_under_root(p, containment_root):
                     results.append(p)
         return sorted(results)
     # Walk with symlink following + cycle detection
@@ -16282,10 +16794,14 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
                 dirnames.clear()
                 continue
         dp = Path(dirpath)
-        dirnames[:] = [d for d in dirnames if not _is_noise_dir(d)]
+        dirnames[:] = [
+            d for d in dirnames
+            if not _is_noise_dir(d)
+            and (not (dp / d).is_symlink() or _resolves_under_root(dp / d, containment_root))
+        ]
         for fname in filenames:
             p = dp / fname
-            if p.suffix in _EXTENSIONS and not _ignored(p):
+            if p.suffix in _EXTENSIONS and not _ignored(p) and _resolves_under_root(p, containment_root):
                 results.append(p)
     return sorted(results)
 

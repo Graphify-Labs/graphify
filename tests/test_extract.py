@@ -362,6 +362,32 @@ def test_collect_files_follows_symlinked_directory(tmp_path):
     assert [f.name for f in files_yes].count("lib.py") == 2
 
 
+def test_collect_files_skips_out_of_root_symlinked_directory(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("token = 'outside'")
+    (root / "linked_secret").symlink_to(outside)
+
+    files = collect_files(root, follow_symlinks=True)
+
+    assert not any("linked_secret" in str(f) for f in files)
+
+
+def test_collect_files_skips_out_of_root_symlinked_file_by_default(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("token = 'outside'")
+    (root / "secret_link.py").symlink_to(outside / "secret.py")
+
+    files = collect_files(root)
+
+    assert not any(f.name == "secret_link.py" for f in files)
+
+
 def test_collect_files_handles_circular_symlinks(tmp_path):
     sub = tmp_path / "pkg"
     sub.mkdir()

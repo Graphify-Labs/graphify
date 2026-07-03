@@ -3655,6 +3655,17 @@ def main() -> None:
         stages.mark("report")
         from graphify.export import backup_if_protected as _backup
         _backup(out)
+        analysis = {
+            "communities": {str(k): v for k, v in communities.items()},
+            "cohesion": {str(k): v for k, v in cohesion.items()},
+            "gods": gods,
+            "surprises": surprises,
+            "questions": questions,
+        }
+        (out / ".graphify_analysis.json").write_text(
+            json.dumps(analysis, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         to_json(G, communities, str(out / "graph.json"), community_labels=labels)
         labels_path.write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding="utf-8")
         # Membership signatures beside the labels so a later cluster-only can detect
