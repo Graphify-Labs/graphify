@@ -3867,7 +3867,7 @@ def main() -> None:
             except TypeError:
                 return _jg.node_link_graph(data), data
         try:
-            G_cur, _ = _load_graph(_current_path)
+            G_cur, _data_cur = _load_graph(_current_path)
             G_oth, _ = _load_graph(_other_path)
         except Exception as exc:
             print(f"[graphify merge-driver] error loading graphs: {exc}", file=sys.stderr)
@@ -3884,6 +3884,29 @@ def main() -> None:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
             out_data = _jg.node_link_data(merged)
+        # Stamp before writing (d1692f4's chokepoint) so a merged graph.json
+        # still carries a fresh generated_at/built_at_commit for check_staleness.
+        # There's no single "indexed root" argument here — git invokes merge
+        # drivers with (base, current, other) as throwaway temp file paths, not
+        # the real graphify-out/graph.json location, so _current_path's parent
+        # dir can't be used the way _infer_merge_root normally would. Instead,
+        # resolve the actual repo root git is merging in: git runs merge
+        # drivers with cwd set to the top of the work tree, so `rev-parse
+        # --show-toplevel` from here IS the indexed repo root. Fall back to
+        # whatever root the current side was already stamped with, then to cwd.
+        import subprocess as _sp
+        try:
+            _mr = _sp.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=3,
+            )
+            _merge_repo_root = _mr.stdout.strip() if _mr.returncode == 0 and _mr.stdout.strip() else None
+        except Exception:
+            _merge_repo_root = None
+        if not _merge_repo_root:
+            _merge_repo_root = _data_cur.get("indexed_repo_root") or str(Path.cwd())
+        from graphify.export import stamp_graph_metadata as _stamp_graph_metadata
+        _stamp_graph_metadata(out_data, indexed_repo_root=_merge_repo_root)
         Path(_current_path).write_text(json.dumps(out_data, indent=2), encoding="utf-8")
         sys.exit(0)
 
