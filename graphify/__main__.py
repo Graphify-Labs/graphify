@@ -3673,7 +3673,7 @@ def main() -> None:
             json.dumps(analysis, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        to_json(G, communities, str(out / "graph.json"), community_labels=labels)
+        to_json(G, communities, str(out / "graph.json"), community_labels=labels, indexed_repo_root=watch_path)
         labels_path.write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding="utf-8")
         # Membership signatures beside the labels so a later cluster-only can detect
         # which communities changed and avoid reusing a stale label (see reuse above).
@@ -4914,6 +4914,8 @@ def main() -> None:
                         _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
                     )
             _backup(graphify_out)
+            from graphify.export import stamp_graph_metadata as _stamp_graph_metadata
+            _stamp_graph_metadata(merged, indexed_repo_root=target)
             graph_json_path.write_text(
                 json.dumps(merged, indent=2), encoding="utf-8"
             )
@@ -4998,7 +5000,7 @@ def main() -> None:
 
         from graphify.export import backup_if_protected as _backup
         _backup(graphify_out)
-        _to_json(G, communities, str(graph_json_path), force=True)
+        _to_json(G, communities, str(graph_json_path), force=True, indexed_repo_root=target)
         stages.mark("export")
         if merged.get("output_tokens", 0) > 0:
             (graphify_out / ".graphify_semantic_marker").write_text(

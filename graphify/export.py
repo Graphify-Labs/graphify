@@ -506,8 +506,14 @@ def check_staleness(raw: dict, graph_path: Path) -> str | None:
         )
 
     import subprocess as _sp
-    from graphify.build import _infer_merge_root
-    repo_root = _infer_merge_root(graph_path)
+    # Prefer the indexed repo root recorded IN the graph at write time (stamp_graph_metadata) —
+    # correct even when the graph was written to --out <elsewhere>. Only legacy graphs
+    # (written before this field existed) fall back to inferring the root from the
+    # graph file's own location, which is wrong for an out-of-tree --out path.
+    repo_root = raw.get("indexed_repo_root")
+    if not repo_root:
+        from graphify.build import _infer_merge_root
+        repo_root = _infer_merge_root(graph_path)
     if repo_root is None:
         return None  # can't resolve the indexed root - nothing to compare against
     try:
@@ -533,7 +539,28 @@ def check_staleness(raw: dict, graph_path: Path) -> str | None:
     return None
 
 
-def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
+def stamp_graph_metadata(data: dict, *, indexed_repo_root: "str | os.PathLike | None" = None, built_at_commit: str | None = None) -> None:
+    """Stamp graph.json metadata that ``check_staleness`` reads: generation
+    timestamp, build commit, and the indexed repo's root.
+
+    This is the ONE chokepoint every graph.json writer must call — clustered
+    (``to_json``) and raw ``--no-cluster`` writers alike — so staleness detection
+    works regardless of which code path produced the file or where ``--out`` put
+    it (#1618-followup: a prior fix stamped only ``to_json``, leaving --no-cluster
+    writes and --out-elsewhere graphs unstamped/unresolvable).
+    """
+    commit = built_at_commit if built_at_commit is not None else _git_head()
+    if commit:
+        data["built_at_commit"] = commit
+    data["generated_at"] = datetime.now(timezone.utc).isoformat()
+    if indexed_repo_root is not None:
+        try:
+            data["indexed_repo_root"] = str(Path(indexed_repo_root).resolve())
+        except OSError:
+            data["indexed_repo_root"] = str(indexed_repo_root)
+
+
+def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, indexed_repo_root: "str | os.PathLike | None" = None) -> bool:
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -585,10 +612,7 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             link["source"] = true_src
             link["target"] = true_tgt
     data["hyperedges"] = getattr(G, "graph", {}).get("hyperedges", [])
-    commit = built_at_commit if built_at_commit is not None else _git_head()
-    if commit:
-        data["built_at_commit"] = commit
-    data["generated_at"] = datetime.now(timezone.utc).isoformat()
+    stamp_graph_metadata(data, indexed_repo_root=indexed_repo_root, built_at_commit=built_at_commit)
     with open(output_path, "w", encoding="utf-8") as f:  # nosec
         json.dump(data, f, indent=2)
     return True

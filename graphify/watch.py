@@ -272,7 +272,12 @@ def _node_community_map(graph_data: dict) -> dict[str, int]:
 
 def _canonical_graph_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
+    # Build-time metadata stamped by stamp_graph_metadata() varies every run
+    # (timestamp always changes; commit/root can too) without reflecting an
+    # actual graph-content change, so it must never affect a same-graph verdict.
     canonical.pop("built_at_commit", None)
+    canonical.pop("generated_at", None)
+    canonical.pop("indexed_repo_root", None)
     for key in ("nodes", "links", "edges", "hyperedges"):
         if key in canonical and isinstance(canonical[key], list):
             canonical[key] = sorted(
@@ -285,6 +290,8 @@ def _canonical_graph_for_compare(graph_data: dict) -> dict:
 def _canonical_topology_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
     canonical.pop("built_at_commit", None)
+    canonical.pop("generated_at", None)
+    canonical.pop("indexed_repo_root", None)
 
     nodes = canonical.get("nodes")
     if isinstance(nodes, list):
@@ -713,11 +720,13 @@ def _rebuild_code(
             # without it, --no-cluster + repeated `update` accumulate duplicates and edge
             # counts diverge across build modes (#1317).
             from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+            from graphify.export import stamp_graph_metadata as _stamp_graph_metadata
             candidate_graph_data = {
                 **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
                 "nodes": _dedupe_nodes(result.get("nodes", [])),
                 "links": _dedupe_edges(result.get("edges", [])),
             }
+            _stamp_graph_metadata(candidate_graph_data, indexed_repo_root=project_root, built_at_commit=commit)
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
             if existing_graph.exists():
@@ -817,7 +826,7 @@ def _rebuild_code(
         report_path = out / "GRAPH_REPORT.md"
         labels_json = json.dumps({str(k): v for k, v in sorted(labels.items())}, ensure_ascii=False, indent=2) + "\n"
         graph_tmp = out / ".graph.tmp.json"
-        json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit)
+        json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit, indexed_repo_root=project_root)
         if not json_written:
             return False
         candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))
