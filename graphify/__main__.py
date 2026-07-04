@@ -2842,22 +2842,38 @@ def main() -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--recency] [--half-life-days N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _query_graph_text
+        from graphify.serve import _query_graph_text, _source_root_for
         from graphify.security import sanitize_label
         from networkx.readwrite import json_graph
         from graphify import querylog
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
+        use_recency = "--recency" in sys.argv
+        half_life_days = 30.0
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
         args = sys.argv[3:]
         i = 0
         while i < len(args):
-            if args[i] == "--budget" and i + 1 < len(args):
+            if args[i] == "--half-life-days" and i + 1 < len(args):
+                try:
+                    half_life_days = float(args[i + 1])
+                except ValueError:
+                    print("error: --half-life-days must be a number", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--half-life-days="):
+                try:
+                    half_life_days = float(args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --half-life-days must be a number", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+            elif args[i] == "--budget" and i + 1 < len(args):
                 try:
                     budget = int(args[i + 1])
                 except ValueError:
@@ -2925,6 +2941,9 @@ def main() -> None:
             depth=2,
             token_budget=budget,
             context_filters=context_filters,
+            recency=use_recency,
+            half_life_days=half_life_days,
+            source_root=_source_root_for(gp),
         )
         querylog.log_query(
             kind="query",

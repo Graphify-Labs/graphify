@@ -1,5 +1,7 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
 import json
+from datetime import datetime, timezone
+
 import pytest
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -20,6 +22,8 @@ from graphify.serve import (
     _infer_context_filters,
     _query_terms,
     _query_graph_text,
+    _node_recency_weight,
+    _source_root_for,
     _resolve_context_filters,
     _subgraph_to_text,
     _load_graph,
@@ -121,6 +125,124 @@ def test_score_nodes_multiword_exact_label_outranks_superset():
     # Resolves uniquely to the exact label, strictly ahead of the superset.
     assert scored[0][1] == "exact"
     assert scored[0][0] > scored[1][0], "exact label must strictly outrank superset/token-bag matches"
+
+
+# --- opt-in --recency weighting (#1650, partial) ---
+
+_NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _recency_graph() -> nx.Graph:
+    """Two textually-identical matches for query 'widget' that differ only in age.
+
+    Equal-length labels ('widget aaa'/'widget bbb') so the recency-off tie-break
+    (score desc, then label length, then node id) is decided purely by node id —
+    making any recency-driven reorder unambiguous and wall-clock-independent
+    (ages come from injected captured_at + an explicit `now`).
+    """
+    G = nx.Graph()
+    G.add_node("a_old", label="widget aaa", source_file="a.py",
+               captured_at="2025-06-01T00:00:00+00:00")   # ~214 days before _NOW
+    G.add_node("b_new", label="widget bbb", source_file="b.py",
+               captured_at="2026-01-01T00:00:00+00:00")   # 0 days before _NOW
+    G.add_edge("a_old", "b_new", relation="calls", context="call")
+    return G
+
+
+def test_score_nodes_recency_off_is_byte_identical():
+    """Flag off must not touch scoring even when captured_at is present."""
+    G = _recency_graph()
+    baseline = _score_nodes(G, ["widget"])
+    # Default call and an explicit recency=False call (with now/half-life supplied)
+    # both must equal the pre-#1650 result exactly.
+    assert _score_nodes(G, ["widget"], recency=False, now=_NOW, half_life_days=30.0) == baseline
+    # Off-path leaves the tie broken by node id: older 'a_old' first.
+    assert [nid for _, nid in baseline] == ["a_old", "b_new"]
+
+
+def test_score_nodes_recency_prefers_newer():
+    G = _recency_graph()
+    weighted = _score_nodes(G, ["widget"], recency=True, now=_NOW, half_life_days=30.0)
+    ranked = [nid for _, nid in weighted]
+    assert ranked[0] == "b_new"  # newer node promoted above the equal-text older one
+    scores = {nid: s for s, nid in weighted}
+    assert scores["b_new"] > scores["a_old"]
+    # Newest (age 0) keeps ~full weight; the ~214-day-old one is heavily decayed.
+    base = {nid: s for s, nid in _score_nodes(G, ["widget"])}
+    assert scores["b_new"] == pytest.approx(base["b_new"])
+    assert scores["a_old"] < base["a_old"] * 0.05
+
+
+def test_score_nodes_recency_no_captured_at_is_neutral(tmp_path):
+    """Nodes without captured_at and without a resolvable source file keep weight 1.0."""
+    G = nx.Graph()
+    G.add_node("x", label="widget aaa", source_file="a.py")
+    G.add_node("y", label="widget bbb", source_file="b.py")
+    off = _score_nodes(G, ["widget"])
+    on = _score_nodes(G, ["widget"], recency=True, now=_NOW, half_life_days=30.0, source_root=tmp_path)
+    # No captured_at and files don't exist under tmp_path -> neutral -> unchanged.
+    assert on == off
+
+
+def test_score_nodes_recency_falls_back_to_source_mtime(tmp_path):
+    """When captured_at is absent, an on-disk source_file's mtime drives decay."""
+    import os
+    G = nx.Graph()
+    G.add_node("fresh", label="widget aaa", source_file="fresh.py")
+    G.add_node("stale", label="widget bbb", source_file="stale.py")
+    (tmp_path / "fresh.py").write_text("x")
+    (tmp_path / "stale.py").write_text("x")
+    fresh_mtime = _NOW.timestamp()
+    stale_mtime = fresh_mtime - 400 * 86400  # ~400 days older
+    os.utime(tmp_path / "fresh.py", (fresh_mtime, fresh_mtime))
+    os.utime(tmp_path / "stale.py", (stale_mtime, stale_mtime))
+    weighted = _score_nodes(G, ["widget"], recency=True, now=_NOW, half_life_days=30.0, source_root=tmp_path)
+    ranked = [nid for _, nid in weighted]
+    assert ranked[0] == "fresh"
+    scores = {nid: s for s, nid in weighted}
+    assert scores["fresh"] > scores["stale"]
+
+
+def test_node_recency_weight_precedence_and_bounds():
+    now = _NOW
+    # captured_at wins even if a source file exists.
+    assert _node_recency_weight({"captured_at": now.isoformat()}, now, 30.0, None) == pytest.approx(1.0)
+    # ~30 days old -> exactly one half-life.
+    older = {"captured_at": "2025-12-02T00:00:00+00:00"}  # 30 days before _NOW
+    assert _node_recency_weight(older, now, 30.0, None) == pytest.approx(0.5, abs=0.02)
+    # No signal at all -> neutral.
+    assert _node_recency_weight({}, now, 30.0, None) == 1.0
+    # Future-dated captured_at is clamped to full weight (mirrors reflect._decay).
+    fut = {"captured_at": "2999-01-01T00:00:00+00:00"}
+    assert _node_recency_weight(fut, now, 30.0, None) == pytest.approx(1.0)
+
+
+def test_query_graph_text_recency_shifts_start_seed():
+    G = _recency_graph()
+    off = _query_graph_text(G, "widget")
+    on = _query_graph_text(G, "widget", recency=True, now=_NOW, half_life_days=30.0)
+    off_header = off.splitlines()[0]
+    on_header = on.splitlines()[0]
+    # Off: older 'widget aaa' seeded first (node-id tie-break). On: newer flips ahead.
+    assert off_header.index("widget aaa") < off_header.index("widget bbb")
+    assert on_header.index("widget bbb") < on_header.index("widget aaa")
+
+
+def test_query_graph_text_recency_off_is_byte_identical():
+    G = _recency_graph()
+    assert _query_graph_text(G, "widget", recency=False, now=_NOW) == _query_graph_text(G, "widget")
+
+
+def test_source_root_for_derivation(tmp_path):
+    # <root>/graphify-out/graph.json -> root is two levels up.
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    gp = out / "graph.json"
+    assert _source_root_for(gp) == tmp_path
+    # A graph elsewhere -> its own directory.
+    other = tmp_path / "misc" / "g.json"
+    assert _source_root_for(other) == tmp_path / "misc"
+    assert _source_root_for(None) is None
 
 
 def test_find_node_ignores_trailing_punctuation():

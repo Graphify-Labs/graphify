@@ -5,12 +5,17 @@ import math
 import re
 import sys
 from array import array
+from datetime import datetime, timezone
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap
 from graphify.build import edge_data
 from graphify.paths import default_graph_json as _default_graph_json
+from graphify.paths import GRAPHIFY_OUT_NAME as _GRAPHIFY_OUT_NAME
+# Reuse the reflect sidecar's pure half-life math (no sidecar coupling) so the
+# opt-in --recency query weighting decays on the same curve as `graphify reflect`.
+from graphify.reflect import _DEFAULT_HALF_LIFE_DAYS, _decay
 
 try:
     import jieba as _jieba  # type: ignore[import-untyped]
@@ -283,8 +288,62 @@ def _trigram_candidates(G: nx.Graph, needles: list[str], *, guard_frac: float = 
     return [ids[i] for i in sorted(cand)]
 
 
-def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
+def _source_root_for(graph_path: "str | Path | None") -> "Path | None":
+    """Repo root that node ``source_file`` paths are relative to, for mtime lookup.
+
+    Graphs live at ``<root>/graphify-out/graph.json``, so the root is two levels
+    up when the parent dir is the output dir, else the graph's own directory.
+    Returns None for an unknown path (recency then falls back to captured_at only).
+    """
+    if not graph_path:
+        return None
+    p = Path(graph_path)
+    if p.parent.name == _GRAPHIFY_OUT_NAME:
+        return p.parent.parent
+    return p.parent
+
+
+def _node_recency_weight(
+    data: dict,
+    now: datetime,
+    half_life_days: float,
+    source_root: "Path | None",
+) -> float:
+    """Time-decay multiplier in (0, 1] for a node — newest ~= 1.0.
+
+    Signal precedence: ``captured_at`` (ISO datetime, present only on ingested
+    docs) first; else the ``source_file``'s mtime resolved under ``source_root``;
+    else 1.0 (neutral). Code/AST nodes carry neither, so recency is a no-op for
+    them. Decay uses the same half-life curve as ``graphify reflect`` (_decay).
+    """
+    captured = data.get("captured_at")
+    if captured:
+        return _decay(str(captured), now, half_life_days)
+    if source_root is not None:
+        sf = data.get("source_file")
+        if sf:
+            try:
+                mtime = (source_root / str(sf)).stat().st_mtime
+            except (OSError, ValueError):
+                return 1.0
+            dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+            return _decay(dt.isoformat(), now, half_life_days)
+    return 1.0
+
+
+def _score_nodes(
+    G: nx.Graph,
+    terms: list[str],
+    *,
+    recency: bool = False,
+    half_life_days: float = _DEFAULT_HALF_LIFE_DAYS,
+    now: "datetime | None" = None,
+    source_root: "Path | None" = None,
+) -> list[tuple[float, str]]:
     scored = []
+    # Recency is strictly opt-in: when off, every code path below is byte-for-byte
+    # identical to the pre-#1650 scorer (no age lookup, no decay).
+    recency_now = (now or datetime.now(timezone.utc)) if recency else None
     norm_terms = [tok for t in terms for tok in _search_tokens(t)]
     idf = _compute_idf(G, norm_terms)
     # Whole-query string for full-label matching (mirrors _find_node's `term`).
@@ -341,6 +400,8 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
             if t in source:
                 score += _SOURCE_MATCH_BONUS * w
         if score > 0:
+            if recency_now is not None:
+                score *= _node_recency_weight(data, recency_now, half_life_days, source_root)
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
     # match beats a longer superset that happens to share the same score.
@@ -634,9 +695,22 @@ def _query_graph_text(
     depth: int = 3,
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
+    recency: bool = False,
+    half_life_days: float = _DEFAULT_HALF_LIFE_DAYS,
+    now: "datetime | None" = None,
+    source_root: "Path | None" = None,
 ) -> str:
     terms = _query_terms(question)
-    scored = _score_nodes(G, terms)
+    scored = _score_nodes(
+        G,
+        terms,
+        recency=recency,
+        half_life_days=half_life_days,
+        now=now,
+        source_root=source_root,
+    )
+    # _pick_seeds' per-term coverage guarantee stays age-neutral on purpose: an
+    # old but sole match for a query term shouldn't be starved out just for age.
     start_nodes = _pick_seeds(scored, G=G, terms=terms)
     if not start_nodes:
         return "No matching nodes found."
@@ -863,6 +937,16 @@ def _build_server(graph_path: str):
                             "items": {"type": "string"},
                             "description": "Optional explicit edge-context filter, e.g. ['call', 'field']",
                         },
+                        "recency": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Opt-in: down-weight stale facts by age (captured_at, else source-file mtime). Off by default; leaves ranking unchanged when false.",
+                        },
+                        "half_life_days": {
+                            "type": "number",
+                            "default": 30,
+                            "description": "Recency half-life in days (a fact's weight halves every N days). Only used when recency=true.",
+                        },
                     },
                     "required": ["question"],
                 },
@@ -990,6 +1074,8 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
+        recency = bool(arguments.get("recency", False))
+        half_life_days = float(arguments.get("half_life_days", _DEFAULT_HALF_LIFE_DAYS))
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -998,6 +1084,9 @@ def _build_server(graph_path: str):
             depth=depth,
             token_budget=budget,
             context_filters=context_filter,
+            recency=recency,
+            half_life_days=half_life_days,
+            source_root=_source_root_for(active_graph_path),
         )
         querylog.log_query(
             kind="mcp_query",
