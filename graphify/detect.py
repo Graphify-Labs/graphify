@@ -603,7 +603,11 @@ def xlsx_extract_structure(path: Path) -> dict:
 
 # Sidecar header records the source's raw-byte fingerprint so a later run can
 # tell whether the Office file changed without re-parsing it (#1649, #1656).
-_SIDECAR_SOURCE_FP_RE = re.compile(r"source-md5:\s*([0-9a-f]+)")
+# Anchor to the ` | source-md5: <fp> -->` delimiter/terminator at the END of the
+# header line so a source *filename* that happens to contain a "source-md5: ..."
+# substring can't be captured as the fingerprint — otherwise the real fingerprint
+# would never match and the file would re-parse+rewrite (and re-queue) every run.
+_SIDECAR_SOURCE_FP_RE = re.compile(r"\| source-md5:\s*([0-9a-f]+)\s*-->\s*$")
 
 
 def _read_sidecar_source_fingerprint(out_path: Path) -> str | None:
@@ -1390,7 +1394,14 @@ def save_manifest(
             continue  # file deleted between detect() and manifest write
         mtime, h = hashed[f]
         prev = _normalise_entry(existing.get(f, {})) or {}
-        content_unchanged = h == prev.get("ast_hash", "")
+        # Compare the file's content hash (h) against the prior hash of the SAME
+        # kind so an unchanged file is recognised regardless of which pipeline
+        # wrote the manifest. ast/both key off the prior ast_hash (unchanged
+        # behaviour); a semantic-only manifest never populates ast_hash, so key
+        # off the prior semantic_hash there — otherwise content_unchanged would
+        # always be False and the word_count cache below could never be reused.
+        prior_hash = prev.get("semantic_hash", "") if kind == "semantic" else prev.get("ast_hash", "")
+        content_unchanged = h == prior_hash
         entry: dict = {"mtime": mtime}
         if kind in ("ast", "both"):
             entry["ast_hash"] = h

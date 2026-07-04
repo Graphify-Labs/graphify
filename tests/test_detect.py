@@ -1684,3 +1684,84 @@ def test_detect_incremental_pdf_not_reparsed_when_unchanged(tmp_path, monkeypatc
     assert calls["n"] == after_run1  # #1656: unchanged PDF is not re-parsed
     assert not any(p.endswith("paper.pdf") for p in _flat(r2["new_files"]))
     assert any(p.endswith("paper.pdf") for p in _flat(r2["unchanged_files"]))
+
+
+def test_convert_office_file_pathological_source_filename_fingerprint(tmp_path, monkeypatch):
+    """A source *filename* that itself contains a ``source-md5: <hex>`` substring
+    must not fool the sidecar fingerprint reader. The header interpolates the
+    filename before the real trailing fingerprint, so a naive un-anchored regex
+    would capture the filename's fake hash — the real fingerprint would then
+    never match and the file would re-parse + rewrite (and re-queue) on EVERY
+    run. The reader anchors to the trailing delimiter so only the real
+    fingerprint matches and an unchanged source is parsed exactly once (#1656)."""
+    calls = {"n": 0}
+
+    def fake_docx(path):
+        calls["n"] += 1
+        return path.read_bytes().decode("latin-1", "ignore")
+
+    monkeypatch.setattr(detect_mod, "docx_to_markdown", fake_docx)
+
+    out_dir = tmp_path / "converted"
+    # Filename embeds a decoy "source-md5: deadbeef" substring.
+    src = tmp_path / "report source-md5: deadbeef.docx"
+    src.write_bytes(b"payload one")
+
+    first = detect_mod.convert_office_file(src, out_dir)
+    assert first is not None
+    assert calls["n"] == 1
+    # The stored fingerprint is the real source md5, not the filename's decoy.
+    stored = detect_mod._read_sidecar_source_fingerprint(first)
+    assert stored is not None and stored != "deadbeef"
+
+    # Unchanged source: must NOT re-parse despite the misleading filename.
+    second = detect_mod.convert_office_file(src, out_dir)
+    assert second == first
+    assert calls["n"] == 1
+
+    # An actual edit still re-parses.
+    src.write_bytes(b"payload two, now different")
+    third = detect_mod.convert_office_file(src, out_dir)
+    assert third == first
+    assert calls["n"] == 2
+
+
+def test_save_manifest_semantic_kind_reuses_cached_word_count(tmp_path, monkeypatch):
+    """For a semantic-only manifest ``ast_hash`` is never populated, so keying the
+    word_count cache off it would always miss. save_manifest keys the reuse check
+    off the prior hash of the matching kind, so an unchanged file's cached count
+    is reused rather than recomputed on the next kind='semantic' write (#1656)."""
+    from graphify.detect import load_manifest
+
+    calls = {"n": 0}
+    real_count_words = detect_mod.count_words
+
+    def counting(path):
+        calls["n"] += 1
+        return real_count_words(path)
+
+    monkeypatch.setattr(detect_mod, "count_words", counting)
+
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    doc = tmp_path / "notes.md"
+    doc.write_text("alpha beta gamma delta epsilon", encoding="utf-8")
+    files = {"document": [str(doc)]}
+
+    save_manifest(files, manifest_path, kind="semantic", root=tmp_path)
+    assert calls["n"] == 1  # parsed once to seed the cache
+    stored = load_manifest(manifest_path, root=tmp_path)
+    (entry,) = stored.values()
+    assert entry["word_count"] == 5
+    assert entry.get("ast_hash", "") == ""  # semantic-only: ast_hash stays empty
+
+    # Second semantic write, content unchanged: cached count is reused.
+    save_manifest(files, manifest_path, kind="semantic", root=tmp_path)
+    assert calls["n"] == 1
+
+    # A real content change must still recompute.
+    doc.write_text("one two three", encoding="utf-8")
+    save_manifest(files, manifest_path, kind="semantic", root=tmp_path)
+    assert calls["n"] == 2
+    stored = load_manifest(manifest_path, root=tmp_path)
+    (entry,) = stored.values()
+    assert entry["word_count"] == 3
