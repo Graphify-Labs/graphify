@@ -123,6 +123,59 @@ def test_score_nodes_multiword_exact_label_outranks_superset():
     assert scored[0][0] > scored[1][0], "exact label must strictly outrank superset/token-bag matches"
 
 
+def test_score_nodes_single_token_probe_does_not_falsely_promote_bare_method(monkeypatch):
+    """#1617: a single-token probe must not let `label_tokens` (punctuation-
+    stripped) promote a bare method whose only word is the query term to a
+    fake EXACT match, outranking a real multi-word file whose raw label only
+    reaches PREFIX for that same bare word.
+
+    Reproduces a live failure: `graphify query "... search results"` seeded on
+    an unrelated provider's `.search()` method and never surfaced the real
+    `search.handler.ts` file at all, because `_pick_seeds`'s per-term
+    diversity probe calls `_score_nodes(G, ["search"])` in isolation, and the
+    (pre-fix) joined-tier bonus treated `.search()`'s tokenized label
+    ("search") as an exact match for the single-word query — a promotion the
+    per-token loop's own raw exact check correctly refuses (raw ".search" !=
+    "search").
+    """
+    def _add(nid, label, src):
+        G.add_node(nid, label=label, norm_label=label.lower(), source_file=src, community=0)
+
+    G = nx.DiGraph()
+    _add("bare_method", ".search()", "server/providers/tmdbProvider.ts")
+    _add("real_file", "search.handler.ts", "server/modules/search/search.handler.ts")
+    monkeypatch.setattr("graphify.serve._trigram_candidates", lambda *a, **k: None)
+
+    scored = _score_nodes(G, ["search"])
+    scored_by_id = {nid: s for s, nid in scored}
+    assert scored_by_id["real_file"] > scored_by_id["bare_method"], (
+        "the real multi-word file (PREFIX tier) must outrank the bare "
+        "same-named method (SUBSTRING tier) once the joined-tier bonus is "
+        "gated to len(norm_terms) > 1"
+    )
+
+
+def test_pick_seeds_diversity_does_not_seed_bare_method_over_relevant_file(monkeypatch):
+    """End-to-end version of the test above, through `_pick_seeds`'s per-term
+    diversity guarantee (#1445) — the mechanism where the bug actually bites,
+    since it probes each query term in isolation via `_score_nodes(G, [term])`.
+    """
+    def _add(nid, label, src):
+        G.add_node(nid, label=label, norm_label=label.lower(), source_file=src, community=0)
+
+    G = nx.DiGraph()
+    _add("bare_method", ".search()", "server/providers/tmdbProvider.ts")
+    _add("real_file", "search.handler.ts", "server/modules/search/search.handler.ts")
+    _add("settings", "providerSettingsService.ts", "server/services/providerSettingsService.ts")
+    monkeypatch.setattr("graphify.serve._trigram_candidates", lambda *a, **k: None)
+
+    terms = ["provider", "settings", "search", "results"]
+    scored = _score_nodes(G, terms)
+    seeds = _pick_seeds(scored, G=G, terms=terms)
+    assert "real_file" in seeds
+    assert "bare_method" not in seeds
+
+
 def test_find_node_ignores_trailing_punctuation():
     G = _make_graph()
     assert _find_node(G, "extract?") == ["n1"]

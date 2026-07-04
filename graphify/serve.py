@@ -296,7 +296,30 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
         # this, no single token equals a multi-word label, the per-token exact
         # tier never fires, and every node sharing the token set ties -> arbitrary
         # node-id sort -> wrong/disconnected endpoint -> false "No path found".
-        if joined:
+        #
+        # Gated on len(norm_terms) > 1 (#1617): a single-token probe has no
+        # "multi-word phrase vs per-token bag-of-words" distinction to make —
+        # the per-token loop below already fully handles single-term exact/
+        # prefix/substring via raw (non-tokenized) label comparison. Without
+        # this gate, `label_tokens` (punctuation-stripped) can make a bare
+        # method name whose only word is the query term — e.g. `.search()` —
+        # falsely equal a single-word `joined` query at the EXACT tier, even
+        # though the same node correctly fails the per-token loop's raw
+        # `t == norm_label or t == bare_label` exact check just below (raw
+        # ".search" != "search"). This matters most inside `_pick_seeds`'s
+        # per-term seed-diversity probe (#1445), which calls
+        # `_score_nodes(G, [term])` with exactly one token per distinct query
+        # word: a short same-named method repeated across unrelated files
+        # (three providers each defining `.search()`) can win that probe's
+        # EXACT tier and starve out the actually-relevant multi-word file
+        # (`search.handler.ts`, correctly only PREFIX-tier for the bare word
+        # "search"), reproduced live on a real repo's `graphify query "how
+        # does a change in provider settings affect what shows up in search
+        # results"` — search.handler.ts never appeared in the traversal
+        # despite scoring far higher than `.search()` under the full
+        # multi-word sentence (this gate does not change that combined-query
+        # path at all, since len(norm_terms) > 1 there).
+        if joined and len(norm_terms) > 1:
             nid_lower = nid.lower()
             if joined in (norm_label, bare_label, label_tokens, nid_lower):
                 score += _EXACT_MATCH_BONUS * 10 * joined_w
