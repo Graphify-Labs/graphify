@@ -195,7 +195,8 @@ def deduplicate_entities(
     *,
     communities: dict[str, int],
     dedup_llm_backend: str | None = None,
-) -> tuple[list[dict], list[dict]]:
+    return_remap: bool = False,
+) -> tuple[list[dict], list[dict]] | tuple[list[dict], list[dict], dict[str, str]]:
     """Deduplicate near-identical entities in a knowledge graph.
 
     Args:
@@ -203,9 +204,11 @@ def deduplicate_entities(
         edges: list of edge dicts with {"source": str, "target": str, ...}
         communities: mapping of node_id -> community_id (from cluster())
         dedup_llm_backend: if set, use LLM to resolve ambiguous pairs
+        return_remap: if true, include the removed_id -> survivor_id map
 
     Returns:
-        (deduped_nodes, deduped_edges) with edges rewired to survivors
+        (deduped_nodes, deduped_edges) with edges rewired to survivors, plus
+        the remap table when return_remap=True.
     """
     # Guard: cross-project dedup is not supported — nodes from different repos
     # share label names by coincidence and must never be merged by string similarity.
@@ -218,6 +221,8 @@ def deduplicate_entities(
         )
 
     if len(nodes) <= 1:
+        if return_remap:
+            return nodes, edges, {}
         return nodes, edges
 
     # Pre-deduplicate: keep first occurrence of each id.
@@ -246,6 +251,8 @@ def deduplicate_entities(
     unique_nodes = list(seen_ids.values())
 
     if len(unique_nodes) <= 1:
+        if return_remap:
+            return unique_nodes, edges, {}
         return unique_nodes, edges
 
     # ── pass 1: exact normalization ───────────────────────────────────────────
@@ -413,6 +420,8 @@ def deduplicate_entities(
 
     # ── apply remap ───────────────────────────────────────────────────────────
     if not remap:
+        if return_remap:
+            return unique_nodes, edges, {}
         return unique_nodes, edges
 
     total = len(remap)
@@ -445,6 +454,8 @@ def deduplicate_entities(
         if e["source"] != e["target"]:
             deduped_edges.append(e)
 
+    if return_remap:
+        return deduped_nodes, deduped_edges, remap
     return deduped_nodes, deduped_edges
 
 

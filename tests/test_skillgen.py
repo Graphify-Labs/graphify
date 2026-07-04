@@ -751,7 +751,7 @@ def test_git_show_validators_skip_cleanly_without_origin_v8(monkeypatch, tmp_pat
 
 
 def test_audit_allowlist_documents_only_consolidations():
-    """The allowlist holds only the wave-2/3 consolidations, nothing genuine.
+    """The allowlist holds only documented consolidations, nothing genuine.
 
     A genuine drop (trae's native AGENTS.md integration) must never be in the
     allowlist, or the guard would rubber-stamp the regression it exists to catch.
@@ -760,8 +760,12 @@ def test_audit_allowlist_documents_only_consolidations():
     for hs in gen._CONSOLIDATION_ALLOWLIST.values():
         all_allowlisted |= set(hs)
     assert "## For native AGENTS.md integration (Trae)" not in all_allowlisted
-    # Only the two minimal-body hosts carry per-host consolidations.
-    assert set(gen._CONSOLIDATION_ALLOWLIST) == {"kilo", "vscode"}
+    # The two minimal-body hosts carry wave-2/3 heading consolidations; Codex
+    # carries only the explicit CLAUDE.md -> AGENTS.md hooks migration.
+    assert set(gen._CONSOLIDATION_ALLOWLIST) == {"codex", "kilo", "vscode"}
+    assert gen._CONSOLIDATION_ALLOWLIST["codex"] == frozenset({
+        "## For native CLAUDE.md integration",
+    })
 
 
 # --- the trae / trae-cn native AGENTS.md integration fix -----------------------
@@ -807,7 +811,7 @@ def test_claude_flavored_hosts_keep_their_hooks_text_unchanged():
     droid's v8 dispatch never had the Trae caveat and its hooks section names
     CLAUDE.md; restoring trae must not bleed into droid or any other host.
     """
-    for key in ("claude", "droid", "codex", "windows", "kilo", "vscode"):
+    for key in ("claude", "droid", "windows", "kilo", "vscode"):
         core, refs = _platform_artifacts(key)
         hooks = refs["hooks.md"]
         assert "graphify claude install" in hooks, f"[{key}] lost the claude install command"
@@ -815,6 +819,21 @@ def test_claude_flavored_hosts_keep_their_hooks_text_unchanged():
         assert "Trae does NOT support PreToolUse hooks" not in core, f"[{key}] leaked the trae caveat"
         assert "Trae does NOT support PreToolUse hooks" not in hooks, f"[{key}] leaked the trae caveat"
         assert "## For the commit hook and native CLAUDE.md integration" in core, f"[{key}] pointer drifted"
+
+
+def test_codex_hooks_reference_uses_project_agents_and_codex_hooks():
+    """codex wires project install to AGENTS.md + .codex/hooks.json, never Claude."""
+    core, refs = _platform_artifacts("codex")
+    hooks = refs["hooks.md"]
+    assert "## For native AGENTS.md integration (Codex)" in hooks
+    assert "graphify codex install --project" in hooks
+    assert "graphify codex uninstall --project" in hooks
+    assert "AGENTS.md" in hooks
+    assert ".codex/hooks.json" in hooks
+    assert "graphify claude install" not in hooks
+    assert "native CLAUDE.md integration" not in hooks
+    assert "## For the commit hook and native AGENTS.md integration" in core
+    assert "wire graphify into a project's AGENTS.md" in core
 
 
 # --- the amp native AGENTS.md integration (the 13th split host) ----------------

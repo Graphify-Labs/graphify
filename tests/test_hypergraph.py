@@ -7,7 +7,7 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
-from graphify.build import build_from_json
+from graphify.build import build, build_from_json
 from graphify.export import attach_hyperedges, to_json
 from graphify.report import generate
 
@@ -316,6 +316,112 @@ def test_build_rekeys_alias_keyed_hyperedge_members():
     G = build_from_json(extraction)
     he = G.graph["hyperedges"][0]
     assert he["nodes"] == ["pkg_mod_foo", "pkg_mod_bar"]
+
+
+def test_build_rewires_hyperedge_members_after_ghost_merge():
+    """Ghost nodes merged into AST nodes must not survive inside hyperedges."""
+    extraction = {
+        "nodes": [
+            {
+                "id": "ast_foo",
+                "label": "foo",
+                "file_type": "code",
+                "source_file": "a.py",
+                "source_location": "L1",
+                "_origin": "ast",
+            },
+            {
+                "id": "ghost_foo",
+                "label": "foo",
+                "file_type": "concept",
+                "source_file": "a.py",
+                "source_location": "L2",
+            },
+            {"id": "bar", "label": "bar", "file_type": "code", "source_file": "a.py"},
+        ],
+        "edges": [
+            {
+                "source": "ghost_foo",
+                "target": "bar",
+                "relation": "references",
+                "confidence": "INFERRED",
+                "source_file": "a.py",
+            }
+        ],
+        "hyperedges": [{"id": "h", "label": "flow", "nodes": ["ghost_foo", "bar"]}],
+    }
+
+    G = build_from_json(extraction)
+
+    assert "ghost_foo" not in G
+    assert G.graph["hyperedges"][0]["nodes"] == ["ast_foo", "bar"]
+
+
+def test_build_rewires_hyperedge_members_after_entity_dedup():
+    """The pre-build entity dedup remap must apply to hyperedges too."""
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "Shared Concept", "file_type": "concept", "source_file": "doc.md"},
+            {
+                "id": "duplicate_shared_concept",
+                "label": "Shared Concept",
+                "file_type": "concept",
+                "source_file": "doc.md",
+            },
+            {"id": "target", "label": "Target", "file_type": "concept", "source_file": "doc.md"},
+        ],
+        "edges": [
+            {
+                "source": "duplicate_shared_concept",
+                "target": "target",
+                "relation": "references",
+                "confidence": "INFERRED",
+                "source_file": "doc.md",
+            }
+        ],
+        "hyperedges": [
+            {"id": "h", "label": "flow", "nodes": ["duplicate_shared_concept", "target"]}
+        ],
+    }
+
+    G = build([extraction], dedup=True)
+
+    assert "duplicate_shared_concept" not in G
+    assert G.graph["hyperedges"][0]["nodes"] == ["a", "target"]
+
+
+def test_build_rewires_alias_keyed_hyperedge_members_after_entity_dedup():
+    """Dedup remaps apply even before build_from_json normalizes member aliases."""
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "Shared Concept", "file_type": "concept", "source_file": "doc.md"},
+            {
+                "id": "duplicate_shared_concept",
+                "label": "Shared Concept",
+                "file_type": "concept",
+                "source_file": "doc.md",
+            },
+            {"id": "target", "label": "Target", "file_type": "concept", "source_file": "doc.md"},
+        ],
+        "edges": [
+            {
+                "source": "duplicate_shared_concept",
+                "target": "target",
+                "relation": "references",
+                "confidence": "INFERRED",
+                "source_file": "doc.md",
+            }
+        ],
+        "hyperedges": [
+            {"id": "h", "label": "flow", "members": ["duplicate_shared_concept", "target"]}
+        ],
+    }
+
+    G = build([extraction], dedup=True)
+
+    assert "duplicate_shared_concept" not in G
+    assert G.graph["hyperedges"][0]["nodes"] == ["a", "target"]
+    assert "members" not in G.graph["hyperedges"][0]
 
 
 def test_build_warns_once_per_aliased_hyperedge(capsys):

@@ -56,6 +56,30 @@ def test_caller_shows_callee_as_outbound(monkeypatch, tmp_path, capsys):
     assert "<-- " not in out
 
 
+def test_explain_output_sanitizes_control_chars(monkeypatch, tmp_path, capsys):
+    graph_data = {
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [
+            {"id": "a", "label": "A\x00", "source_file": "a.py\x1f", "community": "0\x00"},
+            {"id": "b", "label": "B\x1f", "source_file": "b.py", "community": 0},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "calls\x00", "confidence": "EXTRACTED\x1f"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+
+    out = _run(monkeypatch, p, "A", capsys)
+
+    assert "\x00" not in out
+    assert "\x1f" not in out
+    assert "Node: A" in out
+    assert "--> B [calls] [EXTRACTED]" in out
+
+
 def test_explain_source_file_path_prefers_file_level_node(monkeypatch, tmp_path, capsys):
     source_file = "app/api/example/route.ts"
     graph_data = {

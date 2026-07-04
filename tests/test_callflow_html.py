@@ -66,6 +66,10 @@ def test_write_callflow_html_creates_file_and_uses_report(tmp_path):
     assert "ApiClient" in content
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in content
     assert "<script>alert(1)</script>" not in content
+    assert "securityLevel: 'strict'" in content
+    assert "htmlLabels: false" in content
+    assert '"securityLevel": "strict"' in content
+    assert '"htmlLabels": true' not in content
 
 
 def test_export_callflow_html_cli_creates_file(tmp_path):

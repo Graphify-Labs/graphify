@@ -538,6 +538,24 @@ def test_cli_reflect_groups_by_community_when_graph_present(tmp_path):
     assert "### Uncategorized" not in body
 
 
+def test_cli_reflect_groups_from_graph_node_attrs_without_analysis_sidecar(tmp_path):
+    """cluster-only/update outputs can lack .graphify_analysis.json but still carry
+    community attrs on graph nodes. Reflect should match export wiki and use those
+    attrs instead of collapsing lessons into Uncategorized."""
+    out = _make_graph(tmp_path)
+    (out / ".graphify_analysis.json").unlink()
+    graph = json.loads((out / "graph.json").read_text())
+    node_label = graph["nodes"][0]["label"]
+
+    _run(["save-result", "--question", "q", "--answer", "a",
+          "--nodes", node_label, "--outcome", "useful"], tmp_path)
+    r = _run(["reflect"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    body = (out / "reflections" / "LESSONS.md").read_text(encoding="utf-8")
+    assert "## By topic" in body
+    assert "### Uncategorized" not in body
+
+
 def test_cli_node_existence_gate_drops_stale_node_end_to_end(tmp_path):
     """Through reflect()/CLI with a real graph.json: a cited node that isn't in the
     graph is dropped from LESSONS.md; a real one stays. Exercises _load_known_nodes

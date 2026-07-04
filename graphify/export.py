@@ -211,6 +211,16 @@ def _html_styles() -> str:
   .legend-cb:checked::after, #select-all-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
   #select-all-cb:indeterminate { background: #4E79A7; border-color: #4E79A7; }
   #select-all-cb:indeterminate::after { content: ''; position: absolute; left: 2px; top: 5px; width: 8px; height: 2px; background: #fff; border: none; transform: none; }
+  @media (max-width: 720px) {
+    body { flex-direction: column; height: 100dvh; }
+    #graph { width: 100%; min-height: 56dvh; }
+    #sidebar { width: 100%; height: 44dvh; border-left: 0; border-top: 1px solid #2a2a4e; }
+    #search-results { max-height: 88px; }
+    #info-panel { min-height: 0; padding: 10px 12px; }
+    #neighbors-list { max-height: 88px; }
+    #legend-wrap { padding: 10px 12px; }
+    #stats { padding: 8px 12px; }
+  }
 </style>"""
 
 
@@ -795,8 +805,8 @@ def to_html(
     # for `calls` and `rationale_for` in the rendered graph (#563).
     vis_edges = []
     for u, v, data in G.edges(data=True):
-        confidence = data.get("confidence", "EXTRACTED")
-        relation = data.get("relation", "")
+        confidence = sanitize_label(str(data.get("confidence", "EXTRACTED")))
+        relation = sanitize_label(str(data.get("relation", "")))
         true_src = data.get("_src", u)
         true_tgt = data.get("_tgt", v)
         vis_edges.append({
@@ -822,10 +832,22 @@ def to_html(
     def _js_safe(obj) -> str:
         return json.dumps(obj).replace("</", "<\\/")
 
+    def _sanitize_hyperedges_for_html(raw_hyperedges: list) -> list:
+        safe: list = []
+        for he in raw_hyperedges or []:
+            if not isinstance(he, dict):
+                continue
+            out = dict(he)
+            for key in ("id", "label", "relation", "confidence", "source_file"):
+                if key in out:
+                    out[key] = sanitize_label(str(out.get(key, "")))
+            safe.append(out)
+        return safe
+
     nodes_json = _js_safe(vis_nodes)
     edges_json = _js_safe(vis_edges)
     legend_json = _js_safe(legend_data)
-    hyperedges_json = _js_safe(getattr(G, "graph", {}).get("hyperedges", []))
+    hyperedges_json = _js_safe(_sanitize_hyperedges_for_html(getattr(G, "graph", {}).get("hyperedges", [])))
     title = _html.escape(sanitize_label(str(output_path)))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
 
@@ -833,6 +855,7 @@ def to_html(
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>graphify - {title}</title>
 <script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"
         integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"

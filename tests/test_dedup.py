@@ -106,6 +106,24 @@ def test_empty_inputs():
     assert result_edges == []
 
 
+def test_return_remap_with_duplicate_id_prededup_single_survivor():
+    nodes = [
+        {"id": "same", "label": "Same", "file_type": "concept", "source_file": "a.md"},
+        {"id": "same", "label": "Same", "file_type": "concept", "source_file": "a.md"},
+    ]
+
+    result_nodes, result_edges, remap = deduplicate_entities(
+        nodes,
+        [],
+        communities={},
+        return_remap=True,
+    )
+
+    assert [n["id"] for n in result_nodes] == ["same"]
+    assert result_edges == []
+    assert remap == {}
+
+
 def test_single_node_no_crash():
     nodes = _make_nodes("UserService")
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})

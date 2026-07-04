@@ -300,6 +300,17 @@ def test_update_no_cluster_writes_raw_graph(tmp_path):
 
 # Regression test for #934 - cluster-only crashes when graphify-out/ doesn't exist
 
+def test_cluster_only_help_lists_cluster_options(tmp_path):
+    """cluster-only --help should explain clustering flags without requiring a graph."""
+    r = _run(["cluster-only", "--help"], tmp_path)
+    assert r.returncode == 0
+    assert "Usage: graphify cluster-only" in r.stdout
+    assert "--resolution" in r.stdout
+    assert "--exclude-hubs" in r.stdout
+    assert "--timing" in r.stdout
+    assert "no graph found" not in r.stderr
+
+
 def test_cluster_only_creates_output_dir_when_missing(tmp_path):
     """cluster-only must not crash with FileNotFoundError when graphify-out/ is absent (#934)."""
     # Build graph.json somewhere other than the default graphify-out/ location

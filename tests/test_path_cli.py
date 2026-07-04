@@ -46,3 +46,26 @@ def test_reverse_arrow(monkeypatch, tmp_path, capsys):
     assert "Shortest path (1 hops):" in out
     assert "validateSanitySession() <--calls [EXTRACTED]-- createPatchHandler()" in out
     assert "validateSanitySession() --calls [EXTRACTED]--> createPatchHandler()" not in out
+
+
+def test_path_output_sanitizes_control_chars(monkeypatch, tmp_path, capsys):
+    graph_data = {
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [
+            {"id": "a", "label": "A\x00", "source_file": "a.py", "community": 0},
+            {"id": "b", "label": "B\x1f", "source_file": "b.py", "community": 0},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "calls\x00", "confidence": "EXTRACTED\x1f"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+
+    out = _run(monkeypatch, p, "A", "B", capsys)
+
+    assert "\x00" not in out
+    assert "\x1f" not in out
+    assert "A --calls [EXTRACTED]--> B" in out

@@ -165,19 +165,13 @@ def _load_node_community(graph_path: Path, analysis_path: Path,
     graph isn't available.
 
     Mirrors how `graphify export wiki` reads graph.json + .graphify_analysis.json +
-    .graphify_labels.json. Community membership in the analysis sidecar is keyed by
-    node id, but `save-result` cites nodes by label, so both are mapped — otherwise a
-    cited ``build_from_json()`` never finds its community and every lesson collapses
-    into Uncategorized. Best-effort: any missing/unparseable artifact disables grouping.
+    .graphify_labels.json. Community membership is preferably loaded from the
+    analysis sidecar, but cluster-only/update outputs also carry the community on
+    each graph node. `save-result` cites nodes by label, so both ids and labels are
+    mapped — otherwise a cited ``build_from_json()`` never finds its community and
+    every lesson collapses into Uncategorized.
     """
-    if not graph_path.exists() or not analysis_path.exists():
-        return None
-    try:
-        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    communities = analysis.get("communities", {})
-    if not communities:
+    if not graph_path.exists():
         return None
     labels: dict[str, str] = {}
     if labels_path.exists():
@@ -187,13 +181,34 @@ def _load_node_community(graph_path: Path, analysis_path: Path,
             labels = {}
     # id -> label from the graph, so a label-form citation resolves to a community too.
     id_to_label: dict[str, str] = {}
+    communities: dict[str, list[str]] = {}
     try:
         gdata = json.loads(graph_path.read_text(encoding="utf-8"))
         for n in gdata.get("nodes", []):
-            if isinstance(n, dict) and n.get("id") is not None and n.get("label") is not None:
-                id_to_label[str(n["id"])] = str(n["label"])
+            if not isinstance(n, dict) or n.get("id") is None:
+                continue
+            nid = str(n["id"])
+            if n.get("label") is not None:
+                id_to_label[nid] = str(n["label"])
+            cid = n.get("community")
+            if cid is not None:
+                communities.setdefault(str(cid), []).append(nid)
     except (OSError, ValueError):
-        id_to_label = {}
+        return None
+    if analysis_path.exists():
+        try:
+            analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+            analysis_communities = analysis.get("communities", {})
+            if analysis_communities:
+                communities = {
+                    str(cid): [str(nid) for nid in members]
+                    for cid, members in analysis_communities.items()
+                    if isinstance(members, list)
+                }
+        except (OSError, ValueError):
+            pass
+    if not communities:
+        return None
     # Sorted cid iteration + setdefault makes any label collision resolve
     # deterministically (smallest community id wins).
     node_community: dict[str, str] = {}

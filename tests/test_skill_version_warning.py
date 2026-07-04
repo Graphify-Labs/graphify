@@ -29,6 +29,7 @@ def test_version_tuple_orders_numerically():
     assert vt("0.9.2") > vt("0.8.27")     # 9 > 8, not string-compared
     assert vt("0.10.0") > vt("0.9.0")     # 10 > 9
     assert vt("0.9.3") == vt("0.9.3")
+    assert vt("0.9.3+local") > vt("0.9.3")  # PEP 440 local version ordering
     assert vt("1.0.0rc1") == vt("1.0.0")  # pre-release suffix compares by core
     assert vt("") == (0,)                 # malformed stamp degrades, no raise
 

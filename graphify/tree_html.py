@@ -177,6 +177,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
   <style>
     body {{
@@ -194,9 +195,11 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     }}
     .controls {{
       margin: 20px 0 15px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
     }}
     button {{
-      margin-right: 10px;
       padding: 8px 18px;
       background: #007bff;
       color: #fff;
@@ -244,6 +247,27 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
       fill: none;
       stroke-opacity: 0.7;
       stroke-width: 2px;
+    }}
+    @media (max-width: 720px) {{
+      h1 {{
+        margin: 14px 12px 0;
+        font-size: 1.45rem;
+        line-height: 1.2;
+      }}
+      .controls {{
+        margin: 14px 12px 12px;
+      }}
+      button {{
+        flex: 1 1 120px;
+        min-width: 0;
+        padding: 8px 10px;
+      }}
+      #tree-container {{
+        width: calc(100vw - 24px);
+        height: 76dvh;
+        margin-left: 12px;
+        margin-right: 12px;
+      }}
     }}
   </style>
 </head>

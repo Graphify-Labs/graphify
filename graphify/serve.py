@@ -1076,7 +1076,10 @@ def _build_server(graph_path: str):
         from graphify.analyze import god_nodes as _god_nodes
         nodes = _god_nodes(G, top_n=int(arguments.get("top_n", 10)))
         lines = ["God nodes (most connected):"]
-        lines += [f"  {i}. {n['label']} - {n['degree']} edges" for i, n in enumerate(nodes, 1)]
+        lines += [
+            f"  {i}. {sanitize_label(n.get('label', ''))} - {n['degree']} edges"
+            for i, n in enumerate(nodes, 1)
+        ]
         return "\n".join(lines)
 
     def _tool_graph_stats(_: dict) -> str:
@@ -1095,17 +1098,19 @@ def _build_server(graph_path: str):
         src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
         if not src_scored:
-            return f"No node matching source '{arguments['source']}' found."
+            return f"No node matching source '{sanitize_label(arguments['source'])}' found."
         if not tgt_scored:
-            return f"No node matching target '{arguments['target']}' found."
+            return f"No node matching target '{sanitize_label(arguments['target'])}' found."
         src_nid, tgt_nid = src_scored[0][1], tgt_scored[0][1]
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
         if src_nid == tgt_nid:
             return (
-                f"'{arguments['source']}' and '{arguments['target']}' both resolved to "
-                f"the same node '{src_nid}'. Use a more specific label or the exact node ID."
+                f"'{sanitize_label(arguments['source'])}' and "
+                f"'{sanitize_label(arguments['target'])}' both resolved to "
+                f"the same node '{sanitize_label(src_nid)}'. "
+                "Use a more specific label or the exact node ID."
             )
         warnings: list[str] = []
         for name, scored in (("source", src_scored), ("target", tgt_scored)):
@@ -1121,7 +1126,9 @@ def _build_server(graph_path: str):
             # Use undirected view for path-finding (works regardless of query src/tgt order)
             path_nodes = nx.shortest_path(G.to_undirected(as_view=True), src_nid, tgt_nid)
         except (nx.NetworkXNoPath, nx.NodeNotFound):
-            return f"No path found between '{G.nodes[src_nid].get('label', src_nid)}' and '{G.nodes[tgt_nid].get('label', tgt_nid)}'."
+            src_label = sanitize_label(G.nodes[src_nid].get("label", src_nid))
+            tgt_label = sanitize_label(G.nodes[tgt_nid].get("label", tgt_nid))
+            return f"No path found between '{src_label}' and '{tgt_label}'."
         hops = len(path_nodes) - 1
         if hops > max_hops:
             return f"Path exceeds max_hops={max_hops} ({hops} hops found)."
@@ -1134,15 +1141,16 @@ def _build_server(graph_path: str):
             else:
                 edata = edge_data(G, v, u)
                 forward = False
-            rel = edata.get("relation", "")
-            conf = edata.get("confidence", "")
+            rel = sanitize_label(str(edata.get("relation", "")))
+            conf = sanitize_label(str(edata.get("confidence", "")))
             conf_str = f" [{conf}]" if conf else ""
             if i == 0:
-                segments.append(G.nodes[u].get("label", u))
+                segments.append(sanitize_label(G.nodes[u].get("label", u)))
+            v_label = sanitize_label(G.nodes[v].get("label", v))
             if forward:
-                segments.append(f"--{rel}{conf_str}--> {G.nodes[v].get('label', v)}")
+                segments.append(f"--{rel}{conf_str}--> {v_label}")
             else:
-                segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
+                segments.append(f"<--{rel}{conf_str}-- {v_label}")
         prefix = ("\n".join(warnings) + "\n") if warnings else ""
         return prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
 
@@ -1285,7 +1293,11 @@ def _build_server(graph_path: str):
                     return "No surprising connections found."
                 lines = ["Surprising cross-community connections:"]
                 for s in surprises:
-                    lines.append(f"  {s.get('source', '')} <-> {s.get('target', '')} [{s.get('relation', '')}]")
+                    lines.append(
+                        f"  {sanitize_label(str(s.get('source', '')))} <-> "
+                        f"{sanitize_label(str(s.get('target', '')))} "
+                        f"[{sanitize_label(str(s.get('relation', '')))}]"
+                    )
                 return "\n".join(lines)
             except Exception as exc:
                 return f"Could not compute surprising connections: {exc}"
