@@ -623,6 +623,13 @@ def test_kotlin_splits_inherits_and_implements():
     assert ("DataProcessor", "Loggable") in _edge_labels(r, "implements")
 
 
+def test_kotlin_interface_delegation_emits_implements():
+    """`class Foo : Bar by baz` wraps the delegated interface in an
+    `explicit_delegation` node — it must still emit an implements edge."""
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    assert ("LoggingList", "MutableList") in _edge_labels(r, "implements")
+
+
 def test_kotlin_parameter_return_generic_and_field_contexts():
     r = extract_kotlin(FIXTURES / "sample.kt")
     assert ("run", "DataProcessor") in _edge_labels(r, "references", "parameter_type")

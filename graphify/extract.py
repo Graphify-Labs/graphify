@@ -3648,6 +3648,17 @@ def _extract_generic(
                             if sub.type == "user_type":
                                 user_type_node = sub
                                 break
+                            # `class Foo : Bar by baz` wraps the delegated
+                            # interface `Bar` in an `explicit_delegation`
+                            # node; grab its first `user_type` descendant so
+                            # the implements edge (and generic-arg recovery)
+                            # still fire.
+                            if sub.type == "explicit_delegation":
+                                for inner in sub.children:
+                                    if inner.type == "user_type":
+                                        user_type_node = inner
+                                        break
+                                break
                         if user_type_node is None:
                             continue
                         base = _kotlin_user_type_name(user_type_node, source)
