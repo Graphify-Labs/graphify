@@ -24,6 +24,7 @@ from graphify.serve import (
     _query_graph_text,
     _node_recency_weight,
     _source_root_for,
+    _recency_args,
     _resolve_context_filters,
     _subgraph_to_text,
     _load_graph,
@@ -243,6 +244,76 @@ def test_source_root_for_derivation(tmp_path):
     other = tmp_path / "misc" / "g.json"
     assert _source_root_for(other) == tmp_path / "misc"
     assert _source_root_for(None) is None
+
+
+@pytest.mark.parametrize("captured", [None, "", "not-a-date", "2026-13-40", 12345, [2026, 1, 1], {"y": 2026}])
+def test_node_recency_weight_malformed_captured_at_is_neutral(captured):
+    """Null / empty / non-string / unparseable captured_at -> neutral weight 1.0.
+
+    None/'' fall through the truthiness guard; a garbage or non-string value is
+    stringified and rejected by reflect._parse_dt, so recency degrades to a no-op
+    rather than crashing or mis-decaying.
+    """
+    data = {} if captured is None else {"captured_at": captured}
+    # source_root=None so there's no mtime fallback: the only signal is captured_at.
+    assert _node_recency_weight(data, _NOW, 30.0, None) == 1.0
+
+
+def test_node_recency_weight_normalizes_trailing_z():
+    """External frontmatter written as '...Z' must decay, not silently go neutral.
+
+    datetime.fromisoformat only accepts a trailing 'Z' on Python >= 3.11, so on
+    3.10 the unnormalized string would fail to parse and return 1.0. Asserting the
+    30-day value is ~0.5 (one half-life) — not 1.0 — locks the normalization on
+    3.10 while staying correct on 3.11+.
+    """
+    now = _NOW
+    z = _node_recency_weight({"captured_at": "2025-12-02T00:00:00Z"}, now, 30.0, None)
+    offset = _node_recency_weight({"captured_at": "2025-12-02T00:00:00+00:00"}, now, 30.0, None)
+    assert z == pytest.approx(offset)
+    assert z == pytest.approx(0.5, abs=0.02)
+
+
+@pytest.mark.parametrize("half_life", [0.0, -5.0])
+def test_score_nodes_nonpositive_half_life_disables_recency(half_life):
+    """half_life_days <= 0 makes every weight 1.0 (recency off) with no div-by-zero."""
+    G = _recency_graph()
+    base = _score_nodes(G, ["widget"])
+    weighted = _score_nodes(G, ["widget"], recency=True, now=_NOW, half_life_days=half_life)
+    # All decay factors collapse to 1.0, so scoring is identical to the flag-off path.
+    assert weighted == base
+
+
+def test_recency_args_threads_and_defaults():
+    """MCP payload -> (recency, half_life_days); numeric strings coerce cleanly."""
+    assert _recency_args({}) == (False, 30.0)
+    assert _recency_args({"recency": True}) == (True, 30.0)
+    assert _recency_args({"recency": True, "half_life_days": 7}) == (True, 7.0)
+    assert _recency_args({"recency": True, "half_life_days": "7"}) == (True, 7.0)
+
+
+@pytest.mark.parametrize("bad", ["soon", None, [1, 2], {"x": 1}])
+def test_recency_args_bad_half_life_falls_back(bad):
+    """A malformed half_life_days must not raise; it falls back to the 30-day default.
+
+    The CLI reports the error and exits; the MCP handler stays lenient so one bad
+    argument can't crash the tool (the pre-fix unguarded float() raised ValueError).
+    """
+    assert _recency_args({"recency": True, "half_life_days": bad}) == (True, 30.0)
+
+
+def test_recency_args_feed_query_graph_text_without_crash():
+    """End-to-end: a bad half_life_days still threads recency through and reorders.
+
+    Exercises exactly what the MCP query_graph handler does — parse the payload
+    with _recency_args, then hand the result to _query_graph_text — proving the
+    newer node is promoted even though half_life_days was garbage (defaulted to 30).
+    """
+    G = _recency_graph()
+    recency, half_life = _recency_args({"recency": True, "half_life_days": "garbage"})
+    on = _query_graph_text(G, "widget", recency=recency, half_life_days=half_life, now=_NOW)
+    header = on.splitlines()[0]
+    assert header.index("widget bbb") < header.index("widget aaa")
 
 
 def test_find_node_ignores_trailing_punctuation():

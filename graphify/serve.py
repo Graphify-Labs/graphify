@@ -318,7 +318,14 @@ def _node_recency_weight(
     """
     captured = data.get("captured_at")
     if captured:
-        return _decay(str(captured), now, half_life_days)
+        s = str(captured)
+        # datetime.fromisoformat (via reflect._parse_dt) only learned to accept a
+        # trailing 'Z' on Python >= 3.11; normalize it here so external frontmatter
+        # written as '...Z' still decays on 3.10. reflect._parse_dt itself is left
+        # untouched, so the reflect Q&A path keeps its existing semantics.
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return _decay(s, now, half_life_days)
     if source_root is not None:
         sf = data.get("source_file")
         if sf:
@@ -329,6 +336,21 @@ def _node_recency_weight(
             dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
             return _decay(dt.isoformat(), now, half_life_days)
     return 1.0
+
+
+def _recency_args(arguments: dict) -> "tuple[bool, float]":
+    """Coerce the opt-in recency knobs from an MCP ``query_graph`` payload.
+
+    Mirrors the CLI's leniency: a missing or non-numeric ``half_life_days`` falls
+    back to the default instead of raising, so a malformed MCP argument can't crash
+    the tool handler (the CLI reports the error and exits; the MCP path defaults).
+    """
+    recency = bool(arguments.get("recency", False))
+    try:
+        half_life_days = float(arguments.get("half_life_days", _DEFAULT_HALF_LIFE_DAYS))
+    except (TypeError, ValueError):
+        half_life_days = _DEFAULT_HALF_LIFE_DAYS
+    return recency, half_life_days
 
 
 def _score_nodes(
@@ -1074,8 +1096,7 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
-        recency = bool(arguments.get("recency", False))
-        half_life_days = float(arguments.get("half_life_days", _DEFAULT_HALF_LIFE_DAYS))
+        recency, half_life_days = _recency_args(arguments)
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
