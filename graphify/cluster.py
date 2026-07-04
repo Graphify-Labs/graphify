@@ -345,6 +345,13 @@ def community_overlap_ratios(
     saved LLM label across a re-cluster (see ``LABEL_CARRYOVER_MIN_JACCARD``)
     rather than resetting it to a hub name (#1653). A cid with no previous
     community of the same id (a genuinely new community) scores 0.0.
+
+    ``previous_node_community`` is read from the surviving nodes' saved
+    ``community`` tags in the current ``graph.json``, so the Jaccard is computed
+    over SURVIVING nodes only: a member deleted from the graph is absent from
+    both sets and neither shrinks nor inflates the overlap. This deletion-
+    insensitivity is intentional — a community losing nodes to deletion is still
+    "the same community", so it keeps its label.
     """
     old_sets: dict[int, set[str]] = {}
     for node, old_cid in previous_node_community.items():

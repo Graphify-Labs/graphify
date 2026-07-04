@@ -131,3 +131,37 @@ def test_carryover_threshold_is_conservative():
     # re-scoped community can't silently inherit an old LLM name (#1653).
     from graphify.cluster import LABEL_CARRYOVER_MIN_JACCARD
     assert 0.5 < LABEL_CARRYOVER_MIN_JACCARD <= 1.0
+
+
+def test_overlap_ratio_exactly_at_threshold_keeps_inclusive():
+    # old {1,2,3} -> new {1,2,3,4}: intersection 3, union 4 -> Jaccard exactly 0.75.
+    # The gate is inclusive (>=), so a community sitting right on the boundary
+    # KEEPS its label. Pins the `>=` against an accidental flip to `>`.
+    from graphify.cluster import community_overlap_ratios, LABEL_CARRYOVER_MIN_JACCARD
+    prev = {"1": 0, "2": 0, "3": 0}
+    ratios = community_overlap_ratios({0: ["1", "2", "3", "4"]}, prev)
+    assert ratios[0] == 0.75
+    assert ratios[0] >= LABEL_CARRYOVER_MIN_JACCARD, "an exact 0.75 overlap must clear the inclusive gate"
+
+
+def test_overlap_ratio_single_member_swap_drops_below_threshold():
+    # A single add+remove on a 4-member community: old {1,2,3,4} -> new {1,2,3,5}.
+    # intersection 3, union 5 -> Jaccard 0.6, just under the gate -> DROP the label.
+    # Unlike the extreme 1/11 swap, this is the tightest failing case.
+    from graphify.cluster import community_overlap_ratios, LABEL_CARRYOVER_MIN_JACCARD
+    prev = {"1": 0, "2": 0, "3": 0, "4": 0}
+    ratios = community_overlap_ratios({0: ["1", "2", "3", "5"]}, prev)
+    assert ratios[0] == 0.6
+    assert ratios[0] < LABEL_CARRYOVER_MIN_JACCARD, "a single-member swap on a small community must drop the label"
+
+
+def test_overlap_ratio_reused_cid_partial_overlap():
+    # A reused cid whose community only partially overlaps its predecessor:
+    # old {p,q,r,s} -> new {p,q,x,y}. intersection 2, union 6 -> Jaccard 1/3.
+    # A partial reuse is neither a fresh community (0.0) nor an identity (1.0).
+    from graphify.cluster import community_overlap_ratios, LABEL_CARRYOVER_MIN_JACCARD
+    prev = {"p": 0, "q": 0, "r": 0, "s": 0}
+    ratios = community_overlap_ratios({0: ["p", "q", "x", "y"]}, prev)
+    assert ratios[0] == 1 / 3
+    assert 0.0 < ratios[0] < 1.0
+    assert ratios[0] < LABEL_CARRYOVER_MIN_JACCARD, "a partial reuse below the gate must not carry the label"

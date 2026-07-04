@@ -435,13 +435,16 @@ def _clique_links(nodes):
             for i, a in enumerate(nodes) for b in nodes[i + 1:]]
 
 
-def _seed_carryover_fixture(tmp_path: Path, new_nodes, prev_community, links):
+def _seed_carryover_fixture(tmp_path: Path, new_nodes, prev_community, links, write_sig=True):
     """Write graph.json + labels + sig emulating a prior labeled clustering.
 
     new_nodes: {node_id: label} for the CURRENT graph.
     prev_community: {node_id: cid} the previous per-node community attribute
         (nodes absent from this map are treated as new, unlabeled communities).
     links: edge list for the current graph.
+    write_sig: when False, omit the `.graphify_labels.json.sig` sidecar to
+        emulate labels that predate the signature file (exercises the no-sig
+        reuse branch, which falls back to a community-COUNT check + overlap gate).
     Community 100 was labeled "Auth Service", 200 "Billing Service"; the sig
     sidecar records each community's EXACT prior membership.
     """
@@ -459,13 +462,14 @@ def _seed_carryover_fixture(tmp_path: Path, new_nodes, prev_community, links):
     labels = {"100": "Auth Service", "200": "Billing Service"}
     (out / ".graphify_labels.json").write_text(json.dumps(labels), encoding="utf-8")
 
-    # Prior EXACT membership of each community (what was hashed at labeling time).
-    prior_members: dict[int, list[str]] = {}
-    for nid, cid in prev_community.items():
-        prior_members.setdefault(cid, []).append(nid)
-    sigs = community_member_sigs(prior_members)
-    (out / ".graphify_labels.json.sig").write_text(
-        json.dumps({str(k): v for k, v in sigs.items()}), encoding="utf-8")
+    if write_sig:
+        # Prior EXACT membership of each community (what was hashed at labeling time).
+        prior_members: dict[int, list[str]] = {}
+        for nid, cid in prev_community.items():
+            prior_members.setdefault(cid, []).append(nid)
+        sigs = community_member_sigs(prior_members)
+        (out / ".graphify_labels.json.sig").write_text(
+            json.dumps({str(k): v for k, v in sigs.items()}), encoding="utf-8")
     return out
 
 
@@ -512,3 +516,30 @@ def test_cluster_only_drops_label_when_community_is_mostly_replaced(tmp_path):
     # The user is nagged only about the community that actually lost its label.
     assert "community set changed since labeling" in r.stderr
     assert "renamed 1 community" in r.stderr
+
+
+def test_cluster_only_carries_label_without_sig_under_count_mismatch(tmp_path):
+    # Labels predate the signature sidecar, so NO `.graphify_labels.json.sig` is
+    # written -> the reuse path takes its no-sig branch. The current graph has 3
+    # communities vs 2 saved labels (a brand-new c-clique), so the community COUNT
+    # differs, which on its own distrusts every saved label. Community 100 still
+    # overlaps its prior membership by 5/6 ≈ 0.83, so the overlap gate (`or carried`
+    # on the no-sig branch) carries the label across the count mismatch anyway.
+    a_nodes = [f"a{i}" for i in range(6)]     # a0..a4 were community 100; a5 is new
+    b_nodes = [f"b{i}" for i in range(5)]     # unchanged community 200
+    c_nodes = [f"c{i}" for i in range(5)]     # a brand-new community -> count mismatch
+    new_nodes = {n: n for n in a_nodes + b_nodes + c_nodes}
+    prev_community = {n: 100 for n in a_nodes[:5]} | {n: 200 for n in b_nodes}
+    links = _clique_links(a_nodes) + _clique_links(b_nodes) + _clique_links(c_nodes)
+
+    out = _seed_carryover_fixture(tmp_path, new_nodes, prev_community, links, write_sig=False)
+    assert not (out / ".graphify_labels.json.sig").exists()
+    r = _cluster_only(tmp_path)
+    assert r.returncode == 0, r.stderr
+
+    labels = json.loads((out / ".graphify_labels.json").read_text(encoding="utf-8"))
+    assert labels["100"] == "Auth Service", (
+        f"overlap must carry the label with no .sig despite a count mismatch, got {labels}")
+    assert labels["200"] == "Billing Service", "the unchanged community keeps its label"
+    # Both labeled communities were carried, so nothing was renamed by its hub.
+    assert "community set changed since labeling" not in r.stderr
