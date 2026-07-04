@@ -22,6 +22,7 @@ except Exception:
 # Defined once in graphify.paths so the security/callflow path guards honour the
 # same override (#1423).
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import query_config_defaults as _query_config_defaults
 
 
 @functools.lru_cache(maxsize=None)
@@ -2305,7 +2306,10 @@ def main() -> None:
         print("    --dfs                   use depth-first instead of breadth-first")
         print("    --context C             explicit edge-context filter (repeatable)")
         print("    --budget N              cap output at N tokens (default 2000)")
+        print("    --depth N               traversal depth (default 2)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
+        print("    (defaults for --budget/--depth can be set per-project in")
+        print("     graphify-out/config.json: {\"query\": {\"default_budget\": N, \"default_depth\": N}}; CLI flags override)")
         print("  affected \"X\"             reverse traversal to find nodes impacted by X")
         print("    --relation R            edge relation to traverse in reverse (repeatable)")
         print("    --depth N               reverse traversal depth (default 2)")
@@ -2842,7 +2846,7 @@ def main() -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--depth N] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -2851,7 +2855,15 @@ def main() -> None:
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
+        # Built-in defaults, optionally seeded from graphify-out/config.json;
+        # CLI flags below still override the config (#1654).
         budget = 2000
+        depth = 2
+        _cfg_defaults = _query_config_defaults()
+        if "budget" in _cfg_defaults:
+            budget = _cfg_defaults["budget"]
+        if "depth" in _cfg_defaults:
+            depth = _cfg_defaults["depth"]
         graph_path = _default_graph_path()
         context_filters: list[str] = []
         args = sys.argv[3:]
@@ -2869,6 +2881,20 @@ def main() -> None:
                     budget = int(args[i].split("=", 1)[1])
                 except ValueError:
                     print(f"error: --budget must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+            elif args[i] == "--depth" and i + 1 < len(args):
+                try:
+                    depth = int(args[i + 1])
+                except ValueError:
+                    print(f"error: --depth must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--depth="):
+                try:
+                    depth = int(args[i].split("=", 1)[1])
+                except ValueError:
+                    print(f"error: --depth must be an integer", file=sys.stderr)
                     sys.exit(1)
                 i += 1
             elif args[i] == "--context" and i + 1 < len(args):
@@ -2922,7 +2948,7 @@ def main() -> None:
             G,
             question,
             mode=_mode,
-            depth=2,
+            depth=depth,
             token_budget=budget,
             context_filters=context_filters,
         )
@@ -2932,7 +2958,7 @@ def main() -> None:
             corpus=str(gp),
             result=_result,
             mode=_mode,
-            depth=2,
+            depth=depth,
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )

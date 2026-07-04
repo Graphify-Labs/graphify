@@ -16,6 +16,7 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path, PurePosixPath
@@ -232,3 +233,54 @@ def default_graph_json() -> str:
     the path is passed explicitly (#1423).
     """
     return str(out_path("graph.json"))
+
+
+def query_config_defaults(config_path: Path | None = None) -> dict[str, int]:
+    """Per-project ``query`` defaults read from ``graphify-out/config.json``.
+
+    Returns any ``budget``/``depth`` overrides the sidecar declares, as a dict
+    that may contain either, both, or neither key. The values seed the CLI's
+    built-in defaults before flag parsing, so a CLI flag still wins (#1654).
+
+    The file may nest the settings under a ``"query"`` object (the documented
+    shape) or place them at the top level, and either the
+    ``default_budget``/``default_depth`` or bare ``budget``/``depth`` spelling
+    is accepted::
+
+        {"query": {"default_budget": 4000, "default_depth": 3}}
+
+    A missing file, unreadable file, malformed JSON, wrong top-level type, or
+    non-positive/non-integer values all degrade to an empty dict so a bad
+    config never crashes a query. When both a nested and a flat value are
+    present the nested ``query`` object wins.
+    """
+    defaults: dict[str, int] = {}
+    target = config_path if config_path is not None else out_path("config.json")
+    try:
+        raw = json.loads(Path(target).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return defaults
+    if not isinstance(raw, dict):
+        return defaults
+    section = raw.get("query")
+    if not isinstance(section, dict):
+        section = {}
+
+    def _pick(*keys: str) -> int | None:
+        for source in (section, raw):
+            for key in keys:
+                value = source.get(key)
+                # bool is an int subclass; reject it and any non-positive/non-int.
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, int) and value > 0:
+                    return value
+        return None
+
+    budget = _pick("default_budget", "budget")
+    if budget is not None:
+        defaults["budget"] = budget
+    depth = _pick("default_depth", "depth")
+    if depth is not None:
+        defaults["depth"] = depth
+    return defaults

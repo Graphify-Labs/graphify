@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from graphify.paths import (
     _is_test_path,
     disambiguate_ambiguous_candidates,
+    query_config_defaults,
 )
 
 
@@ -97,3 +100,53 @@ def test_disambiguate_path_proximity_same_dir() -> None:
         "pkg/a/caller.py",
     )
     assert winner == "near"
+
+
+# --- query_config_defaults (per-project config.json, #1654) -----------------
+
+
+def _write_config(tmp_path, data) -> None:
+    (tmp_path / "config.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_query_config_defaults_nested_query_object(tmp_path) -> None:
+    _write_config(tmp_path, {"query": {"default_budget": 4000, "default_depth": 3}})
+    assert query_config_defaults(tmp_path / "config.json") == {"budget": 4000, "depth": 3}
+
+
+def test_query_config_defaults_flat_keys(tmp_path) -> None:
+    _write_config(tmp_path, {"budget": 1234, "depth": 5})
+    assert query_config_defaults(tmp_path / "config.json") == {"budget": 1234, "depth": 5}
+
+
+def test_query_config_defaults_partial(tmp_path) -> None:
+    _write_config(tmp_path, {"query": {"default_depth": 4}})
+    assert query_config_defaults(tmp_path / "config.json") == {"depth": 4}
+
+
+def test_query_config_defaults_nested_wins_over_flat(tmp_path) -> None:
+    _write_config(tmp_path, {"query": {"default_budget": 4000}, "budget": 9999})
+    assert query_config_defaults(tmp_path / "config.json") == {"budget": 4000}
+
+
+def test_query_config_defaults_missing_file(tmp_path) -> None:
+    assert query_config_defaults(tmp_path / "does-not-exist.json") == {}
+
+
+def test_query_config_defaults_malformed_json(tmp_path) -> None:
+    (tmp_path / "config.json").write_text("{not valid json", encoding="utf-8")
+    assert query_config_defaults(tmp_path / "config.json") == {}
+
+
+def test_query_config_defaults_rejects_bad_values(tmp_path) -> None:
+    # non-int, bool, zero, and negative values are all ignored.
+    _write_config(
+        tmp_path,
+        {"query": {"default_budget": "lots", "default_depth": -1}, "budget": True, "depth": 0},
+    )
+    assert query_config_defaults(tmp_path / "config.json") == {}
+
+
+def test_query_config_defaults_non_dict_top_level(tmp_path) -> None:
+    (tmp_path / "config.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    assert query_config_defaults(tmp_path / "config.json") == {}
