@@ -3242,7 +3242,47 @@ def main() -> None:
         source_exact, exact, prefix, substring, source_exact_resolved = _find_node_tiers(G, label)
         matches = source_exact + exact + prefix + substring
         if not matches:
-            print(f"No node matching '{label}' found.")
+            # Whole-phrase fallback (#1616): _find_node_tiers requires `label`'s
+            # tokens, joined back into one string, to match/prefix/substring a
+            # single node's label as a whole — so a multi-word natural-language
+            # phrase (e.g. "critic score aggregation") returns zero matches even
+            # when every individual word exists on some node, because no real
+            # node label ever literally contains the entire joined phrase. This
+            # silently dead-ends for exactly the query shape `graphify explain`
+            # is otherwise recommended for. `_score_nodes` already does the
+            # per-token bag-of-words scoring `query` relies on for this same
+            # class of input — reuse it here instead of inventing new matching
+            # logic. Gated on >1 token: a single-word miss here would score
+            # identically to the substring tier already tried above, so there's
+            # nothing new to find and the original message stays exact for that
+            # case (unaffected — see existing single-term tests).
+            from graphify.serve import _score_nodes, _search_tokens
+            tokens = _search_tokens(label)
+            scored = _score_nodes(G, tokens) if len(tokens) > 1 else []
+            if not scored:
+                print(f"No node matching '{label}' found.")
+                sys.exit(0)
+            print(
+                f"No exact node matching '{label}' found — "
+                "showing closest candidates by term overlap:\n"
+            )
+            for i, (_score, cand) in enumerate(scored[:10], start=1):
+                cd = G.nodes[cand]
+                loc = f" {cd.get('source_location', '')}" if cd.get("source_location") else ""
+                print(
+                    f"  {i}. {cd.get('label', cand)} "
+                    f"[src={cd.get('source_file', '')}{loc} degree={G.degree(cand)}]"
+                )
+            if len(scored) > 10:
+                print(f"  ... and {len(scored) - 10} more")
+            print(
+                "\nRe-run `graphify explain` with one candidate's exact label/path for full detail."
+            )
+            from graphify import querylog
+            querylog.log_query(
+                kind="explain", question=label, corpus=str(gp),
+                nodes_returned=min(len(scored), 10),
+            )
             sys.exit(0)
         # Ambiguity guard (#1613): the top precedence tier that produced any
         # candidates is what `matches[0]` would silently commit to. Picking one

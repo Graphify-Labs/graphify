@@ -341,3 +341,68 @@ def test_explain_close_degree_ties_still_flagged_ambiguous(monkeypatch, tmp_path
         mainmod.main()
     out = capsys.readouterr().out
     assert "Ambiguous: 2 nodes match 'Cradle' equally closely." in out
+
+
+def _write_ratings_graph(tmp_path):
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "agg", "label": "AggregatedRatings",
+             "source_file": "server/utils/ratingsAggregation.ts", "community": 0},
+            {"id": "fmt", "label": "formatRating()",
+             "source_file": "server/utils/ratingsAggregation.ts", "community": 0},
+            {"id": "unrelated", "label": "Sidebar",
+             "source_file": "src/components/Sidebar/index.tsx", "community": 1},
+        ],
+        "links": [
+            {"source": "fmt", "target": "agg", "relation": "uses", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    return p
+
+
+def test_explain_multiword_phrase_falls_back_to_term_overlap_candidates(monkeypatch, tmp_path, capsys):
+    """#1616: no node's label literally contains the whole phrase "critic score
+    aggregation" as a substring (the tier-matching `explain` normally uses), but
+    "aggregation"/"rating" individually overlap with real nodes — the fallback
+    should surface them instead of a bare "No node matching" dead end."""
+    p = _write_ratings_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", "critic score aggregation", "--graph", str(p)])
+    with pytest.raises(SystemExit):
+        mainmod.main()
+    out = capsys.readouterr().out
+    assert "No exact node matching 'critic score aggregation' found" in out
+    assert "AggregatedRatings" in out
+    assert "Sidebar" not in out
+
+
+def test_explain_multiword_phrase_with_no_overlap_still_says_no_match(monkeypatch, tmp_path, capsys):
+    """No token in the phrase overlaps any node at all — the fallback must not
+    fabricate candidates; the original honest message stays."""
+    p = _write_ratings_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", "quantum flux capacitor", "--graph", str(p)])
+    with pytest.raises(SystemExit):
+        mainmod.main()
+    out = capsys.readouterr().out
+    assert "No node matching 'quantum flux capacitor' found." in out
+    assert "candidates" not in out
+
+
+def test_explain_single_word_miss_is_unaffected(monkeypatch, tmp_path, capsys):
+    """Gate on >1 token (#1616): a single-word miss must keep the exact
+    pre-existing message, not attempt the multi-token fallback (which would
+    score identically to the substring tier already tried and add nothing)."""
+    p = _write_ratings_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", "zzzznomatch", "--graph", str(p)])
+    with pytest.raises(SystemExit):
+        mainmod.main()
+    out = capsys.readouterr().out
+    assert out == "No node matching 'zzzznomatch' found.\n"
