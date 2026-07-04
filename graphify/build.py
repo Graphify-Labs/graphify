@@ -746,23 +746,32 @@ _HUB_DROP_REPORT_LIMIT = 10
 
 
 def _hub_degrees(
-    nodes: list[dict], edges: list[dict], threshold: int = HUB_DEGREE_MIN
+    nodes: list[dict], edges: list[dict], threshold: int = HUB_DEGREE_MIN,
+    *, directed: bool = False,
 ) -> dict[str, tuple[str, int]]:
     """Map id -> (label, degree) for every node whose degree >= threshold.
 
-    Degree is computed with plain undirected nx.Graph semantics (parallel edges
-    collapse, self-loops count twice) so it lines up with G.degree() on the
-    post-merge graph. Direction is irrelevant to degree, so the direct-JSON read
-    build_merge does to preserve edge direction is not needed here.
+    Mirrors G.degree() on the post-merge graph so the before/after comparison is
+    like-for-like. Two subtleties:
+
+    - Directedness matches the merge (`directed`): a DiGraph counts a bidirectional
+      pair as degree 2 where an undirected Graph collapses it to 1, so snapshotting
+      with the wrong type would skew the ratio for build_merge(directed=True).
+    - An edge is counted only when BOTH endpoints are in the node set. build_from_json
+      DROPS an edge whose endpoint id has no node rather than orphaning it onto an
+      auto-created bare node, so counting dangling stored edges here (as add_edge's
+      implicit node creation would) overstates the pre-merge degree.
     """
-    g = nx.Graph()
+    g: nx.Graph = nx.DiGraph() if directed else nx.Graph()
+    node_ids: set = set()
     for n in nodes:
         nid = n.get("id")
         if nid is not None:
             g.add_node(nid, label=n.get("label", nid))
+            node_ids.add(nid)
     for e in edges:
         s, t = e.get("source"), e.get("target")
-        if s is not None and t is not None:
+        if s in node_ids and t in node_ids:
             g.add_edge(s, t)
     return {
         nid: (g.nodes[nid].get("label", nid), deg)
@@ -792,8 +801,21 @@ def _hub_degree_drops(
     return drops
 
 
-def _warn_hub_degree_drops(pre_hubs: dict[str, tuple[str, int]], G: nx.Graph) -> None:
-    """Emit a stderr WARNING for any hub node that collapsed during a merge."""
+def _warn_hub_degree_drops(
+    pre_hubs: dict[str, tuple[str, int]],
+    G: nx.Graph,
+    exclude: set[str] | None = None,
+) -> None:
+    """Emit a stderr WARNING for any hub node that collapsed during a merge.
+
+    Hubs in `exclude` are skipped: their source_file was intentionally pruned this
+    run, so their collapse is an operator-requested deletion, not the #1651 id-drift
+    corruption the alert exists to catch. Warning on them would be alarm fatigue on
+    the exact signal that matters (mirrors the shrink guard's `not prune_sources`
+    exemption). A hub that collapsed WITHOUT its file being pruned still warns.
+    """
+    if exclude:
+        pre_hubs = {nid: v for nid, v in pre_hubs.items() if nid not in exclude}
     drops = _hub_degree_drops(pre_hubs, G)
     if not drops:
         return
@@ -866,7 +888,19 @@ def build_merge(
     # Snapshot the pre-merge graph's hub-node degrees so we can warn if this merge
     # collapses one (#1651/#1652b). Captured from the graph AS LOADED, before the
     # replace-per-source filter below drops the re-extracted files' contribution.
-    pre_merge_hubs = _hub_degrees(existing_nodes, existing_edges) if had_graph else {}
+    pre_merge_hubs = (
+        _hub_degrees(existing_nodes, existing_edges, directed=directed)
+        if had_graph else {}
+    )
+    # Remember each hub's source_file from the graph AS LOADED, so the degree-drop
+    # alert below can exempt a hub whose collapse is explained by an intentional
+    # prune — using the same source_file-in-prune_set rule the node prune uses.
+    pre_merge_hub_sources: dict[str, str | None] = {}
+    if pre_merge_hubs:
+        for _n in existing_nodes:
+            _nid = _n.get("id")
+            if _nid in pre_merge_hubs and _nid not in pre_merge_hub_sources:
+                pre_merge_hub_sources[_nid] = _n.get("source_file")
 
     # Effective root for relativizing absolute source_file / prune paths back to the
     # stored relative source_file keys. When the caller passes root we use it;
@@ -999,7 +1033,15 @@ def build_merge(
     # normal dedup=True --update — and warns rather than raises, since a genuine
     # large refactor can legitimately shed a hub's edges.
     if pre_merge_hubs:
-        _warn_hub_degree_drops(pre_merge_hubs, G)
+        # Exempt hubs whose source_file was pruned this run: their collapse is a
+        # deletion the operator asked for (the normal way --update drops a removed
+        # file), not the #1651 id-drift corruption the alert exists to catch. A hub
+        # that collapsed WITHOUT its file being pruned still warns.
+        pruned_hub_ids = {
+            nid for nid, sf in pre_merge_hub_sources.items()
+            if sf in prune_set or _norm_source_file(sf, _eff_root) in prune_set
+        }
+        _warn_hub_degree_drops(pre_merge_hubs, G, exclude=pruned_hub_ids)
 
     return G
 
