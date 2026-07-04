@@ -1203,7 +1203,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
         user_message = _with_image_notes(user_message, images, with_paths=True)
         seen_dirs: set[str] = set()
         for r in images:
-            d = str(r.path.parent)
+            d = str(Path(r.path.parent).resolve())
             if d not in seen_dirs:
                 seen_dirs.add(d)
                 add_dir_args.extend(["--add-dir", d])
