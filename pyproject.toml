@@ -104,6 +104,7 @@ dev = [
 # Install via: uv tool install graphifyy
 # Run without installing: uvx graphifyy install
 package = true
+exclude-newer = "7 days"
 
 [tool.setuptools]
 packages = ["graphify", "graphify.extractors"]
