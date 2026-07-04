@@ -222,7 +222,7 @@ def test_extract_writes_to_graphify_out_env(tmp_path):
     # The default dir must NOT be created when the override is set.
     assert not (tmp_path / "graphify-out").exists(), "extract ignored GRAPHIFY_OUT and wrote graphify-out/"
     # Manifest keys are relative to the scan root (portable) — #1417.
-    keys = list(json.loads((tmp_path / "custom-out" / "manifest.json").read_text()).keys())
+    keys = list(json.loads((tmp_path / "custom-out" / "manifest.json").read_text(encoding="utf-8")).keys())
     assert keys == ["m.py"], keys
 
 

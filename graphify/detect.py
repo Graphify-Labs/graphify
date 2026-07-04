@@ -1266,7 +1266,8 @@ def load_manifest(
     to :func:`save_manifest`) remains readable.
     """
     try:
-        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
     except Exception:
         return {}
     if root is None or not isinstance(raw, dict):
@@ -1352,7 +1353,8 @@ def save_manifest(
         # machine even when not every entry can be portably encoded.
         manifest = {_to_relative_for_storage(k, root): v for k, v in manifest.items()}
     Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(manifest_path).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
 
 
 def detect_incremental(

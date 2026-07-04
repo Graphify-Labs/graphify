@@ -56,8 +56,8 @@ def test_incremental_mode_detected_via_manifest(tmp_path):
     docs = _make_docs_corpus(tmp_path)
     out = docs / "graphify-out"
     out.mkdir()
-    (out / "graph.json").write_text(json.dumps({"nodes": [], "links": []}))
-    (out / "manifest.json").write_text(json.dumps({"document": [str(docs / "intro.md")]}))
+    (out / "graph.json").write_text(json.dumps({"nodes": [], "links": []}), encoding="utf-8")
+    (out / "manifest.json").write_text(json.dumps({"document": [str(docs / "intro.md")]}), encoding="utf-8")
     r = _run(["extract", str(docs)], tmp_path)
     combined = r.stdout + r.stderr
     assert "incremental" in combined.lower() or r.returncode != 0

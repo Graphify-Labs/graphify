@@ -105,3 +105,49 @@ def test_report_work_memory_section_absent_without_overlay():
                      tokens, "./project", learning={"overlay": {}, "dead_ends": []})
     assert "## Work-memory lessons" not in empty
     assert before == empty
+
+
+def test_report_omits_import_cycles_on_document_only_corpus():
+    """A report built entirely from document nodes should omit the Import Cycles section."""
+    import networkx as nx
+    from graphify.report import generate
+
+    G = nx.Graph()
+    G.add_node("doc1", label="Intro", file_type="document", source_file="intro.md")
+    G.add_node("doc2", label="Outro", file_type="document", source_file="outro.md")
+    G.add_edge("doc1", "doc2", relation="references")
+
+    communities = {1: ["doc1", "doc2"]}
+    cohesion = {1: 1.0}
+    labels = {1: "Intro"}
+    gods = [{"label": "Intro", "degree": 1}]
+    surprises = []
+    detection = {"total_files": 2, "total_words": 100, "needs_graph": True}
+    tokens = {"input": 10, "output": 10}
+
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    # Check that "Import Cycles" is NOT in the report.
+    assert "Import Cycles" not in report
+
+
+def test_report_includes_import_cycles_on_code_heavy_corpus():
+    """A report built from code nodes should still include the Import Cycles section."""
+    import networkx as nx
+    from graphify.report import generate
+
+    G = nx.Graph()
+    G.add_node("c1.py", label="c1.py", file_type="code", source_file="c1.py")
+    G.add_node("c2.py", label="c2.py", file_type="code", source_file="c2.py")
+    G.add_edge("c1.py", "c2.py", relation="imports_from")
+
+    communities = {1: ["c1.py", "c2.py"]}
+    cohesion = {1: 1.0}
+    labels = {1: "Code"}
+    gods = [{"label": "c1.py", "degree": 1}]
+    surprises = []
+    detection = {"total_files": 2, "total_words": 100, "needs_graph": True}
+    tokens = {"input": 10, "output": 10}
+
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    # Check that "Import Cycles" IS in the report.
+    assert "Import Cycles" in report

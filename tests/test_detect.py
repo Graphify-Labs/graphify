@@ -1378,7 +1378,7 @@ def test_load_manifest_absolutizes_relative_keys(tmp_path):
     manifest_path.write_text(json.dumps({
         "src/foo.py": {"mtime": 0.0, "ast_hash": "h1", "semantic_hash": ""},
         "doc.md": {"mtime": 0.0, "ast_hash": "h2", "semantic_hash": ""},
-    }))
+    }), encoding="utf-8")
 
     loaded = load_manifest(str(manifest_path), root=tmp_path)
     assert str((tmp_path / "src" / "foo.py").resolve()) in loaded
@@ -1394,7 +1394,7 @@ def test_load_manifest_passes_through_legacy_absolute_keys(tmp_path):
     manifest_path = tmp_path / "graphify-out" / "manifest.json"
     manifest_path.parent.mkdir(parents=True)
     abs_key = str((tmp_path / "foo.py").resolve())
-    manifest_path.write_text(json.dumps({abs_key: {"mtime": 0.0, "ast_hash": "h", "semantic_hash": ""}}))
+    manifest_path.write_text(json.dumps({abs_key: {"mtime": 0.0, "ast_hash": "h", "semantic_hash": ""}}), encoding="utf-8")
 
     loaded = load_manifest(str(manifest_path), root=tmp_path)
     assert abs_key in loaded
@@ -1538,3 +1538,61 @@ def test_convert_office_file_does_not_rewrite_existing_sidecar(tmp_path, monkeyp
     second = detect_mod.convert_office_file(src, out_dir)
     assert second == first
     assert second.stat().st_mtime_ns == mtime_before
+
+
+def test_manifest_and_report_preserve_accented_paths(tmp_path):
+    """Accented filenames must be preserved correctly as UTF-8 in manifest.json and GRAPH_REPORT.md."""
+    import json
+    from pathlib import Path
+    from graphify.detect import detect, save_manifest, load_manifest
+    from graphify.report import generate
+    import networkx as nx
+
+    # 1. Create files with accented names
+    file1 = tmp_path / "Confirmé.md"
+    file2 = tmp_path / "Expérience.py"
+    file1.write_text("# Confirmé", encoding="utf-8")
+    file2.write_text("def experience():\n    pass", encoding="utf-8")
+
+    # 2. Run detect
+    detected = detect(tmp_path)
+    # Check that paths exist in detected files
+    assert any("Confirmé.md" in f for f in detected["files"]["document"])
+    assert any("Expérience.py" in f for f in detected["files"]["code"])
+
+    # 3. Save manifest
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    save_manifest(detected["files"], str(manifest_path), root=tmp_path)
+
+    # Verify manifest.json on disk contains the correct UTF-8 text (byte-for-byte round trip)
+    manifest_content = manifest_path.read_text(encoding="utf-8")
+    assert "Confirmé.md" in manifest_content
+    assert "Expérience.py" in manifest_content
+
+    # 4. Load manifest and verify
+    loaded = load_manifest(str(manifest_path), root=tmp_path)
+    assert any("Confirmé.md" in k for k in loaded.keys())
+    assert any("Expérience.py" in k for k in loaded.keys())
+
+    # 5. Generate report
+    G = nx.Graph()
+    # Add nodes with accented source files
+    G.add_node("node1", label="Confirmé", source_file=str(file1), file_type="document")
+    G.add_node("node2", label="Expérience", source_file=str(file2), file_type="code")
+    G.add_edge("node1", "node2", relation="references", confidence="EXTRACTED")
+    
+    communities = {1: ["node1", "node2"]}
+    cohesion = {1: 1.0}
+    labels = {1: "Community 1"}
+    gods = [{"label": "Confirmé", "degree": 1}]
+    surprises = [{"source": "node1", "target": "node2", "relation": "references", "source_files": [str(file1), str(file2)]}]
+    tokens = {"input": 100, "output": 100}
+    
+    report = generate(
+        G, communities, cohesion, labels, gods, surprises, 
+        {"total_files": 2, "total_words": 100, "needs_graph": True}, 
+        tokens, str(tmp_path)
+    )
+    
+    assert "Confirmé.md" in report or "Confirmé" in report
+    assert "Expérience.py" in report or "Expérience" in report

@@ -68,3 +68,30 @@ def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys):
     err = capsys.readouterr().err
     assert "exceeds" in err
     assert "byte cap" in err
+
+
+def test_query_cli_non_ascii_no_encoding_error(tmp_path):
+    """Confirm that running query with non-ASCII text does not raise UnicodeEncodeError on Windows console."""
+    import os
+    import sys
+    import subprocess
+    import networkx as nx
+    from networkx.readwrite import json_graph
+
+    G = nx.Graph()
+    G.add_node("n1", label="Confirmé", source_file="Confirmé.md", source_location="L1", community=0)
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")), encoding="utf-8")
+
+    env = os.environ.copy()
+    env.pop("PYTHONIOENCODING", None)
+    
+    r = subprocess.run(
+        [sys.executable, "-m", "graphify", "query", "Confirmé", "--graph", str(graph_path)],
+        capture_output=True,
+        text=True,
+        env=env,
+        encoding="utf-8", # ensure we read output correctly in test
+    )
+    assert r.returncode == 0, f"Subprocess failed: stdout={r.stdout}, stderr={r.stderr}"
+    assert "Confirmé" in r.stdout or "Confirm" in r.stdout
