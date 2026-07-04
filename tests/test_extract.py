@@ -408,7 +408,8 @@ def _legacy_collect_files(target, *, root=None):
     for ext in sorted(extensions):
         results.extend(
             p for p in target.rglob(f"*{ext}")
-            if not any(_is_noise_dir(part) for part in p.parts)
+            if p.suffix == ext
+            and not any(_is_noise_dir(part) for part in p.parts)
             and not (patterns and _is_ignored(p, ignore_root, patterns))
         )
     return sorted(results)
@@ -1693,3 +1694,28 @@ def test_non_colliding_path_id_is_not_salted(tmp_path):
     result = extract([p], cache_root=tmp_path)
     file_id = next(n["id"] for n in result["nodes"] if n.get("source_location") == "L1")
     assert file_id == make_id(_file_stem(Path("src/auth/session.py"))) == "src_auth_session"
+
+
+def test_case_insensitive_suffix_filtering(tmp_path):
+    py_file = tmp_path / "app.PY"
+    js_file = tmp_path / "script.JS"
+    ts_file = tmp_path / "lib.Ts"
+    
+    py_file.write_text("class MyPythonClass:\n    pass\n")
+    js_file.write_text("function myJSFunction() {}\n")
+    ts_file.write_text("export class MyTSClass {}\n")
+    
+    collected = collect_files(tmp_path)
+    collected_names = {f.name for f in collected}
+    assert "app.PY" in collected_names
+    assert "script.JS" in collected_names
+    assert "lib.Ts" in collected_names
+
+    result = extract(collected, cache_root=tmp_path)
+    nodes = result["nodes"]
+    labels = {n.get("label") for n in nodes if "label" in n}
+    
+    assert "MyPythonClass" in labels
+    assert "myJSFunction()" in labels
+    assert "MyTSClass" in labels
+
