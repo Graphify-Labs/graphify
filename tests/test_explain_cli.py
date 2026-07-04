@@ -406,3 +406,57 @@ def test_explain_single_word_miss_is_unaffected(monkeypatch, tmp_path, capsys):
         mainmod.main()
     out = capsys.readouterr().out
     assert out == "No node matching 'zzzznomatch' found.\n"
+
+
+def _write_noise_flood_graph(tmp_path, n=60):
+    """`n` nodes that all share one generic token ("server") as their only
+    lexical overlap with the query, plus a handful of unrelated real-looking
+    nodes so the fixture isn't trivially just "every node matches"."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": f"n{i}", "label": f"Thing{i}()",
+             "source_file": f"server/module{i}/thing{i}.ts", "community": 0}
+            for i in range(n)
+        ] + [
+            {"id": "unrelated", "label": "Sidebar", "source_file": "src/components/Sidebar/index.tsx", "community": 1},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    return p
+
+
+def test_explain_noise_flood_falls_back_to_honest_no_match(monkeypatch, tmp_path, capsys):
+    """#1618: a query whose only shared vocabulary with the corpus is one
+    generic word (here, "server" — matched via the source-file substring
+    bonus on every node under server/) must not present an arbitrary top-10
+    slice of a graph-spanning tie as if it were a confident answer. With 60
+    of 61 total nodes matching, this exceeds both the absolute floor (50)
+    and the 15% fraction of the graph — the honest zero-match message
+    should be shown instead of a misleading candidate list."""
+    p = _write_noise_flood_graph(tmp_path, n=60)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", "server startup handling", "--graph", str(p)])
+    with pytest.raises(SystemExit):
+        mainmod.main()
+    out = capsys.readouterr().out
+    assert out == "No node matching 'server startup handling' found.\n"
+
+
+def test_explain_large_but_below_threshold_candidates_still_shown(monkeypatch, tmp_path, capsys):
+    """Contrast case: a genuinely large candidate list (more than the 10
+    displayed, but under the noise-flood threshold for this graph's size)
+    must still be shown — the guard is for degenerate floods, not simply
+    "more than 10 results"."""
+    p = _write_noise_flood_graph(tmp_path, n=20)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", "server startup handling", "--graph", str(p)])
+    with pytest.raises(SystemExit):
+        mainmod.main()
+    out = capsys.readouterr().out
+    assert "No exact node matching 'server startup handling' found" in out
+    assert "... and" in out

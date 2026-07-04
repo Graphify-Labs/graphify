@@ -3212,6 +3212,15 @@ def main() -> None:
         )
 
     elif cmd == "explain":
+        # #1618: thresholds for the term-overlap fallback's noise-flood guard
+        # — see the fallback block below for the full rationale. `_FLOOR`
+        # keeps small graphs/fixtures from ever being flagged (even "most of
+        # a 40-node graph matched" can be a legitimate result on a tiny
+        # corpus); `_FRACTION` is what actually catches a real degenerate
+        # flood on a normal-sized graph (a single generic word matching a
+        # large slice of the whole corpus).
+        _FALLBACK_NOISE_FLOOR = 50
+        _FALLBACK_NOISE_FRACTION = 0.15
         if len(sys.argv) < 3:
             print('Usage: graphify explain "<node>" [--graph path] [--force]', file=sys.stderr)
             sys.exit(1)
@@ -3259,6 +3268,24 @@ def main() -> None:
             from graphify.serve import _score_nodes, _search_tokens
             tokens = _search_tokens(label)
             scored = _score_nodes(G, tokens) if len(tokens) > 1 else []
+            # Noise-flood guard (#1618): a query whose only shared vocabulary
+            # with the corpus is one generic word (e.g. "server", which is
+            # also this repo's top-level backend directory name) matches a
+            # huge slice of the whole graph at the weakest possible bonus
+            # tier — live repro: "server startup error handling" matched
+            # 1,765 of this repo's 3,491 nodes (51%), with the real target
+            # buried past rank 800, tied with 1,627 other nodes at the exact
+            # same floor score. An arbitrary top-10 slice of a match that
+            # broad looks like a confident answer but is close to a coin
+            # flip; the honest response is the same "found nothing useful"
+            # signal as a bare zero-match, not a misleadingly specific
+            # candidate list. `_FALLBACK_NOISE_FLOOR` keeps this from firing
+            # on small graphs, where even "most nodes matched" can be a
+            # genuinely small, legitimate candidate list.
+            total_nodes = G.number_of_nodes() or 1
+            noise_threshold = max(_FALLBACK_NOISE_FLOOR, int(total_nodes * _FALLBACK_NOISE_FRACTION))
+            if len(scored) > noise_threshold:
+                scored = []
             if not scored:
                 print(f"No node matching '{label}' found.")
                 sys.exit(0)
