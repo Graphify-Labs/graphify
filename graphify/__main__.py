@@ -2329,6 +2329,7 @@ def main() -> None:
         print("    --half-life-days N      signal weight halves every N days (default 30)")
         print("    --min-corroboration N   distinct useful results to prefer a node (default 2)")
         print("  check-update <path>     check needs_update flag and notify if semantic re-extraction is pending (cron-safe)")
+        print("  inspect <path>          list corpus files by category (no LLM or graph build)")
         print("  tree                    emit a D3 v7 collapsible-tree HTML for graph.json")
         print("    --graph PATH            path to graph.json (default graphify-out/graph.json)")
         print("    --output HTML           output path (default graphify-out/GRAPH_TREE.html)")
@@ -3769,6 +3770,18 @@ def main() -> None:
 
         check_update(Path(sys.argv[2]).resolve())
         sys.exit(0)
+    elif cmd == "inspect":
+        if len(sys.argv) < 3:
+            print("Usage: graphify inspect <path>", file=sys.stderr)
+            sys.exit(1)
+        target = Path(sys.argv[2]).resolve()
+        if not target.exists():
+            print(f"error: path not found: {target}", file=sys.stderr)
+            sys.exit(1)
+        from graphify.detect import detect as _detect, format_detect_summary
+
+        detection = _detect(target)
+        print(format_detect_summary(detection, root=target))
     elif cmd == "tree":
         # Emit a D3 v7 collapsible-tree HTML view of graph.json:
         # expand-all / collapse-all / reset-view buttons, multi-line

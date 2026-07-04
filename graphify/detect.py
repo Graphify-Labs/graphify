@@ -1185,6 +1185,57 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     }
 
 
+def format_detect_summary(detection: dict, root: Path | None = None) -> str:
+    """Human-readable corpus summary for ``graphify inspect``."""
+    files = detection.get("files", {})
+    if not any(files.get(key, []) for key in ("code", "document", "paper", "image", "video")):
+        return "No supported files found."
+
+    scan_root = Path(detection.get("scan_root") or root or ".").resolve()
+
+    lines: list[str] = []
+    for key, label in (
+        ("code", "code"),
+        ("document", "docs"),
+        ("paper", "papers"),
+        ("image", "images"),
+        ("video", "video"),
+    ):
+        count = len(files.get(key, []))
+        if count:
+            lines.append(f"  {label}:{' ' * max(1, 9 - len(label))}{count} files")
+
+    semantic_groups = (
+        ("document", "Documents"),
+        ("paper", "Papers"),
+        ("image", "Images"),
+    )
+    has_semantic = False
+    for key, heading in semantic_groups:
+        paths = files.get(key, [])
+        if not paths:
+            continue
+        has_semantic = True
+        lines.append("")
+        lines.append(f"{heading}:")
+        for path_str in sorted(paths):
+            p = Path(path_str)
+            try:
+                rel = str(p.relative_to(scan_root))
+            except ValueError:
+                rel = path_str
+            lines.append(f"  {rel}")
+
+    if has_semantic:
+        lines.append("")
+        lines.append(
+            "Note: documents, papers, and images require an LLM API key during "
+            "`graphify extract` (code-only corpora do not)."
+        )
+
+    return "\n".join(lines)
+
+
 def _md5_file(path: Path) -> str:
     """MD5 of file contents streamed in 64KB chunks — for change detection only."""
     import hashlib as _hl
