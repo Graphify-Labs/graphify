@@ -251,8 +251,10 @@ def query_config_defaults(config_path: Path | None = None) -> dict[str, int]:
 
     A missing file, unreadable file, malformed JSON, wrong top-level type, or
     non-positive/non-integer values all degrade to an empty dict so a bad
-    config never crashes a query. When both a nested and a flat value are
-    present the nested ``query`` object wins.
+    config never crashes a query. A whole-valued float (``4000.0``) is coerced
+    to ``int``; a fractional float (``4000.5``), bool, string, or null is
+    rejected. When both a nested and a flat value are present the nested
+    ``query`` object wins.
     """
     defaults: dict[str, int] = {}
     target = config_path if config_path is not None else out_path("config.json")
@@ -270,11 +272,16 @@ def query_config_defaults(config_path: Path | None = None) -> dict[str, int]:
         for source in (section, raw):
             for key in keys:
                 value = source.get(key)
-                # bool is an int subclass; reject it and any non-positive/non-int.
+                # bool is an int subclass; reject it up front so True/False can
+                # never read as 1/0.
                 if isinstance(value, bool):
                     continue
                 if isinstance(value, int) and value > 0:
                     return value
+                # Accept a whole-valued float (4000.0 -> 4000) from a hand-written
+                # config; reject a fractional one (4000.5) and non-positive values.
+                if isinstance(value, float) and value.is_integer() and value > 0:
+                    return int(value)
         return None
 
     budget = _pick("default_budget", "budget")

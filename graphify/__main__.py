@@ -2889,12 +2889,18 @@ def main() -> None:
                 except ValueError:
                     print(f"error: --depth must be an integer", file=sys.stderr)
                     sys.exit(1)
+                if depth <= 0:
+                    print("error: --depth must be a positive integer", file=sys.stderr)
+                    sys.exit(1)
                 i += 2
             elif args[i].startswith("--depth="):
                 try:
                     depth = int(args[i].split("=", 1)[1])
                 except ValueError:
                     print(f"error: --depth must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                if depth <= 0:
+                    print("error: --depth must be a positive integer", file=sys.stderr)
                     sys.exit(1)
                 i += 1
             elif args[i] == "--context" and i + 1 < len(args):

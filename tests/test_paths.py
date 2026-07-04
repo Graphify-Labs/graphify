@@ -150,3 +150,30 @@ def test_query_config_defaults_rejects_bad_values(tmp_path) -> None:
 def test_query_config_defaults_non_dict_top_level(tmp_path) -> None:
     (tmp_path / "config.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
     assert query_config_defaults(tmp_path / "config.json") == {}
+
+
+def test_query_config_defaults_whole_valued_float_accepted(tmp_path) -> None:
+    # A hand-written config often carries floats; a whole-valued one coerces.
+    _write_config(tmp_path, {"query": {"default_budget": 4000.0, "default_depth": 3.0}})
+    assert query_config_defaults(tmp_path / "config.json") == {"budget": 4000, "depth": 3}
+
+
+def test_query_config_defaults_fractional_float_rejected(tmp_path) -> None:
+    # A fractional float can't be an integer depth/budget, so it degrades.
+    _write_config(tmp_path, {"query": {"default_budget": 4000.5, "default_depth": 2.5}})
+    assert query_config_defaults(tmp_path / "config.json") == {}
+
+
+def test_query_config_defaults_absolute_graphify_out(tmp_path, monkeypatch) -> None:
+    # With no explicit path, the reader resolves via out_path(), which honours
+    # an absolute GRAPHIFY_OUT override (#1423 / #686).
+    import graphify.paths as paths
+
+    out_dir = tmp_path / "shared" / "graphify-out"
+    out_dir.mkdir(parents=True)
+    (out_dir / "config.json").write_text(
+        json.dumps({"query": {"default_budget": 7000, "default_depth": 4}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "GRAPHIFY_OUT", str(out_dir))
+    assert query_config_defaults() == {"budget": 7000, "depth": 4}

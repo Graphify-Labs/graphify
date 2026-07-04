@@ -142,6 +142,75 @@ def test_query_cli_malformed_config_falls_back(monkeypatch, tmp_path, capsys):
     assert captured["token_budget"] == 2000
 
 
+def test_query_cli_depth_rejects_non_integer(monkeypatch, tmp_path, capsys):
+    """`--depth notanint` errors cleanly (exit 1), like the affected command."""
+    import pytest
+
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _capture_query_args(monkeypatch)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "extract", "--depth", "notanint", "--graph", str(graph_path)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code == 1
+    assert "--depth must be an integer" in capsys.readouterr().err
+
+
+def test_query_cli_depth_trailing_no_value_is_graceful(monkeypatch, tmp_path, capsys):
+    """A trailing `--depth` with no value is ignored, not a crash; default holds."""
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    captured = _capture_query_args(monkeypatch)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "extract", "--graph", str(graph_path), "--depth"],
+    )
+    mainmod.main()  # must not raise
+    assert captured["depth"] == 2
+    assert captured["token_budget"] == 2000
+
+
+def test_query_cli_depth_rejects_zero(monkeypatch, tmp_path, capsys):
+    """`--depth 0` is non-positive and must be rejected, not passed to traversal."""
+    import pytest
+
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _capture_query_args(monkeypatch)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "extract", "--depth", "0", "--graph", str(graph_path)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code == 1
+    assert "--depth must be a positive integer" in capsys.readouterr().err
+
+
+def test_query_cli_depth_rejects_negative(monkeypatch, tmp_path, capsys):
+    """`--depth -1` is non-positive and must be rejected."""
+    import pytest
+
+    graph_path = _write_graph(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _capture_query_args(monkeypatch)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "extract", "--depth", "-1", "--graph", str(graph_path)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code == 1
+    assert "--depth must be a positive integer" in capsys.readouterr().err
+
+
 def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys):
     """#F4: query CLI must refuse to parse a graph.json that exceeds the cap."""
     import pytest
