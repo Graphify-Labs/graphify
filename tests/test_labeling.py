@@ -4,7 +4,10 @@ Backend calls are mocked - no network. Covers the happy path, partial replies,
 malformed replies, and the no-backend fallback.
 """
 import json
+import os
+import subprocess
 import sys
+from pathlib import Path
 
 import networkx as nx
 import pytest
@@ -410,3 +413,102 @@ def test_label_communities_forces_serial_for_ollama(monkeypatch):
     monkeypatch.delenv("GRAPHIFY_OLLAMA_PARALLEL", raising=False)
     label_communities(G, communities, backend="ollama", batch_size=1, max_concurrency=8)
     assert state["peak"] == 1, "ollama must be forced serial"
+
+
+# --- #1653: carry LLM labels over a re-cluster via member overlap -------------
+# When `graphify cluster-only` re-clusters, a community that only gained or lost
+# a member should KEEP its saved LLM name (its exact membership signature
+# changed, but it is still the same conceptual community). A community that was
+# largely replaced should DROP the stale name and fall back to a hub label.
+
+def _cluster_only(cwd: Path) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env.pop("GRAPHIFY_OUT", None)  # pin the default graphify-out/ layout
+    return subprocess.run(
+        [sys.executable, "-m", "graphify", "cluster-only", ".", "--no-viz"],
+        cwd=cwd, capture_output=True, text=True, env=env,
+    )
+
+
+def _clique_links(nodes):
+    return [{"source": a, "target": b}
+            for i, a in enumerate(nodes) for b in nodes[i + 1:]]
+
+
+def _seed_carryover_fixture(tmp_path: Path, new_nodes, prev_community, links):
+    """Write graph.json + labels + sig emulating a prior labeled clustering.
+
+    new_nodes: {node_id: label} for the CURRENT graph.
+    prev_community: {node_id: cid} the previous per-node community attribute
+        (nodes absent from this map are treated as new, unlabeled communities).
+    links: edge list for the current graph.
+    Community 100 was labeled "Auth Service", 200 "Billing Service"; the sig
+    sidecar records each community's EXACT prior membership.
+    """
+    from graphify.cluster import community_member_sigs
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    nodes = [
+        {"id": nid, "label": lbl, "community": prev_community.get(nid)}
+        for nid, lbl in new_nodes.items()
+    ]
+    graph = {"directed": False, "multigraph": False, "nodes": nodes, "links": links}
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+    labels = {"100": "Auth Service", "200": "Billing Service"}
+    (out / ".graphify_labels.json").write_text(json.dumps(labels), encoding="utf-8")
+
+    # Prior EXACT membership of each community (what was hashed at labeling time).
+    prior_members: dict[int, list[str]] = {}
+    for nid, cid in prev_community.items():
+        prior_members.setdefault(cid, []).append(nid)
+    sigs = community_member_sigs(prior_members)
+    (out / ".graphify_labels.json.sig").write_text(
+        json.dumps({str(k): v for k, v in sigs.items()}), encoding="utf-8")
+    return out
+
+
+def test_cluster_only_keeps_label_when_community_gains_one_member(tmp_path):
+    # Community 100 was {a0..a4}; the current graph adds a5 to the same clique.
+    # Jaccard 5/6 ≈ 0.83 ≥ threshold -> the saved LLM label survives.
+    a_nodes = [f"a{i}" for i in range(6)]          # a0..a5 (a5 is new)
+    b_nodes = [f"b{i}" for i in range(5)]          # unchanged community 200
+    new_nodes = {n: n for n in a_nodes + b_nodes}
+    prev_community = {n: 100 for n in a_nodes[:5]} | {n: 200 for n in b_nodes}
+    links = _clique_links(a_nodes) + _clique_links(b_nodes)
+
+    out = _seed_carryover_fixture(tmp_path, new_nodes, prev_community, links)
+    r = _cluster_only(tmp_path)
+    assert r.returncode == 0, r.stderr
+
+    labels = json.loads((out / ".graphify_labels.json").read_text(encoding="utf-8"))
+    assert labels["100"] == "Auth Service", (
+        f"a one-member gain must keep the saved LLM label, got {labels}")
+    assert labels["200"] == "Billing Service"
+    # Nothing genuinely lost its label -> no nag to re-run `graphify label`.
+    assert "community set changed since labeling" not in r.stderr
+
+
+def test_cluster_only_drops_label_when_community_is_mostly_replaced(tmp_path):
+    # Community 100's surviving member is a0; the current clique around it is 5
+    # otherwise-fresh nodes. Jaccard 1/6 ≈ 0.17 < threshold, and the exact
+    # signature differs -> the stale LLM name is dropped for a hub label.
+    a_clique = ["a0", "c0", "c1", "c2", "c3", "c4"]   # a0 is the lexical hub
+    b_nodes = [f"b{i}" for i in range(5)]
+    new_nodes = {n: (f"{n}_fn") for n in a_clique + b_nodes}
+    prev_community = {"a0": 100} | {n: 200 for n in b_nodes}
+    links = _clique_links(a_clique) + _clique_links(b_nodes)
+
+    out = _seed_carryover_fixture(tmp_path, new_nodes, prev_community, links)
+    r = _cluster_only(tmp_path)
+    assert r.returncode == 0, r.stderr
+
+    labels = json.loads((out / ".graphify_labels.json").read_text(encoding="utf-8"))
+    assert labels["100"] != "Auth Service", (
+        f"a mostly-replaced community must NOT keep the stale label, got {labels}")
+    assert labels["100"] == "a0_fn", f"dropped community should take its hub name, got {labels}"
+    assert labels["200"] == "Billing Service", "the unchanged community keeps its label"
+    # The user is nagged only about the community that actually lost its label.
+    assert "community set changed since labeling" in r.stderr
+    assert "renamed 1 community" in r.stderr

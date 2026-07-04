@@ -81,3 +81,53 @@ def test_community_member_sigs_change_when_membership_changes():
     before = community_member_sigs({0: ["x", "y", "z"]})
     after = community_member_sigs({0: ["x", "y"]})  # a node left the community
     assert before[0] != after[0], "signature must change when a community's members change"
+
+
+# ── label carry-over via member overlap (cluster-only re-cluster, #1653) ───────
+
+def test_overlap_ratio_identical_community_is_one():
+    from graphify.cluster import community_overlap_ratios
+    prev = {"a": 0, "b": 0, "c": 0}
+    ratios = community_overlap_ratios({0: ["a", "b", "c"]}, prev)
+    assert ratios[0] == 1.0
+
+
+def test_overlap_ratio_gained_one_member_stays_above_threshold():
+    # Old community was 5 members; new run gained one -> Jaccard 5/6 ≈ 0.83.
+    from graphify.cluster import community_overlap_ratios, LABEL_CARRYOVER_MIN_JACCARD
+    prev = {f"n{i}": 0 for i in range(5)}
+    new_members = [f"n{i}" for i in range(5)] + ["n5"]
+    ratios = community_overlap_ratios({0: new_members}, prev)
+    assert ratios[0] == 5 / 6
+    assert ratios[0] >= LABEL_CARRYOVER_MIN_JACCARD, "a one-member drift must clear the carry-over gate"
+
+
+def test_overlap_ratio_swapped_most_members_drops_below_threshold():
+    # Only one of six members survives -> Jaccard 1/6 ≈ 0.17, well below the gate.
+    from graphify.cluster import community_overlap_ratios, LABEL_CARRYOVER_MIN_JACCARD
+    prev = {f"old{i}": 0 for i in range(6)}
+    new_members = ["old0"] + [f"new{i}" for i in range(5)]
+    ratios = community_overlap_ratios({0: new_members}, prev)
+    assert ratios[0] == 1 / 11
+    assert ratios[0] < LABEL_CARRYOVER_MIN_JACCARD, "a mostly-new community must NOT carry the stale label"
+
+
+def test_overlap_ratio_new_community_scores_zero():
+    # cid 1 has no previous community of the same id -> genuinely new -> 0.0.
+    from graphify.cluster import community_overlap_ratios
+    prev = {"a": 0, "b": 0}
+    ratios = community_overlap_ratios({0: ["a", "b"], 1: ["x", "y"]}, prev)
+    assert ratios[1] == 0.0
+
+
+def test_overlap_ratio_empty_previous_is_all_zero():
+    from graphify.cluster import community_overlap_ratios
+    ratios = community_overlap_ratios({0: ["a"], 1: ["b"]}, {})
+    assert ratios == {0: 0.0, 1: 0.0}
+
+
+def test_carryover_threshold_is_conservative():
+    # A stale-label guard: the default must be a strong majority overlap so a
+    # re-scoped community can't silently inherit an old LLM name (#1653).
+    from graphify.cluster import LABEL_CARRYOVER_MIN_JACCARD
+    assert 0.5 < LABEL_CARRYOVER_MIN_JACCARD <= 1.0

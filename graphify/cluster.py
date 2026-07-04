@@ -318,3 +318,45 @@ def remap_communities_to_previous(
     for new_cid, nodes in communities.items():
         remapped[new_to_final[new_cid]] = sorted(nodes)
     return dict(sorted(remapped.items(), key=lambda kv: kv[0]))
+
+
+# Minimum Jaccard overlap between a re-clustered community and the previous
+# community that shared its id for the saved LLM label to be carried over
+# instead of reset to a structural hub name (#1653). Conservative on purpose:
+# the exact-membership signature check (community_member_sigs) was added to stop
+# stale labels surviving a re-scope, so carry-over only kicks in when the two
+# communities are "the same, give or take a member". At 0.75 a five-member
+# community may gain or lose one member (Jaccard 5/6 ≈ 0.83) and keep its name,
+# but a community that swapped out a quarter of its members drops to the hub.
+LABEL_CARRYOVER_MIN_JACCARD = 0.75
+
+
+def community_overlap_ratios(
+    communities: dict[int, list[str]],
+    previous_node_community: dict[str, int],
+) -> dict[int, float]:
+    """Jaccard overlap of each community against the previous community with the
+    same id: ``{cid: |new ∩ old| / |new ∪ old|}``.
+
+    Call *after* :func:`remap_communities_to_previous` has aligned ids to the
+    prior assignment, so cid ``X``'s members are the natural successor of the
+    community whose saved label/signature are also keyed on ``X``. A ratio near
+    1.0 means "the same community, give or take a member" — enough to carry a
+    saved LLM label across a re-cluster (see ``LABEL_CARRYOVER_MIN_JACCARD``)
+    rather than resetting it to a hub name (#1653). A cid with no previous
+    community of the same id (a genuinely new community) scores 0.0.
+    """
+    old_sets: dict[int, set[str]] = {}
+    for node, old_cid in previous_node_community.items():
+        old_sets.setdefault(old_cid, set()).add(str(node))
+
+    ratios: dict[int, float] = {}
+    for cid, nodes in communities.items():
+        new_set = {str(n) for n in nodes}
+        old_set = old_sets.get(cid)
+        if not new_set or not old_set:
+            ratios[cid] = 0.0
+            continue
+        union = len(new_set | old_set)
+        ratios[cid] = (len(new_set & old_set) / union) if union else 0.0
+    return ratios

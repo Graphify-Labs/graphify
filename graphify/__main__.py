@@ -3559,7 +3559,12 @@ def main() -> None:
             # is told to `graphify label` for fresh LLM names. Unchanged communities keep
             # their saved label. When no signature sidecar exists (labels predate this),
             # fall back to hub-filling only the communities missing a label.
-            from graphify.cluster import community_member_sigs, label_communities_by_hub
+            from graphify.cluster import (
+                LABEL_CARRYOVER_MIN_JACCARD,
+                community_member_sigs,
+                community_overlap_ratios,
+                label_communities_by_hub,
+            )
             sig_path = labels_path.parent / (labels_path.name + ".sig")
             saved_sigs: dict[int, str] = {}
             if sig_path.exists():
@@ -3572,21 +3577,31 @@ def main() -> None:
                 except Exception:
                     saved_sigs = {}
             cur_sigs = community_member_sigs(communities)
+            # Overlap of each (already remapped) community against the previous
+            # community that shared its id. An exact-signature mismatch used to
+            # discard the saved LLM label outright, so a community that merely
+            # gained/lost a member was renamed to its hub (#1653). Carry the
+            # label over when the two are still substantially the same set.
+            overlap_ratios = community_overlap_ratios(communities, previous_node_community)
             count_mismatch = len(existing_labels) != len(communities)
             labels = {}
             hub_labels: dict[int, str] | None = None
             changed = 0
             for cid in communities:
                 have_label = cid in existing_labels
+                # Same community, give or take a member: keep its saved label
+                # even though the exact signature changed, gated on a conservative
+                # Jaccard so a genuinely different community can't inherit it.
+                carried = have_label and overlap_ratios.get(cid, 0.0) >= LABEL_CARRYOVER_MIN_JACCARD
                 if saved_sigs:
                     # Precise: the membership signature tells us if this exact
                     # community changed since it was labeled.
-                    fresh = have_label and saved_sigs.get(cid) == cur_sigs.get(cid)
+                    fresh = (have_label and saved_sigs.get(cid) == cur_sigs.get(cid)) or carried
                 else:
                     # No signature sidecar (labels predate it). A differing community
                     # COUNT means the labels describe a different clustering, so a cid's
                     # old label can't be trusted; equal count is the best "same" signal.
-                    fresh = have_label and not count_mismatch
+                    fresh = (have_label and not count_mismatch) or carried
                 if fresh:
                     labels[cid] = existing_labels[cid]
                 else:
