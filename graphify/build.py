@@ -732,6 +732,89 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
     return deduped_nodes, deduped_edges
 
 
+# Incremental --update (build_merge, below) REPLACES each re-extracted file's
+# prior nodes/edges. If a re-extraction emits a DIFFERENT id for an entity that
+# already exists as a well-connected hub, the old hub and its cross-file edges
+# are dropped and a fresh node is created with only this file's edges — the hub
+# silently collapses (e.g. 174 edges -> ~0) while total node count may even rise,
+# so the count-based shrink guard never catches it (#1651/#1652b). We snapshot
+# pre-merge hub degrees and WARN (not raise — a real refactor can legitimately
+# shed edges) when a former hub vanishes or loses most of its degree.
+HUB_DEGREE_MIN = 20
+DEGREE_DROP_FRAC = 0.5
+_HUB_DROP_REPORT_LIMIT = 10
+
+
+def _hub_degrees(
+    nodes: list[dict], edges: list[dict], threshold: int = HUB_DEGREE_MIN
+) -> dict[str, tuple[str, int]]:
+    """Map id -> (label, degree) for every node whose degree >= threshold.
+
+    Degree is computed with plain undirected nx.Graph semantics (parallel edges
+    collapse, self-loops count twice) so it lines up with G.degree() on the
+    post-merge graph. Direction is irrelevant to degree, so the direct-JSON read
+    build_merge does to preserve edge direction is not needed here.
+    """
+    g = nx.Graph()
+    for n in nodes:
+        nid = n.get("id")
+        if nid is not None:
+            g.add_node(nid, label=n.get("label", nid))
+    for e in edges:
+        s, t = e.get("source"), e.get("target")
+        if s is not None and t is not None:
+            g.add_edge(s, t)
+    return {
+        nid: (g.nodes[nid].get("label", nid), deg)
+        for nid, deg in g.degree()
+        if deg >= threshold
+    }
+
+
+def _hub_degree_drops(
+    pre_hubs: dict[str, tuple[str, int]],
+    G: nx.Graph,
+    drop_frac: float = DEGREE_DROP_FRAC,
+) -> list[tuple[str, int, int]]:
+    """Pre-merge hubs that vanished or lost more than drop_frac of their degree.
+
+    Returns [(label, before, after)] sorted worst-drop first.
+    """
+    post_deg = dict(G.degree())
+    drops: list[tuple[str, int, int]] = []
+    for nid, (label, before) in pre_hubs.items():
+        if before <= 0:
+            continue
+        after = post_deg.get(nid, 0)
+        if (before - after) / before > drop_frac:
+            drops.append((label, before, after))
+    drops.sort(key=lambda d: d[1] - d[2], reverse=True)
+    return drops
+
+
+def _warn_hub_degree_drops(pre_hubs: dict[str, tuple[str, int]], G: nx.Graph) -> None:
+    """Emit a stderr WARNING for any hub node that collapsed during a merge."""
+    drops = _hub_degree_drops(pre_hubs, G)
+    if not drops:
+        return
+    print(
+        f"[graphify] WARNING: {len(drops)} hub node(s) lost >"
+        f"{int(DEGREE_DROP_FRAC * 100)}% of their edges after this merge — "
+        "possible silent data loss from a re-extraction changing an entity's id "
+        "(#1651).",
+        file=sys.stderr,
+    )
+    for label, before, after in drops[:_HUB_DROP_REPORT_LIMIT]:
+        suffix = " (node dropped entirely)" if after == 0 else ""
+        print(
+            f"[graphify]   - '{label}': {before} -> {after} edges{suffix}",
+            file=sys.stderr,
+        )
+    extra = len(drops) - _HUB_DROP_REPORT_LIMIT
+    if extra > 0:
+        print(f"[graphify]   ... and {extra} more hub node(s).", file=sys.stderr)
+
+
 def build_merge(
     new_chunks: list[dict],
     graph_path: str | Path | None = None,
@@ -779,6 +862,11 @@ def build_merge(
         existing_edges = []
         existing_hyperedges = []
         had_graph = False
+
+    # Snapshot the pre-merge graph's hub-node degrees so we can warn if this merge
+    # collapses one (#1651/#1652b). Captured from the graph AS LOADED, before the
+    # replace-per-source filter below drops the re-extracted files' contribution.
+    pre_merge_hubs = _hub_degrees(existing_nodes, existing_edges) if had_graph else {}
 
     # Effective root for relativizing absolute source_file / prune paths back to the
     # stored relative source_file keys. When the caller passes root we use it;
@@ -905,6 +993,13 @@ def build_merge(
                 f"graphify: build_merge would shrink graph from {existing_n} → {new_n} nodes. "
                 f"Pass prune_sources explicitly if you intend to remove nodes."
             )
+
+    # Degree-drop alert (#1652b): warn when a former hub collapsed. Unlike the
+    # count-based shrink guard above, this runs on every path — including the
+    # normal dedup=True --update — and warns rather than raises, since a genuine
+    # large refactor can legitimately shed a hub's edges.
+    if pre_merge_hubs:
+        _warn_hub_degree_drops(pre_merge_hubs, G)
 
     return G
 
