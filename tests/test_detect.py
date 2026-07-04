@@ -1538,3 +1538,149 @@ def test_convert_office_file_does_not_rewrite_existing_sidecar(tmp_path, monkeyp
     second = detect_mod.convert_office_file(src, out_dir)
     assert second == first
     assert second.stat().st_mtime_ns == mtime_before
+
+
+def _flat(files: dict) -> list:
+    return [p for bucket in files.values() for p in bucket]
+
+
+def test_convert_office_file_reparses_when_source_changes(tmp_path, monkeypatch):
+    """A source fingerprint in the sidecar header lets convert_office_file skip
+    re-parsing an unchanged .docx (#1656) yet re-parse + rewrite an edited one so
+    the change flows through detect_incremental (#1649)."""
+    calls = {"n": 0}
+
+    def fake_docx(path):
+        calls["n"] += 1
+        return path.read_bytes().decode("latin-1", "ignore")
+
+    monkeypatch.setattr(detect_mod, "docx_to_markdown", fake_docx)
+
+    out_dir = tmp_path / "converted"
+    src = tmp_path / "report.docx"
+    src.write_bytes(b"version one")
+
+    first = detect_mod.convert_office_file(src, out_dir)
+    assert first is not None
+    assert calls["n"] == 1
+    assert "version one" in first.read_text(encoding="utf-8")
+    mtime_before = first.stat().st_mtime_ns
+
+    # Source unchanged: fingerprint matches -> no re-parse, no rewrite (#1656/#1226).
+    second = detect_mod.convert_office_file(src, out_dir)
+    assert second == first
+    assert calls["n"] == 1
+    assert second.stat().st_mtime_ns == mtime_before
+
+    # Source edited: fingerprint differs -> re-parse + rewrite the sidecar (#1649).
+    src.write_bytes(b"version two, now considerably longer")
+    third = detect_mod.convert_office_file(src, out_dir)
+    assert third == first  # deterministic sidecar name is unchanged
+    assert calls["n"] == 2
+    assert "version two" in third.read_text(encoding="utf-8")
+
+
+def test_convert_office_file_reparses_xlsx_on_edit(tmp_path, monkeypatch):
+    """Same source-change detection for .xlsx sources (#1649/#1656)."""
+    calls = {"n": 0}
+
+    def fake_xlsx(path):
+        calls["n"] += 1
+        return "sheet: " + path.read_bytes().decode("latin-1", "ignore")
+
+    monkeypatch.setattr(detect_mod, "xlsx_to_markdown", fake_xlsx)
+
+    out_dir = tmp_path / "converted"
+    src = tmp_path / "budget.xlsx"
+    src.write_bytes(b"q1")
+
+    first = detect_mod.convert_office_file(src, out_dir)
+    assert first is not None and calls["n"] == 1
+
+    detect_mod.convert_office_file(src, out_dir)  # unchanged
+    assert calls["n"] == 1
+
+    src.write_bytes(b"q1 q2 q3 q4")  # edited
+    detect_mod.convert_office_file(src, out_dir)
+    assert calls["n"] == 2
+
+
+def test_convert_office_file_upgrades_legacy_sidecar(tmp_path, monkeypatch):
+    """A sidecar written before source fingerprints existed (no source-md5 in the
+    header) is treated as stale and rewritten once, then reused thereafter."""
+    monkeypatch.setattr(detect_mod, "docx_to_markdown", lambda p: "hello world")
+
+    out_dir = tmp_path / "converted"
+    src = tmp_path / "legacy.docx"
+    src.write_bytes(b"body")
+
+    # First conversion writes a fingerprinted sidecar.
+    sidecar = detect_mod.convert_office_file(src, out_dir)
+    assert sidecar is not None
+    assert detect_mod._read_sidecar_source_fingerprint(sidecar) is not None
+
+    # Simulate an old (pre-fingerprint) sidecar header and confirm a run refreshes it.
+    sidecar.write_text("<!-- converted from legacy.docx -->\n\nhello world", encoding="utf-8")
+    assert detect_mod._read_sidecar_source_fingerprint(sidecar) is None
+    refreshed = detect_mod.convert_office_file(src, out_dir)
+    assert refreshed == sidecar
+    assert detect_mod._read_sidecar_source_fingerprint(sidecar) is not None
+
+
+def test_detect_incremental_reenters_edited_office_file(tmp_path, monkeypatch):
+    """End-to-end: after an Office source is edited, detect_incremental must
+    surface its sidecar as changed so `--update` re-extracts it (#1649). An
+    unchanged source stays out of the changed set (#1226/#1656)."""
+    monkeypatch.setattr(
+        detect_mod,
+        "docx_to_markdown",
+        lambda p: p.read_bytes().decode("latin-1", "ignore"),
+    )
+
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    src = tmp_path / "spec.docx"
+    src.write_bytes(b"first draft")
+
+    r1 = detect_incremental(tmp_path, manifest_path)
+    sidecars = r1["files"]["document"]
+    assert sidecars, "office sidecar should be classified as a document"
+    save_manifest(r1["files"], manifest_path, root=tmp_path)
+
+    # Unchanged run: sidecar is not re-queued.
+    r2 = detect_incremental(tmp_path, manifest_path)
+    assert not r2["new_files"]["document"]
+    assert r2["unchanged_files"]["document"] == sidecars
+    save_manifest(r2["files"], manifest_path, root=tmp_path)
+
+    # Edit the source: the sidecar is rewritten and re-queued as changed.
+    src.write_bytes(b"second draft, substantially revised and longer")
+    r3 = detect_incremental(tmp_path, manifest_path)
+    assert r3["new_files"]["document"] == sidecars
+
+
+def test_detect_incremental_pdf_not_reparsed_when_unchanged(tmp_path, monkeypatch):
+    """An unchanged PDF must not be re-parsed for its word count on a later
+    incremental run — the count is cached in the manifest and reused (#1656)."""
+    calls = {"n": 0}
+
+    def fake_pdf(path):
+        calls["n"] += 1
+        return "alpha beta gamma delta"
+
+    monkeypatch.setattr(detect_mod, "extract_pdf_text", fake_pdf)
+
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4 stub content")
+
+    r1 = detect_incremental(tmp_path, manifest_path)
+    assert any(p.endswith("paper.pdf") for p in _flat(r1["files"]))
+    save_manifest(r1["files"], manifest_path, root=tmp_path)
+    after_run1 = calls["n"]
+    assert after_run1 >= 1  # parsed at least once to seed the cached word count
+
+    r2 = detect_incremental(tmp_path, manifest_path)
+    save_manifest(r2["files"], manifest_path, root=tmp_path)
+    assert calls["n"] == after_run1  # #1656: unchanged PDF is not re-parsed
+    assert not any(p.endswith("paper.pdf") for p in _flat(r2["new_files"]))
+    assert any(p.endswith("paper.pdf") for p in _flat(r2["unchanged_files"]))

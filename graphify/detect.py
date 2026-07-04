@@ -601,6 +601,26 @@ def xlsx_extract_structure(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+# Sidecar header records the source's raw-byte fingerprint so a later run can
+# tell whether the Office file changed without re-parsing it (#1649, #1656).
+_SIDECAR_SOURCE_FP_RE = re.compile(r"source-md5:\s*([0-9a-f]+)")
+
+
+def _read_sidecar_source_fingerprint(out_path: Path) -> str | None:
+    """Read the source fingerprint stored in an existing sidecar's header.
+
+    Returns ``None`` for legacy sidecars written before the fingerprint was
+    added, so they are treated as needing a refresh on the next run.
+    """
+    try:
+        with out_path.open("r", encoding="utf-8") as fh:
+            first_line = fh.readline()
+    except OSError:
+        return None
+    m = _SIDECAR_SOURCE_FP_RE.search(first_line)
+    return m.group(1) if m else None
+
+
 def convert_office_file(path: Path, out_dir: Path) -> Path | None:
     """Convert a .docx or .xlsx to a markdown sidecar in out_dir.
 
@@ -608,14 +628,7 @@ def convert_office_file(path: Path, out_dir: Path) -> Path | None:
     or the required library is not installed.
     """
     ext = path.suffix.lower()
-    if ext == ".docx":
-        text = docx_to_markdown(path)
-    elif ext == ".xlsx":
-        text = xlsx_to_markdown(path)
-    else:
-        return None
-
-    if not text.strip():
+    if ext not in (".docx", ".xlsx"):
         return None
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -630,13 +643,31 @@ def convert_office_file(path: Path, out_dir: Path) -> Path | None:
     normalized_path = unicodedata.normalize("NFC", str(path.resolve()))
     name_hash = hashlib.sha256(normalized_path.encode()).hexdigest()[:8]
     out_path = out_dir / f"{path.stem}_{name_hash}.md"
-    # Once the hash is stable the sidecar name is deterministic; skip re-writing
-    # an existing sidecar so an unchanged source never churns its mtime (which
-    # would still flag it as changed in detect_incremental).
+
+    # Fingerprint the SOURCE by its raw bytes (md5). Reading the bytes does NOT
+    # unzip/parse the OOXML container, so this is cheap — that is the whole
+    # point. If a sidecar already exists and records the same fingerprint the
+    # source is unchanged: return it WITHOUT parsing (avoids the per-run
+    # re-parse of #1656) and WITHOUT rewriting (so an unchanged source never
+    # churns its mtime, which detect_incremental would otherwise flag as
+    # changed — #1226). If the fingerprint differs (or is missing, e.g. a legacy
+    # sidecar) the source was edited: re-parse and rewrite so the change flows
+    # through detect_incremental via the sidecar's new mtime/md5 (#1649).
+    source_fp = _md5_file(path)
     if out_path.exists():
-        return out_path
+        if not source_fp or _read_sidecar_source_fingerprint(out_path) == source_fp:
+            return out_path
+
+    if ext == ".docx":
+        text = docx_to_markdown(path)
+    else:
+        text = xlsx_to_markdown(path)
+
+    if not text.strip():
+        return None
+
     out_path.write_text(
-        f"<!-- converted from {path.name} -->\n\n{text}",
+        f"<!-- converted from {path.name} | source-md5: {source_fp} -->\n\n{text}",
         encoding="utf-8",
     )
     return out_path
@@ -1015,7 +1046,14 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
     return True
 
 
-def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None) -> dict:
+def detect(
+    root: Path,
+    *,
+    follow_symlinks: bool | None = None,
+    google_workspace: bool | None = None,
+    extra_excludes: list[str] | None = None,
+    prior_word_counts: dict[str, tuple[float, int]] | None = None,
+) -> dict:
     root = root.resolve()
     if follow_symlinks is None:
         follow_symlinks = False
@@ -1028,6 +1066,21 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         FileType.VIDEO: [],
     }
     total_words = 0
+
+    # Word counting parses PDFs (extract_pdf_text) and reads sidecars on every
+    # file; re-doing it for unchanged files on each incremental run is pure waste
+    # (#1656). When the caller supplies the previous run's per-file counts, reuse
+    # the cached count for any file whose mtime is unchanged instead of parsing.
+    def _count_words(fp: Path) -> int:
+        if prior_word_counts is not None:
+            cached = prior_word_counts.get(str(fp))
+            if cached is not None:
+                try:
+                    if fp.stat().st_mtime == cached[0]:
+                        return cached[1]
+                except OSError:
+                    pass
+        return count_words(fp)
 
     skipped_sensitive: list[str] = []
     ignore_patterns = _load_graphifyignore(root)
@@ -1133,7 +1186,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
-                    total_words += count_words(md_path)
+                    total_words += _count_words(md_path)
                 else:
                     skipped_sensitive.append(str(p) + " [Google Workspace export produced no readable text]")
                 continue
@@ -1144,14 +1197,14 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
-                    total_words += count_words(md_path)
+                    total_words += _count_words(md_path)
                 else:
                     # Conversion failed (library not installed) - skip with note
                     skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
                 continue
             files[ftype].append(str(p))
             if ftype != FileType.VIDEO:
-                total_words += count_words(p)
+                total_words += _count_words(p)
 
     for ftype in files:
         files[ftype].sort()
@@ -1323,6 +1376,9 @@ def save_manifest(
             continue
 
     all_files = [f for file_list in files.values() for f in file_list]
+    # Video files are never word-counted (mirrors detect(), and avoids reading
+    # large media in as text).
+    video_set = set(files.get("video", []))
     with ThreadPoolExecutor() as pool:
         raw = pool.map(_stat_and_hash, all_files)
     hashed: dict[str, tuple[float, str]] = {
@@ -1334,6 +1390,7 @@ def save_manifest(
             continue  # file deleted between detect() and manifest write
         mtime, h = hashed[f]
         prev = _normalise_entry(existing.get(f, {})) or {}
+        content_unchanged = h == prev.get("ast_hash", "")
         entry: dict = {"mtime": mtime}
         if kind in ("ast", "both"):
             entry["ast_hash"] = h
@@ -1343,7 +1400,17 @@ def save_manifest(
             entry["semantic_hash"] = h
         else:
             # Preserve semantic_hash only when content is unchanged
-            entry["semantic_hash"] = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
+            entry["semantic_hash"] = prev.get("semantic_hash", "") if content_unchanged else ""
+        # Cache the word count so detect() can reuse it for unchanged files
+        # rather than re-parsing (esp. PDFs) on every incremental run (#1656).
+        # Reuse the previous count whenever the content hash is unchanged; only
+        # (re)parse a genuinely new or changed file.
+        if f in video_set:
+            entry["word_count"] = 0
+        elif content_unchanged and isinstance(prev.get("word_count"), int):
+            entry["word_count"] = prev["word_count"]
+        else:
+            entry["word_count"] = count_words(Path(f))
         manifest[f] = entry
     if root is not None:
         # Persist in portable form: forward-slash relative paths. Keys outside
@@ -1386,11 +1453,27 @@ def detect_incremental(
     runs. ``None`` (default) does not follow symlinked directories; callers must
     opt in explicitly, and resolved targets outside the scan root are skipped.
     """
-    full = detect(root, follow_symlinks=follow_symlinks, google_workspace=google_workspace, extra_excludes=extra_excludes)
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
     # re-anchored to the absolute form the rest of this function compares
-    # against. Legacy absolute-keyed manifests pass through unchanged.
+    # against. Legacy absolute-keyed manifests pass through unchanged. Loaded
+    # before detect() so the cached per-file word counts can be handed down and
+    # reused for unchanged files (avoids re-parsing every PDF each run — #1656).
     manifest = load_manifest(manifest_path, root=root)
+    prior_word_counts: dict[str, tuple[float, int]] = {}
+    for key, entry in manifest.items():
+        if isinstance(entry, dict):
+            wc = entry.get("word_count")
+            mt = entry.get("mtime")
+            if isinstance(wc, int) and isinstance(mt, (int, float)):
+                prior_word_counts[key] = (mt, wc)
+
+    full = detect(
+        root,
+        follow_symlinks=follow_symlinks,
+        google_workspace=google_workspace,
+        extra_excludes=extra_excludes,
+        prior_word_counts=prior_word_counts,
+    )
 
     if not manifest:
         # No previous run - treat everything as new
