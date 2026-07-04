@@ -2627,6 +2627,16 @@ def test_apex_interface_extraction():
     labels = _labels(r)
     assert "Notifiable" in labels
 
+def test_apex_interface_extends(tmp_path):
+    source = tmp_path / "PaymentProcessor.cls"
+    source.write_text(
+        "public interface PaymentProcessor extends Processor, Auditable { void process(); }\n"
+    )
+    result = extract_apex(source)
+    inheritance = _edge_labels(result, "extends") | _edge_labels(result, "implements")
+    assert ("PaymentProcessor", "Processor") in inheritance
+    assert ("PaymentProcessor", "Auditable") in inheritance
+
 def test_apex_method_extraction():
     r = extract_apex(FIXTURES / "sample.cls")
     labels = _labels(r)

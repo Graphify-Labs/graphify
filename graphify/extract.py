@@ -6297,6 +6297,16 @@ def extract_apex(path: Path) -> dict:
             add_node(iface_nid, iface_name, lineno)
             add_edge(file_nid if current_class_nid is None else current_class_nid,
                      iface_nid, "contains", lineno)
+            if im.group(2):
+                for parent in im.group(2).split(","):
+                    parent = parent.strip()
+                    if parent:
+                        parent_nid = _make_id(stem, parent)
+                        if parent_nid not in seen_ids:
+                            parent_nid = _make_id(parent)
+                        if parent_nid not in seen_ids:
+                            add_node(parent_nid, parent, lineno)
+                        add_edge(iface_nid, parent_nid, "extends", lineno, confidence="INFERRED")
             pending_annotations = []
             continue
 
