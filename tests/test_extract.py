@@ -1514,6 +1514,56 @@ def test_extract_json_via_dispatch():
     assert _get_extractor(Path("foo.json")) is extract_json
 
 
+def test_extensionless_shebang_via_dispatch(tmp_path):
+    """Extensionless CLIs resolve their extractor from the shebang, mirroring
+    detect.classify_file — otherwise detect labels them code and extraction
+    silently drops them."""
+    from graphify.extract import _get_extractor
+
+    cli = tmp_path / "devctl"
+    cli.write_text("#!/usr/bin/env bash\necho hi\n")
+    assert _get_extractor(cli) is extract_bash
+
+    pytool = tmp_path / "manage"
+    pytool.write_text("#!/usr/bin/env python3\nprint('hi')\n")
+    assert _get_extractor(pytool) is extract_python
+
+    # env -S split-args form is handled by the shared shebang parser
+    split = tmp_path / "runner"
+    split.write_text("#!/usr/bin/env -S bash -eu\necho hi\n")
+    assert _get_extractor(split) is extract_bash
+
+
+def test_extensionless_without_usable_shebang_stays_unsupported(tmp_path):
+    from graphify.extract import _get_extractor
+
+    plain = tmp_path / "LICENSE-COPY"
+    plain.write_text("plain text, no shebang\n")
+    assert _get_extractor(plain) is None
+
+    # Interpreter known to detect but with no AST extractor: stays skipped
+    # rather than being mis-parsed by a wrong grammar.
+    perl = tmp_path / "legacy"
+    perl.write_text("#!/usr/bin/env perl\nprint 1;\n")
+    assert _get_extractor(perl) is None
+
+
+def test_extract_extensionless_bash_cli_end_to_end(tmp_path):
+    """A shebang-only bash CLI must contribute nodes with the same ID scheme
+    as a .sh file (path stem + entity), so doc-created stub IDs merge."""
+    cli = tmp_path / "devctl"
+    cli.write_text(
+        "#!/usr/bin/env bash\n"
+        "helper() { echo hi; }\n"
+        "main() { helper; }\n"
+        'main "$@"\n'
+    )
+    result = extract([cli], cache_root=tmp_path)
+    ids = {n["id"] for n in result["nodes"]}
+    assert "devctl_helper" in ids
+    assert "devctl_main" in ids
+
+
 def test_extract_bash_node_metadata_is_sanitized():
     """Bash extractor must route node metadata through sanitize_metadata so
     HTML-sensitive characters cannot reach downstream graph viewers raw."""
