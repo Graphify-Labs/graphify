@@ -1922,8 +1922,13 @@ def _dynamic_import_js(node, source: bytes, caller_nid: str, str_path: str, edge
             edges.append({
                 "source": caller_nid,
                 "target": tgt_nid,
+                # A deferred `import(...)` is a real dependency, so keep it as an
+                # `imports_from` edge (visible in the graph) but mark it `deferred`
+                # so find_import_cycles does not treat it as a static import and
+                # report a phantom file cycle (#1241).
                 "relation": "imports_from",
                 "context": "import",
+                "deferred": True,
                 "confidence": "EXTRACTED",
                 "source_file": str_path,
                 "source_location": f"L{node.start_point[0] + 1}",
