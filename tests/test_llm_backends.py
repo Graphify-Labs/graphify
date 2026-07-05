@@ -167,6 +167,26 @@ def test_extract_corpus_parallel_accepts_str_and_mixed_paths(tmp_path, monkeypat
             assert merged["failed_chunks"] == 0
 
 
+def test_corpus_parallel_oversized_markdown_does_not_crash_on_fileslice(tmp_path, monkeypatch):
+    # #1397/#1399 regression: a Markdown file large enough to be sliced into
+    # FileSlice units must not crash extract_files_direct's Path() coercion
+    # (#1386). The earlier str-path tests used tiny files, so slicing never ran.
+    from graphify.llm import _FILE_CHAR_CAP
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
+    big = tmp_path / "big.md"
+    big.write_text(("# Section\n\n" + "lorem ipsum dolor sit amet " * 60 + "\n\n") * 30)
+    assert len(big.read_text()) > _FILE_CHAR_CAP  # guarantees slicing kicks in
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result):
+        # both a str path and a FileSlice unit must flow through without TypeError
+        merged = llm.extract_corpus_parallel(
+            [str(big)], backend="gemini", root=tmp_path, max_concurrency=1
+        )
+    assert merged["failed_chunks"] == 0  # no chunk raised Path(FileSlice) TypeError
+
+
 def test_str_path_entry_points_handle_edge_cases(tmp_path, monkeypatch):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
@@ -513,6 +533,17 @@ def test_non_ollama_backend_gets_no_num_ctx_extra_body(monkeypatch):
     assert eb is None or "options" not in eb, "non-ollama backends must not get num_ctx injection"
 
 
+def test_openai_compat_forces_non_streaming_response(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://gateway.example/v1", "sk-test", "gpt-4.1-mini",
+        "u", temperature=0, max_completion_tokens=8192, backend="openai",
+    )
+
+    assert captured["stream"] is False
+
+
 # ---------------------------------------------------------------------------
 # Custom-provider extra_body: lets providers.json route around the moonshot-only
 # default. Self-hosted Qwen3 served by vLLM needs
@@ -825,3 +856,234 @@ def test_openai_compat_env_var_temperature_applied(tmp_path, monkeypatch):
     llm.extract_files_direct([tmp_path / "f.py"], backend="openai", root=tmp_path)
 
     assert captured.get("temperature") == 0.3
+
+
+def test_native_extraction_prompt_requests_hyperedges():
+    """The native-backend prompt must request hyperedges, like the skill's
+    extraction-spec does — otherwise `graphify extract --backend X` silently
+    produces zero hyperedges while the agent path produces them. Guards against
+    the two prompts drifting apart again.
+    """
+    for deep in (False, True):
+        prompt = llm._extraction_system(deep=deep)
+        assert "hyperedge" in prompt.lower(), f"deep={deep}: prompt does not mention hyperedges"
+        assert "3 or more nodes" in prompt, f"deep={deep}: prompt lacks the hyperedge guidance"
+        # The schema example must show a populated hyperedge, not an empty array.
+        assert '"hyperedges":[]' not in prompt, f"deep={deep}: schema still shows empty hyperedges"
+        assert '"nodes":["node_id1"' in prompt, f"deep={deep}: schema lacks a populated hyperedge example"
+
+
+def test_native_extraction_prompt_matches_skill_spec_on_hyperedges():
+    """Both extraction paths share the same hyperedge contract (the '3 or more
+    nodes … participate together' rule), so a corpus yields the same hyperedge
+    behaviour whether built via the skill or `graphify extract --backend`.
+    """
+    spec = (
+        Path(__file__).resolve().parents[1]
+        / "tools" / "skillgen" / "fragments" / "references" / "shared" / "extraction-spec.md"
+    ).read_text(encoding="utf-8")
+    shared = "3 or more nodes clearly participate together"
+    assert shared in spec, "skill extraction-spec changed its hyperedge wording"
+    assert shared in llm._EXTRACTION_SYSTEM, "native prompt drifted from the skill hyperedge wording"
+
+
+# --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------
+# BACKENDS reads the env at import time, so each case runs in a fresh interpreter
+# (subprocess) to avoid reload contamination of the test session.
+import subprocess
+import sys as _sys
+
+
+def _backend_base_url(backend: str, env_extra: dict) -> str:
+    out = subprocess.run(
+        [_sys.executable, "-c",
+         f"import graphify.llm as l; print(l.BACKENDS[{backend!r}]['base_url'])"],
+        env={**os.environ, **env_extra}, capture_output=True, text=True, check=True,
+    )
+    return out.stdout.strip()
+
+
+import os  # noqa: E402
+
+
+@pytest.mark.parametrize("backend,env_var,override", [
+    ("kimi", "KIMI_BASE_URL", "https://proxy.example/kimi/v1"),
+    ("gemini", "GEMINI_BASE_URL", "https://proxy.example/gemini"),
+    ("deepseek", "DEEPSEEK_BASE_URL", "https://proxy.example/deepseek"),
+])
+def test_base_url_env_overrides(backend, env_var, override):
+    assert _backend_base_url(backend, {env_var: override}) == override
+
+
+@pytest.mark.parametrize("backend,default", [
+    ("kimi", "https://api.moonshot.ai/v1"),
+    ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/"),
+    ("deepseek", "https://api.deepseek.com"),
+])
+def test_base_url_defaults_without_env(backend, default):
+    # Ensure the override env vars are unset so the hardcoded default is used.
+    cleared = {k: "" for k in ("KIMI_BASE_URL", "GEMINI_BASE_URL", "DEEPSEEK_BASE_URL")}
+    # empty string would be falsy-but-set; delete instead by reconstructing env without them
+    env = {k: v for k, v in os.environ.items() if k not in cleared}
+    out = subprocess.run(
+        [_sys.executable, "-c",
+         f"import graphify.llm as l; print(l.BACKENDS[{backend!r}]['base_url'])"],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.strip() == default
+
+
+# ---------------------------------------------------------------------------
+# #1505: claude-cli subprocess.run must use errors="replace" so non-UTF-8
+# bytes from claude.cmd on Chinese Windows (GBK/cp936) don't crash the reader
+# thread.
+# ---------------------------------------------------------------------------
+
+import json as _json
+
+
+def _make_cli_envelope(result_text: str) -> str:
+    """Return a minimal claude -p --output-format json envelope."""
+    return _json.dumps({"type": "result", "result": result_text, "usage": {}, "modelUsage": {}})
+
+
+def test_call_claude_cli_passes_errors_replace_to_subprocess():
+    """subprocess.run must be called with errors='replace' so non-UTF-8 output
+    bytes (e.g. GBK from claude.cmd on Chinese Windows) are tolerated instead
+    of crashing the reader thread with UnicodeDecodeError (#1505)."""
+    from unittest.mock import patch, MagicMock
+
+    valid_envelope = _make_cli_envelope('{"nodes":[],"edges":[],"hyperedges":[]}')
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stdout = valid_envelope
+    mock_proc.stderr = ""
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("shutil.which", return_value="/usr/bin/claude"), \
+         patch("subprocess.run", return_value=mock_proc) as mock_run:
+        llm._call_claude_cli("test prompt")
+
+    assert mock_run.call_args.kwargs.get("errors") == "replace", \
+        "subprocess.run missing errors='replace' — non-UTF-8 bytes will crash the reader thread"
+
+
+def test_call_claude_cli_tolerates_non_utf8_in_stderr():
+    """When errors='replace' is set, non-UTF-8 bytes in stderr produce replacement
+    chars instead of UnicodeDecodeError, allowing the error path to report cleanly."""
+    from unittest.mock import patch, MagicMock
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.stdout = ""
+    mock_proc.stderr = "GBK error: ��"  # replacement chars after decode
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("shutil.which", return_value="/usr/bin/claude"), \
+         patch("subprocess.run", return_value=mock_proc):
+        with pytest.raises(RuntimeError, match="claude -p exited 1"):
+            llm._call_claude_cli("test prompt")
+
+
+def test_resolve_max_retries_default_and_env(monkeypatch):
+    """Default retry count is generous (so 429s are absorbed, #1523); env overrides."""
+    monkeypatch.delenv("GRAPHIFY_MAX_RETRIES", raising=False)
+    assert llm._resolve_max_retries() >= 5
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRIES", "10")
+    assert llm._resolve_max_retries() == 10
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRIES", "0")
+    assert llm._resolve_max_retries() == 0          # disable is allowed
+    monkeypatch.setenv("GRAPHIFY_MAX_RETRIES", "bogus")
+    assert llm._resolve_max_retries() >= 5          # invalid -> default
+
+
+def test_openai_compat_client_built_with_retries(monkeypatch):
+    """The OpenAI-compatible client (kimi/openai/gemini/deepseek/ollama) is built with
+    max_retries so rate-limited (429) chunks are retried with backoff instead of being
+    dropped — the kimi rate-limit failure in #1523."""
+    import sys
+    import types
+
+    ctor_kwargs = {}
+
+    class _FakeOpenAI:
+        def __init__(self, *_, **kwargs):
+            ctor_kwargs.update(kwargs)
+            self.chat = self
+            self.completions = self
+
+        def create(self, **_):
+            return _fake_openai_response(
+                '{"nodes":[],"edges":[],"hyperedges":[]}', finish_reason="stop",
+                completion_tokens=10,
+            )
+
+    fake_module = types.ModuleType("openai")
+    fake_module.OpenAI = _FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.delenv("GRAPHIFY_MAX_RETRIES", raising=False)
+
+    llm._call_openai_compat(
+        "https://api.moonshot.ai/v1", "fake-key", "kimi-k2",
+        "user msg", temperature=0, max_completion_tokens=4096, backend="kimi",
+    )
+    assert ctor_kwargs.get("max_retries", 0) >= 5, ctor_kwargs
+
+
+def test_call_llm_claude_client_built_with_timeout_and_retries(monkeypatch):
+    """The secondary dispatch path (_call_llm, used by the dedup tiebreaker)
+    must build its Anthropic client with both timeout and max_retries, matching
+    the primary extraction path — #1442. Previously _call_llm passed neither
+    (then only max_retries), so GRAPHIFY_API_TIMEOUT was silently ignored here."""
+    import sys
+    import types
+
+    ctor_kwargs = {}
+
+    class _FakeMessages:
+        def create(self, **_):
+            return types.SimpleNamespace(content=[types.SimpleNamespace(text="ok")])
+
+    class _FakeAnthropic:
+        def __init__(self, *_, **kwargs):
+            ctor_kwargs.update(kwargs)
+            self.messages = _FakeMessages()
+
+    fake_module = types.ModuleType("anthropic")
+    fake_module.Anthropic = _FakeAnthropic
+    monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _b: "fake-key")
+    monkeypatch.setenv("GRAPHIFY_API_TIMEOUT", "1")
+    monkeypatch.delenv("GRAPHIFY_MAX_RETRIES", raising=False)
+
+    assert llm._call_llm("hi", backend="claude") == "ok"
+    assert ctor_kwargs.get("timeout") == 1.0, ctor_kwargs
+    assert ctor_kwargs.get("max_retries", 0) >= 5, ctor_kwargs
+
+
+def test_call_llm_openai_compat_client_built_with_timeout_and_retries(monkeypatch):
+    """Same #1442 fix for the OpenAI-compatible branch of _call_llm."""
+    import sys
+    import types
+
+    ctor_kwargs = {}
+
+    class _FakeOpenAI:
+        def __init__(self, *_, **kwargs):
+            ctor_kwargs.update(kwargs)
+            self.chat = self
+            self.completions = self
+
+        def create(self, **_):
+            return _fake_openai_response("ok", finish_reason="stop", completion_tokens=1)
+
+    fake_module = types.ModuleType("openai")
+    fake_module.OpenAI = _FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _b: "fake-key")
+    monkeypatch.setenv("GRAPHIFY_API_TIMEOUT", "1")
+    monkeypatch.delenv("GRAPHIFY_MAX_RETRIES", raising=False)
+
+    llm._call_llm("hi", backend="kimi")
+    assert ctor_kwargs.get("timeout") == 1.0, ctor_kwargs
+    assert ctor_kwargs.get("max_retries", 0) >= 5, ctor_kwargs

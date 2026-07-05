@@ -12,6 +12,10 @@ from graphify.serve import (
     _bfs,
     _dfs,
     _find_node,
+    _trigrams,
+    _node_search_text,
+    _get_trigram_index,
+    _trigram_candidates,
     _filter_graph_by_context,
     _infer_context_filters,
     _query_terms,
@@ -19,6 +23,7 @@ from graphify.serve import (
     _resolve_context_filters,
     _subgraph_to_text,
     _load_graph,
+    _community_header,
 )
 
 
@@ -130,8 +135,147 @@ def test_find_node_matches_full_punctuated_unicode_label():
     assert _find_node(G, "Skill /auditar — Auditoría inquisitiva de enlaces") == ["n1"]
 
 
+# --- trigram candidate prefilter (the trigram index that shrinks the O(N) scan) ---
+
+
+def _force_full_scan(monkeypatch):
+    """Disable the prefilter so a call exercises the original full-node scan."""
+    monkeypatch.setattr("graphify.serve._trigram_candidates", lambda *a, **k: None)
+
+
+def _make_big_graph(n: int = 150) -> nx.Graph:
+    """A graph large enough that the selectivity guard lets the fast-path fire for
+    rare terms and fall back for common ones. Most labels share the 'item'/'node'
+    stem (common), plus a few distinctive rare labels and one punctuated label."""
+    G = nx.Graph()
+    for i in range(n):
+        G.add_node(f"id{i}", label=f"item node {i}", source_file=f"pkg/item_{i}.py")
+    G.add_node("rareA", label="ZebraQuokkaWidget", source_file="zoo/zqw.py")
+    G.add_node("rareB", label="MarmosetGadget handler", source_file="zoo/marmoset.py")
+    G.add_node("punct", label="Foo.Bar:Baz", source_file="pkg/foobar.py")
+    return G
+
+
+def test_trigrams_basic():
+    assert _trigrams("foobar") == {"foo", "oob", "oba", "bar"}
+    assert _trigrams("ab") == {"ab"}        # <3 chars -> whole string is the key
+    assert _trigrams("") == set()
+
+
+def test_node_search_text_includes_all_matched_fields():
+    G = _make_big_graph()
+    text = _node_search_text(G.nodes["punct"], "punct")
+    # norm_label, tokenized label, nid, raw source, and tokenized source are all
+    # present, NUL-separated so trigrams can't span fields.
+    parts = text.split("\x00")
+    assert parts[0] == "foo.bar:baz"          # norm_label (punctuation kept)
+    assert parts[1] == "foo bar baz"          # label_tokens (tokenized)
+    assert parts[2] == "punct"                # nid
+    assert parts[3] == "pkg/foobar.py"        # source_file
+    assert parts[4] == "pkg foobar py"        # source_file tokens
+
+
+def test_trigram_candidates_fast_path_fires_for_rare_term():
+    G = _make_big_graph()
+    cand = _trigram_candidates(G, ["zebraquokkawidget"])
+    assert cand is not None                   # selective -> fast-path used
+    assert "rareA" in cand
+    assert len(cand) < G.number_of_nodes()    # a real shrink, not the whole graph
+
+
+def test_trigram_candidates_falls_back_on_common_term():
+    G = _make_big_graph()
+    # 'item' is in the label of every one of the 150 'item node N' nodes -> the
+    # rarest trigram is still common -> guard returns None (full-scan fallback).
+    assert _trigram_candidates(G, ["item"]) is None
+
+
+def test_trigram_candidates_falls_back_on_short_token():
+    G = _make_big_graph()
+    assert _trigram_candidates(G, ["ab"]) is None   # <3 chars -> can't trigram-filter
+
+
+def test_score_nodes_prefilter_is_identical_to_full_scan(monkeypatch):
+    G = _make_big_graph()
+    queries = ["zebraquokkawidget", "marmosetgadget handler", "foo bar baz",
+               "item", "node 42", "nonexistentxyz"]
+    for q in queries:
+        terms = _query_terms(q)
+        fast = _score_nodes(G, terms)
+        _force_full_scan(monkeypatch)
+        full = _score_nodes(G, terms)
+        monkeypatch.undo()
+        assert fast == full, f"prefilter diverged from full scan for {q!r}"
+
+
+def test_find_node_prefilter_is_identical_to_full_scan(monkeypatch):
+    G = _make_big_graph()
+    # includes the punctuated label, exercised via its tokenized (label_tokens) form
+    for label in ["ZebraQuokkaWidget", "MarmosetGadget handler", "Foo Bar Baz",
+                  "item node 7", "missing"]:
+        fast = _find_node(G, label)
+        _force_full_scan(monkeypatch)
+        full = _find_node(G, label)
+        monkeypatch.undo()
+        assert fast == full, f"_find_node prefilter diverged (order!) for {label!r}"
+
+
+def test_find_node_label_tokens_branch_covered_by_index():
+    # "foo bar baz" matches label "Foo.Bar:Baz" only via the tokenized label_tokens
+    # form (the dotted/colon norm_label never contains the spaced query). The index
+    # must surface this node as a candidate, or the prefilter would silently drop it.
+    G = _make_big_graph()
+    assert _find_node(G, "Foo Bar Baz") == ["punct"]
+
+
+def test_find_node_source_file_path_prefers_file_level_node():
+    G = _make_big_graph()
+    source_file = "app/api/example/route.ts"
+    # Insert the function node first to prove source-file lookup reorders the
+    # file-level node ahead of other nodes from the same file.
+    G.add_node(
+        "example_route_get",
+        label="GET()",
+        source_file=source_file,
+        source_location="L42",
+    )
+    G.add_node(
+        "example_route",
+        label="route.ts",
+        source_file=source_file,
+        source_location="L1",
+    )
+
+    matches = _find_node(G, source_file)
+
+    assert matches[0] == "example_route"
+    assert "example_route_get" in matches
+
+
+def test_trigram_index_cached_and_rebuilt_per_graph():
+    G = _make_big_graph()
+    idx1 = _get_trigram_index(G)
+    assert idx1 is _get_trigram_index(G)            # cached on the same graph object
+    assert G.graph["_trigram_index"] is idx1
+    G2 = _make_big_graph()
+    assert _get_trigram_index(G2) is not idx1       # a fresh graph rebuilds (reload safety)
+
+
 def test_query_terms_strips_search_punctuation():
-    assert _query_terms("what calls extract?") == ["what", "calls", "extract"]
+    # "what" is a question stopword (dropped); punctuation is still stripped from "extract?".
+    assert _query_terms("what calls extract?") == ["calls", "extract"]
+
+
+def test_query_terms_drops_question_stopwords():
+    # Natural-language question words are dropped so content words drive seeding:
+    # "how does the frontier cache work" must reduce to the content terms, or it
+    # seeds on "how"/"the"/"work" (which prefix-match prose labels) instead.
+    assert _query_terms("how does the frontier cache work") == ["frontier", "cache"]
+
+
+def test_query_terms_all_stopwords_falls_back_to_unfiltered():
+    # An all-stopword query keeps its terms rather than seeding on nothing.
+    assert _query_terms("how does it work") == ["how", "does", "work"]
 
 
 def test_query_terms_filters_only_short_english_terms(monkeypatch):
@@ -246,6 +390,54 @@ def test_subgraph_to_text_includes_edge_context():
     G = _make_graph()
     text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
     assert "context=call" in text
+
+
+# --- work-memory overlay annotation on NODE lines -----------------------------
+
+def test_subgraph_to_text_annotates_node_with_learning_status():
+    """An annotated node gets a `learning=<status>` suffix inside its NODE
+    bracket; an un-annotated node gets none."""
+    G = _make_graph()
+    G.graph["_learning_overlay"] = {
+        "n1": {"status": "preferred", "stale": False},
+    }
+    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    lines = {l.split()[1]: l for l in text.splitlines() if l.startswith("NODE ")}
+    assert "learning=preferred]" in lines["extract"]
+    assert "learning=" not in lines["cluster"]  # un-annotated node
+
+
+def test_subgraph_to_text_marks_stale_status():
+    G = _make_graph()
+    G.graph["_learning_overlay"] = {"n1": {"status": "contested", "stale": True}}
+    text = _subgraph_to_text(G, {"n1"}, [])
+    assert "learning=contested:stale]" in text
+
+
+def test_subgraph_to_text_learning_suffix_counts_against_budget():
+    """The learning= suffix is part of the NODE line BEFORE the budget cut, so it
+    is included in the char_budget accounting (a budget tight enough to fit the
+    bare line but not the suffixed line forces truncation)."""
+    G = _make_graph()
+    bare = _subgraph_to_text(G, {"n1", "n2", "n3"}, [])
+    # token_budget chosen so the un-annotated render fits without truncation...
+    budget = (len(bare) // 3) + 1
+    assert "truncated" not in _subgraph_to_text(G, {"n1", "n2", "n3"}, [],
+                                                token_budget=budget)
+    # ...but once every node carries a learning= suffix, the same budget overflows.
+    G.graph["_learning_overlay"] = {
+        n: {"status": "preferred", "stale": False} for n in ("n1", "n2", "n3")
+    }
+    annotated = _subgraph_to_text(G, {"n1", "n2", "n3"}, [], token_budget=budget)
+    assert "learning=preferred" in annotated
+    assert "truncated" in annotated
+
+
+def test_subgraph_to_text_no_overlay_is_unchanged():
+    """With no overlay on the graph, NODE lines carry no learning= suffix."""
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    assert "learning=" not in text
 
 
 def test_query_graph_text_explicit_context_filter_changes_traversal():
@@ -455,6 +647,42 @@ def test_pick_seeds_respects_max_k():
     assert len(seeds) == 3
 
 
+def test_pick_seeds_without_diversity_args_is_unchanged():
+    """G/terms are optional and default to None: existing callers see identical
+    behavior to before this change."""
+    scored = [(1000.0, "fbs"), (1.0, "err1"), (0.9, "err2")]
+    assert _pick_seeds(scored) == ["fbs"]
+
+
+def test_pick_seeds_diversity_recovers_starved_term(monkeypatch):
+    """Reproduces #1445: a vague natural-language query where one term's
+    incidental EXACT match on an unrelated node (e.g. a common word also used
+    as an unrelated field/identifier) outscores every SUBSTRING match on the
+    query's other, actually-relevant terms by ~1000x. Without G/terms, the
+    20%-gap cutoff discards the relevant candidate entirely; with them, it is
+    recovered as a guaranteed per-term seed.
+    """
+    G = nx.DiGraph()
+    # "unrelated" is an exact label match for the query term "unrelated" and
+    # has no connection to the actually-relevant "target" node.
+    G.add_node("noise", label="unrelated", source_file="design_tokens.json")
+    # "target" only substring-matches the query term "widget" via its label.
+    G.add_node("target", label="rate_limit_widget", source_file="src/widget.py")
+    G.add_node("other", label="something_else", source_file="src/other.py")
+    G.add_edge("other", "target")
+
+    terms = ["unrelated", "widget"]
+    scored = _score_nodes(G, terms)
+
+    # Sanity check the premise: without diversity, only the exact match survives.
+    seeds_before = _pick_seeds(scored)
+    assert seeds_before == ["noise"]
+
+    seeds_after = _pick_seeds(scored, G=G, terms=terms)
+    assert "noise" in seeds_after
+    assert "target" in seeds_after
+
+
 # --- actionable truncation hint (#897) ---
 
 def test_subgraph_to_text_truncation_hint_is_actionable():
@@ -577,3 +805,27 @@ def test_query_text_chinese_finds_routing_nodes():
     text = _query_graph_text(G, "页面路由", mode="bfs", depth=2)
     assert "No matching nodes found." not in text
     assert "路由" in text
+
+
+# --- get_community header (#1448): show the community name, no placeholder doubling ---
+
+def test_community_header_shows_real_name():
+    assert _community_header(12, "Auth & Sessions") == "Community 12 — Auth & Sessions"
+
+
+def test_community_header_skips_placeholder_name():
+    # community_name is written as the "Community N" placeholder for unnamed
+    # communities; the header must not read "Community 12 — Community 12".
+    assert _community_header(12, "Community 12") == "Community 12"
+
+
+def test_community_header_falls_back_when_no_name():
+    assert _community_header(7, None) == "Community 7"
+    assert _community_header(7, "") == "Community 7"
+
+
+def test_community_header_sanitizes_name():
+    # control characters in an LLM-derived name are stripped (F-010)
+    out = _community_header(3, "Pay\x00ments\x1b[31m")
+    assert out.startswith("Community 3 — ")
+    assert "\x00" not in out and "\x1b" not in out

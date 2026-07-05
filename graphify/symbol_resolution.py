@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from graphify.ids import make_id as _shared_make_id
+from graphify.paths import disambiguate_ambiguous_candidates
 from graphify.security import sanitize_metadata
 
 
@@ -319,6 +320,13 @@ def resolve_cross_file_raw_calls(
 
     label_index = build_label_index(all_nodes)
     known_pairs = existing_edge_pairs(all_edges)
+    # nid -> source_file, for the shared god-node tie-breakers (#1553) so a
+    # same-named test mock no longer erases a real cross-file call.
+    nid_to_source_file = {
+        str(n.get("id")): str(n.get("source_file", ""))
+        for n in all_nodes
+        if n.get("id")
+    }
     resolved: list[dict[str, Any]] = []
 
     for raw_call in iter_raw_calls(per_file):
@@ -328,9 +336,21 @@ def resolve_cross_file_raw_calls(
         if raw_call.get("is_member_call"):
             continue
         candidates = label_index.get(callee.lower(), [])
-        if len(candidates) != 1:
+        if not candidates:
             continue
-        target = candidates[0]
+        if len(candidates) == 1:
+            target: str | None = candidates[0]
+        else:
+            # Ambiguous bare name. Apply the shared tie-breakers (non-test
+            # preference, then path proximity); resolve only if exactly one
+            # candidate survives, else preserve the god-node guard and skip.
+            target = disambiguate_ambiguous_candidates(
+                candidates,
+                {c: nid_to_source_file.get(c, "") for c in candidates},
+                str(raw_call.get("source_file", "")),
+            )
+            if target is None:
+                continue
         caller = str(raw_call.get("caller_nid", ""))
         if not caller:
             continue
@@ -366,12 +386,7 @@ def _bash_make_id(*parts: str) -> str:
     return _shared_make_id(*parts)
 
 
-def _bash_file_stem(rel_path: Path) -> str:
-    """Exact copy of extract._file_stem — kept here to avoid an import cycle."""
-    parent = rel_path.parent.name
-    if parent and parent not in (".", ""):
-        return f"{parent}.{rel_path.stem}"
-    return rel_path.stem
+from graphify.extractors.base import _file_stem as _bash_file_stem  # canonical recipe (no import cycle: base imports only graphify.ids)
 
 
 def _file_node_id_for_path(path: Path, root: Path) -> str:

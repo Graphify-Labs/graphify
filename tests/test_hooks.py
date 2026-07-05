@@ -254,12 +254,21 @@ def test_hooks_use_cross_platform_detach(name, script):
     assert "0x00000200" in script, f"{name} missing CREATE_NEW_PROCESS_GROUP flag"
 
 
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_limit_windows_workers_by_default(name, script):
+    """Git for Windows/MSYS hooks can expose fragile pipe handles to spawned
+    ProcessPoolExecutor children. Hook-triggered rebuilds should default to one
+    worker there, while still allowing explicit user overrides."""
+    assert '[ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]' in script
+    assert 'export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"' in script
+
+
 def _launcher_payload(script: str) -> str:
     """Extract the `python -c "<payload>"` the hook hands to GRAPHIFY_PYTHON.
 
     The launcher is the only `-c` invocation whose body begins with
     `import os, subprocess, sys` (the interpreter-detection probes in
-    _PYTHON_DETECT use `-c "import graphify"`)."""
+    _PYTHON_DETECT use `-c "$_GFY_PROBE"`)."""
     m = re.search(r'-c "(import os, subprocess, sys.*?)"\n', script, re.DOTALL)
     assert m, "launcher payload not found"
     return m.group(1)
@@ -301,9 +310,12 @@ def test_rebuild_bodies_are_shell_quote_safe():
 )
 def test_rebuild_bodies_read_graphify_root(name, body):
     """The rebuild must honour the persisted scan root rather than hardcoding the
-    repo top (#1173). Both bodies read graphify-out/.graphify_root and pass the
+    repo top (#1173). Both bodies read <output-dir>/.graphify_root and pass the
     recovered root to _rebuild_code instead of the bare Path('.')."""
-    assert "graphify-out/.graphify_root" in body, f"{name} ignores .graphify_root (#1173)"
+    assert ".graphify_root" in body, f"{name} ignores .graphify_root (#1173)"
+    # The output dir is resolved from GRAPHIFY_OUT at hook-run time, not hardcoded
+    # to graphify-out/, so a renamed output dir is still found (#1423).
+    assert "GRAPHIFY_OUT" in body, f"{name} ignores the GRAPHIFY_OUT override (#1423)"
     # The recovered root is what gets rebuilt, not a hardcoded cwd.
     assert "_rebuild_code(_root" in body, f"{name} does not pass the recovered root"
     # Quote-safe inside the shell-double-quoted launcher: single quotes only.
@@ -348,9 +360,10 @@ def _set_hookspath(repo: Path, value: str) -> None:
     r"D:\hooks",
     r"some\back\slashed\path",
 ])
-def test_windows_hookspath_rejected_no_junk_dir(tmp_path, winpath):
+def test_windows_hookspath_rejected_no_junk_dir_on_posix(tmp_path, monkeypatch, winpath):
     """A Windows-style core.hooksPath must raise (loud failure), not silently
-    create a backslash-named junk directory and report success (#1385)."""
+    create a backslash-named junk directory and report success on POSIX/WSL (#1385)."""
+    monkeypatch.setattr("graphify.hooks.os.name", "posix")
     repo = _make_git_repo(tmp_path)
     _set_hookspath(repo, winpath)
     with pytest.raises(RuntimeError, match="Windows path"):
@@ -374,3 +387,46 @@ def test_default_hooks_dir_unaffected(tmp_path):
     repo = _make_git_repo(tmp_path)
     install(repo)
     assert (repo / ".git" / "hooks" / "post-commit").exists()
+
+
+# ── foreground hook cost: probes must be cheap and quiet ─────────────────────
+
+def test_probes_use_find_spec_not_full_import():
+    """`python -c "import graphify"` executes the FULL package import — 10s+ on a
+    cold cache or AV-scanned site-packages — and could run up to four times
+    synchronously before the detached launch even started, so every commit
+    stalled for tens of seconds. Probes must locate the package with
+    importlib.util.find_spec (no execution); the detached rebuild still reports
+    a broken install loudly in its log."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert '-c "import graphify"' not in _PYTHON_DETECT, (
+        "interpreter probe still imports the full package in the hook foreground"
+    )
+    assert "find_spec" in _PYTHON_DETECT
+
+
+def test_shebang_read_is_null_byte_safe():
+    """On Windows, `command -v graphify` can return the launcher path WITHOUT its
+    .exe suffix, so the `*.exe)` guard misses and the shebang probe reads a
+    BINARY: the shell then warns 'ignored null byte in input' on every commit and
+    the extracted garbage always falls through to the slow fallbacks. The read
+    must strip NULs before the command substitution sees them."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert "tr -d '\\000'" in _PYTHON_DETECT, "shebang read is not NUL-safe"
+
+
+def test_probe_prefers_sibling_python_exe_on_windows_layouts():
+    """pip on Windows puts Scripts/graphify(.exe) beside ..\\python.exe (or
+    .\\python.exe in a venv). Resolving that directly beats shebang-parsing a
+    binary launcher — and works whether or not command -v kept the suffix."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert "/../python.exe" in _PYTHON_DETECT
+    assert "/python.exe" in _PYTHON_DETECT
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_reuse_git_dir_from_env(name, script):
+    """git exports GIT_DIR to hooks, so the rev-parse fallback should only run
+    when the script is invoked by hand — each extra git exec costs 1s+ on
+    AV-scanned Windows machines and lands in the commit's foreground."""
+    assert "GIT_DIR=${GIT_DIR:-" in script, f"{name} always re-runs git rev-parse"

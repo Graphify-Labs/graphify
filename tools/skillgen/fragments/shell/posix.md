@@ -11,7 +11,7 @@ fi
 if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
     _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
     case "$_SHEBANG" in
-        *[!a-zA-Z0-9/_.-]*) ;;
+        *[!a-zA-Z0-9/_.@-]*) ;;
         *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
     esac
 fi

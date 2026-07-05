@@ -11,6 +11,7 @@ import networkx as nx
 
 DEFAULT_AFFECTED_RELATIONS = (
     "calls",
+    "indirect_call",
     "references",
     "imports",
     "imports_from",
@@ -54,7 +55,46 @@ def _normalize_label(label: str) -> str:
     return unicodedata.normalize("NFC", label).casefold()
 
 
+def _prefer_file_node(
+    graph: nx.Graph,
+    node_ids: list[str],
+    query: str,
+) -> str | None:
+    """Return the file-level node when a source_file query matches many nodes."""
+    query_basename = _normalize_label(Path(query).name)
+    exact_file_nodes = [
+        node_id
+        for node_id in node_ids
+        if str(graph.nodes[node_id].get("source_location", "")) == "L1"
+        and _normalize_label(str(graph.nodes[node_id].get("label", ""))) == query_basename
+    ]
+    if len(exact_file_nodes) == 1:
+        return exact_file_nodes[0]
+
+    l1_nodes = [
+        node_id
+        for node_id in node_ids
+        if str(graph.nodes[node_id].get("source_location", "")) == "L1"
+    ]
+    if len(l1_nodes) == 1:
+        return l1_nodes[0]
+
+    basename_nodes = [
+        node_id
+        for node_id in node_ids
+        if _normalize_label(str(graph.nodes[node_id].get("label", ""))) == query_basename
+    ]
+    if len(basename_nodes) == 1:
+        return basename_nodes[0]
+
+    return None
+
+
 def resolve_seed(graph: nx.Graph, query: str) -> str | None:
+    # A trailing path separator must not change a source-file match — serve's
+    # _find_node tokenizes the path (which drops it), so strip it here for parity
+    # (otherwise `affected "src/x.ts/"` returned None while `explain` resolved it).
+    query = query.rstrip("/\\") or query
     if query in graph:
         return query
     query_lower = _normalize_label(query)
@@ -83,6 +123,10 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     ]
     if len(exact_source_matches) == 1:
         return exact_source_matches[0]
+    if exact_source_matches:
+        preferred_file_node = _prefer_file_node(graph, exact_source_matches, query)
+        if preferred_file_node is not None:
+            return preferred_file_node
     contains_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
@@ -104,6 +148,27 @@ def affected_nodes(
     seen = {seed}
     queue: deque[tuple[str, int]] = deque([(seed, 0)])
     hits: list[AffectedHit] = []
+
+    # #1669: seed the reverse walk with the root's own member nodes (one outward
+    # `method`/`contains` hop). A caller can bind to a class's method node rather
+    # than the class node itself (e.g. `Service.call` resolves to the `def
+    # self.call` node, #1634), so those callers are unreachable from the class
+    # otherwise. The member nodes are seeds only (not reported as hits), and
+    # `method`/`contains` stay out of the general relation-filtered walk, so this
+    # adds no forward noise anywhere else.
+    if hasattr(graph, "out_edges"):
+        member_edges = graph.out_edges(seed, data=True)
+    else:
+        member_edges = (
+            (s, t, d) for s, t, d in graph.edges(data=True) if s == seed
+        )
+    for _s, member, data in member_edges:
+        if str(data.get("relation", "")) not in ("method", "contains"):
+            continue
+        member = str(member)
+        if member not in seen:
+            seen.add(member)
+            queue.append((member, 0))
 
     while queue:
         current, current_depth = queue.popleft()
@@ -166,7 +231,13 @@ def load_graph(path: Path) -> nx.Graph:
     import json
     from networkx.readwrite import json_graph
 
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"Cannot read graph file {path}: {exc}. "
+            "Re-run 'graphify extract' to regenerate it."
+        ) from exc
     # Force directed so stored caller→callee direction survives the round-trip;
     # mirrors serve.py and __main__.py (#1174).
     raw = {**raw, "directed": True}

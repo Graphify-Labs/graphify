@@ -14,6 +14,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
 
 
 class FileType(str, Enum):
@@ -24,9 +25,9 @@ class FileType(str, Enum):
     VIDEO = "video"
 
 
-_MANIFEST_PATH = "graphify-out/manifest.json"
+_MANIFEST_PATH = str(out_path("manifest.json"))
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.razor', '.cshtml', '.cls', '.trigger'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -629,11 +630,19 @@ def convert_office_file(path: Path, out_dir: Path) -> Path | None:
     normalized_path = unicodedata.normalize("NFC", str(path.resolve()))
     name_hash = hashlib.sha256(normalized_path.encode()).hexdigest()[:8]
     out_path = out_dir / f"{path.stem}_{name_hash}.md"
-    # Once the hash is stable the sidecar name is deterministic; skip re-writing
-    # an existing sidecar so an unchanged source never churns its mtime (which
-    # would still flag it as changed in detect_incremental).
-    if out_path.exists():
-        return out_path
+    # Skip re-writing only when the sidecar is present AND at least as new as the
+    # source. detect_incremental tracks the SIDECAR (not the Office source), so a
+    # sidecar that is never rewritten after the source changes leaves the doc
+    # reported "unchanged" forever and freezes the graph (#1649). Re-converting
+    # when the source is newer bumps the sidecar's mtime/content, which the
+    # incremental hash check then correctly picks up. An unchanged source keeps
+    # its (newer-or-equal) sidecar untouched so it never churns (#1226).
+    try:
+        if out_path.exists() and os.stat(_os_path(out_path)).st_mtime >= os.stat(_os_path(path)).st_mtime:
+            return out_path
+    except OSError:
+        if out_path.exists():
+            return out_path
     out_path.write_text(
         f"<!-- converted from {path.name} -->\n\n{text}",
         encoding="utf-8",
@@ -650,7 +659,8 @@ def count_words(path: Path) -> int:
             return len(docx_to_markdown(path).split())
         if ext == ".xlsx":
             return len(xlsx_to_markdown(path).split())
-        return len(path.read_text(encoding="utf-8", errors="ignore").split())
+        with open(_os_path(path), encoding="utf-8", errors="ignore") as f:
+            return len(f.read().split())
     except Exception:
         return 0
 
@@ -663,7 +673,7 @@ _SKIP_DIRS = {
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".eggs", "*.egg-info",
-    "graphify-out",  # never treat own output as source input (#524)
+    "graphify-out", GRAPHIFY_OUT_NAME,  # never treat own output as source input (#524); honour GRAPHIFY_OUT (#1423)
     # Coverage/test-artefact dirs — generated, never architecturally meaningful
     "coverage", "lcov-report",              # Vitest/Istanbul/nyc HTML reports (#870)
     "visual-tests", "visual-test",          # Playwright/visual-regression bundles (#869)
@@ -990,14 +1000,11 @@ def _could_contain_included_path(path: Path, root: Path, patterns: list[tuple[Pa
 
 
 def _auto_follow_symlinks(root: Path) -> bool:
-    """Auto-detect: ``True`` if ``root`` has any direct symlinked child.
+    """Return whether ``root`` has any direct symlinked child.
 
-    Allows "fake working dir" patterns (e.g. a folder full of symlinks pointing
-    at scattered source dirs across the user's machine) to work transparently
-    without the caller having to know to pass ``follow_symlinks=True``.
-
-    Override is always possible by passing an explicit ``follow_symlinks=True``
-    or ``follow_symlinks=False`` to :func:`detect` / :func:`detect_incremental`.
+    Kept for callers that import the private helper, but detection no longer
+    enables symlink following automatically. Following symlinks is now an
+    explicit opt-in, and out-of-root symlink targets are never indexed.
     """
     try:
         for p in root.iterdir():
@@ -1008,10 +1015,19 @@ def _auto_follow_symlinks(root: Path) -> bool:
     return False
 
 
+def _resolves_under_root(path: Path, root: Path) -> bool:
+    """True when ``path`` resolves to a target inside ``root``."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None) -> dict:
     root = root.resolve()
     if follow_symlinks is None:
-        follow_symlinks = _auto_follow_symlinks(root)
+        follow_symlinks = False
     google_workspace = google_workspace_enabled() if google_workspace is None else google_workspace
     files: dict[FileType, list[str]] = {
         FileType.CODE: [],
@@ -1021,6 +1037,12 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         FileType.VIDEO: [],
     }
     total_words = 0
+
+    def _wc(path: Path) -> int:
+        # Cache word counts against each file's stat signature so unchanged
+        # PDFs/docx aren't re-parsed on every run just to size the corpus (#1656).
+        from graphify import cache as _cache
+        return _cache.cached_word_count(path, root, count_words)
 
     skipped_sensitive: list[str] = []
     ignore_patterns = _load_graphifyignore(root)
@@ -1035,7 +1057,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     include_patterns = _load_graphifyinclude(root)
 
     # Always include graphify-out/memory/ - query results filed back into the graph
-    memory_dir = root / "graphify-out" / "memory"
+    memory_dir = root / GRAPHIFY_OUT / "memory"
     scan_paths = [root]
     if memory_dir.exists():
         scan_paths.append(memory_dir)
@@ -1071,6 +1093,15 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if not _is_noise_dir(d, dp)
                     and not _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache)
                 ]
+                if follow_symlinks:
+                    safe_dirs: list[str] = []
+                    for d in dirnames:
+                        child = dp / d
+                        if child.is_symlink() and not _resolves_under_root(child, root):
+                            skipped_sensitive.append(str(child) + " [symlink target outside scan root]")
+                            continue
+                        safe_dirs.append(d)
+                    dirnames[:] = safe_dirs
             for fname in filenames:
                 if fname in _SKIP_FILES:
                     continue
@@ -1081,7 +1112,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
 
     all_files.sort(key=lambda p: str(p))
 
-    converted_dir = root / "graphify-out" / "converted"
+    converted_dir = root / GRAPHIFY_OUT / "converted"
 
     for p in all_files:
         # For memory dir files, skip hidden/noise filtering
@@ -1091,6 +1122,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             if str(p).startswith(str(converted_dir)):
                 continue
         if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
+            continue
+        if not _resolves_under_root(p, root):
+            skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
@@ -1114,7 +1148,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
-                    total_words += count_words(md_path)
+                    total_words += _wc(md_path)
                 else:
                     skipped_sensitive.append(str(p) + " [Google Workspace export produced no readable text]")
                 continue
@@ -1125,14 +1159,14 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
-                    total_words += count_words(md_path)
+                    total_words += _wc(md_path)
                 else:
                     # Conversion failed (library not installed) - skip with note
                     skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
                 continue
             files[ftype].append(str(p))
             if ftype != FileType.VIDEO:
-                total_words += count_words(p)
+                total_words += _wc(p)
 
     for ftype in files:
         files[ftype].sort()
@@ -1166,12 +1200,40 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     }
 
 
+def _os_path(path: Path) -> str:
+    r"""Return an OS path string safe for open()/stat() on Windows long paths.
+
+    On win32, paths longer than the legacy MAX_PATH (260 chars) are rejected by
+    the plain file APIs unless prefixed with the extended-length marker ``\\?\``
+    (which also requires a fully-qualified path). Without it, _md5_file /
+    save_manifest / count_words silently fail to hash deeply-nested files, so
+    their manifest entry never stabilizes and detect_incremental re-flags them
+    as changed on every run (#1655). cache._normalize_path strips this prefix
+    for stable KEYS; this adds it for I/O. Non-win32 and already-prefixed paths
+    pass through unchanged.
+    """
+    import sys
+    if sys.platform != "win32":
+        return str(path)
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        return s
+    try:
+        s = os.path.abspath(s)  # \\?\ requires a fully-qualified path
+    except Exception:
+        return str(path)
+    if s.startswith("\\\\"):
+        # UNC share \\server\share -> \\?\UNC\server\share
+        return "\\\\?\\UNC\\" + s[2:]
+    return "\\\\?\\" + s
+
+
 def _md5_file(path: Path) -> str:
     """MD5 of file contents streamed in 64KB chunks — for change detection only."""
     import hashlib as _hl
     h = _hl.md5(usedforsecurity=False)
     try:
-        with path.open("rb") as f:
+        with open(_os_path(path), "rb") as f:
             for chunk in iter(lambda: f.read(65536), b""):
                 h.update(chunk)
     except OSError:
@@ -1183,7 +1245,7 @@ def _stat_and_hash(path_str: str) -> tuple[str, float, str] | None:
     """Stat + MD5 a single file; returns None on OSError (e.g. deleted mid-run)."""
     try:
         p = Path(path_str)
-        return path_str, p.stat().st_mtime, _md5_file(p)
+        return path_str, os.stat(_os_path(p)).st_mtime, _md5_file(p)
     except OSError:
         return None
 
@@ -1362,11 +1424,10 @@ def detect_incremental(
     Backwards compatible with legacy manifests storing plain float mtime values
     or {mtime, hash} dicts (treated as ast_hash only; semantic_hash = miss).
 
-    The ``follow_symlinks`` flag is forwarded to :func:`detect` so corpora that
-    rely on symlinked sub-trees (e.g. a ``state_of_truth/`` symlink pointing to a
-    directory outside the scan root) are scanned consistently between full and
-    incremental runs. ``None`` (default) means auto-detect: ``True`` when ``root``
-    contains at least one direct symlinked child, ``False`` otherwise.
+    The ``follow_symlinks`` flag is forwarded to :func:`detect` so in-root
+    symlinked sub-trees are scanned consistently between full and incremental
+    runs. ``None`` (default) does not follow symlinked directories; callers must
+    opt in explicitly, and resolved targets outside the scan root are skipped.
     """
     full = detect(root, follow_symlinks=follow_symlinks, google_workspace=google_workspace, extra_excludes=extra_excludes)
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
@@ -1389,7 +1450,7 @@ def detect_incremental(
         for f in file_list:
             stored = manifest.get(f)
             try:
-                current_mtime = Path(f).stat().st_mtime
+                current_mtime = os.stat(_os_path(Path(f))).st_mtime
             except Exception:
                 current_mtime = 0
 

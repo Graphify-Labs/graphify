@@ -77,7 +77,7 @@ fi
 if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
     _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
     case "$_SHEBANG" in
-        *[!a-zA-Z0-9/_.-]*) ;;
+        *[!a-zA-Z0-9/_.@-]*) ;;
         *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
     esac
 fi
@@ -151,12 +151,14 @@ Skip this step entirely if `detect` returned zero `video` files. When the corpus
 
 This step has two parts: **structural extraction** (deterministic, free) and **semantic extraction** (LLM, costs tokens).
 
-**Before dispatching subagents:** check whether `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set. If neither is set, print this one-liner to the user:
+> **graphify needs no API key. Never ask the user for one, and never block on one.** Code is extracted structurally (AST) with no LLM and no key at all — a code-only corpus (the common `/graphify .` on a repo) skips semantic extraction entirely, so it needs nothing here: go straight to Part A and skip Part B. Semantic extraction (only for docs, papers, and images) uses Gemini **only if** `GEMINI_API_KEY`/`GOOGLE_API_KEY` is already set; otherwise the host agent itself is the LLM. graphify does **not** read `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or any other provider key. If you catch yourself about to prompt for, wait on, or stop because of a missing API key, that is a misread of this skill — proceed without one.
+
+**Before semantic extraction:** check whether `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set. If neither is set, print this one-liner to the user:
 > Tip: set `GEMINI_API_KEY` or `GOOGLE_API_KEY` to use Gemini for semantic extraction (`pip install 'graphifyy[gemini]'`).
 
-Print it once, then continue. If `GEMINI_API_KEY` or `GOOGLE_API_KEY` IS set, use `graphify.llm.extract_corpus_parallel(files, backend="gemini")` for semantic extraction instead of dispatching Claude subagents. The default Gemini model is `gemini-3-flash-preview`; set `GRAPHIFY_GEMINI_MODEL` or pass `--model` in headless CLI flows to override it.
+Print it once, then continue — do not wait for the user to supply a key. If `GEMINI_API_KEY` or `GOOGLE_API_KEY` IS set, use `graphify.llm.extract_corpus_parallel(files, backend="gemini")` for semantic extraction instead of dispatching subagents. The default Gemini model is `gemini-3-flash-preview`; set `GRAPHIFY_GEMINI_MODEL` or pass `--model` in headless CLI flows to override it.
 
-> **No other API keys are read.** If `GEMINI_API_KEY`/`GOOGLE_API_KEY` are unset, fall straight through to Claude Code subagent dispatch (Part B below) — the host session itself is the LLM. graphify does **not** read `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or any other provider key from the environment. If a host agent prompts the user for `ANTHROPIC_API_KEY` to run extraction, that prompt is a misread of this skill — ignore it and dispatch subagents as written.
+> **No other API keys are read.** When `GEMINI_API_KEY`/`GOOGLE_API_KEY` are unset, semantic extraction falls to the host agent itself — the running session is the LLM. On a host that dispatches subagents (e.g. Claude Code), dispatch them as written in Part B. On a host that runs the CLI directly in a terminal and cannot dispatch subagents, do not stall: a code-only corpus has no semantic work, so write the empty semantic file (Part B "Fast path") and continue to Part C; for a corpus with docs/papers/images, either set a Gemini key or extract those inline yourself, but in no case prompt for `ANTHROPIC_API_KEY` — that prompt is a misread of this skill.
 
 **Run Part A (AST) and Part B (semantic) in parallel. Dispatch all semantic subagents AND start AST extraction in the same message. Both can run simultaneously since they operate on different file types. Merge results in Part C as before.**
 
@@ -179,7 +181,7 @@ for f in detect.get('files', {}).get('code', []):
     code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
 
 if code_files:
-    result = extract(code_files, cache_root=Path('.'))
+    result = extract(code_files, cache_root=Path('INPUT_PATH'))
     Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding=\"utf-8\")
     print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 else:
@@ -190,7 +192,15 @@ else:
 
 #### Part B - Semantic extraction (parallel subagents)
 
-**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do.
+**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input (it reads `.graphify_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
+"
+```
 
 **MANDATORY: You MUST use the Agent tool here. Reading files yourself one-by-one is forbidden - it is 5-10x slower. If you do not use the Agent tool you are doing this wrong.**
 
@@ -211,12 +221,19 @@ from graphify.cache import check_semantic_cache
 from pathlib import Path
 
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
-all_files = [f for files in detect['files'].values() for f in files]
+# Only content files go to semantic extraction. Code is already covered structurally
+# by the AST pass (Part A); flattening every category here makes subagents re-read
+# every source file (#1392). Video is transcribed to a document in Step 2.5 first.
+all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
 
-cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files)
+cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH')
 
+# Always (re)write the cache file: write hits, else DELETE any leftover from a prior
+# run so Part C never merges a stale .graphify_cached.json (#1392).
 if cached_nodes or cached_edges or cached_hyperedges:
     Path('graphify-out/.graphify_cached.json').write_text(json.dumps({'nodes': cached_nodes, 'edges': cached_edges, 'hyperedges': cached_hyperedges}, ensure_ascii=False), encoding=\"utf-8\")
+else:
+    Path('graphify-out/.graphify_cached.json').unlink(missing_ok=True)
 Path('graphify-out/.graphify_uncached.txt').write_text('\n'.join(uncached), encoding=\"utf-8\")
 print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
 "
@@ -246,7 +263,7 @@ Each subagent receives this exact prompt (substitute FILE_LIST, CHUNK_NUM, TOTAL
 
 CHUNK_PATH must be an **absolute** path — derive it before dispatching:
 ```bash
-PROJECT_ROOT=$(cat graphify-out/.graphify_root)
+PROJECT_ROOT=$(pwd)  # cwd — where Part C globs graphify-out/ (NOT .graphify_root/scan dir, #1392)
 # Then for chunk N: CHUNK_PATH="${PROJECT_ROOT}/graphify-out/.graphify_chunk_0N.json"
 ```
 
@@ -296,7 +313,7 @@ from graphify.cache import save_semantic_cache
 from pathlib import Path
 
 new = json.loads(Path('graphify-out/.graphify_semantic_new.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []))
+saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root='INPUT_PATH')
 print(f'Cached {saved} files')
 "
 ```
@@ -369,7 +386,7 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ### Step 4 - Build graph, cluster, analyze, generate outputs
 
-**Before starting:** note whether `--directed` was given. If so, pass `directed=True` to `build_from_json()` in the code block below. This builds a `DiGraph` that preserves edge direction (source→target) instead of the default undirected `Graph`.
+**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source→target), otherwise `False` (the default undirected `Graph`). Substitute it the same way you substitute `INPUT_PATH` — do not leave the literal `IS_DIRECTED` in the code.
 
 ```bash
 mkdir -p graphify-out
@@ -387,7 +404,13 @@ detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text(enc
 
 # root= mirrors the --update runbook (#1361): relativize source_file to the same
 # base so the full build and incremental --update never drift apart on re-extract.
-G = build_from_json(extraction, root='INPUT_PATH')
+G = build_from_json(extraction, root='INPUT_PATH', directed=IS_DIRECTED)
+# Guard BEFORE any write: an empty extraction must not clobber a good graph.json /
+# GRAPH_REPORT.md / analysis sidecar. Check immediately after build (#1392).
+if G.number_of_nodes() == 0:
+    print('ERROR: Graph is empty - extraction produced no nodes.')
+    print('Possible causes: all files were skipped, binary-only corpus, or extraction failed.')
+    raise SystemExit(1)
 communities = cluster(G)
 cohesion = score_all(G, communities)
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
@@ -397,10 +420,17 @@ labels = {cid: 'Community ' + str(cid) for cid in communities}
 # Placeholder questions - regenerated with real labels in Step 5
 questions = suggest_questions(G, communities, labels)
 
-report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, '.', suggested_questions=questions)
+# Export FIRST and honor the #479 shrink-guard: to_json returns False (writing
+# nothing) when the new graph is smaller than the existing graph.json. Only write
+# GRAPH_REPORT.md + the analysis sidecar when the graph was actually written, so
+# they never describe a graph that graph.json doesn't contain (#1392).
+wrote = to_json(G, communities, 'graphify-out/graph.json')
+if not wrote:
+    print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
+    print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
+    raise SystemExit(1)
+report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
-to_json(G, communities, 'graphify-out/graph.json')
-
 analysis = {
     'communities': {str(k): v for k, v in communities.items()},
     'cohesion': {str(k): v for k, v in cohesion.items()},
@@ -409,10 +439,6 @@ analysis = {
     'questions': questions,
 }
 Path('graphify-out/.graphify_analysis.json').write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-if G.number_of_nodes() == 0:
-    print('ERROR: Graph is empty - extraction produced no nodes.')
-    print('Possible causes: all files were skipped, binary-only corpus, or extraction failed.')
-    raise SystemExit(1)
 print(f'Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {len(communities)} communities')
 "
 ```
@@ -420,6 +446,32 @@ print(f'Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {len(co
 If this step prints `ERROR: Graph is empty`, stop and tell the user what happened - do not proceed to labeling or visualization.
 
 Replace INPUT_PATH with the actual path.
+
+### Step 4.5 - Graph health check (read-only integrity gate)
+
+A non-destructive diagnostic on the extraction, before labeling. It surfaces edge collapse, dangling/missing endpoints, and self-loops — the silent-corruption modes of incremental updates and AST/LLM id mismatches. Read-only; never aborts.
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+from graphify.diagnostics import diagnose_extraction, format_diagnostic_report
+
+extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
+summary = diagnose_extraction(extraction, directed=IS_DIRECTED, root='INPUT_PATH')
+print(format_diagnostic_report(summary))
+flags = [f'{summary[k]} {label}' for k, label in (
+    ('dangling_endpoint_edges', 'dangling-endpoint edges'),
+    ('missing_endpoint_edges', 'missing-endpoint edges'),
+    ('self_loop_edges', 'self-loop edges'),
+    ('directed_same_endpoint_collapsed_edges', 'collapsed (directed) edges'),
+    ('undirected_same_endpoint_collapsed_edges', 'collapsed (undirected) edges'),
+) if summary.get(k, 0)]
+print('GRAPH HEALTH WARNING: ' + '; '.join(flags) + ' - graph may be incomplete/corrupt.' if flags else 'Graph health: OK (no dangling/missing/collapsed edges).')
+"
+```
+
+Substitute `IS_DIRECTED` and `INPUT_PATH` as in Step 4. If a `GRAPH HEALTH WARNING` prints, surface it in the final summary (do not abort — the graph is still usable, but the integrity issue must be visible, per the Honesty Rules).
 
 ### Step 5 - Label communities
 
@@ -441,7 +493,7 @@ detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text(enc
 analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text(encoding=\"utf-8\"))
 
 # root= as in Step 4 / the --update runbook (#1361) — same base for node-key parity.
-G = build_from_json(extraction, root='INPUT_PATH')
+G = build_from_json(extraction, root='INPUT_PATH', directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
@@ -452,7 +504,7 @@ labels = LABELS_DICT
 # Regenerate questions with real community labels (labels affect question phrasing)
 questions = suggest_questions(G, communities, labels)
 
-report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, '.', suggested_questions=questions)
+report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)
 Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
 Path('graphify-out/.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding=\"utf-8\")
 print('Report updated with community labels')
@@ -501,7 +553,10 @@ from graphify.detect import save_manifest
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
 # In --update mode, 'all_files' carries the full corpus; 'files' is the changed
 # subset. Full-rebuild mode populates only 'files', so the fallback handles that.
-save_manifest(detect.get('all_files') or detect['files'])
+# root= relativizes the manifest keys to the scan root (same base as the build),
+# so the on-disk manifest is portable across clones/machines and a later --update
+# matches cached files instead of missing every one (#1417).
+save_manifest(detect.get('all_files') or detect['files'], root='INPUT_PATH')
 
 # Update cumulative cost tracker
 extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
@@ -531,6 +586,8 @@ rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json gra
 find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
 rm -f graphify-out/.needs_update 2>/dev/null || true
 ```
+
+Replace INPUT_PATH with the actual path (same value used in Steps 4-5) so the manifest is relativized to the scan root.
 
 Tell the user (omit the obsidian line unless --obsidian was given):
 ```
@@ -572,7 +629,7 @@ if [ ! -f graphify-out/.graphify_python ]; then
     GRAPHIFY_BIN=$(which graphify 2>/dev/null)
     if [ -n "$GRAPHIFY_BIN" ]; then
         PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.-]*) PYTHON="python3" ;; esac
+        case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
     else
         PYTHON="python3"
     fi

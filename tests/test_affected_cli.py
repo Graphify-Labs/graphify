@@ -174,3 +174,97 @@ def test_resolve_seed_bare_name_tie_still_returns_none():
     graph.add_node("b", label="dup()", source_file="pkg/two.py")
 
     assert resolve_seed(graph, "dup") is None
+
+
+def test_resolve_seed_source_file_path_prefers_file_level_node():
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    source_file = "app/api/example/route.ts"
+    graph.add_node(
+        "example_route_get",
+        label="GET()",
+        source_file=source_file,
+        source_location="L42",
+    )
+    graph.add_node(
+        "example_route",
+        label="route.ts",
+        source_file=source_file,
+        source_location="L1",
+    )
+
+    assert resolve_seed(graph, source_file) == "example_route"
+
+
+def test_resolve_seed_source_file_trailing_slash_parity():
+    """A trailing path separator must not change the match (parity with explain's
+    _find_node, which tokenizes the path and drops the slash)."""
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    source_file = "app/api/example/route.ts"
+    graph.add_node("get", label="GET()", source_file=source_file, source_location="L42")
+    graph.add_node("file", label="route.ts", source_file=source_file, source_location="L1")
+
+    assert resolve_seed(graph, source_file + "/") == "file"
+
+
+def test_resolve_seed_source_file_ambiguous_no_file_node_returns_none():
+    """Several nodes share a source_file but none is the L1 file node and none's
+    basename matches the path — must not guess; return None."""
+    from graphify.affected import resolve_seed
+
+    graph = nx.DiGraph()
+    source_file = "pkg/handlers.py"
+    graph.add_node("a", label="handle_a()", source_file=source_file, source_location="L10")
+    graph.add_node("b", label="handle_b()", source_file=source_file, source_location="L20")
+
+    assert resolve_seed(graph, source_file) is None
+
+
+def test_affected_cli_source_file_path_uses_file_level_node(monkeypatch, tmp_path, capsys):
+    graph = nx.DiGraph()
+    source_file = "app/api/example/route.ts"
+    graph.add_node(
+        "example_route_get",
+        label="GET()",
+        source_file=source_file,
+        source_location="L42",
+    )
+    graph.add_node(
+        "example_route",
+        label="route.ts",
+        source_file=source_file,
+        source_location="L1",
+    )
+    graph.add_node(
+        "consumer",
+        label="consumer.ts",
+        source_file="app/consumer.ts",
+        source_location="L1",
+    )
+    graph.add_edge(
+        "consumer",
+        "example_route",
+        relation="imports_from",
+        context="import",
+        confidence="EXTRACTED",
+    )
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(json_graph.node_link_data(graph, edges="links")), encoding="utf-8")
+
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "affected", source_file, "--graph", str(graph_path)],
+    )
+
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    assert "Affected nodes for route.ts" in out
+    assert "consumer.ts" in out
+    assert "imports_from" in out
+    assert "No unique node matched" not in out

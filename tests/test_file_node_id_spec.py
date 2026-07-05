@@ -25,7 +25,8 @@ def _file_nodes(extraction: dict) -> list[dict]:
 
 
 def test_file_node_id_uses_parent_dir_and_stem_no_extension(tmp_path):
-    """match/script/pipeline_step.py -> file node id 'script_pipeline_step'."""
+    """match/script/pipeline_step.py -> file node id 'match_script_pipeline_step'
+    (full repo-relative path, #1504)."""
     sub = tmp_path / "match" / "script"
     sub.mkdir(parents=True)
     f = sub / "pipeline_step.py"
@@ -34,8 +35,8 @@ def test_file_node_id_uses_parent_dir_and_stem_no_extension(tmp_path):
     extraction = extract([f], cache_root=tmp_path)
     ids = {n["id"] for n in extraction["nodes"]}
 
-    assert "script_pipeline_step" in ids, (
-        f"expected spec-format file id 'script_pipeline_step', got {sorted(ids)}"
+    assert "match_script_pipeline_step" in ids, (
+        f"expected full-path file id 'match_script_pipeline_step', got {sorted(ids)}"
     )
     # The old buggy full-path-with-extension id must be gone.
     assert "match_script_pipeline_step_py" not in ids
@@ -104,16 +105,16 @@ def test_symbol_and_file_ids_share_the_same_stem(tmp_path):
     extraction = extract([f], cache_root=tmp_path)
     ids = {n["id"] for n in extraction["nodes"]}
 
-    assert "script_pipeline_step" in ids          # file node
-    assert "script_pipeline_step_stage" in ids     # class symbol shares stem
+    assert "match_script_pipeline_step" in ids          # file node
+    assert "match_script_pipeline_step_stage" in ids     # class symbol shares stem
 
     # The file -> class 'contains' edge must reference the real file node id.
     contains = [
         e for e in extraction["edges"]
-        if e["relation"] == "contains" and e["target"] == "script_pipeline_step_stage"
+        if e["relation"] == "contains" and e["target"] == "match_script_pipeline_step_stage"
     ]
     assert contains, "no 'contains' edge to the class symbol"
-    assert contains[0]["source"] == "script_pipeline_step", (
+    assert contains[0]["source"] == "match_script_pipeline_step", (
         f"contains edge source {contains[0]['source']!r} does not match file node"
     )
 
