@@ -474,7 +474,23 @@ Substitute `IS_DIRECTED` and `INPUT_PATH` as in Step 4. If a `GRAPH HEALTH WARNI
 
 Read `graphify-out/.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
 
+**At scale (100+ communities), do NOT hand-label one at a time and do NOT fall back to a naive path-prefix heuristic (e.g. title-casing the common directory prefix).** Both break down past a handful of communities — the heuristic in particular produces duplicated-segment junk ("Backend Backend", "Frontend Frontend") and word-soup names that look plausible until you actually read them. Verified in production on a 1000+ community monorepo graph (apa, 2026-07-03): a heuristic pass needed a full redo.
+
+What works instead, for communities with >=20 nodes (the ones that actually surface in God Nodes / navigation):
+1. For each such community, sample its ~15 highest-degree (most connected) member nodes — not the full member list, communities can have 300+ nodes.
+2. Batch communities into groups of ~15-20 per subagent (write each batch's samples to a small JSON file under `graphify-out/`).
+3. Dispatch one `general-purpose` subagent per batch (all in the same message, in parallel — same pattern as Step 3 Part B), each told to read its batch file and write a JSON `{community_id: name}` map based on genuine reasoning about the sampled node labels/paths, not just repeating directory names.
+4. Merge all batch results.
+
+For the long tail of small communities (<20 nodes) where subagent cost isn't justified, a path-prefix heuristic is an acceptable lighter-weight fallback — but dedupe repeated words/segments, strip trailing file extensions, and spot-check a random sample of ~15 outputs across different sizes before trusting it. If duplicated-word or generic ("Community N") names appear in the sample, fix the heuristic before applying it to the rest.
+
 Then regenerate the report and save the labels for the visualizer:
+
+**Reconcile the FULL label set for cross-batch duplicates before regenerating the report — this is a required final pass, not optional polish.** Subagent batches only see their own slice and the small-community heuristic naturally collapses siblings from the same directory (e.g. many different test-file clusters under the same folder), so duplicates are expected even after the steps above — verified in production: 338 of 1083 communities (31%) shared a label with at least one other community before reconciliation (apa monorepo, 2026-07-03). After all labels are assembled:
+1. Group community IDs by their current label.
+2. For every group with >1 member, pick a distinguishing keyword from each member's OWN node labels (word-frequency count, excluding stopwords and words already in the shared base label) and append it, e.g. `"Agent Gateway MCP Client" -> "Agent Gateway MCP Client — Server"` / `"— Additional"`.
+3. If a collision still remains after that (rare — e.g. multiple communities extracted from the very same source image), append a numeric suffix `" (1)"`, `" (2)"` as a last resort.
+4. Re-check for zero duplicates before moving on.
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -530,6 +546,8 @@ Generate the HTML graph (always, unless `--no-viz`):
 graphify export html  # auto-aggregates to community view if graph > 5000 nodes
 # or: graphify export html --no-viz
 ```
+
+**If the resulting view (aggregated community graph, or the raw graph for small corpora) has more than ~300 nodes, ALSO generate a Sigma.js + graphology version and present that as the primary interactive file instead of vis-network's `graph.html`.** vis-network runs a live single-threaded JS forceAtlas2 physics simulation on load (200 iterations before it disables itself) — verified in production this is genuinely slow/laggy past a few hundred nodes (apa monorepo, 1083-community aggregated view, 2026-07-03), independent of hardware. Sigma.js (WebGL rendering) with the layout **precomputed offline in Python** (`nx.forceatlas2_layout`, no client-side physics at all) fixes this at the root rather than swapping one JS physics engine for another. See `references/sigma-viz.md` for the full recipe (meta-graph construction, offline layout, self-contained HTML template loading sigma/graphology from esm.sh). Below the 300-node threshold, vis-network's `graph.html` is fine as-is — the extra build step isn't worth it.
 
 ### Steps 6b-8 - Wiki, Neo4j, FalkorDB, SVG, GraphML, MCP, benchmark (only on their flags)
 
