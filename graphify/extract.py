@@ -868,6 +868,69 @@ def _java_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     return frozenset(names)
 
 
+# java.lang (auto-imported) plus the ubiquitous java.util / java.io / java.time /
+# java.util.{stream,function,concurrent} / java.math / java.nio.file types that
+# appear as field, parameter, return, and generic-argument annotations. They never
+# resolve to a project node, so emitting `references` edges to them is pure noise
+# (mirrors _GO_PREDECLARED_TYPES / _PYTHON_ANNOTATION_NOISE). Suppressed at the
+# type-ref walker so they are never created as nodes or emitted as edges. The
+# boxed-scalar/`void` primitives are already dropped by grammar node type above;
+# these are the class/interface names the grammar reports as identifiers.
+_JAVA_BUILTIN_TYPES = frozenset({
+    # java.lang — core
+    "Object", "String", "CharSequence", "StringBuilder", "StringBuffer",
+    "Number", "Byte", "Short", "Integer", "Long", "Float", "Double",
+    "Boolean", "Character", "Void", "Class", "Enum", "Record", "Math",
+    "System", "Thread", "Runnable", "Comparable", "Iterable", "Cloneable",
+    "AutoCloseable", "Appendable", "Readable", "Process", "ProcessBuilder",
+    "Runtime", "Package", "ThreadLocal", "InheritableThreadLocal",
+    # java.lang — throwables
+    "Throwable", "Exception", "RuntimeException", "Error",
+    "IllegalArgumentException", "IllegalStateException", "NullPointerException",
+    "IndexOutOfBoundsException", "ArrayIndexOutOfBoundsException",
+    "ClassCastException", "NumberFormatException", "ArithmeticException",
+    "UnsupportedOperationException", "InterruptedException",
+    "CloneNotSupportedException", "SecurityException", "StackOverflowError",
+    "OutOfMemoryError", "AssertionError",
+    # java.util — collections & core
+    "Collection", "List", "ArrayList", "LinkedList", "Vector", "Stack",
+    "Set", "HashSet", "LinkedHashSet", "TreeSet", "SortedSet", "NavigableSet",
+    "EnumSet", "Map", "HashMap", "LinkedHashMap", "TreeMap", "SortedMap",
+    "NavigableMap", "Hashtable", "EnumMap", "Properties", "Queue", "Deque",
+    "ArrayDeque", "PriorityQueue", "Iterator", "ListIterator", "Comparator",
+    "Optional", "OptionalInt", "OptionalLong", "OptionalDouble", "Collections",
+    "Arrays", "Objects", "Date", "Calendar", "Random", "UUID", "Scanner",
+    "StringJoiner", "StringTokenizer", "BitSet", "Spliterator", "Locale",
+    "NoSuchElementException", "ConcurrentModificationException",
+    # java.util.stream
+    "Stream", "IntStream", "LongStream", "DoubleStream", "Collector",
+    "Collectors",
+    # java.util.function
+    "Function", "BiFunction", "Consumer", "BiConsumer", "Supplier",
+    "Predicate", "BiPredicate", "UnaryOperator", "BinaryOperator",
+    "IntFunction", "ToIntFunction", "ToLongFunction", "ToDoubleFunction",
+    # java.util.concurrent
+    "Callable", "Future", "CompletableFuture", "CompletionStage", "Executor",
+    "ExecutorService", "Executors", "ScheduledExecutorService", "TimeUnit",
+    "ConcurrentHashMap", "ConcurrentMap", "CopyOnWriteArrayList",
+    "BlockingQueue", "CountDownLatch", "Semaphore", "CyclicBarrier",
+    "AtomicInteger", "AtomicLong", "AtomicBoolean", "AtomicReference",
+    # java.time
+    "Instant", "Duration", "Period", "LocalDate", "LocalTime", "LocalDateTime",
+    "ZonedDateTime", "OffsetDateTime", "ZoneId", "ZoneOffset", "DayOfWeek",
+    "Month", "Year", "Clock", "DateTimeFormatter",
+    # java.io / java.nio.file
+    "IOException", "UncheckedIOException", "FileNotFoundException", "File",
+    "InputStream", "OutputStream", "Reader", "Writer", "BufferedReader",
+    "BufferedWriter", "InputStreamReader", "OutputStreamWriter", "FileReader",
+    "FileWriter", "PrintStream", "PrintWriter", "ByteArrayInputStream",
+    "ByteArrayOutputStream", "Serializable", "Closeable", "Path", "Paths",
+    "Files",
+    # java.math
+    "BigDecimal", "BigInteger",
+})
+
+
 def _java_collect_type_refs(
     node,
     source: bytes,
@@ -885,19 +948,23 @@ def _java_collect_type_refs(
         return
     if t == "type_identifier":
         name = _read_text(node, source)
-        if name and name not in skip:
+        if name and name not in skip and name not in _JAVA_BUILTIN_TYPES:
             out.append((name, "generic_arg" if generic else "type"))
         return
     if t == "scoped_type_identifier":
         text = _read_text(node, source).rsplit(".", 1)[-1]
-        if text:
+        if text and text not in _JAVA_BUILTIN_TYPES:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "generic_type":
         for c in node.children:
             if c.type in ("type_identifier", "scoped_type_identifier"):
                 text = _read_text(c, source).rsplit(".", 1)[-1]
-                if text and (c.type == "scoped_type_identifier" or text not in skip):
+                if (
+                    text
+                    and text not in _JAVA_BUILTIN_TYPES
+                    and (c.type == "scoped_type_identifier" or text not in skip)
+                ):
                     out.append((text, "generic_arg" if generic else "type"))
                 break
         for c in node.children:
@@ -1771,7 +1838,17 @@ def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | Non
     module_name = raw.split("/")[-1]
     if not module_name:
         return None
-    return _make_id(module_name), None
+    # Unresolved: relative/absolute, tsconfig-alias and workspace resolution have
+    # all run and failed, so this is an external package (or a dangling local
+    # path). Namespace the id with the "ref" prefix — the J-4 convention already
+    # used for tsconfig `extends`/`$ref` externals — so it can NEVER collapse to
+    # the same _make_id as a local file/symbol node. Without it, the bare
+    # last-segment id (e.g. "tailwindcss/colors" -> "colors") collides with any
+    # unrelated local file of that stem via build.py's pre-migration alias index,
+    # producing a confident (EXTRACTED) cross-language phantom imports_from edge
+    # (#1638). The ref-namespaced target has no node, so build drops it as an
+    # external reference — the correct outcome for a third-party import.
+    return _make_id("ref", raw), None
 
 
 def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
@@ -1922,8 +1999,13 @@ def _dynamic_import_js(node, source: bytes, caller_nid: str, str_path: str, edge
             edges.append({
                 "source": caller_nid,
                 "target": tgt_nid,
+                # A deferred `import(...)` is a real dependency, so keep it as an
+                # `imports_from` edge (visible in the graph) but mark it `deferred`
+                # so find_import_cycles does not treat it as a static import and
+                # report a phantom file cycle (#1241).
                 "relation": "imports_from",
                 "context": "import",
+                "deferred": True,
                 "confidence": "EXTRACTED",
                 "source_file": str_path,
                 "source_location": f"L{node.start_point[0] + 1}",
@@ -2338,6 +2420,55 @@ def _csharp_member_type_table(root, source: bytes) -> dict[str, str]:
         for c in n.children:
             stack.append(c)
     return table
+
+
+def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
+    """Add TS/JS receiver bindings to ``table`` (name -> TypeName), for member-call
+    resolution beyond the constructor-injected `this.field` case (#1630):
+
+      * local ``const/let/var x = new Foo()`` -> ``x: Foo`` (Pattern A);
+      * a type-annotated parameter ``(svc: Svc)`` -> ``svc: Svc`` (Pattern B), so a
+        call on the param — including inside a returned closure — resolves.
+
+    File-scoped, first-binding-wins (merged into the constructor-injection table,
+    which is populated first and therefore wins on a name clash). Only a bare
+    ``type_identifier`` (a single class/interface name) is recorded — an array,
+    union, generic, qualified, or predefined type is skipped (precision over
+    recall, matching the receiver-typed resolvers for Swift/C#/C++)."""
+    def _bare_type_ident(type_annotation):
+        # type_annotation -> ": T"; accept only a single type_identifier child.
+        idents = [c for c in type_annotation.children if c.type == "type_identifier"]
+        others = [c for c in type_annotation.children
+                  if c.is_named and c.type not in ("type_identifier",)]
+        if len(idents) == 1 and not others:
+            return _read_text(idents[0], source)
+        return None
+
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        t = n.type
+        if t == "variable_declarator":
+            name_n = n.child_by_field_name("name")
+            value = n.child_by_field_name("value")
+            if (name_n is not None and name_n.type == "identifier"
+                    and value is not None and value.type == "new_expression"):
+                ctor = value.child_by_field_name("constructor")
+                if ctor is not None and ctor.type in ("identifier", "type_identifier"):
+                    name = _read_text(name_n, source)
+                    tname = _read_text(ctor, source)
+                    if name and tname and name not in table:
+                        table[name] = tname
+        elif t == "required_parameter" or t == "optional_parameter":
+            pat = n.child_by_field_name("pattern")
+            ann = n.child_by_field_name("type")
+            if pat is not None and pat.type == "identifier" and ann is not None:
+                tname = _bare_type_ident(ann)
+                name = _read_text(pat, source)
+                if name and tname and name not in table:
+                    table[name] = tname
+        for c in n.children:
+            stack.append(c)
 
 
 def _objc_local_var_types(body_node, source: bytes, table: dict[str, str]) -> None:
@@ -2934,7 +3065,12 @@ _CPP_CONFIG = LanguageConfig(
 
 _RUBY_CONFIG = LanguageConfig(
     ts_module="tree_sitter_ruby",
-    class_types=frozenset({"class"}),
+    # `module Foo` is a container node just like `class Foo` in tree-sitter's
+    # Ruby grammar (name in a `constant` child, body in `body_statement`), so it
+    # gets a node and its methods attach via `method` (#1640). Without it, plain
+    # utility/`module_function` modules produced no node and their methods hung
+    # off the file via `contains` with dot-less labels.
+    class_types=frozenset({"class", "module"}),
     function_types=frozenset({"method", "singleton_method"}),
     import_types=frozenset(),
     call_types=frozenset({"call"}),
@@ -3224,6 +3360,92 @@ def _ruby_local_class_bindings(body_node, source: bytes) -> dict[str, str | None
     return bindings
 
 
+def _ruby_const_last_name(node, source: bytes) -> str:
+    """Last constant of a ``constant`` or ``scope_resolution`` (``A::B::C`` -> ``C``)."""
+    if node is None:
+        return ""
+    if node.type == "constant":
+        return _read_text(node, source)
+    if node.type == "scope_resolution":
+        consts = [c for c in node.children if c.type == "constant"]
+        if consts:
+            return _read_text(consts[-1], source)
+    return ""
+
+
+# `Const = <factory>(...)` shapes that define a lightweight class named after the
+# constant. tree-sitter parses each as an `assignment`, not a `class`, so the
+# generic class branch never saw them (#1640).
+_RUBY_CLASS_FACTORIES = frozenset({("Struct", "new"), ("Class", "new"), ("Data", "define")})
+
+
+def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                     nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                     parent_class_nid: str | None, add_node, add_edge, walk,
+                     callable_def_nids: set) -> bool:
+    """Ruby: a constant assignment whose RHS is ``Struct.new(...)``,
+    ``Class.new(Super)`` or ``Data.define(...)`` defines a class named after the
+    constant (#1640). Synthesize the class node, attach block-defined methods via
+    ``method`` (by recursing the block with the new node as parent), and emit an
+    ``inherits`` edge for ``Class.new(Super)``. Returns True if handled.
+    """
+    if node.type != "assignment":
+        return False
+    left = node.child_by_field_name("left")
+    right = node.child_by_field_name("right")
+    if left is None or right is None or left.type != "constant" or right.type != "call":
+        return False
+    recv = right.child_by_field_name("receiver")
+    meth = right.child_by_field_name("method")
+    if recv is None or meth is None or recv.type != "constant":
+        return False
+    if (_read_text(recv, source), _read_text(meth, source)) not in _RUBY_CLASS_FACTORIES:
+        return False
+
+    const_name = _read_text(left, source)
+    if not const_name:
+        return False
+    line = node.start_point[0] + 1
+    class_nid = _make_id(stem, const_name)
+    add_node(class_nid, const_name, line)
+    callable_def_nids.add(class_nid)  # a class is callable (its constructor)
+    # Mirror the generic class branch: containment always hangs off the file node.
+    add_edge(file_nid, class_nid, "contains", line)
+
+    # `Class.new(Super)` — the first positional constant argument is the superclass.
+    if _read_text(recv, source) == "Class":
+        args = next((c for c in right.children if c.type == "argument_list"), None)
+        if args is not None:
+            for arg in args.children:
+                if arg.type in ("constant", "scope_resolution"):
+                    base = _ruby_const_last_name(arg, source)
+                    if base:
+                        base_nid = _make_id(stem, base)
+                        if base_nid not in seen_ids:
+                            base_nid = _make_id(base)
+                            if base_nid not in seen_ids:
+                                nodes.append({
+                                    "id": base_nid, "label": base,
+                                    "file_type": "code", "source_file": "",
+                                    "source_location": "",
+                                })
+                                seen_ids.add(base_nid)
+                        add_edge(class_nid, base_nid, "inherits", line)
+                    break
+
+    # Recurse the do/brace block so block-defined methods attach to the class.
+    # The block wraps its statements in a `body_statement` (like a class body);
+    # descend into it so the method handler sees parent_class_nid — otherwise the
+    # default recurse resets the parent to None and the method hangs off the file
+    # with a dot-less label.
+    block = next((c for c in right.children if c.type in ("do_block", "block")), None)
+    if block is not None:
+        body = next((c for c in block.children if c.type == "body_statement"), block)
+        for child in body.children:
+            walk(child, parent_class_nid=class_nid)
+    return True
+
+
 # ── Generic extractor ─────────────────────────────────────────────────────────
 
 def _extract_generic(
@@ -3295,6 +3517,10 @@ def _extract_generic(
     # `let vm = VM()`) live outside function bodies, so the call-walk never
     # reaches them. Collect (owner_nid, call_node) here and walk them too.
     initializer_nodes: list[tuple[str, object]] = []
+    # Ruby include/extend/prepend mixins collected during the node walk (#1668),
+    # merged into raw_calls after the call-walk populates it (raw_calls does not
+    # exist yet while walk() runs). Resolved cross-file by the Ruby resolver.
+    _ruby_mixin_calls: list[dict] = []
     # #1356: per-file map of local name -> declared type (properties + params),
     # threaded out as `swift_type_table` so member calls (`vm.update()`) can be
     # resolved to the receiver's real definition in _resolve_swift_member_calls.
@@ -3589,6 +3815,17 @@ def _extract_generic(
                             if sub.type == "user_type":
                                 user_type_node = sub
                                 break
+                            # `class Foo : Bar by baz` wraps the delegated
+                            # interface `Bar` in an `explicit_delegation`
+                            # node; grab its first `user_type` descendant so
+                            # the implements edge (and generic-arg recovery)
+                            # still fire.
+                            if sub.type == "explicit_delegation":
+                                for inner in sub.children:
+                                    if inner.type == "user_type":
+                                        user_type_node = inner
+                                        break
+                                break
                         if user_type_node is None:
                             continue
                         base = _kotlin_user_type_name(user_type_node, source)
@@ -3652,6 +3889,36 @@ def _extract_generic(
                                 })
                                 seen_ids.add(base_nid)
                         add_edge(class_nid, base_nid, "inherits", line)
+
+                # `include`/`extend`/`prepend <Const>` in the class/module body ->
+                # a `mixes_in` edge to the module (#1668). The module usually lives
+                # in another file, so defer resolution to the cross-file Ruby
+                # resolver (reusing the #1634 candidate logic and the #1640 module
+                # nodes as targets). Only bare/namespaced constant arguments count;
+                # `extend self`, `include some_var`, etc. are skipped.
+                _rb_body = _find_body(node, config)
+                if _rb_body is not None:
+                    for _stmt in _rb_body.children:
+                        if _stmt.type != "call" or _stmt.child_by_field_name("receiver") is not None:
+                            continue
+                        _m = _stmt.child_by_field_name("method")
+                        if _m is None or _read_text(_m, source) not in ("include", "extend", "prepend"):
+                            continue
+                        _args = _stmt.child_by_field_name("arguments")
+                        if _args is None:
+                            continue
+                        for _arg in _args.children:
+                            if _arg.type not in ("constant", "scope_resolution"):
+                                continue
+                            _mod = _ruby_const_last_name(_arg, source)
+                            if _mod:
+                                _ruby_mixin_calls.append({
+                                    "caller_nid": class_nid,
+                                    "callee": _mod,
+                                    "is_mixin": True,
+                                    "source_file": str_path,
+                                    "source_location": f"L{_stmt.start_point[0] + 1}",
+                                })
 
             # C#-specific: inheritance / interface implementation via base_list
             if config.ts_module == "tree_sitter_c_sharp":
@@ -4588,6 +4855,13 @@ def _extract_generic(
                                   ensure_named_node):
                 return
 
+        if config.ts_module == "tree_sitter_ruby":
+            if _ruby_extra_walk(node, source, file_nid, stem, str_path,
+                                nodes, edges, seen_ids, function_bodies,
+                                parent_class_nid, add_node, add_edge, walk,
+                                callable_def_nids):
+                return
+
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the
         # inner function_definition in a `decorated_definition` node. The
         # default recurse below clears parent_class_nid, which would cause the
@@ -4775,8 +5049,23 @@ def _extract_generic(
             return None
         return _read_text(scope, source)
 
+    _tracked_body_ids: set[int] = set()
+    _JS_CLOSURE_TYPES = ("arrow_function", "function_expression")
+
     def walk_calls(node, caller_nid: str) -> None:
         if node.type in config.function_boundary_types:
+            # JS/TS: an inline/returned closure not separately tracked in
+            # function_bodies would otherwise drop its calls at this boundary.
+            # Descend into it with the enclosing caller so `return () =>
+            # svc.doThing()` links to the caller (#1630). Tracked closures
+            # (const-assigned arrows) are walked with their own nid — skip to
+            # avoid double-counting.
+            if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                    and node.type in _JS_CLOSURE_TYPES):
+                body = node.child_by_field_name("body")
+                if body is not None and id(body) not in _tracked_body_ids:
+                    for child in node.children:
+                        walk_calls(child, caller_nid)
             return
 
         if node.type in config.call_types:
@@ -4957,6 +5246,11 @@ def _extract_generic(
                     is_member_call = True
                     if recv.type in ("identifier", "constant"):
                         member_receiver = _read_text(recv, source)
+                    elif recv.type == "scope_resolution":
+                        # Namespaced receiver `Billing::Processor.call` — capture the
+                        # last constant so cross-file resolution can bind it by the
+                        # bare class name (the god-node guard bails if ambiguous).
+                        member_receiver = _ruby_const_last_name(recv, source) or None
             else:
                 # Generic: get callee from call_function_field
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
@@ -5282,6 +5576,14 @@ def _extract_generic(
         for _caller_nid, body_node in function_bodies:
             _swift_local_var_types(body_node, source, type_table)
 
+    # JS/TS: bodies already walked with their own caller_nid (const-assigned
+    # arrows, methods). An INLINE/returned arrow or function-expression that is
+    # NOT separately tracked (e.g. `return () => svc.doThing()`) is otherwise
+    # skipped at the arrow boundary in walk_calls, losing its calls — so let
+    # walk_calls descend into such untracked closures with the enclosing caller
+    # (#1630 Pattern B). Guarding on the tracked set prevents double-walking.
+    _tracked_body_ids.update(id(b) for _, b in function_bodies)
+
     for caller_nid, body_node in function_bodies:
         walk_calls(body_node, caller_nid)
 
@@ -5375,6 +5677,10 @@ def _extract_generic(
         if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from", "re_exports")):
             clean_edges.append(edge)
 
+    # Ruby mixins were collected during the node walk (before raw_calls existed);
+    # fold them in so the cross-file resolver sees them (#1668).
+    if _ruby_mixin_calls:
+        raw_calls.extend(_ruby_mixin_calls)
     result = {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
     if callable_def_nids:
         # Mark function / method / class defs with a `_callable` attribute so the
@@ -5388,6 +5694,13 @@ def _extract_generic(
                 n["_callable"] = True
     if swift_extensions:
         result["swift_extensions"] = swift_extensions
+    # TS/JS: augment the constructor-injection type table with local `new`
+    # bindings and type-annotated parameters, so `const s = new Svc(); s.m()` and
+    # a call on a typed param (incl. inside a closure) resolve (#1630). The
+    # constructor-injection entries are populated during the walk above and win on
+    # a name clash (first-binding-wins in the helper).
+    if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+        _ts_receiver_type_table(root, source, type_table)
     if type_table:
         if config.ts_module == "tree_sitter_swift":
             result["swift_type_table"] = {"path": str_path, "table": type_table}
@@ -5553,7 +5866,114 @@ def extract_js(path: Path) -> dict:
         config = _TS_CONFIG
     else:
         config = _JS_CONFIG
-    return _extract_generic(path, config)
+    result = _extract_generic(path, config)
+    if "error" not in result:
+        _extract_js_rationale(path, result)
+    return result
+
+
+# ── JS/TS rationale + doc-reference extraction ────────────────────────────────
+#
+# Parity with _extract_python_rationale: Python files get rationale nodes from
+# docstrings and `# NOTE:`-style comments, but JS/TS comments were discarded
+# entirely. That silently drops two high-value signals in mixed corpora:
+#   1. rationale comments (`// NOTE:`, `// WHY:`, ...) — same as Python;
+#   2. architecture-decision references (`ADR-0011`, `RFC 793`) that teams
+#      conventionally cite in file/function headers. These are the natural
+#      join points between code and design docs in the same graph — without
+#      them, code<->ADR edges never form even when the code cites the ADR.
+
+_JS_RATIONALE_PREFIXES = (
+    "// NOTE:", "// IMPORTANT:", "// HACK:", "// WHY:", "// RATIONALE:",
+    "// TODO:", "// FIXME:",
+    "* NOTE:", "* IMPORTANT:", "* HACK:", "* WHY:", "* RATIONALE:",
+    "* TODO:", "* FIXME:",
+)
+
+# Doc-reference tokens worth first-classing as graph nodes. Deliberately
+# conservative: ADR-NNNN (Architecture Decision Records, any zero padding)
+# and RFC NNNN / RFC-NNNN.
+_JS_DOC_REF_RE = re.compile(r"\b(ADR[- ]?\d{1,5}|RFC[- ]?\d{1,5})\b", re.IGNORECASE)
+
+# Only look for doc references inside comments, not string literals or code.
+_JS_COMMENT_LINE_RE = re.compile(r"^\s*(//|/\*|\*)")
+
+
+def _extract_js_rationale(path: Path, result: dict) -> None:
+    """Post-pass: extract rationale comments and doc references from JS/TS source.
+    Mutates result in-place by appending to result['nodes'] and result['edges'].
+    """
+    try:
+        source_text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return
+
+    stem = _file_stem(path)
+    str_path = str(path)
+    nodes = result["nodes"]
+    edges = result["edges"]
+    seen_ids = {n["id"] for n in nodes}
+    file_nid = _make_id(str(path))
+    seen_doc_refs: set[str] = set()
+
+    def _add_rationale(text: str, line: int) -> None:
+        label = text[:80].replace("\r\n", " ").replace("\r", " ").replace("\n", " ").strip()
+        rid = _make_id(stem, "rationale", str(line))
+        if rid not in seen_ids:
+            seen_ids.add(rid)
+            nodes.append({
+                "id": rid,
+                "label": label,
+                "file_type": "rationale",
+                "source_file": str_path,
+                "source_location": f"L{line}",
+            })
+        edges.append({
+            "source": rid,
+            "target": file_nid,
+            "relation": "rationale_for",
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": 1.0,
+        })
+
+    def _add_doc_ref(token: str, line: int) -> None:
+        # Normalize "adr 11" / "ADR-0011" spellings to a canonical "ADR-0011"
+        # style label so references to the same document collapse to one node.
+        kind, num = re.match(r"([A-Za-z]+)[- ]?(\d+)", token).groups()
+        kind = kind.upper()
+        label = f"{kind}-{num.zfill(4)}" if kind == "ADR" else f"{kind}-{num}"
+        if label in seen_doc_refs:
+            return
+        seen_doc_refs.add(label)
+        rid = _make_id("docref", label)
+        if rid not in seen_ids:
+            seen_ids.add(rid)
+            nodes.append({
+                "id": rid,
+                "label": label,
+                "file_type": "doc_ref",
+                "source_file": str_path,
+                "source_location": f"L{line}",
+            })
+        edges.append({
+            "source": file_nid,
+            "target": rid,
+            "relation": "cites",
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": 1.0,
+        })
+
+    for lineno, line_text in enumerate(source_text.splitlines(), start=1):
+        stripped = line_text.strip()
+        if any(stripped.startswith(p) for p in _JS_RATIONALE_PREFIXES):
+            _add_rationale(stripped.lstrip("/* "), lineno)
+        if _JS_COMMENT_LINE_RE.match(line_text):
+            for m in _JS_DOC_REF_RE.finditer(stripped):
+                _add_doc_ref(m.group(1), lineno)
 
 
 def extract_svelte(path: Path) -> dict:
@@ -6208,6 +6628,16 @@ def extract_apex(path: Path) -> dict:
             add_node(iface_nid, iface_name, lineno)
             add_edge(file_nid if current_class_nid is None else current_class_nid,
                      iface_nid, "contains", lineno)
+            if im.group(2):
+                for parent in im.group(2).split(","):
+                    parent = parent.strip()
+                    if parent:
+                        parent_nid = _make_id(stem, parent)
+                        if parent_nid not in seen_ids:
+                            parent_nid = _make_id(parent)
+                        if parent_nid not in seen_ids:
+                            add_node(parent_nid, parent, lineno)
+                        add_edge(iface_nid, parent_nid, "extends", lineno, confidence="INFERRED")
             pending_annotations = []
             continue
 
@@ -15565,6 +15995,30 @@ _DISPATCH: dict[str, Any] = {
 }
 
 
+# Extensionless executables (CLI entry points like `devctl` or `manage`) carry
+# their language in the shebang, not the suffix. detect.classify_file already
+# routes them to the CODE path via _shebang_interpreter; _get_extractor must
+# honor the same signal or these files are classified as code and then silently
+# dropped by extraction. Only interpreters with a real extractor are mapped —
+# detect's wider set (perl, fish, tcsh, Rscript) stays unmapped and skipped.
+_SHEBANG_DISPATCH: dict[str, Any] = {
+    "python": extract_python,
+    "python2": extract_python,
+    "python3": extract_python,
+    "bash": extract_bash,
+    "sh": extract_bash,
+    "dash": extract_bash,
+    "zsh": extract_bash,
+    "ksh": extract_bash,
+    "node": extract_js,
+    "nodejs": extract_js,
+    "ruby": extract_ruby,
+    "lua": extract_lua,
+    "php": extract_php,
+    "julia": extract_julia,
+}
+
+
 # ObjC-only directives. They are illegal in C and C++, so finding one in a `.h`
 # file is a near-zero-false-positive signal that the header is Objective-C (and so
 # belongs to extract_objc, not extract_c). `@property` is deliberately excluded: it
@@ -15626,7 +16080,7 @@ def _is_cpp_header(path: Path) -> bool:
 
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
-    if path.name.endswith(".blade.php"):
+    if path.name.lower().endswith(".blade.php"):
         return extract_blade
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
     # by filename before generic .json dispatch so they get MCP-aware nodes
@@ -15642,14 +16096,25 @@ def _get_extractor(path: Path) -> Any | None:
     # (the suffix map sends `.h` to extract_c, which can't read @interface etc.).
     # ObjC sniffing has priority over the C++ sniff: an Objective-C++ header can
     # contain both `@interface` and inline C++ (`::`), and it must parse as ObjC.
-    if path.suffix == ".h":
+    suffix = path.suffix
+    if suffix not in _DISPATCH and suffix.lower() in _DISPATCH:
+        suffix = suffix.lower()
+    if suffix == ".h":
         if _is_objc_header(path):
             return extract_objc
         # A C++ class header routed to extract_c loses the class entirely (the C
         # grammar has no class_specifier). Reroute to extract_cpp (#1547).
         if _is_cpp_header(path):
             return extract_cpp
-    return _DISPATCH.get(path.suffix)
+    # Extensionless files: resolve by shebang, mirroring detect.classify_file.
+    # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
+    # extraction returns no extractor and the file silently contributes nothing.
+    if not suffix:
+        from graphify.detect import _shebang_interpreter
+        interp = _shebang_interpreter(path)
+        if interp is not None:
+            return _SHEBANG_DISPATCH.get(interp)
+    return _DISPATCH.get(suffix)
 
 
 def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
@@ -15691,7 +16156,12 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
         return idx, {"nodes": [], "edges": []}
 
     result = _safe_extract_with_xaml_root(extractor, path, cache_root)
-    if not bypass_cache and "error" not in result:
+    # Never cache a zero-node result for an extractable file. Every supported
+    # source produces at least a file node, so an empty node list is anomalous
+    # (e.g. a transient batch/parallel hiccup). Caching it makes the empty
+    # byte-stable across runs and silently blinds affected/explain to and
+    # through the file (#1666); skipping the write lets a rerun self-heal.
+    if not bypass_cache and "error" not in result and result.get("nodes"):
         save_cached(path, result, cache_root)
     return idx, result
 
@@ -15815,7 +16285,8 @@ def _extract_sequential(
             continue
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         result = _safe_extract_with_xaml_root(extractor, path, effective_root)
-        if not bypass_cache and "error" not in result:
+        # See _extract_single_file: don't cache an anomalous zero-node result (#1666).
+        if not bypass_cache and "error" not in result and result.get("nodes"):
             save_cached(path, result, effective_root)
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:
@@ -15910,6 +16381,27 @@ def extract(
     for i in range(total):
         if per_file[i] is None:
             per_file[i] = {"nodes": [], "edges": []}
+
+    # #1666: surface any source file an extractor accepted but that produced zero
+    # nodes (not even a file node). Such a file is silently absent from the graph,
+    # so affected/explain are blind to and through it with no other signal.
+    _empty_sources: list[str] = []
+    for i, _p in enumerate(paths):
+        _res = per_file[i] or {}
+        if _res.get("nodes") or _res.get("error"):
+            continue
+        if _get_extractor(_p) is not None:
+            _empty_sources.append(str(_p))
+    if _empty_sources:
+        _shown = ", ".join(Path(x).name for x in _empty_sources[:5])
+        _more = f" (+{len(_empty_sources) - 5} more)" if len(_empty_sources) > 5 else ""
+        print(
+            f"  warning: {len(_empty_sources)} source file(s) produced zero nodes and "
+            f"are absent from the graph: {_shown}{_more}. A re-run will retry them "
+            f"(empties are no longer cached); if it persists, please report the "
+            f"file(s) (#1666).",
+            file=sys.stderr, flush=True,
+        )
 
     all_nodes: list[dict] = []
     all_edges: list[dict] = []
@@ -16131,9 +16623,20 @@ def extract(
         elif e.get("relation") == "imports_from":
             file_to_module_imports.setdefault(e["source"], set()).add(e["target"])
 
-    # Map each node back to its containing file_id so we can ask
+    # Map each node back to its containing file node id so we can ask
     # "did the caller's file import the callee's file?"
-    # Use relativized paths to match how file node IDs were remapped above (#502).
+    # A node and its file node share the exact same ``source_file`` string, and a
+    # file node is the one whose label is the basename (``add_node(file_nid,
+    # path.name)``). Resolving file membership by that shared string is robust
+    # against the path-resolution/symlink mismatch that makes
+    # ``relative_to(root.resolve())`` throw and fall back to a non-matching
+    # absolute-derived id — which would spuriously fail import evidence and (with
+    # the #1659 JS/TS gate below) drop a legitimately-imported call.
+    sf_to_file_nid: dict[str, str] = {}
+    for n in all_nodes:
+        sf = n.get("source_file")
+        if sf and n.get("label") == Path(str(sf)).name:
+            sf_to_file_nid.setdefault(str(sf), n["id"])
     nid_to_file_nid: dict[str, str] = {}
     # nid -> raw source_file string, for the ambiguous-name tie-breakers below
     # (test/non-test classification + path proximity). Kept separate from the
@@ -16144,6 +16647,12 @@ def extract(
         if not sf:
             continue
         nid_to_source_file[n["id"]] = str(sf)
+        fnid = sf_to_file_nid.get(str(sf))
+        if fnid is not None:
+            nid_to_file_nid[n["id"]] = fnid
+            continue
+        # Fallback (no file node found for this source_file): derive it the old
+        # way from the relativized path.
         sf_path = Path(sf)
         try:
             sf_rel = sf_path.relative_to(root) if sf_path.is_absolute() else sf_path
@@ -16159,6 +16668,10 @@ def extract(
         (e["source"], e["target"]) for e in all_edges
         if e.get("relation") in ("calls", "indirect_call")
     }
+    # JS/TS/JSX modules have no implicit cross-module scope: a call into another
+    # file is real ONLY if the caller imported it. So a cross-file call from one
+    # of these files with no import evidence is gated below (#1659).
+    _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
     for rc in all_raw_calls:
         callee = rc.get("callee", "")
         if not callee:
@@ -16168,6 +16681,12 @@ def extract(
         # Skip member-call callees: obj.log() → "log" has no import evidence
         # and collides with any top-level function named "log" in the corpus.
         if rc.get("is_member_call"):
+            continue
+        # Skip Ruby include/extend/prepend mixin markers: they carry a module
+        # name as `callee` but are not calls — the Ruby resolver turns them into
+        # `mixes_in` edges. Letting the shared pass emit a `calls` edge here would
+        # both mislabel the relation and block the mixes_in emit as a dup (#1668).
+        if rc.get("is_mixin"):
             continue
         # Exact-case match first (case is semantic). Fold only when the CALLING
         # file's language is case-insensitive, and only against the folded index of
@@ -16179,7 +16698,15 @@ def extract(
         if not candidates:
             continue
         caller = rc["caller_nid"]
-        caller_file_nid = nid_to_file_nid.get(caller)
+        # Resolve the caller's file via the raw_call's own source_file string,
+        # which is stable regardless of any caller_nid remap. An indirect
+        # callback's caller_nid is the file node, whose id may have been
+        # relativized after the raw_call was recorded, so a caller_nid lookup can
+        # miss and (with the #1659 gate) drop a legitimately-imported callback.
+        caller_file_nid = (
+            sf_to_file_nid.get(str(rc.get("source_file", "")))
+            or nid_to_file_nid.get(caller)
+        )
         imported_symbols = file_to_symbol_imports.get(caller_file_nid, set())
         imported_modules = file_to_module_imports.get(caller_file_nid, set())
 
@@ -16255,6 +16782,19 @@ def extract(
                     "source_location": rc.get("source_location"),
                     "weight": 1.0,
                 })
+            continue
+        # #1659: a JS/TS DIRECT call with no import evidence is almost always an
+        # unrelated same-named export in a package that was never imported — a
+        # phantom cross-package edge (a 14-package monorepo had `platform` and
+        # `sidecar` shown as depending on `registry-protocol` purely because it
+        # exported generically-named symbols). JS/TS modules have no implicit
+        # cross-module scope, so leave it unresolved rather than binding by name
+        # alone. Other languages keep the #1553 single-candidate resolution:
+        # C/C++ headers, Ruby autoload, and same-package implicit scope
+        # legitimately call across files without an explicit import. Scoped to
+        # direct calls: the indirect_call path above is already conservative
+        # (INFERRED, callable-target-gated) and independent of import evidence.
+        if not has_import_evidence and str(rc.get("source_file", "")).endswith(_JS_TS_CALL_SUFFIXES):
             continue
         if tgt != caller and (caller, tgt) not in existing_pairs:
             existing_pairs.add((caller, tgt))
@@ -16359,7 +16899,8 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             ]
             for fname in filenames:
                 p = dp / fname
-                if p.suffix in _EXTENSIONS and not _ignored(p) and _resolves_under_root(p, containment_root):
+                suffix = p.suffix
+                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
                     results.append(p)
         return sorted(results)
     # Walk with symlink following + cycle detection
@@ -16379,7 +16920,8 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         ]
         for fname in filenames:
             p = dp / fname
-            if p.suffix in _EXTENSIONS and not _ignored(p) and _resolves_under_root(p, containment_root):
+            suffix = p.suffix
+            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
                 results.append(p)
     return sorted(results)
 

@@ -28,6 +28,13 @@ def _key(label: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
 
 
+# A Ruby class/module container node is labelled with a bare constant
+# (``Processor``, ``TaxCalculator``); methods end in ``()`` and files in ``.rb``.
+# Lets us register method-less containers (a ``Class.new(StandardError)`` error
+# class, an empty module) that have no `method` edge to be found by.
+_BARE_CONST_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
+
+
 def _ruby_raw_calls(per_file: list[dict]) -> list[dict]:
     calls: list[dict] = []
     for result in per_file:
@@ -69,6 +76,15 @@ def resolve_ruby_member_calls(
         tnode = node_by_id.get(tgt)
         if tnode is not None:
             method_index[(str(src), _key(tnode.get("label", "")))] = str(tgt)
+    # Also register class/module container nodes that own no `method` edge — a
+    # method-less `Class.new(StandardError)` or an empty module — so a constant
+    # receiver still resolves to a real node (#1640/#1634). External base stubs
+    # carry an empty source_file, so the `.rb` filter keeps them out.
+    for n in all_nodes:
+        nid = n.get("id")
+        sf = str(n.get("source_file", ""))
+        if nid and sf.endswith(".rb") and _BARE_CONST_RE.match(str(n.get("label", ""))):
+            class_def_nids.setdefault(_key(n.get("label", "")), []).append(str(nid))
     for k in list(class_def_nids):
         class_def_nids[k] = sorted(set(class_def_nids[k]))
 
@@ -78,7 +94,8 @@ def resolve_ruby_member_calls(
         nids = class_def_nids.get(_key(name), [])
         return nids[0] if len(nids) == 1 else None
 
-    def _emit(caller: str, target: str, rc: dict[str, Any]) -> None:
+    def _emit(caller: str, target: str, rc: dict[str, Any],
+              relation: str = "calls", context: str = "call") -> None:
         if not caller or not target or caller == target:
             return
         if (caller, target) in existing_pairs:
@@ -87,14 +104,29 @@ def resolve_ruby_member_calls(
         all_edges.append({
             "source": caller,
             "target": target,
-            "relation": "calls",
-            "context": "call",
+            "relation": relation,
+            "context": context,
             "confidence": "EXTRACTED",
             "confidence_score": 1.0,
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+
+    # `include`/`extend`/`prepend <Const>` mixins (#1668): resolve the module by
+    # its constant name to the single owning module/class node and emit a
+    # `mixes_in` edge, under the same single-definition god-node guard. An
+    # ambiguous or unresolved constant produces no edge.
+    for rc in _ruby_raw_calls(per_file):
+        if not rc.get("is_mixin"):
+            continue
+        caller = str(rc.get("caller_nid", ""))
+        module_name = rc.get("callee")
+        if not caller or not module_name:
+            continue
+        target = _unique_class(str(module_name))
+        if target is not None:
+            _emit(caller, target, rc, relation="mixes_in", context="mixin")
 
     for rc in _ruby_raw_calls(per_file):
         if not rc.get("is_member_call"):
@@ -104,12 +136,24 @@ def resolve_ruby_member_calls(
         if not caller or not callee:
             continue
 
-        # `Processor.new` -> instantiation edge to the class.
+        # Constant receiver: `Processor.new` (instantiation) or `Service.call` /
+        # `Model.where` (singleton / class method). The bare method name would
+        # collide with unrelated same-named methods, so we resolve by the
+        # receiver's class under the single-owning-class god-node guard.
         receiver = rc.get("receiver")
-        if callee == "new" and receiver and str(receiver)[:1].isupper():
+        if receiver and str(receiver)[:1].isupper():
             class_nid = _unique_class(str(receiver))
             if class_nid is not None:
-                _emit(caller, class_nid, rc)
+                if callee == "new":
+                    _emit(caller, class_nid, rc)
+                else:
+                    # Emit to the singleton/instance method the class owns
+                    # (`def self.call`, which the extractor indexes); otherwise
+                    # to the class node itself, so inherited/dynamic class methods
+                    # like ActiveRecord `where`/`find_by` still give correct
+                    # blast-radius. An ambiguous receiver bails to nothing.
+                    method_nid = method_index.get((class_nid, _key(str(callee))))
+                    _emit(caller, method_nid or class_nid, rc)
             continue
 
         # `p.run` where p's type is known -> edge to that class's method.

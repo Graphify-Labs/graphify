@@ -630,11 +630,19 @@ def convert_office_file(path: Path, out_dir: Path) -> Path | None:
     normalized_path = unicodedata.normalize("NFC", str(path.resolve()))
     name_hash = hashlib.sha256(normalized_path.encode()).hexdigest()[:8]
     out_path = out_dir / f"{path.stem}_{name_hash}.md"
-    # Once the hash is stable the sidecar name is deterministic; skip re-writing
-    # an existing sidecar so an unchanged source never churns its mtime (which
-    # would still flag it as changed in detect_incremental).
-    if out_path.exists():
-        return out_path
+    # Skip re-writing only when the sidecar is present AND at least as new as the
+    # source. detect_incremental tracks the SIDECAR (not the Office source), so a
+    # sidecar that is never rewritten after the source changes leaves the doc
+    # reported "unchanged" forever and freezes the graph (#1649). Re-converting
+    # when the source is newer bumps the sidecar's mtime/content, which the
+    # incremental hash check then correctly picks up. An unchanged source keeps
+    # its (newer-or-equal) sidecar untouched so it never churns (#1226).
+    try:
+        if out_path.exists() and os.stat(_os_path(out_path)).st_mtime >= os.stat(_os_path(path)).st_mtime:
+            return out_path
+    except OSError:
+        if out_path.exists():
+            return out_path
     out_path.write_text(
         f"<!-- converted from {path.name} -->\n\n{text}",
         encoding="utf-8",
@@ -651,7 +659,8 @@ def count_words(path: Path) -> int:
             return len(docx_to_markdown(path).split())
         if ext == ".xlsx":
             return len(xlsx_to_markdown(path).split())
-        return len(path.read_text(encoding="utf-8", errors="ignore").split())
+        with open(_os_path(path), encoding="utf-8", errors="ignore") as f:
+            return len(f.read().split())
     except Exception:
         return 0
 
@@ -1029,6 +1038,12 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     }
     total_words = 0
 
+    def _wc(path: Path) -> int:
+        # Cache word counts against each file's stat signature so unchanged
+        # PDFs/docx aren't re-parsed on every run just to size the corpus (#1656).
+        from graphify import cache as _cache
+        return _cache.cached_word_count(path, root, count_words)
+
     skipped_sensitive: list[str] = []
     ignore_patterns = _load_graphifyignore(root)
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
@@ -1133,7 +1148,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
-                    total_words += count_words(md_path)
+                    total_words += _wc(md_path)
                 else:
                     skipped_sensitive.append(str(p) + " [Google Workspace export produced no readable text]")
                 continue
@@ -1144,14 +1159,14 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
-                    total_words += count_words(md_path)
+                    total_words += _wc(md_path)
                 else:
                     # Conversion failed (library not installed) - skip with note
                     skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
                 continue
             files[ftype].append(str(p))
             if ftype != FileType.VIDEO:
-                total_words += count_words(p)
+                total_words += _wc(p)
 
     for ftype in files:
         files[ftype].sort()
@@ -1185,12 +1200,40 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     }
 
 
+def _os_path(path: Path) -> str:
+    r"""Return an OS path string safe for open()/stat() on Windows long paths.
+
+    On win32, paths longer than the legacy MAX_PATH (260 chars) are rejected by
+    the plain file APIs unless prefixed with the extended-length marker ``\\?\``
+    (which also requires a fully-qualified path). Without it, _md5_file /
+    save_manifest / count_words silently fail to hash deeply-nested files, so
+    their manifest entry never stabilizes and detect_incremental re-flags them
+    as changed on every run (#1655). cache._normalize_path strips this prefix
+    for stable KEYS; this adds it for I/O. Non-win32 and already-prefixed paths
+    pass through unchanged.
+    """
+    import sys
+    if sys.platform != "win32":
+        return str(path)
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        return s
+    try:
+        s = os.path.abspath(s)  # \\?\ requires a fully-qualified path
+    except Exception:
+        return str(path)
+    if s.startswith("\\\\"):
+        # UNC share \\server\share -> \\?\UNC\server\share
+        return "\\\\?\\UNC\\" + s[2:]
+    return "\\\\?\\" + s
+
+
 def _md5_file(path: Path) -> str:
     """MD5 of file contents streamed in 64KB chunks — for change detection only."""
     import hashlib as _hl
     h = _hl.md5(usedforsecurity=False)
     try:
-        with path.open("rb") as f:
+        with open(_os_path(path), "rb") as f:
             for chunk in iter(lambda: f.read(65536), b""):
                 h.update(chunk)
     except OSError:
@@ -1202,7 +1245,7 @@ def _stat_and_hash(path_str: str) -> tuple[str, float, str] | None:
     """Stat + MD5 a single file; returns None on OSError (e.g. deleted mid-run)."""
     try:
         p = Path(path_str)
-        return path_str, p.stat().st_mtime, _md5_file(p)
+        return path_str, os.stat(_os_path(p)).st_mtime, _md5_file(p)
     except OSError:
         return None
 
@@ -1407,7 +1450,7 @@ def detect_incremental(
         for f in file_list:
             stored = manifest.get(f)
             try:
-                current_mtime = Path(f).stat().st_mtime
+                current_mtime = os.stat(_os_path(Path(f))).st_mtime
             except Exception:
                 current_mtime = 0
 
