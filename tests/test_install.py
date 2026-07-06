@@ -621,6 +621,18 @@ def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
     assert "$(" not in reminder, f"$() in reminder would trigger command substitution: {reminder!r}"
 
 
+def test_opencode_plugin_uses_semicolon_not_ampersand(tmp_path):
+    """The reminder must be joined to the user's command with ';', not '&&'
+    (#1646). Windows PowerShell 5.1 rejects '&&' as a statement separator, which
+    broke the first bash command of every OpenCode session on Windows. ';' works
+    in PowerShell 5.1, Bash, and POSIX shells."""
+    _agents_install(tmp_path, "opencode")
+    body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
+    # The prepend line ends with the separator before `' +`.
+    assert '" ; \' +' in body or '." ; \' +' in body, "reminder should join with ';'"
+    assert '" && \' +' not in body, "'&&' breaks PowerShell 5.1 (#1646)"
+
+
 def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
     """opencode install registers the plugin in .opencode/opencode.json."""
     _agents_install(tmp_path, "opencode")

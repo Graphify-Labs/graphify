@@ -1278,7 +1278,10 @@ def to_canvas(
     group_sizes: dict[int, tuple[int, int]] = {}
     group_cols: dict[int, int] = {}
     for cid in sorted_cids:
-        members = communities[cid]
+        # Skip dangling community members with no backing node / filename, so box
+        # sizing matches the cards actually laid out and `G.nodes[m]` never
+        # KeyErrors below — mirrors the to_obsidian guard (#1236).
+        members = [m for m in communities[cid] if m in G and m in node_filenames]
         n = len(members)
         inner_cols = max(1, math.ceil(math.sqrt(n)))
         w = max(600, 220 * inner_cols)
@@ -1351,6 +1354,9 @@ def to_canvas(
         # Node cards inside the group - laid out in the same ceil(sqrt(n))-column
         # grid the box was sized for (group_cols[cid]), so cards fill the box.
         inner_cols = group_cols[cid]
+        # Same dangling-member guard as the sizing loop and to_obsidian (#1236):
+        # a community id absent from G / node_filenames would KeyError the sort.
+        members = [m for m in members if m in G and m in node_filenames]
         sorted_members = sorted(members, key=lambda n: G.nodes[n].get("label", n))
         for m_idx, node_id in enumerate(sorted_members):
             col = m_idx % inner_cols

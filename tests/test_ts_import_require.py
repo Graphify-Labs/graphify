@@ -54,7 +54,11 @@ def test_import_require_single_quotes(tmp_path: Path):
     assert _has_edge(result, "src/main.ts", "src/util.ts")
 
 
-def test_import_require_bare_module_targets_stub(tmp_path: Path):
+def test_import_require_bare_module_targets_ref_stub(tmp_path: Path):
+    # A bare module (`require("fs")`) is external, so it emits an imports_from
+    # edge to a ref-namespaced stub — NOT the bare `_make_id("fs")` id, which
+    # would collide with any local file named fs.* via build.py's alias index
+    # (#1638). Parity with the ESM external path (test_external_module_unchanged).
     importer = _write(
         tmp_path / "src/io.ts",
         'import fs = require("fs");\nexport const data = fs.readFileSync("x");\n',
@@ -63,11 +67,15 @@ def test_import_require_bare_module_targets_stub(tmp_path: Path):
     result = extract([importer], cache_root=tmp_path)
 
     src = _file_node_id(Path("src/io.ts"))
-    tgt = _make_id("fs")
-    assert any(
-        e["source"] == src and e["target"] == tgt and e["relation"] == "imports_from"
-        for e in result["edges"]
-    ), "bare-module import-equals should target the module-name stub, like ESM"
+    import_targets = {
+        e["target"] for e in result["edges"]
+        if e["source"] == src and e["relation"] == "imports_from"
+    }
+    # An external stub edge still exists...
+    assert import_targets, "bare-module import-equals should still emit an external stub edge"
+    # ...but it is ref-namespaced and never the bare, collision-prone id.
+    assert _make_id("fs") not in import_targets
+    assert any(t.startswith("ref") for t in import_targets), import_targets
 
 
 def test_import_require_parity_with_namespace_import(tmp_path: Path):

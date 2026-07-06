@@ -48,3 +48,23 @@ def test_obsidian_community_of_only_dangling_members(tmp_path):
     ghost_note = tmp_path / "_COMMUNITY_Community 1.md"
     assert ghost_note.exists()
     assert "**Members:** 0 nodes" in ghost_note.read_text(encoding="utf-8")
+
+
+def test_canvas_dangling_community_member_does_not_crash(tmp_path):
+    """#1236 follow-up: the fix landed in to_obsidian but not to_canvas, so
+    `graphify export obsidian` (which also writes graph.canvas) still crashed
+    with KeyError in to_canvas on a dangling member. The same guard now applies
+    to both the box-sizing loop and the card-layout loop."""
+    import json
+    from graphify.export import to_canvas
+
+    G, comms = _graph_with_dangling_member()
+    out = tmp_path / "graph.canvas"
+    to_canvas(G, comms, str(out))  # before the fix: KeyError: 'agents_doc'
+    assert out.exists()
+
+    canvas = json.loads(out.read_text(encoding="utf-8"))
+    node_ids = {n.get("id") for n in canvas.get("nodes", [])}
+    # real members get cards; the dangling id does not
+    assert "n_n0" in node_ids and "n_n1" in node_ids
+    assert "n_agents_doc" not in node_ids
