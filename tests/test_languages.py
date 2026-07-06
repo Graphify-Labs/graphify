@@ -472,7 +472,9 @@ def test_java_record_component_type_references(tmp_path):
     result = extract_java(source)
 
     assert ("Order", "Payload") in _edge_labels(result, "references", "field")
-    assert ("Order", "List") in _edge_labels(result, "references", "field")
+    # `List` is a java.util library type: skipped as noise, so only its user-type
+    # generic argument (`Item`) survives, not the container itself.
+    assert ("Order", "List") not in _edge_labels(result, "references")
     assert ("Order", "Item") in _edge_labels(result, "references", "generic_arg")
     assert ("Order", "Attachment") in _edge_labels(result, "references", "field")
 
@@ -621,6 +623,13 @@ def test_kotlin_splits_inherits_and_implements():
     r = extract_kotlin(FIXTURES / "sample.kt")
     assert ("DataProcessor", "BaseProcessor") in _edge_labels(r, "inherits")
     assert ("DataProcessor", "Loggable") in _edge_labels(r, "implements")
+
+
+def test_kotlin_interface_delegation_emits_implements():
+    """`class Foo : Bar by baz` wraps the delegated interface in an
+    `explicit_delegation` node — it must still emit an implements edge."""
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    assert ("LoggingList", "MutableList") in _edge_labels(r, "implements")
 
 
 def test_kotlin_parameter_return_generic_and_field_contexts():
@@ -2626,6 +2635,16 @@ def test_apex_interface_extraction():
     r = extract_apex(FIXTURES / "sample.cls")
     labels = _labels(r)
     assert "Notifiable" in labels
+
+def test_apex_interface_extends(tmp_path):
+    source = tmp_path / "PaymentProcessor.cls"
+    source.write_text(
+        "public interface PaymentProcessor extends Processor, Auditable { void process(); }\n"
+    )
+    result = extract_apex(source)
+    inheritance = _edge_labels(result, "extends") | _edge_labels(result, "implements")
+    assert ("PaymentProcessor", "Processor") in inheritance
+    assert ("PaymentProcessor", "Auditable") in inheritance
 
 def test_apex_method_extraction():
     r = extract_apex(FIXTURES / "sample.cls")

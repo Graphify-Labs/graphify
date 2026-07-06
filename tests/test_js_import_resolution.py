@@ -404,6 +404,52 @@ def test_svelte_rune_import_resolves_svelte_ts_file(tmp_path: Path):
     assert _has_edge(result, "src/routes/page.ts", "src/lib/hooks/is-mobile.svelte.ts")
 
 
+def test_ts_dynamic_import_does_not_create_phantom_cycle(tmp_path: Path):
+    # A deferred `import('./x')` is not a static import: it must be emitted as a
+    # `dynamic_import` edge (like the Svelte/Astro/Vue emitters), not
+    # `imports_from`. Otherwise two files that reference each other via one static
+    # import + one dynamic import are reported as a phantom circular dependency.
+    # Regression test for #1241.
+    import networkx as nx
+
+    from graphify.analyze import find_import_cycles
+
+    actions = _write(
+        tmp_path / "actions.ts",
+        'export function doThing() {}\n'
+        'export async function lazy() {\n'
+        '  const m = await import("./modal");\n'
+        '  return m.openModal();\n'
+        '}\n',
+    )
+    modal = _write(
+        tmp_path / "modal.ts",
+        'import { doThing } from "./actions";\n'
+        'export function openModal() { doThing(); }\n',
+    )
+
+    result = _extract_for([actions, modal], tmp_path)
+
+    # The deferred import() edge stays in the graph as an `imports_from` edge
+    # marked `deferred` (the dependency remains visible); the real static import
+    # (modal.ts -> actions.ts) is unaffected.
+    deferred = [edge for edge in result["edges"] if edge.get("deferred")]
+    assert deferred and all(edge["relation"] == "imports_from" for edge in deferred)
+    assert _has_edge(result, "modal.ts", "actions.ts", "imports_from")
+
+    # End to end: the deferred import must not manufacture a file cycle.
+    graph = nx.DiGraph()
+    for node in result["nodes"]:
+        graph.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+    for edge in result["edges"]:
+        graph.add_edge(
+            edge["source"],
+            edge["target"],
+            **{k: v for k, v in edge.items() if k not in ("source", "target")},
+        )
+    assert find_import_cycles(graph) == []
+
+
 def test_tsconfig_alias_import_resolves_existing_ts_file(tmp_path: Path):
     _write(
         tmp_path / "tsconfig.json",

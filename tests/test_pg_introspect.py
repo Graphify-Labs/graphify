@@ -276,3 +276,17 @@ def test_pg_introspect_import_error():
     with patch.dict("sys.modules", {"psycopg": None}):
         with pytest.raises(ImportError, match="psycopg is required"):
             introspect_postgres("postgresql://localhost/db")
+
+
+def test_pg_introspect_uri_forward_slashes():
+    """Assert that the virtual path in postgresql introspection output uses forward slashes on all platforms."""
+    mock_psycopg = _make_mock_psycopg([], [], [], [], host="some-host", dbname="some-db")
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        res = introspect_postgres("postgresql://some-host/some-db")
+    
+    # We should have at least the file node
+    assert len(res["nodes"]) > 0
+    for node in res["nodes"]:
+        assert "\\" not in node["source_file"]
+        assert "postgresql:/some-host/some-db" in node["source_file"]
+

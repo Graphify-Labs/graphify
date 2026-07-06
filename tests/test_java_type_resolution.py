@@ -150,6 +150,57 @@ def test_java_type_parameters_do_not_resolve_to_real_class(tmp_path: Path):
     assert ("Generic", "references", "T") not in references
 
 
+def test_java_builtin_library_types_not_emitted_as_references(tmp_path: Path):
+    # Built-in / standard-library types (java.lang, java.util, …) used as field,
+    # parameter, or return types carry no useful graph meaning: they never resolve
+    # to a project node, so emitting `references` edges to them is pure noise.
+    svc = _write(
+        tmp_path / "Svc.java",
+        "package com.app;\n"
+        "import java.util.List;\n"
+        "import java.util.Map;\n"
+        "public class Svc {\n"
+        "    private String name;\n"
+        "    private List<Integer> ids;\n"
+        "    public Map<String, Object> lookup(Long id) { return null; }\n"
+        "    public java.util.Optional<Boolean> flag() { return null; }\n"
+        "}\n",
+    )
+    result = extract([svc], cache_root=tmp_path)
+
+    ref_targets = {
+        by_label
+        for (src, rel, by_label) in _label_edges(result, {"references"})
+    }
+    for builtin in (
+        "String", "Integer", "Map", "Object", "Long",
+        "List", "Optional", "Boolean",
+    ):
+        assert builtin not in ref_targets, (
+            f"builtin/library type {builtin!r} should not be a references target"
+        )
+
+
+def test_java_user_types_still_emit_references(tmp_path: Path):
+    # Guard against over-skipping: a user-defined type sharing the field/return
+    # shape must still resolve to a real `references` edge.
+    dto = _write(tmp_path / "OrderDto.java",
+                 "package com.app;\npublic class OrderDto {}\n")
+    svc = _write(
+        tmp_path / "OrderSvc.java",
+        "package com.app;\n"
+        "public class OrderSvc {\n"
+        "    private java.util.List<OrderDto> orders;\n"
+        "    public OrderDto first() { return null; }\n"
+        "}\n",
+    )
+    result = extract([dto, svc], cache_root=tmp_path)
+    ref_targets = {
+        by_label for (_, _, by_label) in _label_edges(result, {"references"})
+    }
+    assert "OrderDto" in ref_targets, "user type OrderDto must still emit references"
+
+
 def test_java_cross_file_constructor_call_resolves(tmp_path: Path):
     # #1373: `new Foo(...)` in a method body must produce a cross-file edge to the
     # Foo definition. Foo is NOT used as a return type here, so the edge can only

@@ -176,20 +176,30 @@ def generate(
     else:
         lines.append("- None detected - all connections are within the same source files.")
 
-    # Circular imports surfaced from file-level dependency graph.
-    from .analyze import find_import_cycles
-    cycles = find_import_cycles(G)
-    lines += ["", "## Import Cycles"]
-    if cycles:
-        for c in cycles:
-            cycle = c.get("cycle", [])
-            length = c.get("length", len(cycle))
-            if not cycle:
-                continue
-            cycle_path = " -> ".join(cycle + [cycle[0]])
-            lines.append(f"- {length}-file cycle: `{cycle_path}`")
-    else:
-        lines.append("- None detected.")
+    # Circular imports surfaced from file-level dependency graph. Only meaningful
+    # for code — a documents-only corpus has no imports, so the section is pure
+    # noise there ("None detected" on every run). Emit it only when the graph
+    # actually contains code (#1657).
+    _has_code = any(
+        d.get("file_type") == "code" for _, d in G.nodes(data=True)
+    ) or any(
+        d.get("relation") in ("imports", "imports_from")
+        for *_e, d in G.edges(data=True)
+    )
+    if _has_code:
+        from .analyze import find_import_cycles
+        cycles = find_import_cycles(G)
+        lines += ["", "## Import Cycles"]
+        if cycles:
+            for c in cycles:
+                cycle = c.get("cycle", [])
+                length = c.get("length", len(cycle))
+                if not cycle:
+                    continue
+                cycle_path = " -> ".join(cycle + [cycle[0]])
+                lines.append(f"- {length}-file cycle: `{cycle_path}`")
+        else:
+            lines.append("- None detected.")
 
     hyperedges = G.graph.get("hyperedges", [])
     if hyperedges:

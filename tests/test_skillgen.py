@@ -285,9 +285,12 @@ def test_descriptions_are_unified():
 
 
 def test_windows_frontmatter_name_and_shell_and_extra():
-    """windows: graphify-windows name, powershell install, troubleshooting tail."""
+    """windows: name must be `graphify` (folder-name rule, #1635), powershell
+    install, troubleshooting tail."""
     core, _ = _platform_artifacts("windows")
-    assert core.startswith("---\nname: graphify-windows\n")
+    # Claude Code requires the frontmatter name to equal the install folder
+    # (graphify); a `graphify-windows` name broke skill discovery (#1635).
+    assert core.startswith("---\nname: graphify\n")
     assert "```powershell" in core
     assert "function Find-GraphifyPython" in core
     assert "## Troubleshooting" in core

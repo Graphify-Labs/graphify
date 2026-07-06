@@ -35,6 +35,8 @@ class DataProcessor : BaseProcessor(), Loggable {
     override fun log() {}
 }
 
+class LoggingList<T>(inner: MutableList<T>) : MutableList<T> by inner
+
 fun createClient(baseUrl: String): HttpClient {
     val config = Config(baseUrl, 30)
     return HttpClient(config)
