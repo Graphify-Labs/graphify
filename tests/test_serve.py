@@ -8,6 +8,8 @@ from graphify.serve import (
     _communities_from_graph,
     _score_nodes,
     _compute_idf,
+    _EXACT_MATCH_BONUS,
+    _SOURCE_MATCH_BONUS,
     _pick_seeds,
     _bfs,
     _dfs,
@@ -121,6 +123,66 @@ def test_score_nodes_multiword_exact_label_outranks_superset():
     # Resolves uniquely to the exact label, strictly ahead of the superset.
     assert scored[0][1] == "exact"
     assert scored[0][0] > scored[1][0], "exact label must strictly outrank superset/token-bag matches"
+
+
+def test_score_nodes_coverage_lone_generic_exact_hit_loses_to_multi_term_match():
+    """A lone generic-word exact match must not bury a multi-term match.
+
+    Reproduces #1602: in a multi-term query, a single generic term that
+    exactly equals a short leaf label (query term "list" vs a list() function
+    node) received the full exact-tier bonus and outranked every node matching
+    several of the query's terms, even when the query contained the target's
+    literal identifier. The per-term exact/prefix tiers are now scaled by
+    squared term coverage, so a 1-of-5-terms collision drops below a
+    multi-term match. The leaves live in the same directory as the target
+    (the realistic case) to pin that source-path hits do not count as
+    coverage and hand the collision its exact tier back.
+    """
+    G = nx.Graph()
+
+    def _add(nid, label, src):
+        G.add_node(nid, label=label, norm_label=label.lower(),
+                   source_file=src, community=0)
+
+    _add("target", "ClientLive.Index", "lib/clients_live/index.ex")
+    _add("form", "ClientLive.Form", "lib/clients_live/form.ex")
+    _add("show", "ClientLive.Show", "lib/clients_live/show.ex")
+    # Same-named tiny leaf functions: "list" == bare label fires the exact
+    # tier. Placed in the target's own directory so their source paths also
+    # substring-match the query term "clients": a path hit must not inflate
+    # the coverage that multiplies the exact tier.
+    for i in range(3):
+        _add(f"leaf{i}", "list()", f"lib/clients_live/helpers{i}.ex")
+    # Filler making "list" a common (low-IDF) token, as in a real graph where
+    # list()/get()/new() style names are ubiquitous.
+    for i in range(24):
+        _add(f"filler{i}", f"shopping list {i}", f"lib/filler{i}.ex")
+
+    # The user pastes the real identifier plus context words; tokenization
+    # yields 5 terms: clientlive, index, clients, list, columns.
+    scored = _score_nodes(G, [t.lower() for t in "ClientLive.Index clients list columns".split()])
+    by_id = {nid: s for s, nid in scored}
+
+    assert scored[0][1] == "target"
+    assert by_id["target"] > by_id["leaf0"], (
+        "a 1-of-5-terms exact collision must not outrank the node matching 3 of 5 terms"
+    )
+
+
+def test_score_nodes_coverage_full_coverage_query_is_unchanged():
+    """Coverage scaling must not touch full-coverage queries (coverage == 1).
+
+    A single-term identifier lookup keeps the exact tier's full magnitude, so
+    `query "FooBarService"` behavior is byte-identical to before #1602.
+    """
+    G = _make_graph()
+    scored = _score_nodes(G, ["extract"])
+    w = _compute_idf(G, ["extract"])["extract"]
+    assert scored[0][1] == "n1"
+    # Full-query exact tier (10x) + per-term exact tier + source hit
+    # ("extract" in "extract.py"), all undampened.
+    expected = (_EXACT_MATCH_BONUS * 10 + _EXACT_MATCH_BONUS + _SOURCE_MATCH_BONUS) * w
+    assert scored[0][0] == pytest.approx(expected)
 
 
 def test_find_node_ignores_trailing_punctuation():
