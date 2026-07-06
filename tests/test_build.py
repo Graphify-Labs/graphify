@@ -2,9 +2,50 @@ import json
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.build import build_from_json, build, build_merge, edge_data, edge_datas
+from graphify.build import build_from_json, build, build_merge, edge_data, edge_datas, dedupe_edges, dedupe_nodes
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_dedupe_edges_collapses_exact_parallels():
+    # #1317: --no-cluster / incremental update concatenate edge lists raw.
+    edges = [
+        {"source": "a", "target": "b", "relation": "calls", "source_location": "L1"},
+        {"source": "a", "target": "b", "relation": "calls", "source_location": "L9"},  # dup
+        {"source": "a", "target": "b", "relation": "imports"},  # different relation: kept
+        {"source": "b", "target": "c", "relation": "calls"},
+    ]
+    out = dedupe_edges(edges)
+    keys = [(e["source"], e["target"], e["relation"]) for e in out]
+    assert keys == [("a", "b", "calls"), ("a", "b", "imports"), ("b", "c", "calls")]
+    # first occurrence wins (keeps L1, not L9)
+    assert out[0]["source_location"] == "L1"
+
+
+def test_dedupe_edges_is_idempotent():
+    edges = [
+        {"source": "a", "target": "b", "relation": "calls"},
+        {"source": "a", "target": "b", "relation": "calls"},
+    ]
+    once = dedupe_edges(edges)
+    twice = dedupe_edges(once + edges)  # simulate a second `update` re-concatenating
+    assert len(once) == 1
+    assert len(twice) == 1
+
+
+def test_dedupe_nodes_collapses_by_id_last_wins():
+    # #1327: a shared module anchor is emitted once per importing file; the
+    # --no-cluster raw writer must collapse same-id node dicts (#1317).
+    nodes = [
+        {"id": "foundation", "label": "Foundation", "type": "module", "source_file": "A.swift"},
+        {"id": "akit", "label": "AKit", "file_type": "code"},
+        {"id": "foundation", "label": "Foundation", "type": "module", "source_file": "B.swift"},
+    ]
+    out = dedupe_nodes(nodes)
+    ids = [n["id"] for n in out]
+    assert ids == ["foundation", "akit"]  # first-appearance order
+    # last writer wins on attributes
+    assert next(n for n in out if n["id"] == "foundation")["source_file"] == "B.swift"
 
 def load_extraction():
     return json.loads((FIXTURES / "extraction.json").read_text())
@@ -65,6 +106,23 @@ def test_source_file_backslash_normalized():
     G = build_from_json(extraction)
     sources = {G.nodes[n]["source_file"] for n in G.nodes()}
     assert sources == {"src/middleware/auth.py"}
+
+
+def test_edge_missing_source_file_backfilled_from_node():
+    """#1279: a semantic/LLM edge lacking source_file must inherit it from its
+    source node rather than reach graph.json with no file reference."""
+    extraction = {
+        "nodes": [
+            {"id": "n1", "label": "A", "file_type": "concept", "source_file": "docs/a.md"},
+            {"id": "n2", "label": "B", "file_type": "concept", "source_file": "docs/b.md"},
+        ],
+        # No source_file on the edge (as LLM output sometimes omits it).
+        "edges": [{"source": "n1", "target": "n2", "relation": "relates_to", "confidence": "INFERRED"}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(extraction)
+    sf = edge_data(G, "n1", "n2").get("source_file")
+    assert sf == "docs/a.md"  # backfilled from the source node
 
 
 def test_build_merges_multiple_extractions():
@@ -426,7 +484,8 @@ def test_build_from_json_relativizes_absolute_source_file(tmp_path):
         ],
     }
     G = build_from_json(extraction, root=root)
-    sf = G.nodes["overview_intro"]["source_file"]
+    # The id-stem migration (#1504) re-keys the old short id to the full-path form.
+    sf = G.nodes["docs_overview_intro"]["source_file"]
     assert not sf.startswith("/"), f"source_file still absolute: {sf}"
     assert sf == "docs/overview.md"
 
@@ -441,7 +500,8 @@ def test_build_relativizes_absolute_source_file(tmp_path):
         "edges": [],
     }
     G = build([extraction], root=root)
-    sf = G.nodes["main_fn"]["source_file"]
+    # #1504 re-keys main_fn (old stem "main") to the full-path form "src_main".
+    sf = G.nodes["src_main_fn"]["source_file"]
     assert sf == "src/main.py"
 
 
@@ -452,7 +512,8 @@ def test_build_from_json_relative_source_file_unchanged(tmp_path):
         "edges": [],
     }
     G = build_from_json(extraction, root=tmp_path)
-    assert G.nodes["foo_bar"]["source_file"] == "src/foo.py"
+    # source_file must be untouched; the id is re-keyed to the full-path form (#1504).
+    assert G.nodes["src_foo_bar"]["source_file"] == "src/foo.py"
 
 
 def test_build_merge_prune_absolute_paths_match_relative_nodes(tmp_path):
@@ -508,6 +569,108 @@ def test_build_merge_prune_windows_backslash_paths(tmp_path):
     assert "parse_date" not in node_labels, "node should be pruned even with backslash path"
 
 
+def test_build_merge_replaces_changed_file_stale_edges(tmp_path):
+    """Re-extracting a CHANGED file must REPLACE its prior nodes/edges, not
+    accumulate them. build_merge previously only grew the graph, so an edge that
+    disappeared from a file's new version survived forever (only exact-duplicate
+    edges collapsed). The new-chunk source_file may be an absolute win32 path
+    while the stored graph keeps relative posix — both forms must match."""
+    import networkx as nx
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    # First build: changed.md contributed A, B and edge A->B; keep.md is unrelated.
+    chunk0 = {"nodes": [
+        {"id": "A", "label": "A", "file_type": "document", "source_file": "changed.md"},
+        {"id": "B", "label": "B", "file_type": "document", "source_file": "changed.md"},
+        {"id": "K", "label": "K", "file_type": "document", "source_file": "keep.md"},
+    ], "edges": [
+        {"source": "A", "target": "B", "relation": "references", "confidence": "EXTRACTED",
+         "source_file": "changed.md", "weight": 1.0},
+        {"source": "K", "target": "A", "relation": "references", "confidence": "EXTRACTED",
+         "source_file": "keep.md", "weight": 1.0},
+    ]}
+    G0 = build([chunk0], dedup=False)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # changed.md edited: re-extraction now yields A, C and edge A->C (B dropped).
+    # source_file arrives as an absolute win32-style path (as detect emits on Windows).
+    abs_changed = str(root / "changed.md").replace("/", "\\")
+    new_chunk = {"nodes": [
+        {"id": "A", "label": "A", "file_type": "document", "source_file": abs_changed},
+        {"id": "C", "label": "C", "file_type": "document", "source_file": abs_changed},
+    ], "edges": [
+        {"source": "A", "target": "C", "relation": "references", "confidence": "EXTRACTED",
+         "source_file": abs_changed, "weight": 1.0},
+    ]}
+    G1 = build_merge([new_chunk], graph_path, dedup=False, root=root)
+
+    labels = {d["label"] for _, d in G1.nodes(data=True)}
+    edges = {(u, v) for u, v in G1.edges()}
+
+    # Stale contribution from the old version of changed.md is gone.
+    assert "B" not in labels, "stale node from changed file's old version must be dropped"
+    assert ("A", "B") not in edges and ("B", "A") not in edges, "stale edge must be dropped"
+    # Fresh contribution is present.
+    assert "C" in labels, "re-extracted node must be present"
+    assert ("A", "C") in edges, "re-extracted edge must be present"
+    # An unchanged file is untouched.
+    assert "K" in labels, "unchanged file's node must survive"
+    assert ("K", "A") in edges, "unchanged file's edge must survive"
+
+
+def test_build_merge_root_collapses_convention_drift(tmp_path):
+    """Skill contract: the extraction subagent must emit source_file as the
+    verbatim path from FILE_LIST AND the caller must pass root= (the build root).
+    Then build_merge canonicalizes the new chunk to the same relative base as the
+    stored graph, so re-extraction REPLACES the prior node (incl. stale nodes for
+    that file) instead of accumulating a duplicate. Without root, a drifted
+    relative base (e.g. a bare basename from a different run) mismatches and the
+    graph duplicates. Engine is unchanged — this pins the prompt/root contract."""
+    import networkx as nx
+
+    root = tmp_path
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+
+    # Stored graph: nested project-relative convention + a STALE node for the same
+    # file that the re-extraction no longer emits.
+    stored = {"nodes": [
+        {"id": "wiki_overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": "docs/wiki/overview.md"},
+        {"id": "wiki_overview_stale", "label": "Stale", "file_type": "document",
+         "source_file": "docs/wiki/overview.md"},
+    ], "edges": []}
+    G0 = build([stored], dedup=False)
+    saved = json.dumps(nx.node_link_data(G0, edges="edges"))
+    graph_path.write_text(saved, encoding="utf-8")
+
+    # BUG: --update drifted to a bare basename and no root was passed. Different
+    # base -> source_file replace misses -> stale + duplicate both survive.
+    drift = {"nodes": [
+        {"id": "overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": "overview.md"},
+    ], "edges": []}
+    G_bug = build_merge([drift], graph_path, dedup=False)
+    assert G_bug.number_of_nodes() == 3, "mismatched base must NOT replace -> stale+dup remain"
+
+    # FIX: subagent emits the verbatim path; caller passes root (the build root).
+    graph_path.write_text(saved, encoding="utf-8")
+    abs_overview = str(root / "docs" / "wiki" / "overview.md")
+    fixed = {"nodes": [
+        {"id": "wiki_overview_overview", "label": "Overview", "file_type": "document",
+         "source_file": abs_overview},
+    ], "edges": []}
+    G_ok = build_merge([fixed], graph_path, prune_sources=None, dedup=False, root=root)
+    assert G_ok.number_of_nodes() == 1, "verbatim path + root must collapse to one node"
+    # #1504 re-keys the author-chosen short ids to the canonical full-path stem.
+    assert "docs_wiki_overview_stale" not in G_ok, "stale node for the re-extracted file must be dropped"
+    assert G_ok.nodes["docs_wiki_overview_overview"]["source_file"] == "docs/wiki/overview.md", \
+        "new chunk must be canonicalized to the stored relative base"
+
+
 def test_build_merge_rejects_oversized_existing_graph(monkeypatch, tmp_path):
     """#F4: build_merge must refuse to read an existing graph.json that
     exceeds the size cap, rather than json.loads-ing it into memory."""
@@ -518,3 +681,71 @@ def test_build_merge_rejects_oversized_existing_graph(monkeypatch, tmp_path):
     monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
     with pytest.raises(ValueError, match="exceeds"):
         build_merge([], graph_path, dedup=False)
+
+
+def test_build_from_json_skips_non_hashable_node_id():
+    # A malformed LLM extraction can emit a list-valued id; build_from_json must
+    # skip it (NetworkX add_node would otherwise raise unhashable type) and still
+    # build the graph from the well-formed nodes.
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": ["x", "y"], "label": "B", "file_type": "code", "source_file": "b.py"},
+            {"label": "C", "file_type": "code", "source_file": "c.py"},  # missing id
+        ],
+        "edges": [],
+    }
+    G = build_from_json(extraction)
+    assert set(G.nodes()) == {"a"}
+
+
+def test_build_from_json_skips_edge_with_non_hashable_endpoint():
+    # A list-valued edge endpoint must be skipped rather than crash the
+    # `not in node_set` membership test. The well-formed edge survives.
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "a", "target": ["b", "c"], "relation": "calls",
+             "confidence": "INFERRED", "source_file": "a.py"},
+            {"source": "a", "target": "b", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "a.py"},
+        ],
+    }
+    G = build_from_json(extraction)
+    assert G.number_of_nodes() == 2
+    assert G.number_of_edges() == 1
+    assert G.has_edge("a", "b")
+
+
+# ── #1504 migration: legacy-id detection + re-key source_file contract ──────────
+
+def test_graph_has_legacy_ids_detects_old_scheme():
+    """The read-only-consumer nudge (query/serve) flags a pre-#1504 graph and
+    leaves a canonical one alone."""
+    from graphify.build import graph_has_legacy_ids
+    old = [{"id": "api_readme", "source_file": "docs/v1/api/README.md", "type": "document", "source_location": "L1"}]
+    new = [{"id": "docs_v1_api_readme", "source_file": "docs/v1/api/README.md", "type": "document", "source_location": "L1"}]
+    assert graph_has_legacy_ids(old, root=".") is True
+    assert graph_has_legacy_ids(new, root=".") is False
+    # sourceless / top-level file nodes don't false-positive
+    assert graph_has_legacy_ids([{"id": "setup", "source_file": "setup.py", "source_location": "L1"}], root=".") is False
+    assert graph_has_legacy_ids([{"id": "x", "label": "y"}], root=".") is False
+    # package/dir-scoped SYMBOL ids (Go's _make_id(pkg_dir, name) -> "sub_thing") must
+    # NOT false-positive: not file-level (no L1), so ignored even though "sub_thing"
+    # coincides with the old file-stem form of pkg/sub/thing.go.
+    go_symbol = [{"id": "sub_thing", "source_file": "pkg/sub/thing.go", "type": "code", "source_location": "L3"}]
+    assert graph_has_legacy_ids(go_symbol, root=".") is False
+
+
+def test_semantic_rekey_relative_vs_absolute_source_file():
+    """Re-key contract: a relative source_file is migrated; an absolute one is left
+    untouched (it can't be relativized, so its on-disk path must not leak into IDs)."""
+    from graphify.build import _semantic_id_remap
+    rel = [{"id": "api_readme", "source_file": "docs/v1/api/README.md", "type": "document"}]
+    assert _semantic_id_remap(rel, ".") == {"api_readme": "docs_v1_api_readme"}
+    # absolute path with no resolvable root → skipped, not remapped to an abs-path id
+    ab = [{"id": "api_readme", "source_file": "/abs/docs/v1/api/README.md", "type": "document"}]
+    assert _semantic_id_remap(ab, None) == {}

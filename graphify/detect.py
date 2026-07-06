@@ -14,6 +14,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
 
 
 class FileType(str, Enum):
@@ -24,9 +25,9 @@ class FileType(str, Enum):
     VIDEO = "video"
 
 
-_MANIFEST_PATH = "graphify-out/manifest.json"
+_MANIFEST_PATH = str(out_path("manifest.json"))
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.razor', '.cshtml', '.cls', '.trigger'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -124,6 +125,15 @@ _GENERIC_KEYWORD_PATTERNS = [
     re.compile(r'(?<![a-zA-Z0-9])tokens?(?![a-zA-Z])', re.IGNORECASE),
 ]
 
+# Data/serialization extensions that commonly ARE secret stores when their name
+# hits a generic keyword (credentials.json, secrets.yaml, token.toml). These stay
+# subject to the Stage 3 keyword drop even though some route through the CODE path
+# for manifest parsing — only real programming-language source is exempt (#1666).
+_SECRET_PRONE_DATA_EXTS = frozenset({
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".config",
+    ".xml", ".properties", ".env", ".txt",
+})
+
 # Word separators for the load-bearing check (underscore intentionally included;
 # multi-word keywords like private_key are handled by the end-of-stem check,
 # which runs before word counting).
@@ -183,8 +193,19 @@ def _is_sensitive(path: Path) -> bool:
     name = path.name
     if any(p.search(name) for p in _SENSITIVE_PATTERNS):
         return True
-    # Stage 3: generic keywords, only when load-bearing in the name
-    return _generic_keyword_hit(name)
+    # Stage 3: generic keywords, only when load-bearing in the name. Do NOT let a
+    # bare name keyword silently drop a genuine programming-language source file:
+    # a .rb/.py named device_token or passwords_controller is a module, not a secret
+    # store (#1666). Data/config formats (.json, .yaml, .toml, ...) are deliberately
+    # NOT exempt even though .json routes through the CODE path for manifest parsing,
+    # because credentials.json / oauth_token.json / secrets.yaml are exactly the
+    # secret stores this stage must catch. The specific Stage 2 patterns (.env, .pem,
+    # id_rsa, ...) still apply to everything regardless of extension.
+    if _generic_keyword_hit(name):
+        ext = path.suffix.lower()
+        is_source_code = classify_file(path) == FileType.CODE and ext not in _SECRET_PRONE_DATA_EXTS
+        return not is_source_code
+    return False
 
 
 def _looks_like_paper(path: Path) -> bool:
@@ -383,6 +404,13 @@ def _shebang_file_type(path: Path) -> FileType | None:
 
 
 def classify_file(path: Path) -> FileType | None:
+    # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) are parsed
+    # deterministically, so route them to the AST path (CODE) rather than the LLM
+    # document path — otherwise apm.yml (a .yml "document") would be LLM-extracted
+    # and a package would split into duplicate file-anchored nodes (#1377).
+    from graphify.manifest_ingest import is_package_manifest_path
+    if is_package_manifest_path(path):
+        return FileType.CODE
     # Compound extensions must be checked before simple suffix lookup
     if path.name.lower().endswith(".blade.php"):
         return FileType.CODE
@@ -622,11 +650,19 @@ def convert_office_file(path: Path, out_dir: Path) -> Path | None:
     normalized_path = unicodedata.normalize("NFC", str(path.resolve()))
     name_hash = hashlib.sha256(normalized_path.encode()).hexdigest()[:8]
     out_path = out_dir / f"{path.stem}_{name_hash}.md"
-    # Once the hash is stable the sidecar name is deterministic; skip re-writing
-    # an existing sidecar so an unchanged source never churns its mtime (which
-    # would still flag it as changed in detect_incremental).
-    if out_path.exists():
-        return out_path
+    # Skip re-writing only when the sidecar is present AND at least as new as the
+    # source. detect_incremental tracks the SIDECAR (not the Office source), so a
+    # sidecar that is never rewritten after the source changes leaves the doc
+    # reported "unchanged" forever and freezes the graph (#1649). Re-converting
+    # when the source is newer bumps the sidecar's mtime/content, which the
+    # incremental hash check then correctly picks up. An unchanged source keeps
+    # its (newer-or-equal) sidecar untouched so it never churns (#1226).
+    try:
+        if out_path.exists() and os.stat(_os_path(out_path)).st_mtime >= os.stat(_os_path(path)).st_mtime:
+            return out_path
+    except OSError:
+        if out_path.exists():
+            return out_path
     out_path.write_text(
         f"<!-- converted from {path.name} -->\n\n{text}",
         encoding="utf-8",
@@ -643,7 +679,8 @@ def count_words(path: Path) -> int:
             return len(docx_to_markdown(path).split())
         if ext == ".xlsx":
             return len(xlsx_to_markdown(path).split())
-        return len(path.read_text(encoding="utf-8", errors="ignore").split())
+        with open(_os_path(path), encoding="utf-8", errors="ignore") as f:
+            return len(f.read().split())
     except Exception:
         return 0
 
@@ -656,11 +693,11 @@ _SKIP_DIRS = {
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".eggs", "*.egg-info",
-    "graphify-out",  # never treat own output as source input (#524)
+    "graphify-out", GRAPHIFY_OUT_NAME,  # never treat own output as source input (#524); honour GRAPHIFY_OUT (#1423)
     # Coverage/test-artefact dirs — generated, never architecturally meaningful
     "coverage", "lcov-report",              # Vitest/Istanbul/nyc HTML reports (#870)
     "visual-tests", "visual-test",          # Playwright/visual-regression bundles (#869)
-    "__snapshots__", "snapshots",           # Jest/Vitest snapshot dirs
+    "__snapshots__",                        # Jest/Vitest snapshot dir (unambiguous)
     "storybook-static",                     # Storybook production build output
     "dist-protected",                       # Protected dist variants (same noise as dist)
     # Framework cache/build dirs — generated, never architecturally meaningful (#873)
@@ -677,10 +714,31 @@ _SKIP_FILES = {
     "composer.lock", "go.sum", "go.work.sum",
 }
 
+# A bare "snapshots" dir is a Jest/Vitest artifact only when it actually holds
+# snapshot files or lives directly under a JS test root. Elsewhere it is often a
+# real code namespace (e.g. Rails app/services/snapshots/), so pruning it by name
+# silently dropped legitimate source from the graph (#1666). "__snapshots__" stays
+# unconditionally pruned above; only the ambiguous bare name is gated here.
+_JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
+
+
 def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     """Return True if this directory name looks like a venv, cache, or dep dir."""
     if part in _SKIP_DIRS:
         return True
+    if part == "snapshots":
+        # Prune only when it looks like an actual JS/Vitest snapshot dir.
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        snap_dir = parent / part
+        if parent.name in _JS_SNAPSHOT_TEST_ROOTS:
+            return True
+        try:
+            if next(snap_dir.glob("*.snap"), None) is not None:
+                return True
+        except OSError:
+            pass
+        return False
     # Catch *_venv, *_repo/site-packages patterns
     if part.endswith("_venv") or part.endswith("_env"):
         return True
@@ -757,16 +815,23 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
 
     patterns: list[tuple[Path, str]] = []
     for d in dirs:
-        # Prefer .graphifyignore; fall back to .gitignore so projects that already
-        # maintain a .gitignore get sensible defaults without duplicating it (#945).
-        ignore_file = d / ".graphifyignore"
-        if not ignore_file.exists():
-            ignore_file = d / ".gitignore"
-        if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = _parse_gitignore_line(raw)
-                if line:
-                    patterns.append((d, line))
+        # Merge .gitignore and .graphifyignore for this dir (#1363). Previously
+        # the presence of a .graphifyignore made graphify skip that dir's
+        # .gitignore entirely, so a file excluded only by .gitignore (e.g. a
+        # neutrally-named secret like prod-dump.sql) silently got indexed into
+        # the graph — whose artifacts embed file contents and are often
+        # committed. .gitignore is read first and .graphifyignore last, so
+        # .graphifyignore patterns (including `!` negations) win on conflict via
+        # last-match-wins; adding a .graphifyignore can only ever exclude MORE,
+        # never re-include a .gitignore-excluded file (#945 kept: a project with
+        # only a .gitignore still gets sensible defaults).
+        for fname in (".gitignore", ".graphifyignore"):
+            ignore_file = d / fname
+            if ignore_file.exists():
+                for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = _parse_gitignore_line(raw)
+                    if line:
+                        patterns.append((d, line))
     return patterns
 
 
@@ -976,14 +1041,11 @@ def _could_contain_included_path(path: Path, root: Path, patterns: list[tuple[Pa
 
 
 def _auto_follow_symlinks(root: Path) -> bool:
-    """Auto-detect: ``True`` if ``root`` has any direct symlinked child.
+    """Return whether ``root`` has any direct symlinked child.
 
-    Allows "fake working dir" patterns (e.g. a folder full of symlinks pointing
-    at scattered source dirs across the user's machine) to work transparently
-    without the caller having to know to pass ``follow_symlinks=True``.
-
-    Override is always possible by passing an explicit ``follow_symlinks=True``
-    or ``follow_symlinks=False`` to :func:`detect` / :func:`detect_incremental`.
+    Kept for callers that import the private helper, but detection no longer
+    enables symlink following automatically. Following symlinks is now an
+    explicit opt-in, and out-of-root symlink targets are never indexed.
     """
     try:
         for p in root.iterdir():
@@ -994,10 +1056,19 @@ def _auto_follow_symlinks(root: Path) -> bool:
     return False
 
 
+def _resolves_under_root(path: Path, root: Path) -> bool:
+    """True when ``path`` resolves to a target inside ``root``."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None) -> dict:
     root = root.resolve()
     if follow_symlinks is None:
-        follow_symlinks = _auto_follow_symlinks(root)
+        follow_symlinks = False
     google_workspace = google_workspace_enabled() if google_workspace is None else google_workspace
     files: dict[FileType, list[str]] = {
         FileType.CODE: [],
@@ -1007,6 +1078,12 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         FileType.VIDEO: [],
     }
     total_words = 0
+
+    def _wc(path: Path) -> int:
+        # Cache word counts against each file's stat signature so unchanged
+        # PDFs/docx aren't re-parsed on every run just to size the corpus (#1656).
+        from graphify import cache as _cache
+        return _cache.cached_word_count(path, root, count_words)
 
     skipped_sensitive: list[str] = []
     ignore_patterns = _load_graphifyignore(root)
@@ -1021,7 +1098,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     include_patterns = _load_graphifyinclude(root)
 
     # Always include graphify-out/memory/ - query results filed back into the graph
-    memory_dir = root / "graphify-out" / "memory"
+    memory_dir = root / GRAPHIFY_OUT / "memory"
     scan_paths = [root]
     if memory_dir.exists():
         scan_paths.append(memory_dir)
@@ -1057,6 +1134,15 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if not _is_noise_dir(d, dp)
                     and not _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache)
                 ]
+                if follow_symlinks:
+                    safe_dirs: list[str] = []
+                    for d in dirnames:
+                        child = dp / d
+                        if child.is_symlink() and not _resolves_under_root(child, root):
+                            skipped_sensitive.append(str(child) + " [symlink target outside scan root]")
+                            continue
+                        safe_dirs.append(d)
+                    dirnames[:] = safe_dirs
             for fname in filenames:
                 if fname in _SKIP_FILES:
                     continue
@@ -1067,7 +1153,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
 
     all_files.sort(key=lambda p: str(p))
 
-    converted_dir = root / "graphify-out" / "converted"
+    converted_dir = root / GRAPHIFY_OUT / "converted"
 
     for p in all_files:
         # For memory dir files, skip hidden/noise filtering
@@ -1077,6 +1163,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             if str(p).startswith(str(converted_dir)):
                 continue
         if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
+            continue
+        if not _resolves_under_root(p, root):
+            skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
@@ -1100,7 +1189,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
-                    total_words += count_words(md_path)
+                    total_words += _wc(md_path)
                 else:
                     skipped_sensitive.append(str(p) + " [Google Workspace export produced no readable text]")
                 continue
@@ -1111,14 +1200,14 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
-                    total_words += count_words(md_path)
+                    total_words += _wc(md_path)
                 else:
                     # Conversion failed (library not installed) - skip with note
                     skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
                 continue
             files[ftype].append(str(p))
             if ftype != FileType.VIDEO:
-                total_words += count_words(p)
+                total_words += _wc(p)
 
     for ftype in files:
         files[ftype].sort()
@@ -1152,12 +1241,40 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     }
 
 
+def _os_path(path: Path) -> str:
+    r"""Return an OS path string safe for open()/stat() on Windows long paths.
+
+    On win32, paths longer than the legacy MAX_PATH (260 chars) are rejected by
+    the plain file APIs unless prefixed with the extended-length marker ``\\?\``
+    (which also requires a fully-qualified path). Without it, _md5_file /
+    save_manifest / count_words silently fail to hash deeply-nested files, so
+    their manifest entry never stabilizes and detect_incremental re-flags them
+    as changed on every run (#1655). cache._normalize_path strips this prefix
+    for stable KEYS; this adds it for I/O. Non-win32 and already-prefixed paths
+    pass through unchanged.
+    """
+    import sys
+    if sys.platform != "win32":
+        return str(path)
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        return s
+    try:
+        s = os.path.abspath(s)  # \\?\ requires a fully-qualified path
+    except Exception:
+        return str(path)
+    if s.startswith("\\\\"):
+        # UNC share \\server\share -> \\?\UNC\server\share
+        return "\\\\?\\UNC\\" + s[2:]
+    return "\\\\?\\" + s
+
+
 def _md5_file(path: Path) -> str:
     """MD5 of file contents streamed in 64KB chunks — for change detection only."""
     import hashlib as _hl
     h = _hl.md5(usedforsecurity=False)
     try:
-        with path.open("rb") as f:
+        with open(_os_path(path), "rb") as f:
             for chunk in iter(lambda: f.read(65536), b""):
                 h.update(chunk)
     except OSError:
@@ -1169,7 +1286,7 @@ def _stat_and_hash(path_str: str) -> tuple[str, float, str] | None:
     """Stat + MD5 a single file; returns None on OSError (e.g. deleted mid-run)."""
     try:
         p = Path(path_str)
-        return path_str, p.stat().st_mtime, _md5_file(p)
+        return path_str, os.stat(_os_path(p)).st_mtime, _md5_file(p)
     except OSError:
         return None
 
@@ -1348,11 +1465,10 @@ def detect_incremental(
     Backwards compatible with legacy manifests storing plain float mtime values
     or {mtime, hash} dicts (treated as ast_hash only; semantic_hash = miss).
 
-    The ``follow_symlinks`` flag is forwarded to :func:`detect` so corpora that
-    rely on symlinked sub-trees (e.g. a ``state_of_truth/`` symlink pointing to a
-    directory outside the scan root) are scanned consistently between full and
-    incremental runs. ``None`` (default) means auto-detect: ``True`` when ``root``
-    contains at least one direct symlinked child, ``False`` otherwise.
+    The ``follow_symlinks`` flag is forwarded to :func:`detect` so in-root
+    symlinked sub-trees are scanned consistently between full and incremental
+    runs. ``None`` (default) does not follow symlinked directories; callers must
+    opt in explicitly, and resolved targets outside the scan root are skipped.
     """
     full = detect(root, follow_symlinks=follow_symlinks, google_workspace=google_workspace, extra_excludes=extra_excludes)
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
@@ -1375,7 +1491,7 @@ def detect_incremental(
         for f in file_list:
             stored = manifest.get(f)
             try:
-                current_mtime = Path(f).stat().st_mtime
+                current_mtime = os.stat(_os_path(Path(f))).st_mtime
             except Exception:
                 current_mtime = 0
 

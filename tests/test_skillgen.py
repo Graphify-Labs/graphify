@@ -121,6 +121,34 @@ def test_lean_core_runs_default_pipeline_with_zero_references():
         assert needed in core, f"lean core is missing default-pipeline content: {needed!r}"
 
 
+def test_extraction_states_no_api_key_required_for_every_host():
+    """Regression for #1461: every skill body that describes Step 3 extraction must
+    state up front that no API key is required, tell the agent never to prompt for or
+    block on one, and give a terminal-only (non-subagent) fallback.
+
+    Hermes (and the other AGENTS.md hosts) run the CLI directly and can't dispatch
+    subagents; the old text framed the no-key path only as 'dispatch subagents as
+    written', so those agents looped for minutes insisting on a missing API key.
+    """
+    platforms = gen.load_platforms()
+    arts = gen.render_all(platforms)
+    bodies = [a for a in arts
+              if "### Step 3 - Extract entities and relationships" in a.content]
+    assert bodies, "no rendered skill body contains the Step 3 extraction section"
+    for a in bodies:
+        assert "graphify needs no API key" in a.content, a.path
+        assert "Never ask the user for one, and never block on one." in a.content, a.path
+        # the no-key fallback must not be framed *only* around subagent dispatch
+        assert "cannot dispatch subagents" in a.content, a.path
+        # where a host prints the GEMINI key tip, the clarity must precede it (be
+        # hoisted) rather than sit buried after the key check (aider/devin print no
+        # tip — they are the model themselves — so the check only applies if present)
+        tip = "Tip: set `GEMINI_API_KEY`"
+        if tip in a.content:
+            assert a.content.index("graphify needs no API key") < a.content.index(tip), \
+                f"{a.path}: no-key clarity is not hoisted above the GEMINI tip"
+
+
 def test_references_contain_no_core_pipeline_content():
     """No reference fragment may duplicate the core build pipeline."""
     _, refs = _claude_artifacts()
@@ -257,9 +285,12 @@ def test_descriptions_are_unified():
 
 
 def test_windows_frontmatter_name_and_shell_and_extra():
-    """windows: graphify-windows name, powershell install, troubleshooting tail."""
+    """windows: name must be `graphify` (folder-name rule, #1635), powershell
+    install, troubleshooting tail."""
     core, _ = _platform_artifacts("windows")
-    assert core.startswith("---\nname: graphify-windows\n")
+    # Claude Code requires the frontmatter name to equal the install folder
+    # (graphify); a `graphify-windows` name broke skill discovery (#1635).
+    assert core.startswith("---\nname: graphify\n")
     assert "```powershell" in core
     assert "function Find-GraphifyPython" in core
     assert "## Troubleshooting" in core
@@ -305,19 +336,21 @@ def test_codex_uses_compact_extraction_windows_uses_verbose():
     assert "(compact)" not in windows_refs["extraction-spec.md"]
 
 
-def test_cli_inline_query_stub_has_no_vocab_expansion():
-    """cli-inline hosts get the NetworkX-fallback stub, not vocab-expansion."""
-    for key in ("codex", "windows"):
+def test_every_platform_query_has_expansion_and_fallback():
+    """#1325: the unified query reference ships BOTH the vocab-expansion step and
+    the inline NetworkX fallback to every platform (previously split so no host
+    got both — Claude had expansion but no fallback; the rest the reverse)."""
+    for key in ("claude", "codex", "windows", "opencode"):
         core, refs = _platform_artifacts(key)
-        # The core stub points at the query reference without the vocab step.
-        assert "expand the question against the graph's own vocabulary" not in core
+        # Core stub mentions both the vocab-expansion step and the inline fallback.
+        assert "expand the question against the graph's own vocabulary" in core
         assert "NetworkX traversal" in core
-        # The query reference carries the path/explain headings but not the
-        # claude-only vocab-expansion sub-headings.
+        # The query reference carries expansion, fallback, and path/explain.
         q = refs["query.md"]
+        assert "Constrained query expansion" in q
+        assert "If the CLI is unavailable" in q
         assert "## For /graphify path" in q
         assert "## For /graphify explain" in q
-        assert "Constrained query expansion" not in q
 
 
 def test_schema_singleton_passes_across_all_platforms():
@@ -448,54 +481,83 @@ def test_monolith_roundtrip_passes_for_aider_and_devin():
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
 
 
-def test_monoliths_change_only_the_enum_description_and_chunk_cleanup():
-    """The rendered monolith differs from v8 on exactly the allowed lines.
+def test_monoliths_change_only_sanctioned_lines():
+    """Every line that differs from pristine v8 is a sanctioned change-class.
 
-    Three changes are now in play for the monoliths: the file_type enum unified to
-    the six-value superset (the prose guidance line + the schema line), the
-    frontmatter description unified across all platforms, and the shell-agnostic
-    chunk-cleanup rewrite (#1172). Nothing else may differ.
+    The round-trip (multiset diff vs the pinned v8 blob) must come back clean:
+    each added/removed line matches one of the documented sanctioned predicates
+    in gen — the enum unification, the unified description, the chunk-cleanup
+    rewrite (#1172), and the four #1392 runbook fixes. Anything else is drift.
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
-        rendered = gen.render(platforms[key])[0].content.splitlines()
-        # Strip trigger: lines from the reference — their removal (#1180) is a
-        # permitted diff alongside enum, description, and chunk-cleanup changes.
-        original = [
-            l for l in gen._normalise(gen._git_show(platforms[key].roundtrip_ref)).splitlines()
-            if not gen._is_trigger_line(l)
-        ]
-        assert len(rendered) == len(original), f"[{key}] line count changed"
-        diff_idx = [i for i, (r, o) in enumerate(zip(rendered, original)) if r != o]
-        # Four lines change: the prose enum guidance, the schema line,
-        # the frontmatter description, and the chunk-cleanup rewrite.
-        assert len(diff_idx) == 4, f"[{key}] expected 4 changed lines, got {len(diff_idx)}"
-        enum_changes = 0
-        desc_changes = 0
-        cleanup_changes = 0
-        for i in diff_idx:
-            line = rendered[i]
-            if gen.ENUM_VALUES in line or gen.ENUM_PROSE in line:
-                enum_changes += 1
-            elif line.lstrip().startswith("description:"):
-                desc_changes += 1
-                assert UNIFIED_DESCRIPTION in line, (
-                    f"[{key}] description line is not the unified text: {line!r}"
-                )
-            elif gen._is_chunk_cleanup_line(line):
-                cleanup_changes += 1
-                # The unmatched-glob abort is fixed: the rm no longer carries the
-                # bare chunk glob, and a find ... -delete sweeps the chunks.
-                assert ".graphify_chunk_*.json" not in line.split("find", 1)[0]
-            else:
-                raise AssertionError(
-                    f"[{key}] changed line {i} is none of enum/description/cleanup: {line!r}"
-                )
-        assert enum_changes == 2, f"[{key}] expected 2 enum line changes, got {enum_changes}"
-        assert desc_changes == 1, f"[{key}] expected 1 description change, got {desc_changes}"
-        assert cleanup_changes == 1, f"[{key}] expected 1 cleanup change, got {cleanup_changes}"
+        assert gen.monolith_roundtrip(platforms[key]) == []
         # The six-value superset replaced the five-value enum in both files.
-        assert any(gen.ENUM_VALUES in line for line in rendered)
+        rendered = gen.render(platforms[key])[0].content
+        assert gen.ENUM_VALUES in rendered
+        assert UNIFIED_DESCRIPTION in rendered
+
+
+def test_monoliths_carry_the_1392_runbook_fixes():
+    """The four #1392 data-loss/correctness fixes are present in both monoliths.
+
+    The round-trip allows these change-classes; this test asserts they are
+    actually applied, so a regression that drops a fix fails here even though the
+    round-trip (which only forbids *unsanctioned* drift) would still pass.
+    """
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        body = gen.render(platforms[key])[0].content
+
+        # #6/#7 directed propagation: no bare build_from_json call survives, and
+        # the IS_DIRECTED substitution instruction is present.
+        assert "directed=IS_DIRECTED" in body
+        assert "build_from_json(extraction)" not in body
+        assert "Substitute it everywhere it appears" in body
+
+        # #10 content-only semantic scope: code is no longer flattened in.
+        assert "for cat in ('document', 'paper', 'image')" in body
+        assert "detect['files'].values()" not in body
+
+        # #12 stale-cache unlink on a miss.
+        assert ".graphify_cached.json').unlink(missing_ok=True)" in body
+
+        # #18/#20 zero-node guard before any write, report/analysis gated on
+        # to_json's return.
+        lines = body.splitlines()
+        build_i = next(i for i, l in enumerate(lines) if "G = build_from_json(extraction, directed=IS_DIRECTED)" in l)
+        guard_i = next(i for i, l in enumerate(lines[build_i:], build_i) if "number_of_nodes() == 0" in l)
+        report_i = next(i for i, l in enumerate(lines[build_i:], build_i) if "GRAPH_REPORT.md').write_text(report)" in l)
+        wrote_i = next(i for i, l in enumerate(lines[build_i:], build_i) if l.strip().startswith("wrote = to_json("))
+        # guard fires right after the build, before the graph/report are written.
+        assert build_i < guard_i < wrote_i < report_i, f"[{key}] Step 4 ordering not fixed"
+        assert "if not wrote:" in body
+
+
+def test_generated_runbooks_pass_root_to_save_manifest():
+    """#1417: every save_manifest call in a shipped runbook threads root=.
+
+    Without root=, save_manifest stores absolute path keys, so a clone or move
+    breaks --update (every cached file misses and the whole corpus re-extracts).
+    The full-build (skill.md / monoliths) and the --update reference all relativize
+    the manifest to the scan root via root='INPUT_PATH'. This guards the actual
+    shipped artifacts; --check keeps them in sync with the fragments.
+    """
+    targets = [
+        REPO_ROOT / "graphify" / "skill.md",
+        REPO_ROOT / "graphify" / "skill-aider.md",
+        REPO_ROOT / "graphify" / "skill-devin.md",
+    ]
+    targets += sorted((REPO_ROOT / "graphify" / "skills").glob("*/references/update.md"))
+    checked = 0
+    for path in targets:
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            if "save_manifest(" in ln and "import" not in ln:
+                checked += 1
+                assert "root=" in ln, (
+                    f"{path.relative_to(REPO_ROOT)}: save_manifest without root= (#1417): {ln.strip()!r}"
+                )
+    assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
 
 
 def test_devin_keeps_its_multi_field_frontmatter():
@@ -542,8 +604,36 @@ def test_always_on_roundtrip_is_byte_faithful():
     graphify.__main__, so the packaged markdown must round-trip exactly or those
     contracts silently change.
     """
+    # The guard passes with zero problems: every always-on block reproduces its
+    # frozen baseline, with the agents-md block allowed exactly the #1530
+    # sanctioned substitution recorded in gen.ALWAYS_ON_SANCTIONED_EDITS.
     problems = gen.always_on_roundtrip()
-    assert problems == [], "\n".join(problems)
+    assert problems == []
+
+    rendered_agents = next(
+        a.content
+        for a in gen.render_always_on()
+        if a.path == "graphify/always_on/agents-md.md"
+    )
+    old_instruction = (
+        "When the user types `/graphify`, invoke the `skill` tool with "
+        '`skill: "graphify"` before doing anything else.'
+    )
+    new_instruction = (
+        "When the user types `/graphify`, use the installed graphify skill or instructions "
+        "before doing anything else."
+    )
+    # The sanctioned-edit registry holds exactly this single old->new substitution.
+    assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
+        (old_instruction, new_instruction),
+    )
+    baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
+    # The ONLY divergence from the frozen baseline is the sanctioned sentence —
+    # any other byte drift would have surfaced as a problem above.
+    assert old_instruction in baseline_agents
+    assert baseline_agents.replace(old_instruction, new_instruction) == rendered_agents
+    assert "`skill` tool" not in rendered_agents
+    assert 'skill: "graphify"' not in rendered_agents
 
 
 def test_extracted_constants_equal_the_packaged_always_on_files():
@@ -791,4 +881,60 @@ def test_amp_audit_coverage_passes_against_its_own_v8():
     platforms = gen.load_platforms()
     assert gen._v8_baseline_ref("amp") == "47042beb05d1f6dd2186c0c499ae2840ce604ead:graphify/skill-amp.md"
     problems = gen.audit_coverage(platforms["amp"])
+    assert problems == [], "\n".join(problems)
+
+
+# --- the generic agents platform (#1432) ---------------------------------------
+
+
+def test_agents_renders_its_own_agents_md_hooks_wording():
+    """`agents` re-homes amp's agents-md body but with its OWN install wording.
+
+    It shares amp's bare, caveat-free `## For native AGENTS.md integration`
+    section (no `(Trae)` suffix, no PreToolUse note) but points at
+    `graphify agents install` and is worded for an unspecified host.
+    """
+    core, refs = _platform_artifacts("agents")
+    hooks = refs["hooks.md"]
+    assert "## For native AGENTS.md integration" in hooks
+    assert "## For native AGENTS.md integration (Trae)" not in hooks
+    assert "make graphify always-on in your agent sessions" in hooks
+    assert "graphify agents install" in hooks
+    assert "graphify agents uninstall  # remove the section" in hooks
+    # No amp/trae/claude wording leaks into the agents render.
+    assert "graphify amp install" not in hooks
+    assert "graphify trae" not in hooks
+    assert "graphify claude install" not in hooks
+    assert "PreToolUse" not in hooks and "PreToolUse" not in core
+    # The lean-core pointer names AGENTS.md, not CLAUDE.md.
+    assert "## For the commit hook and native AGENTS.md integration" in core
+    assert "native CLAUDE.md integration" not in core
+
+
+def test_agents_body_matches_amp_modulo_hooks_wording():
+    """The agents skill body is amp's body verbatim (it re-homes amp's bundle).
+
+    The two platforms differ only in the hooks reference's install/uninstall
+    command wording — everything else (core, query, extraction spec, the other
+    six references) is byte-identical, which is why agents audits cleanly against
+    amp's v8 baseline.
+    """
+    platforms = gen.load_platforms()
+    amp = {a.path.rsplit("/", 1)[-1]: a.content for a in gen.render(platforms["amp"])}
+    agents = {a.path.rsplit("/", 1)[-1]: a.content for a in gen.render(platforms["agents"])}
+    # The lean-core skill body is identical (frontmatter + steps, no hooks ref).
+    assert amp["skill-amp.md"] == agents["skill-agents.md"]
+    # Every reference except hooks.md is byte-identical.
+    for name in amp:
+        if name in ("skill-amp.md", "hooks.md"):
+            continue
+        assert amp[name] == agents[name], f"{name} drifted between amp and agents"
+    assert amp["hooks.md"] != agents["hooks.md"]
+
+
+def test_agents_audit_baseline_is_amps_v8_body():
+    """`agents` is a post-v8 platform, so its audit baseline is amp's v8 body."""
+    platforms = gen.load_platforms()
+    assert gen._v8_baseline_ref("agents") == "47042beb05d1f6dd2186c0c499ae2840ce604ead:graphify/skill-amp.md"
+    problems = gen.audit_coverage(platforms["agents"])
     assert problems == [], "\n".join(problems)

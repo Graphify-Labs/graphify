@@ -22,6 +22,12 @@ class ApiClient
   end
 end
 
+class TimeoutApiClient < ApiClient
+  def fetch(path, method)
+    super
+  end
+end
+
 def parse_response(raw)
   JSON.parse(raw)
 end

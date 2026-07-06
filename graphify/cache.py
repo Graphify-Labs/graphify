@@ -11,8 +11,9 @@ from pathlib import Path
 
 # Output directory name — override with GRAPHIFY_OUT env var for worktrees or
 # shared-output setups. Accepts a relative name ("graphify-out-feature") or an
-# absolute path ("/shared/graphify-out").
-_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+# absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
+# (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
+from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
@@ -179,6 +180,7 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
         st = p.stat()
         entry = _stat_index.get(abs_key)
         if (entry
+                and entry.get("hash") is not None  # word-count-only entries carry no hash
                 and entry.get("size") == st.st_size
                 and entry.get("mtime_ns") == st.st_mtime_ns):
             return entry["hash"]
@@ -198,10 +200,63 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
     digest = h.hexdigest()
 
     if st is not None:
-        _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "hash": digest}
+        entry = _stat_index.get(abs_key)
+        if (entry is not None
+                and entry.get("size") == st.st_size
+                and entry.get("mtime_ns") == st.st_mtime_ns):
+            entry["hash"] = digest  # preserve a co-located word_count
+        else:
+            _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "hash": digest}
         _stat_index_dirty = True
 
     return digest
+
+
+def cached_word_count(path: Path, root: Path, compute) -> int:
+    """Word count with the same (size, mtime_ns) stat-fastpath cache as
+    :func:`file_hash`, persisted in the shared stat index.
+
+    ``detect()`` counts words in every PDF/docx/text file to size the corpus,
+    which re-opens and re-parses every binary on each run — minutes on a large
+    docs corpus even when only a handful of files changed (#1656). This caches
+    the count against the file's stat signature so an unchanged file is counted
+    once and read from the index thereafter. ``compute(path)`` produces the
+    count on a miss. A file that can't be stat'd (e.g. a Windows long path the
+    index normalization can't reach) simply recomputes and isn't cached —
+    correct, just not accelerated.
+    """
+    global _stat_index_dirty
+    p = _normalize_path(Path(path))
+    root = _normalize_path(Path(root))
+    _ensure_stat_index(root)
+    abs_key = str(p.resolve())
+    st: "os.stat_result | None" = None
+    try:
+        st = p.stat()
+        entry = _stat_index.get(abs_key)
+        if (entry
+                and entry.get("size") == st.st_size
+                and entry.get("mtime_ns") == st.st_mtime_ns
+                and "word_count" in entry):
+            return entry["word_count"]
+    except OSError:
+        pass
+
+    wc = compute(Path(path))
+
+    if st is not None:
+        entry = _stat_index.get(abs_key)
+        if (entry
+                and entry.get("size") == st.st_size
+                and entry.get("mtime_ns") == st.st_mtime_ns):
+            entry["word_count"] = wc  # augment the existing hash entry in place
+        else:
+            _stat_index[abs_key] = {
+                "size": st.st_size, "mtime_ns": st.st_mtime_ns, "word_count": wc,
+            }
+        _stat_index_dirty = True
+
+    return wc
 
 
 def _relativize_source_files_in(payload: dict, root: Path) -> None:
@@ -404,6 +459,44 @@ def clear_cache(root: Path = Path(".")) -> None:
         if d.is_dir():
             for f in d.glob(pattern):
                 f.unlink()
+
+
+def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
+    """Remove orphaned semantic cache entries, returning the count pruned.
+
+    The semantic cache is content-hash-keyed (``{file_hash}.json`` under
+    ``cache/semantic/``) and deliberately UNVERSIONED — entries are produced by
+    the LLM from file contents, so invalidating them on every release would
+    re-bill extraction. Because it is unversioned it is also never swept by the
+    AST version-cleanup, so every content change or file deletion leaves a
+    permanent orphan entry that accumulates unbounded.
+
+    This sweeps ``cache/semantic/*.json`` and deletes any entry whose stem (the
+    content hash) is not in ``live_hashes`` — the hashes of the current live
+    document set. ``*.tmp`` atomic-write temporaries are skipped, and only this
+    directory is touched (never ``cache/ast/**`` or anything else). The
+    unversioned design is preserved: we prune by liveness, not by version.
+
+    Best-effort, mirroring :func:`_cleanup_stale_ast_entries`: each unlink is
+    wrapped in ``try/except OSError`` and a failure is ignored. The worst-case
+    failure mode is benign — a surviving orphan costs only one re-extraction of
+    one doc on a future run, never incorrect output.
+    """
+    _out = Path(_GRAPHIFY_OUT)
+    base = _out if _out.is_absolute() else Path(root).resolve() / _out
+    semantic_dir = base / "cache" / "semantic"
+    if not semantic_dir.is_dir():
+        return 0
+    pruned = 0
+    for entry in semantic_dir.glob("*.json"):
+        if entry.stem in live_hashes:
+            continue
+        try:
+            entry.unlink()
+            pruned += 1
+        except OSError:
+            pass
+    return pruned
 
 
 def check_semantic_cache(

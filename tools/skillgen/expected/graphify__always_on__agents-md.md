@@ -2,7 +2,7 @@
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
-When the user types `/graphify`, invoke the `skill` tool with `skill: "graphify"` before doing anything else.
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
 
 Rules:
 - For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.

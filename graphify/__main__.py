@@ -19,7 +19,9 @@ except Exception:
 
 # Output directory — override with GRAPHIFY_OUT env var for worktrees or shared-output setups.
 # Accepts a relative name ("graphify-out-feature") or an absolute path ("/shared/graphify-out").
-_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+# Defined once in graphify.paths so the security/callflow path guards honour the
+# same override (#1423).
+from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 
 
 @functools.lru_cache(maxsize=None)
@@ -72,6 +74,32 @@ def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
 
+class _StageTimer:
+    """Print per-stage wall-clock timings to stderr when --timing is set (#1490).
+
+    Monotonic (perf_counter), diagnostic-only: emits ``[graphify timing] <stage>:
+    N.Ns`` after each stage and a final total. Off by default, so normal output is
+    byte-identical and machine-read stdout is untouched.
+    """
+
+    def __init__(self, enabled: bool) -> None:
+        import time as _time
+        self._now = _time.perf_counter
+        self.enabled = enabled
+        self.start = self._now()
+        self._last = self.start
+
+    def mark(self, stage: str) -> None:
+        now = self._now()
+        if self.enabled:
+            print(f"[graphify timing] {stage}: {now - self._last:.1f}s", file=sys.stderr)
+        self._last = now
+
+    def total(self) -> None:
+        if self.enabled:
+            print(f"[graphify timing] total: {self._now() - self.start:.1f}s", file=sys.stderr)
+
+
 def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
     """Reject oversized graph files before parsing (CLI exit-on-fail flavor).
 
@@ -120,7 +148,41 @@ def _check_skill_version(skill_dst: Path) -> None:
     except OSError:
         return
     if installed != __version__:
-        print(f"  warning: skill is from graphify {installed}, package is {__version__}. Run 'graphify install' to update.", file=sys.stderr)
+        if _version_tuple(installed) > _version_tuple(__version__):
+            # The skill on disk is NEWER than the running package. `graphify install`
+            # writes the package's OWN (older) bundled skill and re-stamps the version,
+            # so following the old "run install" advice would silently DOWNGRADE the
+            # skill. The real fix is to upgrade the package (#1568). Common for a stale
+            # `uv tool` CLI, or a contributor whose dev checkout stamped a newer skill.
+            print(
+                f"  warning: skill is from graphify {installed}, but the package is "
+                f"{__version__} (older). Upgrade the package "
+                f"(e.g. 'uv tool upgrade graphifyy' or 'pip install -U graphifyy'); "
+                f"running 'graphify install' would downgrade the skill.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"  warning: skill is from graphify {installed}, package is {__version__}. Run 'graphify install' to update.", file=sys.stderr)
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """Parse a version string into a comparable integer tuple (``0.9.2`` -> ``(0, 9, 2)``).
+
+    Reads the leading digits of each dot-segment, so pre/post-release suffixes
+    (``1.0.0rc1``) compare by their numeric core. A non-numeric or empty segment
+    becomes 0, so a malformed stamp degrades to a conservative comparison rather
+    than raising.
+    """
+    parts: list[int] = []
+    for segment in str(version).split("."):
+        digits = ""
+        for ch in segment:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
 
 
 def _refresh_all_version_stamps() -> None:
@@ -146,6 +208,15 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".opencode" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "opencode" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "hermes":
+        if project:
+            return (project_dir or Path(".")) / ".hermes" / "skills" / "graphify" / "SKILL.md"
+        # On Windows, Hermes scans %LOCALAPPDATA%\hermes\skills, not ~/.hermes (#1403).
+        if platform.system() == "Windows":
+            local_appdata = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+            return local_appdata / "hermes" / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / ".hermes" / "skills" / "graphify" / "SKILL.md"
+
     if platform_name == "devin":
         if project:
             return (project_dir or Path(".")) / ".devin" / "skills" / "graphify" / "SKILL.md"
@@ -155,6 +226,14 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
         if project:
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "agents" / "skills" / "graphify" / "SKILL.md"
+
+    if platform_name == "agents":
+        # The generic Agent-Skills target: project ./.agents/skills, global the
+        # spec's user-global ~/.agents/skills (read by `npx skills` and compliant
+        # frameworks), NOT amp's ~/.config/agents/skills.
+        if project:
+            return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
+        return Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
 
     cfg = _PLATFORM_CONFIG[platform_name]
     if project:
@@ -345,64 +424,78 @@ def _print_project_git_add_hint(paths: list[Path]) -> None:
     print("Project-scoped install. Add to version control:")
     print(f"  git add {' '.join(unique)}")
 
-_SETTINGS_HOOK = {
-    # Claude Code v2.1.117+ removed dedicated Grep/Glob tools; searches now go through Bash.
-    # We match on Bash and inspect the command string to avoid firing on every shell call.
-    "matcher": "Bash",
-    "hooks": [
-        {
-            "type": "command",
-            "command": (
-                "CMD=$(python3 -c \""
-                "import json,sys; d=json.load(sys.stdin); "
-                "print(d.get('tool_input',d).get('command',''))\" 2>/dev/null || true); "
-                "case \"$CMD\" in "
-                r"*grep*|*rg\ *|*ripgrep*|*find\ *|*fd\ *|*ack\ *|*ag\ *) "
-                "  [ -f graphify-out/graph.json ] && "
-                r"""  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"MANDATORY: graphify-out/graph.json exists. You MUST run `graphify query \"<question>\"` before grepping raw files. Only grep after graphify has oriented you, or to modify/debug specific lines."}}' """
-                "  || true ;; "
-                "esac"
-            ),
-        }
-    ],
-}
+# PreToolUse nudge payloads, emitted verbatim by the shell-agnostic
+# `graphify hook-guard` subcommand (see _run_hook_guard). The previous hooks
+# inlined POSIX bash (case/esac, [ -f ], single-quoted echo) which Windows
+# cmd.exe/PowerShell cannot parse, so on Windows the hook failed and the nudge
+# silently vanished — users had to invoke /graphify by hand (#522). Moving the
+# logic into a Python subcommand invoked via an absolute exe path makes the hook
+# parse identically under sh, cmd.exe and PowerShell. Claude Code accepts
+# additionalContext on PreToolUse (Codex Desktop does not — that path stays a
+# no-op via `hook-check`). Compact separators keep the payload byte-for-byte the
+# same JSON the old `echo` emitted.
+_SEARCH_NUDGE = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "additionalContext": (
+            'MANDATORY: graphify-out/graph.json exists. You MUST run '
+            '`graphify query "<question>"` before grepping raw files. Only grep '
+            'after graphify has oriented you, or to modify/debug specific lines.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
 
-_READ_SETTINGS_HOOK = {
-    # The Bash hook above never sees a file read through the native Read tool or a
-    # Glob, which is the most common way an agent skips the graph: answering a
-    # codebase question by Read-ing many source files one by one (issue #1114).
-    # Match Read|Glob, inspect the target path, and nudge (never block) only for a
-    # source/doc file outside graphify-out/ when a graph exists. The parser is
-    # python3 (already a graphify dependency), the shell is POSIX, and every branch
-    # fails open, so a legitimate read always goes through. Reading the graph's own
-    # report under graphify-out/ is suppressed so it never starts a feedback loop.
-    "matcher": "Read|Glob",
-    "hooks": [
-        {
-            "type": "command",
-            "command": (
-                "HIT=$(python3 -c \""
-                "import json,sys;"
-                "d=json.load(sys.stdin);"
-                "t=d.get('tool_input',d);"
-                "s=(str(t.get('file_path') or '')+' '+str(t.get('pattern') or '')+' '+str(t.get('path') or '')).lower().replace(chr(92),'/');"
-                "exts=('.py','.js','.ts','.tsx','.jsx','.go','.rs','.java','.rb','.c','.h','.cpp','.hpp','.cc','.cs','.kt','.swift','.php','.scala','.lua','.sh','.md','.rst','.txt','.mdx');"
-                "sys.stdout.write('1' if 'graphify-out/' not in s and any(e in s for e in exts) else '')\" 2>/dev/null || true); "
-                "if [ \"$HIT\" = 1 ] && [ -f graphify-out/graph.json ]; then "
-                r"""echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"MANDATORY: graphify-out/graph.json exists. You MUST run graphify before reading source files. Use: `graphify query \"<question>\"` (scoped subgraph), `graphify explain \"<concept>\"`, or `graphify path \"<A>\" \"<B>\"`. Only read raw files after graphify has oriented you, or to modify/debug specific lines. This rule applies to subagents too — include it in every subagent prompt involving code exploration."}}'; """
-                "fi || true"
-            ),
-        }
-    ],
-}
+_READ_NUDGE = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "additionalContext": (
+            'MANDATORY: graphify-out/graph.json exists. You MUST run graphify '
+            'before reading source files. Use: `graphify query "<question>"` '
+            '(scoped subgraph), `graphify explain "<concept>"`, or '
+            '`graphify path "<A>" "<B>"`. Only read raw files after graphify has '
+            'oriented you, or to modify/debug specific lines. This rule applies to '
+            'subagents too — include it in every subagent prompt involving code '
+            'exploration.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+# Source/doc extensions the Read|Glob guard nudges on (verbatim from the old hook).
+# The trailing-extension test (real final path segment, then its last '.') means
+# '.json' never false-matches '.js', and framework files like '.astro' are kept.
+_HOOK_SOURCE_EXTS = (
+    '.py', '.js', '.ts', '.tsx', '.jsx', '.astro', '.vue', '.svelte', '.go',
+    '.rs', '.java', '.rb', '.c', '.h', '.cpp', '.hpp', '.cc', '.cs', '.kt',
+    '.swift', '.php', '.scala', '.lua', '.sh', '.md', '.rst', '.txt', '.mdx',
+)
+
+
+def _claude_pretooluse_hooks() -> "list[dict]":
+    """graphify's Claude/Codebuddy PreToolUse hooks, resolved at install time.
+
+    The command invokes `graphify hook-guard <search|read>` via the absolute exe
+    path (`_resolve_graphify_exe`), so it parses under sh, cmd.exe and PowerShell
+    alike — this is the #522 fix, and mirrors the codex hook. Matchers stay "Bash"
+    and "Read|Glob" and the command always contains "graphify", so the existing
+    install/uninstall filters find and replace both old bash hooks and these.
+    """
+    exe = _resolve_graphify_exe()
+    if " " in exe and not exe.startswith('"'):
+        exe = f'"{exe}"'
+    return [
+        {"matcher": "Bash",
+         "hooks": [{"type": "command", "command": f"{exe} hook-guard search"}]},
+        {"matcher": "Read|Glob",
+         "hooks": [{"type": "command", "command": f"{exe} hook-guard read"}]},
+    ]
 
 def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") -> str:
     return (
         "\n# graphify\n"
         f"- **graphify** (`{skill_path}`) "
         "- any input to knowledge graph. Trigger: `/graphify`\n"
-        "When the user types `/graphify`, invoke the Skill tool "
-        "with `skill: \"graphify\"` before doing anything else.\n"
+        "When the user types `/graphify`, use the installed graphify skill "
+        "or instructions before doing anything else.\n"
     )
 
 
@@ -529,6 +622,16 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "amp",
     },
+    "agents": {
+        # The generic cross-framework Agent-Skills target. Global: ~/.agents/skills
+        # (the spec's user-global location, read by `npx skills` and compliant
+        # frameworks); project: ./.agents/skills. The CLI accepts `skills` as an
+        # alias (see _canonical_platform). Ships its own rendered bundle.
+        "skill_file": "skill-agents.md",
+        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "agents",
+    },
     "devin": {
         # Monolith: devin ships the full SKILL.md inline, no references/ sidecar.
         "skill_file": "skill-devin.md",
@@ -539,30 +642,45 @@ _PLATFORM_CONFIG: dict[str, dict] = {
     },
 }
 
+# CLI-only platform aliases, resolved to a real _PLATFORM_CONFIG key before
+# dispatch. `skills` is the friendly alias for the generic `agents` platform
+# (the Agent-Skills ecosystem calls them "skills").
+_PLATFORM_ALIASES: dict[str, str] = {"skills": "agents"}
+
+
+def _canonical_platform(platform_name: str) -> str:
+    """Resolve a CLI platform alias to its real _PLATFORM_CONFIG key."""
+    return _PLATFORM_ALIASES.get(platform_name, platform_name)
+
 
 def _replace_or_append_section(content: str, marker: str, new_section: str) -> str:
     """Idempotently update or append a graphify-owned section in shared files.
 
-    If ``marker`` is not in ``content``, append ``new_section`` to the end
-    (with a blank-line separator if there's existing content).
+    If no line is exactly ``marker`` (the heading, at column 0), append
+    ``new_section`` to the end (with a blank-line separator if there's existing
+    content).
 
-    If ``marker`` IS in ``content``, replace the existing section in place.
-    The section runs from the first line containing ``marker`` to the line
-    before the next H2 heading (``## `` at line start), or to EOF if no later
-    H2 exists. This lets older installs receive the updated copy without
-    users having to uninstall and reinstall — important for the issue #580
-    fix where existing report-first text would otherwise silently linger.
+    If a real ``marker`` heading exists, replace the existing section in place.
+    The section runs from that heading to the line before the next H2 heading
+    (``## `` at line start), or to EOF if no later H2 exists. This lets older
+    installs receive the updated copy without users having to uninstall and
+    reinstall (issue #580).
+
+    The heading is matched only when a line *is* exactly ``marker`` (after
+    stripping surrounding whitespace), never as a substring. Matching ``##
+    graphify`` inside a bullet or an inline reference used to anchor the replace
+    on that mention and delete every line from there to the next heading,
+    silently destroying hand-curated content (#1688). When several exact
+    headings exist, the last one is used, since graphify's section is appended.
     """
-    if marker not in content:
+    lines = content.split("\n")
+    starts = [i for i, line in enumerate(lines) if line.strip() == marker]
+    if not starts:
         if content.strip():
             return content.rstrip() + "\n\n" + new_section.lstrip()
         return new_section.lstrip()
 
-    lines = content.split("\n")
-    start = next((i for i, line in enumerate(lines) if marker in line), None)
-    if start is None:
-        return content.rstrip() + "\n\n" + new_section.lstrip()
-
+    start = starts[-1]
     end = len(lines)
     for j in range(start + 1, len(lines)):
         if lines[j].startswith("## "):
@@ -617,6 +735,7 @@ def _print_banner() -> None:
 
 def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
     _print_banner()
+    platform = _canonical_platform(platform)
     if platform == "gemini":
         gemini_install(project_dir=project_dir, project=project)
         return
@@ -723,23 +842,30 @@ _AGENTS_MD_MARKER = "## graphify"
 
 _GEMINI_MD_MARKER = "## graphify"
 
-_GEMINI_HOOK = {
-    "matcher": "read_file|list_directory",
-    "hooks": [
-        {
-            "type": "command",
-            "command": (
-                'python -c "'
-                "import sys,pathlib,json;"
-                "e=pathlib.Path('graphify-out/graph.json').exists();"
-                "d={'decision':'allow'};"
-                "e and d.update({'additionalContext':'graphify: knowledge graph at graphify-out/. For focused questions, run `graphify query \"<question>\"` (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context.'});"
-                "sys.stdout.write(json.dumps(d))"
-                '"'
-            ),
-        }
-    ],
-}
+# Gemini CLI BeforeTool hook nudge text. The hook always returns
+# {"decision":"allow"} (never blocks a tool) and appends this as additionalContext
+# when a graph exists. Emitted by `graphify hook-guard gemini`. The old hook was a
+# `python -c "..."` one-liner that depended on a bare `python` on PATH (often
+# `python`/`py` or absent on Windows) and embedded backticks + escaped quotes that
+# Windows PowerShell mangles (#522 follow-up); the subcommand form has no such
+# dependency and parses under every shell.
+_GEMINI_NUDGE_TEXT = (
+    'graphify: knowledge graph at graphify-out/. For focused questions, run '
+    '`graphify query "<question>"` (scoped subgraph, usually much smaller than '
+    'GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only '
+    'for broad architecture context.'
+)
+
+
+def _gemini_hook() -> dict:
+    """Gemini CLI BeforeTool hook, resolved to a shell-agnostic `graphify` call."""
+    exe = _resolve_graphify_exe()
+    if " " in exe and not exe.startswith('"'):
+        exe = f'"{exe}"'
+    return {
+        "matcher": "read_file|list_directory",
+        "hooks": [{"type": "command", "command": f"{exe} hook-guard gemini"}],
+    }
 
 
 def gemini_install(project_dir: Path | None = None, *, project: bool = False) -> None:
@@ -788,7 +914,7 @@ def _install_gemini_hook(project_dir: Path) -> None:
     settings["hooks"]["BeforeTool"] = [
         h for h in before_tool if "graphify" not in str(h)
     ]
-    settings["hooks"]["BeforeTool"].append(_GEMINI_HOOK)
+    settings["hooks"]["BeforeTool"].append(_gemini_hook())
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     print("  .gemini/settings.json  ->  BeforeTool hook registered")
 
@@ -1210,8 +1336,12 @@ export const GraphifyPlugin = async ({ directory }) => {
       if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
 
       if (input.tool === "bash") {
+        // Separate with ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a
+        // statement separator ("not a valid statement separator"), which broke
+        // the first bash command in every OpenCode session on Windows (#1646).
+        // ';' works in PowerShell 5.1, Bash, and POSIX shells alike.
         output.args.command =
-          'echo "[graphify] Knowledge graph available. Read graphify-out/GRAPH_REPORT.md for god nodes and architecture context before searching files." && ' +
+          'echo "[graphify] Knowledge graph available. Read graphify-out/GRAPH_REPORT.md for god nodes and architecture context before searching files." ; ' +
           output.args.command;
         reminded = true;
       }
@@ -1369,6 +1499,12 @@ def _uninstall_kilo_plugin(project_dir: Path) -> None:
 _OPENCODE_PLUGIN_JS = """\
 // graphify OpenCode plugin
 // Injects a knowledge graph reminder before bash tool calls when the graph exists.
+//
+// IMPORTANT: keep the reminder string free of backticks and $(...) constructs.
+// The hook prepends `echo "<reminder>" && <cmd>` to the user's bash command;
+// backticks inside the double-quoted echo trigger bash command substitution,
+// which both corrupts tool output and silently executes the very graphify
+// command we are only suggesting. Plain words render fine in opencode's TUI.
 import { existsSync } from "fs";
 import { join } from "path";
 
@@ -1381,8 +1517,10 @@ export const GraphifyPlugin = async ({ directory }) => {
       if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
 
       if (input.tool === "bash") {
+        // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
+        // separator, breaking the first bash command of the session (#1646).
         output.args.command =
-          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run \\`graphify query \\"<question>\\"\\` (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." && ' +
+          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ' +
           output.args.command;
         reminded = true;
       }
@@ -1484,6 +1622,63 @@ def _resolve_graphify_exe() -> str:
         if candidate.exists():
             return str(candidate)
     return "graphify"
+
+
+def _run_hook_guard(kind: str) -> None:
+    """Shell-agnostic PreToolUse guard (#522).
+
+    Reads the tool-call JSON from stdin and, when a knowledge graph exists in the
+    current output dir, prints a nudge (`additionalContext`) telling the agent to
+    use graphify instead of grepping/reading raw files. Replaces the old inline
+    bash hooks that failed to parse on Windows. Always fails open: any error, or a
+    non-matching tool call, prints nothing and the caller exits 0, so a legitimate
+    tool call is never blocked. Detection mirrors the previous hooks exactly.
+    """
+    from graphify.paths import out_path, GRAPHIFY_OUT_NAME
+    # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
+    # the tool is never blocked; the graph nudge is appended only when a graph
+    # exists. Handled before the stdin read below (which the search/read guards need).
+    if kind == "gemini":
+        payload = {"decision": "allow"}
+        try:
+            if out_path("graph.json").is_file():
+                payload["additionalContext"] = _GEMINI_NUDGE_TEXT
+        except Exception:
+            pass
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        return
+    try:
+        d = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
+    except Exception:
+        return
+    if not isinstance(d, dict):
+        return
+    t = d.get("tool_input", d)
+    if not isinstance(t, dict):
+        return
+    try:
+        if kind == "search":
+            cmd_str = str(t.get("command", "") or "")
+            # Same set the old `case` matched: *grep*, *ripgrep*, and rg/find/fd/
+            # ack/ag as a token (name followed by a space).
+            if any(tok in cmd_str for tok in ("grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag ")) \
+                    and out_path("graph.json").is_file():
+                sys.stdout.write(_SEARCH_NUDGE)
+        elif kind == "read":
+            vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
+            j = " ".join(vals).lower().replace("\\", "/")
+            tails = [
+                "." + seg.rsplit(".", 1)[-1]
+                for v in vals if v
+                for seg in [v.lower().replace("\\", "/").rsplit("/", 1)[-1]]
+                if "." in seg
+            ]
+            under_out = "graphify-out/" in j or (GRAPHIFY_OUT_NAME.lower() + "/") in j
+            if not under_out and any(tl in _HOOK_SOURCE_EXTS for tl in tails) \
+                    and out_path("graph.json").is_file():
+                sys.stdout.write(_READ_NUDGE)
+    except Exception:
+        pass
 
 
 def _install_codex_hook(project_dir: Path) -> None:
@@ -1601,9 +1796,32 @@ def _amp_uninstall(project_dir: Path | None = None) -> None:
     _agents_uninstall(project_dir or Path("."), platform="amp")
 
 
+def _agents_platform_install(project_dir: Path | None = None) -> None:
+    """`graphify agents install`: skill into ~/.agents/skills + AGENTS.md.
+
+    The amp-twin of the generic Agent-Skills target. Mirrors _amp_install but
+    lands the skill at the spec's user-global ~/.agents/skills (set in
+    _platform_skill_destination). Wiring AGENTS.md keeps it honest with the
+    rendered hooks reference, which points at `graphify agents install`. The bare
+    `graphify install --platform agents` path stays skill-only (via install()),
+    exactly as amp's `--platform amp` does.
+    """
+    _copy_skill_file("agents")
+    _agents_install(project_dir or Path("."), "agents")
+
+
+def _agents_platform_uninstall(project_dir: Path | None = None) -> None:
+    """`graphify agents uninstall`: remove the skill and the AGENTS.md section."""
+    removed = _remove_skill_file("agents")
+    if removed:
+        print("skill removed")
+    _agents_uninstall(project_dir or Path("."), platform="agents")
+
+
 def _project_install(platform_name: str, project_dir: Path | None = None) -> None:
     """Install platform skill/config files in the current project."""
     project_dir = project_dir or Path(".")
+    platform_name = _canonical_platform(platform_name)
     if platform_name in ("claude", "windows"):
         install(platform=platform_name, project=True, project_dir=project_dir)
         claude_install(project_dir)
@@ -1636,7 +1854,9 @@ def _project_install(platform_name: str, project_dir: Path | None = None) -> Non
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
-    elif platform_name in ("copilot", "pi", "kimi"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+        # Skill-only project install: drop SKILL.md (+ references) at the scope
+        # root. `agents` -> ./.agents/skills/graphify/SKILL.md.
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
     else:
@@ -1646,6 +1866,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None) -> Non
 def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> None:
     """Remove project-scoped platform skill/config files only."""
     project_dir = project_dir or Path(".")
+    platform_name = _canonical_platform(platform_name)
     if platform_name in ("claude", "windows"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _remove_claude_skill_registration(project_dir)
@@ -1668,7 +1889,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _devin_rules_uninstall(project_dir)
         if not removed:
             print("nothing to remove")
-    elif platform_name in ("copilot", "pi", "kimi"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents"):
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         if not removed:
             print("nothing to remove")
@@ -1817,8 +2038,7 @@ def _install_claude_hook(project_dir: Path) -> None:
     pre_tool = hooks.setdefault("PreToolUse", [])
 
     hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Read|Glob") and "graphify" in str(h))]
-    hooks["PreToolUse"].append(_SETTINGS_HOOK)
-    hooks["PreToolUse"].append(_READ_SETTINGS_HOOK)
+    hooks["PreToolUse"].extend(_claude_pretooluse_hooks())
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash search + Read/Glob)")
 
@@ -1859,6 +2079,9 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # Amp also drops a user-scope skill at ~/.config/agents/skills, which the
     # AGENTS.md cleanup above does not touch.
     _remove_skill_file("amp")
+    # The generic agents platform's user-scope skill lives at ~/.agents/skills,
+    # which neither the AGENTS.md cleanup nor amp's removal reaches.
+    _remove_skill_file("agents")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
@@ -1873,12 +2096,12 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
 
     if purge:
         import shutil as _shutil
-        out = pd / "graphify-out"
+        out = pd / _GRAPHIFY_OUT
         if out.exists():
             _shutil.rmtree(out)
-            print(f"\n  graphify-out/  ->  deleted (--purge)")
+            print(f"\n  {_GRAPHIFY_OUT}/  ->  deleted (--purge)")
         else:
-            print("\n  graphify-out/  ->  not found (nothing to purge)")
+            print(f"\n  {_GRAPHIFY_OUT}/  ->  not found (nothing to purge)")
 
     print("\nDone. Run 'pip uninstall graphifyy' to remove the package itself.")
 
@@ -1964,8 +2187,7 @@ def _install_codebuddy_hook(project_dir: Path) -> None:
     pre_tool = hooks.setdefault("PreToolUse", [])
 
     hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Read|Glob") and "graphify" in str(h))]
-    hooks["PreToolUse"].append(_SETTINGS_HOOK)
-    hooks["PreToolUse"].append(_READ_SETTINGS_HOOK)
+    hooks["PreToolUse"].extend(_claude_pretooluse_hooks())
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     print(f"  .codebuddy/settings.json  ->  PreToolUse hooks registered")
 
@@ -2089,7 +2311,7 @@ def main() -> None:
     # Skip during install/uninstall (hook writes trigger a fresh check anyway).
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
-    _silent_cmds = {"install", "uninstall", "hook-check"}
+    _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
     if not any(arg in _silent_cmds for arg in sys.argv):
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
@@ -2105,7 +2327,7 @@ def main() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -2143,9 +2365,14 @@ def main() -> None:
         print("    --no-label              keep 'Community N' placeholders (skip LLM community naming)")
         print("    --backend=<name>        backend to use for community naming (default: auto-detect)")
         print("    --model=<name>          model to use for community naming")
+        print("    --max-concurrency=N     parallel community-labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
+        print("    --batch-size=N          communities per labeling LLM call (default 100)")
         print("  label <path>            (re)name communities with the configured LLM backend, regenerate report")
+        print("    --missing-only         keep existing labels and only name missing/placeholder communities")
         print("    --backend=<name>        backend to use (default: auto-detect from API keys)")
         print("    --model=<name>          model to use for community naming")
+        print("    --max-concurrency=N     parallel labeling LLM calls (default 4; forced to 1 for ollama/claude-cli)")
+        print("    --batch-size=N          communities per labeling LLM call (default 100)")
         print("  query \"<question>\"       BFS traversal of graph.json for a question")
         print("    --dfs                   use depth-first instead of breadth-first")
         print("    --context C             explicit edge-context filter (repeatable)")
@@ -2162,7 +2389,17 @@ def main() -> None:
             "    --type T                query type: query|path_query|explain (default: query)"
         )
         print("    --nodes N1 N2 ...       source node labels cited in the answer")
+        print("    --outcome O             work-memory signal: useful|dead_end|corrected")
+        print("    --correction TEXT       what the right answer was (pairs with --outcome corrected)")
         print("    --memory-dir DIR        memory directory (default: graphify-out/memory)")
+        print("  reflect                 aggregate graphify-out/memory/ outcomes into a deterministic lessons doc")
+        print("    --memory-dir DIR        memory directory (default: graphify-out/memory)")
+        print("    --out FILE              output path (default: graphify-out/reflections/LESSONS.md)")
+        print("    --graph PATH            graph.json, for community grouping + dropping stale nodes (optional)")
+        print("    --analysis PATH         .graphify_analysis.json (optional, auto-detected next to --graph)")
+        print("    --labels PATH           .graphify_labels.json (optional, auto-detected next to --graph)")
+        print("    --half-life-days N      signal weight halves every N days (default 30)")
+        print("    --min-corroboration N   distinct useful results to prefer a node (default 2)")
         print("  check-update <path>     check needs_update flag and notify if semantic re-extraction is pending (cron-safe)")
         print("  tree                    emit a D3 v7 collapsible-tree HTML for graph.json")
         print("    --graph PATH            path to graph.json (default graphify-out/graph.json)")
@@ -2173,6 +2410,11 @@ def main() -> None:
         print("    --label NAME            project label in header")
         print("  extract <path>          headless full extraction (AST + semantic LLM) for CI/scripts")
         print("    --backend B             gemini|kimi|claude|openai|deepseek|ollama (default: whichever API key is set)")
+        print("                            openai also reaches self-hosted OpenAI-compatible servers (llama.cpp,")
+        print("                            vLLM, LM Studio): set OPENAI_BASE_URL (e.g. http://localhost:8080/v1)")
+        print("                            and OPENAI_MODEL to the model name your server serves")
+        print("                            claude also reaches custom Anthropic-compatible endpoints (LiteLLM")
+        print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
         print("    --max-workers N         AST extraction subprocess count (default: cpu_count)")
@@ -2486,6 +2728,21 @@ def main() -> None:
         else:
             print("Usage: graphify amp [install|uninstall]", file=sys.stderr)
             sys.exit(1)
+    elif cmd in ("agents", "skills"):
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("agents", Path("."))
+            else:
+                _agents_platform_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("agents", Path("."))
+            else:
+                _agents_platform_uninstall(Path("."))
+        else:
+            print(f"Usage: graphify {cmd} [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
     elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd == "install":
@@ -2716,6 +2973,17 @@ def main() -> None:
                 G = json_graph.node_link_graph(_raw, edges="links")
             except TypeError:
                 G = json_graph.node_link_graph(_raw)
+            try:
+                from graphify.build import graph_has_legacy_ids as _legacy
+                if _legacy(_raw.get("nodes", [])):
+                    print(
+                        "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
+                        "rebuild with `graphify extract --force` to get path-qualified IDs "
+                        "(fixes same-name-file collisions).",
+                        file=sys.stderr,
+                    )
+            except Exception:
+                pass
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -2747,7 +3015,7 @@ def main() -> None:
             sys.exit(1)
         from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
         query = sys.argv[2]
-        graph_path = "graphify-out/graph.json"
+        graph_path = _default_graph_path()
         depth = 2
         relations: list[str] = []
         args = sys.argv[3:]
@@ -2802,16 +3070,24 @@ def main() -> None:
             )
         )
     elif cmd == "save-result":
-        # graphify save-result --question Q --answer A --type T [--nodes N1 N2 ...]
+        # graphify save-result --question Q --answer A [--type T] [--nodes N1 N2 ...]
+        #                      [--outcome useful|dead_end|corrected] [--correction TEXT]
         import argparse as _ap
 
         p = _ap.ArgumentParser(prog="graphify save-result")
         p.add_argument("--question", required=True)
-        p.add_argument("--answer", required=True)
+        p.add_argument("--answer", default=None)
+        p.add_argument("--answer-file", dest="answer_file", default=None)
         p.add_argument("--type", dest="query_type", default="query")
         p.add_argument("--nodes", nargs="*", default=[])
-        p.add_argument("--memory-dir", default="graphify-out/memory")
+        p.add_argument("--outcome", choices=("useful", "dead_end", "corrected"), default=None)
+        p.add_argument("--correction", default=None)
+        p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
         opts = p.parse_args(sys.argv[2:])
+        if opts.answer_file:
+            opts.answer = Path(opts.answer_file).read_text(encoding="utf-8").strip()
+        elif not opts.answer:
+            p.error("--answer or --answer-file is required")
         from graphify.ingest import save_query_result as _sqr
 
         out = _sqr(
@@ -2820,8 +3096,67 @@ def main() -> None:
             memory_dir=Path(opts.memory_dir),
             query_type=opts.query_type,
             source_nodes=opts.nodes or None,
+            outcome=opts.outcome,
+            correction=opts.correction,
         )
         print(f"Saved to {out}")
+    elif cmd == "reflect":
+        import argparse as _ap
+
+        p = _ap.ArgumentParser(prog="graphify reflect")
+        p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
+        p.add_argument(
+            "--out",
+            default=str(Path(_GRAPHIFY_OUT) / "reflections" / "LESSONS.md"),
+        )
+        p.add_argument("--graph", default=None)
+        p.add_argument("--analysis", default=None)
+        p.add_argument("--labels", default=None)
+        p.add_argument("--half-life-days", type=float, default=30.0,
+                       help="signal weight halves every N days (default 30)")
+        p.add_argument("--min-corroboration", type=int, default=2,
+                       help="distinct useful results to promote a node to preferred (default 2)")
+        p.add_argument("--if-stale", action="store_true",
+                       help="skip when LESSONS.md is already newer than every input "
+                            "(e.g. the git hook just refreshed it)")
+        opts = p.parse_args(sys.argv[2:])
+        from graphify.reflect import reflect as _reflect, lessons_fresh as _lessons_fresh
+
+        graph_arg = opts.graph
+        if graph_arg is None:
+            default_graph = Path(_GRAPHIFY_OUT) / "graph.json"
+            if default_graph.exists():
+                graph_arg = str(default_graph)
+
+        _gp = Path(graph_arg) if graph_arg else None
+        _analysis_path = None
+        _labels_path = None
+        if _gp is not None:
+            _analysis_path = Path(opts.analysis) if opts.analysis else (
+                _gp.parent / ".graphify_analysis.json")
+            _labels_path = Path(opts.labels) if opts.labels else (
+                _gp.parent / ".graphify_labels.json")
+
+        if opts.if_stale and _lessons_fresh(
+            Path(opts.out), Path(opts.memory_dir), _gp, _analysis_path, _labels_path
+        ):
+            print(f"Lessons already up to date -> {opts.out} (skipped; omit --if-stale to force)")
+        else:
+            out_path, agg = _reflect(
+                memory_dir=Path(opts.memory_dir),
+                out_path=Path(opts.out),
+                graph_path=_gp,
+                analysis_path=_analysis_path,
+                labels_path=_labels_path,
+                half_life_days=opts.half_life_days,
+                min_corroboration=opts.min_corroboration,
+            )
+            c = agg["counts"]
+            print(
+                f"Reflected {agg['total']} memories "
+                f"({c['useful']} useful, {c['dead_end']} dead ends, "
+                f"{c['corrected']} corrected) -> {out_path}"
+            )
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
@@ -2957,6 +3292,30 @@ def main() -> None:
         )
         print(f"  Type:      {d.get('file_type', '')}")
         print(f"  Community: {d.get('community_name') or d.get('community', '')}")
+        # Work-memory overlay: a derived experiential hint from `graphify reflect`,
+        # merged in display-only from the .graphify_learning.json sidecar next to
+        # graph.json. No line when the node has no overlay entry.
+        try:
+            from graphify.reflect import load_learning_overlay as _llo
+            from graphify.security import sanitize_label as _sl
+            _overlay = _llo(gp)
+            _entry = _overlay.get(str(nid))
+            if _entry:
+                _status = _sl(str(_entry.get("status", "")))
+                if _status == "contested":
+                    _line = (f"  Lesson: contested (useful {_entry.get('uses', 0)} / "
+                             f"dead-end {_entry.get('neg', 0)})")
+                elif _status == "preferred":
+                    _line = (f"  Lesson: preferred source (start here) — "
+                             f"{_entry.get('uses', 0)} useful, score={_entry.get('score', 0)}")
+                else:
+                    _line = (f"  Lesson: {_status or 'tentative'} — "
+                             f"{_entry.get('uses', 0)} useful, score={_entry.get('score', 0)}")
+                if _entry.get("stale"):
+                    _line += " [code changed since — re-verify]"
+                print(_line)
+        except Exception:
+            pass
         print(f"  Degree:    {G.degree(nid)}")
         from graphify.build import edge_data
         connections: list[tuple[str, str, dict]] = []  # (direction, neighbor_id, edge_data)
@@ -3132,6 +3491,8 @@ def main() -> None:
         # the optional positional path can appear in any order (#724).
         no_viz = "--no-viz" in sys.argv
         no_label = "--no-label" in sys.argv
+        missing_only = "--missing-only" in sys.argv
+        co_timing = "--timing" in sys.argv
         _backend_arg = next((a for a in sys.argv if a.startswith("--backend=")), None)
         label_backend = _backend_arg.split("=", 1)[1] if _backend_arg else None
         _model_arg = next((a for a in sys.argv if a.startswith("--model=")), None)
@@ -3143,6 +3504,8 @@ def main() -> None:
         graph_override: Path | None = None
         co_resolution: float = 1.0
         co_exclude_hubs: float | None = None
+        label_max_concurrency: int = 4
+        label_batch_size: int = 100
         i_arg = 0
         while i_arg < len(args):
             a = args[i_arg]
@@ -3164,7 +3527,15 @@ def main() -> None:
                 co_exclude_hubs = float(args[i_arg + 1]); i_arg += 2
             elif a.startswith("--exclude-hubs="):
                 co_exclude_hubs = float(a.split("=", 1)[1]); i_arg += 1
-            elif a == "--no-viz" or a.startswith("--min-community-size="):
+            elif a == "--max-concurrency" and i_arg + 1 < len(args):
+                label_max_concurrency = int(args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--max-concurrency="):
+                label_max_concurrency = int(a.split("=", 1)[1]); i_arg += 1
+            elif a == "--batch-size" and i_arg + 1 < len(args):
+                label_batch_size = int(args[i_arg + 1]); i_arg += 2
+            elif a.startswith("--batch-size="):
+                label_batch_size = int(a.split("=", 1)[1]); i_arg += 1
+            elif a in ("--no-viz", "--missing-only") or a.startswith("--min-community-size="):
                 i_arg += 1
             elif a.startswith("--"):
                 i_arg += 1
@@ -3174,7 +3545,7 @@ def main() -> None:
                 i_arg += 1
         if watch_path is None:
             watch_path = Path(".")
-        graph_json = graph_override if graph_override is not None else watch_path / "graphify-out" / "graph.json"
+        graph_json = graph_override if graph_override is not None else watch_path / _GRAPHIFY_OUT / "graph.json"
         if not graph_json.exists():
             print(
                 f"error: no graph found at {graph_json} — run /graphify first",
@@ -3192,6 +3563,7 @@ def main() -> None:
         from graphify.report import generate
         from graphify.export import to_json, to_html
 
+        stages = _StageTimer(co_timing)
         print("Loading existing graph...")
         # Solution 3 (#1019): don't hard-exit on an oversized graph.json here.
         # Core outputs (graph.json + GRAPH_REPORT.md) still get written; the
@@ -3216,6 +3588,7 @@ def main() -> None:
         _directed = bool(_raw.get("directed", False))
         G = build_from_json(_raw, directed=_directed)
         print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+        stages.mark("load")
         print("Re-clustering...")
         communities = cluster(G, resolution=co_resolution, exclude_hubs_percentile=co_exclude_hubs)
         # Mirror the watch/update path (#822): map new cids to prior ones by
@@ -3230,44 +3603,153 @@ def main() -> None:
         }
         if previous_node_community:
             communities = remap_communities_to_previous(communities, previous_node_community)
+        stages.mark("cluster")
         cohesion = score_all(G, communities)
         gods = god_nodes(G)
         surprises = surprising_connections(G, communities)
-        out = watch_path / "graphify-out"
+        stages.mark("analyze")
+        out = watch_path / _GRAPHIFY_OUT
         out.mkdir(parents=True, exist_ok=True)
         labels_path = out / ".graphify_labels.json"
-        if labels_path.exists() and not force_relabel:
+        existing_labels: dict[int, str] = {}
+        if labels_path.exists():
             try:
-                labels = {int(k): v for k, v in json.loads(labels_path.read_text(encoding="utf-8")).items()}
+                existing_labels = {
+                    int(k): v
+                    for k, v in json.loads(labels_path.read_text(encoding="utf-8")).items()
+                    if isinstance(v, str)
+                }
             except Exception:
-                labels = {cid: f"Community {cid}" for cid in communities}
+                existing_labels = {}
+        # Accumulate token usage from the labeling LLM calls so cluster-only mode
+        # reports real cost instead of a hardcoded zero (#1694). Stays {0, 0} on
+        # the reuse / no-label paths, which make no LLM calls.
+        label_token_usage = {"input": 0, "output": 0}
+        if labels_path.exists() and not force_relabel:
+            # Reuse saved labels, but don't blindly trust them: the graph may have
+            # been re-scoped/re-clustered since labeling, in which case a cid now
+            # covers a DIFFERENT community and its old (LLM) name is wrong (#label-stale).
+            # Validate each community against the membership signature saved beside the
+            # labels; any community that changed (or has no saved label) is renamed by
+            # its current hub — deterministic and correct-by-construction — and the user
+            # is told to `graphify label` for fresh LLM names. Unchanged communities keep
+            # their saved label. When no signature sidecar exists (labels predate this),
+            # fall back to hub-filling only the communities missing a label.
+            from graphify.cluster import community_member_sigs, label_communities_by_hub
+            sig_path = labels_path.parent / (labels_path.name + ".sig")
+            saved_sigs: dict[int, str] = {}
+            if sig_path.exists():
+                try:
+                    saved_sigs = {
+                        int(k): v for k, v in
+                        json.loads(sig_path.read_text(encoding="utf-8")).items()
+                        if isinstance(v, str)
+                    }
+                except Exception:
+                    saved_sigs = {}
+            cur_sigs = community_member_sigs(communities)
+            count_mismatch = len(existing_labels) != len(communities)
+            labels = {}
+            hub_labels: dict[int, str] | None = None
+            changed = 0
+            for cid in communities:
+                have_label = cid in existing_labels
+                if saved_sigs:
+                    # Precise: the membership signature tells us if this exact
+                    # community changed since it was labeled.
+                    fresh = have_label and saved_sigs.get(cid) == cur_sigs.get(cid)
+                else:
+                    # No signature sidecar (labels predate it). A differing community
+                    # COUNT means the labels describe a different clustering, so a cid's
+                    # old label can't be trusted; equal count is the best "same" signal.
+                    fresh = have_label and not count_mismatch
+                if fresh:
+                    labels[cid] = existing_labels[cid]
+                else:
+                    if hub_labels is None:
+                        hub_labels = label_communities_by_hub(G, communities)
+                    labels[cid] = hub_labels[cid]
+                    if have_label:
+                        changed += 1
+            if changed:
+                print(
+                    f"[graphify] community set changed since labeling "
+                    f"({len(existing_labels)} saved labels, {len(communities)} communities now; "
+                    f"renamed {changed} community(ies) by their hub). "
+                    f"Run `graphify label` to refresh names with the LLM.",
+                    file=sys.stderr,
+                )
         elif no_label and not force_relabel:
             labels = {cid: f"Community {cid}" for cid in communities}
         else:
             # No labels file yet (or `graphify label` forced a refresh). When run
             # standalone there is no orchestrating agent to do skill.md Step 5, so
-            # auto-name communities with the configured backend rather than leave
-            # "Community N" (#1097). Degrades to placeholders if no backend/on error.
+            # auto-name communities rather than leave "Community N" (#1097).
+            from graphify.cluster import label_communities_by_hub
             from graphify.llm import generate_community_labels
             print("Labeling communities...")
-            # The final labels (LLM or placeholder fallback) are persisted to
-            # .graphify_labels.json by the unconditional write below.
-            labels, _ = generate_community_labels(
-                G, communities, backend=label_backend, model=label_model, gods=gods
+            # Deterministic, LLM-free base labels: name each community after its
+            # highest-degree hub, so the report is readable even with no backend
+            # (previously bare "Community N"). A configured LLM backend overrides these
+            # with richer names below; its no-backend placeholder fallback does NOT.
+            hub_labels = label_communities_by_hub(G, communities)
+            label_communities_input = communities
+            labels = dict(hub_labels)
+            if missing_only:
+                labels = {
+                    cid: existing_labels.get(cid, hub_labels[cid])
+                    for cid in communities
+                }
+                label_communities_input = {
+                    cid: members
+                    for cid, members in communities.items()
+                    if cid not in existing_labels or existing_labels.get(cid) == f"Community {cid}"
+                }
+            generated_labels, _ = generate_community_labels(
+                G, label_communities_input, backend=label_backend, model=label_model, gods=gods,
+                max_concurrency=label_max_concurrency, batch_size=label_batch_size,
+                usage_out=label_token_usage,
             )
+            # Only let the LLM OVERRIDE where it produced a real name — its no-backend
+            # fallback returns "Community {cid}" placeholders, which must not clobber
+            # the deterministic hub labels.
+            labels.update({
+                cid: v for cid, v in generated_labels.items()
+                if v and v != f"Community {cid}"
+            })
+        stages.mark("label")
         questions = suggest_questions(G, communities, labels)
-        tokens = {"input": 0, "output": 0}
+        tokens = label_token_usage
         from graphify.export import _git_head as _gh
         _commit = _gh()
+        from graphify.report import load_learning_for_report as _llfr
         report = generate(G, communities, cohesion, labels, gods, surprises,
                           {"warning": "cluster-only mode — file stats not available"},
                           tokens, str(watch_path), suggested_questions=questions,
-                          min_community_size=min_community_size, built_at_commit=_commit)
+                          min_community_size=min_community_size, built_at_commit=_commit,
+                          learning=_llfr(out / "graph.json"))
         (out / "GRAPH_REPORT.md").write_text(report, encoding="utf-8")
+        stages.mark("report")
         from graphify.export import backup_if_protected as _backup
         _backup(out)
+        analysis = {
+            "communities": {str(k): v for k, v in communities.items()},
+            "cohesion": {str(k): v for k, v in cohesion.items()},
+            "gods": gods,
+            "surprises": surprises,
+            "questions": questions,
+        }
+        (out / ".graphify_analysis.json").write_text(
+            json.dumps(analysis, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         to_json(G, communities, str(out / "graph.json"), community_labels=labels)
         labels_path.write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding="utf-8")
+        # Membership signatures beside the labels so a later cluster-only can detect
+        # which communities changed and avoid reusing a stale label (see reuse above).
+        from graphify.cluster import community_member_sigs as _cms
+        (labels_path.parent / (labels_path.name + ".sig")).write_text(
+            json.dumps({str(k): v for k, v in _cms(communities).items()}), encoding="utf-8")
 
         # Mirror watch.py pattern: gate to_html so core outputs (graph.json +
         # GRAPH_REPORT.md) always land. Honor --no-viz explicitly; otherwise
@@ -3277,6 +3759,7 @@ def main() -> None:
         if no_viz:
             if html_target.exists():
                 html_target.unlink()
+            stages.mark("export"); stages.total()
             print(f"Done - {len(communities)} communities. GRAPH_REPORT.md and graph.json updated (--no-viz; graph.html removed).")
         else:
             try:
@@ -3285,11 +3768,13 @@ def main() -> None:
                 _node_limit = 5000 if _over_cap else None
                 to_html(G, communities, str(html_target), community_labels=labels or None,
                         node_limit=_node_limit)
+                stages.mark("export"); stages.total()
                 print(f"Done - {len(communities)} communities. GRAPH_REPORT.md, graph.json and graph.html updated.")
             except ValueError as viz_err:
                 if html_target.exists():
                     html_target.unlink()
                 print(f"Skipped graph.html: {viz_err}")
+                stages.mark("export"); stages.total()
                 print(f"Done - {len(communities)} communities. GRAPH_REPORT.md and graph.json updated.")
 
     elif cmd == "update":
@@ -3352,6 +3837,12 @@ def main() -> None:
         # Codex Desktop rejects hookSpecificOutput.additionalContext on PreToolUse.
         # Keep this as a cross-platform no-op so installed hooks never break Bash
         # tool calls. Graph guidance reaches the agent via AGENTS.md / skill instead.
+        sys.exit(0)
+    elif cmd == "hook-guard":
+        # Shell-agnostic Claude/Codebuddy PreToolUse guard (#522). Replaces the old
+        # inline-bash hooks that failed on Windows. Prints an additionalContext nudge
+        # toward graphify when a graph exists; always exits 0 (never blocks a tool).
+        _run_hook_guard(sys.argv[2] if len(sys.argv) > 2 else "")
         sys.exit(0)
     elif cmd == "check-update":
         if len(sys.argv) < 3:
@@ -3510,10 +4001,25 @@ def main() -> None:
             except TypeError:
                 G = _jg.node_link_graph(data)
             graphs.append(G)
+        # nx.compose requires all graphs to be the same type.  When input graphs
+        # come from different sources (e.g. an AST-only run vs a full LLM run) one
+        # may be a MultiGraph and another a Graph.  Normalise everything to Graph
+        # (the graphify default) by converting MultiGraphs with nx.Graph().
+        def _to_simple(g: "_nx.Graph") -> "_nx.Graph":
+            # nx.compose requires every graph to be the same type. Inputs may
+            # disagree on BOTH axes — directed vs undirected, and multi vs simple
+            # — because per-repo graph.json files are written by different extract
+            # paths at different times. Normalise everything to a plain undirected
+            # Graph (the merged cross-repo view is undirected anyway), which covers
+            # DiGraph / MultiGraph / MultiDiGraph. Without this a directed input
+            # crashed compose with "All graphs must be directed or undirected" (#1606).
+            if type(g) is not _nx.Graph:
+                return _nx.Graph(g)
+            return g
         merged = _nx.Graph()
         for G, gp in zip(graphs, graph_paths):
             repo_tag = gp.parent.parent.name  # graphify-out/../ → repo dir name
-            prefixed = _prefix(G, repo_tag)
+            prefixed = _to_simple(_prefix(G, repo_tag))
             merged = _nx.compose(merged, prefixed)
         try:
             out_data = _jg.node_link_data(merged, edges="links")
@@ -3858,7 +4364,7 @@ def main() -> None:
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark
 
-        graph_path = sys.argv[2] if len(sys.argv) > 2 else "graphify-out/graph.json"
+        graph_path = sys.argv[2] if len(sys.argv) > 2 else _default_graph_path()
         _enforce_graph_size_cap_or_exit(Path(graph_path))
         # Try to load corpus_words from detect output
         corpus_words = None
@@ -3940,7 +4446,7 @@ def main() -> None:
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
-                "[--api-timeout S] [--postgres DSN] [--cargo]",
+                "[--api-timeout S] [--postgres DSN] [--cargo] [--timing]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -3975,6 +4481,7 @@ def main() -> None:
         cli_resolution: float = 1.0
         cli_exclude_hubs: float | None = None
         cli_excludes: list[str] = []
+        cli_timing: bool = False
 
         def _parse_int(name: str, raw: str) -> int:
             try:
@@ -4063,6 +4570,8 @@ def main() -> None:
             elif a == "--cargo":
                 cli_cargo = True
                 i += 1
+            elif a == "--timing":
+                cli_timing = True; i += 1
             else:
                 i += 1
 
@@ -4093,8 +4602,10 @@ def main() -> None:
         # so a fresh checkout writes graphify-out/ at the project root, matching
         # the skill.md pipeline.
         out_root = (out_dir.resolve() if out_dir else target)
-        graphify_out = out_root / "graphify-out"
+        graphify_out = out_root / _GRAPHIFY_OUT
         graphify_out.mkdir(parents=True, exist_ok=True)
+
+        stages = _StageTimer(cli_timing)
 
         from graphify.detect import (
             detect as _detect,
@@ -4153,6 +4664,7 @@ def main() -> None:
                 f"{len(doc_files)} docs, {len(paper_files)} papers, "
                 f"{len(image_files)} images"
             )
+        stages.mark("detect")
 
         # Resolve the LLM backend only now that we know whether the corpus
         # needs one. A code-only corpus is pure local AST and must not require
@@ -4258,10 +4770,12 @@ def main() -> None:
             except Exception as exc:
                 print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
+        stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
         from graphify.cache import (
             check_semantic_cache as _check_semantic_cache,
+            prune_semantic_cache as _prune_semantic_cache,
             save_semantic_cache as _save_semantic_cache,
         )
         sem_result: dict = {
@@ -4353,6 +4867,33 @@ def main() -> None:
                 sem_result["input_tokens"] += fresh.get("input_tokens", 0)
                 sem_result["output_tokens"] += fresh.get("output_tokens", 0)
 
+        # Prune orphaned semantic cache entries. The semantic cache is
+        # content-hash-keyed and unversioned, so it is never swept by the AST
+        # version-cleanup: every content change or file deletion leaves a
+        # permanent orphan that accumulates unbounded (#1527). Sweep it against
+        # the FULL live document set (``files_by_type`` — present in both the
+        # incremental and full branches), NOT the incremental ``semantic_files``
+        # changed-subset, which would delete every unchanged doc's valid entry.
+        # Best-effort: a prune failure must never break extraction.
+        try:
+            from graphify.cache import file_hash as _file_hash
+            _live_hashes: set[str] = set()
+            for _kind in ("document", "paper", "image"):
+                for _fp in files_by_type.get(_kind, []):
+                    _abs = Path(_fp)
+                    if not _abs.is_absolute():
+                        _abs = Path(out_root) / _abs
+                    if not _abs.is_file():
+                        continue  # deleted/missing — leave out so its entry is pruned
+                    try:
+                        _live_hashes.add(_file_hash(_abs, out_root))
+                    except OSError:
+                        pass
+            _prune_semantic_cache(out_root, _live_hashes)
+        except Exception as exc:
+            print(f"[graphify extract] warning: could not prune semantic cache: {exc}", file=sys.stderr)
+        stages.mark("semantic extract")
+
         pg_result: dict = {"nodes": [], "edges": []}
         if cli_postgres_dsn is not None:
             from graphify.pg_introspect import introspect_postgres
@@ -4371,7 +4912,7 @@ def main() -> None:
             print("[graphify extract] introspecting Cargo workspace...")
             try:
                 cargo_result = introspect_cargo(target)
-            except (ConnectionError, ImportError) as exc:
+            except (ConnectionError, ImportError, OSError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 sys.exit(1)
             print(f"[graphify extract] Cargo: {len(cargo_result['nodes'])} nodes, "
@@ -4411,11 +4952,48 @@ def main() -> None:
         if no_cluster:
             # --no-cluster: dump the raw merged extraction as graph.json.
             # No NetworkX, no community detection, no analysis sidecar.
+            # Dedupe nodes (by id) and parallel edges so the raw output matches the
+            # clustered path (whose DiGraph collapses both) and stays deterministic
+            # across modes (#1317; node dedup also collapses shared Swift module
+            # anchors emitted per importing file, #1327).
+            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
             from graphify.export import backup_if_protected as _backup
+            if (
+                incremental_mode
+                and not code_files
+                and not semantic_files
+                and not deleted_files
+                and not pg_result.get("nodes")
+                and not pg_result.get("edges")
+                and not cargo_result.get("nodes")
+                and not cargo_result.get("edges")
+            ):
+                print(
+                    "[graphify extract] no incremental changes detected "
+                    "(--no-cluster); outputs left untouched."
+                )
+                try:
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
+                except Exception as exc:
+                    print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+                stages.total()
+                sys.exit(0)
+
+            merged["nodes"] = _dedupe_nodes(merged["nodes"])
+            merged["edges"] = _dedupe_edges(merged["edges"])
+            # Backfill source_file from endpoint nodes — this raw path bypasses
+            # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
+            _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}
+            for _e in merged["edges"]:
+                if not _e.get("source_file"):
+                    _e["source_file"] = (
+                        _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
+                    )
             _backup(graphify_out)
             graph_json_path.write_text(
                 json.dumps(merged, indent=2), encoding="utf-8"
             )
+            stages.mark("write")
             cost = _estimate_cost(
                 backend, merged["input_tokens"], merged["output_tokens"]
             )
@@ -4447,6 +5025,7 @@ def main() -> None:
                               f"(+{result['nodes_added']} nodes, -{result['nodes_removed']} pruned).")
                 except Exception as exc:
                     print(f"[graphify global] warning: failed to merge into global graph: {exc}", file=sys.stderr)
+            stages.total()
             sys.exit(0)
 
         # Build graph + cluster + score + write.
@@ -4470,6 +5049,7 @@ def main() -> None:
             )
         else:
             G = _build([merged], dedup=True, dedup_llm_backend=dedup_backend, root=target)
+        stages.mark("build")
         if G.number_of_nodes() == 0:
             print(
                 "[graphify extract] graph is empty — extraction produced no nodes. "
@@ -4480,6 +5060,7 @@ def main() -> None:
             sys.exit(1)
 
         communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs)
+        stages.mark("cluster")
         cohesion = _score_all(G, communities)
         try:
             gods = _god_nodes(G)
@@ -4489,10 +5070,12 @@ def main() -> None:
             surprises = _surprising(G, communities)
         except Exception:
             surprises = []
+        stages.mark("analyze")
 
         from graphify.export import backup_if_protected as _backup
         _backup(graphify_out)
         _to_json(G, communities, str(graph_json_path), force=True)
+        stages.mark("export")
         if merged.get("output_tokens", 0) > 0:
             (graphify_out / ".graphify_semantic_marker").write_text(
                 json.dumps({"output_tokens": merged["output_tokens"]}), encoding="utf-8"
@@ -4556,6 +5139,7 @@ def main() -> None:
             f"`graphify cluster-only {graphify_out.parent}` "
             "to generate GRAPH_REPORT.md and name communities"
         )
+        stages.total()
 
     elif cmd == "cache-check":
         # graphify cache-check <files_from> [--root <dir>]
@@ -4579,7 +5163,7 @@ def main() -> None:
                 i += 1
         files = [f for f in files_from.read_text(encoding="utf-8").splitlines() if f.strip()]
         cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(files, root)
-        out = root / "graphify-out"
+        out = root / _GRAPHIFY_OUT
         out.mkdir(parents=True, exist_ok=True)
         if cached_nodes or cached_edges or cached_hyperedges:
             (out / ".graphify_cached.json").write_text(

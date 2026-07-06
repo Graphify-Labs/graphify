@@ -19,3 +19,17 @@ class SampleService {
         processor.reset()
     }
 }
+
+interface Resettable {
+    void reset()
+}
+
+class ExtendedService extends SampleService implements Resettable {
+    ExtendedService(Processor processor) {
+        super(processor)
+    }
+
+    void reset() {
+        // no-op
+    }
+}

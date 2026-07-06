@@ -61,3 +61,77 @@ def test_report_shows_raw_cohesion_scores():
     assert "Cohesion:" in report
     assert "✓" not in report
     assert "⚠" not in report
+
+
+# --- work-memory lessons section ----------------------------------------------
+
+def test_report_work_memory_section_present_with_overlay_and_dead_ends():
+    """When a work-memory overlay (preferred sources) and query-scoped dead-ends
+    are supplied, the report grows a `## Work-memory lessons` section listing the
+    preferred sources and, separately, the dead-ends as question -> nodes."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    learning = {
+        "overlay": {
+            "auth_login": {"status": "preferred", "uses": 3, "score": 2.4,
+                           "label": "login()", "stale": False},
+            "redis": {"status": "tentative", "uses": 1, "score": 0.5,
+                      "label": "RedisClient", "stale": False},
+        },
+        "dead_ends": [
+            {"question": "does it use websockets?", "nodes": ["WSServer"], "date": "2026-05-01"},
+        ],
+    }
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection,
+                      tokens, "./project", learning=learning)
+    assert "## Work-memory lessons" in report
+    assert "**Preferred sources**" in report
+    assert "`login()`" in report
+    # Tentative is not listed in the report's preferred block.
+    assert "RedisClient" not in report
+    # Dead-ends are query-scoped: question -> nodes, NOT a node-level status.
+    assert "**Known dead ends**" in report
+    assert "does it use websockets?" in report
+    assert "`WSServer`" in report
+
+
+def test_report_work_memory_section_absent_without_overlay():
+    """No learning input => no section; report identical to pre-feature."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    before = generate(G, communities, cohesion, labels, gods, surprises, detection,
+                      tokens, "./project")
+    assert "## Work-memory lessons" not in before
+    # Explicit empty learning also omits the section.
+    empty = generate(G, communities, cohesion, labels, gods, surprises, detection,
+                     tokens, "./project", learning={"overlay": {}, "dead_ends": []})
+    assert "## Work-memory lessons" not in empty
+    assert before == empty
+
+
+def test_import_cycles_section_present_for_code_corpus():
+    # #1657: the fixture is a code corpus, so the Import Cycles section shows.
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Import Cycles" in report
+
+
+def test_import_cycles_section_absent_for_documents_only_corpus():
+    # #1657: a documents-only corpus has no imports; the section is pure noise
+    # ("None detected") and must be suppressed.
+    extraction = {
+        "nodes": [
+            {"id": "d1", "label": "intro.md", "file_type": "document"},
+            {"id": "d2", "label": "guide.md", "file_type": "document"},
+        ],
+        "edges": [{"source": "d1", "target": "d2", "relation": "references"}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(extraction)
+    communities = cluster(G)
+    cohesion = score_all(G, communities)
+    labels = {cid: f"Community {cid}" for cid in communities}
+    gods = god_nodes(G)
+    surprises = surprising_connections(G)
+    detection = {"total_files": 2, "total_words": 100, "needs_graph": True, "warning": None}
+    tokens = {"input": 0, "output": 0}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Import Cycles" not in report

@@ -12,6 +12,8 @@ import json
 import re
 from pathlib import Path
 
+from .build import _normalize_hyperedge_members
+
 # Labels longer than this many characters, or containing >= this many words,
 # are candidates for being sentence-like rationale text rather than entity names.
 _RATIONALE_MIN_CHARS = 80
@@ -101,6 +103,10 @@ def validate_semantic_fragment(fragment: object) -> list[str]:
             if not isinstance(he, dict):
                 errors.append(f"hyperedges[{i}] must be an object")
                 continue
+            # Fold alias member keys (members/node_ids) onto `nodes` (#1561) so
+            # an alias-keyed hyperedge isn't rejected here for "nodes must be a
+            # list" before it ever reaches build's normalization.
+            _normalize_hyperedge_members(he)
             _validate_semantic_id(errors, f"hyperedges[{i}].id", he.get("id"))
             he_nodes = he.get("nodes")
             if not isinstance(he_nodes, list):
@@ -265,6 +271,10 @@ def sanitize_semantic_fragment(fragment: dict) -> dict:
     for he in hyperedges:
         if not isinstance(he, dict):
             continue
+        # Fold alias member keys (members/node_ids) onto `nodes` (#1561) so an
+        # alias-keyed hyperedge isn't silently dropped below for a missing
+        # `nodes` list before build can canonicalize it.
+        _normalize_hyperedge_members(he)
         he_nodes = he.get("nodes")
         if not isinstance(he_nodes, list):
             continue
