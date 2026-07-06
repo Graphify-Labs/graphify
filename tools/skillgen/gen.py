@@ -96,6 +96,27 @@ ALWAYS_ON_BLOCKS = {
     "kiro-steering": "_KIRO_STEERING",
 }
 
+# Sanctioned divergences from the frozen always-on baseline above. The roundtrip
+# guard deliberately does NOT track HEAD, so any *intentional* change to an
+# always-on instruction block must be recorded here as an explicit, reviewable
+# old -> new substitution keyed by the baseline constant. The guard applies these
+# to the baseline before the byte-for-byte comparison; anything not covered here
+# still fails the guard, so unrelated drift cannot slip through. Each entry is a
+# one-time, audited edit to the otherwise-immutable v8 baseline.
+ALWAYS_ON_SANCTIONED_EDITS: dict[str, tuple[tuple[str, str], ...]] = {
+    # #1530: install guidance must stay host-generic — do not tell agents to
+    # invoke a literal `skill` tool with `skill: "graphify"`, which is
+    # host-specific and not valid in every environment.
+    "_AGENTS_MD_SECTION": (
+        (
+            "When the user types `/graphify`, invoke the `skill` tool with "
+            '`skill: "graphify"` before doing anything else.',
+            "When the user types `/graphify`, use the installed graphify skill or instructions "
+            "before doing anything else.",
+        ),
+    ),
+}
+
 # The full six-value file_type enum (Decision A). Every rendered platform — split
 # or monolith — must carry exactly this enum, byte for byte. schema-singleton
 # guards it.
@@ -565,6 +586,7 @@ def _git_show(ref: str) -> str:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.returncode != 0:
         raise SystemExit(f"error: could not read {ref}: {result.stderr.strip()}")
@@ -846,6 +868,19 @@ def _is_no_api_key_fix_line(line: str) -> bool:
     return "graphify needs no API key" in line
 
 
+def _is_shebang_allowlist_fix_line(line: str) -> bool:
+    """Whether a line is part of the Homebrew ``python@`` shebang allowlist fix (#1586).
+
+    The interpreter-detection guard rejected any shebang containing a character
+    outside ``[!a-zA-Z0-9/_.-]``, but Homebrew installs versioned Python under
+    ``python@3.13``, so a valid interpreter path legitimately contains ``@`` and
+    detection fell through to a bare ``python3`` that lacked graphify. ``@`` is now
+    allowed, matching the #473 hooks.py fix; injection chars are still rejected.
+    Both the old (removed) and new (added) allowlist forms match here.
+    """
+    return "[!a-zA-Z0-9/_." in line
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -860,6 +895,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_zero_node_guard_fix_line,
     _is_manifest_root_fix_line,
     _is_no_api_key_fix_line,
+    _is_shebang_allowlist_fix_line,
 )
 
 
@@ -953,10 +989,18 @@ def always_on_roundtrip() -> list[str]:
         if const_name not in baseline:
             problems.append(f"could not find constant {const_name} in {ALWAYS_ON_BASELINE_REF}")
             continue
-        if rendered[path] != baseline[const_name]:
+        expected = baseline[const_name]
+        for old, new in ALWAYS_ON_SANCTIONED_EDITS.get(const_name, ()):
+            if old not in expected:
+                problems.append(
+                    f"sanctioned edit for {const_name} no longer applies: "
+                    f"old text not found in {ALWAYS_ON_BASELINE_REF}"
+                )
+            expected = expected.replace(old, new)
+        if rendered[path] != expected:
             problems.append(
                 f"always_on/{basename}.md does not reproduce {const_name} byte for byte "
-                f"(rendered {len(rendered[path])} chars vs baseline {len(baseline[const_name])} chars)"
+                f"(rendered {len(rendered[path])} chars vs baseline {len(expected)} chars)"
             )
     return problems
 

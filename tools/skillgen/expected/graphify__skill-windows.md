@@ -1,5 +1,5 @@
 ---
-name: graphify-windows
+name: graphify
 description: "Use for any question about a codebase, its architecture, file relationships, or project content — especially when graphify-out/ exists, where the question should be treated as a graphify query first. Turns any input (code, docs, papers, images, videos) into a persistent knowledge graph with god nodes, community detection, and query/path/explain tools."
 ---
 
@@ -651,7 +651,7 @@ if [ ! -f graphify-out/.graphify_python ]; then
     GRAPHIFY_BIN=$(which graphify 2>/dev/null)
     if [ -n "$GRAPHIFY_BIN" ]; then
         PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.-]*) PYTHON="python3" ;; esac
+        case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
     else
         PYTHON="python3"
     fi
