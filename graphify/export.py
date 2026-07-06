@@ -1565,6 +1565,99 @@ def push_to_falkordb(
     return {"nodes": nodes_pushed, "edges": edges_pushed}
 
 
+def push_to_maludb(
+    G: nx.Graph,
+    base_url: str,
+    token: str,
+    namespace: str,
+    communities: dict[int, list[str]] | None = None,
+    timeout: int = 300,
+) -> dict:
+    """Push graph to a MaluDb memory database via POST /v1/graph/import.
+
+    MaluDb (https://github.com/maludb) persists the graph in PostgreSQL:
+    nodes become subjects (canonical name "<namespace>/<node id>", label as
+    alias) and edges become subject-verb-object statements (the relation is
+    the verb; EXTRACTED/INFERRED/AMBIGUOUS confidence maps to 1.0/0.7/0.4).
+    The server upserts idempotently, so re-pushing the same graph updates
+    rather than duplicates — same contract as push_to_neo4j.
+
+    No extra dependency: uses stdlib urllib against any MaluDb /v1 API
+    server. Auth is a bearer token (mint one via the server's /v1/tokens).
+
+    Returns the server's import report:
+    {"namespace", "nodes": {...}, "edges": {...}, "verbs_created",
+     "chunks", "skipped"}.
+    """
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urlparse
+
+    # Operator-supplied push target (like neo4j's bolt URI), not untrusted
+    # content — so only the scheme is enforced. security.validate_url would
+    # wrongly reject localhost / private-network MaluDb servers here.
+    if urlparse(base_url).scheme.lower() not in ("http", "https"):
+        raise ValueError(f"MaluDb base URL must be http(s), got {base_url!r}")
+
+    node_community = _node_community_map(communities) if communities else {}
+
+    nodes = []
+    for node_id, data in G.nodes(data=True):
+        n: dict = {"id": node_id}
+        for key in ("label", "source_file", "source_location", "file_type"):
+            value = data.get(key)
+            if isinstance(value, (str, int, float, bool)):
+                n[key] = value
+        cid = node_community.get(node_id, data.get("community"))
+        if cid is not None:
+            n["community"] = cid
+        nodes.append(n)
+
+    links = []
+    for u, v, data in G.edges(data=True):
+        e: dict = {
+            "source": u,
+            "target": v,
+            "relation": data.get("relation") or "related_to",
+        }
+        confidence = data.get("confidence")
+        if confidence is not None:
+            e["confidence"] = confidence
+        links.append(e)
+
+    try:
+        from importlib.metadata import version as _pkg_version
+        provenance = f"graphify-{_pkg_version('graphifyy')}"
+    except Exception:
+        provenance = "graphify"
+
+    payload = {
+        "namespace": namespace,
+        "provenance": provenance,
+        "graph": {"nodes": nodes, "links": links},
+    }
+
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/v1/graph/import",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310 - validate_url enforces http(s)
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(
+            f"MaluDb import failed: HTTP {exc.code} from {base_url}: {detail}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"MaluDb import failed: cannot reach {base_url}: {exc.reason}") from exc
+
+
 def to_graphml(
     G: nx.Graph,
     communities: dict[int, list[str]],

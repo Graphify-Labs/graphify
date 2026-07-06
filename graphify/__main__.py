@@ -3979,7 +3979,7 @@ def main() -> None:
 
     elif cmd == "export":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
-        if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb"):
+        if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb", "maludb"):
             print("Usage: graphify export <format>", file=sys.stderr)
             print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=sys.stderr)
             print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=sys.stderr)
@@ -3992,6 +3992,9 @@ def main() -> None:
             print("            (or set NEO4J_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
             print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
             print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
+            print("  maludb    [--graph PATH] [--push URL] [--namespace NS] [--token T]", file=sys.stderr)
+            print("            (URL defaults to MALUDB_URL; set MALUDB_TOKEN instead of --token to keep it off argv;", file=sys.stderr)
+            print("             namespace defaults to the graph's project directory name)", file=sys.stderr)
             sys.exit(1)
 
         # Parse shared args
@@ -4023,8 +4026,15 @@ def main() -> None:
         # NEO4J_PASSWORD otherwise.
         push_password: str | None = (
             os.environ.get("FALKORDB_PASSWORD") if subcmd == "falkordb"
+            else os.environ.get("MALUDB_TOKEN") if subcmd == "maludb"
             else os.environ.get("NEO4J_PASSWORD")
         ) or None
+        # maludb-only settings: --push falls back to MALUDB_URL, --token is an
+        # alias for --password (same F-031 keep-it-off-argv rationale), and the
+        # namespace defaults to the graph's project directory name.
+        maludb_namespace: str | None = None
+        if subcmd == "maludb" and not push_uri:
+            push_uri = os.environ.get("MALUDB_URL") or None
         i = 0
         while i < len(args):
             a = args[i]
@@ -4080,6 +4090,10 @@ def main() -> None:
                 push_user = args[i + 1]; i += 2
             elif a == "--password" and i + 1 < len(args):
                 push_password = args[i + 1]; i += 2
+            elif a == "--token" and i + 1 < len(args):
+                push_password = args[i + 1]; i += 2
+            elif a == "--namespace" and i + 1 < len(args):
+                maludb_namespace = args[i + 1]; i += 2
             elif subcmd == "callflow-html" and not a.startswith("-") and not graph_path_explicit:
                 candidate = Path(a)
                 if candidate.name == "graph.json" or candidate.suffix.lower() == ".json":
@@ -4283,6 +4297,31 @@ def main() -> None:
                       f"FalkorDB's GRAPH.QUERY runs one statement at a time (no bulk script "
                       f"import), so load a graph with: graphify export falkordb --push "
                       f"falkordb://localhost:6379")
+
+        elif subcmd == "maludb":
+            from graphify.export import push_to_maludb as _push_maludb
+            if not push_uri:
+                print("error: --push URL (or MALUDB_URL) required, e.g. "
+                      "graphify export maludb --push https://api.example.com", file=sys.stderr)
+                sys.exit(1)
+            if not push_password:
+                print("error: --token (or MALUDB_TOKEN) required — a MaluDb bearer token", file=sys.stderr)
+                sys.exit(1)
+            namespace = maludb_namespace
+            if not namespace:
+                # graph.json lives in <project>/graphify-out/, so the project
+                # directory is the graph dir's parent (cwd when defaulted).
+                project_dir = graph_path.resolve().parent.parent
+                namespace = re.sub(r"[^A-Za-z0-9._-]", "-", project_dir.name).strip("-") or "graphify"
+            result = _push_maludb(G, base_url=push_uri, token=push_password,
+                                  namespace=namespace, communities=communities)
+            n = result.get("nodes", {})
+            e = result.get("edges", {})
+            n_skipped = len(result.get("skipped", []))
+            print(f"Pushed to MaluDb ({push_uri}, namespace '{result.get('namespace', namespace)}'): "
+                  f"{n.get('imported', 0)} nodes ({n.get('created', 0)} new, {n.get('resolved', 0)} updated), "
+                  f"{e.get('imported', 0)} edges ({e.get('created', 0)} new)"
+                  + (f", {n_skipped} skipped" if n_skipped else ""))
 
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark
