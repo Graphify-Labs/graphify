@@ -93,6 +93,27 @@ def test_this_field_receiver_resolves_to_declared_type(tmp_path: Path):
     assert (run, gateway_charge) in calls
 
 
+def test_this_field_uses_field_type_when_parameter_shadows_name(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        **_AMBIGUOUS_METHODS,
+        "Checkout.java": (
+            "class Checkout {\n"
+            "    PaymentGateway service;\n"
+            "    void run(AuditLog service) {\n"
+            "        service.charge();\n"
+            "        this.service.charge();\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    run = _find(result, ".run()", "checkout")
+    gateway_charge = _find(result, ".charge()", "paymentgateway")
+    audit_charge = _find(result, ".charge()", "auditlog")
+    assert (run, gateway_charge) in calls
+    assert (run, audit_charge) in calls
+
+
 def test_parameter_and_local_receivers_resolve_per_method(tmp_path: Path):
     calls, result = _calls(tmp_path, {
         **_AMBIGUOUS_METHODS,
@@ -112,6 +133,34 @@ def test_parameter_and_local_receivers_resolve_per_method(tmp_path: Path):
     assert (from_parameter, audit_charge) not in calls
     assert (from_local, audit_charge) in calls
     assert (from_local, gateway_charge) not in calls
+
+
+def test_nested_receiver_bindings_do_not_escape_their_scope(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        **_AMBIGUOUS_METHODS,
+        "Checkout.java": (
+            "class Checkout {\n"
+            "    PaymentGateway service;\n"
+            "    void blockLocal() {\n"
+            "        service.charge();\n"
+            "        { AuditLog service = null; service.charge(); }\n"
+            "    }\n"
+            "    void anonymousClass() {\n"
+            "        new Object() { void nested() { AuditLog service = null; } };\n"
+            "        service.charge();\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    block_local = _find(result, ".blockLocal()", "checkout")
+    anonymous_class = _find(result, ".anonymousClass()", "checkout")
+    gateway_charge = _find(result, ".charge()", "paymentgateway")
+    audit_charge = _find(result, ".charge()", "auditlog")
+    assert not any(source == block_local and "charge" in target
+                   for source, target in calls)
+    assert (anonymous_class, gateway_charge) in calls
+    assert (anonymous_class, audit_charge) not in calls
 
 
 def test_overloaded_callers_keep_body_scoped_receiver_types(tmp_path: Path):

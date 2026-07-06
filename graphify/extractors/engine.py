@@ -432,9 +432,9 @@ def _java_method_receiver_types(
 ) -> dict[str, str]:
     """Build the receiver type table visible to one Java method.
 
-    Current-class fields are the base scope. Parameters and explicit local
-    declarations shadow them. Conflicting local declarations in disjoint nested
-    scopes are omitted because raw call facts do not retain lexical scope.
+    Current-class fields are the base scope, and parameters shadow them for the
+    full method. Conflicting local declarations are omitted because raw call
+    facts do not retain lexical scope.
     """
     method_types: dict[str, str] = {}
     ambiguous: set[str] = set()
@@ -467,6 +467,7 @@ def _java_method_receiver_types(
         node = stack.pop()
         if node.type in (
             "class_declaration",
+            "class_body",
             "interface_declaration",
             "record_declaration",
             "enum_declaration",
@@ -479,13 +480,18 @@ def _java_method_receiver_types(
                 node.child_by_field_name("type"), source
             )
             for name in _java_declarator_names(node, source):
-                bind(name, type_name)
+                if field_types.get(name) not in (None, type_name):
+                    method_types.pop(name, None)
+                    ambiguous.add(name)
+                else:
+                    bind(name, type_name)
         stack.extend(node.children)
 
     table = dict(field_types)
     table.update(method_types)
     for name in ambiguous:
         table.pop(name, None)
+    table.update({f"this.{name}": type_name for name, type_name in field_types.items()})
     return table
 
 
@@ -3854,7 +3860,8 @@ def _extract_generic(
                             owner = receiver.child_by_field_name("object")
                             field = receiver.child_by_field_name("field")
                             if owner is not None and owner.type == "this" and field is not None:
-                                member_receiver = _read_text(field, source)
+                                member_receiver = f"this.{_read_text(field, source)}"
+                                is_this_field_call = True
             elif config.ts_module == "tree_sitter_ruby":
                 # Ruby's `call` node carries `receiver` and `method` as direct
                 # fields (no intermediate accessor node), so the generic accessor
