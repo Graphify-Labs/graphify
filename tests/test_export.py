@@ -603,3 +603,91 @@ def test_backup_env_disable(tmp_path, monkeypatch):
     (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
     (tmp_path / ".graphify_semantic_marker").write_text("{}")
     assert backup_if_protected(tmp_path) is None
+
+
+def test_push_to_maludb_payload_and_report(monkeypatch):
+    """push_to_maludb POSTs a node-link payload and returns the server report."""
+    import urllib.request
+    from graphify.export import push_to_maludb
+
+    G = make_graph()
+
+    captured = {}
+
+    class FakeResponse:
+        def read(self):
+            return json.dumps(
+                {"namespace": "ns", "nodes": {"imported": G.number_of_nodes()},
+                 "edges": {"imported": G.number_of_edges()}, "skipped": []}
+            ).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["auth"] = req.get_header("Authorization")
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    report = push_to_maludb(G, "http://localhost:8000/", "tok123", "ns")
+
+    assert captured["url"] == "http://localhost:8000/v1/graph/import"
+    assert captured["auth"] == "Bearer tok123"
+    body = captured["body"]
+    assert body["namespace"] == "ns"
+    assert body["provenance"].startswith("graphify")
+    assert {n["id"] for n in body["graph"]["nodes"]} == set(G.nodes())
+    assert len(body["graph"]["links"]) == G.number_of_edges()
+    # relations and confidence tags pass through raw; the server maps them
+    for link in body["graph"]["links"]:
+        assert link["source"] in G and link["target"] in G
+        assert link["relation"]
+    assert report["nodes"]["imported"] == G.number_of_nodes()
+
+
+def test_push_to_maludb_rejects_non_http_url():
+    """file:// and other schemes are refused before any request is made."""
+    import pytest
+    from graphify.export import push_to_maludb
+
+    G = make_graph()
+    with pytest.raises(Exception):
+        push_to_maludb(G, "file:///etc/passwd", "tok", "ns")
+
+
+def test_push_to_maludb_communities_attached(monkeypatch):
+    """Community ids ride along on the node payload when provided."""
+    import urllib.request
+    from graphify.export import push_to_maludb
+
+    G = make_graph()
+    communities = cluster(G)
+
+    captured = {}
+
+    class FakeResponse:
+        def read(self):
+            return b'{"namespace": "ns"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    push_to_maludb(G, "http://localhost:8000", "tok", "ns", communities=communities)
+
+    tagged = [n for n in captured["body"]["graph"]["nodes"] if "community" in n]
+    assert tagged, "expected at least one node to carry a community id"
