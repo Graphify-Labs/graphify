@@ -1220,15 +1220,15 @@ def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
         refs_dir = skill_dst.parent / "references"
         if refs_dir.exists():
             shutil.rmtree(refs_dir)
-    for d in (
-        skill_dst.parent,
-        skill_dst.parent.parent,
-        skill_dst.parent.parent.parent,
-    ):
-        try:
-            d.rmdir()
-        except OSError:
-            break
+        for d in (
+            skill_dst.parent,
+            skill_dst.parent.parent,
+            skill_dst.parent.parent.parent,
+        ):
+            try:
+                d.rmdir()
+            except OSError:
+                break
 
 
 _CURSOR_RULE_PATH = Path(".cursor") / "rules" / "graphify.mdc"
