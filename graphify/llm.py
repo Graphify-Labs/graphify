@@ -759,6 +759,30 @@ def _bedrock_content(user_message: str, refs: list[_ImageRef]) -> list[dict]:
 _LLM_JSON_MAX_BYTES = 10 * 1024 * 1024  # 10 MB hard cap before json.loads (F-016)
 
 
+def _sanitize_fragment(parsed: dict) -> dict:
+    """Force ``nodes``/``edges``/``hyperedges`` to lists of dicts, in place.
+
+    A model can return a well-formed top-level object whose ``edges`` (or
+    ``nodes``/``hyperedges``) array contains a stray non-dict entry — most often
+    a nested list where an edge object belongs, or the whole value being a bare
+    array/scalar instead of a list. Those entries slip past JSON parsing but
+    blow up every downstream consumer that calls ``.get()`` per entry
+    (semantic-cache write and the AST+semantic merge both did — #1631, crashing
+    with ``'list' object has no attribute 'get'`` and discarding all successful
+    chunks). Sanitizing here, at the single parse chokepoint, protects the cache
+    writer, the adaptive-retry merge, and the CLI merge in one place.
+    """
+    for key in ("nodes", "edges", "hyperedges"):
+        value = parsed.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, list):
+            parsed[key] = []
+            continue
+        parsed[key] = [entry for entry in value if isinstance(entry, dict)]
+    return parsed
+
+
 def _parse_llm_json(raw: str) -> dict:
     """Strip optional markdown fences and parse JSON. Returns empty fragment on failure.
 
@@ -792,7 +816,7 @@ def _parse_llm_json(raw: str) -> dict:
     try:
         parsed = json.loads(stripped)
         if isinstance(parsed, dict):
-            return parsed
+            return _sanitize_fragment(parsed)
         # Top-level array/scalar (common LLM output) is not a usable graph
         # fragment; fall through to the next strategy rather than returning a
         # non-dict that callers will try to subscript (e.g. result["input_tokens"]).
@@ -827,7 +851,7 @@ def _parse_llm_json(raw: str) -> dict:
                     try:
                         parsed = json.loads(stripped[start : i + 1])
                         if isinstance(parsed, dict):
-                            return parsed
+                            return _sanitize_fragment(parsed)
                         break
                     except json.JSONDecodeError:
                         break
@@ -1862,6 +1886,14 @@ def extract_corpus_parallel(
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
     else:
+        # Merge in deterministic submission order, NOT completion order. Merging
+        # as chunks finish makes the node/edge ordering in the returned corpus
+        # (and therefore graph.json) depend on which network call happened to
+        # return first — so identical input churned run-to-run (#1632). Collect
+        # results keyed by chunk index and merge in sorted order after the pool
+        # drains; this matches the serial path's order. The progress callback
+        # still fires in completion order so long local runs aren't silent.
+        results_by_idx: dict[int, dict] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(_run_one, idx, chunk) for idx, chunk in enumerate(chunks)]
             for future in as_completed(futures):
@@ -1874,9 +1906,11 @@ def extract_corpus_parallel(
                     merged["failed_chunks"] += 1
                     continue
                 assert result is not None
-                _merge_into(merged, result)
+                results_by_idx[idx] = result
                 if callable(on_chunk_done):
                     on_chunk_done(idx, total, result)
+        for idx in sorted(results_by_idx):
+            _merge_into(merged, results_by_idx[idx])
 
     # Loud failure summary — surface chunk failures at end so they're never
     # buried mid-log. Exit 0 preserved for caller compatibility; the

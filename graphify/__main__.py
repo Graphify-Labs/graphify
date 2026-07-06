@@ -1325,8 +1325,12 @@ export const GraphifyPlugin = async ({ directory }) => {
       if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
 
       if (input.tool === "bash") {
+        // Separate with ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a
+        // statement separator ("not a valid statement separator"), which broke
+        // the first bash command in every OpenCode session on Windows (#1646).
+        // ';' works in PowerShell 5.1, Bash, and POSIX shells alike.
         output.args.command =
-          'echo "[graphify] Knowledge graph available. Read graphify-out/GRAPH_REPORT.md for god nodes and architecture context before searching files." && ' +
+          'echo "[graphify] Knowledge graph available. Read graphify-out/GRAPH_REPORT.md for god nodes and architecture context before searching files." ; ' +
           output.args.command;
         reminded = true;
       }
@@ -1502,8 +1506,10 @@ export const GraphifyPlugin = async ({ directory }) => {
       if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
 
       if (input.tool === "bash") {
+        // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
+        // separator, breaking the first bash command of the session (#1646).
         output.args.command =
-          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." && ' +
+          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ' +
           output.args.command;
         reminded = true;
       }

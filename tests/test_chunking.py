@@ -201,6 +201,53 @@ def test_corpus_parallel_sequential_when_max_concurrency_is_one(tmp_path):
     assert call_order == [("f0.py",), ("f1.py",), ("f2.py",)]
 
 
+def test_corpus_parallel_merge_order_is_submission_order_not_completion(tmp_path):
+    """#1632: merged node/edge order must be deterministic (submission order),
+    not the order chunks' network calls happen to finish. We skew latencies so
+    the first-submitted chunk finishes LAST; the merged result must still be in
+    file/submission order so graph.json is stable run-to-run."""
+    from graphify.llm import extract_corpus_parallel
+
+    files = []
+    for i in range(4):
+        f = tmp_path / f"f{i}.py"; f.write_text("x")
+        files.append(f)
+
+    def latency_skewed(chunk, **kwargs):
+        # chunk is a single file (chunk_size=1). Earlier files sleep longer, so
+        # completion order is the reverse of submission order.
+        name = chunk[0].name  # f0.py .. f3.py
+        idx = int(name[1])
+        time.sleep(0.05 * (4 - idx))  # f0 sleeps 0.20s, f3 sleeps 0.05s
+        return {
+            "nodes": [{"id": f"node_from_{name}"}],
+            "edges": [{"source": f"node_from_{name}", "target": "t"}],
+            "hyperedges": [],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=latency_skewed):
+        result = extract_corpus_parallel(
+            files, backend="kimi", token_budget=None, chunk_size=1, max_concurrency=4
+        )
+
+    node_ids = [n["id"] for n in result["nodes"]]
+    assert node_ids == [
+        "node_from_f0.py",
+        "node_from_f1.py",
+        "node_from_f2.py",
+        "node_from_f3.py",
+    ], f"merge order not deterministic: {node_ids}"
+    edge_srcs = [e["source"] for e in result["edges"]]
+    assert edge_srcs == [
+        "node_from_f0.py",
+        "node_from_f1.py",
+        "node_from_f2.py",
+        "node_from_f3.py",
+    ], f"edge merge order not deterministic: {edge_srcs}"
+
+
 def test_corpus_parallel_continues_after_chunk_failure(tmp_path, capsys):
     """A single chunk raising should be logged but not abort the run.
     Other chunks' results should still be merged."""
