@@ -691,3 +691,63 @@ def test_push_to_maludb_communities_attached(monkeypatch):
 
     tagged = [n for n in captured["body"]["graph"]["nodes"] if "community" in n]
     assert tagged, "expected at least one node to carry a community id"
+
+
+def test_sql_usage_scan_and_mine(tmp_path):
+    """sql_usage finds reads/writes in code and links from file nodes."""
+    import networkx as nx
+    from graphify.sql_usage import scan_file, mine_sql_usage
+
+    found = scan_file(
+        'q = "SELECT a FROM orders o JOIN customers c ON 1=1"\n'
+        'db.exec("INSERT INTO order_items VALUES (%s)")\n'
+        'db.exec("UPDATE maludb_core.malu$community SET label = $1")\n'
+        'x = "select * from unnest(arr)"  # noise\n'
+    )
+    assert found["reads"] == {"orders", "customers"}
+    assert found["writes"] == {"order_items", "maludb_core.malu$community"}
+
+    src = tmp_path / "app.py"
+    src.write_text('c.execute("SELECT 1 FROM orders WHERE id=%s")\n')
+    G = nx.Graph()
+    G.add_node("app.py::main", label="main()", source_file="app.py")
+    G.add_node("app.py", label="app.py", source_file="app.py")  # file node (shorter id)
+    links = mine_sql_usage(G, str(tmp_path), default_schema="shop")
+    assert links == [{
+        "source": "app.py",
+        "target": "datamodel/shop.orders",
+        "relation": "reads",
+        "confidence": "INFERRED",
+    }]
+
+
+def test_push_to_maludb_extra_links_and_options(monkeypatch):
+    """extra_links ride along and options land in the payload."""
+    import urllib.request
+    from graphify.export import push_to_maludb
+
+    G = make_graph()
+    captured = {}
+
+    class FakeResponse:
+        def read(self):
+            return b'{"namespace": "ns"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    extra = [{"source": "x", "target": "datamodel/public.orders",
+              "relation": "writes", "confidence": "INFERRED"}]
+    push_to_maludb(G, "http://localhost:8000", "tok", "ns",
+                   extra_links=extra, options={"resolve_external": True})
+    assert captured["body"]["options"] == {"resolve_external": True}
+    assert captured["body"]["graph"]["links"][-1]["target"] == "datamodel/public.orders"

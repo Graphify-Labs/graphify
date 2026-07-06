@@ -3993,6 +3993,7 @@ def main() -> None:
             print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
             print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
             print("  maludb    [--graph PATH] [--push URL] [--namespace NS] [--token T]", file=sys.stderr)
+            print("            [--sql-usage --source-root DIR [--db-schema S] [--datamodel-ns NS]]", file=sys.stderr)
             print("            (URL defaults to MALUDB_URL; set MALUDB_TOKEN instead of --token to keep it off argv;", file=sys.stderr)
             print("             namespace defaults to the graph's project directory name)", file=sys.stderr)
             sys.exit(1)
@@ -4033,6 +4034,10 @@ def main() -> None:
         # alias for --password (same F-031 keep-it-off-argv rationale), and the
         # namespace defaults to the graph's project directory name.
         maludb_namespace: str | None = None
+        maludb_sql_usage = False
+        maludb_source_root: str | None = None
+        maludb_db_schema = "public"
+        maludb_datamodel_ns = "datamodel"
         if subcmd == "maludb" and not push_uri:
             push_uri = os.environ.get("MALUDB_URL") or None
         i = 0
@@ -4094,6 +4099,14 @@ def main() -> None:
                 push_password = args[i + 1]; i += 2
             elif a == "--namespace" and i + 1 < len(args):
                 maludb_namespace = args[i + 1]; i += 2
+            elif a == "--sql-usage":
+                maludb_sql_usage = True; i += 1
+            elif a == "--source-root" and i + 1 < len(args):
+                maludb_source_root = args[i + 1]; i += 2
+            elif a == "--db-schema" and i + 1 < len(args):
+                maludb_db_schema = args[i + 1]; i += 2
+            elif a == "--datamodel-ns" and i + 1 < len(args):
+                maludb_datamodel_ns = args[i + 1]; i += 2
             elif subcmd == "callflow-html" and not a.startswith("-") and not graph_path_explicit:
                 candidate = Path(a)
                 if candidate.name == "graph.json" or candidate.suffix.lower() == ".json":
@@ -4313,8 +4326,20 @@ def main() -> None:
                 # directory is the graph dir's parent (cwd when defaulted).
                 project_dir = graph_path.resolve().parent.parent
                 namespace = re.sub(r"[^A-Za-z0-9._-]", "-", project_dir.name).strip("-") or "graphify"
+            extra_links = None
+            push_options = None
+            if maludb_sql_usage:
+                from graphify.sql_usage import mine_sql_usage
+                source_root = maludb_source_root or str(graph_path.resolve().parent.parent)
+                extra_links = mine_sql_usage(
+                    G, source_root,
+                    datamodel_ns=maludb_datamodel_ns,
+                    default_schema=maludb_db_schema)
+                push_options = {"resolve_external": True}
+                print(f"sql-usage: {len(extra_links)} table-reference links mined from {source_root}")
             result = _push_maludb(G, base_url=push_uri, token=push_password,
-                                  namespace=namespace, communities=communities)
+                                  namespace=namespace, communities=communities,
+                                  extra_links=extra_links, options=push_options)
             n = result.get("nodes", {})
             e = result.get("edges", {})
             n_skipped = len(result.get("skipped", []))

@@ -1572,6 +1572,8 @@ def push_to_maludb(
     namespace: str,
     communities: dict[int, list[str]] | None = None,
     timeout: int = 300,
+    extra_links: list[dict] | None = None,
+    options: dict | None = None,
 ) -> dict:
     """Push graph to a MaluDb memory database via POST /v1/graph/import.
 
@@ -1631,11 +1633,16 @@ def push_to_maludb(
     except Exception:
         provenance = "graphify"
 
+    if extra_links:
+        links = links + list(extra_links)
+
     payload = {
         "namespace": namespace,
         "provenance": provenance,
         "graph": {"nodes": nodes, "links": links},
     }
+    if options:
+        payload["options"] = dict(options)
 
     request = urllib.request.Request(
         base_url.rstrip("/") + "/v1/graph/import",
