@@ -6,6 +6,8 @@ Output file: `graphify-out/graph_sigma.html` (self-contained, opens directly lik
 
 Beyond the raw performance fix, this view also encodes things vis-network's `graph.html` doesn't surface at a glance: each community's **dominant content kind** (code/document/paper/image/rationale/concept, drawn as a small icon), its **dominant module** (the top-level directory most of its members live under, drawn as color), a **left-side filter panel** for both entity kind and relation type, **edges colored and labeled by relation type**, **draggable nodes** for manual layout tidying, node labels rendered on their own small background box for readability over a dense tangle of edges, and a **click panel listing every source file a community represents**, filterable and scrollable, where clicking a file opens a **movable dialog with an embedded content preview** (falling back to a working `file://` link when opened on the machine that generated the graph) — so a code-heavy corpus with a handful of docs sprinkled in doesn't read as one undifferentiated blob, and clicking a community gets you to real file content, not just a label.
 
+Good spread alone doesn't read as *structure* — a well-separated layout with every edge drawn at full opacity still looks like a hairball, because nothing visually ties related things together beyond a small color dot. Three more things address that directly: the offline layout **clusters communities by module** (a stronger pull between same-module communities than raw topology alone would produce, so color-coding and position now agree), a **soft region outline is drawn behind each module's cluster** (a translucent hull, not just individual node colors), and **edges below a weight percentile are hidden by default** (with a checkbox to show everything, and any edge touching the currently-highlighted node always shows regardless of weight) so the default view reads as "these are the load-bearing connections" instead of every single one at once.
+
 ## Step 1 — build the meta-graph and precompute layout in Python
 
 Adjust `MIN_COMMUNITY_SIZE` (20 is a reasonable default — communities below this rarely appear in God Nodes / navigation and just add render cost) and `INPUT_PATH`/label source to match the current run.
@@ -140,6 +142,24 @@ for he in g_data.get('hyperedges', []):
 for (cu, cv), w in edge_counts.items():
     meta.add_edge(cu, cv, weight=w, buckets=dict(edge_buckets[(cu, cv)]))
 
+# Module clustering: boost the LAYOUT-ONLY weight (not the real edge weight,
+# which still drives rendered thickness/labels) for same-module edges, so
+# forceAtlas2's attraction pulls same-module communities toward each other
+# more than the raw topology alone would. Without this, module color-coding
+# is the only thing tying a module together visually - nodes can be
+# color-matched but scattered anywhere, which reads as chaotic even once
+# the general bunching problem is fixed. Verified on the real 342-community
+# production graph by measuring the ratio of average within-module distance
+# to average between-module distance (lower = tighter, more legible
+# clusters): boost=1 (no boost) -> 0.96 (modules barely distinguishable
+# spatially); boost=15 -> 0.48 (clearly separated clusters); boost=30 was
+# slightly WORSE (0.49) than 15, not better - this stopped improving well
+# before "as much boost as possible", so don't push it up blindly.
+MODULE_CLUSTER_BOOST = 15
+for u, v, d in meta.edges(data=True):
+    same_module = meta.nodes[u]['module'] == meta.nodes[v]['module']
+    d['layout_weight'] = d['weight'] * MODULE_CLUSTER_BOOST if same_module else d['weight']
+
 # offline layout — no client-side physics needed at all.
 #
 # linlog=True (logarithmic attraction) plus a node_size repulsion halo
@@ -163,7 +183,7 @@ max_members = max((meta.nodes[n]['member_count'] for n in meta.nodes), default=1
 node_size = {n: 3 + 12 * (meta.nodes[n]['member_count'] / max_members) ** 0.5 for n in meta.nodes}
 pos = nx.forceatlas2_layout(
     meta, max_iter=1000, gravity=0.15, scaling_ratio=80.0, linlog=True,
-    node_size=node_size, seed=42, weight='weight',
+    node_size=node_size, seed=42, weight='layout_weight',
 )
 # A "RuntimeWarning: invalid value encountered in divide" from networkx's
 # linlog attraction calculation is expected and benign (transient zero-
@@ -213,8 +233,52 @@ edges_out = [
     for u, v, d in meta.edges(data=True)
 ]
 
+def _convex_hull(points):
+    """Andrew's monotone chain, pure stdlib - avoids adding scipy as a
+    dependency of this doc just for one shape per module."""
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return pts
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+# Module hull shading: a soft region outline behind each module's cluster,
+# reinforcing the module-clustering boost above with an explicit visual
+# boundary rather than relying on the viewer to infer "these dots are all
+# the same color, therefore a group" in a dense view. Expand outward from
+# the hull's own centroid so the shape has breathing room around the actual
+# node positions instead of hugging them exactly.
+HULL_MARGIN = 30
+by_module_points = defaultdict(list)
+for n in meta.nodes():
+    by_module_points[meta.nodes[n]['module']].append(scaled[n])
+hulls_out = {}
+for module, points in by_module_points.items():
+    hull = _convex_hull(points)
+    if len(hull) < 3:
+        continue  # 1-2 communities in this module - no polygon to draw
+    cx = sum(p[0] for p in hull) / len(hull)
+    cy = sum(p[1] for p in hull) / len(hull)
+    expanded = []
+    for x, y in hull:
+        dx, dy = x - cx, y - cy
+        dist = math.hypot(dx, dy) or 1
+        expanded.append([round(x + dx / dist * HULL_MARGIN, 2), round(y + dy / dist * HULL_MARGIN, 2)])
+    hulls_out[module] = expanded
+
 Path('graphify-out/.graphify_sigma_data.json').write_text(
-    json.dumps({'nodes': nodes_out, 'edges': edges_out}, ensure_ascii=False), encoding='utf-8')
+    json.dumps({'nodes': nodes_out, 'edges': edges_out, 'hulls': hulls_out}, ensure_ascii=False), encoding='utf-8')
 print(f'meta graph: {len(nodes_out)} nodes, {len(edges_out)} edges — layout precomputed, size range {SIZE_MIN:.1f}-{SIZE_MAX:.1f}, {dropped} communities below MIN_COMMUNITY_SIZE={MIN_COMMUNITY_SIZE} dropped')
 ```
 
@@ -233,6 +297,9 @@ Key implementation notes:
 - **Color by module, not degree**: with the icon now carrying "what kind of thing is this", color is free to carry "which part of the codebase is this from" — tint each node by its dominant top-level directory (`module`) using a fixed categorical palette, ranked so the most common modules get the most visually distinct colors and the long tail collapses into one muted gray. This also becomes a clickable legend (see below) — a lightweight grouping tool without a separate library.
 - **Edges are colored AND labeled by their dominant relation bucket** (the same six buckets the filter panel uses), not a flat gray — pick the bucket with the highest count in the edge's `buckets` breakdown, set `color` to a per-bucket color and `label` to the bucket's human-readable name as plain edge attributes (`renderEdgeLabels: true` on the constructor is what actually draws them; the label/color attributes alone do nothing without it). Keep edge colors at moderate opacity (not solid) — a real corpus renders 1000+ edges simultaneously at the default zoom, and solid colors at that density read as noise rather than a legible signal. Edge label visibility is NOT independently configurable the way node labels are (there is no `edgeLabelRenderedSizeThreshold`) — sigma only shows an edge's label when at least one endpoint is hovered/highlighted, or when both endpoints already have their own node labels showing (which IS gated by `labelRenderedSizeThreshold`). This is a feature, not a limitation to work around: it means edge labels progressively reveal as you zoom in or click a node, instead of 1000+ labels overlapping into unreadable clutter at the initial fit-all view.
 - **Layout spread**: a fixed `scaling_ratio` with linear attraction and no repulsion halo packs almost every node within a small radius of the centroid once a real corpus produces 300+ communities — verified in production, 87% of nodes landed within 15% of the bounding-box center, unreadable and impossible to label. Step 1's `linlog=True` + a `node_size` repulsion halo (proportional to member count) + a much higher `scaling_ratio` than the networkx default fixes this at the source (see Step 1's comment for the exact numbers and why they're calibrated together, not independently tunable).
+- **Module clustering**: spread alone isn't structure — Step 1 boosts the LAYOUT-ONLY edge weight (a separate `layout_weight` attribute, not the real `weight` that drives rendered edge thickness) for same-module edges before running forceAtlas2, so communities in the same module pull toward each other more than raw topology alone would produce. Verified by measuring the ratio of average within-module to average between-module node distance on the real production graph: 0.96 (no boost, modules barely distinguishable spatially) down to 0.48 at the chosen boost factor. Pushing the boost far higher didn't keep improving it — measure before increasing further, the same lesson as the layout-spread tuning above.
+- **Module hulls**: a soft, translucent polygon drawn behind each module's node cluster, computed with a small pure-Python convex-hull implementation in Step 1 (Andrew's monotone chain — not worth adding scipy as a dependency for one shape per module) and rendered on a separate 2D canvas positioned behind sigma's own WebGL canvas via `z-index` in the stylesheet. Redraw on every sigma `afterRender` event (fires on pan/zoom/drag) using `renderer.graphToViewport(...)` — NOT `framedGraphToViewport`, since hull points are stored in the same raw graph coordinate space as node `x`/`y`, not sigma's internal normalized space — so the hulls stay aligned with the nodes as the camera moves.
+- **Edges below a weight percentile are hidden by default**, with a "show all edges" checkbox to opt back in and an exception for whatever's connected to the currently-highlighted node (which always shows in full regardless of weight, since a user who picked a specific node wants completeness for it, not a curated subset). This declutter logic lives in the shared `edgeReducer`, which means it's only actually applied once `applyReducers()` runs — an explicit initial call to `applyReducers()` is required for this reason (previously, nothing called it until the first user interaction, which was harmless when every reducer was a no-op identity function at its default state, but isn't harmless now that hiding-by-weight is a real default-view behavior, not a no-op).
 - **Nodes are draggable** — the precomputed layout is a starting point for exploration, not a constraint; some real corpora warrant manual tidying that no automatic layout gets right for every viewer. See the `downNode`/`moveBody`/`upNode`/`upStage` handlers and `renderer.setCustomBBox(renderer.getBBox())` in the script — the frozen custom bbox is required, not optional: without it, sigma recomputes its normalization extent from live node positions on every reindex (even with `autoRescale: false`, which only fixes scale/aspect, not this recentering), so dragging one node toward the edge of the current extent visibly pans every OTHER node too. `originalPositions` is captured at load so the reset button can undo dragging, not just filters/highlight.
 - **Click panel lists every one of the community's actual source files**, not a capped sample — Step 1 collects each significant community's complete distinct `source_file` list. The panel renders it as a filter textbox + a scrollable list rather than truncating with "+N more", since a 300-member community can legitimately have dozens of files and there's no good way to guess which ones matter to a given user in advance.
 - **Clicking a file opens a movable dialog with an embedded content preview**, not just a link. Step 1 reads and embeds a bounded preview (`PREVIEW_CHARS`, currently 3000 characters) for only the first `PREVIEW_CAP` files (currently 8) of each community's complete list — embedding full content for every file in every community would bloat the self-contained HTML far more than paths alone do, so files beyond the cap show their path and, when available, a working `file://` link (built from `graphify-out/.graphify_root`, which only resolves on the machine that generated the graph) without an inline preview. The dialog itself is a plain DOM element dragged via its header (`mousedown`/`mousemove`/`mouseup` on screen-pixel `left`/`top` CSS, NOT `viewportToGraph` — this is unrelated to sigma's graph/camera coordinate spaces, unlike node dragging above).
@@ -249,8 +316,21 @@ Key implementation notes:
 <title>Codebase Knowledge Graph (Sigma.js)</title>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: #0b0d12; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e6e6e6; }
-  #container { position: absolute; inset: 0; }
-  #ui { position: absolute; top: 12px; left: 12px; z-index: 10; background: rgba(20,22,28,0.92); border: 1px solid #2a2d36; border-radius: 8px; padding: 10px 12px; width: 300px; max-height: calc(100vh - 24px); overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+  #container { position: absolute; inset: 0; z-index: 2; }
+  #hullLayer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+  /* position: fixed, not absolute - the panel must anchor to the actual
+     viewport regardless of any page-level scroll (e.g. from the file
+     dialog or a tall corpus), or top/left and the max-height's 100vh
+     calculation drift out of sync with what's actually visible, which
+     reads as "the panel is truncated on my laptop" on a short screen. */
+  /* height, not max-height - the sidebar should always span the full
+     viewport (like a real sidebar), not shrink to whatever its current
+     content happens to need. overflow-y:auto still scrolls internally
+     when content exceeds that height. */
+  #ui { position: fixed; top: 12px; left: 12px; z-index: 10; background: rgba(20,22,28,0.92); border: 1px solid #2a2d36; border-radius: 8px; padding: 10px 12px; width: 300px; height: calc(100vh - 24px); overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+  #ui::-webkit-scrollbar { width: 8px; }
+  #ui::-webkit-scrollbar-thumb { background: #3a3d46; border-radius: 4px; }
+  #ui::-webkit-scrollbar-track { background: transparent; }
   #ui h1 { font-size: 13px; margin: 0 0 8px; font-weight: 600; color: #fff; }
   #ui .meta { font-size: 11px; color: #9aa0ab; margin-bottom: 8px; }
   #ui h2 { font-size: 11px; margin: 14px 0 6px; color: #9aa0ab; text-transform: uppercase; letter-spacing: 0.04em; border-top: 1px solid #262932; padding-top: 10px; }
@@ -291,6 +371,7 @@ Key implementation notes:
 </style>
 </head>
 <body>
+<canvas id="hullLayer"></canvas>
 <div id="container"></div>
 <div id="ui">
   <h1>Codebase Knowledge Graph</h1>
@@ -303,7 +384,8 @@ Key implementation notes:
   <div id="bucketFilters"></div>
   <h2>Modules (click to isolate)</h2>
   <div id="moduleLegend"></div>
-  <div style="margin-top:10px;"><a class="reset" id="resetBtn">reset view / filters / highlight</a></div>
+  <label class="filter-row" style="margin-top:10px;"><input type="checkbox" id="showAllEdges"><span>Show all edges (default: hide the weakest)</span></label>
+  <div style="margin-top:6px;"><a class="reset" id="resetBtn">reset view / filters / highlight</a></div>
   <div id="info"></div>
 </div>
 
@@ -455,6 +537,42 @@ fitViewportToNodes(renderer, graph.nodes(), { animate: false });
 // example uses (packages/storybook/stories/2-advanced-usecases/mouse-manipulations).
 renderer.setCustomBBox(renderer.getBBox());
 
+// --- module hull shading: a soft region outline behind each module's node
+// cluster, drawn on a plain 2D canvas BEHIND sigma's WebGL canvas (z-index
+// in the stylesheet), redrawn on every sigma render so it stays in sync
+// with pan/zoom/drag. graphToViewport (not framedGraphToViewport) is the
+// correct conversion here since hull points are raw graph coordinates, the
+// same space node x/y are in - not sigma's internal normalized space. ---
+const hullCanvas = document.getElementById("hullLayer");
+const hullCtx = hullCanvas.getContext("2d");
+function resizeHullCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  hullCanvas.width = window.innerWidth * dpr;
+  hullCanvas.height = window.innerHeight * dpr;
+  hullCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function drawHulls() {
+  hullCtx.clearRect(0, 0, hullCanvas.width, hullCanvas.height);
+  for (const [moduleName, points] of Object.entries(DATA.hulls || {})) {
+    if (points.length < 3 || !activeModules.has(moduleName)) continue;
+    const color = moduleColor.get(moduleName) || OTHER_MODULE_COLOR;
+    hullCtx.beginPath();
+    points.forEach(([x, y], i) => {
+      const vp = renderer.graphToViewport({ x, y });
+      if (i === 0) hullCtx.moveTo(vp.x, vp.y); else hullCtx.lineTo(vp.x, vp.y);
+    });
+    hullCtx.closePath();
+    hullCtx.fillStyle = color + "1a";   // 8-digit hex alpha, ~10% opacity fill
+    hullCtx.fill();
+    hullCtx.strokeStyle = color + "55"; // ~33% opacity outline
+    hullCtx.lineWidth = 1.5;
+    hullCtx.stroke();
+  }
+}
+resizeHullCanvas();
+window.addEventListener("resize", () => { resizeHullCanvas(); drawHulls(); });
+renderer.on("afterRender", drawHulls);
+
 // --- drag nodes to manually reposition them (precomputed layout is a
 // starting point, not a constraint - some corpora warrant manual tidying).
 // Exact event names (downNode/moveBody/upNode/upStage) and the
@@ -491,6 +609,19 @@ for (const e of DATA.edges) for (const b of Object.keys(e.buckets || {})) presen
 const activeBuckets = new Set(presentBuckets);
 let highlightedNode = null;
 
+// Declutter by default: with every edge drawn at once, a real corpus reads
+// as a solid tangle regardless of how well-spread the nodes are. Hide edges
+// below a weight percentile unless the user opts back in (checkbox) or an
+// edge is connected to the currently-highlighted node - highlighting a node
+// always shows ALL of its real edges, weak ones included, since a user who
+// picked a specific node wants completeness, not a curated view.
+const EDGE_DECLUTTER_PERCENTILE = 0.6;
+const sortedWeights = DATA.edges.map(e => e.weight).sort((a, b) => a - b);
+const edgeWeightThreshold = sortedWeights.length
+  ? sortedWeights[Math.floor(sortedWeights.length * EDGE_DECLUTTER_PERCENTILE)]
+  : 0;
+let showAllEdges = false;
+
 function isNodeVisible(attrs) {
   return activeTypes.has(attrs.fileType) && activeModules.has(attrs.module);
 }
@@ -513,8 +644,10 @@ function applyReducers() {
     const [s, t] = graph.extremities(edge);
     const endpointsVisible = isNodeVisible(graph.getNodeAttributes(s)) && isNodeVisible(graph.getNodeAttributes(t));
     if (!endpointsVisible || !edgeMatchesActiveBuckets(data)) return { ...data, hidden: true };
+    const isHighlightedEdge = highlightedNode && (s === highlightedNode || t === highlightedNode);
+    if (!showAllEdges && !isHighlightedEdge && data.weight < edgeWeightThreshold) return { ...data, hidden: true };
     if (highlightedNode) {
-      return (s === highlightedNode || t === highlightedNode)
+      return isHighlightedEdge
         ? { ...data, color: "rgba(230,230,230,0.55)", size: Math.max(data.size, 1) }
         : { ...data, color: "rgba(150,155,165,0.03)" };
     }
@@ -522,6 +655,10 @@ function applyReducers() {
   });
   renderer.refresh();
 }
+document.getElementById("showAllEdges").addEventListener("change", (ev) => {
+  showAllEdges = ev.target.checked;
+  applyReducers();
+});
 
 // source_file paths come from the filesystem, not LLM/corpus content, so
 // they're not an XSS vector the way labels are - still escaped for
@@ -658,11 +795,27 @@ for (const m of rankedModules) {
   moduleLegendEl.appendChild(row);
 }
 
+// Without this, the custom reducers (which is what the edge-decluttering
+// above actually depends on) only ever get installed reactively, on the
+// first checkbox/click/highlight interaction - the initial render would use
+// sigma's plain defaults, showing every edge regardless of weight, until
+// the user touched something. Filters/highlight happened to be harmless to
+// skip here before (their initial state is a no-op identity reducer), but
+// the weight declutter is not a no-op, so this call is now required, not cosmetic.
+applyReducers();
+
 document.getElementById("resetBtn").addEventListener("click", () => {
   activeTypes.clear(); DATA.nodes.forEach(n => activeTypes.add(n.fileType));
   activeModules.clear(); rankedModules.forEach(m => activeModules.add(m));
   activeBuckets.clear(); presentBuckets.forEach(b => activeBuckets.add(b));
   document.querySelectorAll('.filter-row, .legend-row').forEach(el => { el.classList.remove('is-off'); const cb = el.querySelector('input'); if (cb) cb.checked = true; });
+  // showAllEdges shares the .filter-row class for consistent styling, but its
+  // default is the OPPOSITE of every other filter (unchecked = decluttered,
+  // which IS the reset state) - the generic sweep above just checked it, so
+  // explicitly override back to unchecked rather than adding a one-off
+  // selector exclusion just for this.
+  showAllEdges = false;
+  document.getElementById("showAllEdges").checked = false;
   clearHighlight();
   // Undo manual dragging too, not just filters/highlight - a silent partial
   // reset (filters cleared but nodes still wherever they were dragged to)
@@ -747,3 +900,5 @@ If it's more than 1, the regex substitution above didn't run (e.g. Step 3 was ed
 - The click panel's `file://` links only resolve on the machine that generated the graph (they're built from `.graphify_root`'s absolute path) — sharing `graph_sigma.html` with a teammate gives them the correct relative path as text, but the link itself won't open on their machine unless the repo happens to be checked out at the identical absolute path. If the HTML is served over `http://` instead of opened via `file://` (e.g. for local testing through a dev server), some browsers block a same-page navigation from `http:` to `file:` for security reasons — the link is still present and copyable, just not clickable in that mode.
 - Dragging a node is a purely local, in-memory repositioning — it is not written back to `graph.json`, `.graphify_labels.json`, or any other output. Reloading `graph_sigma.html` restores the precomputed layout; the reset button restores it without a reload.
 - File previews are capped (`PREVIEW_CAP` files per community, `PREVIEW_CHARS` per file) specifically to bound the self-contained HTML's size — a corpus with many large communities and no cap could produce a multi-hundred-MB file. Raise these in Step 1 for a smaller corpus where completeness matters more than file size; the complete path *list* (not the preview content) is never capped regardless.
+- Module hulls go stale after manual node dragging — they're computed once in Step 1 from the precomputed layout and don't recompute as a node moves, so a heavily-dragged node can end up visually outside its own module's hull. This is a deliberate simplification (recomputing a hull live on every drag frame is unnecessary complexity for what's meant as a big-picture visual aid, not a precise boundary) — the reset button restores both node positions and, implicitly, hull accuracy.
+- The edge-weight declutter threshold (`EDGE_DECLUTTER_PERCENTILE`, currently 0.6) is a blunt global cutoff, not per-module or per-relation-type — a corpus where every edge happens to have similar weight will decluttered to roughly the same degree everywhere, while one with a few very heavy hub edges and many light ones will hide a larger fraction. Check the result against a specific corpus and adjust the percentile if the default view still feels either too sparse or too busy.
