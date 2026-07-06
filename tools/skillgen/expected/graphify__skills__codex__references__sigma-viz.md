@@ -4,7 +4,7 @@ Load this when Step 6's `graph.html` (vis-network) would render more than ~300 n
 
 Output file: `graphify-out/graph_sigma.html` (self-contained, opens directly like `graph.html`).
 
-Beyond the raw performance fix, this view also encodes things vis-network's `graph.html` doesn't surface at a glance: each community's **dominant content kind** (code/document/paper/image/rationale/concept, drawn as a small icon), its **dominant module** (the top-level directory most of its members live under, drawn as color), a **left-side filter panel** for both entity kind and relation type, **edges colored and labeled by relation type**, **draggable nodes** for manual layout tidying, and a **click panel listing the actual source files** a community represents (with working `file://` links when opened on the machine that generated the graph) — so a code-heavy corpus with a handful of docs sprinkled in doesn't read as one undifferentiated blob, and clicking a community gets you to real files, not just a label.
+Beyond the raw performance fix, this view also encodes things vis-network's `graph.html` doesn't surface at a glance: each community's **dominant content kind** (code/document/paper/image/rationale/concept, drawn as a small icon), its **dominant module** (the top-level directory most of its members live under, drawn as color), a **left-side filter panel** for both entity kind and relation type, **edges colored and labeled by relation type**, **draggable nodes** for manual layout tidying, node labels rendered on their own small background box for readability over a dense tangle of edges, and a **click panel listing every source file a community represents**, filterable and scrollable, where clicking a file opens a **movable dialog with an embedded content preview** (falling back to a working `file://` link when opened on the machine that generated the graph) — so a code-heavy corpus with a handful of docs sprinkled in doesn't read as one undifferentiated blob, and clicking a community gets you to real file content, not just a label.
 
 ## Step 1 — build the meta-graph and precompute layout in Python
 
@@ -49,6 +49,23 @@ def top_level_dir(source_file: str) -> str:
         return '(root)'
     return source_file.split('/')[0]
 
+PREVIEW_CAP = 8       # only the first N files (of the complete list) get embedded content
+PREVIEW_CHARS = 3000  # per-file cap - this is a preview for a dialog, not a full viewer
+
+def read_preview(source_file: str) -> "str | None":
+    """Best-effort file preview for the click-panel dialog. None means
+    "not attempted" (beyond PREVIEW_CAP) or "unreadable" (missing, binary,
+    permission error, no SCAN_ROOT to resolve against) - the dialog falls
+    back to just the file:// link in either case, never raises."""
+    if not SCAN_ROOT:
+        return None
+    try:
+        text = (Path(SCAN_ROOT) / source_file).read_text(encoding='utf-8', errors='replace')
+    except (OSError, UnicodeDecodeError):
+        return None
+    truncated = len(text) > PREVIEW_CHARS
+    return text[:PREVIEW_CHARS] + ('\n… (truncated)' if truncated else '')
+
 MIN_COMMUNITY_SIZE = 20
 node_attrs = {n['id']: n for n in g_data['nodes']}
 comms = defaultdict(list)
@@ -74,20 +91,23 @@ for cid, members in significant.items():
     # level — a mixed community shows its majority kind/module, not a blend.
     type_counts = Counter(node_attrs[m].get('file_type', 'code') for m in members)
     dir_counts = Counter(top_level_dir(node_attrs[m].get('source_file', '')) for m in members)
-    # Representative file list for the click panel. Capped so a 300-member
-    # community doesn't dump hundreds of paths into the UI; file_count keeps
-    # the true total so the panel can say "and N more" instead of implying
-    # completeness.
+    # Full distinct file list for the click panel - the UI renders it as a
+    # scrollable, filterable list rather than truncating, so send everything
+    # rather than a capped sample. Only the first PREVIEW_CAP get embedded
+    # content (see read_preview) - a 300-member community's worth of full
+    # file contents would bloat the HTML far more than its path list does.
     distinct_files = sorted({node_attrs[m]['source_file'] for m in members if node_attrs[m].get('source_file')})
-    FILE_CAP = 8
     files_out = [
-        {'path': f, 'url': f'file://{SCAN_ROOT}/{f}' if SCAN_ROOT else None}
-        for f in distinct_files[:FILE_CAP]
+        {
+            'path': f, 'url': f'file://{SCAN_ROOT}/{f}' if SCAN_ROOT else None,
+            'preview': read_preview(f) if i < PREVIEW_CAP else None,
+        }
+        for i, f in enumerate(distinct_files)
     ]
     meta.add_node(
         cid, member_count=len(members), label=labels.get(str(cid), f'Community {cid}'),
         file_type=type_counts.most_common(1)[0][0], module=dir_counts.most_common(1)[0][0],
-        files=files_out, file_count=len(distinct_files),
+        files=files_out,
     )
 
 edge_counts = Counter()
@@ -129,16 +149,20 @@ for (cu, cv), w in edge_counts.items():
 # the naive defaults (linear attraction, scaling_ratio=4, no node_size)
 # packed 87% of nodes within 15% of the bounding-box center - unreadable,
 # and exactly the "nodes are bunched, labels aren't readable" failure
-# mode. This combination drops that to ~15-20% while keeping structurally
-# related communities near each other (not just uniformly scattered).
-# scaling_ratio is raised well past its default (2.0) specifically to
+# mode. gravity=0.15 + scaling_ratio=80 (pushed well past an earlier,
+# still-too-tight 0.5/20 pass that measured better on paper but was still
+# reported as too bunched to read labels without manually dragging nodes
+# apart) drops the near-center fraction to ~7% - verify spread visually in
+# a real browser, not just by this fraction, before tuning further; a
+# purely numeric spread proxy under-predicted "good enough" once already.
+# scaling_ratio is raised so far past its default (2.0) specifically to
 # compensate for linlog's gentler pull once nodes spread out - lowering
 # it re-collapses the layout fast at intermediate values, so don't tune
 # it down without re-checking spread on a real multi-hundred-node corpus.
 max_members = max((meta.nodes[n]['member_count'] for n in meta.nodes), default=1)
 node_size = {n: 3 + 12 * (meta.nodes[n]['member_count'] / max_members) ** 0.5 for n in meta.nodes}
 pos = nx.forceatlas2_layout(
-    meta, max_iter=1000, gravity=0.5, scaling_ratio=20.0, linlog=True,
+    meta, max_iter=1000, gravity=0.15, scaling_ratio=80.0, linlog=True,
     node_size=node_size, seed=42, weight='weight',
 )
 # A "RuntimeWarning: invalid value encountered in divide" from networkx's
@@ -182,7 +206,7 @@ for n in meta.nodes():
         'size': round(SIZE_MIN + (SIZE_MAX - SIZE_MIN) * (mc / max_members) ** 0.5, 2),
         'degree': deg, 'members': mc,
         'fileType': meta.nodes[n]['file_type'], 'module': meta.nodes[n]['module'],
-        'files': meta.nodes[n]['files'], 'fileCount': meta.nodes[n]['file_count'],
+        'files': meta.nodes[n]['files'],
     })
 edges_out = [
     {'source': str(u), 'target': str(v), 'weight': int(d.get('weight', 1)), 'buckets': d.get('buckets', {})}
@@ -210,7 +234,9 @@ Key implementation notes:
 - **Edges are colored AND labeled by their dominant relation bucket** (the same six buckets the filter panel uses), not a flat gray — pick the bucket with the highest count in the edge's `buckets` breakdown, set `color` to a per-bucket color and `label` to the bucket's human-readable name as plain edge attributes (`renderEdgeLabels: true` on the constructor is what actually draws them; the label/color attributes alone do nothing without it). Keep edge colors at moderate opacity (not solid) — a real corpus renders 1000+ edges simultaneously at the default zoom, and solid colors at that density read as noise rather than a legible signal. Edge label visibility is NOT independently configurable the way node labels are (there is no `edgeLabelRenderedSizeThreshold`) — sigma only shows an edge's label when at least one endpoint is hovered/highlighted, or when both endpoints already have their own node labels showing (which IS gated by `labelRenderedSizeThreshold`). This is a feature, not a limitation to work around: it means edge labels progressively reveal as you zoom in or click a node, instead of 1000+ labels overlapping into unreadable clutter at the initial fit-all view.
 - **Layout spread**: a fixed `scaling_ratio` with linear attraction and no repulsion halo packs almost every node within a small radius of the centroid once a real corpus produces 300+ communities — verified in production, 87% of nodes landed within 15% of the bounding-box center, unreadable and impossible to label. Step 1's `linlog=True` + a `node_size` repulsion halo (proportional to member count) + a much higher `scaling_ratio` than the networkx default fixes this at the source (see Step 1's comment for the exact numbers and why they're calibrated together, not independently tunable).
 - **Nodes are draggable** — the precomputed layout is a starting point for exploration, not a constraint; some real corpora warrant manual tidying that no automatic layout gets right for every viewer. See the `downNode`/`moveBody`/`upNode`/`upStage` handlers and `renderer.setCustomBBox(renderer.getBBox())` in the script — the frozen custom bbox is required, not optional: without it, sigma recomputes its normalization extent from live node positions on every reindex (even with `autoRescale: false`, which only fixes scale/aspect, not this recentering), so dragging one node toward the edge of the current extent visibly pans every OTHER node too. `originalPositions` is captured at load so the reset button can undo dragging, not just filters/highlight.
-- **Click panel lists the community's actual source files**, not just its label and counts — Step 1 collects each significant community's distinct `source_file` paths (capped at 8, with a true total count for "+N more") and, when `graphify-out/.graphify_root` records the scan root (i.e. the graph was generated and is being viewed on the same machine), builds a `file://` link per path. Files are a *dominant-vote-adjacent* list, not exhaustive — this is about getting the user to a real file fast, not a complete manifest.
+- **Click panel lists every one of the community's actual source files**, not a capped sample — Step 1 collects each significant community's complete distinct `source_file` list. The panel renders it as a filter textbox + a scrollable list rather than truncating with "+N more", since a 300-member community can legitimately have dozens of files and there's no good way to guess which ones matter to a given user in advance.
+- **Clicking a file opens a movable dialog with an embedded content preview**, not just a link. Step 1 reads and embeds a bounded preview (`PREVIEW_CHARS`, currently 3000 characters) for only the first `PREVIEW_CAP` files (currently 8) of each community's complete list — embedding full content for every file in every community would bloat the self-contained HTML far more than paths alone do, so files beyond the cap show their path and, when available, a working `file://` link (built from `graphify-out/.graphify_root`, which only resolves on the machine that generated the graph) without an inline preview. The dialog itself is a plain DOM element dragged via its header (`mousedown`/`mousemove`/`mouseup` on screen-pixel `left`/`top` CSS, NOT `viewportToGraph` — this is unrelated to sigma's graph/camera coordinate spaces, unlike node dragging above).
+- **Node labels get their own small background box, not bare canvas text.** Sigma's built-in label renderer (`drawDiscNodeLabel` in its own source) is a plain `fillText` with no background, which is illegible over a dense, colorful tangle of edges — and there is no settings-level "add a background" toggle. `defaultDrawNodeLabel` is sigma's documented override point for a fully custom label-drawing function; use it to fill a small rect (sized from `context.measureText`) behind the text before drawing it.
 - Include: click → highlight neighbors + dim the rest (`nodeReducer`/`edgeReducer`), a text search box that filters by label (respecting active filters) and pans the camera to the match, a left-side panel with checkboxes for entity kind and bucketed relation type, and a clickable module legend that doubles as an isolate/hide-by-module toggle. Filtering and highlighting share one pair of reducers (`applyReducers`) so they compose instead of one clobbering the other's `setSetting` call.
 - **Camera-pan targets must come from `renderer.getNodeDisplayData(key)`, not the raw data's `x`/`y`.** Sigma's `Camera` operates in its own normalized display space, not the raw graph coordinates you fed it — panning with the raw values silently targets the wrong point. This is the same pattern sigma's own demo search field uses (`packages/demo/src/views/SearchField.tsx`).
 - **Escape any label before it goes through `innerHTML`.** Community labels are LLM-generated from indexed corpus content, and module names come from real directory names — both can legally contain `<`/`>`/`"`. `graphify-out/` is meant to be committed and shared with a team (per the README), so an unescaped label is a stored-XSS path for whoever opens the HTML next. Escape with a small helper before interpolating into `innerHTML`; the search-results list already does this correctly by using `textContent` instead. Source-file paths in the click panel are filesystem-derived, not corpus content, so they're a much lower XSS risk — still escaped for consistency and because a pathological filename could in principle contain HTML metacharacters on some filesystems.
@@ -241,13 +267,27 @@ Key implementation notes:
   .filter-row .swatch, .legend-row .swatch { width: 12px; height: 12px; flex: none; border-radius: 50%; }
   .legend-row.is-off, .filter-row.is-off { opacity: 0.4; }
   .legend-row .count { color: #6b7280; margin-left: auto; }
-  #info { position: absolute; bottom: 12px; left: 12px; z-index: 10; background: rgba(20,22,28,0.92); border: 1px solid #2a2d36; border-radius: 8px; padding: 10px 12px; max-width: 380px; max-height: 260px; overflow-y: auto; font-size: 12px; display: none; }
+  /* #info lives inside #ui now (same sidebar, same width, one scroll) rather
+     than floating as its own fixed-position box - that's what was getting
+     truncated by the viewport edge independently of the main panel. */
+  #info { margin-top: 10px; padding-top: 10px; border-top: 1px solid #262932; font-size: 12px; display: none; }
   #info b { color: #fff; font-size: 13px; }
   #info .stat { color: #9aa0ab; margin-top: 4px; }
-  #info .file-link { margin-top: 2px; font-size: 11px; overflow-wrap: anywhere; }
-  #info .file-link a { color: #5b8def; text-decoration: none; }
-  #info .file-link a:hover { text-decoration: underline; }
+  .file-filter { width: 100%; box-sizing: border-box; padding: 5px 7px; margin-top: 4px; border-radius: 5px; border: 1px solid #3a3d46; background: #14161c; color: #fff; font-size: 11px; outline: none; }
+  .file-filter:focus { border-color: #5b8def; }
+  .file-list { max-height: 130px; overflow-y: auto; margin-top: 4px; border-top: 1px solid #262932; padding-top: 4px; }
+  .file-list .file-link { padding: 3px 2px; font-size: 11px; overflow-wrap: anywhere; color: #8fb2f5; cursor: pointer; border-radius: 4px; }
+  .file-list .file-link:hover { background: #23262f; color: #aecbff; }
+  .file-list .file-empty { color: #6b7280; font-size: 11px; padding: 3px 2px; }
   a.reset { color: #5b8def; cursor: pointer; font-size: 11px; }
+  #fileDialog { display: none; position: fixed; width: 520px; max-width: 90vw; max-height: 70vh; background: #14161c; border: 1px solid #2a2d36; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); z-index: 20; flex-direction: column; overflow: hidden; }
+  .file-dialog-header { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: #1b1e26; border-bottom: 1px solid #2a2d36; cursor: move; user-select: none; }
+  .file-dialog-title { flex: 1; font-size: 12px; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-dialog-open { color: #5b8def; font-size: 11px; text-decoration: none; white-space: nowrap; }
+  .file-dialog-open:hover { text-decoration: underline; }
+  .file-dialog-close { cursor: pointer; color: #9aa0ab; font-size: 16px; line-height: 1; padding: 0 2px; }
+  .file-dialog-close:hover { color: #fff; }
+  .file-dialog-body { margin: 0; padding: 10px 12px; overflow: auto; font-size: 11px; color: #d8dbe2; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 </style>
 </head>
 <body>
@@ -264,8 +304,8 @@ Key implementation notes:
   <h2>Modules (click to isolate)</h2>
   <div id="moduleLegend"></div>
   <div style="margin-top:10px;"><a class="reset" id="resetBtn">reset view / filters / highlight</a></div>
+  <div id="info"></div>
 </div>
-<div id="info"></div>
 
 <script type="module">
 import Graph from "https://esm.sh/graphology@0.25.4";
@@ -345,7 +385,7 @@ for (const n of DATA.nodes) {
     color: moduleColor.get(n.module) || OTHER_MODULE_COLOR,
     image: TYPE_ICONS[n.fileType] || TYPE_ICONS.code,
     fileType: n.fileType, module: n.module, members: n.members, degree: n.degree,
-    files: n.files || [], fileCount: n.fileCount || 0,
+    files: n.files || [],
   });
 }
 function dominantBucket(buckets) {
@@ -365,8 +405,29 @@ for (const e of DATA.edges) {
   }
 }
 
+// Sigma's built-in label renderer (drawDiscNodeLabel in sigma's own source)
+// is a bare fillText with no background - illegible over a dense, colorful
+// tangle of edges. There is no settings-level "add a background" option;
+// defaultDrawNodeLabel is the documented override point for a fully custom
+// label renderer, so give each label its own small filled box.
+function drawNodeLabelWithBackground(context, data, settings) {
+  if (!data.label) return;
+  const size = settings.labelSize, font = settings.labelFont, weight = settings.labelWeight;
+  context.font = `${weight} ${size}px ${font}`;
+  const textWidth = context.measureText(data.label).width;
+  const x = data.x + data.size + 3, y = data.y + size / 3;
+  const padX = 4, padY = 2;
+  // A near-black background (matching the canvas's #0b0d12) is indistinguishable
+  // from the canvas itself - use the same visibly-lighter panel tone the UI
+  // chrome uses elsewhere so the box actually reads as a background, not nothing.
+  context.fillStyle = "rgba(30,33,40,0.9)";
+  context.fillRect(x - padX, y - size, textWidth + padX * 2, size + padY * 2);
+  context.fillStyle = settings.labelColor.color || "#d8dbe2";
+  context.fillText(data.label, x, y);
+}
+
 const renderer = new Sigma(graph, document.getElementById("container"), {
-  renderLabels: true, labelRenderedSizeThreshold: 8,
+  renderLabels: true, labelRenderedSizeThreshold: 8, defaultDrawNodeLabel: drawNodeLabelWithBackground,
   labelFont: "-apple-system, BlinkMacSystemFont, sans-serif", labelColor: { color: "#d8dbe2" }, labelSize: 12,
   renderEdgeLabels: true, edgeLabelSize: 10, edgeLabelColor: { color: "#9aa0ab" },
   defaultEdgeColor: "rgba(150,155,165,0.18)", minCameraRatio: 0.05, maxCameraRatio: 10,
@@ -462,6 +523,21 @@ function applyReducers() {
   renderer.refresh();
 }
 
+// source_file paths come from the filesystem, not LLM/corpus content, so
+// they're not an XSS vector the way labels are - still escaped for
+// consistency and because a pathological filename could in principle
+// contain HTML metacharacters on some filesystems.
+function renderFileList(container, files, query) {
+  const q = query.trim().toLowerCase();
+  const filtered = q ? files.filter(f => f.path.toLowerCase().includes(q)) : files;
+  container.innerHTML = filtered.length
+    ? filtered.map(f => `<div class="file-link">${escapeHtml(f.path)}</div>`).join("")
+    : `<div class="file-empty">No matching files</div>`;
+  container.querySelectorAll(".file-link").forEach((el, i) => {
+    el.addEventListener("click", () => openFileDialog(filtered[i]));
+  });
+}
+
 function highlightNode(key) {
   highlightedNode = key;
   applyReducers();
@@ -469,18 +545,67 @@ function highlightNode(key) {
   const info = document.getElementById("info");
   info.style.display = "block";
   const files = attrs.files || [];
-  // source_file paths come from the filesystem, not LLM/corpus content, so
-  // they're not an XSS vector the way labels are - still escaped for
-  // consistency and because a pathological filename could in principle
-  // contain HTML metacharacters on some filesystems.
-  const fileLines = files.map(f =>
-    f.url
-      ? `<div class="file-link"><a href="${escapeHtml(f.url)}" target="_blank" rel="noopener">${escapeHtml(f.path)}</a></div>`
-      : `<div class="file-link">${escapeHtml(f.path)}</div>`
-  ).join("");
-  const moreCount = (attrs.fileCount || 0) - files.length;
-  const moreLine = moreCount > 0 ? `<div class="stat">+ ${moreCount} more file${moreCount === 1 ? "" : "s"}</div>` : "";
-  info.innerHTML = `<b>${escapeHtml(attrs.label)}</b><div class="stat">${attrs.members} member node${attrs.members===1?"":"s"}</div><div class="stat">${attrs.degree} connected communit${attrs.degree===1?"y":"ies"}</div>${files.length ? `<div class="stat">Files:</div>${fileLines}${moreLine}` : ""}`;
+  info.innerHTML = `<b>${escapeHtml(attrs.label)}</b><div class="stat">${attrs.members} member node${attrs.members===1?"":"s"}</div><div class="stat">${attrs.degree} connected communit${attrs.degree===1?"y":"ies"}</div>` +
+    (files.length
+      ? `<div class="stat">Files (${files.length}):</div><input class="file-filter" type="text" placeholder="Filter files..."><div class="file-list"></div>`
+      : "");
+  if (files.length) {
+    const filterInput = info.querySelector(".file-filter");
+    const fileListEl = info.querySelector(".file-list");
+    renderFileList(fileListEl, files, "");
+    filterInput.addEventListener("input", () => renderFileList(fileListEl, files, filterInput.value));
+  }
+}
+
+// --- draggable file-preview dialog, created lazily on first use ---
+let fileDialogEl = null;
+function ensureFileDialog() {
+  if (fileDialogEl) return fileDialogEl;
+  const dialog = document.createElement("div");
+  dialog.id = "fileDialog";
+  dialog.innerHTML = `
+    <div class="file-dialog-header">
+      <span class="file-dialog-title"></span>
+      <a class="file-dialog-open" target="_blank" rel="noopener">Open file</a>
+      <span class="file-dialog-close">&times;</span>
+    </div>
+    <pre class="file-dialog-body"></pre>`;
+  document.body.appendChild(dialog);
+  // Drag-by-header: a plain DOM element position drag, unrelated to sigma's
+  // graph/camera coordinate spaces - no viewportToGraph conversion needed
+  // here, just CSS left/top in screen pixels.
+  const header = dialog.querySelector(".file-dialog-header");
+  let dragging = false, offsetX = 0, offsetY = 0;
+  header.addEventListener("mousedown", (e) => {
+    if (e.target.classList.contains("file-dialog-close")) return;
+    dragging = true;
+    const rect = dialog.getBoundingClientRect();
+    offsetX = e.clientX - rect.left;
+    offsetY = e.clientY - rect.top;
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    dialog.style.left = `${e.clientX - offsetX}px`;
+    dialog.style.top = `${e.clientY - offsetY}px`;
+  });
+  window.addEventListener("mouseup", () => { dragging = false; });
+  dialog.querySelector(".file-dialog-close").addEventListener("click", () => { dialog.style.display = "none"; });
+  fileDialogEl = dialog;
+  return dialog;
+}
+function openFileDialog(file) {
+  const dialog = ensureFileDialog();
+  dialog.querySelector(".file-dialog-title").textContent = file.path;
+  const openLink = dialog.querySelector(".file-dialog-open");
+  if (file.url) { openLink.href = file.url; openLink.style.display = ""; } else { openLink.style.display = "none"; }
+  dialog.querySelector(".file-dialog-body").textContent = file.preview || "(no preview embedded for this file - use Open file instead)";
+  const wasPositioned = !!dialog.style.left;
+  dialog.style.display = "flex";
+  if (!wasPositioned) {
+    dialog.style.left = `${Math.max(0, (window.innerWidth - dialog.offsetWidth) / 2)}px`;
+    dialog.style.top = `${Math.max(0, (window.innerHeight - dialog.offsetHeight) / 2)}px`;
+  }
 }
 function clearHighlight() {
   highlightedNode = null;
@@ -584,24 +709,32 @@ searchInput.addEventListener("input", () => {
 
 ```python
 import json
+import re
 from pathlib import Path
 
 data = json.loads(Path('graphify-out/.graphify_sigma_data.json').read_text(encoding='utf-8'))
 html = Path('graphify-out/graph_sigma.html').read_text(encoding='utf-8')
-html = html.replace('__GRAPH_DATA__', json.dumps(data, ensure_ascii=False))
+payload = json.dumps(data, ensure_ascii=False)
+# A community label OR an embedded file preview containing a literal
+# </script (any case - HTML tag names are case-insensitive) would prematurely
+# close the page's own <script> block and corrupt it. File previews make
+# this a routine occurrence, not a rare edge case: any previewed HTML/JS/XML
+# file (a Vite index.html, a <script> tag in a template, ...) will trigger
+# it. Escape unconditionally with the standard JSON-in-HTML technique rather
+# than checking after the fact and hoping it wasn't needed.
+payload = re.sub(r'</script', '<\\/script', payload, flags=re.IGNORECASE)
+html = html.replace('__GRAPH_DATA__', payload)
 Path('graphify-out/graph_sigma.html').write_text(html, encoding='utf-8')
 Path('graphify-out/.graphify_sigma_data.json').unlink()
 ```
 
-**Before telling the user it's done**, sanity-check the embedded JSON didn't break the `<script>` tag: a community label containing the literal substring `</script` would prematurely close the script block and corrupt the page. Check with:
+**Before telling the user it's done**, verify the escape actually worked:
 
 ```bash
 grep -io '</script' graphify-out/graph_sigma.html | wc -l   # must be exactly 1 (the real closing tag)
 ```
 
-HTML tag names are case-insensitive, so a label containing `</SCRIPT` or `</Script` would corrupt the page exactly the same way — the `-i` flag is required, not cosmetic.
-
-If it's more than 1, a node/edge label contains `</script` — fix by replacing `json.dumps(data, ...)` output's `</script` substring with `<\\/script` (a standard JSON-in-HTML escape) before writing.
+If it's more than 1, the regex substitution above didn't run (e.g. Step 3 was edited or skipped) — re-run Step 3, don't hand-patch the output file.
 
 ## Notes
 
@@ -613,3 +746,4 @@ If it's more than 1, a node/edge label contains `</script` — fix by replacing 
 - The "Groups" relation bucket comes from graphify's hyperedges (`participate_in`/`implement`/`form`), which have no `source`/`target` and live in graph.json's separate top-level `hyperedges` array — they're remapped to community-pairs the same way `graphify/export.py`'s vis-network aggregated view already does, so this bucket has real content instead of being permanently empty.
 - The click panel's `file://` links only resolve on the machine that generated the graph (they're built from `.graphify_root`'s absolute path) — sharing `graph_sigma.html` with a teammate gives them the correct relative path as text, but the link itself won't open on their machine unless the repo happens to be checked out at the identical absolute path. If the HTML is served over `http://` instead of opened via `file://` (e.g. for local testing through a dev server), some browsers block a same-page navigation from `http:` to `file:` for security reasons — the link is still present and copyable, just not clickable in that mode.
 - Dragging a node is a purely local, in-memory repositioning — it is not written back to `graph.json`, `.graphify_labels.json`, or any other output. Reloading `graph_sigma.html` restores the precomputed layout; the reset button restores it without a reload.
+- File previews are capped (`PREVIEW_CAP` files per community, `PREVIEW_CHARS` per file) specifically to bound the self-contained HTML's size — a corpus with many large communities and no cap could produce a multi-hundred-MB file. Raise these in Step 1 for a smaller corpus where completeness matters more than file size; the complete path *list* (not the preview content) is never capped regardless.
