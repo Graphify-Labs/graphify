@@ -2378,6 +2378,8 @@ def main() -> None:
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
+        print("  mimo install            write skill to .mimo/skills/graphify/ (MiMo Code)")
+        print("  mimo uninstall          remove skill from .mimo/skills/graphify/")
         print()
         return
 
@@ -2586,6 +2588,22 @@ def main() -> None:
                 _remove_skill_file("pi")
         else:
             print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "mimo":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("mimo", Path("."))
+            else:
+                install(platform="mimo")
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("mimo", Path("."))
+            else:
+                removed = _remove_skill_file("mimo")
+                print("skill removed" if removed else "nothing to remove")
+        else:
+            print("Usage: graphify mimo [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "amp":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
