@@ -361,7 +361,13 @@ Key implementation notes:
      viewport (like a real sidebar), not shrink to whatever its current
      content happens to need. overflow-y:auto still scrolls internally
      when content exceeds that height. */
-  #ui { position: fixed; top: 12px; left: 12px; z-index: 10; background: rgba(20,22,28,0.92); border: 1px solid #2a2d36; border-radius: 8px; padding: 10px 12px; width: 300px; height: calc(100vh - 24px); overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+  /* scrollbar-width/scrollbar-color is the standard property Firefox
+     (and now recent Chrome/Safari) use for this - the ::-webkit-scrollbar-*
+     rules below are a Chromium/WebKit-only proprietary API and do NOTHING
+     in Firefox, which would otherwise fall back to the OS's auto-hiding
+     scrollbar and reproduce the exact "looks truncated, dead end" problem
+     these rules exist to fix, just in one specific browser. Set both. */
+  #ui { position: fixed; top: 12px; left: 12px; z-index: 10; background: rgba(20,22,28,0.92); border: 1px solid #2a2d36; border-radius: 8px; padding: 10px 12px; width: 300px; height: calc(100vh - 24px); overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.4); scrollbar-width: thin; scrollbar-color: #3a3d46 transparent; }
   #ui::-webkit-scrollbar { width: 8px; }
   #ui::-webkit-scrollbar-thumb { background: #3a3d46; border-radius: 4px; }
   #ui::-webkit-scrollbar-track { background: transparent; }
