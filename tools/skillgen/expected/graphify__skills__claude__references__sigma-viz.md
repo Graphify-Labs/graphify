@@ -15,6 +15,7 @@ Adjust `MIN_COMMUNITY_SIZE` (20 is a reasonable default — communities below th
 ```python
 import json
 import math
+import subprocess
 import networkx as nx
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -27,6 +28,18 @@ labels = json.loads(Path('graphify-out/.graphify_labels.json').read_text(encodin
 # copyable) relative path when the marker is missing.
 _root_marker = Path('graphify-out/.graphify_root')
 SCAN_ROOT = _root_marker.read_text(encoding='utf-8').strip() if _root_marker.exists() else None
+REPO_NAME = Path(SCAN_ROOT).name if SCAN_ROOT else None
+# Best-effort - a scan root that isn't a git repo (or has no git binary
+# available) is common enough (a docs corpus, a partial checkout) that this
+# must degrade to None rather than raise; the header line below just omits
+# the branch when it's unknown instead of showing a misleading placeholder.
+try:
+    GIT_BRANCH = subprocess.run(
+        ['git', '-C', SCAN_ROOT, 'rev-parse', '--abbrev-ref', 'HEAD'],
+        capture_output=True, text=True, timeout=5,
+    ).stdout.strip() or None if SCAN_ROOT else None
+except (OSError, subprocess.SubprocessError):
+    GIT_BRANCH = None
 
 # Maps every relation graphify emits (AST-structural and LLM-semantic alike) to
 # one of six buckets the filter panel toggles as a group. Keep this in sync
@@ -146,16 +159,31 @@ for (cu, cv), w in edge_counts.items():
 # which still drives rendered thickness/labels) for same-module edges, so
 # forceAtlas2's attraction pulls same-module communities toward each other
 # more than the raw topology alone would. Without this, module color-coding
-# is the only thing tying a module together visually - nodes can be
-# color-matched but scattered anywhere, which reads as chaotic even once
-# the general bunching problem is fixed. Verified on the real 342-community
-# production graph by measuring the ratio of average within-module distance
-# to average between-module distance (lower = tighter, more legible
-# clusters): boost=1 (no boost) -> 0.96 (modules barely distinguishable
-# spatially); boost=15 -> 0.48 (clearly separated clusters); boost=30 was
-# slightly WORSE (0.49) than 15, not better - this stopped improving well
-# before "as much boost as possible", so don't push it up blindly.
-MODULE_CLUSTER_BOOST = 15
+# (and the hull below) is the only thing tying a module together visually -
+# nodes can be color-matched but scattered anywhere, which reads as chaotic
+# even once the general bunching problem is fixed. Tuned jointly with
+# scaling_ratio below, not independently - re-verify both together on a
+# real multi-hundred-node corpus rather than nudging just one.
+#
+# A too-high boost actively backfires: it doesn't just plateau, it makes
+# bunching WORSE for the largest modules specifically, because a big module
+# has many more same-module edges, so the boost compounds - the two largest
+# modules on the real production graph visibly collapsed into their own
+# dense sub-hairball at boost=15 even though the *average* within/between
+# distance ratio looked fine, and was reported as still-too-clumped against
+# real output. boost=6 (down from boost=15) prioritizes breaking up that
+# hairball over maximizing module separation: within/between distance ratio
+# goes 0.550 -> 0.727 (modules less tightly separated, an accepted
+# trade-off since the hull overlay still visually groups a module even when
+# its nodes aren't packed tightly) while the fraction of nodes within 15%
+# of the bounding-box center drops 0.28 -> 0.12 and the median
+# nearest-neighbor spacing roughly triples (3.9 -> 10.5 units) - measured
+# directly against the current corpus snapshot, not assumed from an older
+# pass, since corpus growth alone can shift these numbers even with
+# unchanged parameters. If module separation ever matters more than spread
+# for a given corpus, raise this back toward 12-15 and re-verify the
+# hairball doesn't return.
+MODULE_CLUSTER_BOOST = 6
 for u, v, d in meta.edges(data=True):
     same_module = meta.nodes[u]['module'] == meta.nodes[v]['module']
     d['layout_weight'] = d['weight'] * MODULE_CLUSTER_BOOST if same_module else d['weight']
@@ -165,24 +193,25 @@ for u, v, d in meta.edges(data=True):
 # linlog=True (logarithmic attraction) plus a node_size repulsion halo
 # proportional to member count spreads communities out by actual graph
 # structure instead of collapsing almost everything into one dense blob
-# near the centroid. Verified on a real 342-community production graph:
-# the naive defaults (linear attraction, scaling_ratio=4, no node_size)
-# packed 87% of nodes within 15% of the bounding-box center - unreadable,
-# and exactly the "nodes are bunched, labels aren't readable" failure
-# mode. gravity=0.15 + scaling_ratio=80 (pushed well past an earlier,
-# still-too-tight 0.5/20 pass that measured better on paper but was still
-# reported as too bunched to read labels without manually dragging nodes
-# apart) drops the near-center fraction to ~7% - verify spread visually in
-# a real browser, not just by this fraction, before tuning further; a
-# purely numeric spread proxy under-predicted "good enough" once already.
+# near the centroid. The naive defaults (linear attraction, scaling_ratio=4,
+# no node_size) packed the vast majority of nodes within 15% of the
+# bounding-box center on a real production graph - unreadable, and exactly
+# the "nodes are bunched, labels aren't readable" failure mode reported
+# multiple times against real output, not a synthetic worst case.
+# gravity=0.15 + scaling_ratio=100 (raised again from an earlier 80, paired
+# with the MODULE_CLUSTER_BOOST=6 change above) is the current best
+# verified balance - always verify spread AND module separation together,
+# visually in a real browser, before tuning either further; a purely
+# numeric spread proxy has under-predicted "good enough" before, and
+# pushing scaling_ratio up alone (without lowering the module boost) trades
+# away module separation for less bunching rather than improving both.
 # scaling_ratio is raised so far past its default (2.0) specifically to
-# compensate for linlog's gentler pull once nodes spread out - lowering
-# it re-collapses the layout fast at intermediate values, so don't tune
-# it down without re-checking spread on a real multi-hundred-node corpus.
+# compensate for linlog's gentler pull once nodes spread out - lowering it
+# re-collapses the layout fast at intermediate values.
 max_members = max((meta.nodes[n]['member_count'] for n in meta.nodes), default=1)
 node_size = {n: 3 + 12 * (meta.nodes[n]['member_count'] / max_members) ** 0.5 for n in meta.nodes}
 pos = nx.forceatlas2_layout(
-    meta, max_iter=1000, gravity=0.15, scaling_ratio=80.0, linlog=True,
+    meta, max_iter=1000, gravity=0.15, scaling_ratio=100.0, linlog=True,
     node_size=node_size, seed=42, weight='layout_weight',
 )
 # A "RuntimeWarning: invalid value encountered in divide" from networkx's
@@ -278,7 +307,10 @@ for module, points in by_module_points.items():
     hulls_out[module] = expanded
 
 Path('graphify-out/.graphify_sigma_data.json').write_text(
-    json.dumps({'nodes': nodes_out, 'edges': edges_out, 'hulls': hulls_out}, ensure_ascii=False), encoding='utf-8')
+    json.dumps({
+        'nodes': nodes_out, 'edges': edges_out, 'hulls': hulls_out,
+        'repoName': REPO_NAME, 'scanRoot': SCAN_ROOT, 'gitBranch': GIT_BRANCH,
+    }, ensure_ascii=False), encoding='utf-8')
 print(f'meta graph: {len(nodes_out)} nodes, {len(edges_out)} edges — layout precomputed, size range {SIZE_MIN:.1f}-{SIZE_MAX:.1f}, {dropped} communities below MIN_COMMUNITY_SIZE={MIN_COMMUNITY_SIZE} dropped')
 ```
 
@@ -296,15 +328,17 @@ Key implementation notes:
 - **Icons by content kind**: `NodePictogramProgram` (from `@sigma/node-image`) renders each node as a small monochrome glyph tinted by the node's `color` attribute — set `type: "pictogram"` and an `image` data URI per `fileType` (code/document/paper/image/rationale/concept) on every node, and register `nodeProgramClasses: { pictogram: NodePictogramProgram }` on the `Sigma` constructor. **Every icon SVG must declare explicit `width`/`height` attributes, not just `viewBox`.** `@sigma/node-image` dispatches data-URI images through its raster-image path (not the dedicated SVG path, which keys off a literal `.svg` file extension that a data URI never has), and that path sizes the icon from the `<img>` element's intrinsic dimensions — an SVG with only a `viewBox` has no intrinsic size in some browsers, which silently rasterizes to a zero-size (fully transparent, invisible) texture. `viewBox='0 0 24 24' width='24' height='24'` is sufficient; the exact value doesn't matter since sizing at render time comes from the node's `size` attribute, not the icon's own dimensions.
 - **Color by module, not degree**: with the icon now carrying "what kind of thing is this", color is free to carry "which part of the codebase is this from" — tint each node by its dominant top-level directory (`module`) using a fixed categorical palette, ranked so the most common modules get the most visually distinct colors and the long tail collapses into one muted gray. This also becomes a clickable legend (see below) — a lightweight grouping tool without a separate library.
 - **Edges are colored AND labeled by their dominant relation bucket** (the same six buckets the filter panel uses), not a flat gray — pick the bucket with the highest count in the edge's `buckets` breakdown, set `color` to a per-bucket color and `label` to the bucket's human-readable name as plain edge attributes (`renderEdgeLabels: true` on the constructor is what actually draws them; the label/color attributes alone do nothing without it). Keep edge colors at moderate opacity (not solid) — a real corpus renders 1000+ edges simultaneously at the default zoom, and solid colors at that density read as noise rather than a legible signal. Edge label visibility is NOT independently configurable the way node labels are (there is no `edgeLabelRenderedSizeThreshold`) — sigma only shows an edge's label when at least one endpoint is hovered/highlighted, or when both endpoints already have their own node labels showing (which IS gated by `labelRenderedSizeThreshold`). This is a feature, not a limitation to work around: it means edge labels progressively reveal as you zoom in or click a node, instead of 1000+ labels overlapping into unreadable clutter at the initial fit-all view.
-- **Layout spread**: a fixed `scaling_ratio` with linear attraction and no repulsion halo packs almost every node within a small radius of the centroid once a real corpus produces 300+ communities — verified in production, 87% of nodes landed within 15% of the bounding-box center, unreadable and impossible to label. Step 1's `linlog=True` + a `node_size` repulsion halo (proportional to member count) + a much higher `scaling_ratio` than the networkx default fixes this at the source (see Step 1's comment for the exact numbers and why they're calibrated together, not independently tunable).
-- **Module clustering**: spread alone isn't structure — Step 1 boosts the LAYOUT-ONLY edge weight (a separate `layout_weight` attribute, not the real `weight` that drives rendered edge thickness) for same-module edges before running forceAtlas2, so communities in the same module pull toward each other more than raw topology alone would produce. Verified by measuring the ratio of average within-module to average between-module node distance on the real production graph: 0.96 (no boost, modules barely distinguishable spatially) down to 0.48 at the chosen boost factor. Pushing the boost far higher didn't keep improving it — measure before increasing further, the same lesson as the layout-spread tuning above.
-- **Module hulls**: a soft, translucent polygon drawn behind each module's node cluster, computed with a small pure-Python convex-hull implementation in Step 1 (Andrew's monotone chain — not worth adding scipy as a dependency for one shape per module) and rendered on a separate 2D canvas positioned behind sigma's own WebGL canvas via `z-index` in the stylesheet. Redraw on every sigma `afterRender` event (fires on pan/zoom/drag) using `renderer.graphToViewport(...)` — NOT `framedGraphToViewport`, since hull points are stored in the same raw graph coordinate space as node `x`/`y`, not sigma's internal normalized space — so the hulls stay aligned with the nodes as the camera moves.
+- **Layout spread**: a fixed `scaling_ratio` with linear attraction and no repulsion halo packs almost every node within a small radius of the centroid once a real corpus produces 300+ communities — unreadable and impossible to label. Step 1's `linlog=True` + a `node_size` repulsion halo (proportional to member count) + a much higher `scaling_ratio` than the networkx default fixes this at the source (see Step 1's comment for the exact numbers and why they're calibrated together, not independently tunable).
+- **Module clustering**: spread alone isn't structure — Step 1 boosts the LAYOUT-ONLY edge weight (a separate `layout_weight` attribute, not the real `weight` that drives rendered edge thickness) for same-module edges before running forceAtlas2, so communities in the same module pull toward each other more than raw topology alone would produce. This trades off directly against the layout-spread goal above: too high a boost re-clumps the largest modules specifically (they have the most same-module edges, so the boost compounds), which was reported as still-too-bunched even after the general spread fix. Both are tuned together — see Step 1's comment for the current numbers and why a too-high boost was reverted rather than kept.
+- **Module hulls**: a soft, translucent polygon drawn behind each module's node cluster, computed with a small pure-Python convex-hull implementation in Step 1 (Andrew's monotone chain — not worth adding scipy as a dependency for one shape per module) and rendered on a separate 2D canvas positioned behind sigma's own WebGL canvas via `z-index` in the stylesheet. Redraw on every sigma `afterRender` event (fires on pan/zoom/drag) using `renderer.graphToViewport(...)` — NOT `framedGraphToViewport`, since hull points are stored in the same raw graph coordinate space as node `x`/`y`, not sigma's internal normalized space — so the hulls stay aligned with the nodes as the camera moves. On a window resize, the hull redraw is deliberately gated behind the SAME `afterRender` firing that follows the camera re-fit (see the resize handler below), not drawn eagerly right after mutating the camera — otherwise the hull canvas (a plain synchronous 2D draw) briefly reflects the new camera state a frame before sigma's own WebGL node/edge canvases catch up, which reads as the hull and the graph visibly disagreeing with each other.
+- **Resizing the browser window after the page has loaded** re-fits the camera via `fitViewportToNodes` + `renderer.setCustomBBox`, but only from inside a `renderer.on("afterRender", ...)` handler gated by a `pendingViewportRefit` flag set on the raw `resize` event — never synchronously in the resize handler itself, and not from a bare `requestAnimationFrame` either. Sigma's own resize handling re-normalizes node coordinates on its own next scheduled render, not synchronously; reading node display data before that finishes returns stale, un-normalized coordinates and points the camera far outside the graph (a blank canvas — worse than the dead-space bug this fixes). A bare `requestAnimationFrame` merely assumes it runs after sigma's own internal one; that held in most manual tests but is not guaranteed, and failed specifically when the window was resized in the first instants after the page loaded, or resized rapidly (dragging a window edge fires many resize events in quick succession, not one at the end). `afterRender` is the reliable signal, since sigma only emits it once a render pass — including any pending re-normalization — has actually finished.
 - **Edges below a weight percentile are hidden by default**, with a "show all edges" checkbox to opt back in and an exception for whatever's connected to the currently-highlighted node (which always shows in full regardless of weight, since a user who picked a specific node wants completeness for it, not a curated subset). This declutter logic lives in the shared `edgeReducer`, which means it's only actually applied once `applyReducers()` runs — an explicit initial call to `applyReducers()` is required for this reason (previously, nothing called it until the first user interaction, which was harmless when every reducer was a no-op identity function at its default state, but isn't harmless now that hiding-by-weight is a real default-view behavior, not a no-op).
 - **Nodes are draggable** — the precomputed layout is a starting point for exploration, not a constraint; some real corpora warrant manual tidying that no automatic layout gets right for every viewer. See the `downNode`/`moveBody`/`upNode`/`upStage` handlers and `renderer.setCustomBBox(renderer.getBBox())` in the script — the frozen custom bbox is required, not optional: without it, sigma recomputes its normalization extent from live node positions on every reindex (even with `autoRescale: false`, which only fixes scale/aspect, not this recentering), so dragging one node toward the edge of the current extent visibly pans every OTHER node too. `originalPositions` is captured at load so the reset button can undo dragging, not just filters/highlight.
 - **Click panel lists every one of the community's actual source files**, not a capped sample — Step 1 collects each significant community's complete distinct `source_file` list. The panel renders it as a filter textbox + a scrollable list rather than truncating with "+N more", since a 300-member community can legitimately have dozens of files and there's no good way to guess which ones matter to a given user in advance.
 - **Clicking a file opens a movable dialog with an embedded content preview**, not just a link. Step 1 reads and embeds a bounded preview (`PREVIEW_CHARS`, currently 3000 characters) for only the first `PREVIEW_CAP` files (currently 8) of each community's complete list — embedding full content for every file in every community would bloat the self-contained HTML far more than paths alone do, so files beyond the cap show their path and, when available, a working `file://` link (built from `graphify-out/.graphify_root`, which only resolves on the machine that generated the graph) without an inline preview. The dialog itself is a plain DOM element dragged via its header (`mousedown`/`mousemove`/`mouseup` on screen-pixel `left`/`top` CSS, NOT `viewportToGraph` — this is unrelated to sigma's graph/camera coordinate spaces, unlike node dragging above).
 - **Node labels get their own small background box, not bare canvas text.** Sigma's built-in label renderer (`drawDiscNodeLabel` in its own source) is a plain `fillText` with no background, which is illegible over a dense, colorful tangle of edges — and there is no settings-level "add a background" toggle. `defaultDrawNodeLabel` is sigma's documented override point for a fully custom label-drawing function; use it to fill a small rect (sized from `context.measureText`) behind the text before drawing it.
 - Include: click → highlight neighbors + dim the rest (`nodeReducer`/`edgeReducer`), a text search box that filters by label (respecting active filters) and pans the camera to the match, a left-side panel with checkboxes for entity kind and bucketed relation type, and a clickable module legend that doubles as an isolate/hide-by-module toggle. Filtering and highlighting share one pair of reducers (`applyReducers`) so they compose instead of one clobbering the other's `setSetting` call.
+- **The header shows which repo/branch this graph is of** — a repo name (the last path segment of `.graphify_root`), its full scan-root path, and the git branch (`git rev-parse --abbrev-ref HEAD` run in Step 1, best-effort). This matters once someone has more than one `graph_sigma.html` open (e.g. comparing two branches, or a stale copy from a previous run) — nothing else on the page identifies which checkout it came from. Both the branch and the repo name/path degrade independently and silently: a non-git corpus just omits the branch, and a `graph.json` missing `.graphify_root` entirely (moved from another machine, or generated without the marker) omits the whole row rather than showing a misleading blank.
 - **Camera-pan targets must come from `renderer.getNodeDisplayData(key)`, not the raw data's `x`/`y`.** Sigma's `Camera` operates in its own normalized display space, not the raw graph coordinates you fed it — panning with the raw values silently targets the wrong point. This is the same pattern sigma's own demo search field uses (`packages/demo/src/views/SearchField.tsx`).
 - **Escape any label before it goes through `innerHTML`.** Community labels are LLM-generated from indexed corpus content, and module names come from real directory names — both can legally contain `<`/`>`/`"`. `graphify-out/` is meant to be committed and shared with a team (per the README), so an unescaped label is a stored-XSS path for whoever opens the HTML next. Escape with a small helper before interpolating into `innerHTML`; the search-results list already does this correctly by using `textContent` instead. Source-file paths in the click panel are filesystem-derived, not corpus content, so they're a much lower XSS risk — still escaped for consistency and because a pathological filename could in principle contain HTML metacharacters on some filesystems.
 
@@ -333,6 +367,8 @@ Key implementation notes:
   #ui::-webkit-scrollbar-track { background: transparent; }
   #ui h1 { font-size: 13px; margin: 0 0 8px; font-weight: 600; color: #fff; }
   #ui .meta { font-size: 11px; color: #9aa0ab; margin-bottom: 8px; }
+  #ui .source { font-size: 11px; color: #6b7280; margin: 2px 0 8px; overflow-wrap: break-word; }
+  #ui .source .branch { color: #9aa0ab; }
   #ui h2 { font-size: 11px; margin: 14px 0 6px; color: #9aa0ab; text-transform: uppercase; letter-spacing: 0.04em; border-top: 1px solid #262932; padding-top: 10px; }
   #search { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid #3a3d46; background: #14161c; color: #fff; font-size: 12px; outline: none; }
   #search:focus { border-color: #5b8def; }
@@ -375,6 +411,7 @@ Key implementation notes:
 <div id="container"></div>
 <div id="ui">
   <h1>Codebase Knowledge Graph</h1>
+  <div class="source" id="sourceLine"></div>
   <div class="meta" id="metaLine"></div>
   <input id="search" type="text" placeholder="Search communities...">
   <div id="results"></div>
@@ -444,6 +481,19 @@ const OTHER_MODULE_COLOR = "#5a5f6b";
 // escaping isn't needed instead).
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// repoName/scanRoot are only present when .graphify_root existed at
+// generation time (see Step 1) - a corpus scanned without it (or a graph.json
+// moved from a different machine) simply omits this row rather than showing
+// a misleading blank/placeholder. gitBranch is independently optional even
+// when the other two are present (a non-git corpus, or `git` unavailable).
+const sourceLine = document.getElementById('sourceLine');
+if (DATA.repoName) {
+  const branch = DATA.gitBranch ? ` <span class="branch">(${escapeHtml(DATA.gitBranch)})</span>` : '';
+  sourceLine.innerHTML = `${escapeHtml(DATA.repoName)}${branch}<br>${escapeHtml(DATA.scanRoot || '')}`;
+} else {
+  sourceLine.style.display = 'none';
 }
 
 document.getElementById('metaLine').textContent =
@@ -573,30 +623,56 @@ resizeHullCanvas();
 // Sigma's own internal resize listener (registered inside its constructor, so
 // it runs before this one) resizes its CANVAS/WebGL viewport to match the
 // container automatically - but that resize is NOT synchronous: it flags the
-// renderer dirty and re-normalizes node coordinates on the next animation
-// frame. Without an explicit re-fit here, growing the browser window just
-// reveals more dead space around the same old camera framing, which reads as
-// "the viewport doesn't expand to the window" even though the canvas itself
-// did resize correctly. The fix has to be deferred with requestAnimationFrame
-// - calling fitViewportToNodes synchronously in this same handler reads node
-// display data mid-flight through sigma's own pending re-normalization pass
-// and gets back stale, un-normalized graph coordinates (e.g. a camera
+// renderer dirty and re-normalizes node coordinates on its own next scheduled
+// render pass. Without an explicit re-fit here, growing the browser window
+// just reveals more dead space around the same old camera framing, which
+// reads as "the viewport doesn't expand to the window" even though the
+// canvas itself did resize correctly.
+//
+// The re-fit must NOT run synchronously in this handler, nor even in a bare
+// requestAnimationFrame: both read node display data before sigma's own
+// pending re-normalization pass has necessarily finished, occasionally
+// getting back stale, un-normalized graph coordinates (e.g. a camera
 // centered around the raw ~1000-unit layout extent instead of the expected
-// 0-1 range), which points the camera far outside the graph and renders a
-// blank canvas - a strictly worse regression than the dead-space bug this is
-// fixing. Deferring one frame lets sigma's own resize/re-normalization finish
-// first. This does mean a manual zoom/pan gets reset on every resize - an
-// intentional tradeoff, since leaving dead space is a worse default than
-// occasionally re-centering.
+// 0-1 range) - pointing the camera far outside the graph and rendering a
+// blank canvas, a strictly worse regression than the dead-space bug this is
+// fixing. A bare rAF merely assumes it will run after sigma's own internal
+// one, which held in most manual tests but is not guaranteed - it raced and
+// failed when the window was resized in the first moments after the page
+// loaded. The reliable signal is sigma's own `afterRender` event, which by
+// definition fires only once a render pass (including any pending
+// normalization) has actually completed: set a flag on resize, act on it the
+// next time `afterRender` fires, so the re-fit is tied to sigma's real
+// lifecycle instead of a guessed frame count. This does mean a manual
+// zoom/pan gets reset on every resize - an intentional tradeoff, since
+// leaving dead space is a worse default than occasionally re-centering.
+//
+// Mutating the camera (fitViewportToNodes) and the extent (setCustomBBox)
+// both call sigma's own `scheduleRender()` - they do NOT repaint the
+// WebGL node/edge canvases synchronously. Drawing the hulls in this same
+// callback, right after those calls, would use the brand-new camera state
+// (graphToViewport reads it live) while the node/edge canvases still show
+// the OLD framing until that scheduled render actually runs - hulls and
+// graph visibly out of sync with each other for a frame. `return` here
+// instead of falling through to `drawHulls()`, and let the render that
+// fitViewportToNodes/setCustomBBox just scheduled fire its OWN afterRender
+// once nodes/edges are repainted with the new camera - that is what
+// finally calls drawHulls, so hulls are never drawn against a camera state
+// the node/edge canvases haven't caught up to yet.
+let pendingViewportRefit = false;
 window.addEventListener("resize", () => {
   resizeHullCanvas();
-  requestAnimationFrame(() => {
+  pendingViewportRefit = true;
+});
+renderer.on("afterRender", () => {
+  if (pendingViewportRefit) {
+    pendingViewportRefit = false;
     fitViewportToNodes(renderer, graph.nodes(), { animate: false });
     renderer.setCustomBBox(renderer.getBBox());
-    drawHulls();
-  });
+    return;
+  }
+  drawHulls();
 });
-renderer.on("afterRender", drawHulls);
 
 // --- drag nodes to manually reposition them (precomputed layout is a
 // starting point, not a constraint - some corpora warrant manual tidying).
