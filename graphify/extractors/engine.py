@@ -381,6 +381,114 @@ def _java_collect_type_refs(
             if c.is_named:
                 _java_collect_type_refs(c, source, generic, out, skip)
 
+
+def _java_receiver_type_name(type_node, source: bytes) -> str | None:
+    """Return the concrete declared type usable for Java receiver resolution."""
+    if type_node is None:
+        return None
+    t = type_node.type
+    if t == "type_identifier":
+        name = _read_text(type_node, source)
+    elif t == "scoped_type_identifier":
+        name = _read_text(type_node, source).rsplit(".", 1)[-1]
+    elif t == "generic_type":
+        base = next(
+            (
+                child
+                for child in type_node.children
+                if child.type in ("type_identifier", "scoped_type_identifier")
+            ),
+            None,
+        )
+        return _java_receiver_type_name(base, source)
+    else:
+        return None
+    if (
+        not name
+        or name in _JAVA_BUILTIN_TYPES
+        or name in _java_type_parameters_in_scope(type_node, source)
+    ):
+        return None
+    return name
+
+
+def _java_declarator_names(declaration_node, source: bytes) -> list[str]:
+    names: list[str] = []
+    for child in declaration_node.children:
+        if child.type != "variable_declarator":
+            continue
+        name_node = child.child_by_field_name("name")
+        if name_node is not None:
+            name = _read_text(name_node, source)
+            if name:
+                names.append(name)
+    return names
+
+
+def _java_method_receiver_types(
+    method_node,
+    source: bytes,
+    field_types: dict[str, str],
+) -> dict[str, str]:
+    """Build the receiver type table visible to one Java method.
+
+    Current-class fields are the base scope. Parameters and explicit local
+    declarations shadow them. Conflicting local declarations in disjoint nested
+    scopes are omitted because raw call facts do not retain lexical scope.
+    """
+    method_types: dict[str, str] = {}
+    ambiguous: set[str] = set()
+
+    def bind(name: str, type_name: str | None) -> None:
+        if not name or not type_name or name in ambiguous:
+            return
+        previous = method_types.get(name)
+        if previous is not None and previous != type_name:
+            method_types.pop(name, None)
+            ambiguous.add(name)
+        else:
+            method_types[name] = type_name
+
+    params = method_node.child_by_field_name("parameters")
+    if params is not None:
+        for param in params.children:
+            if param.type not in ("formal_parameter", "spread_parameter"):
+                continue
+            type_name = _java_receiver_type_name(
+                param.child_by_field_name("type"), source
+            )
+            name_node = param.child_by_field_name("name")
+            if name_node is not None:
+                bind(_read_text(name_node, source), type_name)
+
+    body = method_node.child_by_field_name("body")
+    stack = list(body.children) if body is not None else []
+    while stack:
+        node = stack.pop()
+        if node.type in (
+            "class_declaration",
+            "interface_declaration",
+            "record_declaration",
+            "enum_declaration",
+            "annotation_type_declaration",
+            "lambda_expression",
+        ):
+            continue
+        if node.type == "local_variable_declaration":
+            type_name = _java_receiver_type_name(
+                node.child_by_field_name("type"), source
+            )
+            for name in _java_declarator_names(node, source):
+                bind(name, type_name)
+        stack.extend(node.children)
+
+    table = dict(field_types)
+    table.update(method_types)
+    for name in ambiguous:
+        table.pop(name, None)
+    return table
+
+
 def _java_annotation_names(declaration_node, source: bytes) -> list[str]:
     """Collect annotation names from a Java declaration's `modifiers` child."""
     names: list[str] = []
@@ -2034,6 +2142,10 @@ def _extract_generic(
     # threaded out as `swift_type_table` so member calls (`vm.update()`) can be
     # resolved to the receiver's real definition in _resolve_swift_member_calls.
     type_table: dict[str, str] = {}
+    # Java receiver typing is method-scoped: current-class fields are shared,
+    # while parameters and locals belong only to their declaring method.
+    java_field_types: dict[str, dict[str, str]] = {}
+    java_method_scopes: dict[int, tuple[object, str]] = {}
 
     csharp_interface_names: set[str] = set()
     if config.ts_module == "tree_sitter_c_sharp":
@@ -2768,6 +2880,11 @@ def _extract_generic(
                 and parent_class_nid):
             type_node = node.child_by_field_name("type")
             if type_node is not None:
+                receiver_type = _java_receiver_type_name(type_node, source)
+                if receiver_type:
+                    fields = java_field_types.setdefault(parent_class_nid, {})
+                    for field_name in _java_declarator_names(node, source):
+                        fields[field_name] = receiver_type
                 line = node.start_point[0] + 1
                 refs: list[tuple[str, str]] = []
                 _java_collect_type_refs(type_node, source, False, refs)
@@ -3288,6 +3405,8 @@ def _extract_generic(
                     if m_body:
                         function_bodies.append((m_nid, m_body))
             if body:
+                if config.ts_module == "tree_sitter_java" and parent_class_nid:
+                    java_method_scopes[id(body)] = (node, parent_class_nid)
                 function_bodies.append((func_nid, body))
             return
 
@@ -3387,6 +3506,14 @@ def _extract_generic(
     # populated before walk_calls runs. Lets member-call raw_calls carry a
     # receiver_type so the cross-file pass resolves `var.method` by type (#ruby).
     ruby_var_types: dict[str, dict[str, str | None]] = {}
+    java_receiver_types = {
+        body_id: _java_method_receiver_types(
+            method_node,
+            source,
+            java_field_types.get(class_nid, {}),
+        )
+        for body_id, (method_node, class_nid) in java_method_scopes.items()
+    }
 
     def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
                                context: str) -> None:
@@ -3529,7 +3656,11 @@ def _extract_generic(
     _tracked_body_ids: set[int] = set()
     _JS_CLOSURE_TYPES = ("arrow_function", "function_expression")
 
-    def walk_calls(node, caller_nid: str) -> None:
+    def walk_calls(
+        node,
+        caller_nid: str,
+        java_types: dict[str, str] | None = None,
+    ) -> None:
         if node.type in config.function_boundary_types:
             # JS/TS: an inline/returned closure not separately tracked in
             # function_bodies would otherwise drop its calls at this boundary.
@@ -3542,7 +3673,7 @@ def _extract_generic(
                 body = node.child_by_field_name("body")
                 if body is not None and id(body) not in _tracked_body_ids:
                     for child in node.children:
-                        walk_calls(child, caller_nid)
+                        walk_calls(child, caller_nid, java_types)
             return
 
         if node.type in config.call_types:
@@ -3552,7 +3683,7 @@ def _extract_generic(
                                       edges, seen_dyn_import_pairs):
                     # Still recurse into children (import().then(...) may have calls)
                     for child in node.children:
-                        walk_calls(child, caller_nid)
+                        walk_calls(child, caller_nid, java_types)
                     return
 
             callee_name: str | None = None
@@ -3699,16 +3830,31 @@ def _extract_generic(
                         scope = func_node.child_by_field_name("scope")
                         if scope is not None:
                             member_receiver = _read_text(scope, source)
-            elif config.ts_module == "tree_sitter_java" and node.type == "object_creation_expression":
-                # `new Foo(...)` — the constructed type is in the `type` field, not
-                # `name`, so the generic path misses it (#1373). Reduce a qualified
-                # / generic type to its simple name (com.a.Foo<Bar> -> Foo). Java
-                # method_invocation still flows through the generic branch below.
-                type_node = node.child_by_field_name("type")
-                if type_node is not None:
-                    raw = _read_text(type_node, source).split("<", 1)[0].strip()
-                    if raw:
-                        callee_name = raw.rsplit(".", 1)[-1]
+            elif config.ts_module == "tree_sitter_java":
+                if node.type == "object_creation_expression":
+                    # `new Foo(...)` — the constructed type is in the `type` field,
+                    # not `name`, so the generic path misses it (#1373).
+                    type_node = node.child_by_field_name("type")
+                    if type_node is not None:
+                        raw = _read_text(type_node, source).split("<", 1)[0].strip()
+                        if raw:
+                            callee_name = raw.rsplit(".", 1)[-1]
+                elif node.type == "method_invocation":
+                    name_node = node.child_by_field_name("name")
+                    if name_node is not None:
+                        callee_name = _read_text(name_node, source)
+                    receiver = node.child_by_field_name("object")
+                    if receiver is not None:
+                        is_member_call = True
+                        if receiver.type == "identifier":
+                            member_receiver = _read_text(receiver, source)
+                        elif receiver.type == "this":
+                            member_receiver = "this"
+                        elif receiver.type == "field_access":
+                            owner = receiver.child_by_field_name("object")
+                            field = receiver.child_by_field_name("field")
+                            if owner is not None and owner.type == "this" and field is not None:
+                                member_receiver = _read_text(field, source)
             elif config.ts_module == "tree_sitter_ruby":
                 # Ruby's `call` node carries `receiver` and `method` as direct
                 # fields (no intermediate accessor node), so the generic accessor
@@ -3778,8 +3924,17 @@ def _extract_generic(
                     config.ts_module == "tree_sitter_c_sharp"
                     and is_member_call and member_receiver
                 )
-                if is_member_call and member_receiver and (
-                    member_receiver[:1].isupper() or is_this_field_call or _csharp_defer
+                _java_defer = (
+                    config.ts_module == "tree_sitter_java" and is_member_call
+                )
+                if _java_defer or (
+                    is_member_call
+                    and member_receiver
+                    and (
+                        member_receiver[:1].isupper()
+                        or is_this_field_call
+                        or _csharp_defer
+                    )
                 ):
                     tgt_nid = None
                 else:
@@ -3826,6 +3981,11 @@ def _extract_generic(
                     # type table (#1609).
                     if config.ts_module == "tree_sitter_c_sharp":
                         rc_entry["lang"] = "csharp"
+                    if config.ts_module == "tree_sitter_java":
+                        rc_entry["lang"] = "java"
+                        receiver_type = (java_types or {}).get(member_receiver or "")
+                        if receiver_type:
+                            rc_entry["receiver_type"] = receiver_type
                     raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -4032,7 +4192,7 @@ def _extract_generic(
                 _emit_indirect_ref(ident, caller_nid, enclosing_locals, "return")
 
         for child in node.children:
-            walk_calls(child, caller_nid)
+            walk_calls(child, caller_nid, java_types)
 
     if config.ts_module == "tree_sitter_ruby":
         for caller_nid, body_node in function_bodies:
@@ -4062,7 +4222,11 @@ def _extract_generic(
     _tracked_body_ids.update(id(b) for _, b in function_bodies)
 
     for caller_nid, body_node in function_bodies:
-        walk_calls(body_node, caller_nid)
+        walk_calls(
+            body_node,
+            caller_nid,
+            java_receiver_types.get(id(body_node)),
+        )
 
     # #1356: walk property/field initializers (collected above). walk_calls
     # self-guards against re-entering function bodies and dedups via
