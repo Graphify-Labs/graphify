@@ -570,7 +570,32 @@ function drawHulls() {
   }
 }
 resizeHullCanvas();
-window.addEventListener("resize", () => { resizeHullCanvas(); drawHulls(); });
+// Sigma's own internal resize listener (registered inside its constructor, so
+// it runs before this one) resizes its CANVAS/WebGL viewport to match the
+// container automatically - but that resize is NOT synchronous: it flags the
+// renderer dirty and re-normalizes node coordinates on the next animation
+// frame. Without an explicit re-fit here, growing the browser window just
+// reveals more dead space around the same old camera framing, which reads as
+// "the viewport doesn't expand to the window" even though the canvas itself
+// did resize correctly. The fix has to be deferred with requestAnimationFrame
+// - calling fitViewportToNodes synchronously in this same handler reads node
+// display data mid-flight through sigma's own pending re-normalization pass
+// and gets back stale, un-normalized graph coordinates (e.g. a camera
+// centered around the raw ~1000-unit layout extent instead of the expected
+// 0-1 range), which points the camera far outside the graph and renders a
+// blank canvas - a strictly worse regression than the dead-space bug this is
+// fixing. Deferring one frame lets sigma's own resize/re-normalization finish
+// first. This does mean a manual zoom/pan gets reset on every resize - an
+// intentional tradeoff, since leaving dead space is a worse default than
+// occasionally re-centering.
+window.addEventListener("resize", () => {
+  resizeHullCanvas();
+  requestAnimationFrame(() => {
+    fitViewportToNodes(renderer, graph.nodes(), { animate: false });
+    renderer.setCustomBBox(renderer.getBBox());
+    drawHulls();
+  });
+});
 renderer.on("afterRender", drawHulls);
 
 // --- drag nodes to manually reposition them (precomputed layout is a
