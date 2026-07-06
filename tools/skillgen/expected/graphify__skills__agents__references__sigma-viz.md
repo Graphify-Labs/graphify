@@ -160,10 +160,11 @@ print(f'meta graph: {len(nodes_out)} nodes, {len(edges_out)} edges — layout pr
 Write this template to `graphify-out/graph_sigma.html`, with a literal `__GRAPH_DATA__` placeholder where the data goes (substituted in Step 3 — do NOT try to embed the JSON directly while authoring the template, string-templating that much escaping inline is error-prone).
 
 Key implementation notes:
-- **Library loading**: sigma@3 ships CJS/ESM only, no browser UMD global. Load libraries as ES modules from `esm.sh` (`https://esm.sh/sigma@3.0.3`, `https://esm.sh/graphology@0.25.4`, `https://esm.sh/@sigma/node-image@3.0.0`) via `<script type="module">` — this works fine even when the HTML is opened via `file://`, because the CORS restriction on `file://` only blocks *local relative* fetches, not remote `https://` module imports.
+- **Library loading**: sigma@3 ships CJS/ESM only, no browser UMD global. Load libraries as ES modules from `esm.sh` (`https://esm.sh/sigma@3.0.3`, `https://esm.sh/graphology@0.25.4`, `https://esm.sh/@sigma/node-image@3.0.0?deps=sigma@3.0.3`, `https://esm.sh/@sigma/utils@3.0.0?deps=sigma@3.0.3`) via `<script type="module">` — this works fine even when the HTML is opened via `file://`, because the CORS restriction on `file://` only blocks *local relative* fetches, not remote `https://` module imports. **The `?deps=sigma@3.0.3` query parameter on the two `@sigma/*` companion packages is required, not optional.** Without it, esm.sh resolves their `sigma` peer dependency (declared as a range like `>=3.0.0-beta.10`) to a literal broken module path instead of the concrete pinned version — the browser console shows `The requested module '/sigma@>=3.0.0-beta.10/...' does not provide an export named 'NodeProgram'`, that `import` statement throws, and because it's at the top of the module, the ENTIRE script fails before any of your code runs — Sigma is never constructed, the filter panel never populates, and the page renders as a plain black screen with only the (empty) left panel visible. This reproduces even on a small, otherwise-correct example graph — it is not a data-size or layout issue. Verified by actually loading a generated file in a real browser (Chrome via Playwright) and reading the console: the import resolves cleanly once both companion packages carry the matching `?deps=` pin.
 - **No physics**: node `x`/`y` come straight from the precomputed data; sigma just renders and handles pan/zoom/click natively via WebGL — no `stabilizationIterationsDone` wait, no lag.
 - **Set `autoRescale: false` alongside `itemSizesReference: "positions"`, not just `zoomToSizeRatioFunction`.** These are three independent settings: `zoomToSizeRatioFunction: (ratio) => ratio` alone is what makes size scale *linearly* with zoom rather than by square root. But `autoRescale` (on by default) separately auto-fits/centers the graph's positions in the viewport on load — leaving it on while sizes are position-referenced means the one-time auto-fit repositions the graph without symmetrically adjusting the size scale, so sizes stop being anchored to the coordinate frame you actually laid out (oversized/overlapping nodes, inconsistent-looking zoom response). Sigma's own `fit-sizes-to-positions` example (`packages/storybook/stories/2-advanced-usecases/fit-sizes-to-positions`) combines all three settings together for exactly this reason — do the same: `itemSizesReference: "positions"` + `zoomToSizeRatioFunction: (ratio) => ratio` + `autoRescale: false` on the `Sigma` constructor (https://www.sigmajs.org/docs/advanced/sizes/).
-- **Icons by content kind**: `NodePictogramProgram` (from `@sigma/node-image`) renders each node as a small monochrome glyph tinted by the node's `color` attribute — set `type: "pictogram"` and an `image` data URI per `fileType` (code/document/paper/image/rationale/concept) on every node, and register `nodeProgramClasses: { pictogram: NodePictogramProgram }` on the `Sigma` constructor.
+- **`autoRescale: false` also disables sigma's automatic "fit the camera to the graph" behavior on load — you must replace it with an explicit fit, or the page renders as a blank/black screen with nothing visible.** Without `autoRescale`, the camera stays at its default state (near the origin, ratio 1) regardless of where the actual nodes are; since Step 1 lays nodes out over a 0-1000 range, the camera ends up pointed at empty space, not a badly-framed graph. Call `fitViewportToNodes(renderer, graph.nodes(), { animate: false })` from `@sigma/utils` (the same package sigma's own demo uses for this) immediately after constructing the `Sigma` instance, and again — with `animate: true` — anywhere the camera needs to reframe the whole graph (e.g. the reset button). Do NOT use `camera.animatedReset()` for that: it resets to sigma's default state, the exact "pointed at empty space" position this exists to fix. `maxCameraRatio: 10` (rather than a tighter bound like `3`) gives this fit headroom on a small/narrow viewport — the fitted ratio for a 0-1000-unit layout is roughly `1000 / min(viewportWidth, viewportHeight)`, which can exceed a tight bound on a short window and clip the fit.
+- **Icons by content kind**: `NodePictogramProgram` (from `@sigma/node-image`) renders each node as a small monochrome glyph tinted by the node's `color` attribute — set `type: "pictogram"` and an `image` data URI per `fileType` (code/document/paper/image/rationale/concept) on every node, and register `nodeProgramClasses: { pictogram: NodePictogramProgram }` on the `Sigma` constructor. **Every icon SVG must declare explicit `width`/`height` attributes, not just `viewBox`.** `@sigma/node-image` dispatches data-URI images through its raster-image path (not the dedicated SVG path, which keys off a literal `.svg` file extension that a data URI never has), and that path sizes the icon from the `<img>` element's intrinsic dimensions — an SVG with only a `viewBox` has no intrinsic size in some browsers, which silently rasterizes to a zero-size (fully transparent, invisible) texture. `viewBox='0 0 24 24' width='24' height='24'` is sufficient; the exact value doesn't matter since sizing at render time comes from the node's `size` attribute, not the icon's own dimensions.
 - **Color by module, not degree**: with the icon now carrying "what kind of thing is this", color is free to carry "which part of the codebase is this from" — tint each node by its dominant top-level directory (`module`) using a fixed categorical palette, ranked so the most common modules get the most visually distinct colors and the long tail collapses into one muted gray. This also becomes a clickable legend (see below) — a lightweight grouping tool without a separate library.
 - Include: click → highlight neighbors + dim the rest (`nodeReducer`/`edgeReducer`), a text search box that filters by label (respecting active filters) and pans the camera to the match, a left-side panel with checkboxes for entity kind and bucketed relation type, and a clickable module legend that doubles as an isolate/hide-by-module toggle. Filtering and highlighting share one pair of reducers (`applyReducers`) so they compose instead of one clobbering the other's `setSetting` call.
 - **Camera-pan targets must come from `renderer.getNodeDisplayData(key)`, not the raw data's `x`/`y`.** Sigma's `Camera` operates in its own normalized display space, not the raw graph coordinates you fed it — panning with the raw values silently targets the wrong point. This is the same pattern sigma's own demo search field uses (`packages/demo/src/views/SearchField.tsx`).
@@ -218,7 +219,8 @@ Key implementation notes:
 <script type="module">
 import Graph from "https://esm.sh/graphology@0.25.4";
 import Sigma from "https://esm.sh/sigma@3.0.3";
-import { NodePictogramProgram } from "https://esm.sh/@sigma/node-image@3.0.0";
+import { NodePictogramProgram } from "https://esm.sh/@sigma/node-image@3.0.0?deps=sigma@3.0.3";
+import { fitViewportToNodes } from "https://esm.sh/@sigma/utils@3.0.0?deps=sigma@3.0.3";
 
 const DATA = __GRAPH_DATA__;
 
@@ -226,12 +228,12 @@ const DATA = __GRAPH_DATA__;
 // NodePictogramProgram) — one per graphify file_type. `code` unmapped types
 // fall back to the code glyph.
 const TYPE_ICONS = {
-  code: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6zm5.2 0L19.2 12l-4.6-4.6L16 6l6 6-6 6z'/></svg>",
-  document: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M6 2c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6H6zm7 7V3.5L18.5 9H13z'/></svg>",
-  paper: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 2L1 8l11 6 9-4.91V17h2V8L12 2zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z'/></svg>",
-  image: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z'/></svg>",
-  rationale: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z'/></svg>",
-  concept: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='black' d='M12 2l2.9 6.26L22 9.27l-5 4.87L18.18 21 12 17.27 5.82 21 7 14.14 2 9.27l7.1-1.01L12 2z'/></svg>",
+  code: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='24' height='24'><path fill='black' d='M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6zm5.2 0L19.2 12l-4.6-4.6L16 6l6 6-6 6z'/></svg>",
+  document: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='24' height='24'><path fill='black' d='M6 2c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6H6zm7 7V3.5L18.5 9H13z'/></svg>",
+  paper: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='24' height='24'><path fill='black' d='M12 2L1 8l11 6 9-4.91V17h2V8L12 2zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z'/></svg>",
+  image: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='24' height='24'><path fill='black' d='M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z'/></svg>",
+  rationale: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='24' height='24'><path fill='black' d='M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z'/></svg>",
+  concept: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='24' height='24'><path fill='black' d='M12 2l2.9 6.26L22 9.27l-5 4.87L18.18 21 12 17.27 5.82 21 7 14.14 2 9.27l7.1-1.01L12 2z'/></svg>",
 };
 const BUCKET_LABELS = {
   calls: "Calls / invocation", structure: "Structure", imports: "Imports / dependencies",
@@ -279,10 +281,21 @@ for (const e of DATA.edges) {
 const renderer = new Sigma(graph, document.getElementById("container"), {
   renderLabels: true, labelRenderedSizeThreshold: 8,
   labelFont: "-apple-system, BlinkMacSystemFont, sans-serif", labelColor: { color: "#d8dbe2" }, labelSize: 12,
-  defaultEdgeColor: "rgba(150,155,165,0.18)", minCameraRatio: 0.05, maxCameraRatio: 3,
+  defaultEdgeColor: "rgba(150,155,165,0.18)", minCameraRatio: 0.05, maxCameraRatio: 10,
   itemSizesReference: "positions", zoomToSizeRatioFunction: (ratio) => ratio, autoRescale: false,
   defaultNodeType: "pictogram", nodeProgramClasses: { pictogram: NodePictogramProgram },
 });
+
+// autoRescale: false (above) trades away sigma's automatic "fit the camera to
+// the graph on load" behavior in exchange for sizes staying anchored to the
+// real coordinate frame. Without this, the camera sits at its default state
+// (roughly the origin, ratio 1) while the actual nodes live wherever Step 1's
+// 0-1000 layout put them - which renders as a black screen with nothing
+// visible, not a wrong-looking graph. fitViewportToNodes (from @sigma/utils,
+// the same package sigma's own demo uses for this) computes the camera state
+// that frames every node and applies it once, instantly (no animation, since
+// there's nothing to animate from - this is the initial frame).
+fitViewportToNodes(renderer, graph.nodes(), { animate: false });
 
 // --- filter + highlight state, combined into one pair of reducers so they compose ---
 const activeTypes = new Set(DATA.nodes.map(n => n.fileType));
@@ -388,7 +401,10 @@ document.getElementById("resetBtn").addEventListener("click", () => {
   activeBuckets.clear(); presentBuckets.forEach(b => activeBuckets.add(b));
   document.querySelectorAll('.filter-row, .legend-row').forEach(el => { el.classList.remove('is-off'); const cb = el.querySelector('input'); if (cb) cb.checked = true; });
   clearHighlight();
-  renderer.getCamera().animatedReset();
+  // NOT animatedReset() - that resets to sigma's default camera state, which
+  // is the same "pointed at empty space" position fitViewportToNodes exists
+  // to fix in the first place (see the comment where it's first called).
+  fitViewportToNodes(renderer, graph.nodes(), { animate: true });
 });
 
 const searchInput = document.getElementById("search");
