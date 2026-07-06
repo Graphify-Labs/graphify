@@ -281,7 +281,7 @@ def test_claude_install_ships_lean_core_and_references(tmp_path):
     assert len(body.splitlines()) < 800
     # The version stamp covers SKILL.md + references/ together.
     assert (skill_dir / ".graphify_version").read_text() == mainmod.__version__
-    # The eight on-demand fragments all landed.
+    # The nine on-demand fragments all landed.
     names = sorted(p.name for p in refs.glob("*.md"))
     assert names == [
         "add-watch.md",
@@ -290,6 +290,7 @@ def test_claude_install_ships_lean_core_and_references(tmp_path):
         "github-and-merge.md",
         "hooks.md",
         "query.md",
+        "sigma-viz.md",
         "transcribe.md",
         "update.md",
     ]
@@ -353,7 +354,7 @@ def test_pyproject_declares_references_globs():
 
 
 # The full progressive-disclosure payload the wheel must ship: 15 skill bodies,
-# 104 references (13 split hosts x 8 each), and 6 always-on injection blocks.
+# 117 references (13 split hosts x 9 each), and 6 always-on injection blocks.
 _EXPECTED_SKILL_BODIES = (
     "skill.md",
     "skill-codex.md",
@@ -377,7 +378,7 @@ _SPLIT_HOSTS = (
 )
 _REFERENCE_NAMES = (
     "add-watch.md", "exports.md", "extraction-spec.md", "github-and-merge.md",
-    "hooks.md", "query.md", "transcribe.md", "update.md",
+    "hooks.md", "query.md", "sigma-viz.md", "transcribe.md", "update.md",
 )
 _ALWAYS_ON_NAMES = (
     "agents-md.md", "antigravity-rules.md", "claude-md.md",
@@ -454,7 +455,7 @@ def test_built_wheel_ships_the_full_skill_payload():
         if f"graphify/skills/{host}/references/{ref}" not in names
     ]
     assert not missing_refs, f"wheel is missing references: {missing_refs}"
-    assert len(_SPLIT_HOSTS) * len(_REFERENCE_NAMES) == 104
+    assert len(_SPLIT_HOSTS) * len(_REFERENCE_NAMES) == 117
 
     missing_always_on = [
         f"graphify/always_on/{name}"

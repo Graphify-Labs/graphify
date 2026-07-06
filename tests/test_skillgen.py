@@ -189,8 +189,8 @@ def test_query_heading_is_homed_in_core_stub_only():
     assert "## For /graphify path" not in core_headings
 
 
-def test_eight_references_render_for_claude():
-    """claude renders exactly the eight on-demand fragments from the design."""
+def test_nine_references_render_for_claude():
+    """claude renders exactly the nine on-demand fragments from the design."""
     _, refs = _claude_artifacts()
     assert sorted(refs) == [
         "add-watch.md",
@@ -199,6 +199,7 @@ def test_eight_references_render_for_claude():
         "github-and-merge.md",
         "hooks.md",
         "query.md",
+        "sigma-viz.md",
         "transcribe.md",
         "update.md",
     ]
@@ -436,8 +437,8 @@ def test_compact_extraction_hosts_use_the_compact_spec():
         assert "(compact)" not in refs["extraction-spec.md"], f"[{key}] should be verbose"
 
 
-def test_every_split_host_renders_eight_references():
-    """All twelve split hosts render exactly the eight on-demand references."""
+def test_every_split_host_renders_nine_references():
+    """All twelve split hosts render exactly the nine on-demand references."""
     platforms = gen.load_platforms()
     expected = [
         "add-watch.md",
@@ -446,6 +447,7 @@ def test_every_split_host_renders_eight_references():
         "github-and-merge.md",
         "hooks.md",
         "query.md",
+        "sigma-viz.md",
         "transcribe.md",
         "update.md",
     ]
