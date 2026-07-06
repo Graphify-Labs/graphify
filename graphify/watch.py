@@ -657,6 +657,37 @@ def _json_text(data: dict) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
+def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
+    """Ensure relative rebuild paths have a usable CWD before queue/lock setup.
+
+    Detached git hooks can inherit a transient working directory that is deleted
+    before the background rebuild starts. In that state Path.cwd(),
+    Path('.').resolve(), and relative graphify-out mkdirs raise FileNotFoundError
+    before the normal rebuild error handling can run. Hooks that know the repo
+    root export GRAPHIFY_REPO_ROOT so the rebuild can recover by chdir'ing there.
+    """
+    if watch_path.is_absolute():
+        return True
+
+    repo_root = os.environ.get("GRAPHIFY_REPO_ROOT", "").strip()
+    if repo_root and Path(repo_root).is_dir():
+        try:
+            os.chdir(repo_root)
+            return True
+        except OSError:
+            pass
+
+    try:
+        Path.cwd()
+        return True
+    except FileNotFoundError:
+        print(
+            "[graphify watch] Rebuild failed: current working directory "
+            "no longer exists and GRAPHIFY_REPO_ROOT is not set."
+        )
+        return False
+
+
 def _rebuild_code(
     watch_path: Path,
     *,
@@ -690,6 +721,9 @@ def _rebuild_code(
 
     Returns True on success, False on error or skipped-due-to-lock.
     """
+    if not _stabilize_rebuild_cwd(watch_path):
+        return False
+
     out = watch_path / _GRAPHIFY_OUT
     if acquire_lock:
         # #1059: incremental (changed_paths is not None) hooks must not drop
