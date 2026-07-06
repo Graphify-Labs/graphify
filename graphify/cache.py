@@ -180,6 +180,7 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
         st = p.stat()
         entry = _stat_index.get(abs_key)
         if (entry
+                and entry.get("hash") is not None  # word-count-only entries carry no hash
                 and entry.get("size") == st.st_size
                 and entry.get("mtime_ns") == st.st_mtime_ns):
             return entry["hash"]
@@ -199,10 +200,63 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
     digest = h.hexdigest()
 
     if st is not None:
-        _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "hash": digest}
+        entry = _stat_index.get(abs_key)
+        if (entry is not None
+                and entry.get("size") == st.st_size
+                and entry.get("mtime_ns") == st.st_mtime_ns):
+            entry["hash"] = digest  # preserve a co-located word_count
+        else:
+            _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "hash": digest}
         _stat_index_dirty = True
 
     return digest
+
+
+def cached_word_count(path: Path, root: Path, compute) -> int:
+    """Word count with the same (size, mtime_ns) stat-fastpath cache as
+    :func:`file_hash`, persisted in the shared stat index.
+
+    ``detect()`` counts words in every PDF/docx/text file to size the corpus,
+    which re-opens and re-parses every binary on each run — minutes on a large
+    docs corpus even when only a handful of files changed (#1656). This caches
+    the count against the file's stat signature so an unchanged file is counted
+    once and read from the index thereafter. ``compute(path)`` produces the
+    count on a miss. A file that can't be stat'd (e.g. a Windows long path the
+    index normalization can't reach) simply recomputes and isn't cached —
+    correct, just not accelerated.
+    """
+    global _stat_index_dirty
+    p = _normalize_path(Path(path))
+    root = _normalize_path(Path(root))
+    _ensure_stat_index(root)
+    abs_key = str(p.resolve())
+    st: "os.stat_result | None" = None
+    try:
+        st = p.stat()
+        entry = _stat_index.get(abs_key)
+        if (entry
+                and entry.get("size") == st.st_size
+                and entry.get("mtime_ns") == st.st_mtime_ns
+                and "word_count" in entry):
+            return entry["word_count"]
+    except OSError:
+        pass
+
+    wc = compute(Path(path))
+
+    if st is not None:
+        entry = _stat_index.get(abs_key)
+        if (entry
+                and entry.get("size") == st.st_size
+                and entry.get("mtime_ns") == st.st_mtime_ns):
+            entry["word_count"] = wc  # augment the existing hash entry in place
+        else:
+            _stat_index[abs_key] = {
+                "size": st.st_size, "mtime_ns": st.st_mtime_ns, "word_count": wc,
+            }
+        _stat_index_dirty = True
+
+    return wc
 
 
 def _relativize_source_files_in(payload: dict, root: Path) -> None:

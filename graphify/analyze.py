@@ -663,6 +663,11 @@ def find_import_cycles(
         if rel not in ("imports_from", "re_exports"):
             continue
 
+        # Deferred `import(...)` edges are real dependencies but do not form a
+        # hard file-level cycle, so they are excluded from cycle detection (#1241).
+        if data.get("deferred"):
+            continue
+
         src_file_attr = data.get("source_file", "")
         if not isinstance(src_file_attr, str) or not src_file_attr:
             continue

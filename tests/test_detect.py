@@ -1,3 +1,4 @@
+import os
 import unicodedata
 from pathlib import Path
 from graphify.detect import classify_file, count_words, detect, detect_incremental, save_manifest, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore, _is_sensitive
@@ -467,14 +468,33 @@ def test_detect_skips_visual_tests_dir(tmp_path):
 
 
 def test_detect_skips_snapshots_dir(tmp_path):
-    """__snapshots__/ and snapshots/ are jest/vitest artefacts — must be excluded."""
+    """__snapshots__/ and real jest/vitest snapshots/ dirs are artefacts — excluded."""
     (tmp_path / "__snapshots__").mkdir()
     (tmp_path / "__snapshots__" / "app.test.ts.snap").write_text("// Jest Snapshot\nexports[`test 1`] = `<div/>`")
+    # a bare snapshots/ dir that actually holds .snap files is still a JS artefact
+    snap = tmp_path / "snapshots"
+    snap.mkdir()
+    (snap / "component.test.tsx.snap").write_text("exports[`renders`] = `<span/>`")
     (tmp_path / "app.ts").write_text("export function greet() { return 'hi'; }")
     result = detect(tmp_path)
     all_files = [f for files in result["files"].values() for f in files]
     assert not any("__snapshots__" in f for f in all_files)
+    assert not any(f"{os.sep}snapshots{os.sep}" in f for f in all_files)
     assert any("app.ts" in f for f in all_files)
+
+
+def test_detect_keeps_snapshots_code_namespace(tmp_path):
+    """#1666: a bare snapshots/ dir with no .snap files is a legit code namespace
+    (e.g. Rails app/services/snapshots/) and must NOT be pruned as a JS artefact."""
+    svc = tmp_path / "app" / "services" / "snapshots"
+    svc.mkdir(parents=True)
+    (svc / "round_reader.rb").write_text("class RoundReader\n  def call; end\nend\n")
+    (svc / "backfill_marker.rb").write_text("class BackfillMarker\n  def run; end\nend\n")
+    (tmp_path / "app.rb").write_text("class App; end\n")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert any("round_reader.rb" in f for f in all_files)
+    assert any("backfill_marker.rb" in f for f in all_files)
 
 
 def test_detect_skips_storybook_static_dir(tmp_path):
@@ -810,9 +830,26 @@ def test_sensitive_does_not_flag_tokenizer_py():
 def test_sensitive_does_not_flag_tokenize_py():
     assert not _is_sensitive(Path("tokenize.py"))
 
-def test_sensitive_flags_passwords_py():
-    # passwords.py is just as likely a secret store as passwords.txt — code ext is no excuse
-    assert _is_sensitive(Path("passwords.py"))
+def test_sensitive_does_not_flag_passwords_py():
+    # #1666: a programming-language source file named after a domain noun is a
+    # module, not a secret store. Silently dropping it hid real code from the graph.
+    # Genuine secret stores are .env/.pem/credentials.json etc. (still flagged below).
+    assert not _is_sensitive(Path("passwords.py"))
+
+
+def test_sensitive_does_not_flag_ruby_code_modules():
+    # #1666 exact cases: Rails source modules with keyword-ish names must survive.
+    assert not _is_sensitive(Path("app/models/device_token.rb"))
+    assert not _is_sensitive(Path("app/controllers/api/v1/passwords_controller.rb"))
+
+
+def test_sensitive_still_flags_data_secret_stores():
+    # #1666 guard: the exemption is ONLY for real source code, not data/config
+    # formats — credentials.json / oauth_token.json / secrets.yaml are the secret
+    # stores Stage 3 must keep catching (even though .json routes through CODE).
+    assert _is_sensitive(Path("credentials.json"))
+    assert _is_sensitive(Path("oauth_token.json"))
+    assert _is_sensitive(Path("app_secret.yaml"))
 
 def test_sensitive_flags_ssh_dir():
     assert _is_sensitive(Path("/home/user/.ssh/id_rsa"))

@@ -1,17 +1,31 @@
-"""The Read|Glob PreToolUse hook nudges toward the graph instead of raw reads.
+"""The Read|Glob PreToolUse guard nudges toward the graph instead of raw reads.
 
 Closes the issue #1114 gap: the Bash search hook never sees a file read through
-the native Read tool or a Glob. These tests run the hook command the way Claude
-Code does - via `sh -c` with crafted stdin JSON - and assert it nudges only for
-a source/doc file outside graphify-out/ when a graph exists, and otherwise stays
-silent and fails open.
+the native Read tool or a Glob. Since #522 the guard runs as the shell-agnostic
+`graphify hook-guard read` subcommand (not inline bash), so it works on Windows
+too. These tests invoke that subcommand with crafted stdin JSON and assert it
+nudges only for a source/doc file outside graphify-out/ when a graph exists, and
+otherwise stays silent and fails open.
 """
 import json
+import os
 import subprocess
+import sys
 
-from graphify.__main__ import _READ_SETTINGS_HOOK
+from graphify.__main__ import _claude_pretooluse_hooks
 
-CMD = _READ_SETTINGS_HOOK["hooks"][0]["command"]
+
+def _read_matcher():
+    hooks = _claude_pretooluse_hooks()
+    return next(h for h in hooks if h["matcher"] == "Read|Glob")
+
+
+def _env():
+    # The guard resolves the graph via GRAPHIFY_OUT (default "graphify-out",
+    # relative to cwd). Drop any inherited override so the tmp_path graph is found.
+    e = dict(os.environ)
+    e.pop("GRAPHIFY_OUT", None)
+    return e
 
 
 def _run(tool_input, cwd, *, graph: bool):
@@ -20,12 +34,21 @@ def _run(tool_input, cwd, *, graph: bool):
         (cwd / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
     stdin = json.dumps({"tool_input": tool_input})
     return subprocess.run(
-        ["sh", "-c", CMD], input=stdin, capture_output=True, text=True, cwd=cwd
+        [sys.executable, "-m", "graphify", "hook-guard", "read"],
+        input=stdin, capture_output=True, text=True, cwd=cwd, env=_env(),
     )
 
 
 def test_matcher_targets_read_and_glob():
-    assert _READ_SETTINGS_HOOK["matcher"] == "Read|Glob"
+    assert _read_matcher()["matcher"] == "Read|Glob"
+
+
+def test_command_has_no_shell_syntax():
+    # #522: the command must be a plain exe invocation, not POSIX bash.
+    cmd = _read_matcher()["hooks"][0]["command"]
+    for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):
+        assert token not in cmd, f"shell syntax {token!r} leaked into the hook"
+    assert "graphify" in cmd and "hook-guard read" in cmd
 
 
 def test_silent_without_graph(tmp_path):
@@ -106,14 +129,15 @@ def test_fails_open_on_malformed_stdin(tmp_path):
     (tmp_path / "graphify-out").mkdir()
     (tmp_path / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
     r = subprocess.run(
-        ["sh", "-c", CMD], input="this is not json", capture_output=True, text=True, cwd=tmp_path
+        [sys.executable, "-m", "graphify", "hook-guard", "read"],
+        input="this is not json", capture_output=True, text=True, cwd=tmp_path, env=_env(),
     )
     assert r.returncode == 0
     assert r.stdout.strip() == ""
 
 
 def test_never_blocks(tmp_path):
-    """A nudge is additionalContext only - the hook must exit 0, never deny."""
+    """A nudge is additionalContext only - the guard must exit 0, never deny."""
     r = _run({"file_path": "src/app.py"}, tmp_path, graph=True)
     assert r.returncode == 0
     assert '"permissionDecision"' not in r.stdout
