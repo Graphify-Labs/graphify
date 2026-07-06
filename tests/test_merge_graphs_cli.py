@@ -28,6 +28,35 @@ def _write(p: Path, directed: bool, multigraph: bool, node_id: str):
     }))
 
 
+def _write_repository_graph(p: Path, label: str):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({
+        "directed": True,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [
+            {
+                "id": "entry",
+                "label": f"{label} entry",
+                "community": 0,
+                "community_name": "Community 0",
+            },
+            {
+                "id": "worker",
+                "label": f"{label} worker",
+                "community": 1,
+                "community_name": f"{label} workers",
+            },
+        ],
+        "links": [
+            {"source": "entry", "target": "worker", "relation": "calls"},
+        ],
+        "hyperedges": [
+            {"id": "request_flow", "nodes": ["entry", "worker"], "relation": "flow"},
+        ],
+    }))
+
+
 def test_merge_graphs_mixed_directed_and_multigraph(tmp_path):
     a = tmp_path / "r1" / "graphify-out" / "graph.json"
     b = tmp_path / "r2" / "graphify-out" / "graph.json"
@@ -43,7 +72,7 @@ def test_merge_graphs_mixed_directed_and_multigraph(tmp_path):
     data = json.loads(out.read_text())
     ids = {n["id"] for n in data["nodes"]}
     # every input's node survives, normalized into one undirected simple graph
-    assert {"r1::x", "r2::y", "r3::z"} <= ids or len(ids) == 3
+    assert ids == {"r1::x", "r2::y", "r3::z"}
     assert data.get("directed") is False
     assert data.get("multigraph") is False
 
@@ -92,3 +121,142 @@ def test_distinct_repo_tags_unit(tmp_path):
         Path("c/src/graphify-out/graph.json"),
     ])
     assert len(set(tags3)) == 3, tags3
+
+
+def test_merge_graphs_preserves_repository_local_identity(tmp_path):
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    _write_repository_graph(a, "A")
+    _write_repository_graph(b, "B")
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    nodes = {node["id"]: node for node in data["nodes"]}
+    assert set(nodes) == {"a::entry", "a::worker", "b::entry", "b::worker"}
+    assert {nodes["a::entry"]["community"], nodes["a::worker"]["community"]}.isdisjoint(
+        {nodes["b::entry"]["community"], nodes["b::worker"]["community"]}
+    )
+    assert nodes["b::entry"]["community_name"] == (
+        f"Community {nodes['b::entry']['community']}"
+    )
+    assert nodes["b::worker"]["community_name"] == "B workers"
+    assert {
+        (edge["source"], edge["target"], edge["relation"])
+        for edge in data["links"]
+    } == {
+        ("a::entry", "a::worker", "calls"),
+        ("b::entry", "b::worker", "calls"),
+    }
+    assert {
+        hyperedge["id"]: hyperedge["nodes"] for hyperedge in data["hyperedges"]
+    } == {
+        "a::request_flow": ["a::entry", "a::worker"],
+        "b::request_flow": ["b::entry", "b::worker"],
+    }
+    assert "4 nodes, 2 edges, 2 hyperedges" in r.stdout
+
+
+def test_merge_graphs_derives_tag_from_relative_canonical_path(tmp_path):
+    a = tmp_path / "repo-a" / "graphify-out" / "graph.json"
+    b = tmp_path / "repo-b" / "graphify-out" / "graph.json"
+    _write_repository_graph(a, "A")
+    _write_repository_graph(b, "B")
+
+    r = _run([
+        "merge-graphs", "graphify-out/graph.json",
+        "../repo-b/graphify-out/graph.json", "--out", "merged.json",
+    ], tmp_path / "repo-a")
+
+    assert r.returncode == 0, r.stderr
+    ids = {node["id"] for node in json.loads((tmp_path / "repo-a/merged.json").read_text())["nodes"]}
+    assert {"repo-a::entry", "repo-b::entry"} <= ids
+
+
+def test_merge_graphs_community_remap_is_input_order_independent(tmp_path):
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    _write_repository_graph(a, "A")
+    _write_repository_graph(b, "B")
+    out_ab = tmp_path / "merged-ab.json"
+    out_ba = tmp_path / "merged-ba.json"
+
+    first = _run(["merge-graphs", str(a), str(b), "--out", str(out_ab)], tmp_path)
+    second = _run(["merge-graphs", str(b), str(a), "--out", str(out_ba)], tmp_path)
+
+    assert first.returncode == second.returncode == 0
+    communities_ab = {
+        node["id"]: node.get("community")
+        for node in json.loads(out_ab.read_text())["nodes"]
+    }
+    communities_ba = {
+        node["id"]: node.get("community")
+        for node in json.loads(out_ba.read_text())["nodes"]
+    }
+    assert communities_ab == communities_ba
+
+
+def test_merge_graphs_disambiguates_duplicate_derived_tags(tmp_path):
+    a = tmp_path / "owner-a" / "service" / "graphify-out" / "graph.json"
+    b = tmp_path / "owner-b" / "service" / "graphify-out" / "graph.json"
+    _write_repository_graph(a, "A")
+    _write_repository_graph(b, "B")
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+
+    assert r.returncode == 0, r.stderr
+    ids = {node["id"] for node in json.loads(out.read_text())["nodes"]}
+    assert "owner-a_service::entry" in ids
+    assert "owner-b_service::entry" in ids
+
+
+def test_merge_graphs_accepts_explicit_repository_tags(tmp_path):
+    a = tmp_path / "owner-a" / "service" / "graphify-out" / "graph.json"
+    b = tmp_path / "owner-b" / "service" / "graphify-out" / "graph.json"
+    _write_repository_graph(a, "A")
+    _write_repository_graph(b, "B")
+    out = tmp_path / "merged.json"
+
+    r = _run([
+        "merge-graphs", str(a), str(b),
+        "--repo-tag", "owner-a-service", "--repo-tag", "owner-b-service",
+        "--out", str(out),
+    ], tmp_path)
+
+    assert r.returncode == 0, r.stderr
+    ids = {node["id"] for node in json.loads(out.read_text())["nodes"]}
+    assert "owner-a-service::entry" in ids
+    assert "owner-b-service::entry" in ids
+
+
+def test_merge_graphs_rejects_duplicate_explicit_tags(tmp_path):
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    _write_repository_graph(a, "A")
+    _write_repository_graph(b, "B")
+    out = tmp_path / "merged.json"
+
+    r = _run([
+        "merge-graphs", str(a), str(b),
+        "--repo-tag", "service", "--repo-tag", "service",
+        "--out", str(out),
+    ], tmp_path)
+
+    assert r.returncode != 0
+    assert "duplicate repository tag(s): 'service'" in r.stderr
+    assert not out.exists()
+
+
+def test_merge_graphs_requires_one_explicit_tag_per_input(tmp_path):
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    _write_repository_graph(a, "A")
+    _write_repository_graph(b, "B")
+
+    r = _run(["merge-graphs", str(a), str(b), "--repo-tag", "a"], tmp_path)
+
+    assert r.returncode != 0
+    assert "--repo-tag must be repeated once for every input graph" in r.stderr

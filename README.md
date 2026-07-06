@@ -743,6 +743,7 @@ GRAPHIFY_TRIAGE_BACKEND=kimi graphify prs --triage   # use a specific backend fo
 
 graphify clone https://github.com/karpathy/nanoGPT
 graphify merge-graphs a.json b.json --out merged.json
+graphify merge-graphs a.json b.json --repo-tag api --repo-tag web --out merged.json
 graphify --version                                    # print installed version
 graphify watch ./src
 graphify check-update ./src

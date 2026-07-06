@@ -21,6 +21,7 @@
 #    before any graph construction happens.
 #
 from __future__ import annotations
+import copy
 import json
 import math
 import os
@@ -1127,29 +1128,102 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
 def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
     """Return a unique, human-meaningful repo tag per input graph for merge-graphs.
 
-    The naive tag (the ``graphify-out`` parent dir name) is NOT unique across
-    inputs: ``src/graphify-out`` and ``frontend/src/graphify-out`` both yield
-    ``src``. Prefixing both node sets with ``src::`` then makes same-stem nodes
-    (a backend ``src/app.js`` and a frontend ``App.jsx``, both bare ``app``)
-    collide, so ``nx.compose`` silently merges two unrelated entities and invents
-    cross-runtime edges (#1729). Colliding tags are widened with their own parent
-    dir (``frontend_src``), then an index suffix guarantees uniqueness so no two
-    graphs ever share a prefix.
+    Canonical ``<repo>/graphify-out/graph.json`` inputs use the resolved
+    repository directory, while flat JSON inputs use their filename stem.
+    Colliding tags are widened with path context, then an index suffix guarantees
+    uniqueness so no two input graphs ever share a prefix (#1729).
     """
-    repo_dirs = [p.parent.parent for p in graph_paths]  # graphify-out/.. → repo dir
-    tags = [d.name or "repo" for d in repo_dirs]
+    tags: list[str] = []
+    qualifiers: list[str] = []
+    for path in graph_paths:
+        if path.name == "graph.json" and path.parent.name == "graphify-out":
+            repo_dir = path.parent.parent.resolve()
+            tags.append(repo_dir.name or "repo")
+            qualifiers.append(repo_dir.parent.name)
+        else:
+            parent = path.parent.resolve()
+            tags.append(path.stem or parent.name or "repo")
+            qualifiers.append(parent.name)
+
     if len(set(tags)) != len(tags):
-        widened: list[str] = []
-        for d in repo_dirs:
-            parent = d.parent.name
-            widened.append(f"{parent}_{d.name}" if parent and d.name else (d.name or "repo"))
-        tags = widened
+        tags = [
+            f"{qualifier}_{tag}" if qualifier and qualifier != tag else tag
+            for tag, qualifier in zip(tags, qualifiers)
+        ]
+
     seen: dict[str, int] = {}
     unique: list[str] = []
-    for t in tags:
-        seen[t] = seen.get(t, 0) + 1
-        unique.append(t if seen[t] == 1 else f"{t}-{seen[t]}")
+    for tag in tags:
+        seen[tag] = seen.get(tag, 0) + 1
+        unique.append(tag if seen[tag] == 1 else f"{tag}-{seen[tag]}")
     return unique
+
+
+def _community_identity(value: object) -> str:
+    """Return a stable, sortable identity for a repository-local community id."""
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return repr(value)
+
+
+def compose_repository_graphs(tagged_graphs: list[tuple[str, nx.Graph]]) -> nx.Graph:
+    """Compose repository graphs without conflating repository-local identity.
+
+    Node and hyperedge ids are namespaced by repository tag. Community ids are
+    remapped deterministically into one non-overlapping integer range while
+    preserving each repository's existing partition.
+    """
+    tags = [tag for tag, _graph in tagged_graphs]
+    invalid_tags = [tag for tag in tags if not tag or "::" in tag]
+    if invalid_tags:
+        raise ValueError("repository tags must be non-empty and cannot contain '::'")
+    duplicate_tags = sorted({tag for tag in tags if tags.count(tag) > 1})
+    if duplicate_tags:
+        raise ValueError(
+            "duplicate repository tag(s): " + ", ".join(repr(tag) for tag in duplicate_tags)
+        )
+
+    community_keys = {
+        (tag, _community_identity(data["community"]))
+        for tag, graph in tagged_graphs
+        for _node, data in graph.nodes(data=True)
+        if data.get("community") is not None
+    }
+    community_ids = {
+        key: community_id for community_id, key in enumerate(sorted(community_keys))
+    }
+
+    merged = nx.Graph()
+    merged_hyperedges: list = []
+    for tag, source_graph in tagged_graphs:
+        graph = source_graph if type(source_graph) is nx.Graph else nx.Graph(source_graph)
+        prefixed = prefix_graph_for_global(graph, tag)
+
+        for _node, data in prefixed.nodes(data=True):
+            local_community = data.get("community")
+            if local_community is not None:
+                merged_community = community_ids[(tag, _community_identity(local_community))]
+                data["community"] = merged_community
+                if data.get("community_name") == f"Community {local_community}":
+                    data["community_name"] = f"Community {merged_community}"
+
+        for raw_hyperedge in graph.graph.get("hyperedges", []) or []:
+            hyperedge = copy.deepcopy(raw_hyperedge)
+            if not isinstance(hyperedge, dict):
+                merged_hyperedges.append(hyperedge)
+                continue
+            _normalize_hyperedge_members(hyperedge)
+            if hyperedge.get("id") is not None:
+                hyperedge["id"] = f"{tag}::{hyperedge['id']}"
+            if isinstance(hyperedge.get("nodes"), list):
+                hyperedge["nodes"] = [f"{tag}::{node}" for node in hyperedge["nodes"]]
+            merged_hyperedges.append(hyperedge)
+
+        merged = nx.compose(merged, prefixed)
+
+    merged.graph["hyperedges"] = merged_hyperedges
+    return merged
 
 
 def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:

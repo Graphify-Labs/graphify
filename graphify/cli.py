@@ -1636,24 +1636,37 @@ def dispatch_command(cmd: str) -> None:
         # graphify merge-graphs graph1.json graph2.json ... --out merged.json
         args = sys.argv[2:]
         graph_paths: list[Path] = []
+        repo_tags: list[str] = []
         out_path = Path(_GRAPHIFY_OUT) / "merged-graph.json"
         i = 0
         while i < len(args):
             if args[i] == "--out" and i + 1 < len(args):
                 out_path = Path(args[i + 1])
                 i += 2
+            elif args[i] == "--repo-tag" and i + 1 < len(args):
+                repo_tags.append(args[i + 1])
+                i += 2
             else:
                 graph_paths.append(Path(args[i]))
                 i += 1
         if len(graph_paths) < 2:
             print(
-                "Usage: graphify merge-graphs <graph1.json> <graph2.json> [...] [--out merged.json]",
+                "Usage: graphify merge-graphs <graph1.json> <graph2.json> [...] "
+                "[--repo-tag TAG ...] [--out merged.json]",
                 file=sys.stderr,
             )
             sys.exit(1)
-        import networkx as _nx
+        if repo_tags and len(repo_tags) != len(graph_paths):
+            print(
+                "error: --repo-tag must be repeated once for every input graph",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         from networkx.readwrite import json_graph as _jg
-        from graphify.build import prefix_graph_for_global as _prefix, distinct_repo_tags as _repo_tags
+        from graphify.build import (
+            compose_repository_graphs as _compose_repository_graphs,
+            distinct_repo_tags as _repo_tags,
+        )
         graphs = []
         for gp in graph_paths:
             if not gp.exists():
@@ -1669,42 +1682,36 @@ def dispatch_command(cmd: str) -> None:
                 G = _jg.node_link_graph(data, edges="links")
             except TypeError:
                 G = _jg.node_link_graph(data)
+            G.graph["hyperedges"] = data.get(
+                "hyperedges", G.graph.get("hyperedges", [])
+            )
             graphs.append(G)
-        # nx.compose requires all graphs to be the same type.  When input graphs
-        # come from different sources (e.g. an AST-only run vs a full LLM run) one
-        # may be a MultiGraph and another a Graph.  Normalise everything to Graph
-        # (the graphify default) by converting MultiGraphs with nx.Graph().
-        def _to_simple(g: "_nx.Graph") -> "_nx.Graph":
-            # nx.compose requires every graph to be the same type. Inputs may
-            # disagree on BOTH axes — directed vs undirected, and multi vs simple
-            # — because per-repo graph.json files are written by different extract
-            # paths at different times. Normalise everything to a plain undirected
-            # Graph (the merged cross-repo view is undirected anyway), which covers
-            # DiGraph / MultiGraph / MultiDiGraph. Without this a directed input
-            # crashed compose with "All graphs must be directed or undirected" (#1606).
-            if type(g) is not _nx.Graph:
-                return _nx.Graph(g)
-            return g
-        # Unique repo tag per graph. The bare `graphify-out/..` dir name is not
-        # unique across inputs (src/graphify-out and frontend/src/graphify-out both
-        # → "src"), which collides same-stem node ids and silently merges unrelated
-        # entities (#1729). distinct_repo_tags guarantees a distinct prefix per graph.
-        repo_tags = _repo_tags(graph_paths)
-        naive_tags = [gp.parent.parent.name for gp in graph_paths]
-        if len(set(naive_tags)) != len(naive_tags):
-            print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
-        merged = _nx.Graph()
-        for G, repo_tag in zip(graphs, repo_tags):
-            prefixed = _to_simple(_prefix(G, repo_tag))
-            merged = _nx.compose(merged, prefixed)
+        if not repo_tags:
+            repo_tags = _repo_tags(graph_paths)
+            naive_tags = [gp.parent.parent.name for gp in graph_paths]
+            if len(set(naive_tags)) != len(naive_tags):
+                print(
+                    "  note: repo dir names collide; using distinct tags: "
+                    + ", ".join(repo_tags)
+                )
+        try:
+            merged = _compose_repository_graphs(list(zip(repo_tags, graphs)))
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
         try:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
             out_data = _jg.node_link_data(merged)
+        out_data["hyperedges"] = merged.graph.get("hyperedges", [])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, out_data, indent=2)
-        print(f"Merged {len(graphs)} graphs -> {merged.number_of_nodes()} nodes, {merged.number_of_edges()} edges")
+        print(
+            f"Merged {len(graphs)} graphs [{', '.join(repo_tags)}] -> "
+            f"{merged.number_of_nodes()} nodes, {merged.number_of_edges()} edges, "
+            f"{len(merged.graph.get('hyperedges', []))} hyperedges"
+        )
         print(f"Written to: {out_path}")
 
     elif cmd == "clone":
