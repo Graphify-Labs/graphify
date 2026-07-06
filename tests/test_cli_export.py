@@ -323,6 +323,36 @@ def test_cluster_only_creates_output_dir_when_missing(tmp_path):
 
 # Regression test for #1027 - cluster-only must remap labels via node overlap
 
+def test_cluster_only_persists_analysis_sidecar(tmp_path):
+    """cluster-only must refresh .graphify_analysis.json alongside graph.json.
+
+    Downstream export commands use the sidecar for community membership and
+    should not see stale or missing community analysis after a recluster.
+    """
+    out = _make_graph(tmp_path)
+    analysis_path = out / ".graphify_analysis.json"
+    analysis_path.unlink()
+
+    r = _run(["cluster-only", ".", "--no-viz"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert analysis_path.exists()
+
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    assert analysis["communities"]
+    assert analysis["cohesion"]
+    assert "gods" in analysis
+    assert "surprises" in analysis
+    assert "questions" in analysis
+
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    graph_cids = {
+        str(node["community"])
+        for node in graph.get("nodes", [])
+        if node.get("community") is not None
+    }
+    assert graph_cids == set(analysis["communities"])
+
+
 def test_cluster_only_remaps_labels_to_previous_cids(tmp_path):
     """cluster-only must invoke remap_communities_to_previous so the existing
     .graphify_labels.json keeps tracking the same conceptual communities after

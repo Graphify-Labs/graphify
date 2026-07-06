@@ -23,7 +23,7 @@ _BUILTIN_NOISE_LABELS = frozenset({
 # Language families — extensions sharing a runtime can legitimately call each other
 _LANG_FAMILY: dict[str, str] = {
     **{e: "python" for e in (".py", ".pyw")},
-    **{e: "js" for e in (".js", ".jsx", ".mjs", ".ejs", ".ts", ".tsx", ".vue", ".svelte")},
+    **{e: "js" for e in (".js", ".jsx", ".mjs", ".ejs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte")},
     **{e: "go" for e in (".go",)},
     **{e: "rust" for e in (".rs",)},
     **{e: "jvm" for e in (".java", ".kt", ".kts", ".scala")},
@@ -661,6 +661,11 @@ def find_import_cycles(
     for u, v, data in G.edges(data=True):
         rel = data.get("relation", "")
         if rel not in ("imports_from", "re_exports"):
+            continue
+
+        # Deferred `import(...)` edges are real dependencies but do not form a
+        # hard file-level cycle, so they are excluded from cycle detection (#1241).
+        if data.get("deferred"):
             continue
 
         src_file_attr = data.get("source_file", "")

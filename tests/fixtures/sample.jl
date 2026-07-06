@@ -2,6 +2,8 @@ module Geometry
 
 using LinearAlgebra
 import Base: show
+using Base.Threads
+using ..ParentModule
 
 abstract type Shape end
 

@@ -36,6 +36,17 @@ struct RetryingHttpClient : HttpClient {
     int maxRetries;
 };
 
+template <typename T>
+class Connection {
+public:
+    T resource;
+};
+
+class PooledClient : public Connection<HttpClient> {
+public:
+    int poolSize;
+};
+
 int main() {
     HttpClient client("https://api.example.com");
     std::string response = client.get("/users");

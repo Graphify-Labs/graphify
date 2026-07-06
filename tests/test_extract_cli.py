@@ -235,3 +235,33 @@ def test_extract_without_key_still_errors_when_docs_present(
     assert "no LLM API key found" in err
     assert "code-only corpus needs no key" in err
     assert not (out_dir / "graphify-out" / "graph.json").exists()
+
+
+def test_extract_timing_flag_emits_stage_timings(monkeypatch, tmp_path, capsys):
+    """--timing prints per-stage `[graphify timing]` lines to stderr (#1490); omitting
+    it prints none, so default output is unchanged. Code-only corpus => no API key."""
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "a.py").write_text("def a():\n    return b()\ndef b():\n    return 1\n")
+
+    # with --timing
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(code), "--no-cluster", "--out", str(tmp_path / "o1"), "--timing"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code == 0
+    err = capsys.readouterr().err
+    assert "[graphify timing] detect:" in err
+    assert "[graphify timing] total:" in err
+
+    # without --timing => no timing lines
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(code), "--no-cluster", "--out", str(tmp_path / "o2")],
+    )
+    with pytest.raises(SystemExit) as exc2:
+        mainmod.main()
+    assert exc2.value.code == 0
+    assert "graphify timing" not in capsys.readouterr().err

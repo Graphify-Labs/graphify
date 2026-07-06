@@ -89,7 +89,8 @@ def test_cautionary_wrong_forms_are_actually_wrong():
     """The canonical spec warns against the filename-only and full-path ID forms.
     Lock those anti-examples to the code too, so the warning can't go stale."""
     correct = _ast_symbol_id("src/auth/session.py", "ValidateToken")
-    assert correct == "auth_session_validatetoken"
-    # filename-only (drops the parent dir) and full-path (keeps every segment)
+    assert correct == "src_auth_session_validatetoken"
+    # filename-only (drops every dir) and immediate-parent-only (drops outer dirs)
+    # are both wrong now that the stem is the full repo-relative path (#1504).
     assert _make_id("session", "ValidateToken") != correct
-    assert _make_id("src", "auth", "session", "ValidateToken") != correct
+    assert _make_id("auth", "session", "ValidateToken") != correct

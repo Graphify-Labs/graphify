@@ -285,9 +285,12 @@ def test_descriptions_are_unified():
 
 
 def test_windows_frontmatter_name_and_shell_and_extra():
-    """windows: graphify-windows name, powershell install, troubleshooting tail."""
+    """windows: name must be `graphify` (folder-name rule, #1635), powershell
+    install, troubleshooting tail."""
     core, _ = _platform_artifacts("windows")
-    assert core.startswith("---\nname: graphify-windows\n")
+    # Claude Code requires the frontmatter name to equal the install folder
+    # (graphify); a `graphify-windows` name broke skill discovery (#1635).
+    assert core.startswith("---\nname: graphify\n")
     assert "```powershell" in core
     assert "function Find-GraphifyPython" in core
     assert "## Troubleshooting" in core
@@ -601,8 +604,36 @@ def test_always_on_roundtrip_is_byte_faithful():
     graphify.__main__, so the packaged markdown must round-trip exactly or those
     contracts silently change.
     """
+    # The guard passes with zero problems: every always-on block reproduces its
+    # frozen baseline, with the agents-md block allowed exactly the #1530
+    # sanctioned substitution recorded in gen.ALWAYS_ON_SANCTIONED_EDITS.
     problems = gen.always_on_roundtrip()
-    assert problems == [], "\n".join(problems)
+    assert problems == []
+
+    rendered_agents = next(
+        a.content
+        for a in gen.render_always_on()
+        if a.path == "graphify/always_on/agents-md.md"
+    )
+    old_instruction = (
+        "When the user types `/graphify`, invoke the `skill` tool with "
+        '`skill: "graphify"` before doing anything else.'
+    )
+    new_instruction = (
+        "When the user types `/graphify`, use the installed graphify skill or instructions "
+        "before doing anything else."
+    )
+    # The sanctioned-edit registry holds exactly this single old->new substitution.
+    assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
+        (old_instruction, new_instruction),
+    )
+    baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
+    # The ONLY divergence from the frozen baseline is the sanctioned sentence —
+    # any other byte drift would have surfaced as a problem above.
+    assert old_instruction in baseline_agents
+    assert baseline_agents.replace(old_instruction, new_instruction) == rendered_agents
+    assert "`skill` tool" not in rendered_agents
+    assert 'skill: "graphify"' not in rendered_agents
 
 
 def test_extracted_constants_equal_the_packaged_always_on_files():

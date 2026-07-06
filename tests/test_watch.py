@@ -207,6 +207,167 @@ def test_rebuild_code_evicts_nodes_from_deleted_files(tmp_path):
     assert "login()" in node_labels_after, "nodes from surviving file must be kept"
 
 
+def _add_unrelated_semantic_pair(graph_path):
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["nodes"].extend([
+        {"id": "docs_topic", "label": "DocsTopic", "file_type": "concept"},
+        {"id": "shared_concept", "label": "SharedConcept", "file_type": "concept"},
+    ])
+    data["links"].append({
+        "source": "docs_topic",
+        "target": "shared_concept",
+        "relation": "related_to",
+    })
+    data["hyperedges"] = [{
+        "id": "semantic_context",
+        "label": "Semantic context",
+        "nodes": ["docs_topic", "shared_concept"],
+    }]
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "changed_paths",
+    [None, [Path("only.py")]],
+    ids=["full-update", "incremental-update"],
+)
+def test_rebuild_code_prunes_final_deleted_file(tmp_path, changed_paths):
+    """Deleting the final code file must reconcile the existing graph."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    only = corpus / "only.py"
+    only.write_text("def only_fn():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    _add_unrelated_semantic_pair(graph_path)
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+    code_node_id = next(n["id"] for n in before["nodes"] if n.get("source_file") == "only.py")
+    before["hyperedges"].append({
+        "id": "code_context",
+        "label": "Code context",
+        "nodes": [code_node_id],
+        "source_file": "only.py",
+    })
+    before["nodes"].append({
+        "id": "sourceless_ast_stub",
+        "label": "ExternalType",
+        "file_type": "class",
+        "_origin": "ast",
+    })
+    graph_path.write_text(json.dumps(before), encoding="utf-8")
+
+    only.unlink()
+    assert _rebuild_code(
+        corpus,
+        changed_paths=changed_paths,
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert not any(n.get("source_file") == "only.py" for n in after["nodes"])
+    assert {"docs_topic", "shared_concept"} <= {n["id"] for n in after["nodes"]}
+    assert any(
+        e.get("source") == "docs_topic" and e.get("target") == "shared_concept"
+        for e in after["links"]
+    )
+    assert {he["id"] for he in after["hyperedges"]} == {"semantic_context"}
+    assert "sourceless_ast_stub" not in {n["id"] for n in after["nodes"]}
+
+
+def test_rebuild_code_prunes_renamed_source_not_listed_by_hook(tmp_path):
+    """A hook-style rename list may contain only the destination path."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    old = corpus / "old.py"
+    old.write_text("def old_fn():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    _add_unrelated_semantic_pair(graph_path)
+
+    renamed = corpus / "renamed.py"
+    old.rename(renamed)
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[Path("renamed.py")],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    sources = {n.get("source_file") for n in after["nodes"]}
+    assert "old.py" not in sources
+    assert "renamed.py" in sources
+    assert {"docs_topic", "shared_concept"} <= {n["id"] for n in after["nodes"]}
+    assert any(
+        e.get("source") == "docs_topic" and e.get("target") == "shared_concept"
+        for e in after["links"]
+    )
+
+
+def test_rebuild_code_normalizes_preserved_source_paths(tmp_path):
+    """An incremental rebuild must not treat ./foo.py as a deleted live source."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    foo = corpus / "foo.py"
+    bar = corpus / "bar.py"
+    foo.write_text("def foo_fn():\n    return 1\n", encoding="utf-8")
+    bar.write_text("def bar_fn():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    for item in data["nodes"] + data["links"]:
+        if item.get("source_file") == "foo.py":
+            item["source_file"] = "./foo.py"
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    bar.write_text("def updated_bar_fn():\n    return 2\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[Path("bar.py")],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert "foo_fn()" in {n.get("label") for n in after["nodes"]}
+
+
+def test_rebuild_code_prunes_renamed_ast_backed_document(tmp_path):
+    """Destination-only rename reconciliation also covers AST-backed docs."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    old = corpus / "old.md"
+    old.write_text("# Old heading\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    renamed = corpus / "renamed.md"
+    old.rename(renamed)
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[Path("renamed.md")],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    sources = {n.get("source_file") for n in after["nodes"]}
+    assert "old.md" not in sources
+    assert "renamed.md" in sources
+
+
 def test_rebuild_code_evicts_removed_symbol_from_surviving_file(tmp_path):
     """#1116: graphify update (_rebuild_code with no changed_paths) must prune a
     symbol removed from a file that still exists — and its inbound call edge —
@@ -719,6 +880,225 @@ def test_rebuild_code_accepts_repo_relative_changed_path_for_subdir_root(tmp_pat
         assert "new_name()" in labels
     finally:
         os.chdir(cwd)
+
+
+@pytest.mark.parametrize(
+    "changed_paths",
+    [None, [Path("src/app.py")]],
+    ids=["full-update", "incremental-update"],
+)
+def test_rebuild_code_subdir_preserves_outside_ast_nodes(tmp_path, changed_paths):
+    """A full rebuild of a subdirectory must not prune graph data outside it."""
+    from graphify.watch import _rebuild_code
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (tmp_path / "app.py").write_text("def outside_fn():\n    return 2\n", encoding="utf-8")
+    (src / "app.py").write_text("def inside_fn():\n    return 1\n", encoding="utf-8")
+
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        assert _rebuild_code(Path("src"), no_cluster=True, acquire_lock=False) is True
+        graph_path = src / "graphify-out" / "graph.json"
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        inside_id = next(n["id"] for n in data["nodes"] if n.get("label") == "inside_fn()")
+        outside_source = "app.py"
+        data["nodes"].extend([
+            {
+                "id": "outside_ast",
+                "label": "outside_fn()",
+                "file_type": "function",
+                "source_file": outside_source,
+                "_origin": "ast",
+            },
+            {
+                "id": "stale_inside_ast",
+                "label": "stale_inside_fn()",
+                "file_type": "function",
+                "source_file": "src/deleted.py",
+                "_origin": "ast",
+            },
+        ])
+        data["links"].append({
+            "source": "outside_ast",
+            "target": inside_id,
+            "relation": "calls",
+            "source_file": outside_source,
+        })
+        graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+        assert _rebuild_code(
+            Path("src"),
+            changed_paths=changed_paths,
+            no_cluster=True,
+            acquire_lock=False,
+        ) is True
+        after = json.loads(graph_path.read_text(encoding="utf-8"))
+        node_ids = {n["id"] for n in after["nodes"]}
+        assert "outside_ast" in node_ids
+        assert "stale_inside_ast" not in node_ids
+        outside_node = next(n for n in after["nodes"] if n["id"] == "outside_ast")
+        assert outside_node["source_file"] == outside_source
+        outside_edge = next(
+            e
+            for e in after["links"]
+            if e.get("source") == "outside_ast" and e.get("target") == inside_id
+        )
+        assert outside_edge["source_file"] == outside_source
+    finally:
+        os.chdir(cwd)
+
+
+def test_rebuild_code_subdir_survives_absolute_to_relative_invocation(tmp_path):
+    """Persisted source paths keep their meaning when invocation style changes."""
+    from graphify.watch import _rebuild_code
+
+    src = tmp_path / "src"
+    src.mkdir()
+    old = src / "old.py"
+    old.write_text("def old_fn():\n    return 1\n", encoding="utf-8")
+
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        assert _rebuild_code(src, no_cluster=True, acquire_lock=False) is True
+        graph_path = src / "graphify-out" / "graph.json"
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        data["nodes"].append({
+            "id": "local_semantic",
+            "label": "LocalSemantic",
+            "file_type": "concept",
+            "source_file": "old.py",
+        })
+        graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+        assert _rebuild_code(Path("src"), no_cluster=True, acquire_lock=False) is True
+        rebased = json.loads(graph_path.read_text(encoding="utf-8"))
+        semantic = next(n for n in rebased["nodes"] if n["id"] == "local_semantic")
+        assert semantic["source_file"] == "src/old.py"
+
+        old.rename(src / "renamed.py")
+
+        assert _rebuild_code(Path("src"), no_cluster=True, acquire_lock=False) is True
+        after = json.loads(graph_path.read_text(encoding="utf-8"))
+        sources = {n.get("source_file") for n in after["nodes"]}
+        assert "old.py" not in sources
+        assert "src/renamed.py" in sources
+    finally:
+        os.chdir(cwd)
+
+
+def test_rebuild_code_prunes_legacy_watch_relative_subdir_source(tmp_path):
+    """Pre-rebase subdirectory graphs stored source_file relative to watch_root."""
+    from graphify.watch import _rebuild_code
+
+    src = tmp_path / "src"
+    src.mkdir()
+    old = src / "old.py"
+    old.write_text("def old_fn():\n    return 1\n", encoding="utf-8")
+
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        assert _rebuild_code(Path("src"), no_cluster=True, acquire_lock=False) is True
+        graph_path = src / "graphify-out" / "graph.json"
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        for item in data["nodes"] + data["links"]:
+            source = item.get("source_file")
+            if source and source.startswith("src/"):
+                item["source_file"] = source.removeprefix("src/")
+        graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+        old.rename(src / "renamed.py")
+        assert _rebuild_code(
+            Path("src"),
+            changed_paths=[Path("src/renamed.py")],
+            no_cluster=True,
+            acquire_lock=False,
+        ) is True
+
+        after = json.loads(graph_path.read_text(encoding="utf-8"))
+        sources = {n.get("source_file") for n in after["nodes"]}
+        assert "old.py" not in sources
+        assert "src/renamed.py" in sources
+    finally:
+        os.chdir(cwd)
+
+
+def test_rebuild_code_does_not_update_root_marker_when_write_is_refused(tmp_path, monkeypatch):
+    """A rejected candidate keeps the marker paired with the existing graph."""
+    from graphify import watch as watch_mod
+
+    src = tmp_path / "src"
+    src.mkdir()
+    app = src / "app.py"
+    app.write_text("def before():\n    return 1\n", encoding="utf-8")
+
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        assert watch_mod._rebuild_code(src, no_cluster=True, acquire_lock=False) is True
+        marker = src / "graphify-out" / ".graphify_root"
+        assert marker.read_text(encoding="utf-8") == str(src)
+
+        app.write_text("def after():\n    return 2\n", encoding="utf-8")
+        monkeypatch.setattr(watch_mod, "_check_shrink", lambda *args, **kwargs: False)
+        assert watch_mod._rebuild_code(
+            Path("src"), no_cluster=True, acquire_lock=False
+        ) is False
+        assert marker.read_text(encoding="utf-8") == str(src)
+    finally:
+        os.chdir(cwd)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink setup differs on Windows")
+def test_rebuild_code_incremental_rename_preserves_symlink_source_path(tmp_path):
+    """Changed files under followed symlinks retain their watched lexical path."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    real = corpus / "real"
+    real.mkdir()
+    (corpus / ".graphifyignore").write_text("real/\n", encoding="utf-8")
+    old = real / "old.py"
+    old.write_text("def linked_fn():\n    return 1\n", encoding="utf-8")
+    (corpus / "linked").symlink_to(real, target_is_directory=True)
+
+    assert _rebuild_code(
+        corpus,
+        follow_symlinks=True,
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    first = real / "first.py"
+    old.rename(first)
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[Path("linked/first.py")],
+        follow_symlinks=True,
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    second = real / "second.py"
+    first.rename(second)
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[Path("linked/second.py")],
+        follow_symlinks=True,
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    sources = {n.get("source_file") for n in after["nodes"]}
+    assert "linked/old.py" not in sources
+    assert "linked/first.py" not in sources
+    assert "linked/second.py" in sources
 
 
 # --- #1059: pending-changes queue prevents commit drops under lock contention ---

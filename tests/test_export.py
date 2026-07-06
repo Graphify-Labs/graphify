@@ -82,6 +82,23 @@ def test_to_graphml_has_community_attribute():
         content = out.read_text()
         assert "community" in content
 
+def test_to_graphml_tolerates_none_attribute_values():
+    """nx.write_graphml raises ValueError on a None attribute value; to_graphml
+    must coerce None -> "" so a node/edge with a null field still exports (#1502)."""
+    G = make_graph()
+    communities = cluster(G)
+    # Inject a None-valued attribute on one node and one edge.
+    a_node = next(iter(G.nodes()))
+    G.nodes[a_node]["nullable_field"] = None
+    if G.number_of_edges():
+        u, v = next(iter(G.edges()))
+        G.edges[u, v]["nullable_field"] = None
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.graphml"
+        to_graphml(G, communities, str(out))  # must not raise
+        content = out.read_text()
+        assert "<graphml" in content
+
 def test_to_html_creates_file():
     G = make_graph()
     communities = cluster(G)
@@ -165,6 +182,75 @@ def test_to_html_member_counts_accepted():
         out = Path(tmp) / "graph.html"
         to_html(G, communities, str(out), member_counts=member_counts)
         assert out.exists()
+
+
+def _vis_nodes_from_html(content: str) -> list:
+    """Extract the RAW_NODES JSON array embedded in the generated HTML."""
+    m = re.search(r"const RAW_NODES = (\[.*?\]);", content, re.DOTALL)
+    assert m, "RAW_NODES not found in HTML"
+    return json.loads(m.group(1).replace("<\\/", "</"))
+
+
+def test_to_html_annotated_node_gets_learning_status_and_ring():
+    """A node with an overlay entry gets learning_status + learning_stale fields,
+    a status-colored ring (border), and a Lesson line in its hover title."""
+    G = make_graph()
+    communities = cluster(G)
+    overlay = {
+        "n_transformer": {"status": "preferred", "uses": 3, "score": 2.4,
+                          "stale": False, "neg": 0},
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), learning_overlay=overlay)
+        content = out.read_text()
+    nodes = {n["id"]: n for n in _vis_nodes_from_html(content)}
+    ann = nodes["n_transformer"]
+    assert ann["learning_status"] == "preferred"
+    assert ann["learning_stale"] is False
+    assert ann["color"]["border"] == "#22c55e"  # green ring for preferred
+    assert ann.get("borderWidth") == 3
+    assert "Lesson: preferred source" in ann["title"]
+    # An un-annotated node carries no learning fields.
+    other = next(n for nid, n in nodes.items() if nid != "n_transformer")
+    assert "learning_status" not in other
+    assert "learning_stale" not in other
+
+
+def test_to_html_contested_stale_node_gets_dashed_desaturated_ring():
+    G = make_graph()
+    communities = cluster(G)
+    overlay = {
+        "n_transformer": {"status": "contested", "uses": 2, "neg": 1,
+                          "verdict": "dead end", "stale": True},
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), learning_overlay=overlay)
+        content = out.read_text()
+    ann = {n["id"]: n for n in _vis_nodes_from_html(content)}["n_transformer"]
+    assert ann["learning_status"] == "contested"
+    assert ann["learning_stale"] is True
+    assert ann["color"]["border"] == "#9ca3af"  # desaturated when stale
+    assert ann["shapeProperties"]["borderDashes"] == [4, 4]
+    assert "code changed" in ann["title"]
+
+
+def test_to_html_unannotated_identical_to_pre_feature():
+    """With no overlay, the HTML is byte-identical whether learning_overlay is
+    omitted or passed empty — no learning fields leak into the un-annotated render."""
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        a = Path(tmp) / "a.html"
+        b = Path(tmp) / "b.html"
+        to_html(G, communities, str(a))
+        to_html(G, communities, str(b), learning_overlay={})
+        # Output path appears in the title, so compare with paths normalized out.
+        ca = a.read_text().replace("a.html", "X.html")
+        cb = b.read_text().replace("b.html", "X.html")
+    assert ca == cb
+    assert "learning_status" not in ca
 
 
 def test_to_canvas_file_paths_relative_to_vault():
@@ -278,6 +364,58 @@ def test_to_canvas_never_emits_punctuation_only_filenames():
         assert file_nodes, "canvas has no file nodes"
         bad = [n["file"] for n in file_nodes if not re.search(r"\w", Path(n["file"]).stem, flags=re.UNICODE)]
         assert not bad, f"punctuation-only canvas filenames: {bad}"
+
+
+# ── Existing-vault safety: graphify must not clobber user notes / .obsidian (#1506) ──
+
+def _two_node_graph():
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label="Database", community=0, source_file="app/db.py", type="code")
+    G.add_node("n2", label="Server", community=0, source_file="app/srv.py", type="code")
+    G.add_edge("n1", "n2")
+    return G, {0: ["n1", "n2"]}
+
+
+def test_to_obsidian_preserves_existing_user_notes_and_obsidian_config():
+    """#1506: exporting into an existing vault must not overwrite a user's note that
+    collides with a graphify node name, nor their .obsidian/ graph settings."""
+    G, communities = _two_node_graph()
+    with tempfile.TemporaryDirectory() as tmp:
+        vault = Path(tmp)
+        (vault / "Database.md").write_text("# MY NOTES\nkeep me\n", encoding="utf-8")
+        (vault / ".obsidian").mkdir()
+        (vault / ".obsidian" / "graph.json").write_text('{"USER":"settings"}', encoding="utf-8")
+        to_obsidian(G, communities, str(vault), community_labels={0: "Backend"})
+        # user content untouched
+        assert "MY NOTES" in (vault / "Database.md").read_text()
+        assert json.loads((vault / ".obsidian" / "graph.json").read_text()) == {"USER": "settings"}
+        # non-colliding graphify note still written
+        assert (vault / "Server.md").exists()
+
+
+def test_to_obsidian_empty_dir_writes_full_vault():
+    """No regression: a fresh/empty dir still gets every note + .obsidian/graph.json."""
+    G, communities = _two_node_graph()
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "obsidian"
+        n = to_obsidian(G, communities, str(out), community_labels={0: "Backend"})
+        assert (out / "Database.md").exists() and (out / "Server.md").exists()
+        assert (out / ".obsidian" / "graph.json").exists()
+        assert n == 3  # 2 nodes + 1 community note
+
+
+def test_to_obsidian_rerun_updates_own_notes_but_not_user_files():
+    """A re-run overwrites graphify's own prior notes (via the manifest) but leaves a
+    user-added note in the same dir alone."""
+    G, communities = _two_node_graph()
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "obsidian"
+        to_obsidian(G, communities, str(out), community_labels={0: "Backend"})
+        (out / "UserNote.md").write_text("mine\n", encoding="utf-8")
+        to_obsidian(G, communities, str(out), community_labels={0: "Backend2"})
+        assert (out / "Database.md").exists()  # graphify re-wrote its own
+        assert (out / "UserNote.md").read_text().strip() == "mine"  # user's untouched
 
 
 # ── Case-only-distinct labels must not collide on case-insensitive filesystems ──
