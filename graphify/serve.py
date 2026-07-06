@@ -318,7 +318,30 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
         # this, no single token equals a multi-word label, the per-token exact
         # tier never fires, and every node sharing the token set ties -> arbitrary
         # node-id sort -> wrong/disconnected endpoint -> false "No path found".
-        if joined:
+        #
+        # Gated on len(norm_terms) > 1 (#1617): a single-token probe has no
+        # "multi-word phrase vs per-token bag-of-words" distinction to make —
+        # the per-token loop below already fully handles single-term exact/
+        # prefix/substring via raw (non-tokenized) label comparison. Without
+        # this gate, `label_tokens` (punctuation-stripped) can make a bare
+        # method name whose only word is the query term — e.g. `.search()` —
+        # falsely equal a single-word `joined` query at the EXACT tier, even
+        # though the same node correctly fails the per-token loop's raw
+        # `t == norm_label or t == bare_label` exact check just below (raw
+        # ".search" != "search"). This matters most inside `_pick_seeds`'s
+        # per-term seed-diversity probe (#1445), which calls
+        # `_score_nodes(G, [term])` with exactly one token per distinct query
+        # word: a short same-named method repeated across unrelated files
+        # (three providers each defining `.search()`) can win that probe's
+        # EXACT tier and starve out the actually-relevant multi-word file
+        # (`search.handler.ts`, correctly only PREFIX-tier for the bare word
+        # "search"), reproduced live on a real repo's `graphify query "how
+        # does a change in provider settings affect what shows up in search
+        # results"` — search.handler.ts never appeared in the traversal
+        # despite scoring far higher than `.search()` under the full
+        # multi-word sentence (this gate does not change that combined-query
+        # path at all, since len(norm_terms) > 1 there).
+        if joined and len(norm_terms) > 1:
             nid_lower = nid.lower()
             if joined in (norm_label, bare_label, label_tokens, nid_lower):
                 score += _EXACT_MATCH_BONUS * 10 * joined_w
@@ -561,11 +584,31 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(
+    G: nx.Graph,
+    nodes: set[str],
+    edges: list[tuple],
+    token_budget: int = 2000,
+    *,
+    seeds: list[str] | None = None,
+    scores: "list[tuple[float, str]] | dict[str, float] | None" = None,
+) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
-    seeds: exact-match nodes rendered first before the degree-sorted expansion,
-    so the queried symbol always appears at the top of the output.
+    seeds: exact-match nodes rendered first before the ranked expansion, so the
+    queried symbol always appears at the top of the output.
+
+    scores (#1612): the same per-node query-relevance scores `_score_nodes`
+    computed to pick seeds (a `_score_nodes`-shaped list, or an equivalent
+    dict), reused here to rank the *non-seed* expansion too. Without this, a
+    BFS/DFS neighborhood is entirely un-ranked structural noise: a node that
+    matched none of the query's terms but happens to be the most-imported file
+    in the whole corpus (test setup, DB schema, DI container, ...) sorts above
+    a node that matched a query term but has an ordinary degree, since the
+    fallback is pure degree-sort. `_score_nodes` only returns nodes with
+    score > 0 (some term overlap), so a node absent from `scores` falls back
+    to degree exactly like today when `scores` is omitted — this is
+    strictly additive, never worse than the pre-#1612 ordering.
     """
     char_budget = token_budget * 3
     lines = []
@@ -573,8 +616,17 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     # Empty when no sidecar exists, so un-annotated output stays byte-identical.
     overlay = getattr(G, "graph", {}).get("_learning_overlay", {}) or {}
     seed_set = set(seeds or [])
+    score_map: dict[str, float] = (
+        dict(scores) if isinstance(scores, dict)
+        else {nid: s for s, nid in scores} if scores
+        else {}
+    )
     ordered = [n for n in (seeds or []) if n in nodes] + \
-              sorted(nodes - seed_set, key=lambda n: G.degree(n), reverse=True)
+              sorted(
+                  nodes - seed_set,
+                  key=lambda n: (score_map.get(n, 0.0), G.degree(n)),
+                  reverse=True,
+              )
     for nid in ordered:
         d = G.nodes[nid]
         # Every LLM-derived field passes through sanitize_label before being
@@ -651,19 +703,40 @@ def _query_graph_text(
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget)
+    # seeds=start_nodes (#1612): _subgraph_to_text has always supported rendering
+    # the traversal's actual seed nodes first, before the generic degree-sorted
+    # expansion — but this was the only call site, and it never passed seeds,
+    # so every `graphify query` result silently fell back to pure degree-sort:
+    # whichever nodes happen to be the most-imported/highest-degree in the
+    # WHOLE graph led the output regardless of relevance to the question, and
+    # the nodes the traversal actually seeded from (the ones _pick_seeds and
+    # #1445's per-term guarantee worked to select) could be buried arbitrarily
+    # far down or truncated out by the token budget entirely.
+    return header + _subgraph_to_text(
+        traversal_graph, nodes, edges, token_budget, seeds=start_nodes, scores=scored,
+    )
 
 
-def _find_node(G: nx.Graph, label: str) -> list[str]:
-    """Return node IDs whose label or ID matches the search term (diacritic-insensitive).
+def _find_node_tiers(
+    G: nx.Graph, label: str,
+) -> tuple[list[str], list[str], list[str], list[str], bool]:
+    """Return (source_exact, exact, prefix, substring, source_exact_resolved) for `label`.
 
-    Results are ordered by precedence: exact source-file path match first, then
-    exact (label/ID) match, then prefix match, then substring match. Node-ID exact
-    matches are grouped with label exact matches.
+    Same matching logic as `_find_node`, but callers that need to know *how many*
+    candidates tied in the top precedence tier — to detect ambiguity rather than
+    silently picking the first one — should use this instead of the flattened
+    list (#1613; see `explain`'s disambiguation in __main__.py).
+
+    `source_exact_resolved` is True when `source_exact` has more than one entry
+    but a pre-existing heuristic (the file-level node — source_location "L1" with
+    a label matching the queried path's basename — among several same-file
+    matches, #the-original-source-exact-preference-fix) already picked a single
+    unambiguous winner and moved it to the front. Callers must not treat that
+    case as ambiguous: it was deliberately resolved, not left as a raw tie.
     """
     term = " ".join(_search_tokens(label))
     if not term:
-        return []
+        return [], [], [], [], False
     source_exact: list[str] = []
     exact: list[str] = []
     prefix: list[str] = []
@@ -695,6 +768,7 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
         elif term in norm_label or term in label_tokens:
             substring.append(nid)
 
+    source_exact_resolved = False
     if source_exact:
         query_basename = _strip_diacritics(Path(label).name).lower()
         preferred = [
@@ -706,7 +780,19 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
         ]
         if len(preferred) == 1:
             source_exact = preferred + [nid for nid in source_exact if nid != preferred[0]]
+            source_exact_resolved = len(source_exact) > 1
 
+    return source_exact, exact, prefix, substring, source_exact_resolved
+
+
+def _find_node(G: nx.Graph, label: str) -> list[str]:
+    """Return node IDs whose label or ID matches the search term (diacritic-insensitive).
+
+    Results are ordered by precedence: exact source-file path match first, then
+    exact (label/ID) match, then prefix match, then substring match. Node-ID exact
+    matches are grouped with label exact matches.
+    """
+    source_exact, exact, prefix, substring, _resolved = _find_node_tiers(G, label)
     return source_exact + exact + prefix + substring
 
 

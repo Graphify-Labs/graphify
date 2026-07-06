@@ -123,6 +123,59 @@ def test_score_nodes_multiword_exact_label_outranks_superset():
     assert scored[0][0] > scored[1][0], "exact label must strictly outrank superset/token-bag matches"
 
 
+def test_score_nodes_single_token_probe_does_not_falsely_promote_bare_method(monkeypatch):
+    """#1617: a single-token probe must not let `label_tokens` (punctuation-
+    stripped) promote a bare method whose only word is the query term to a
+    fake EXACT match, outranking a real multi-word file whose raw label only
+    reaches PREFIX for that same bare word.
+
+    Reproduces a live failure: `graphify query "... search results"` seeded on
+    an unrelated provider's `.search()` method and never surfaced the real
+    `search.handler.ts` file at all, because `_pick_seeds`'s per-term
+    diversity probe calls `_score_nodes(G, ["search"])` in isolation, and the
+    (pre-fix) joined-tier bonus treated `.search()`'s tokenized label
+    ("search") as an exact match for the single-word query — a promotion the
+    per-token loop's own raw exact check correctly refuses (raw ".search" !=
+    "search").
+    """
+    def _add(nid, label, src):
+        G.add_node(nid, label=label, norm_label=label.lower(), source_file=src, community=0)
+
+    G = nx.DiGraph()
+    _add("bare_method", ".search()", "server/providers/tmdbProvider.ts")
+    _add("real_file", "search.handler.ts", "server/modules/search/search.handler.ts")
+    monkeypatch.setattr("graphify.serve._trigram_candidates", lambda *a, **k: None)
+
+    scored = _score_nodes(G, ["search"])
+    scored_by_id = {nid: s for s, nid in scored}
+    assert scored_by_id["real_file"] > scored_by_id["bare_method"], (
+        "the real multi-word file (PREFIX tier) must outrank the bare "
+        "same-named method (SUBSTRING tier) once the joined-tier bonus is "
+        "gated to len(norm_terms) > 1"
+    )
+
+
+def test_pick_seeds_diversity_does_not_seed_bare_method_over_relevant_file(monkeypatch):
+    """End-to-end version of the test above, through `_pick_seeds`'s per-term
+    diversity guarantee (#1445) — the mechanism where the bug actually bites,
+    since it probes each query term in isolation via `_score_nodes(G, [term])`.
+    """
+    def _add(nid, label, src):
+        G.add_node(nid, label=label, norm_label=label.lower(), source_file=src, community=0)
+
+    G = nx.DiGraph()
+    _add("bare_method", ".search()", "server/providers/tmdbProvider.ts")
+    _add("real_file", "search.handler.ts", "server/modules/search/search.handler.ts")
+    _add("settings", "providerSettingsService.ts", "server/services/providerSettingsService.ts")
+    monkeypatch.setattr("graphify.serve._trigram_candidates", lambda *a, **k: None)
+
+    terms = ["provider", "settings", "search", "results"]
+    scored = _score_nodes(G, terms)
+    seeds = _pick_seeds(scored, G=G, terms=terms)
+    assert "real_file" in seeds
+    assert "bare_method" not in seeds
+
+
 def test_find_node_ignores_trailing_punctuation():
     G = _make_graph()
     assert _find_node(G, "extract?") == ["n1"]
@@ -438,6 +491,79 @@ def test_subgraph_to_text_no_overlay_is_unchanged():
     G = _make_graph()
     text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
     assert "learning=" not in text
+
+
+# --- #1612: non-seed node ordering ranks by query relevance, not raw degree ---
+
+def _hub_graph() -> nx.Graph:
+    """A relevant-but-ordinary-degree node vs. a high-degree unrelated hub, both
+    one hop from a seed — reproduces the "generic infra node leads the output"
+    shape seen against a real repo (vitest.ts/schema.ts/container.ts outranking
+    the actually-relevant match)."""
+    G = nx.Graph()
+    G.add_node("seed", label="IdentityResolutionJob", source_file="identityResolutionJob.ts", community=0)
+    G.add_node("relevant", label="identityJobFactory", source_file="identityJobFactory.ts", community=0)
+    G.add_node("hub", label="config", source_file="config.ts", community=1)
+    G.add_edge("seed", "relevant", relation="imports")
+    G.add_edge("seed", "hub", relation="imports")
+    # Give "hub" a much higher raw degree than "relevant", unrelated to the query.
+    for i in range(10):
+        nid = f"hub_dep_{i}"
+        G.add_node(nid, label=f"dep{i}", source_file=f"dep{i}.ts", community=2)
+        G.add_edge("hub", nid, relation="imports")
+    return G
+
+
+def test_subgraph_to_text_without_scores_falls_back_to_degree_sort_unchanged():
+    """No scores passed (pre-#1612 call shape) must reproduce the exact old
+    ordering — pure degree-sort — so this is strictly additive, never a
+    behavior change for existing callers that don't opt in."""
+    G = _hub_graph()
+    nodes = {"seed", "relevant", "hub"}
+    text = _subgraph_to_text(G, nodes, [], seeds=["seed"])
+    hub_pos = text.index("NODE config")
+    relevant_pos = text.index("NODE identityJobFactory")
+    assert hub_pos < relevant_pos, "hub (degree 11) must still outrank relevant (degree 1) without scores"
+
+
+def test_subgraph_to_text_with_scores_ranks_relevant_node_above_higher_degree_hub():
+    G = _hub_graph()
+    nodes = {"seed", "relevant", "hub"}
+    # "relevant" matched a query term (nonzero score); "hub" matched nothing
+    # (absent from scores, exactly what _score_nodes returns for a non-match).
+    scores = [(42.0, "relevant")]
+    text = _subgraph_to_text(G, nodes, [], seeds=["seed"], scores=scores)
+    hub_pos = text.index("NODE config")
+    relevant_pos = text.index("NODE identityJobFactory")
+    assert relevant_pos < hub_pos, (
+        "a node that matched a query term must outrank a higher-degree node "
+        "that matched nothing, once scores are supplied"
+    )
+
+
+def test_subgraph_to_text_accepts_scores_as_dict_or_score_nid_list():
+    G = _hub_graph()
+    nodes = {"seed", "relevant", "hub"}
+    as_list = _subgraph_to_text(G, nodes, [], seeds=["seed"], scores=[(42.0, "relevant")])
+    as_dict = _subgraph_to_text(G, nodes, [], seeds=["seed"], scores={"relevant": 42.0})
+    assert as_list == as_dict
+
+
+def test_query_graph_text_ranks_relevant_neighbor_above_unrelated_hub():
+    """End-to-end: _query_graph_text must pass its own computed scores through
+    to _subgraph_to_text (#1612), not just seeds — this is the actual call
+    site the standalone _subgraph_to_text tests above cannot cover."""
+    G = _hub_graph()
+    # Seed from "IdentityResolutionJob" (exact match on the "seed" node) so BFS
+    # depth=1 reaches both "relevant" and "hub" as one-hop neighbors — the
+    # actual query term ("job factory") only partially overlaps "relevant"'s
+    # label, giving it a real but non-dominant score, same shape as the
+    # original repo repro (query term overlaps a neighbor's label, not the
+    # seed's).
+    text = _query_graph_text(G, "IdentityResolutionJob job factory", mode="bfs", depth=1)
+    hub_pos = text.index("NODE config")
+    relevant_pos = text.index("NODE identityJobFactory")
+    assert relevant_pos < hub_pos
 
 
 def test_query_graph_text_explicit_context_filter_changes_traversal():

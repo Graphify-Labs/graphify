@@ -830,6 +830,33 @@ def _rebuild_code(
         }
         _rebase_relative_source_files(result, watch_root, project_root)
 
+        # Reattach semantic content for re-extracted files at zero LLM cost (#1610).
+        # AST-only rebuilds unconditionally evict a changed file's prior semantic
+        # nodes below (its old node IDs are gone once new_ast_ids is computed) and
+        # never regenerate them, since this path makes no LLM call by design ("no
+        # LLM needed"). That is correct when the file's content is genuinely new —
+        # stale semantic labels on new code would be wrong. But the semantic cache
+        # is keyed on the file's current content hash (cache.py: SHA256 of file
+        # bytes), so a hit here means this exact content was already
+        # LLM-processed and its semantic result is still valid verbatim: no
+        # re-billing, and the reattached content is byte-identical to what a full
+        # rebuild would have cached, so this is a pure availability fix, not a new
+        # source of drift. Files with no cache entry are unaffected — they keep
+        # today's AST-only behavior exactly.
+        if extract_targets:
+            from graphify.cache import check_semantic_cache
+            cached_nodes, cached_edges, cached_hyperedges, _uncached = check_semantic_cache(
+                [str(p) for p in extract_targets], root=watch_root,
+            )
+            if cached_nodes or cached_edges:
+                result = {
+                    "nodes": result["nodes"] + cached_nodes,
+                    "edges": result["edges"] + cached_edges,
+                    "hyperedges": result.get("hyperedges", []) + cached_hyperedges,
+                    "input_tokens": result.get("input_tokens", 0),
+                    "output_tokens": result.get("output_tokens", 0),
+                }
+
         # Preserve semantic nodes/edges from a previous full run.
         # AST-only rebuild replaces nodes for changed files; everything else is kept.
         # Filter by node ID membership in the new AST output, not by file_type —
