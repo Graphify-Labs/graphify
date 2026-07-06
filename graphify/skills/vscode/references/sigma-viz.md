@@ -4,7 +4,7 @@ Load this when Step 6's `graph.html` (vis-network) would render more than ~300 n
 
 Output file: `graphify-out/graph_sigma.html` (self-contained, opens directly like `graph.html`).
 
-Beyond the raw performance fix, this view also encodes three things vis-network's `graph.html` doesn't surface at a glance: each community's **dominant content kind** (code/document/paper/image/rationale/concept, drawn as a small icon), its **dominant module** (the top-level directory most of its members live under, drawn as color), and a **left-side filter panel** for both entity kind and relation type — so a code-heavy corpus with a handful of docs sprinkled in doesn't read as one undifferentiated blob.
+Beyond the raw performance fix, this view also encodes things vis-network's `graph.html` doesn't surface at a glance: each community's **dominant content kind** (code/document/paper/image/rationale/concept, drawn as a small icon), its **dominant module** (the top-level directory most of its members live under, drawn as color), a **left-side filter panel** for both entity kind and relation type, **edges colored and labeled by relation type**, **draggable nodes** for manual layout tidying, and a **click panel listing the actual source files** a community represents (with working `file://` links when opened on the machine that generated the graph) — so a code-heavy corpus with a handful of docs sprinkled in doesn't read as one undifferentiated blob, and clicking a community gets you to real files, not just a label.
 
 ## Step 1 — build the meta-graph and precompute layout in Python
 
@@ -19,6 +19,12 @@ from collections import Counter, defaultdict
 
 g_data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 labels = json.loads(Path('graphify-out/.graphify_labels.json').read_text(encoding='utf-8'))
+# .graphify_root records the absolute scan root on THIS machine, letting the
+# click panel link straight to a source file. file:// links only resolve on
+# the machine that generated the graph - degrade to a plain (still useful,
+# copyable) relative path when the marker is missing.
+_root_marker = Path('graphify-out/.graphify_root')
+SCAN_ROOT = _root_marker.read_text(encoding='utf-8').strip() if _root_marker.exists() else None
 
 # Maps every relation graphify emits (AST-structural and LLM-semantic alike) to
 # one of six buckets the filter panel toggles as a group. Keep this in sync
@@ -68,9 +74,20 @@ for cid, members in significant.items():
     # level — a mixed community shows its majority kind/module, not a blend.
     type_counts = Counter(node_attrs[m].get('file_type', 'code') for m in members)
     dir_counts = Counter(top_level_dir(node_attrs[m].get('source_file', '')) for m in members)
+    # Representative file list for the click panel. Capped so a 300-member
+    # community doesn't dump hundreds of paths into the UI; file_count keeps
+    # the true total so the panel can say "and N more" instead of implying
+    # completeness.
+    distinct_files = sorted({node_attrs[m]['source_file'] for m in members if node_attrs[m].get('source_file')})
+    FILE_CAP = 8
+    files_out = [
+        {'path': f, 'url': f'file://{SCAN_ROOT}/{f}' if SCAN_ROOT else None}
+        for f in distinct_files[:FILE_CAP]
+    ]
     meta.add_node(
         cid, member_count=len(members), label=labels.get(str(cid), f'Community {cid}'),
         file_type=type_counts.most_common(1)[0][0], module=dir_counts.most_common(1)[0][0],
+        files=files_out, file_count=len(distinct_files),
     )
 
 edge_counts = Counter()
@@ -103,11 +120,34 @@ for he in g_data.get('hyperedges', []):
 for (cu, cv), w in edge_counts.items():
     meta.add_edge(cu, cv, weight=w, buckets=dict(edge_buckets[(cu, cv)]))
 
-# offline layout — no client-side physics needed at all
-pos = nx.forceatlas2_layout(meta, max_iter=800, gravity=1.0, scaling_ratio=4.0, seed=42, weight='weight')
+# offline layout — no client-side physics needed at all.
+#
+# linlog=True (logarithmic attraction) plus a node_size repulsion halo
+# proportional to member count spreads communities out by actual graph
+# structure instead of collapsing almost everything into one dense blob
+# near the centroid. Verified on a real 342-community production graph:
+# the naive defaults (linear attraction, scaling_ratio=4, no node_size)
+# packed 87% of nodes within 15% of the bounding-box center - unreadable,
+# and exactly the "nodes are bunched, labels aren't readable" failure
+# mode. This combination drops that to ~15-20% while keeping structurally
+# related communities near each other (not just uniformly scattered).
+# scaling_ratio is raised well past its default (2.0) specifically to
+# compensate for linlog's gentler pull once nodes spread out - lowering
+# it re-collapses the layout fast at intermediate values, so don't tune
+# it down without re-checking spread on a real multi-hundred-node corpus.
+max_members = max((meta.nodes[n]['member_count'] for n in meta.nodes), default=1)
+node_size = {n: 3 + 12 * (meta.nodes[n]['member_count'] / max_members) ** 0.5 for n in meta.nodes}
+pos = nx.forceatlas2_layout(
+    meta, max_iter=1000, gravity=0.5, scaling_ratio=20.0, linlog=True,
+    node_size=node_size, seed=42, weight='weight',
+)
+# A "RuntimeWarning: invalid value encountered in divide" from networkx's
+# linlog attraction calculation is expected and benign (transient zero-
+# distance case during iteration) - verified it does not produce NaN/Inf in
+# the final positions on a real 342-node production graph. Don't treat it as
+# a failure signal.
 
 degrees = dict(meta.degree())
-max_members = max((meta.nodes[n]['member_count'] for n in meta.nodes), default=1)
 xs = [float(p[0]) for p in pos.values()]
 ys = [float(p[1]) for p in pos.values()]
 xr, yr = (max(xs) - min(xs)) or 1, (max(ys) - min(ys)) or 1
@@ -142,6 +182,7 @@ for n in meta.nodes():
         'size': round(SIZE_MIN + (SIZE_MAX - SIZE_MIN) * (mc / max_members) ** 0.5, 2),
         'degree': deg, 'members': mc,
         'fileType': meta.nodes[n]['file_type'], 'module': meta.nodes[n]['module'],
+        'files': meta.nodes[n]['files'], 'fileCount': meta.nodes[n]['file_count'],
     })
 edges_out = [
     {'source': str(u), 'target': str(v), 'weight': int(d.get('weight', 1)), 'buckets': d.get('buckets', {})}
@@ -166,9 +207,13 @@ Key implementation notes:
 - **`autoRescale: false` also disables sigma's automatic "fit the camera to the graph" behavior on load — you must replace it with an explicit fit, or the page renders as a blank/black screen with nothing visible.** Without `autoRescale`, the camera stays at its default state (near the origin, ratio 1) regardless of where the actual nodes are; since Step 1 lays nodes out over a 0-1000 range, the camera ends up pointed at empty space, not a badly-framed graph. Call `fitViewportToNodes(renderer, graph.nodes(), { animate: false })` from `@sigma/utils` (the same package sigma's own demo uses for this) immediately after constructing the `Sigma` instance, and again — with `animate: true` — anywhere the camera needs to reframe the whole graph (e.g. the reset button). Do NOT use `camera.animatedReset()` for that: it resets to sigma's default state, the exact "pointed at empty space" position this exists to fix. `maxCameraRatio: 10` (rather than a tighter bound like `3`) gives this fit headroom on a small/narrow viewport — the fitted ratio for a 0-1000-unit layout is roughly `1000 / min(viewportWidth, viewportHeight)`, which can exceed a tight bound on a short window and clip the fit.
 - **Icons by content kind**: `NodePictogramProgram` (from `@sigma/node-image`) renders each node as a small monochrome glyph tinted by the node's `color` attribute — set `type: "pictogram"` and an `image` data URI per `fileType` (code/document/paper/image/rationale/concept) on every node, and register `nodeProgramClasses: { pictogram: NodePictogramProgram }` on the `Sigma` constructor. **Every icon SVG must declare explicit `width`/`height` attributes, not just `viewBox`.** `@sigma/node-image` dispatches data-URI images through its raster-image path (not the dedicated SVG path, which keys off a literal `.svg` file extension that a data URI never has), and that path sizes the icon from the `<img>` element's intrinsic dimensions — an SVG with only a `viewBox` has no intrinsic size in some browsers, which silently rasterizes to a zero-size (fully transparent, invisible) texture. `viewBox='0 0 24 24' width='24' height='24'` is sufficient; the exact value doesn't matter since sizing at render time comes from the node's `size` attribute, not the icon's own dimensions.
 - **Color by module, not degree**: with the icon now carrying "what kind of thing is this", color is free to carry "which part of the codebase is this from" — tint each node by its dominant top-level directory (`module`) using a fixed categorical palette, ranked so the most common modules get the most visually distinct colors and the long tail collapses into one muted gray. This also becomes a clickable legend (see below) — a lightweight grouping tool without a separate library.
+- **Edges are colored AND labeled by their dominant relation bucket** (the same six buckets the filter panel uses), not a flat gray — pick the bucket with the highest count in the edge's `buckets` breakdown, set `color` to a per-bucket color and `label` to the bucket's human-readable name as plain edge attributes (`renderEdgeLabels: true` on the constructor is what actually draws them; the label/color attributes alone do nothing without it). Keep edge colors at moderate opacity (not solid) — a real corpus renders 1000+ edges simultaneously at the default zoom, and solid colors at that density read as noise rather than a legible signal. Edge label visibility is NOT independently configurable the way node labels are (there is no `edgeLabelRenderedSizeThreshold`) — sigma only shows an edge's label when at least one endpoint is hovered/highlighted, or when both endpoints already have their own node labels showing (which IS gated by `labelRenderedSizeThreshold`). This is a feature, not a limitation to work around: it means edge labels progressively reveal as you zoom in or click a node, instead of 1000+ labels overlapping into unreadable clutter at the initial fit-all view.
+- **Layout spread**: a fixed `scaling_ratio` with linear attraction and no repulsion halo packs almost every node within a small radius of the centroid once a real corpus produces 300+ communities — verified in production, 87% of nodes landed within 15% of the bounding-box center, unreadable and impossible to label. Step 1's `linlog=True` + a `node_size` repulsion halo (proportional to member count) + a much higher `scaling_ratio` than the networkx default fixes this at the source (see Step 1's comment for the exact numbers and why they're calibrated together, not independently tunable).
+- **Nodes are draggable** — the precomputed layout is a starting point for exploration, not a constraint; some real corpora warrant manual tidying that no automatic layout gets right for every viewer. See the `downNode`/`moveBody`/`upNode`/`upStage` handlers and `renderer.setCustomBBox(renderer.getBBox())` in the script — the frozen custom bbox is required, not optional: without it, sigma recomputes its normalization extent from live node positions on every reindex (even with `autoRescale: false`, which only fixes scale/aspect, not this recentering), so dragging one node toward the edge of the current extent visibly pans every OTHER node too. `originalPositions` is captured at load so the reset button can undo dragging, not just filters/highlight.
+- **Click panel lists the community's actual source files**, not just its label and counts — Step 1 collects each significant community's distinct `source_file` paths (capped at 8, with a true total count for "+N more") and, when `graphify-out/.graphify_root` records the scan root (i.e. the graph was generated and is being viewed on the same machine), builds a `file://` link per path. Files are a *dominant-vote-adjacent* list, not exhaustive — this is about getting the user to a real file fast, not a complete manifest.
 - Include: click → highlight neighbors + dim the rest (`nodeReducer`/`edgeReducer`), a text search box that filters by label (respecting active filters) and pans the camera to the match, a left-side panel with checkboxes for entity kind and bucketed relation type, and a clickable module legend that doubles as an isolate/hide-by-module toggle. Filtering and highlighting share one pair of reducers (`applyReducers`) so they compose instead of one clobbering the other's `setSetting` call.
 - **Camera-pan targets must come from `renderer.getNodeDisplayData(key)`, not the raw data's `x`/`y`.** Sigma's `Camera` operates in its own normalized display space, not the raw graph coordinates you fed it — panning with the raw values silently targets the wrong point. This is the same pattern sigma's own demo search field uses (`packages/demo/src/views/SearchField.tsx`).
-- **Escape any label before it goes through `innerHTML`.** Community labels are LLM-generated from indexed corpus content, and module names come from real directory names — both can legally contain `<`/`>`/`"`. `graphify-out/` is meant to be committed and shared with a team (per the README), so an unescaped label is a stored-XSS path for whoever opens the HTML next. Escape with a small helper before interpolating into `innerHTML`; the search-results list already does this correctly by using `textContent` instead.
+- **Escape any label before it goes through `innerHTML`.** Community labels are LLM-generated from indexed corpus content, and module names come from real directory names — both can legally contain `<`/`>`/`"`. `graphify-out/` is meant to be committed and shared with a team (per the README), so an unescaped label is a stored-XSS path for whoever opens the HTML next. Escape with a small helper before interpolating into `innerHTML`; the search-results list already does this correctly by using `textContent` instead. Source-file paths in the click panel are filesystem-derived, not corpus content, so they're a much lower XSS risk — still escaped for consistency and because a pathological filename could in principle contain HTML metacharacters on some filesystems.
 
 ```html
 <!doctype html>
@@ -189,13 +234,19 @@ Key implementation notes:
   #results div { padding: 3px 4px; border-radius: 4px; cursor: pointer; }
   #results div:hover { background: #23262f; }
   .filter-row, .legend-row { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 2px 0; cursor: pointer; user-select: none; }
-  .filter-row img, .legend-row .swatch { width: 12px; height: 12px; flex: none; }
-  .legend-row .swatch { border-radius: 50%; }
+  /* TYPE_ICONS are solid black, meant to be tinted by NodePictogramProgram in
+     WebGL at render time - shown raw as an <img> against this dark panel
+     background they're nearly invisible, so force them to white here. */
+  .filter-row img { width: 12px; height: 12px; flex: none; filter: invert(1); }
+  .filter-row .swatch, .legend-row .swatch { width: 12px; height: 12px; flex: none; border-radius: 50%; }
   .legend-row.is-off, .filter-row.is-off { opacity: 0.4; }
   .legend-row .count { color: #6b7280; margin-left: auto; }
-  #info { position: absolute; bottom: 12px; left: 12px; z-index: 10; background: rgba(20,22,28,0.92); border: 1px solid #2a2d36; border-radius: 8px; padding: 10px 12px; max-width: 380px; font-size: 12px; display: none; }
+  #info { position: absolute; bottom: 12px; left: 12px; z-index: 10; background: rgba(20,22,28,0.92); border: 1px solid #2a2d36; border-radius: 8px; padding: 10px 12px; max-width: 380px; max-height: 260px; overflow-y: auto; font-size: 12px; display: none; }
   #info b { color: #fff; font-size: 13px; }
   #info .stat { color: #9aa0ab; margin-top: 4px; }
+  #info .file-link { margin-top: 2px; font-size: 11px; overflow-wrap: anywhere; }
+  #info .file-link a { color: #5b8def; text-decoration: none; }
+  #info .file-link a:hover { text-decoration: underline; }
   a.reset { color: #5b8def; cursor: pointer; font-size: 11px; }
 </style>
 </head>
@@ -235,9 +286,32 @@ const TYPE_ICONS = {
   rationale: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='24' height='24'><path fill='black' d='M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z'/></svg>",
   concept: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' width='24' height='24'><path fill='black' d='M12 2l2.9 6.26L22 9.27l-5 4.87L18.18 21 12 17.27 5.82 21 7 14.14 2 9.27l7.1-1.01L12 2z'/></svg>",
 };
+// doc_ref (an ADR/RFC citation pulled out of a code comment) isn't part of
+// the six-value file_type enum the LLM extraction schema declares, but a
+// newer AST feature emits it anyway - alias it to the document glyph rather
+// than let it silently fall back to the code icon.
+TYPE_ICONS.doc_ref = TYPE_ICONS.document;
 const BUCKET_LABELS = {
   calls: "Calls / invocation", structure: "Structure", imports: "Imports / dependencies",
   references: "References / bindings", docs: "Documentation & concepts", groups: "Groups", other: "Other",
+};
+// One color per relation bucket, so an edge's color tells you what kind of
+// relationship it is at a glance instead of every edge being the same gray.
+// Kept at moderate opacity (not solid) since a real corpus renders 1000+
+// edges simultaneously at the default zoom - solid colors at that density
+// read as visual noise rather than a legible category signal.
+const BUCKET_EDGE_COLORS = {
+  calls: "rgba(91,141,239,0.4)", structure: "rgba(224,162,58,0.4)", imports: "rgba(95,184,122,0.4)",
+  references: "rgba(155,107,214,0.4)", docs: "rgba(224,122,155,0.4)", groups: "rgba(58,183,191,0.4)",
+  other: "rgba(150,155,165,0.3)",
+};
+// Same hues as BUCKET_EDGE_COLORS, solid - the translucent edge colors read
+// as too faint for a small UI swatch, so the filter panel gets its own
+// fully-opaque version of the same palette rather than trying to parse
+// opacity back out of an rgba() string.
+const BUCKET_SWATCH_COLORS = {
+  calls: "#5b8def", structure: "#e0a23a", imports: "#5fb87a",
+  references: "#9b6bd6", docs: "#e07a9b", groups: "#3ab7bf", other: "#7a8fa6",
 };
 const MODULE_PALETTE = ["#4a7fd6","#e0a23a","#d64550","#5fb87a","#9b6bd6","#3ab7bf","#d68a3a","#7a8fa6","#c4548a","#6bbf59"];
 const OTHER_MODULE_COLOR = "#5a5f6b";
@@ -260,6 +334,10 @@ for (const n of DATA.nodes) moduleCounts.set(n.module, (moduleCounts.get(n.modul
 const rankedModules = [...moduleCounts.keys()].sort((a, b) => moduleCounts.get(b) - moduleCounts.get(a));
 const moduleColor = new Map(rankedModules.map((m, i) => [m, i < MODULE_PALETTE.length ? MODULE_PALETTE[i] : OTHER_MODULE_COLOR]));
 
+// Original positions, kept so "reset view" can undo manual dragging, not
+// just recenter the camera.
+const originalPositions = new Map(DATA.nodes.map(n => [n.key, { x: n.x, y: n.y }]));
+
 const graph = new Graph();
 for (const n of DATA.nodes) {
   graph.addNode(n.key, {
@@ -267,13 +345,22 @@ for (const n of DATA.nodes) {
     color: moduleColor.get(n.module) || OTHER_MODULE_COLOR,
     image: TYPE_ICONS[n.fileType] || TYPE_ICONS.code,
     fileType: n.fileType, module: n.module, members: n.members, degree: n.degree,
+    files: n.files || [], fileCount: n.fileCount || 0,
   });
+}
+function dominantBucket(buckets) {
+  const entries = Object.entries(buckets || {});
+  if (!entries.length) return null;
+  return entries.sort((a, b) => b[1] - a[1])[0][0];
 }
 for (const e of DATA.edges) {
   if (graph.hasNode(e.source) && graph.hasNode(e.target) && !graph.hasEdge(e.source, e.target)) {
+    const bucket = dominantBucket(e.buckets);
     graph.addEdge(e.source, e.target, {
       size: Math.min(0.3 + Math.log2(1 + e.weight) * 0.35, 4),
-      color: "rgba(150,155,165,0.18)", weight: e.weight, buckets: e.buckets || {},
+      color: bucket ? BUCKET_EDGE_COLORS[bucket] : BUCKET_EDGE_COLORS.other,
+      label: bucket ? BUCKET_LABELS[bucket] : "",
+      weight: e.weight, buckets: e.buckets || {},
     });
   }
 }
@@ -281,6 +368,7 @@ for (const e of DATA.edges) {
 const renderer = new Sigma(graph, document.getElementById("container"), {
   renderLabels: true, labelRenderedSizeThreshold: 8,
   labelFont: "-apple-system, BlinkMacSystemFont, sans-serif", labelColor: { color: "#d8dbe2" }, labelSize: 12,
+  renderEdgeLabels: true, edgeLabelSize: 10, edgeLabelColor: { color: "#9aa0ab" },
   defaultEdgeColor: "rgba(150,155,165,0.18)", minCameraRatio: 0.05, maxCameraRatio: 10,
   itemSizesReference: "positions", zoomToSizeRatioFunction: (ratio) => ratio, autoRescale: false,
   defaultNodeType: "pictogram", nodeProgramClasses: { pictogram: NodePictogramProgram },
@@ -296,6 +384,43 @@ const renderer = new Sigma(graph, document.getElementById("container"), {
 // that frames every node and applies it once, instantly (no animation, since
 // there's nothing to animate from - this is the initial frame).
 fitViewportToNodes(renderer, graph.nodes(), { animate: false });
+
+// Freeze the normalization bounding box so dragging one node doesn't shift
+// every other node's rendered position. Sigma recomputes its node extent
+// from LIVE positions on every reindex even with autoRescale:false (that
+// setting only fixes scale/aspect, not this recentering) - without a frozen
+// customBBox, moving one node toward the edge of the current extent would
+// visibly pan the whole graph. This is the same call sigma's own drag-nodes
+// example uses (packages/storybook/stories/2-advanced-usecases/mouse-manipulations).
+renderer.setCustomBBox(renderer.getBBox());
+
+// --- drag nodes to manually reposition them (precomputed layout is a
+// starting point, not a constraint - some corpora warrant manual tidying).
+// Exact event names (downNode/moveBody/upNode/upStage) and the
+// preventSigmaDefault()+stopPropagation() combo (which stops sigma from
+// ALSO panning the camera while a node drags) match sigma's own official
+// example: packages/storybook/stories/2-advanced-usecases/mouse-manipulations. ---
+let draggedNode = null;
+let isDragging = false;
+renderer.on("downNode", ({ node }) => {
+  isDragging = true;
+  draggedNode = node;
+});
+renderer.on("moveBody", ({ event }) => {
+  if (!isDragging || !draggedNode) return;
+  const pos = renderer.viewportToGraph(event);
+  graph.setNodeAttribute(draggedNode, "x", pos.x);
+  graph.setNodeAttribute(draggedNode, "y", pos.y);
+  event.preventSigmaDefault();
+  event.original.preventDefault();
+  event.original.stopPropagation();
+});
+function stopDragging() {
+  isDragging = false;
+  draggedNode = null;
+}
+renderer.on("upNode", stopDragging);
+renderer.on("upStage", stopDragging);
 
 // --- filter + highlight state, combined into one pair of reducers so they compose ---
 const activeTypes = new Set(DATA.nodes.map(n => n.fileType));
@@ -343,7 +468,19 @@ function highlightNode(key) {
   const attrs = graph.getNodeAttributes(key);
   const info = document.getElementById("info");
   info.style.display = "block";
-  info.innerHTML = `<b>${escapeHtml(attrs.label)}</b><div class="stat">${attrs.members} member node${attrs.members===1?"":"s"}</div><div class="stat">${attrs.degree} connected communit${attrs.degree===1?"y":"ies"}</div>`;
+  const files = attrs.files || [];
+  // source_file paths come from the filesystem, not LLM/corpus content, so
+  // they're not an XSS vector the way labels are - still escaped for
+  // consistency and because a pathological filename could in principle
+  // contain HTML metacharacters on some filesystems.
+  const fileLines = files.map(f =>
+    f.url
+      ? `<div class="file-link"><a href="${escapeHtml(f.url)}" target="_blank" rel="noopener">${escapeHtml(f.path)}</a></div>`
+      : `<div class="file-link">${escapeHtml(f.path)}</div>`
+  ).join("");
+  const moreCount = (attrs.fileCount || 0) - files.length;
+  const moreLine = moreCount > 0 ? `<div class="stat">+ ${moreCount} more file${moreCount === 1 ? "" : "s"}</div>` : "";
+  info.innerHTML = `<b>${escapeHtml(attrs.label)}</b><div class="stat">${attrs.members} member node${attrs.members===1?"":"s"}</div><div class="stat">${attrs.degree} connected communit${attrs.degree===1?"y":"ies"}</div>${files.length ? `<div class="stat">Files:</div>${fileLines}${moreLine}` : ""}`;
 }
 function clearHighlight() {
   highlightedNode = null;
@@ -372,7 +509,8 @@ const bucketFiltersEl = document.getElementById("bucketFilters");
 for (const b of [...presentBuckets].sort()) {
   const row = document.createElement("label");
   row.className = "filter-row";
-  row.innerHTML = `<input type="checkbox" checked><span>${BUCKET_LABELS[b] || b}</span>`;
+  const swatchColor = BUCKET_SWATCH_COLORS[b] || BUCKET_SWATCH_COLORS.other;
+  row.innerHTML = `<input type="checkbox" checked><span class="swatch" style="background:${swatchColor}"></span><span>${escapeHtml(BUCKET_LABELS[b] || b)}</span>`;
   row.querySelector("input").addEventListener("change", (ev) => {
     ev.target.checked ? activeBuckets.add(b) : activeBuckets.delete(b);
     row.classList.toggle("is-off", !ev.target.checked);
@@ -401,6 +539,16 @@ document.getElementById("resetBtn").addEventListener("click", () => {
   activeBuckets.clear(); presentBuckets.forEach(b => activeBuckets.add(b));
   document.querySelectorAll('.filter-row, .legend-row').forEach(el => { el.classList.remove('is-off'); const cb = el.querySelector('input'); if (cb) cb.checked = true; });
   clearHighlight();
+  // Undo manual dragging too, not just filters/highlight - a silent partial
+  // reset (filters cleared but nodes still wherever they were dragged to)
+  // would be confusing. Recompute the frozen bbox from the restored
+  // positions before re-fitting, or the frozen (pre-restore) bbox would
+  // frame the WRONG layout.
+  for (const [key, p] of originalPositions) {
+    graph.setNodeAttribute(key, "x", p.x);
+    graph.setNodeAttribute(key, "y", p.y);
+  }
+  renderer.setCustomBBox(renderer.getBBox());
   // NOT animatedReset() - that resets to sigma's default camera state, which
   // is the same "pointed at empty space" position fitViewportToNodes exists
   // to fix in the first place (see the comment where it's first called).
@@ -463,3 +611,5 @@ If it's more than 1, a node/edge label contains `</script` — fix by replacing 
 - The relation-bucket filter operates on the meta-edge's aggregated bucket breakdown, not individual original edges — unchecking "Calls / invocation" hides a meta-edge only if *none* of the original edges it aggregates fall in a still-checked bucket. A meta-edge that's 90% imports and 10% calls stays visible if either bucket is checked.
 - If no community reaches `MIN_COMMUNITY_SIZE`, Step 1 falls back to showing every community rather than producing an empty (and crashing) meta-graph — tell the user this happened rather than silently showing an unfiltered view.
 - The "Groups" relation bucket comes from graphify's hyperedges (`participate_in`/`implement`/`form`), which have no `source`/`target` and live in graph.json's separate top-level `hyperedges` array — they're remapped to community-pairs the same way `graphify/export.py`'s vis-network aggregated view already does, so this bucket has real content instead of being permanently empty.
+- The click panel's `file://` links only resolve on the machine that generated the graph (they're built from `.graphify_root`'s absolute path) — sharing `graph_sigma.html` with a teammate gives them the correct relative path as text, but the link itself won't open on their machine unless the repo happens to be checked out at the identical absolute path. If the HTML is served over `http://` instead of opened via `file://` (e.g. for local testing through a dev server), some browsers block a same-page navigation from `http:` to `file:` for security reasons — the link is still present and copyable, just not clickable in that mode.
+- Dragging a node is a purely local, in-memory repositioning — it is not written back to `graph.json`, `.graphify_labels.json`, or any other output. Reloading `graph_sigma.html` restores the precomputed layout; the reset button restores it without a reload.
