@@ -15995,20 +15995,45 @@ def extract_haxe(path: Path) -> dict:
                         return _read_text(sub[-1], source)
         return ""
 
-    def walk_calls(node, owner_nid: str) -> None:
+    def walk_calls(node, owner_nid: str, class_name: "str | None") -> None:
         """Walk a function body collecting call edges; stops at nested function boundaries."""
         if node.type == "function_declaration":
             return
         if node.type == "call_expression":
             call_name = _haxe_call_name(node)
             if call_name and call_name not in _LANGUAGE_BUILTIN_GLOBALS:
-                tgt_nid = _make_id(stem, call_name)
-                if tgt_nid not in seen_ids:
-                    tgt_nid = _make_id(call_name)
-                line = node.start_point[0] + 1
-                add_edge(owner_nid, tgt_nid, "calls", line)
+                # Only resolve within the same file. Every other language's
+                # extractor in this codebase deliberately stops here too when
+                # it can't otherwise disambiguate (see the generic call-walk's
+                # per-file label_to_nid lookup and the #543/#1219 god-node
+                # comments in _resolve_cross_file_*): a bare, language-unscoped
+                # name lookup collides across the whole depot and produces
+                # wrong edges (e.g. a Haxe `textSprite()` call resolving to an
+                # unrelated `Dev/Poker/Client/GraphObjs.h` by name coincidence)
+                # far more often than it produces a real one. No cross-file
+                # resolver exists for Haxe, so an unresolved call here is
+                # simply dropped rather than guessed at.
+                #
+                # `_haxe_call_name` doesn't distinguish a bare call, a
+                # `this.foo()` call, and an `other.foo()` call — all three
+                # come back as just "foo" — so a same-class sibling-method
+                # call (the idiomatic case, since methods are stored under a
+                # class-qualified id) has to be tried explicitly here rather
+                # than falling out of a single file-scoped lookup.
+                tgt_nid = None
+                if class_name is not None:
+                    candidate = _make_id(stem, class_name, call_name)
+                    if candidate in seen_ids:
+                        tgt_nid = candidate
+                if tgt_nid is None:
+                    candidate = _make_id(stem, call_name)
+                    if candidate in seen_ids:
+                        tgt_nid = candidate
+                if tgt_nid is not None:
+                    line = node.start_point[0] + 1
+                    add_edge(owner_nid, tgt_nid, "calls", line)
         for child in node.children:
-            walk_calls(child, owner_nid)
+            walk_calls(child, owner_nid, class_name)
 
     def _haxe_dotted_path(node) -> str:
         """Reconstruct dotted package path from an import/using statement."""
@@ -16104,7 +16129,7 @@ def extract_haxe(path: Path) -> dict:
                 add_edge(file_nid, func_nid, "contains", line)
             fn_body = node.child_by_field_name("body")
             if fn_body is not None:
-                function_bodies.append((func_nid, fn_body))
+                function_bodies.append((func_nid, fn_body, parent_class_name))
             return
 
         for child in node.children:
@@ -16122,8 +16147,8 @@ def extract_haxe(path: Path) -> dict:
         _haxe_recover_scattered(root, source, stem, file_nid,
                                 add_node, add_edge, seen_ids, function_bodies)
 
-    for func_nid, body in function_bodies:
-        walk_calls(body, func_nid)
+    for func_nid, body, class_name in function_bodies:
+        walk_calls(body, func_nid, class_name)
 
     return {"nodes": nodes, "edges": edges}
 
@@ -16176,7 +16201,7 @@ def _haxe_recover_scattered(
                             add_edge(class_nid, fn_nid, "method", fn_line)
                             fn_body = sib.child_by_field_name("body")
                             if fn_body is not None:
-                                function_bodies.append((fn_nid, fn_body))
+                                function_bodies.append((fn_nid, fn_body, class_name))
                     elif sib.type in ("class_declaration", "interface_declaration",
                                        "enum_declaration", "enum_abstract_declaration"):
                         break
