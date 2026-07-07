@@ -2933,6 +2933,32 @@ def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
     return False
 
 
+# ── Java extra walk for enum constants ───────────────────────────────────────
+
+def _java_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                     nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                     parent_class_nid: str | None, add_node_fn, add_edge_fn,
+                     walk_fn) -> bool:
+    """Handle enum_constant for Java. Returns True if handled."""
+    if node.type == "enum_constant" and parent_class_nid:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return True
+        const_name = _read_text(name_node, source)
+        line = node.start_point[0] + 1
+        const_nid = _make_id(parent_class_nid, const_name)
+        add_node_fn(const_nid, const_name, line)
+        add_edge_fn(parent_class_nid, const_nid, "case_of", line)
+        # Anonymous-body constants (`MONDAY { void greet(){} }`): descend so the
+        # body's methods aren't dropped; const_nid attaches them to the constant.
+        for child in node.children:
+            if child.type == "class_body":
+                for member in child.children:
+                    walk_fn(member, parent_class_nid=const_nid)
+        return True
+    return False
+
+
 # ── Language configs ──────────────────────────────────────────────────────────
 
 _PYTHON_CONFIG = LanguageConfig(
@@ -4853,6 +4879,12 @@ def _extract_generic(
                                   nodes, edges, seen_ids, function_bodies,
                                   parent_class_nid, add_node, add_edge,
                                   ensure_named_node):
+                return
+
+        if config.ts_module == "tree_sitter_java":
+            if _java_extra_walk(node, source, file_nid, stem, str_path,
+                                nodes, edges, seen_ids, function_bodies,
+                                parent_class_nid, add_node, add_edge, walk):
                 return
 
         if config.ts_module == "tree_sitter_ruby":

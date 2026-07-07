@@ -115,6 +115,15 @@ def test_java_no_dangling_edges():
         assert e["source"] in node_ids
 
 
+def test_java_enum_constants_have_case_of_edge():
+    r = extract_java(FIXTURES / "sample.java")
+    labels = _labels(r)
+    assert "OK" in labels
+    assert "GAME_DONE" in labels
+    assert ("ErrorCode", "OK") in _edge_labels(r, "case_of")
+    assert ("ErrorCode", "GAME_DONE") in _edge_labels(r, "case_of")
+
+
 # ── C ────────────────────────────────────────────────────────────────────────
 
 def test_c_no_error():
