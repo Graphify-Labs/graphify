@@ -9828,6 +9828,52 @@ def _lang_is_case_insensitive(source_file: object) -> bool:
     return Path(str(source_file)).suffix.lower() in _CASE_INSENSITIVE_EXTS
 
 
+# Language interop families for cross-file call resolution. A call in one language
+# can never bind by name to a definition in another family — a TSX component does
+# not invoke a Kotlin method, and a Python function does not invoke a Java one.
+# Families are grouped by REAL interop so legitimate cross-language resolution
+# keeps working: Kotlin/Java/Scala/Groovy share the JVM, C/C++/Objective-C/CUDA
+# share headers and symbols (Swift bridges to Objective-C), and JS/TS variants
+# (plus Vue/Svelte/Astro SFC script blocks) compile into one module graph.
+# Extensions absent from this map (docs, configs, unknown languages) resolve to
+# no family and are never filtered — same permissive default as before.
+_LANG_FAMILY_BY_EXT: dict[str, str] = {
+    # JS/TS module graph (SFCs embed JS/TS)
+    ".js": "jsts", ".jsx": "jsts", ".mjs": "jsts", ".cjs": "jsts",
+    ".ts": "jsts", ".tsx": "jsts", ".mts": "jsts", ".cts": "jsts",
+    ".vue": "jsts", ".svelte": "jsts", ".astro": "jsts",
+    # JVM interop
+    ".java": "jvm", ".kt": "jvm", ".kts": "jvm",
+    ".scala": "jvm", ".groovy": "jvm", ".gradle": "jvm",
+    # C-family: shared headers, Objective-C/C++ mix, Swift↔ObjC bridging
+    ".c": "native", ".h": "native", ".cpp": "native", ".cc": "native",
+    ".cxx": "native", ".hpp": "native", ".cu": "native", ".cuh": "native",
+    ".metal": "native", ".m": "native", ".mm": "native", ".swift": "native",
+    # Single-language families
+    ".py": "python",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".php": "php", ".phtml": "php", ".php3": "php", ".php4": "php",
+    ".php5": "php", ".php7": "php", ".phps": "php",
+    ".cs": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
+    ".lua": "lua", ".luau": "lua",
+    ".zig": "zig",
+    ".ex": "elixir", ".exs": "elixir",
+    ".jl": "julia",
+    ".dart": "dart",
+    ".sh": "shell", ".bash": "shell",
+    ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
+}
+
+
+def _lang_family(source_file: object) -> str | None:
+    """Interop family of the file's language, or None when unknown/not code."""
+    if not source_file:
+        return None
+    return _LANG_FAMILY_BY_EXT.get(Path(str(source_file)).suffix.lower())
+
+
 def _node_label_key(node: dict, fold: bool = False) -> str:
     label = str(node.get("label", "")).strip()
     key = re.sub(r"[^a-zA-Z0-9]+", "", label)
@@ -16748,6 +16794,23 @@ def extract(
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
         if not candidates:
             continue
+        # Cross-language guard: never bind a call to a definition in a different
+        # language family. Name-only matching was resolving a TSX callback passed
+        # by name to a same-named Kotlin method in the Android half of the repo
+        # (and a Python call to a Kotlin fun) — phantom edges the extraction spec
+        # explicitly forbids. Candidates whose family is unknown (no source_file,
+        # non-code nodes) are kept, preserving the previous permissive behavior;
+        # real interop pairs (Kotlin↔Java, C↔C++↔ObjC, JS↔TS) share a family and
+        # still resolve.
+        caller_family = _lang_family(rc.get("source_file"))
+        if caller_family is not None:
+            candidates = [
+                c for c in candidates
+                if (candidate_family := _lang_family(nid_to_source_file.get(c))) is None
+                or candidate_family == caller_family
+            ]
+            if not candidates:
+                continue
         caller = rc["caller_nid"]
         # Resolve the caller's file via the raw_call's own source_file string,
         # which is stable regardless of any caller_nid remap. An indirect
