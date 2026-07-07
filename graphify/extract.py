@@ -4153,18 +4153,18 @@ def _extract_generic(
                             continue
                         if not base:
                             continue
-                        base_nid = _make_id(stem, base)
-                        if base_nid not in seen_ids:
-                            base_nid = _make_id(base)
-                            if base_nid not in seen_ids:
-                                nodes.append({
-                                    "id": base_nid,
-                                    "label": base,
-                                    "file_type": "code",
-                                    "source_file": "",
-                                    "source_location": "",
-                                })
-                                seen_ids.add(base_nid)
+                        # Was a hand-inlined copy of ensure_named_node()'s
+                        # same-file-then-bare-stub logic that predated (and never
+                        # picked up) the origin_file tag ensure_named_node() sets
+                        # on the stub it creates. Without that tag,
+                        # _disambiguate_colliding_node_ids can't tell one file's
+                        # unresolved base-class reference apart from another's,
+                        # so every C++ file's same-named unresolved base class
+                        # collapsed onto one shared bare id -- which could then
+                        # exact-case-collide with a same-named real class in a
+                        # completely different language (e.g. a C++ `mTimer`
+                        # base class merging with an unrelated Haxe `MTimer`).
+                        base_nid = ensure_named_node(base, line)
                         add_edge(class_nid, base_nid, "inherits", line)
                         # Emit a generic_arg reference for each type argument on the
                         # base (Base<Dep> -> Car references Dep). _cpp_collect_type_refs
