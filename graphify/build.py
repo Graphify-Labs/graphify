@@ -519,6 +519,18 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # resolve to a real path) could ride this alias onto whichever unrelated
     # same-stem file happened to be inserted first into ``node_set`` — a Python
     # set, so "first" is hash-order, not anything meaningful.
+    #
+    # A file node's OWN id is not always a clean ``new_stem`` prefix: when a
+    # same-directory ``.h``/``.cpp`` pair collides on their shared pre-extension
+    # id, _disambiguate_colliding_node_ids salts both apart into ids like
+    # ``tools_aolserver_utility_h_tools_aolserver_utility`` — which no longer
+    # string-prefixes cleanly for the suffix math below. Detecting "this IS the
+    # file node" by label (every file node's label is its own basename,
+    # regardless of id mangling) instead of by id shape keeps a salted file node
+    # in the alias competition, so a genuine collision (a C header AND an
+    # unrelated same-named PHP script) is still caught as ambiguous instead of
+    # the header silently dropping out of the race and leaving the PHP file as
+    # the lone (wrong) "unambiguous" winner.
     from graphify.extractors.base import _file_stem as _fs
     _alias_candidates: dict[str, set[str]] = {}
     for nid in node_set:
@@ -530,9 +542,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if rel.is_absolute():
             continue
         new_stem = make_id(_fs(rel))
-        suffix = ""
-        if _normalize_id(nid).startswith(new_stem):
-            suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
+        if str(attrs.get("label", "")) == rel.name:
+            suffix = ""  # this node IS the file, whatever its (possibly salted) id
+        else:
+            suffix = ""
+            if _normalize_id(nid).startswith(new_stem):
+                suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
         for old_stem in _old_file_stems(rel):
             if old_stem == new_stem:
                 continue
