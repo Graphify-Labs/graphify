@@ -542,6 +542,40 @@ def test_build_from_json_ambiguous_old_stem_alias_stays_dangling(tmp_path):
     assert not G.has_edge("dev_poker_server", "www_pages_api_ping")
 
 
+def test_build_from_json_ambiguous_alias_detected_despite_header_impl_salting(tmp_path):
+    """A same-directory .h/.cpp pair collides on their shared pre-extension id
+    and gets salted apart into ids like "tools_aolserver_utility_h_..." — no
+    longer a clean new_stem prefix. The ambiguity check must still recognize
+    the salted header as a legitimate claimant for the bare old-stem alias (by
+    label, not id shape), so a real collision with an unrelated same-named PHP
+    file is still caught instead of the header silently dropping out of the
+    race and leaving the PHP file as the lone "unambiguous" winner (this
+    reproduced against the real depot: Tools/aolserver/utility.h and .cpp,
+    salted apart, let wwwapi.masque.com/pages/utility.php win the bare
+    "utility" alias uncontested)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            {"id": "tools_aolserver_utility_h_tools_aolserver_utility", "label": "utility.h",
+             "file_type": "code", "source_file": "Tools/aolserver/utility.h"},
+            {"id": "tools_aolserver_utility_cpp_tools_aolserver_utility", "label": "utility.cpp",
+             "file_type": "code", "source_file": "Tools/aolserver/utility.cpp"},
+            {"id": "wwwapi_masque_com_pages_utility", "label": "utility.php",
+             "file_type": "code", "source_file": "wwwapi.masque.com/pages/utility.php"},
+            {"id": "dev_poker_server", "label": "server.cpp", "file_type": "code",
+             "source_file": "Dev/poker/server.cpp"},
+        ],
+        "edges": [
+            {"source": "dev_poker_server", "target": "utility", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "Dev/poker/server.cpp"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert not G.has_edge("dev_poker_server", "wwwapi_masque_com_pages_utility")
+    assert not G.has_edge("dev_poker_server", "tools_aolserver_utility_h_tools_aolserver_utility")
+
+
 def test_build_from_json_unambiguous_old_stem_alias_still_resolves(tmp_path):
     """Companion to the ambiguous case above: when exactly one real file claims
     an old-stem alias, a dangling edge to that bare alias should still resolve
