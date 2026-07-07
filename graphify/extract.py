@@ -3424,10 +3424,16 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
                         if base_nid not in seen_ids:
                             base_nid = _make_id(base)
                             if base_nid not in seen_ids:
+                                # origin_file lets _disambiguate_colliding_node_ids
+                                # tell this file's unresolved reference apart from
+                                # another file's same-named one, instead of every
+                                # file's stub collapsing onto one shared bare id
+                                # (see ensure_named_node(), which sets the same
+                                # field for this exact reason).
                                 nodes.append({
                                     "id": base_nid, "label": base,
                                     "file_type": "code", "source_file": "",
-                                    "source_location": "",
+                                    "source_location": "", "origin_file": str_path,
                                 })
                                 seen_ids.add(base_nid)
                         add_edge(class_nid, base_nid, "inherits", line)
@@ -3681,18 +3687,7 @@ def _extract_generic(
                     for arg in args.children:
                         if arg.type == "identifier":
                             base = _read_text(arg, source)
-                            base_nid = _make_id(stem, base)
-                            if base_nid not in seen_ids:
-                                base_nid = _make_id(base)
-                                if base_nid not in seen_ids:
-                                    nodes.append({
-                                        "id": base_nid,
-                                        "label": base,
-                                        "file_type": "code",
-                                        "source_file": "",
-                                        "source_location": "",
-                                    })
-                                    seen_ids.add(base_nid)
+                            base_nid = ensure_named_node(base, line)
                             add_edge(class_nid, base_nid, "inherits", line)
 
             # Swift-specific: conformance / inheritance
@@ -3831,18 +3826,7 @@ def _extract_generic(
                         base = _kotlin_user_type_name(user_type_node, source)
                         if not base:
                             continue
-                        base_nid = _make_id(stem, base)
-                        if base_nid not in seen_ids:
-                            base_nid = _make_id(base)
-                            if base_nid not in seen_ids:
-                                nodes.append({
-                                    "id": base_nid,
-                                    "label": base,
-                                    "file_type": "code",
-                                    "source_file": "",
-                                    "source_location": "",
-                                })
-                                seen_ids.add(base_nid)
+                        base_nid = ensure_named_node(base, line)
                         add_edge(class_nid, base_nid, relation, line)
                         for arg_child in user_type_node.children:
                             if arg_child.type != "type_arguments":
@@ -3876,18 +3860,7 @@ def _extract_generic(
                                 base = _read_text(consts[-1], source)
                             break
                     if base:
-                        base_nid = _make_id(stem, base)
-                        if base_nid not in seen_ids:
-                            base_nid = _make_id(base)
-                            if base_nid not in seen_ids:
-                                nodes.append({
-                                    "id": base_nid,
-                                    "label": base,
-                                    "file_type": "code",
-                                    "source_file": "",
-                                    "source_location": "",
-                                })
-                                seen_ids.add(base_nid)
+                        base_nid = ensure_named_node(base, line)
                         add_edge(class_nid, base_nid, "inherits", line)
 
                 # `include`/`extend`/`prepend <Const>` in the class/module body ->
@@ -16622,8 +16595,13 @@ def _extract_parallel(
         )
         return False
     if total_files >= _PROGRESS_INTERVAL:
+        # Report the same denominator the intermediate lines used (uncached files
+        # actually processed this run), not total_files — switching to the full
+        # corpus made the count jump upward at the end (cached hits + files with no
+        # extractor never entered uncached_work), which read as inconsistent (#1693).
+        _done = len(uncached_work)
         print(
-            f"  AST extraction: {total_files}/{total_files} files (100%) [{max_workers} workers]",
+            f"  AST extraction: {_done}/{_done} uncached files (100%) [{max_workers} workers]",
             flush=True,
         )
     return True
@@ -16658,7 +16636,9 @@ def _extract_sequential(
             save_cached(path, result, effective_root)
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:
-        print(f"  AST extraction: {total_files}/{total_files} files (100%)", flush=True)
+        # Consistent denominator with the intermediate lines (#1693).
+        _done = len(uncached_work)
+        print(f"  AST extraction: {_done}/{_done} uncached files (100%)", flush=True)
 
 
 _PARALLEL_THRESHOLD = 20
@@ -16768,6 +16748,29 @@ def extract(
             f"are absent from the graph: {_shown}{_more}. A re-run will retry them "
             f"(empties are no longer cached); if it persists, please report the "
             f"file(s) (#1666).",
+            file=sys.stderr, flush=True,
+        )
+
+    # #1689: a file counted as code (extension in CODE_EXTENSIONS) but with no AST
+    # extractor wired up (e.g. .r/.R — there is no tree-sitter-r dispatch) silently
+    # contributes zero nodes. The #1666 warning above deliberately skips these (it
+    # only fires when an extractor exists), so surface them explicitly, grouped by
+    # extension, rather than reporting success as if the language were mapped.
+    from graphify.detect import CODE_EXTENSIONS as _CODE_EXTS
+    _no_extractor: dict[str, int] = {}
+    for _p in paths:
+        _ext = _p.suffix.lower()
+        if _ext in _CODE_EXTS and _get_extractor(_p) is None:
+            _no_extractor[_ext] = _no_extractor.get(_ext, 0) + 1
+    if _no_extractor:
+        _by_count = ", ".join(
+            f"{ext} ({n})" for ext, n in sorted(_no_extractor.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        _tot = sum(_no_extractor.values())
+        print(
+            f"  warning: {_tot} file(s) are classified as code but graphify has no AST "
+            f"extractor for their language, so they contributed nothing to the graph: "
+            f"{_by_count}. Please open an issue to request support for these (#1689).",
             file=sys.stderr, flush=True,
         )
 
