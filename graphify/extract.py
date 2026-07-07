@@ -3424,10 +3424,16 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
                         if base_nid not in seen_ids:
                             base_nid = _make_id(base)
                             if base_nid not in seen_ids:
+                                # origin_file lets _disambiguate_colliding_node_ids
+                                # tell this file's unresolved reference apart from
+                                # another file's same-named one, instead of every
+                                # file's stub collapsing onto one shared bare id
+                                # (see ensure_named_node(), which sets the same
+                                # field for this exact reason).
                                 nodes.append({
                                     "id": base_nid, "label": base,
                                     "file_type": "code", "source_file": "",
-                                    "source_location": "",
+                                    "source_location": "", "origin_file": str_path,
                                 })
                                 seen_ids.add(base_nid)
                         add_edge(class_nid, base_nid, "inherits", line)
@@ -3681,18 +3687,7 @@ def _extract_generic(
                     for arg in args.children:
                         if arg.type == "identifier":
                             base = _read_text(arg, source)
-                            base_nid = _make_id(stem, base)
-                            if base_nid not in seen_ids:
-                                base_nid = _make_id(base)
-                                if base_nid not in seen_ids:
-                                    nodes.append({
-                                        "id": base_nid,
-                                        "label": base,
-                                        "file_type": "code",
-                                        "source_file": "",
-                                        "source_location": "",
-                                    })
-                                    seen_ids.add(base_nid)
+                            base_nid = ensure_named_node(base, line)
                             add_edge(class_nid, base_nid, "inherits", line)
 
             # Swift-specific: conformance / inheritance
@@ -3831,18 +3826,7 @@ def _extract_generic(
                         base = _kotlin_user_type_name(user_type_node, source)
                         if not base:
                             continue
-                        base_nid = _make_id(stem, base)
-                        if base_nid not in seen_ids:
-                            base_nid = _make_id(base)
-                            if base_nid not in seen_ids:
-                                nodes.append({
-                                    "id": base_nid,
-                                    "label": base,
-                                    "file_type": "code",
-                                    "source_file": "",
-                                    "source_location": "",
-                                })
-                                seen_ids.add(base_nid)
+                        base_nid = ensure_named_node(base, line)
                         add_edge(class_nid, base_nid, relation, line)
                         for arg_child in user_type_node.children:
                             if arg_child.type != "type_arguments":
@@ -3876,18 +3860,7 @@ def _extract_generic(
                                 base = _read_text(consts[-1], source)
                             break
                     if base:
-                        base_nid = _make_id(stem, base)
-                        if base_nid not in seen_ids:
-                            base_nid = _make_id(base)
-                            if base_nid not in seen_ids:
-                                nodes.append({
-                                    "id": base_nid,
-                                    "label": base,
-                                    "file_type": "code",
-                                    "source_file": "",
-                                    "source_location": "",
-                                })
-                                seen_ids.add(base_nid)
+                        base_nid = ensure_named_node(base, line)
                         add_edge(class_nid, base_nid, "inherits", line)
 
                 # `include`/`extend`/`prepend <Const>` in the class/module body ->
@@ -4153,18 +4126,7 @@ def _extract_generic(
                             continue
                         if not base:
                             continue
-                        base_nid = _make_id(stem, base)
-                        if base_nid not in seen_ids:
-                            base_nid = _make_id(base)
-                            if base_nid not in seen_ids:
-                                nodes.append({
-                                    "id": base_nid,
-                                    "label": base,
-                                    "file_type": "code",
-                                    "source_file": "",
-                                    "source_location": "",
-                                })
-                                seen_ids.add(base_nid)
+                        base_nid = ensure_named_node(base, line)
                         add_edge(class_nid, base_nid, "inherits", line)
                         # Emit a generic_arg reference for each type argument on the
                         # base (Base<Dep> -> Car references Dep). _cpp_collect_type_refs

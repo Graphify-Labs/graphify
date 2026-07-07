@@ -100,6 +100,37 @@ def test_extract_disambiguates_duplicate_symbol_ids_by_source_path(tmp_path):
             assert edge["target"] in node_ids, f"Dangling structural target: {edge}"
 
 
+def test_cpp_unresolved_base_class_stubs_stay_disambiguated_by_file(tmp_path):
+    """Two different files' same-named, otherwise-undefined base class must not
+    collapse onto one shared stub node.
+
+    The C++ base_class_clause handler used to build its stub inline instead of
+    calling ensure_named_node(), so it never tagged the stub with origin_file.
+    Without that tag, _disambiguate_colliding_node_ids couldn't tell file A's
+    reference to unresolved `Base` apart from file B's, and every file's
+    unresolved base class merged onto one bare id -- which could then collide
+    with an unrelated same-named real definition anywhere else in the corpus.
+    """
+    first = tmp_path / "a" / "Foo.cpp"
+    second = tmp_path / "b" / "Bar.cpp"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text("class Foo : public Base {};\n", encoding="utf-8")
+    second.write_text("class Bar : public Base {};\n", encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+    base_stubs = [
+        node for node in result["nodes"]
+        if node["label"] == "Base" and not node.get("source_file")
+    ]
+    assert len(base_stubs) == 2
+    assert len({node["id"] for node in base_stubs}) == 2
+
+    inherits_edges = [e for e in result["edges"] if e["relation"] == "inherits"]
+    assert len(inherits_edges) == 2
+    assert len({e["target"] for e in inherits_edges}) == 2
+
+
 def test_cross_file_type_annotation_refs_resolve_to_single_node(tmp_path):
     """#1402: a class defined once but referenced via type annotations in N other
     files must NOT create 1+N phantom duplicate nodes (with the referencing file's
