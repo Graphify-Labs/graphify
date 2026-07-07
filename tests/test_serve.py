@@ -12,6 +12,7 @@ from graphify.serve import (
     _bfs,
     _dfs,
     _find_node,
+    _find_node_tiers,
     _trigrams,
     _node_search_text,
     _get_trigram_index,
@@ -145,6 +146,34 @@ def test_find_node_matches_punctuated_file_label_exactly():
                source_file="lib/blockStream.test.ts", source_location="L1")
     assert _find_node(G, "blockStream.ts")[0] == "f1"
     assert _find_node(G, "blockStream.test.ts")[0] == "f2"
+
+
+def test_find_node_prefers_exact_case_match_over_case_insensitive_collision():
+    # _find_node folds case for matching (norm_label/norm_query), so a query for
+    # "GameInfo" (a real class) and a field elsewhere named "gameInfo" land in
+    # the same exact tier with no signal telling them apart — the exact-case
+    # candidate should win deterministically rather than whichever the graph
+    # happens to iterate first.
+    G = nx.Graph()
+    G.add_node("field1", label="gameInfo", norm_label="gameinfo",
+                source_file="Dev/Bingo/Server/BingoGameMaster.h", source_location="L40")
+    G.add_node("class1", label="GameInfo", norm_label="gameinfo",
+                source_file="haxe/src/com/masque/poker/GameInfo.hx", source_location="L1")
+    assert _find_node(G, "GameInfo")[0] == "class1"
+    # The case-insensitive-only match is still reachable, just ranked second.
+    assert set(_find_node(G, "GameInfo")) == {"field1", "class1"}
+
+
+def test_find_node_tiers_exposes_genuinely_ambiguous_top_tier():
+    # Two exact-case, same-labeled nodes from different files/languages: no
+    # signal disambiguates them, so the top tier should retain both entries
+    # for a caller (e.g. `graphify explain`) to detect and warn about.
+    G = nx.Graph()
+    G.add_node("p1", label="Player", norm_label="player", source_file="Dev/Big6/Server/Player.h")
+    G.add_node("p2", label="Player", norm_label="player", source_file="haxe/src/com/masque/poker/Player.hx")
+    tiers = _find_node_tiers(G, "Player")
+    top_tier = next(t for t in tiers if t)
+    assert set(top_tier) == {"p1", "p2"}
 
 
 def test_find_node_resolves_when_label_and_norm_label_diverge():

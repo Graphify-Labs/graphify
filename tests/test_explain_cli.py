@@ -56,6 +56,71 @@ def test_caller_shows_callee_as_outbound(monkeypatch, tmp_path, capsys):
     assert "<-- " not in out
 
 
+def test_explain_warns_on_ambiguous_match_and_resolves_case_exact(monkeypatch, tmp_path, capsys):
+    """Regression: explain silently picked matches[0] with no ambiguity signal,
+    unlike `path`'s existing score-gap warning (#found in graphify-practice
+    round 2). Two same-named nodes should trigger a stderr warning; when one
+    is an exact-case match, it should still be preferred deterministically."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "field1", "label": "gameInfo",
+             "source_file": "Dev/Bingo/Server/BingoGameMaster.h", "community": 0},
+            {"id": "class1", "label": "GameInfo",
+             "source_file": "haxe/src/com/masque/poker/GameInfo.hx", "community": 0},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", "GameInfo", "--graph", str(p)])
+    mainmod.main()
+    captured = capsys.readouterr()
+    assert "Node: GameInfo" in captured.out
+    assert "ID:        class1" in captured.out
+    assert "ambiguous" in captured.err
+
+
+def test_explain_no_ambiguity_warning_for_same_file_class_and_constructor(monkeypatch, tmp_path, capsys):
+    """A class and its own same-named constructor method (Haxe/C++ convention)
+    share a bare label and land in the same match tier — that's expected
+    structure, not a real collision, and must not trigger the ambiguity
+    warning (would otherwise fire on nearly every class lookup depot-wide)."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "class1", "label": "TableRules",
+             "source_file": "haxe/src/com/masque/cardGames/TableRules.hx", "community": 0},
+            {"id": "ctor1", "label": "TableRules()",
+             "source_file": "haxe/src/com/masque/cardGames/TableRules.hx", "community": 0},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", "TableRules", "--graph", str(p)])
+    mainmod.main()
+    captured = capsys.readouterr()
+    assert "ambiguous" not in captured.err
+    assert "Node: TableRules" in captured.out
+
+
+def test_explain_no_ambiguity_warning_for_unique_match(monkeypatch, tmp_path, capsys):
+    p = _write_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", "validateSanitySession", "--graph", str(p)])
+    mainmod.main()
+    captured = capsys.readouterr()
+    assert "ambiguous" not in captured.err
+    assert "Node: validateSanitySession()" in captured.out
+
+
 def test_explain_source_file_path_prefers_file_level_node(monkeypatch, tmp_path, capsys):
     source_file = "app/api/example/route.ts"
     graph_data = {

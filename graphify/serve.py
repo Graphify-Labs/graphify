@@ -654,16 +654,38 @@ def _query_graph_text(
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget)
 
 
-def _find_node(G: nx.Graph, label: str) -> list[str]:
-    """Return node IDs whose label or ID matches the search term (diacritic-insensitive).
+def _prefer_case_exact(ids: list[str], G: nx.Graph, label: str) -> list[str]:
+    """Reorder same-tier matches so an exact-case label match sorts first.
 
-    Results are ordered by precedence: exact source-file path match first, then
-    exact (label/ID) match, then prefix match, then substring match. Node-ID exact
-    matches are grouped with label exact matches.
+    Every tier in _find_node_tiers folds case (via norm_label/norm_query), so a
+    query like "GameInfo" and an unrelated node labeled "gameInfo" land in the
+    same tier with no signal distinguishing them — whichever the graph happens
+    to iterate first wins arbitrarily. When one candidate matches the query's
+    exact casing, that's the strictly more likely intent.
+    """
+    if len(ids) < 2:
+        return ids
+    case_exact, rest = [], []
+    for nid in ids:
+        raw_label = str(G.nodes[nid].get("label") or "")
+        target = case_exact if raw_label == label or raw_label.rstrip("()") == label else rest
+        target.append(nid)
+    return case_exact + rest if case_exact else ids
+
+
+def _find_node_tiers(G: nx.Graph, label: str) -> list[list[str]]:
+    """Same matching as _find_node, but with each precedence tier kept separate.
+
+    Tiers, in precedence order: source-file exact match, exact (label/ID)
+    match, prefix match, substring match. A flattened list can't tell "the top
+    match is unique" apart from "the top match just happens to sort first
+    among several equally-ranked candidates" — callers that need to warn on
+    that collision (see `graphify explain`) should use this instead of
+    `_find_node` and check whether the first non-empty tier has >1 member.
     """
     term = " ".join(_search_tokens(label))
     if not term:
-        return []
+        return [[], [], [], []]
     # Punctuation-preserving normalized query. `term` tokenizes on \w+ (so
     # "blockStream.ts" -> "blockstream ts", space where the '.' was), but a node's
     # stored `norm_label` keeps punctuation ("blockstream.ts"). Matching only via
@@ -719,7 +741,23 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
         if len(preferred) == 1:
             source_exact = preferred + [nid for nid in source_exact if nid != preferred[0]]
 
-    return source_exact + exact + prefix + substring
+    return [
+        source_exact,
+        _prefer_case_exact(exact, G, label),
+        _prefer_case_exact(prefix, G, label),
+        _prefer_case_exact(substring, G, label),
+    ]
+
+
+def _find_node(G: nx.Graph, label: str) -> list[str]:
+    """Return node IDs whose label or ID matches the search term (diacritic-insensitive).
+
+    Results are ordered by precedence: exact source-file path match first, then
+    exact (label/ID) match, then prefix match, then substring match. Node-ID exact
+    matches are grouped with label exact matches. See `_find_node_tiers` for the
+    same matching with tier boundaries preserved (needed to detect ambiguity).
+    """
+    return [nid for tier in _find_node_tiers(G, label) for nid in tier]
 
 
 def _filter_blank_stdin() -> None:

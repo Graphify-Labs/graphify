@@ -3265,7 +3265,7 @@ def main() -> None:
         if len(sys.argv) < 3:
             print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _find_node
+        from graphify.serve import _find_node_tiers
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -3288,10 +3288,27 @@ def main() -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
-        matches = _find_node(G, label)
+        tiers = _find_node_tiers(G, label)
+        matches = [nid for tier in tiers for nid in tier]
         if not matches:
             print(f"No node matching '{label}' found.")
             sys.exit(0)
+        top_tier = next(t for t in tiers if t)
+        # A class and its own same-named constructor method (e.g. "TableRules"
+        # the class and "TableRules()" the method) legitimately share a bare
+        # label and land in the same tier — that's not a meaningful collision,
+        # just Haxe/C++ constructor-naming convention, and warning on it would
+        # fire for nearly every class lookup depot-wide. Only warn when the
+        # tied candidates actually come from different source files.
+        distinct_sources = {G.nodes[n].get("source_file", "") for n in top_tier}
+        if len(top_tier) >= 2 and len(distinct_sources) >= 2:
+            print(
+                f"warning: '{label}' match was ambiguous ({len(top_tier)} "
+                f"equally-ranked matches across {len(distinct_sources)} files) — "
+                f"showing '{G.nodes[matches[0]].get('label', matches[0])}' from "
+                f"{G.nodes[matches[0]].get('source_file', '?') or '(no source)'}",
+                file=sys.stderr,
+            )
         nid = matches[0]
         d = G.nodes[nid]
         print(f"Node: {d.get('label', nid)}")
