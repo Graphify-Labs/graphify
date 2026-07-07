@@ -23,12 +23,47 @@ from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 # use. The semantic cache is deliberately NOT versioned — its entries are
 # produced by the LLM from file contents, and invalidating them on every
 # release would re-bill extraction for unchanged files.
-try:
-    from importlib.metadata import version as _pkg_version
+def _detect_extractor_version() -> str:
+    """Best-effort version string for AST cache namespacing.
 
-    _EXTRACTOR_VERSION = _pkg_version("graphifyy")
-except Exception:
-    _EXTRACTOR_VERSION = "unknown"
+    Installed-package metadata is tried first, so this keeps working exactly
+    as designed if graphify is ever `pip install`ed. But a checkout used
+    purely via PYTHONPATH (this repo's own documented workflow — see
+    code-map/CLAUDE.md's Setup section, which never runs `pip install` for
+    graphify itself) never registers package metadata, so that lookup always
+    raises and this used to collapse to a constant "unknown" bucket that
+    never invalidated across extractor code changes, silently serving
+    arbitrarily stale per-file results forever. Falling back to this
+    checkout's git commit gives PYTHONPATH-only use the same invalidate-on
+    -change behavior pip installs get for free.
+    """
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        return _pkg_version("graphifyy")
+    except Exception:
+        pass
+    try:
+        import subprocess
+
+        repo_root = Path(__file__).resolve().parent.parent
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        commit = result.stdout.strip()
+        if commit:
+            return f"git-{commit}"
+    except Exception:
+        pass
+    return "unknown"
+
+
+_EXTRACTOR_VERSION = _detect_extractor_version()
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()
