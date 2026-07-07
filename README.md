@@ -36,6 +36,12 @@ The server upserts idempotently — re-pushing the same graph updates rather tha
 
 ## Installation
 
+If `uv` is not installed yet (`uv --version` fails), install it first and open a new shell:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
 Install from this fork (the PyPI package `graphifyy` is upstream and does not include the MaluDb exporter):
 
 ```bash
