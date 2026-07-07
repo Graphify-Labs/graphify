@@ -13,11 +13,13 @@ from typing import Callable
 from graphify.extractors.blade import extract_blade
 from graphify.extractors.elixir import extract_elixir
 from graphify.extractors.razor import extract_razor
+from graphify.extractors.terraform import extract_terraform
 from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "blade": extract_blade,
     "elixir": extract_elixir,
     "razor": extract_razor,
+    "terraform": extract_terraform,
     "zig": extract_zig,
 }
