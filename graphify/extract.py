@@ -7597,11 +7597,17 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 return _read(c)
         return None
 
-    def _add_node(nid: str, label: str, line: int) -> None:
+    def _add_node(nid: str, label: str, line: int, *, node_type: str | None = None,
+                  metadata: dict | None = None) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({"id": nid, "label": label, "file_type": "code",
-                           "source_file": str_path, "source_location": f"L{line}"})
+            node = {"id": nid, "label": label, "file_type": "code",
+                    "source_file": str_path, "source_location": f"L{line}"}
+            if node_type:
+                node["type"] = node_type
+            if metadata:
+                node["metadata"] = sanitize_metadata(metadata)
+            nodes.append(node)
             edges.append({"source": file_nid, "target": nid, "relation": "contains",
                            "confidence": "EXTRACTED", "source_file": str_path,
                            "source_location": f"L{line}", "weight": 1.0})
@@ -7611,6 +7617,80 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                        "confidence": "EXTRACTED", "source_file": str_path,
                        "source_location": f"L{line}", "weight": 1.0})
 
+    # Node types that follow a column name but are constraints, not the type.
+    _NON_TYPE_KINDS = {
+        "keyword_not", "keyword_null", "keyword_primary", "keyword_key",
+        "keyword_unique", "keyword_references", "keyword_default",
+        "keyword_check", "keyword_constraint", "keyword_auto_increment",
+        "object_reference", "ERROR", "comment", ",",
+    }
+
+    def _constraint_columns(constraint) -> list[str]:
+        cols: list[str] = []
+        for oc in constraint.children:
+            if oc.type == "ordered_columns":
+                for col in oc.children:
+                    if col.type == "column":
+                        for ci in col.children:
+                            if ci.type == "identifier":
+                                cols.append(_read(ci))
+        return cols
+
+    def _parse_column_metadata(col_defs) -> dict:
+        """Columns/pk/unique from a column_definitions subtree → table node metadata."""
+        columns: list[dict] = []
+        pk: list[str] = []
+        unique: list[list[str]] = []
+        for cd in col_defs.children:
+            if cd.type == "column_definition":
+                name: str | None = None
+                col_type: str | None = None
+                not_null = False
+                inline_pk = False
+                inline_unique = False
+                for cc in cd.children:
+                    if name is None:
+                        if cc.type == "identifier":
+                            name = _read(cc)
+                    elif col_type is None and cc.type not in _NON_TYPE_KINDS:
+                        col_type = _read(cc)
+                    elif cc.type == "keyword_not":
+                        not_null = True
+                    elif cc.type == "keyword_primary":
+                        inline_pk = True
+                    elif cc.type == "keyword_unique":
+                        inline_unique = True
+                if name:
+                    columns.append({"name": name, "type": (col_type or "").upper(),
+                                    "nullable": not (not_null or inline_pk)})
+                    if inline_pk:
+                        pk.append(name)
+                    if inline_unique:
+                        unique.append([name])
+            elif cd.type == "constraints":
+                for constraint in cd.children:
+                    if constraint.type != "constraint":
+                        continue
+                    is_pk = any(c.type == "keyword_primary" for c in constraint.children)
+                    is_unique = any(c.type == "keyword_unique" for c in constraint.children)
+                    if not (is_pk or is_unique):
+                        continue
+                    cols = _constraint_columns(constraint)
+                    if not cols:
+                        continue
+                    if is_pk:
+                        pk.extend(c for c in cols if c not in pk)
+                    else:
+                        unique.append(cols)
+        meta: dict = {}
+        if columns:
+            meta["columns"] = columns
+        if pk:
+            meta["pk"] = pk
+        if unique:
+            meta["unique"] = unique
+        return meta
+
     def walk(node) -> None:
         t = node.type
         line = node.start_point[0] + 1
@@ -7619,7 +7699,10 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             name = _obj_name(node)
             if name:
                 nid = _make_id(stem, name)
-                _add_node(nid, name, line)
+                col_defs = next((c for c in node.children
+                                 if c.type == "column_definitions"), None)
+                meta = _parse_column_metadata(col_defs) if col_defs is not None else {}
+                _add_node(nid, name, line, node_type="table", metadata=meta or None)
                 table_nids[name.lower()] = nid
                 # Foreign key REFERENCES
                 for col in node.children:
@@ -7674,7 +7757,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             name = _obj_name(node)
             if name:
                 nid = _make_id(stem, name)
-                _add_node(nid, name, line)
+                _add_node(nid, name, line, node_type="view")
                 table_nids[name.lower()] = nid
                 # FROM/JOIN table references inside view body
                 _walk_from_refs(node, nid, line)
@@ -7699,7 +7782,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 src_nid = table_nids.get(name.lower())
                 if not src_nid:
                     src_nid = _make_id(stem, name)
-                    _add_node(src_nid, name, line)
+                    _add_node(src_nid, name, line, node_type="table")
                     table_nids[name.lower()] = src_nid
                 for child in node.children:
                     if child.type == "add_constraint":

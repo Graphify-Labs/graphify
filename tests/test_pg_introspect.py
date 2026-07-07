@@ -15,14 +15,21 @@ from graphify.validate import validate_extraction
 
 def _make_mock_psycopg(tables, views, routines, fks,
                         host="myhost", dbname="mydb",
-                        connect_raises=None):
+                        connect_raises=None,
+                        columns=None, pks=None, uniques=None):
     """Return a mock psycopg module wired to the provided catalog data.
 
     ``routines`` rows must be 5-tuples: (schema, name, rtype, body, ext_lang).
     ``fks`` rows must be 7-tuples:
         (constraint_name, t_schema, t_name, [cols], r_schema, r_name, [r_cols])
+    ``columns`` rows are 5-tuples: (schema, table, column, data_type, is_nullable)
+    ``pks`` rows are 3-tuples: (schema, table, [pk_columns])
+    ``uniques`` rows are 3-tuples: (schema, table, [index_columns])
     ``connect_raises``, if set, is an exception *instance* raised by connect().
     """
+    columns = columns or []
+    pks = pks or []
+    uniques = uniques or []
 
     class MockCursor:
         def __enter__(self):
@@ -36,7 +43,13 @@ def _make_mock_psycopg(tables, views, routines, fks,
 
         def fetchall(self):
             q = self.query.strip().lower()
-            if "information_schema.tables" in q:
+            if "information_schema.columns" in q:
+                return columns
+            elif "'primary key'" in q:
+                return pks
+            elif "pg_index" in q:
+                return uniques
+            elif "information_schema.tables" in q:
                 return tables
             elif "information_schema.views" in q:
                 return views
@@ -242,6 +255,68 @@ def test_pg_introspect_composite_fk():
     assert len(ref_edges) == 1, (
         f"Expected exactly 1 references edge for composite FK, got {len(ref_edges)}"
     )
+
+
+def test_pg_introspect_column_metadata():
+    """Catalog columns/PKs/unique indexes land as metadata on the right table
+    node, replacing the '(id INT)' stub the synthetic DDL produces."""
+    mock_tables = [
+        ("public", "users", "BASE TABLE"),
+        ("public", "orders", "BASE TABLE"),
+    ]
+    mock_columns = [
+        ("public", "users", "id", "integer", "NO"),
+        ("public", "users", "email", "character varying", "NO"),
+        ("public", "users", "bio", "text", "YES"),
+        ("public", "orders", "id", "integer", "NO"),
+        ("public", "orders", "user_id", "integer", "NO"),
+    ]
+    mock_pks = [
+        ("public", "users", ["id"]),
+        ("public", "orders", ["id"]),
+    ]
+    mock_uniques = [
+        ("public", "users", ["email"]),
+    ]
+
+    mock_psycopg = _make_mock_psycopg(mock_tables, [], [], [],
+                                      columns=mock_columns, pks=mock_pks,
+                                      uniques=mock_uniques)
+
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        res = introspect_postgres("postgresql://myuser:secret@myhost/mydb")
+
+    errors = validate_extraction(res)
+    assert errors == [], f"Validation errors: {errors}"
+
+    by_label = {n["label"]: n for n in res["nodes"]}
+    users = by_label[_q("public", "users")]
+    assert users.get("type") == "table"
+    meta = users["metadata"]
+    cols = {c["name"]: c for c in meta["columns"]}
+    assert cols["email"]["type"] == "character varying"
+    assert cols["email"]["nullable"] is False
+    assert cols["bio"]["nullable"] is True
+    assert meta["pk"] == ["id"]
+    assert meta["unique"] == [["email"]]
+    # The stub 'id INT' column from the synthetic DDL must not leak through
+    assert len(meta["columns"]) == 3
+
+    orders_meta = by_label[_q("public", "orders")]["metadata"]
+    assert orders_meta["pk"] == ["id"]
+    assert "unique" not in orders_meta
+
+
+def test_pg_introspect_empty_catalog_metadata():
+    """No columns/pks/uniques rows → table nodes get no stub metadata."""
+    mock_tables = [("public", "bare", "BASE TABLE")]
+    mock_psycopg = _make_mock_psycopg(mock_tables, [], [], [])
+
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        res = introspect_postgres("postgresql://myuser:secret@myhost/mydb")
+
+    bare = next(n for n in res["nodes"] if n["label"] == _q("public", "bare"))
+    assert "metadata" not in bare
 
 
 def test_pg_introspect_connection_error():

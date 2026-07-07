@@ -1,11 +1,40 @@
 from __future__ import annotations
 from pathlib import Path, PurePosixPath
 from graphify.extract import extract_sql
+from graphify.security import sanitize_metadata
 
 
 def _quote_ident(name: str) -> str:
     """Double-quote a PostgreSQL identifier, escaping embedded double-quotes."""
     return '"' + name.replace('"', '""') + '"'
+
+
+def _annotate_table_metadata(result: dict, columns, pks, uniques) -> None:
+    """Attach real catalog columns/pk/unique onto table nodes.
+
+    The synthetic DDL renders every table as ``(id INT)``, so whatever column
+    metadata extract_sql parsed from it is a stub — drop it, then attach the
+    catalog truth keyed by the quoted '"schema"."name"' label the DDL produced.
+    """
+    by_table: dict[tuple[str, str], dict] = {}
+    for schema, table, col, dtype, nullable in columns:
+        meta = by_table.setdefault((schema, table), {})
+        meta.setdefault("columns", []).append(
+            {"name": col, "type": dtype, "nullable": nullable == "YES"})
+    for schema, table, pk_cols in pks:
+        by_table.setdefault((schema, table), {})["pk"] = list(pk_cols)
+    for schema, table, cols in uniques:
+        by_table.setdefault((schema, table), {}).setdefault("unique", []).append(list(cols))
+
+    label_meta = {f"{_quote_ident(s)}.{_quote_ident(t)}": m
+                  for (s, t), m in by_table.items()}
+    for node in result.get("nodes", []):
+        if node.get("type") != "table":
+            continue
+        node.pop("metadata", None)  # stub from the '(id INT)' DDL
+        meta = label_meta.get(node.get("label", ""))
+        if meta:
+            node["metadata"] = sanitize_metadata(meta)
 
 
 def introspect_postgres(dsn: str | None = None) -> dict:
@@ -87,6 +116,47 @@ def introspect_postgres(dsn: str | None = None) -> dict:
                 ORDER BY kcu1.table_schema, kcu1.table_name;
             """)
             fks = cur.fetchall()
+
+            # 5. Columns per table
+            cur.execute("""
+                SELECT table_schema, table_name, column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                ORDER BY table_schema, table_name, ordinal_position;
+            """)
+            columns = cur.fetchall()
+
+            # 6. Primary keys
+            cur.execute("""
+                SELECT tc.table_schema, tc.table_name,
+                       ARRAY_AGG(kcu.column_name ORDER BY kcu.ordinal_position) AS pk_columns
+                FROM information_schema.table_constraints AS tc
+                JOIN information_schema.key_column_usage AS kcu
+                  ON tc.constraint_name = kcu.constraint_name
+                 AND tc.table_schema = kcu.table_schema
+                WHERE tc.constraint_type = 'PRIMARY KEY'
+                  AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')
+                GROUP BY tc.table_schema, tc.table_name, tc.constraint_name;
+            """)
+            pks = cur.fetchall()
+
+            # 7. Unique indexes via pg_catalog — catches unique indexes that are
+            # not declared as constraints. Partial/expression indexes are skipped
+            # (they cannot be FK targets).
+            cur.execute("""
+                SELECT n.nspname, t.relname,
+                       ARRAY_AGG(a.attname ORDER BY x.ordinality) AS cols
+                FROM pg_index i
+                JOIN pg_class t ON t.oid = i.indrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS x(attnum, ordinality) ON TRUE
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = x.attnum
+                WHERE i.indisunique AND NOT i.indisprimary
+                  AND i.indpred IS NULL AND i.indexprs IS NULL
+                  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+                GROUP BY n.nspname, t.relname, i.indexrelid;
+            """)
+            uniques = cur.fetchall()
     finally:
         conn.close()
 
@@ -139,4 +209,5 @@ def introspect_postgres(dsn: str | None = None) -> dict:
 
     # Pass virtual path and in-memory DDL content to extract_sql
     result = extract_sql(virtual_path, content=ddl_string)
+    _annotate_table_metadata(result, columns, pks, uniques)
     return result

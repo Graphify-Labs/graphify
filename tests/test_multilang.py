@@ -504,6 +504,38 @@ def test_sql_schema_qualified_names():
     assert any("Sales.Customer" in l for l in labels)
     assert any("Sales.SalesOrder" in l for l in labels)
 
+def test_sql_table_nodes_typed():
+    """CREATE TABLE nodes carry type=table, views type=view."""
+    r = _extract_sql_or_skip()
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert by_label["users"].get("type") == "table"
+    assert by_label["active_users"].get("type") == "view"
+
+
+def test_sql_column_metadata():
+    """Column names/types/nullability and keys land in table node metadata."""
+    r = _extract_sql_or_skip("schema_keys.sql")
+    by_label = {n["label"]: n for n in r["nodes"]}
+
+    cust = by_label["customers"]["metadata"]
+    cols = {c["name"]: c for c in cust["columns"]}
+    assert cols["id"]["type"] == "SERIAL"
+    assert cols["id"]["nullable"] is False
+    assert cols["email"]["type"] == "VARCHAR(255)"
+    assert cols["email"]["nullable"] is False
+    assert cols["name"]["type"] == "TEXT"
+    assert cols["name"]["nullable"] is True
+    assert cust["pk"] == ["id"]
+    assert ["email"] in cust["unique"]
+
+    orders = by_label["orders"]["metadata"]
+    assert orders["pk"] == ["id"]  # table-level PRIMARY KEY (id)
+    assert ["org_id", "slug"] in orders["unique"]  # composite UNIQUE
+    ocols = {c["name"]: c for c in orders["columns"]}
+    assert ocols["customer_id"]["nullable"] is False
+    assert ocols["total"]["type"] == "NUMERIC(10,2)"
+
+
 def test_sql_schema_qualified_alter_fk():
     """ALTER TABLE with schema-qualified names produces correct edges."""
     r = _extract_sql_or_skip("sample_schema_qualified.sql")
