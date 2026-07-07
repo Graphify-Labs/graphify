@@ -507,7 +507,20 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # fragment (e.g. an incremental update whose fragment references a symbol in a
     # file that was NOT re-extracted) still resolves to the migrated node instead
     # of dangling. Only fills gaps — never overrides a real node id.
+    #
+    # The old-stem form drops the extension and (for the file node itself) every
+    # directory but the immediate parent, so it collapses easily: "ping.h" and
+    # "ping.php" in different directories both alias to bare "ping". Collecting
+    # every candidate for an alias BEFORE committing any of them — and only
+    # committing when exactly one candidate claims it — keeps this a precise
+    # re-keying aid instead of a silent cross-file (and cross-language) merge.
+    # Without this, a dangling edge to a bare, deliberately-unscoped fallback id
+    # (e.g. the C/C++ extractor's last-resort target for an #include it couldn't
+    # resolve to a real path) could ride this alias onto whichever unrelated
+    # same-stem file happened to be inserted first into ``node_set`` — a Python
+    # set, so "first" is hash-order, not anything meaningful.
     from graphify.extractors.base import _file_stem as _fs
+    _alias_candidates: dict[str, set[str]] = {}
     for nid in node_set:
         attrs = G.nodes[nid]
         sf = attrs.get("source_file")
@@ -524,8 +537,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             if old_stem == new_stem:
                 continue
             alias = old_stem + suffix
-            norm_to_id.setdefault(_normalize_id(alias), nid)
-            norm_to_id.setdefault(alias, nid)
+            _alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
+            _alias_candidates.setdefault(alias, set()).add(nid)
+    for alias_key, candidates in _alias_candidates.items():
+        if len(candidates) == 1:
+            norm_to_id.setdefault(alias_key, next(iter(candidates)))
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
