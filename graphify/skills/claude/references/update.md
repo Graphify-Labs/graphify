@@ -140,7 +140,7 @@ After Step 4, show the graph diff:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
-import json
+import json, pickle
 from graphify.analyze import graph_diff
 from graphify.build import build_from_json
 from networkx.readwrite import json_graph
@@ -149,8 +149,13 @@ from pathlib import Path
 
 # Load old graph (before update) from backup written before merge
 old_data = json.loads(Path('graphify-out/.graphify_old.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_old.json').exists() else None
-new_extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
-G_new = build_from_json(new_extract)
+# Step 4 pickled the freshly built graph — reuse it instead of rebuilding
+pkl = Path('graphify-out/.graphify_graph.pkl')
+if pkl.exists():
+    G_new = pickle.loads(pkl.read_bytes())
+else:
+    new_extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
+    G_new = build_from_json(new_extract)
 
 if old_data:
     G_old = json_graph.node_link_graph(old_data, edges='links')
@@ -176,4 +181,4 @@ Skip Steps 1–3. Re-run clustering on the existing graph:
 graphify cluster-only .
 ```
 
-Then run Steps 5–9 as normal (label communities, generate viz, benchmark, clean up, report).
+The CLI is self-contained: it re-clusters graph.json, reuses `.graphify_labels.json` when present (or auto-names communities otherwise), and regenerates GRAPH_REPORT.md, graph.json, and graph.html itself. Do NOT run Steps 4–5 afterward — their intermediate files (`.graphify_extract.json`, `.graphify_analysis.json`, `.graphify_graph.pkl`) no longer exist after a completed run's cleanup. Just summarize the refreshed report to the user (the three sections from Step 9).
