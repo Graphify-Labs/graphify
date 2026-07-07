@@ -16146,6 +16146,20 @@ _CPP_HEADER_MARKERS = (
 )
 
 
+def _is_objc_source(path: Path) -> bool:
+    """Whether a `.m` file is Objective-C rather than MATLAB/Octave (#1702).
+
+    `.m` is shared by Objective-C implementation files and MATLAB (also Octave).
+    The suffix map routes `.m` to extract_objc unconditionally, which force-parses
+    MATLAB through the Objective-C tree-sitter grammar and emits garbage nodes/edges
+    (worse than skipping). A genuine ObjC `.m` always carries an ObjC directive
+    (@implementation/@interface/@import/#import); MATLAB has none of them. Reuses
+    the same marker set as the `.h` sniff. `.mm` is unambiguously Objective-C++ and
+    is not sniffed.
+    """
+    return _is_objc_header(path)
+
+
 def _is_cpp_header(path: Path) -> bool:
     """Whether a `.h` file is C++ rather than plain C (#1547).
 
@@ -16189,6 +16203,13 @@ def _get_extractor(path: Path) -> Any | None:
         # grammar has no class_specifier). Reroute to extract_cpp (#1547).
         if _is_cpp_header(path):
             return extract_cpp
+    # `.m` is Objective-C OR MATLAB. extract_objc unconditionally would force-parse
+    # MATLAB through the ObjC grammar into garbage (#1702). Route to extract_objc
+    # only when the file actually looks like Objective-C; otherwise leave it without
+    # an extractor (surfaced by the no-AST-extractor warning, #1689) rather than
+    # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
+    if suffix == ".m" and not _is_objc_source(path):
+        return None
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
     # extraction returns no extractor and the file silently contributes nothing.
@@ -16337,8 +16358,13 @@ def _extract_parallel(
         )
         return False
     if total_files >= _PROGRESS_INTERVAL:
+        # Report the same denominator the intermediate lines used (uncached files
+        # actually processed this run), not total_files — switching to the full
+        # corpus made the count jump upward at the end (cached hits + files with no
+        # extractor never entered uncached_work), which read as inconsistent (#1693).
+        _done = len(uncached_work)
         print(
-            f"  AST extraction: {total_files}/{total_files} files (100%) [{max_workers} workers]",
+            f"  AST extraction: {_done}/{_done} uncached files (100%) [{max_workers} workers]",
             flush=True,
         )
     return True
@@ -16373,7 +16399,9 @@ def _extract_sequential(
             save_cached(path, result, effective_root)
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:
-        print(f"  AST extraction: {total_files}/{total_files} files (100%)", flush=True)
+        # Consistent denominator with the intermediate lines (#1693).
+        _done = len(uncached_work)
+        print(f"  AST extraction: {_done}/{_done} uncached files (100%)", flush=True)
 
 
 _PARALLEL_THRESHOLD = 20
@@ -16483,6 +16511,29 @@ def extract(
             f"are absent from the graph: {_shown}{_more}. A re-run will retry them "
             f"(empties are no longer cached); if it persists, please report the "
             f"file(s) (#1666).",
+            file=sys.stderr, flush=True,
+        )
+
+    # #1689: a file counted as code (extension in CODE_EXTENSIONS) but with no AST
+    # extractor wired up (e.g. .r/.R — there is no tree-sitter-r dispatch) silently
+    # contributes zero nodes. The #1666 warning above deliberately skips these (it
+    # only fires when an extractor exists), so surface them explicitly, grouped by
+    # extension, rather than reporting success as if the language were mapped.
+    from graphify.detect import CODE_EXTENSIONS as _CODE_EXTS
+    _no_extractor: dict[str, int] = {}
+    for _p in paths:
+        _ext = _p.suffix.lower()
+        if _ext in _CODE_EXTS and _get_extractor(_p) is None:
+            _no_extractor[_ext] = _no_extractor.get(_ext, 0) + 1
+    if _no_extractor:
+        _by_count = ", ".join(
+            f"{ext} ({n})" for ext, n in sorted(_no_extractor.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        _tot = sum(_no_extractor.values())
+        print(
+            f"  warning: {_tot} file(s) are classified as code but graphify has no AST "
+            f"extractor for their language, so they contributed nothing to the graph: "
+            f"{_by_count}. Please open an issue to request support for these (#1689).",
             file=sys.stderr, flush=True,
         )
 

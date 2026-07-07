@@ -877,6 +877,17 @@ def _is_shebang_allowlist_fix_line(line: str) -> bool:
     return "[!a-zA-Z0-9/_." in line
 
 
+def _is_obsidian_usage_comment_line(line: str) -> bool:
+    """Whether a line is part of the ``/graphify`` usage-comment fix (#1681).
+
+    The Usage block's bare ``/graphify`` comment said "full pipeline on current
+    directory -> Obsidian vault", contradicting Step 6 (HTML always; Obsidian vault
+    only when ``--obsidian`` is explicitly given). The comment now describes the
+    real default. Both the old (removed) and new (added) comment forms match here.
+    """
+    return "# full pipeline on current directory" in line
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -892,6 +903,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_manifest_root_fix_line,
     _is_no_api_key_fix_line,
     _is_shebang_allowlist_fix_line,
+    _is_obsidian_usage_comment_line,
 )
 
 

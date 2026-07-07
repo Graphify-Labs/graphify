@@ -664,13 +664,20 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
     term = " ".join(_search_tokens(label))
     if not term:
         return []
+    # Punctuation-preserving normalized query. `term` tokenizes on \w+ (so
+    # "blockStream.ts" -> "blockstream ts", space where the '.' was), but a node's
+    # stored `norm_label` keeps punctuation ("blockstream.ts"). Matching only via
+    # `term`/`label_tokens` works when the node label tokenizes the same way, but is
+    # fragile if `label` and `norm_label` diverge. `norm_query` matches `norm_label`
+    # symmetrically so an exactly-typed punctuated label always resolves (#1704).
+    norm_query = _strip_diacritics(str(label)).lower().strip()
     source_exact: list[str] = []
     exact: list[str] = []
     prefix: list[str] = []
     substring: list[str] = []
     # Trigram prefilter (graph-iteration order preserved so exact/prefix/substring
     # ordering — and thus matches[0] — is byte-identical to the full scan).
-    candidate_ids = _trigram_candidates(G, [term])
+    candidate_ids = _trigram_candidates(G, [term, norm_query])
     node_iter = (
         G.nodes(data=True) if candidate_ids is None
         else ((nid, G.nodes[nid]) for nid in candidate_ids)
@@ -683,16 +690,21 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
         nid_lower = nid.lower()
         if term == source_tokens:
             source_exact.append(nid)
-        elif term == norm_label or term == bare_label or term == label_tokens or term == nid_lower:
+        elif (
+            term == norm_label or term == bare_label or term == label_tokens or term == nid_lower
+            or norm_query == norm_label or norm_query == bare_label
+        ):
             exact.append(nid)
         elif (
             norm_label.startswith(term)
             or bare_label.startswith(term)
             or label_tokens.startswith(term)
             or nid_lower.startswith(term)
+            or norm_label.startswith(norm_query)
+            or bare_label.startswith(norm_query)
         ):
             prefix.append(nid)
-        elif term in norm_label or term in label_tokens:
+        elif term in norm_label or term in label_tokens or norm_query in norm_label:
             substring.append(nid)
 
     if source_exact:

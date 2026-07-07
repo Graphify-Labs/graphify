@@ -1769,3 +1769,78 @@ def test_case_insensitive_suffix_filtering(tmp_path):
     assert "myJSFunction()" in labels
     assert "MyTSClass" in labels
 
+
+
+def test_extract_warns_on_code_files_with_no_ast_extractor(tmp_path, capsys):
+    # #1689: .r/.R is in CODE_EXTENSIONS (counted as code) but has no AST extractor,
+    # so R files silently contribute nothing. extract() must surface that instead of
+    # reporting success as if the language were mapped.
+    r1 = tmp_path / "analysis.R"; r1.write_text("f <- function(x) x + 1\n")
+    r2 = tmp_path / "helper.r"; r2.write_text("g <- function(y) y * 2\n")
+    py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
+
+    result = extract([r1, r2, py], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "no AST extractor" in err
+    assert ".r (2)" in err            # both R files grouped under the lowercased ext
+    assert "#1689" in err
+    # the Python file still extracts normally
+    labels = [n.get("label") for n in result["nodes"]]
+    assert any(str(l).startswith("main") for l in labels)
+
+
+def test_extract_no_warning_when_all_code_has_extractors(tmp_path, capsys):
+    py = tmp_path / "a.py"; py.write_text("def a():\n    return 1\n")
+    extract([py], cache_root=tmp_path)
+    err = capsys.readouterr().err
+    assert "no AST extractor" not in err
+
+
+def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsys):
+    # #1693: intermediate progress lines count against uncached_work; the final
+    # "100%" line must NOT switch to total_files (which includes cached hits and
+    # files with no extractor), or the count appears to jump upward at the end.
+    for i in range(100):
+        (tmp_path / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n")
+    for i in range(5):
+        (tmp_path / f"s{i}.r").write_text(f"g{i} <- function(x) x\n")  # no extractor
+    paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.r"))  # total 105
+
+    extract(paths, cache_root=tmp_path, parallel=False)
+    out = capsys.readouterr().out
+
+    # final progress line reports the uncached count (100), not the total (105)
+    assert "100/100 uncached files (100%)" in out
+    assert "105/105 files" not in out, "final line must not switch to total_files (#1693)"
+
+
+def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
+    # #1702: .m is shared by Objective-C and MATLAB. A real ObjC .m still routes to
+    # extract_objc, but a MATLAB .m must NOT be force-parsed by the ObjC grammar
+    # (which produces garbage) — it gets no extractor instead.
+    from graphify.extract import _get_extractor, extract_objc
+
+    objc = tmp_path / "Foo.m"
+    objc.write_text('#import "Foo.h"\n@implementation Foo\n- (void)bar {}\n@end\n')
+    matlab_fn = tmp_path / "solver.m"
+    matlab_fn.write_text("function y = solver(x)\n  y = x + 1;\nend\n")
+    matlab_cls = tmp_path / "Model.m"
+    matlab_cls.write_text("classdef Model\n  methods\n    function run(obj); end\n  end\nend\n")
+    mm = tmp_path / "x.mm"
+    mm.write_text("#import <F/F.h>\n@implementation X\n@end\n")
+
+    assert _get_extractor(objc) is extract_objc            # real ObjC .m -> objc
+    assert _get_extractor(matlab_fn) is None               # MATLAB function -> no garbage
+    assert _get_extractor(matlab_cls) is None              # MATLAB classdef -> no garbage
+    assert _get_extractor(mm) is extract_objc              # .mm is unambiguously ObjC++
+
+
+def test_matlab_m_not_extracted_as_garbage(tmp_path, capsys):
+    # End to end: a MATLAB .m produces no (garbage) nodes and is surfaced by the
+    # no-AST-extractor warning (#1702 + #1689), rather than mis-parsed as ObjC.
+    m = tmp_path / "controller.m"
+    m.write_text("function u = controller(x)\n  u = -x;\nend\n")
+    result = extract([m], cache_root=tmp_path)
+    assert result["nodes"] == []                           # no garbage ObjC nodes
+    assert "no AST extractor" in capsys.readouterr().err    # surfaced, not silent

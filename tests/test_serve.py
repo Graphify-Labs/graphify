@@ -135,6 +135,30 @@ def test_find_node_matches_full_punctuated_unicode_label():
     assert _find_node(G, "Skill /auditar — Auditoría inquisitiva de enlaces") == ["n1"]
 
 
+def test_find_node_matches_punctuated_file_label_exactly():
+    # #1704: an exactly-typed punctuated file label must resolve through explain,
+    # just like it does through path/query.
+    G = nx.Graph()
+    G.add_node("f1", label="blockStream.ts", norm_label="blockstream.ts",
+               source_file="lib/blockStream.ts", source_location="L1")
+    G.add_node("f2", label="blockStream.test.ts", norm_label="blockstream.test.ts",
+               source_file="lib/blockStream.test.ts", source_location="L1")
+    assert _find_node(G, "blockStream.ts")[0] == "f1"
+    assert _find_node(G, "blockStream.test.ts")[0] == "f2"
+
+
+def test_find_node_resolves_when_label_and_norm_label_diverge():
+    # #1704 hardening: the tokenized-label tier only rescues the match by
+    # coincidence (label tokenizes the same as the query). When `label` and
+    # `norm_label` diverge, only the symmetric `norm_query == norm_label` match
+    # resolves it. Here label tokenizes to "blockstream" but norm_label is
+    # "blockstream.ts" — this fails without the norm_query path.
+    G = nx.Graph()
+    G.add_node("n1", label="BlockStream", norm_label="blockstream.ts",
+               source_file="lib/x.ts", source_location="L1")
+    assert _find_node(G, "blockStream.ts") == ["n1"]
+
+
 # --- trigram candidate prefilter (the trigram index that shrinks the O(N) scan) ---
 
 

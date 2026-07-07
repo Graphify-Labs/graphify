@@ -125,6 +125,15 @@ _GENERIC_KEYWORD_PATTERNS = [
     re.compile(r'(?<![a-zA-Z0-9])tokens?(?![a-zA-Z])', re.IGNORECASE),
 ]
 
+# Data/serialization extensions that commonly ARE secret stores when their name
+# hits a generic keyword (credentials.json, secrets.yaml, token.toml). These stay
+# subject to the Stage 3 keyword drop even though some route through the CODE path
+# for manifest parsing — only real programming-language source is exempt (#1666).
+_SECRET_PRONE_DATA_EXTS = frozenset({
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".config",
+    ".xml", ".properties", ".env", ".txt",
+})
+
 # Word separators for the load-bearing check (underscore intentionally included;
 # multi-word keywords like private_key are handled by the end-of-stem check,
 # which runs before word counting).
@@ -184,8 +193,19 @@ def _is_sensitive(path: Path) -> bool:
     name = path.name
     if any(p.search(name) for p in _SENSITIVE_PATTERNS):
         return True
-    # Stage 3: generic keywords, only when load-bearing in the name
-    return _generic_keyword_hit(name)
+    # Stage 3: generic keywords, only when load-bearing in the name. Do NOT let a
+    # bare name keyword silently drop a genuine programming-language source file:
+    # a .rb/.py named device_token or passwords_controller is a module, not a secret
+    # store (#1666). Data/config formats (.json, .yaml, .toml, ...) are deliberately
+    # NOT exempt even though .json routes through the CODE path for manifest parsing,
+    # because credentials.json / oauth_token.json / secrets.yaml are exactly the
+    # secret stores this stage must catch. The specific Stage 2 patterns (.env, .pem,
+    # id_rsa, ...) still apply to everything regardless of extension.
+    if _generic_keyword_hit(name):
+        ext = path.suffix.lower()
+        is_source_code = classify_file(path) == FileType.CODE and ext not in _SECRET_PRONE_DATA_EXTS
+        return not is_source_code
+    return False
 
 
 def _looks_like_paper(path: Path) -> bool:
@@ -677,7 +697,7 @@ _SKIP_DIRS = {
     # Coverage/test-artefact dirs — generated, never architecturally meaningful
     "coverage", "lcov-report",              # Vitest/Istanbul/nyc HTML reports (#870)
     "visual-tests", "visual-test",          # Playwright/visual-regression bundles (#869)
-    "__snapshots__", "snapshots",           # Jest/Vitest snapshot dirs
+    "__snapshots__",                        # Jest/Vitest snapshot dir (unambiguous)
     "storybook-static",                     # Storybook production build output
     "dist-protected",                       # Protected dist variants (same noise as dist)
     # Framework cache/build dirs — generated, never architecturally meaningful (#873)
@@ -694,10 +714,31 @@ _SKIP_FILES = {
     "composer.lock", "go.sum", "go.work.sum",
 }
 
+# A bare "snapshots" dir is a Jest/Vitest artifact only when it actually holds
+# snapshot files or lives directly under a JS test root. Elsewhere it is often a
+# real code namespace (e.g. Rails app/services/snapshots/), so pruning it by name
+# silently dropped legitimate source from the graph (#1666). "__snapshots__" stays
+# unconditionally pruned above; only the ambiguous bare name is gated here.
+_JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
+
+
 def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     """Return True if this directory name looks like a venv, cache, or dep dir."""
     if part in _SKIP_DIRS:
         return True
+    if part == "snapshots":
+        # Prune only when it looks like an actual JS/Vitest snapshot dir.
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        snap_dir = parent / part
+        if parent.name in _JS_SNAPSHOT_TEST_ROOTS:
+            return True
+        try:
+            if next(snap_dir.glob("*.snap"), None) is not None:
+                return True
+        except OSError:
+            pass
+        return False
     # Catch *_venv, *_repo/site-packages patterns
     if part.endswith("_venv") or part.endswith("_env"):
         return True
@@ -1045,6 +1086,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         return _cache.cached_word_count(path, root, count_words)
 
     skipped_sensitive: list[str] = []
+    unclassified: list[str] = []
     ignore_patterns = _load_graphifyignore(root)
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
     # CLI --exclude patterns are anchored at the scan root and appended last
@@ -1130,6 +1172,13 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             skipped_sensitive.append(str(p))
             continue
         ftype = classify_file(p)
+        if not ftype:
+            # Considered but unclassifiable: an extension not in any supported set,
+            # or an extensionless, non-shebang file (Dockerfile, Gemfile, Makefile,
+            # Rakefile, LICENSE, ...). Previously these left no trace at all — not
+            # counted, not listed — so a user couldn't tell they were seen (#1692).
+            unclassified.append(str(p))
+            continue
         if ftype:
             if p.suffix.lower() in GOOGLE_WORKSPACE_EXTENSIONS:
                 if not google_workspace:
@@ -1195,6 +1244,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         "needs_graph": needs_graph,
         "warning": warning,
         "skipped_sensitive": skipped_sensitive,
+        "unclassified": sorted(unclassified),
         "graphifyignore_patterns": len(ignore_patterns),
         "scan_root": str(root.resolve()),
     }
