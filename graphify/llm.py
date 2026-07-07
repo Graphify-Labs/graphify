@@ -1903,6 +1903,27 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
+    def _checkpoint_chunk(result: dict) -> None:
+        # Persist each chunk's semantic results to the cache as soon as it
+        # completes. Without this, the semantic cache is only written once, at
+        # the very end of the run (in __main__), so a run interrupted partway
+        # — a crash, a kill, or a claude-cli/API run that exits on a rate
+        # limit — loses every completed chunk and restarts from scratch. This
+        # is best-effort: a cache write failure must never abort extraction.
+        if os.environ.get("GRAPHIFY_NO_INCREMENTAL_CACHE"):
+            return
+        try:
+            from .cache import save_semantic_cache as _scs
+            _scs(
+                result.get("nodes", []),
+                result.get("edges", []),
+                result.get("hyperedges", []),
+                root=root,
+                merge_existing=True,
+            )
+        except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
+            print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)
+
     workers = max(1, min(max_concurrency, total))
     if workers == 1:
         # Avoid thread pool overhead for single-worker runs (and keep
@@ -1915,6 +1936,7 @@ def extract_corpus_parallel(
                 continue
             assert result is not None
             _merge_into(merged, result)
+            _checkpoint_chunk(result)
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
     else:
@@ -1939,6 +1961,7 @@ def extract_corpus_parallel(
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
+                _checkpoint_chunk(result)
                 if callable(on_chunk_done):
                     on_chunk_done(idx, total, result)
         for idx in sorted(results_by_idx):

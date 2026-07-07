@@ -533,12 +533,18 @@ def save_semantic_cache(
     edges: list[dict],
     hyperedges: list[dict] | None = None,
     root: Path = Path("."),
+    merge_existing: bool = False,
 ) -> int:
     """Save semantic extraction results to cache, keyed by source_file.
 
     Groups nodes and edges by source_file, then saves one cache entry per file
     under cache/semantic/ (separate from AST entries in cache/ast/) to prevent
     hash-key collisions (#582).
+
+    When ``merge_existing`` is True, any already-cached entry for a file is
+    unioned with the new results before saving instead of being overwritten.
+    This lets callers checkpoint incrementally (e.g. once per chunk) without
+    dropping a prior slice of a large file that was split across chunks.
     Returns the number of files cached.
     """
     from collections import defaultdict
@@ -563,6 +569,14 @@ def save_semantic_cache(
         if not p.is_absolute():
             p = Path(root) / p
         if p.is_file():
+            if merge_existing:
+                prev = load_cached(p, root, kind="semantic")
+                if prev:
+                    result = {
+                        "nodes": (prev.get("nodes", []) or []) + result["nodes"],
+                        "edges": (prev.get("edges", []) or []) + result["edges"],
+                        "hyperedges": (prev.get("hyperedges", []) or []) + result["hyperedges"],
+                    }
             save_cached(p, result, root, kind="semantic")
             saved += 1
     return saved
