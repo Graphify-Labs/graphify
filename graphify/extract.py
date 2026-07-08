@@ -12060,6 +12060,13 @@ def _resolve_typescript_member_calls(
             type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
         if not type_name:
             continue
+        # A builtin global receiver type (Date, Promise, Map, ...) must not resolve
+        # to a user symbol. _key() casefolds, so `x: Date; x.getTime()` would bind
+        # the caller to a same-named user `class DATE` in another file, inventing
+        # phantom `references[call]` edges and a false god node (#1726). The
+        # cross-file CALL resolver already skips these globals; do the same here.
+        if type_name in _LANGUAGE_BUILTIN_GLOBALS:
+            continue
         type_defs = type_def_nids.get(_key(type_name), [])
         if len(type_defs) != 1:
             continue
