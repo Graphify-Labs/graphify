@@ -2472,6 +2472,7 @@ def main() -> None:
         print("    --out DIR               output dir (default: <path>); writes <DIR>/graphify-out/")
         print("    --google-workspace      export .gdoc/.gsheet/.gslides shortcuts via gws before extraction")
         print("    --no-cluster            skip clustering, write raw extraction only")
+        print("    --code-only             index code (local AST, no API key) and skip doc/paper/image files")
         print("    --postgres DSN          extract schema from a live PostgreSQL database")
         print("                            maps tables, views, functions + FK relationships;")
         print("                            column-level detail is not represented in the graph")
@@ -4526,6 +4527,7 @@ def main() -> None:
         dedup_llm = False
         google_workspace = False
         global_merge = False
+        code_only = False
         global_repo_tag: str | None = None
         # Performance/tuning knobs (issue #792). None means "use library default".
         cli_max_workers: int | None = None
@@ -4584,6 +4586,8 @@ def main() -> None:
                 no_cluster = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
+            elif a == "--code-only":
+                code_only = True; i += 1
             elif a == "--google-workspace":
                 google_workspace = True; i += 1
             elif a == "--global":
@@ -4707,6 +4711,20 @@ def main() -> None:
             unchanged_total = 0
 
         semantic_files = doc_files + paper_files + image_files
+        # --code-only: index code (pure local AST, no key) and skip the semantic
+        # (doc/paper/image) pass entirely, so a mixed repo doesn't hard-fail when no
+        # LLM backend is configured (#1734). Report what was skipped rather than
+        # silently dropping it.
+        if code_only and semantic_files:
+            print(
+                f"[graphify extract] --code-only: skipping {len(semantic_files)} "
+                f"non-code file(s) ({len(doc_files)} docs, {len(paper_files)} papers, "
+                f"{len(image_files)} images) — no LLM extraction"
+            )
+            semantic_files = []
+            doc_files = []
+            paper_files = []
+            image_files = []
         if incremental_mode:
             print(
                 f"[graphify extract] {len(code_files)} code, {len(doc_files)} docs, "
@@ -4762,12 +4780,16 @@ def main() -> None:
                     )
                 if dedup_llm:
                     reasons.append("--dedup-llm was passed")
+                hint = ""
+                if semantic_files:
+                    hint = (" Or pass --code-only to index just the code "
+                            "(local AST, no key) and skip the non-code files.")
                 print(
                     "error: no LLM API key found (" + "; ".join(reasons) + "). "
                     "Set GEMINI_API_KEY or GOOGLE_API_KEY (gemini), MOONSHOT_API_KEY "
                     "(kimi), ANTHROPIC_API_KEY (claude), OPENAI_API_KEY (openai), "
                     "DEEPSEEK_API_KEY (deepseek), or pass --backend. A code-only "
-                    "corpus needs no key.",
+                    "corpus needs no key." + hint,
                     file=sys.stderr,
                 )
                 sys.exit(1)
