@@ -956,6 +956,34 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
     return H
 
 
+def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
+    """Return a unique, human-meaningful repo tag per input graph for merge-graphs.
+
+    The naive tag (the ``graphify-out`` parent dir name) is NOT unique across
+    inputs: ``src/graphify-out`` and ``frontend/src/graphify-out`` both yield
+    ``src``. Prefixing both node sets with ``src::`` then makes same-stem nodes
+    (a backend ``src/app.js`` and a frontend ``App.jsx``, both bare ``app``)
+    collide, so ``nx.compose`` silently merges two unrelated entities and invents
+    cross-runtime edges (#1729). Colliding tags are widened with their own parent
+    dir (``frontend_src``), then an index suffix guarantees uniqueness so no two
+    graphs ever share a prefix.
+    """
+    repo_dirs = [p.parent.parent for p in graph_paths]  # graphify-out/.. → repo dir
+    tags = [d.name or "repo" for d in repo_dirs]
+    if len(set(tags)) != len(tags):
+        widened: list[str] = []
+        for d in repo_dirs:
+            parent = d.parent.name
+            widened.append(f"{parent}_{d.name}" if parent and d.name else (d.name or "repo"))
+        tags = widened
+    seen: dict[str, int] = {}
+    unique: list[str] = []
+    for t in tags:
+        seen[t] = seen.get(t, 0) + 1
+        unique.append(t if seen[t] == 1 else f"{t}-{seen[t]}")
+    return unique
+
+
 def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
     """Remove all nodes tagged with repo_tag from G in-place. Returns count removed."""
     to_remove = [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]

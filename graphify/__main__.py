@@ -3993,7 +3993,7 @@ def main() -> None:
             sys.exit(1)
         import networkx as _nx
         from networkx.readwrite import json_graph as _jg
-        from graphify.build import prefix_graph_for_global as _prefix
+        from graphify.build import prefix_graph_for_global as _prefix, distinct_repo_tags as _repo_tags
         graphs = []
         for gp in graph_paths:
             if not gp.exists():
@@ -4025,9 +4025,16 @@ def main() -> None:
             if type(g) is not _nx.Graph:
                 return _nx.Graph(g)
             return g
+        # Unique repo tag per graph. The bare `graphify-out/..` dir name is not
+        # unique across inputs (src/graphify-out and frontend/src/graphify-out both
+        # → "src"), which collides same-stem node ids and silently merges unrelated
+        # entities (#1729). distinct_repo_tags guarantees a distinct prefix per graph.
+        repo_tags = _repo_tags(graph_paths)
+        naive_tags = [gp.parent.parent.name for gp in graph_paths]
+        if len(set(naive_tags)) != len(naive_tags):
+            print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
         merged = _nx.Graph()
-        for G, gp in zip(graphs, graph_paths):
-            repo_tag = gp.parent.parent.name  # graphify-out/../ → repo dir name
+        for G, repo_tag in zip(graphs, repo_tags):
             prefixed = _to_simple(_prefix(G, repo_tag))
             merged = _nx.compose(merged, prefixed)
         try:
