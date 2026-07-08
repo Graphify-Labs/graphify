@@ -85,3 +85,55 @@ def test_php_case_insensitive_resolution_preserved(tmp_path):
     calls = {(lbl.get(e["source"]), lbl.get(e["target"]))
              for e in r["edges"] if e["relation"] == "calls"}
     assert ("run()", "Greet()") in calls, "PHP identifiers are case-insensitive; fold must still apply"
+
+
+def test_ts_builtin_static_call_does_not_resolve_to_user_symbol(tmp_path):
+    """`Date.now()` must not bind to a same-spelled user `const DATE` (#1726).
+
+    The TS/JS member-call resolver treats a capitalized receiver as a type name and
+    matches it case-folded. Without a builtin guard, `Date.now()` in every file across
+    the corpus resolves to a lone module-local `const DATE`, turning it into a false
+    god-node with hundreds of cross-file edges.
+    """
+    r = _extract(tmp_path, {
+        "format.ts": (
+            "const DATE = new Intl.DateTimeFormat('en-US', {});\n"
+            "export function fmt(x: number): string { return DATE.format(x); }\n"
+        ),
+        # A typed param (`d: Date`) populates the file's TS type table, which is what
+        # arms the cross-file member-call resolver — the real-world service shape.
+        "svc.ts": (
+            "export class Svc {\n"
+            "  expiry(d: Date): Date { return d; }\n"
+            "  stamp(): number { return Date.now(); }\n"
+            "  when(): string { return new Date().toISOString(); }\n"
+            "}\n"
+        ),
+    })
+    lbl = _labels(r)
+    date_nid = next((n["id"] for n in r["nodes"] if n["label"] == "DATE"), None)
+    assert date_nid is not None
+    leaked = [
+        e for e in r["edges"]
+        if e["target"] == date_nid and lbl.get(e["source"], "").startswith((".stamp", ".when"))
+    ]
+    assert not leaked, f"builtin `Date` leaked onto user `const DATE`: {leaked}"
+
+
+def test_ts_receiver_typed_member_call_still_resolves(tmp_path):
+    """The builtin guard must not break the resolver's real job: constructor-injection
+    type tables (`this.repo.findById()` → `UserRepo.findById`)."""
+    r = _extract(tmp_path, {
+        "repo.ts": "export class UserRepo { findById(id: string): number { return 1; } }\n",
+        "svc.ts": (
+            "import { UserRepo } from './repo';\n"
+            "export class Svc {\n"
+            "  constructor(private repo: UserRepo) {}\n"
+            "  go(): number { return this.repo.findById('x'); }\n"
+            "}\n"
+        ),
+    })
+    lbl = _labels(r)
+    calls = {(lbl.get(e["source"]), lbl.get(e["target"]))
+             for e in r["edges"] if e["relation"] == "calls"}
+    assert (".go()", ".findById()") in calls

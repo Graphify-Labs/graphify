@@ -12026,6 +12026,13 @@ def _resolve_typescript_member_calls(
             type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
         if not type_name:
             continue
+        # `Date.now()`, `Object.keys()`, `Math.max()`, `JSON.parse()` … the receiver
+        # is an ECMAScript built-in global, not a user type. `_key()` case-folds, so a
+        # capitalized builtin (`Date`) would otherwise bind to a same-spelled user
+        # symbol (a module-local `const DATE`), manufacturing a false god-node with
+        # hundreds of cross-file edges. Mirrors the call-edge builtin guard. (#1726)
+        if type_name in _LANGUAGE_BUILTIN_GLOBALS:
+            continue
         type_defs = type_def_nids.get(_key(type_name), [])
         if len(type_defs) != 1:
             continue
