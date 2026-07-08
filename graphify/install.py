@@ -1851,3 +1851,298 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
         print(f"CODEBUDDY.md was empty after removal - deleted {target.resolve()}")
 
     _uninstall_codebuddy_hook(project_dir or Path("."))
+
+
+_CLI_INSTALL_COMMANDS = frozenset({
+    "agents",
+    "aider",
+    "amp",
+    "antigravity",
+    "claude",
+    "claw",
+    "codebuddy",
+    "codex",
+    "copilot",
+    "cursor",
+    "devin",
+    "droid",
+    "gemini",
+    "hermes",
+    "install",
+    "kilo",
+    "kiro",
+    "opencode",
+    "pi",
+    "skills",
+    "trae",
+    "trae-cn",
+    "uninstall",
+    "vscode",
+})
+
+
+def dispatch_install_cli(cmd: str) -> bool:
+    """Handle `graphify <install-command>` dispatch (install/uninstall + every
+    per-platform install target). Returns True if cmd was an install command and
+    was handled, False otherwise so the caller can continue its own dispatch.
+    Moved verbatim from __main__.main().
+    """
+    if cmd not in _CLI_INSTALL_COMMANDS:
+        return False
+    if cmd == "install":
+        # Default to windows platform on Windows, claude elsewhere
+        default_platform = "windows" if platform.system() == "Windows" else "claude"
+        selected_platform: str | None = None
+        project_scope = False
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg in ("-h", "--help"):
+                _print_install_usage()
+                return True
+            if arg == "--project":
+                project_scope = True
+                i += 1
+            elif arg.startswith("--platform="):
+                candidate = arg.split("=", 1)[1]
+                if selected_platform and selected_platform != candidate:
+                    print("error: specify install platform only once", file=sys.stderr)
+                    sys.exit(1)
+                selected_platform = candidate
+                i += 1
+            elif arg == "--platform":
+                if i + 1 >= len(args):
+                    print("error: --platform requires a value", file=sys.stderr)
+                    sys.exit(1)
+                candidate = args[i + 1]
+                if selected_platform and selected_platform != candidate:
+                    print("error: specify install platform only once", file=sys.stderr)
+                    sys.exit(1)
+                selected_platform = candidate
+                i += 2
+            elif arg.startswith("-"):
+                print(f"error: unknown install option '{arg}'", file=sys.stderr)
+                sys.exit(1)
+            else:
+                if selected_platform and selected_platform != arg:
+                    print("error: specify install platform only once", file=sys.stderr)
+                    sys.exit(1)
+                selected_platform = arg
+                i += 1
+        chosen_platform = selected_platform or default_platform
+        if project_scope:
+            _project_install(chosen_platform, Path("."))
+        else:
+            install(platform=chosen_platform)
+    elif cmd == "uninstall":
+        args = sys.argv[2:]
+        purge = "--purge" in args
+        project_scope = "--project" in args
+        selected_platform = None
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg in ("--purge", "--project"):
+                i += 1
+            elif arg.startswith("--platform="):
+                selected_platform = arg.split("=", 1)[1]
+                i += 1
+            elif arg == "--platform":
+                if i + 1 >= len(args):
+                    print("error: --platform requires a value", file=sys.stderr)
+                    sys.exit(1)
+                selected_platform = args[i + 1]
+                i += 2
+            elif arg.startswith("-"):
+                print(f"error: unknown uninstall option '{arg}'", file=sys.stderr)
+                sys.exit(1)
+            else:
+                selected_platform = arg
+                i += 1
+        if project_scope:
+            if selected_platform:
+                _project_uninstall(selected_platform, Path("."))
+            else:
+                _project_uninstall_all(Path("."))
+        else:
+            uninstall_all(purge=purge)
+    elif cmd == "claude":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("claude", Path("."))
+            else:
+                claude_install()
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("claude", Path("."))
+            else:
+                claude_uninstall()
+        else:
+            print("Usage: graphify claude [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "codebuddy":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            codebuddy_install()
+        elif subcmd == "uninstall":
+            codebuddy_uninstall()
+        else:
+            print("Usage: graphify codebuddy [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "gemini":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            gemini_install(project=("--project" in sys.argv[3:]))
+        elif subcmd == "uninstall":
+            gemini_uninstall(project=("--project" in sys.argv[3:]))
+        else:
+            print("Usage: graphify gemini [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "cursor":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            _cursor_install(Path("."))
+        elif subcmd == "uninstall":
+            _cursor_uninstall(Path("."))
+        else:
+            print("Usage: graphify cursor [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "vscode":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            vscode_install()
+        elif subcmd == "uninstall":
+            vscode_uninstall()
+        else:
+            print("Usage: graphify vscode [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "copilot":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("copilot", Path("."))
+            else:
+                install(platform="copilot")
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("copilot", Path("."))
+            else:
+                removed = _remove_skill_file("copilot")
+                print("skill removed" if removed else "nothing to remove")
+        else:
+            print("Usage: graphify copilot [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "kilo":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            _kilo_install(Path("."))
+        elif subcmd == "uninstall":
+            _kilo_uninstall(Path("."))
+        else:
+            print("Usage: graphify kilo [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "kiro":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            _kiro_install(Path("."))
+        elif subcmd == "uninstall":
+            _kiro_uninstall(Path("."))
+        else:
+            print("Usage: graphify kiro [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "devin":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("devin", Path("."))
+            else:
+                install(platform="devin")
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("devin", Path("."))
+            else:
+                removed = _remove_skill_file("devin")
+                print("skill removed" if removed else "nothing to remove")
+        else:
+            print("Usage: graphify devin [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "pi":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("pi", Path("."))
+            else:
+                install("pi")
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("pi", Path("."))
+            else:
+                _remove_skill_file("pi")
+        else:
+            print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "amp":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("amp", Path("."))
+            else:
+                _amp_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("amp", Path("."))
+            else:
+                _amp_uninstall(Path("."))
+        else:
+            print("Usage: graphify amp [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd in ("agents", "skills"):
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("agents", Path("."))
+            else:
+                _agents_platform_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("agents", Path("."))
+            else:
+                _agents_platform_uninstall(Path("."))
+        else:
+            print(f"Usage: graphify {cmd} [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd in ("aider", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install(cmd, Path("."))
+            else:
+                _agents_install(Path("."), cmd)
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall(cmd, Path("."))
+            else:
+                _agents_uninstall(Path("."), platform=cmd)
+                if cmd == "codex":
+                    _uninstall_codex_hook(Path("."))
+        else:
+            print(f"Usage: graphify {cmd} [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "antigravity":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("antigravity", Path("."))
+            else:
+                _antigravity_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("antigravity", Path("."))
+            else:
+                _antigravity_uninstall(Path("."))
+        else:
+            print("Usage: graphify antigravity [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    return True
