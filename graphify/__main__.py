@@ -813,7 +813,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
             print(f"  CODEBUDDY.md     ->  created at {codebuddy_md}")
 
     if platform == "opencode":
-        _install_opencode_plugin(project_dir if project else Path("."))
+        _install_opencode_plugin(project_dir or Path("."), project=project)
 
     # Refresh version stamps in all other previously-installed skill dirs so
     # stale-version warnings don't fire for platforms not explicitly re-installed.
@@ -1542,14 +1542,38 @@ _OPENCODE_PLUGIN_PATH = Path(".opencode") / "plugins" / "graphify.js"
 _OPENCODE_CONFIG_PATH = Path(".opencode") / "opencode.json"
 
 
-def _install_opencode_plugin(project_dir: Path) -> None:
-    """Write graphify.js plugin and register it in opencode.json."""
-    plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
+def _install_opencode_plugin(project_dir: Path, *, project: bool = True) -> None:
+    """Write graphify.js plugin and register it in opencode.json.
+
+    When ``project`` is True (default), the plugin lands at
+    ``<project_dir>/.opencode/plugins/graphify.js`` and is registered in
+    ``<project_dir>/.opencode/opencode.json`` — opencode's project-scoped
+    config location (one of three valid project-config paths opencode walks
+    up from cwd to find).
+
+    When ``project`` is False (global install), the plugin lands at
+    ``~/.config/opencode/.opencode/plugins/graphify.js`` (opencode resolves
+    a ``.opencode/plugins/<name>.js`` plugin entry relative to the
+    declaring config's directory) and is registered in
+    ``~/.config/opencode/opencode.json`` — opencode's ONLY global config
+    location. Note: the previous behaviour wrote both files into
+    ``<cwd>/.opencode/`` which only worked if cwd was the global config
+    dir. See issue #1412.
+    """
+    base = project_dir if project else (Path.home() / ".config" / "opencode")
+    plugin_file = base / _OPENCODE_PLUGIN_PATH
+    # Project mode writes the config inside .opencode/ (one of three valid
+    # project-config locations). Global mode must write to the user's real
+    # global config at <base>/opencode.json — <base>/.opencode/opencode.json
+    # is NOT a config location opencode loads.
+    if project:
+        config_file = base / _OPENCODE_CONFIG_PATH
+    else:
+        config_file = base / "opencode.json"
     plugin_file.parent.mkdir(parents=True, exist_ok=True)
     plugin_file.write_text(_OPENCODE_PLUGIN_JS, encoding="utf-8")
-    print(f"  {_OPENCODE_PLUGIN_PATH}  ->  tool.execute.before hook written")
+    print(f"  {plugin_file.resolve()}  ->  tool.execute.before hook written")
 
-    config_file = project_dir / _OPENCODE_CONFIG_PATH
     if config_file.exists():
         try:
             config = json.loads(config_file.read_text(encoding="utf-8"))
@@ -1563,19 +1587,28 @@ def _install_opencode_plugin(project_dir: Path) -> None:
     if entry not in plugins:
         plugins.append(entry)
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
-        print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin registered")
+        print(f"  {config_file.resolve()}  ->  plugin registered")
     else:
-        print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin already registered (no change)")
+        print(f"  {config_file.resolve()}  ->  plugin already registered (no change)")
 
 
-def _uninstall_opencode_plugin(project_dir: Path) -> None:
-    """Remove graphify.js plugin and deregister from opencode.json."""
-    plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
+def _uninstall_opencode_plugin(project_dir: Path, *, project: bool = True) -> None:
+    """Remove graphify.js plugin and deregister from opencode.json.
+
+    Mirrors :func:`_install_opencode_plugin`: ``project`` selects between
+    the project-scoped config tree (``<project_dir>/.opencode/``) and the
+    global config (``~/.config/opencode/opencode.json``).
+    """
+    base = project_dir if project else (Path.home() / ".config" / "opencode")
+    plugin_file = base / _OPENCODE_PLUGIN_PATH
     if plugin_file.exists():
         plugin_file.unlink()
-        print(f"  {_OPENCODE_PLUGIN_PATH}  ->  removed")
+        print(f"  {plugin_file.resolve()}  ->  removed")
 
-    config_file = project_dir / _OPENCODE_CONFIG_PATH
+    if project:
+        config_file = base / _OPENCODE_CONFIG_PATH
+    else:
+        config_file = base / "opencode.json"
     if not config_file.exists():
         return
     try:
@@ -1589,7 +1622,7 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
         if not plugins:
             config.pop("plugin")
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
-        print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin deregistered")
+        print(f"  {config_file.resolve()}  ->  plugin deregistered")
 
 
 _CODEX_HOOK = {
