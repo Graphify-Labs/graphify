@@ -20,6 +20,7 @@ from .resolver_registry import (
     run_language_resolvers,
 )
 from .ruby_resolution import resolve_ruby_member_calls
+from .pascal_resolution import resolve_pascal_inherited_calls
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.extractors.base import (  # noqa: F401
@@ -12448,6 +12449,19 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver("csharp_member_calls", frozenset({".cs"}), _resolve_csharp_member_calls)
 )
+# Pascal/Delphi cross-file inherited-method-call resolution: a call from a
+# manual descendant class to a method it inherits from an ancestor declared
+# in a DIFFERENT file (the common generated-base/manual-descendant split,
+# e.g. Sistec's Th0Xxx/Th5Xxx) falls outside the per-file extractor's own
+# scope. Lives in graphify.pascal_resolution; registered here as a consumer
+# of the framework, same as the Ruby resolver above.
+register_language_resolver(
+    LanguageResolver(
+        "pascal_inherited_calls",
+        frozenset({".pas", ".pp", ".dpr", ".dpk", ".inc"}),
+        resolve_pascal_inherited_calls,
+    )
+)
 
 
 def extract_objc(path: Path) -> dict:
@@ -13411,9 +13425,20 @@ def _extract_pascal_regex(path: Path) -> dict:
                 base_nid = same_file_nid
             else:
                 resolved = _pascal_resolve_class(path, base_name)
-                base_nid = resolved if resolved else _make_id(base_name)
-                if base_nid not in seen_ids:
-                    _add_node(base_nid, base_name, line)
+                if resolved:
+                    # Cross-file base class found on disk -- its real node
+                    # arrives via THAT file's own extraction. Do not add a
+                    # duplicate stub here: it would carry this file's
+                    # source_file (wrong -- it belongs to the base class's
+                    # own file) and collide with the real node under
+                    # cross-file id disambiguation, producing two different
+                    # salted ids for what should be one class (breaks
+                    # cross-file `inherits`-chain resolution downstream).
+                    base_nid = resolved
+                else:
+                    base_nid = _make_id(base_name)
+                    if base_nid not in seen_ids:
+                        _add_node(base_nid, base_name, line)
             _add_edge(cls_nid, base_nid, "inherits", line)
 
         # Find class body (up to next end;)
@@ -13464,22 +13489,38 @@ def _extract_pascal_regex(path: Path) -> dict:
     # wrapper classes such as TLB import units, etc. -- a common Pascal/Delphi
     # pattern) from collapsing into an arbitrary cross-class edge.
     callee_nid = _resolve_pascal_callee_factory(impl_records, edges, module_nid)
+    raw_calls: list[dict] = []
     for caller_nid, caller_line, body_text, _container, _name_lower in impl_records:
         for cm in _PAS_CALL_RE.finditer(body_text):
             callee_name = cm.group(1).split(".")[-1].lower()
             if callee_name in _PAS_KEYWORDS:
                 continue
+            call_line = caller_line + body_text.count("\n", 0, cm.start())
             target_nid = callee_nid(caller_nid, callee_name)
-            if not target_nid or target_nid == caller_nid:
+            if target_nid == caller_nid:
+                continue
+            if not target_nid:
+                # Not resolvable within this file (e.g. inherited from a base
+                # class declared in another file) -- report for the
+                # cross-file resolver (graphify.pascal_resolution) instead of
+                # guessing or dropping it silently.
+                raw_calls.append({
+                    "source_file": str_path,
+                    "source_location": f"L{call_line}",
+                    "caller_nid": caller_nid,
+                    "callee": callee_name,
+                })
                 continue
             pair = (caller_nid, target_nid)
             if pair in seen_call_pairs:
                 continue
             seen_call_pairs.add(pair)
-            call_line = caller_line + body_text.count("\n", 0, cm.start())
             _add_edge(caller_nid, target_nid, "calls", call_line, context="call")
 
-    return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
+    return {
+        "nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0,
+        "raw_calls": raw_calls,
+    }
 
 
 def extract_pascal(path: Path) -> dict:
@@ -13607,10 +13648,21 @@ def extract_pascal(path: Path) -> dict:
                         if base_nid not in seen_ids:
                             # Try cross-file resolution (TFooBar → FooBar.pas)
                             resolved = _pascal_resolve_class(path, base_name)
-                            base_nid = resolved if resolved else _make_id(base_name)
-                            if base_nid not in seen_ids:
-                                # Stub for RTL/external/cross-file base classes
-                                add_node(base_nid, base_name, line)
+                            if resolved:
+                                # Cross-file base class found on disk -- its
+                                # real node arrives via THAT file's own
+                                # extraction. Do not add a duplicate stub
+                                # here: it would carry this file's
+                                # source_file (wrong) and collide with the
+                                # real node under cross-file id
+                                # disambiguation, producing two different
+                                # salted ids for what should be one class.
+                                base_nid = resolved
+                            else:
+                                base_nid = _make_id(base_name)
+                                if base_nid not in seen_ids:
+                                    # Stub for RTL/external base classes.
+                                    add_node(base_nid, base_name, line)
                         add_edge(cls_nid, base_nid, "inherits", line)
                 for child in kind_node.children:
                     walk(child, cls_nid)
@@ -13672,6 +13724,28 @@ def extract_pascal(path: Path) -> dict:
     # _resolve_pascal_callee_factory).
     resolve_callee = _resolve_pascal_callee_factory(proc_bodies, edges, module_nid)
     seen_call_pairs: set[tuple[str, str]] = set()
+    raw_calls: list[dict] = []
+
+    def _emit_or_report(caller_nid: str, name_lower: str, line: int) -> None:
+        target = resolve_callee(caller_nid, name_lower)
+        if target == caller_nid:
+            return
+        if not target:
+            # Not resolvable within this file (e.g. inherited from a base
+            # class declared in another file) -- report for the cross-file
+            # resolver (graphify.pascal_resolution) instead of guessing or
+            # dropping it silently.
+            raw_calls.append({
+                "source_file": str_path,
+                "source_location": f"L{line}",
+                "caller_nid": caller_nid,
+                "callee": name_lower,
+            })
+            return
+        pair = (caller_nid, target)
+        if pair not in seen_call_pairs:
+            seen_call_pairs.add(pair)
+            add_edge(caller_nid, target, "calls", line, context="call")
 
     def walk_calls(node, caller_nid: str) -> None:  # type: ignore[no-untyped-def]
         if node.type == "exprCall":
@@ -13681,37 +13755,24 @@ def extract_pascal(path: Path) -> dict:
                     callee_text = _read(child).split(".")[-1]
                     break
             if callee_text:
-                callee_nid = resolve_callee(caller_nid, callee_text.lower())
-                if callee_nid and callee_nid != caller_nid:
-                    pair = (caller_nid, callee_nid)
-                    if pair not in seen_call_pairs:
-                        seen_call_pairs.add(pair)
-                        add_edge(
-                            caller_nid, callee_nid, "calls",
-                            node.start_point[0] + 1, context="call",
-                        )
+                _emit_or_report(caller_nid, callee_text.lower(), node.start_point[0] + 1)
         elif node.type == "statement":
             # Pascal bare procedure calls with no args: `Reset;`
             # tree-sitter represents these as statement → identifier (no exprCall wrapper)
             named = [c for c in node.children if c.is_named]
             if len(named) == 1 and named[0].type == "identifier":
                 callee_text = _read(named[0])
-                callee_nid = resolve_callee(caller_nid, callee_text.lower())
-                if callee_nid and callee_nid != caller_nid:
-                    pair = (caller_nid, callee_nid)
-                    if pair not in seen_call_pairs:
-                        seen_call_pairs.add(pair)
-                        add_edge(
-                            caller_nid, callee_nid, "calls",
-                            node.start_point[0] + 1, context="call",
-                        )
+                _emit_or_report(caller_nid, callee_text.lower(), node.start_point[0] + 1)
         for child in node.children:
             walk_calls(child, caller_nid)
 
     for proc_nid, body_node, _container, _name_lower in proc_bodies:
         walk_calls(body_node, proc_nid)
 
-    return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
+    return {
+        "nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0,
+        "raw_calls": raw_calls,
+    }
 
 
 def extract_lazarus_form(path: Path) -> dict:
