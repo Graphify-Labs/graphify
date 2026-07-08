@@ -19,6 +19,7 @@ from graphify.extractors.elixir import extract_elixir
 from graphify.extractors.fortran import extract_fortran
 from graphify.extractors.go import extract_go
 from graphify.extractors.json_config import extract_json
+from graphify.extractors.markdown import extract_markdown
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest
 from graphify.extractors.razor import extract_razor
@@ -26,6 +27,7 @@ from graphify.extractors.rust import extract_rust
 from graphify.extractors.sln import extract_sln
 from graphify.extractors.sql import extract_sql
 from graphify.extractors.terraform import extract_terraform
+from graphify.extractors.verilog import extract_verilog
 from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
@@ -43,6 +45,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "go": extract_go,
     "json": extract_json,
     "lazarus_form": extract_lazarus_form,
+    "markdown": extract_markdown,
     "powershell": extract_powershell,
     "powershell_manifest": extract_powershell_manifest,
     "razor": extract_razor,
@@ -50,5 +53,6 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "sln": extract_sln,
     "sql": extract_sql,
     "terraform": extract_terraform,
+    "verilog": extract_verilog,
     "zig": extract_zig,
 }
