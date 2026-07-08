@@ -13241,6 +13241,83 @@ def _pascal_find_body(text: str, start: int) -> tuple[int, int]:
     return (body_start, len(text))
 
 
+def _resolve_pascal_callee_factory(
+    records: list[tuple],
+    edges: list[dict],
+    module_nid: str,
+) -> Callable[[str, str], str | None]:
+    """Build a scoped call resolver for a single Pascal/Delphi file.
+
+    ``records`` is the list of raw per-procedure tuples produced by either
+    Pascal extractor; only the trailing ``(..., container, name_lower)``
+    fields and the leading ``proc_nid`` are used, so both extractors' tuple
+    shapes work unmodified (regex: proc_nid, line, body_text, container,
+    name_lower; tree-sitter: proc_nid, body_node, container, name_lower).
+
+    Resolution order for a call to ``name_lower`` from ``caller_nid``:
+      1. A method declared on the caller's own class.
+      2. A method declared on an ancestor class (BFS up ``inherits`` edges,
+         which are already resolved by this point).
+      3. A file-level free function (declared directly under the module).
+      4. A global by-name match, but only when unambiguous (exactly one
+         procedure with that name anywhere in the file).
+
+    Returns None (no edge emitted) when the name is ambiguous at every
+    level -- guessing at a same-named method on an unrelated class is worse
+    than omitting the edge. Same-named methods on unrelated classes are a
+    common Pascal/Delphi pattern (property accessors, generated wrapper
+    classes such as TLB import units): without this scoping, a flat
+    file-wide by-name lookup silently collapses onto whichever declaration
+    happens to be inserted last, producing wrong cross-class edges. Mirrors
+    the "god-node guard" already used by ``resolve_ruby_member_calls`` for
+    the analogous Ruby ambiguous-method-name problem.
+    """
+    class_bases: dict[str, list[str]] = {}
+    for e in edges:
+        if e.get("relation") == "inherits":
+            class_bases.setdefault(e["source"], []).append(e["target"])
+
+    class_procs: dict[str, dict[str, list[str]]] = {}
+    module_procs: dict[str, list[str]] = {}
+    global_procs: dict[str, list[str]] = {}
+    proc_owner: dict[str, str] = {}
+    for rec in records:
+        proc_nid, container, name_lower = rec[0], rec[-2], rec[-1]
+        proc_owner[proc_nid] = container
+        global_procs.setdefault(name_lower, []).append(proc_nid)
+        if container == module_nid:
+            module_procs.setdefault(name_lower, []).append(proc_nid)
+        else:
+            class_procs.setdefault(container, {}).setdefault(name_lower, []).append(proc_nid)
+
+    def _resolve(caller_nid: str, name_lower: str) -> str | None:
+        owner = proc_owner.get(caller_nid)
+        if owner is not None:
+            candidates = class_procs.get(owner, {}).get(name_lower)
+            if candidates:
+                return candidates[0] if len(candidates) == 1 else None
+            seen_bases: set[str] = set()
+            queue = list(class_bases.get(owner, []))
+            while queue:
+                base = queue.pop(0)
+                if base in seen_bases:
+                    continue
+                seen_bases.add(base)
+                candidates = class_procs.get(base, {}).get(name_lower)
+                if candidates:
+                    return candidates[0] if len(candidates) == 1 else None
+                queue.extend(class_bases.get(base, []))
+        candidates = module_procs.get(name_lower)
+        if candidates:
+            return candidates[0] if len(candidates) == 1 else None
+        candidates = global_procs.get(name_lower)
+        if candidates and len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    return _resolve
+
+
 def _extract_pascal_regex(path: Path) -> dict:
     """Regex fallback for Pascal/Delphi extraction when tree-sitter-pascal
     is unavailable. Produces the same node/edge schema as the tree-sitter pass.
@@ -13325,10 +13402,18 @@ def _extract_pascal_regex(path: Path) -> dict:
         _add_edge(module_nid, cls_nid, "contains", line)
 
         for base_name in _pascal_split_bases(bases_raw):
-            resolved = _pascal_resolve_class(path, base_name)
-            base_nid = resolved if resolved else _make_id(base_name)
-            if base_nid not in seen_ids:
-                _add_node(base_nid, base_name, line)
+            same_file_nid = _make_id(stem, base_name)
+            if same_file_nid in seen_ids:
+                # Base class already declared earlier in this same file --
+                # reuse its real node instead of the cross-file/stub lookup
+                # below (which assumes one-class-per-file and would create a
+                # duplicate node for a base class that shares this file).
+                base_nid = same_file_nid
+            else:
+                resolved = _pascal_resolve_class(path, base_name)
+                base_nid = resolved if resolved else _make_id(base_name)
+                if base_nid not in seen_ids:
+                    _add_node(base_nid, base_name, line)
             _add_edge(cls_nid, base_nid, "inherits", line)
 
         # Find class body (up to next end;)
@@ -13347,7 +13432,8 @@ def _extract_pascal_regex(path: Path) -> dict:
         pos = end_m.end() if end_m else len(search_text)
 
     # Implementation headers (procedure/function/constructor/destructor)
-    impl_records: list[tuple[str, int, str]] = []
+    impl_records: list[tuple[str, int, str, str, str]] = []
+    # (proc_nid, line, body_text, container, name_lower)
     for fm in _PAS_IMPL_HEADER_RE.finditer(impl_text):
         qualified = fm.group("qual")
         line = _lineno(stripped, impl_off + fm.start())
@@ -13357,37 +13443,41 @@ def _extract_pascal_regex(path: Path) -> dict:
             container = cls_nid if cls_nid in seen_ids else module_nid
             relation = "method" if cls_nid in seen_ids else "contains"
             label = f"{method_part}()"
+            name_lower = method_part.lower()
         else:
             container, relation = module_nid, "contains"
             label = f"{qualified}()"
+            name_lower = qualified.lower()
         proc_nid = _make_id(stem, qualified)
         _add_node(proc_nid, label, line)
         _add_edge(container, proc_nid, relation, line)
 
         body_start, body_end = _pascal_find_body(impl_text, fm.end())
         body_text = impl_text[body_start:body_end] if body_start else ""
-        impl_records.append((proc_nid, line, body_text))
+        impl_records.append((proc_nid, line, body_text, container, name_lower))
 
-    # Intra-file call edges
-    all_procs: dict[str, str] = {
-        n["label"].removesuffix("()").lower(): n["id"]
-        for n in nodes
-        if n["id"] != file_nid and n["label"].endswith("()")
-    }
-    for caller_nid, caller_line, body_text in impl_records:
+    # Intra-file call edges, scoped by the caller's own class, then its
+    # ancestor chain (via `inherits` edges already emitted above), then
+    # file-level free functions; fall back to a global by-name match only
+    # when it is unambiguous (single owner across the file). Prevents
+    # same-named methods on unrelated classes (property accessors, generated
+    # wrapper classes such as TLB import units, etc. -- a common Pascal/Delphi
+    # pattern) from collapsing into an arbitrary cross-class edge.
+    callee_nid = _resolve_pascal_callee_factory(impl_records, edges, module_nid)
+    for caller_nid, caller_line, body_text, _container, _name_lower in impl_records:
         for cm in _PAS_CALL_RE.finditer(body_text):
             callee_name = cm.group(1).split(".")[-1].lower()
             if callee_name in _PAS_KEYWORDS:
                 continue
-            callee_nid = all_procs.get(callee_name)
-            if not callee_nid or callee_nid == caller_nid:
+            target_nid = callee_nid(caller_nid, callee_name)
+            if not target_nid or target_nid == caller_nid:
                 continue
-            pair = (caller_nid, callee_nid)
+            pair = (caller_nid, target_nid)
             if pair in seen_call_pairs:
                 continue
             seen_call_pairs.add(pair)
             call_line = caller_line + body_text.count("\n", 0, cm.start())
-            _add_edge(caller_nid, callee_nid, "calls", call_line, context="call")
+            _add_edge(caller_nid, target_nid, "calls", call_line, context="call")
 
     return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
 
@@ -13433,7 +13523,8 @@ def extract_pascal(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    proc_bodies: list[tuple[str, Any]] = []
+    proc_bodies: list[tuple[str, Any, str, str]] = []
+    # (proc_nid, body_node, container, name_lower)
 
     def _read(node) -> str:  # type: ignore[no-untyped-def]
         return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
@@ -13567,7 +13658,7 @@ def extract_pascal(path: Path) -> dict:
                 line,
             )
             if body_node:
-                proc_bodies.append((proc_nid, body_node))
+                proc_bodies.append((proc_nid, body_node, container, label.removesuffix("()").lower()))
             return
 
         for child in node.children:
@@ -13575,11 +13666,11 @@ def extract_pascal(path: Path) -> dict:
 
     walk(root, file_nid)
 
-    # Second pass: resolve calls inside procedure/function bodies
-    all_procs: dict[str, str] = {
-        n["label"].removesuffix("()").lower(): n["id"]
-        for n in nodes if n["id"] != file_nid
-    }
+    # Second pass: resolve calls inside procedure/function bodies, scoped by
+    # the caller's own class, then its ancestor chain, then file-level free
+    # functions, falling back to an unambiguous global match (see
+    # _resolve_pascal_callee_factory).
+    resolve_callee = _resolve_pascal_callee_factory(proc_bodies, edges, module_nid)
     seen_call_pairs: set[tuple[str, str]] = set()
 
     def walk_calls(node, caller_nid: str) -> None:  # type: ignore[no-untyped-def]
@@ -13590,7 +13681,7 @@ def extract_pascal(path: Path) -> dict:
                     callee_text = _read(child).split(".")[-1]
                     break
             if callee_text:
-                callee_nid = all_procs.get(callee_text.lower())
+                callee_nid = resolve_callee(caller_nid, callee_text.lower())
                 if callee_nid and callee_nid != caller_nid:
                     pair = (caller_nid, callee_nid)
                     if pair not in seen_call_pairs:
@@ -13605,7 +13696,7 @@ def extract_pascal(path: Path) -> dict:
             named = [c for c in node.children if c.is_named]
             if len(named) == 1 and named[0].type == "identifier":
                 callee_text = _read(named[0])
-                callee_nid = all_procs.get(callee_text.lower())
+                callee_nid = resolve_callee(caller_nid, callee_text.lower())
                 if callee_nid and callee_nid != caller_nid:
                     pair = (caller_nid, callee_nid)
                     if pair not in seen_call_pairs:
@@ -13617,7 +13708,7 @@ def extract_pascal(path: Path) -> dict:
         for child in node.children:
             walk_calls(child, caller_nid)
 
-    for proc_nid, body_node in proc_bodies:
+    for proc_nid, body_node, _container, _name_lower in proc_bodies:
         walk_calls(body_node, proc_nid)
 
     return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
