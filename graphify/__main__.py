@@ -2053,8 +2053,19 @@ def _install_claude_hook(project_dir: Path) -> None:
 
 
 def _uninstall_claude_hook(project_dir: Path) -> None:
-    """Remove graphify PreToolUse hook from .claude/settings.json."""
-    settings_path = project_dir / ".claude" / "settings.json"
+    """Remove the graphify PreToolUse hook from .claude/settings.json and its
+    local-only sibling .claude/settings.local.json.
+
+    A user may relocate the hook into settings.local.json so it is not committed
+    to a shared repo, so uninstall has to clean whichever file holds it (#1731).
+    """
+    claude_dir = project_dir / ".claude"
+    for name in ("settings.json", "settings.local.json"):
+        _strip_graphify_hook(claude_dir / name)
+
+
+def _strip_graphify_hook(settings_path: Path) -> None:
+    """Drop graphify PreToolUse hooks from a single Claude settings file, if present."""
     if not settings_path.exists():
         return
     try:
@@ -2067,7 +2078,7 @@ def _uninstall_claude_hook(project_dir: Path) -> None:
         return
     settings["hooks"]["PreToolUse"] = filtered
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
-    print(f"  .claude/settings.json  ->  PreToolUse hook removed")
+    print(f"  .claude/{settings_path.name}  ->  PreToolUse hook removed")
 
 
 def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
@@ -2116,25 +2127,54 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
 
 
 def claude_uninstall(project_dir: Path | None = None, *, project: bool = False) -> None:
-    """Remove the graphify skill tree (SKILL.md + references/) and the CLAUDE.md section.
+    """Remove the graphify skill tree (SKILL.md + references/) and the graphify
+    section from CLAUDE.md and its local-only variants, plus the PreToolUse hook.
 
     Mirrors gemini_uninstall: the bare `graphify uninstall` and `graphify claude
     uninstall` must remove the installed skill, not just strip CLAUDE.md, or the
     progressive-disclosure tree (SKILL.md + references/) is orphaned (#1121).
+
+    A user may relocate the section/hook into the local-only files Claude Code
+    supports so they are not committed to a shared repo, so uninstall also cleans
+    CLAUDE.local.md, .claude/CLAUDE.local.md and .claude/settings.local.json (#1731).
     """
     project_dir = project_dir or Path(".")
     _remove_skill_file("claude", project=project, project_dir=project_dir)
-    target = project_dir / "CLAUDE.md"
 
-    if not target.exists():
+    md_targets = [
+        project_dir / "CLAUDE.md",
+        project_dir / "CLAUDE.local.md",
+        project_dir / ".claude" / "CLAUDE.local.md",
+    ]
+    existing = [t for t in md_targets if t.exists()]
+    removed_any = False
+    for target in existing:
+        # Not short-circuited: every present file must be cleaned, not just the first.
+        if _strip_graphify_md_section(target):
+            removed_any = True
+
+    if not existing:
         print("No CLAUDE.md found in current directory - nothing to do")
-        return
-
-    content = target.read_text(encoding="utf-8")
-    if _CLAUDE_MD_MARKER not in content:
+    elif not removed_any:
         print("graphify section not found in CLAUDE.md - nothing to do")
-        return
 
+    _uninstall_claude_hook(project_dir)
+
+
+def _strip_graphify_md_section(target: Path) -> bool:
+    """Strip the ## graphify section from one CLAUDE.md-style file.
+
+    Returns True if a section was removed. Deletes the file if nothing else
+    remains after removal.
+    """
+    try:
+        content = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # An unreadable/undecodable CLAUDE.md-style file (e.g. non-UTF-8, or a
+        # directory of that name) must not abort uninstall - nothing to strip.
+        return False
+    if _CLAUDE_MD_MARKER not in content:
+        return False
     # Remove the ## graphify section: from the marker to the next ## heading or EOF
     cleaned = re.sub(
         r"\n*## graphify\n.*?(?=\n## |\Z)",
@@ -2147,9 +2187,8 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False) 
         print(f"graphify section removed from {target.resolve()}")
     else:
         target.unlink()
-        print(f"CLAUDE.md was empty after removal - deleted {target.resolve()}")
-
-    _uninstall_claude_hook(project_dir or Path("."))
+        print(f"{target.name} was empty after removal - deleted {target.resolve()}")
+    return True
 
 
 def codebuddy_install(project_dir: Path | None = None) -> None:
