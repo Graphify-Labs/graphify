@@ -1181,6 +1181,8 @@ def to_obsidian(
                 )
 
         fname = community_filename[cid] + ".md"
+        (out / fname).write_text("\n".join(lines), encoding="utf-8")  # nosec
+        community_notes_written += 1
         if _owned_write(fname, "\n".join(lines)):
             community_notes_written += 1
 

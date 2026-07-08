@@ -1,3 +1,6 @@
+# Normalise line endings: LF in repo, platform-native in working tree
+* text=auto
+
 # Tell GitHub Linguist to ignore generated/example HTML files when calculating
 # the repo's primary language. Without this, large graph.html artifacts in
 # worked/ dominate the byte count and the repo shows as HTML instead of Python.
