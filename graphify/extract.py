@@ -2959,6 +2959,34 @@ def _java_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     return False
 
 
+# ── Kotlin extra walk for enum entries ───────────────────────────────────────
+
+def _kotlin_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                       nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                       parent_class_nid: str | None, add_node_fn, add_edge_fn,
+                       walk_fn) -> bool:
+    """Handle enum_entry for Kotlin. Returns True if handled."""
+    if node.type == "enum_entry" and parent_class_nid:
+        name_node = None
+        for child in node.children:
+            if child.type in ("simple_identifier", "identifier"):
+                name_node = child
+                break
+        if name_node is None:
+            return True
+        const_name = _read_text(name_node, source)
+        line = node.start_point[0] + 1
+        const_nid = _make_id(parent_class_nid, const_name)
+        add_node_fn(const_nid, const_name, line)
+        add_edge_fn(parent_class_nid, const_nid, "case_of", line)
+        for child in node.children:
+            if child.type == "class_body":
+                for member in child.children:
+                    walk_fn(member, parent_class_nid=const_nid)
+        return True
+    return False
+
+
 # ── Language configs ──────────────────────────────────────────────────────────
 
 _PYTHON_CONFIG = LanguageConfig(
@@ -3141,7 +3169,7 @@ _KOTLIN_CONFIG = LanguageConfig(
     # older forks use `simple_identifier`. Accept both so the extractor
     # works across grammar generations.
     name_fallback_child_types=("simple_identifier", "identifier"),
-    body_fallback_child_types=("function_body", "class_body"),
+    body_fallback_child_types=("function_body", "class_body", "enum_class_body"),
     function_boundary_types=frozenset({"function_declaration"}),
     import_handler=_import_kotlin,
 )
@@ -4847,6 +4875,12 @@ def _extract_generic(
             if _java_extra_walk(node, source, file_nid, stem, str_path,
                                 nodes, edges, seen_ids, function_bodies,
                                 parent_class_nid, add_node, add_edge, walk):
+                return
+
+        if config.ts_module == "tree_sitter_kotlin":
+            if _kotlin_extra_walk(node, source, file_nid, stem, str_path,
+                                  nodes, edges, seen_ids, function_bodies,
+                                  parent_class_nid, add_node, add_edge, walk):
                 return
 
         if config.ts_module == "tree_sitter_ruby":

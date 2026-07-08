@@ -649,6 +649,17 @@ def test_kotlin_parameter_return_generic_and_field_contexts():
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
 
 
+def test_kotlin_enum_entries_have_case_of_edge():
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    labels = _labels(r)
+    assert "NORMAL" in labels
+    assert "GROUP" in labels
+    assert "SYSTEM" in labels
+    assert ("ChatType", "NORMAL") in _edge_labels(r, "case_of")
+    assert ("ChatType", "GROUP") in _edge_labels(r, "case_of")
+    assert ("ChatType", "SYSTEM") in _edge_labels(r, "case_of")
+
+
 # ── Scala ─────────────────────────────────────────────────────────────────────
 
 def test_scala_no_error():

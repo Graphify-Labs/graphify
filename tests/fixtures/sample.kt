@@ -41,3 +41,9 @@ fun createClient(baseUrl: String): HttpClient {
     val config = Config(baseUrl, 30)
     return HttpClient(config)
 }
+
+enum class ChatType {
+    NORMAL,
+    GROUP,
+    SYSTEM
+}
