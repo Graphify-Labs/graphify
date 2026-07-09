@@ -45,6 +45,7 @@ from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
+from graphify.extractors.qml import extract_qml  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
@@ -1789,6 +1790,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".dart": "dart",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
+    ".qml": "qml",
 }
 
 
@@ -3739,6 +3741,7 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".qml": extract_qml,
 }
 
 
