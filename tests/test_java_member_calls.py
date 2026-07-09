@@ -163,6 +163,48 @@ def test_nested_receiver_bindings_do_not_escape_their_scope(tmp_path: Path):
     assert (anonymous_class, audit_charge) not in calls
 
 
+def test_lambda_shadowing_does_not_reuse_enclosing_receiver_type(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        **_AMBIGUOUS_METHODS,
+        "Checkout.java": (
+            "class Checkout {\n"
+            "    PaymentGateway service;\n"
+            "    void captured() {\n"
+            "        Runnable task = () -> service.charge();\n"
+            "    }\n"
+            "    void shadowed() {\n"
+            "        java.util.function.Consumer<AuditLog> task =\n"
+            "            service -> service.charge();\n"
+            "    }\n"
+            "    void parenthesized() {\n"
+            "        java.util.function.Consumer<AuditLog> task =\n"
+            "            (service) -> service.charge();\n"
+            "    }\n"
+            "    void typed() {\n"
+            "        java.util.function.Consumer<AuditLog> task =\n"
+            "            (AuditLog service) -> service.charge();\n"
+            "    }\n"
+            "    void sameType() {\n"
+            "        java.util.function.Consumer<PaymentGateway> task =\n"
+            "            (PaymentGateway service) -> service.charge();\n"
+            "    }\n"
+            "}\n"
+        ),
+    })
+
+    captured = _find(result, ".captured()", "checkout")
+    same_type = _find(result, ".sameType()", "checkout")
+    shadowed_callers = {
+        _find(result, f".{name}()", "checkout")
+        for name in ("shadowed", "parenthesized", "typed")
+    }
+    gateway_charge = _find(result, ".charge()", "paymentgateway")
+    assert (captured, gateway_charge) in calls
+    assert (same_type, gateway_charge) in calls
+    assert not any(source in shadowed_callers and "charge" in target
+                   for source, target in calls)
+
+
 def test_overloaded_callers_keep_body_scoped_receiver_types(tmp_path: Path):
     calls, result = _calls(tmp_path, {
         **_AMBIGUOUS_METHODS,

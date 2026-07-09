@@ -425,6 +425,36 @@ def _java_declarator_names(declaration_node, source: bytes) -> list[str]:
     return names
 
 
+def _java_lambda_parameters(
+    lambda_node,
+    source: bytes,
+) -> list[tuple[str, str | None]]:
+    parameters = lambda_node.child_by_field_name("parameters")
+    if parameters is None:
+        return []
+    if parameters.type == "identifier":
+        return [(_read_text(parameters, source), None)]
+    if parameters.type == "inferred_parameters":
+        return [
+            (_read_text(child, source), None)
+            for child in parameters.children
+            if child.type == "identifier"
+        ]
+    bindings: list[tuple[str, str | None]] = []
+    for parameter in parameters.children:
+        if parameter.type not in ("formal_parameter", "spread_parameter"):
+            continue
+        name_node = parameter.child_by_field_name("name")
+        if name_node is not None:
+            bindings.append((
+                _read_text(name_node, source),
+                _java_receiver_type_name(
+                    parameter.child_by_field_name("type"), source
+                ),
+            ))
+    return bindings
+
+
 def _java_method_receiver_types(
     method_node,
     source: bytes,
@@ -472,9 +502,17 @@ def _java_method_receiver_types(
             "record_declaration",
             "enum_declaration",
             "annotation_type_declaration",
-            "lambda_expression",
         ):
             continue
+        if node.type == "lambda_expression":
+            # Raw calls are method-scoped, so a lambda-local binding cannot be
+            # distinguished from an enclosing binding with the same name.
+            for name, type_name in _java_lambda_parameters(node, source):
+                if type_name is None or field_types.get(name) not in (None, type_name):
+                    method_types.pop(name, None)
+                    ambiguous.add(name)
+                else:
+                    bind(name, type_name)
         if node.type == "local_variable_declaration":
             type_name = _java_receiver_type_name(
                 node.child_by_field_name("type"), source
