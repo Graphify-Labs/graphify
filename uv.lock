@@ -1090,7 +1090,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.6"
+version = "0.9.12"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1209,6 +1209,9 @@ pdf = [
 postgres = [
     { name = "psycopg", extra = ["binary"] },
 ]
+qml = [
+    { name = "tree-sitter-qmljs" },
+]
 sql = [
     { name = "tree-sitter-sql" },
 ]
@@ -1243,6 +1246,7 @@ dev = [
     { name = "setuptools" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "tree-sitter-hcl" },
+    { name = "tree-sitter-qmljs" },
     { name = "wheel" },
 ]
 
@@ -1317,6 +1321,7 @@ requires-dist = [
     { name = "tree-sitter-php", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-powershell", specifier = ">=0.26,<0.28" },
     { name = "tree-sitter-python", specifier = ">=0.23,<0.26" },
+    { name = "tree-sitter-qmljs", marker = "extra == 'qml'" },
     { name = "tree-sitter-ruby", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-rust", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-scala", specifier = ">=0.23,<0.27" },
@@ -1331,7 +1336,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.6.9" },
     { name = "yt-dlp", marker = "extra == 'video'", specifier = ">=2026.6.9" },
 ]
-provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "all"]
+provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "qml", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1349,6 +1354,7 @@ dev = [
     { name = "setuptools", specifier = ">=82.0.1" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "tree-sitter-hcl", specifier = ">=1.2.0" },
+    { name = "tree-sitter-qmljs", git = "https://github.com/yuja/tree-sitter-qmljs.git?rev=565872b" },
     { name = "wheel", specifier = ">=0.47.0" },
 ]
 
@@ -4799,6 +4805,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ed/a2/996fc2dfa1076dc460d3e2f3c75974ea4b8f02f6bc925383aaae519920e8/tree_sitter_python-0.25.0-cp310-abi3-win_amd64.whl", hash = "sha256:9bcde33f18792de54ee579b00e1b4fe186b7926825444766f849bf7181793a76", size = 76073, upload-time = "2025-09-11T06:47:55.773Z" },
     { url = "https://files.pythonhosted.org/packages/07/19/4b5569d9b1ebebb5907d11554a96ef3fa09364a30fcfabeff587495b512f/tree_sitter_python-0.25.0-cp310-abi3-win_arm64.whl", hash = "sha256:0fbf6a3774ad7e89ee891851204c2e2c47e12b63a5edbe2e9156997731c128bb", size = 74169, upload-time = "2025-09-11T06:47:56.747Z" },
 ]
+
+[[package]]
+name = "tree-sitter-qmljs"
+version = "0.0.1"
+source = { git = "https://github.com/yuja/tree-sitter-qmljs.git?rev=565872b#565872b5c100dfa32c1dd1a63a10ce7ac48d31a6" }
 
 [[package]]
 name = "tree-sitter-ruby"

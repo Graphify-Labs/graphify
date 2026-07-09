@@ -80,12 +80,16 @@ pascal = ["tree-sitter-pascal"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-# extract_qml() uses tree-sitter-qmljs. The PyPI release's Python binding is
-# missing src/scanner.c from its build (the external scanner symbol never
-# gets compiled in, so the extension fails to import) -- fixed upstream at
-# yuja/tree-sitter-qmljs#29, pending merge. Until that lands, the dev group
-# below pins the patched fork so tests/CI stay green; PyPI users who opt into
-# this extra get the (currently broken) upstream release until the fix ships.
+# extract_qml() uses tree-sitter-qmljs -- which has NEVER been published to
+# PyPI (only installable via `pip install git+https://github.com/yuja/tree-sitter-qmljs`).
+# `pip install graphifyy[qml]` therefore cannot resolve this extra at all
+# (PyPI also rejects uploaded packages whose metadata declares direct git-URL
+# deps, so this can't be made to "just work" from our end either). Left out
+# of the `all` extra below for the same reason. Users who want QML support
+# must `pip install git+https://github.com/yuja/tree-sitter-qmljs` themselves
+# first. The dev group below pins that same git source (at a commit with the
+# scanner.c fix from #29 and freshly regenerated parser sources) so our own
+# tests/CI stay green.
 qml = ["tree-sitter-qmljs"]
 all = ["mcp", "starlette>=1.3.1", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal"]
 
@@ -110,9 +114,10 @@ dev = [
     "wheel>=0.47.0",
     "tomli>=2.0 ; python_version < '3.11'",
     "tree-sitter-hcl>=1.2.0",
-    # See the `qml` optional-dependency comment above: pinned to the patched
-    # fork until yuja/tree-sitter-qmljs#29 merges upstream.
-    "tree-sitter-qmljs @ git+https://github.com/Hamza-Masuadi/tree-sitter-qmljs.git@fix-python-binding-scanner",
+    # See the `qml` optional-dependency comment above: tree-sitter-qmljs
+    # isn't on PyPI at all, so it's pinned directly to an upstream commit
+    # with the scanner.c fix (#29) and regenerated parser sources.
+    "tree-sitter-qmljs @ git+https://github.com/yuja/tree-sitter-qmljs.git@565872b",
 ]
 
 [tool.uv]
