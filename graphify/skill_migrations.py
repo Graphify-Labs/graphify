@@ -35,6 +35,13 @@ MIGRATIONS: list[Migration] = [
         "graphify-query-first workflow.",
         "reinstall",
     ),
+    Migration(
+        "0.10.0",
+        "Ranked query results (--top-k / --explain / --semantic) and a new "
+        "references/analysis.md covering bench, embed, chronicle, and skill "
+        "check-update. Re-install to pick up the new query flags and reference.",
+        "reinstall",
+    ),
 ]
 
 

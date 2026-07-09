@@ -43,6 +43,21 @@ _META_NAME = "embeddings.meta.json"
 # node text
 # --------------------------------------------------------------------------- #
 
+def _text_prefix(model_tag: str, kind: str) -> str:
+    """Task-instruction prefix for asymmetric retrieval, keyed to the model.
+
+    Nomic embed models are trained with ``search_document:`` / ``search_query:``
+    instruction prefixes; omitting them measurably degrades retrieval quality
+    (the query and document embeddings land in different regions than intended).
+    Models that don't use instruction prefixes get raw text. ``kind`` is
+    ``"query"`` or ``"document"``.
+    """
+    tag = (model_tag or "").lower()
+    if "nomic" in tag:
+        return "search_query: " if kind == "query" else "search_document: "
+    return ""
+
+
 def node_text(data: dict) -> str:
     """The text used to represent a node to the embedder.
 
@@ -195,7 +210,8 @@ def build_embeddings(
     model_tag = model_tag or "custom"
 
     node_ids = list(G.nodes())
-    texts = [node_text(G.nodes[n]) for n in node_ids]
+    doc_prefix = _text_prefix(model_tag, "document")
+    texts = [doc_prefix + node_text(G.nodes[n]) for n in node_ids]
     content_hash = _hash_ids_model(node_ids, model_tag)
 
     vec_path, meta_path = sidecar_paths(graph_path)
@@ -285,7 +301,9 @@ def semantic_scores_for_query(
             os.environ.setdefault("GRAPHIFY_EMBED_BACKEND", "ollama" if backend == "ollama" else "sentence-transformers")
             os.environ["GRAPHIFY_EMBED_MODEL"] = name
         embedder, _ = get_embedder()
-    q = _normalize(embed_texts([question], embedder=embedder).astype(np.float32))
+    # Prefix the query to match how the sidecar's documents were embedded.
+    query_prefix = _text_prefix(meta.get("model", ""), "query")
+    q = _normalize(embed_texts([query_prefix + question], embedder=embedder).astype(np.float32))
     if q.size == 0:
         return {}
     sims = matrix @ q[0]  # both L2-normalized -> dot product is cosine

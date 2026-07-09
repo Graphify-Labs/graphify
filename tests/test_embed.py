@@ -13,6 +13,7 @@ import networkx as nx
 
 from graphify import embed
 from graphify.embed import (
+    _text_prefix,
     build_embeddings,
     get_embedder,
     load_embeddings,
@@ -20,6 +21,17 @@ from graphify.embed import (
     semantic_scores_for_query,
     sidecar_paths,
 )
+
+
+def test_text_prefix_nomic_is_asymmetric():
+    assert _text_prefix("ollama:nomic-embed-text", "query") == "search_query: "
+    assert _text_prefix("ollama:nomic-embed-text", "document") == "search_document: "
+
+
+def test_text_prefix_non_nomic_is_empty():
+    assert _text_prefix("st:all-MiniLM-L6-v2", "query") == ""
+    assert _text_prefix("fake", "document") == ""
+    assert _text_prefix("", "query") == ""
 
 
 def fake_embedder(texts):
