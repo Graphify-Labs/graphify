@@ -495,17 +495,45 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(
+    G: nx.Graph,
+    nodes: set[str],
+    edges: list[tuple],
+    token_budget: int = 2000,
+    *,
+    seeds: list[str] | None = None,
+    order: list[str] | None = None,
+    explain: dict[str, str] | None = None,
+    top_k: int | None = None,
+) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
     so the queried symbol always appears at the top of the output.
+    order: an explicit relevance order (from graphify.ranking). When given it
+    replaces the default degree sort, so the token budget spends itself on the
+    highest-ranked nodes instead of the highest-degree hubs. Any node missing
+    from `order` is appended by degree so nothing is silently dropped.
+    explain: node_id -> per-node ranking breakdown appended to each NODE line.
+    top_k: keep only the first N nodes of the (ranked) order before rendering.
     """
     char_budget = token_budget * 3
     lines = []
     seed_set = set(seeds or [])
-    ordered = [n for n in (seeds or []) if n in nodes] + \
-              sorted(nodes - seed_set, key=lambda n: G.degree(n), reverse=True)
+    if order is not None:
+        order_set = set(order)
+        ordered = [n for n in order if n in nodes]
+        ordered += sorted(
+            (n for n in nodes if n not in order_set),
+            key=lambda n: G.degree(n),
+            reverse=True,
+        )
+    else:
+        ordered = [n for n in (seeds or []) if n in nodes] + \
+                  sorted(nodes - seed_set, key=lambda n: G.degree(n), reverse=True)
+    if top_k is not None and top_k >= 0:
+        ordered = ordered[:top_k]
+    render_nodes = set(ordered)
     for nid in ordered:
         d = G.nodes[nid]
         # Every LLM-derived field passes through sanitize_label before being
@@ -519,9 +547,14 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}]"
         )
+        # explain values are graphify-generated numeric breakdowns (no corpus
+        # data), but sanitize anyway to keep the "all rendered text is sanitized"
+        # invariant trivially true.
+        if explain and nid in explain:
+            line += f"  {sanitize_label(explain[nid])}"
         lines.append(line)
     for u, v in edges:
-        if u in nodes and v in nodes:
+        if u in render_nodes and v in render_nodes:
             raw = G[u][v]
             d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
             context = d.get("context")
@@ -548,6 +581,108 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     return output
 
 
+def _seed_distances(G: nx.Graph, nodes: set[str], seeds: list[str]) -> dict[str, int]:
+    """Hop distance from the nearest seed to every node, ignoring edge direction.
+
+    Proximity is a relevance signal (a node one call away from the queried symbol
+    is more relevant than one five hops out), so it is measured undirected on the
+    induced subgraph of the traversal result.
+    """
+    try:
+        sub = G.subgraph(nodes)
+        if sub.is_directed():
+            sub = sub.to_undirected(as_view=True)
+        present = [s for s in seeds if s in sub]
+        if not present:
+            return {}
+        return dict(nx.multi_source_shortest_path_length(sub, present))
+    except Exception:
+        return {}
+
+
+def _resolve_and_rank(
+    G: nx.Graph,
+    question: str,
+    *,
+    mode: str = "bfs",
+    depth: int = 3,
+    context_filters: list[str] | None = None,
+    semantic_scores: dict[str, float] | None = None,
+) -> dict | None:
+    """Shared query core: seed → traverse → fuse-rank.
+
+    Returns everything both the text renderer and the eval harness need, or None
+    when no seed node matched. Keeping this in one place means `graphify bench`
+    scores the exact ranking `graphify query` serves — the eval can't drift from
+    production.
+    """
+    from graphify.ranking import rank_nodes
+
+    terms = _query_terms(question)
+    scored = _score_nodes(G, terms)
+    start_nodes = _pick_seeds(scored)
+    seed_source = "lexical"
+    if not start_nodes and semantic_scores:
+        # Semantic rescue: a fuzzy question ("where do we handle expired logins")
+        # may share no token with any label, so lexical seeding finds nothing —
+        # exactly when embeddings should take over. Seed the traversal from the
+        # top cosine matches instead of giving up.
+        top_sem = sorted(semantic_scores.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        start_nodes = [nid for nid, _ in top_sem if nid in G]
+        seed_source = "semantic"
+    if not start_nodes:
+        return None
+    resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
+    traversal_graph = _filter_graph_by_context(G, resolved_filters)
+    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+
+    # Fuse lexical + structural (+ optional semantic) signals into one relevance
+    # order so the token budget renders the nodes that answer the question, not
+    # the highest-degree hubs that merely sit near them.
+    lexical_scores = {nid: sc for sc, nid in scored}
+    degrees = {n: traversal_graph.degree(n) for n in nodes}
+    distances = _seed_distances(traversal_graph, nodes, start_nodes)
+    node_community = {n: traversal_graph.nodes[n].get("community") for n in nodes}
+    ranked = rank_nodes(
+        nodes,
+        start_nodes,
+        lexical_scores=lexical_scores,
+        distances=distances,
+        degrees=degrees,
+        node_community=node_community,
+        semantic_scores=semantic_scores,
+    )
+    return {
+        "start_nodes": start_nodes,
+        "ranked": ranked,
+        "traversal_graph": traversal_graph,
+        "nodes": nodes,
+        "edges": edges,
+        "resolved_filters": resolved_filters,
+        "filter_source": filter_source,
+        "seed_source": seed_source,
+    }
+
+
+def rank_query_nodes(
+    G: nx.Graph,
+    question: str,
+    *,
+    mode: str = "bfs",
+    depth: int = 3,
+    context_filters: list[str] | None = None,
+    semantic_scores: dict[str, float] | None = None,
+) -> list[str]:
+    """Return the query's result node ids in fused-relevance order (best first)."""
+    result = _resolve_and_rank(
+        G, question, mode=mode, depth=depth,
+        context_filters=context_filters, semantic_scores=semantic_scores,
+    )
+    if result is None:
+        return []
+    return [rn.node_id for rn in result["ranked"]]
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -556,24 +691,49 @@ def _query_graph_text(
     depth: int = 3,
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
+    explain: bool = False,
+    top_k: int | None = None,
+    semantic_scores: dict[str, float] | None = None,
 ) -> str:
-    terms = _query_terms(question)
-    scored = _score_nodes(G, terms)
-    start_nodes = _pick_seeds(scored)
-    if not start_nodes:
+    result = _resolve_and_rank(
+        G, question, mode=mode, depth=depth,
+        context_filters=context_filters, semantic_scores=semantic_scores,
+    )
+    if result is None:
         return "No matching nodes found."
-    resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
-    traversal_graph = _filter_graph_by_context(G, resolved_filters)
-    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    start_nodes = result["start_nodes"]
+    ranked = result["ranked"]
+    traversal_graph = result["traversal_graph"]
+    nodes, edges = result["nodes"], result["edges"]
+    resolved_filters, filter_source = result["resolved_filters"], result["filter_source"]
+
+    order = [r.node_id for r in ranked]
+    explain_map = {r.node_id: r.explain() for r in ranked} if explain else None
+
+    shown = min(len(nodes), top_k) if top_k is not None else len(nodes)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
     if resolved_filters:
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
-    header_parts.append(f"{len(nodes)} nodes found")
+    if semantic_scores:
+        header_parts.append("semantic: on" + (" (seeded)" if result.get("seed_source") == "semantic" else ""))
+    if top_k is not None and shown < len(nodes):
+        header_parts.append(f"top {shown} of {len(nodes)} nodes (ranked)")
+    else:
+        header_parts.append(f"{len(nodes)} nodes found (ranked)")
     header = " | ".join(header_parts) + "\n\n"
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget)
+    return header + _subgraph_to_text(
+        traversal_graph,
+        nodes,
+        edges,
+        token_budget,
+        seeds=start_nodes,
+        order=order,
+        explain=explain_map,
+        top_k=top_k,
+    )
 
 
 def _find_node(G: nx.Graph, label: str) -> list[str]:
@@ -760,6 +920,9 @@ def _build_server(graph_path: str):
                             "items": {"type": "string"},
                             "description": "Optional explicit edge-context filter, e.g. ['call', 'field']",
                         },
+                        "top_k": {"type": "integer", "description": "Keep only the N most relevant (ranked) nodes"},
+                        "explain": {"type": "boolean", "default": False,
+                                    "description": "Append the per-node relevance-ranking breakdown to each node"},
                     },
                     "required": ["question"],
                 },
@@ -873,6 +1036,9 @@ def _build_server(graph_path: str):
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
         context_filter = arguments.get("context_filter")
+        top_k = arguments.get("top_k")
+        top_k = int(top_k) if top_k is not None else None
+        explain = bool(arguments.get("explain", False))
         _t0 = _time.perf_counter()
         result = _query_graph_text(
             G,
@@ -881,6 +1047,8 @@ def _build_server(graph_path: str):
             depth=depth,
             token_budget=budget,
             context_filters=context_filter,
+            top_k=top_k,
+            explain=explain,
         )
         querylog.log_query(
             kind="mcp_query",

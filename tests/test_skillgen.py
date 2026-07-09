@@ -190,10 +190,11 @@ def test_query_heading_is_homed_in_core_stub_only():
 
 
 def test_eight_references_render_for_claude():
-    """claude renders exactly the eight on-demand fragments from the design."""
+    """claude renders exactly the nine on-demand fragments from the design."""
     _, refs = _claude_artifacts()
     assert sorted(refs) == [
         "add-watch.md",
+        "analysis.md",
         "exports.md",
         "extraction-spec.md",
         "github-and-merge.md",
@@ -437,10 +438,11 @@ def test_compact_extraction_hosts_use_the_compact_spec():
 
 
 def test_every_split_host_renders_eight_references():
-    """All twelve split hosts render exactly the eight on-demand references."""
+    """All twelve split hosts render exactly the nine on-demand references."""
     platforms = gen.load_platforms()
     expected = [
         "add-watch.md",
+        "analysis.md",
         "exports.md",
         "extraction-spec.md",
         "github-and-merge.md",

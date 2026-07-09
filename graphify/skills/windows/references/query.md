@@ -68,6 +68,20 @@ graphify query "QUESTION"
 # or: graphify query "QUESTION" --dfs --budget 3000
 ```
 
+Query results are **ranked by relevance** (Reciprocal Rank Fusion over lexical
+match, graph proximity to the matched symbols, hub centrality, and community
+cohesion), so the most relevant nodes render first and survive the token budget.
+Useful flags:
+
+| Flag | Effect |
+|------|--------|
+| `--top-k N` | Keep only the N most relevant ranked nodes — a tight, high-signal answer. |
+| `--explain` | Append each node's per-signal ranking breakdown (which backends ranked it and how). Use when a result surprises you. |
+| `--semantic` | Also fuse local-embedding cosine similarity, and — when no label matches the wording — **seed** the search from the closest embeddings. This is what answers fuzzy questions ("where do we handle expired logins") whose words appear in no label. Requires a one-time `graphify embed` first (see the analysis reference); silently degrades to structural-only ranking if embeddings aren't built. |
+
+Prefer `--top-k` + `--explain` when you want to justify an answer; add `--semantic`
+when literal + vocab-expanded matching (Step 0) still returns nothing on-point.
+
 If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal inline:
 
 1. Find the 1-3 nodes whose label best matches the expanded tokens.

@@ -392,6 +392,79 @@ def test_query_graph_text_heuristic_context_filter_changes_traversal():
     text = _query_graph_text(G, "who calls extract", mode="bfs", depth=2, token_budget=2000)
     assert "Context: call (heuristic)" in text
     assert "cluster" in text
+
+
+# --- ranking integration ---
+
+def test_query_graph_text_header_marks_ranked():
+    G = _make_graph()
+    text = _query_graph_text(G, "extract", mode="bfs", depth=2)
+    assert "(ranked)" in text
+
+
+def test_query_graph_text_top_k_limits_and_reports():
+    G = _make_graph()
+    text = _query_graph_text(G, "extract", mode="bfs", depth=3, top_k=2)
+    assert "top 2 of" in text
+    assert text.count("\nNODE ") == 2  # exactly two node lines survive the cap
+
+
+def test_query_graph_text_explain_shows_breakdown():
+    G = _make_graph()
+    text = _query_graph_text(G, "extract", mode="bfs", depth=2, explain=True)
+    assert "rank score=" in text
+    assert "lexical#" in text
+
+
+def test_query_graph_text_no_explain_by_default():
+    G = _make_graph()
+    text = _query_graph_text(G, "extract", mode="bfs", depth=2)
+    assert "rank score=" not in text
+
+
+def test_query_graph_text_semantic_scores_are_used():
+    G = _make_graph()
+    # Force 'build' (n3) to the top of the non-seed order via a semantic signal.
+    sem = {"n3": 0.99, "n2": 0.01, "n4": 0.01}
+    text = _query_graph_text(G, "extract", mode="bfs", depth=3, semantic_scores=sem, explain=True)
+    assert "semantic: on" in text
+    assert "semantic#" in text
+
+
+def test_query_graph_text_semantic_seed_rescue_when_lexical_misses():
+    G = _make_graph()
+    # 'zzznomatch' matches no label lexically; without semantics this returns
+    # "No matching nodes found." With a semantic signal it seeds from the top
+    # cosine node instead of giving up.
+    lexical_only = _query_graph_text(G, "zzznomatch", mode="bfs", depth=2)
+    assert "No matching nodes found." in lexical_only
+    rescued = _query_graph_text(
+        G, "zzznomatch", mode="bfs", depth=2,
+        semantic_scores={"n3": 0.9, "n4": 0.4},
+    )
+    assert "No matching nodes found." not in rescued
+    assert "semantic: on (seeded)" in rescued
+    assert "build" in rescued  # n3 -> 'build', the top semantic match
+
+
+def test_subgraph_to_text_respects_explicit_order():
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1", "n2", "n3"}, [], order=["n3", "n1", "n2"])
+    # n3 -> 'build' renders before n1 -> 'extract'
+    assert text.index("build") < text.index("extract")
+
+
+def test_subgraph_to_text_top_k_trims_nodes():
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1", "n2", "n3", "n4"}, [], order=["n1", "n2", "n3", "n4"], top_k=2)
+    assert "extract" in text and "cluster" in text
+    assert "report" not in text  # n4 trimmed
+
+
+def test_subgraph_to_text_explain_appended():
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1"}, [], order=["n1"], explain={"n1": "rank score=0.10"})
+    assert "rank score=0.10" in text
     assert "build" not in text
 
 

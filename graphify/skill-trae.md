@@ -654,6 +654,12 @@ Before traversal, expand the question against the graph's own vocabulary so a wo
 
 ---
 
+## For evals, semantic search, history, and skill health
+
+None of these run in a default build. When the user wants to measure retrieval quality (`graphify bench`), enable semantic query matching (`graphify embed` + `graphify query --semantic`), diff the graph's structure across git history (`graphify chronicle`), or check whether the installed skill is current (`graphify skill check-update`), see `references/analysis.md`.
+
+---
+
 ## For /graphify add and --watch
 
 Neither is part of the default build. When the user runs `/graphify add <url>` to fetch a URL into the corpus, or passes `--watch` to auto-rebuild on file changes, see `references/add-watch.md`.
