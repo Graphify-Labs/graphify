@@ -1,7 +1,11 @@
 import json
 import os
+import sys
 from collections import Counter
 from pathlib import Path
+
+import pytest
+
 from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1826,6 +1830,36 @@ def test_extract_no_warning_when_all_code_has_extractors(tmp_path, capsys):
     extract([py], cache_root=tmp_path)
     err = capsys.readouterr().err
     assert "no AST extractor" not in err
+
+
+def test_extract_warns_when_sql_extra_missing(tmp_path, capsys, monkeypatch):
+    # #1745: .sql HAS a dispatch entry, so the #1689 warning can't fire, and
+    # extract_sql returns an "error" result when tree-sitter-sql is absent, so
+    # the #1666 warning skips it too. The files must not vanish silently:
+    # extract() surfaces them with the [sql] extra named.
+    monkeypatch.setitem(sys.modules, "tree_sitter_sql", None)  # import -> ImportError
+    s1 = tmp_path / "schema.sql"; s1.write_text("CREATE TABLE users (id INT);\n")
+    s2 = tmp_path / "views.sql"; s2.write_text("CREATE VIEW v AS SELECT * FROM users;\n")
+    py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
+
+    result = extract([s1, s2, py], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "2 .sql file(s)" in err
+    assert "tree_sitter_sql not installed" in err
+    assert 'graphifyy[sql]' in err
+    assert "#1745" in err
+    # the Python file still extracts normally
+    labels = [n.get("label") for n in result["nodes"]]
+    assert any(str(l).startswith("main") for l in labels)
+
+
+def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
+    pytest.importorskip("tree_sitter_sql")
+    s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
+    extract([s], cache_root=tmp_path)
+    err = capsys.readouterr().err
+    assert "#1745" not in err
 
 
 def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsys):

@@ -3742,6 +3742,20 @@ _DISPATCH: dict[str, Any] = {
 }
 
 
+# Extensions whose extractor depends on an optional-dependency extra
+# (pyproject [project.optional-dependencies]) and hard-fails without it,
+# rather than falling back like Pascal does. Used by the #1745 warning in
+# extract() to tell the user which extra restores the language.
+_EXTRA_FOR_EXTENSION = {
+    ".sql": "sql",
+    ".tf": "terraform",
+    ".tfvars": "terraform",
+    ".hcl": "terraform",
+    ".dm": "dm",
+    ".dme": "dm",
+}
+
+
 # Extensionless executables (CLI entry points like `devctl` or `manage`) carry
 # their language in the shebang, not the suffix. detect.classify_file already
 # routes them to the CODE path via _shebang_interpreter; _get_extractor must
@@ -4198,6 +4212,35 @@ def extract(
             f"  warning: {_tot} file(s) are classified as code but graphify has no AST "
             f"extractor for their language, so they contributed nothing to the graph: "
             f"{_by_count}. Please open an issue to request support for these (#1689).",
+            file=sys.stderr, flush=True,
+        )
+
+    # #1745: an extractor IS wired up for these files but bailed out because its
+    # dependency is missing (e.g. .sql needs tree-sitter-sql from the [sql]
+    # extra). Neither warning above fires — #1666 skips results that carry an
+    # error, #1689 only covers files with no extractor — so the graph builds
+    # "successfully" while every such file silently contributes nothing.
+    # Surface them grouped by extension, naming the extra that provides the
+    # dependency when there is one.
+    _missing_dep_count: dict[str, int] = {}
+    _missing_dep_error: dict[str, str] = {}
+    for i, _p in enumerate(paths):
+        _err = (per_file[i] or {}).get("error") or ""
+        if "not installed" in _err:
+            _ext = _p.suffix.lower()
+            _missing_dep_count[_ext] = _missing_dep_count.get(_ext, 0) + 1
+            _missing_dep_error.setdefault(_ext, _err)
+    for _ext, _n in sorted(_missing_dep_count.items(), key=lambda kv: (-kv[1], kv[0])):
+        _extra = _EXTRA_FOR_EXTENSION.get(_ext)
+        if _extra:
+            _reason = _missing_dep_error[_ext].split(". ")[0]
+            _hint = f' Install it with: pip install "graphifyy[{_extra}]"'
+        else:
+            _reason = _missing_dep_error[_ext]
+            _hint = ""
+        print(
+            f"  warning: {_n} {_ext} file(s) contributed nothing to the graph "
+            f"because a dependency is missing: {_reason}.{_hint} (#1745)",
             file=sys.stderr, flush=True,
         )
 
