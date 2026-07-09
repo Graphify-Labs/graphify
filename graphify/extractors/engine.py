@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import re
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
@@ -1181,6 +1182,206 @@ def _cpp_local_var_types(body_node, source: bytes, table: dict[str, str]) -> Non
         for c in n.children:
             stack.append(c)
 
+# Qt section labels aren't real C++ access_specifiers; tree-sitter recovers them
+# as ERROR nodes (bare `signals:` as one ERROR, `public slots:` as access_specifier
+# + ERROR("slots")). Match by stripped text (#1716).
+_CPP_SIGNAL_LABELS = frozenset({"signals", "Q_SIGNALS"})
+_CPP_SLOT_LABELS = frozenset({"slots", "Q_SLOTS"})
+
+# Macros that land in type/declarator slots and must not become field nodes.
+_CPP_MACRO_NOISE_NAMES = frozenset({
+    "Q_OBJECT", "Q_GADGET", "QML_ELEMENT", "QML_ANONYMOUS", "QML_UNCREATABLE",
+    "QML_NAMED_ELEMENT", "QML_SINGLETON", "Q_SIGNALS", "Q_SLOTS", "Q_PROPERTY",
+    "Q_INVOKABLE", "Q_DISABLE_COPY", "Q_DISABLE_COPY_MOVE", "Q_INTERFACES",
+    "Q_CLASSINFO", "Q_ENUM", "Q_FLAG", "Q_REVISION",
+})
+
+# Q_PROPERTY paren contents aren't C++; tokenize raw text instead of the AST.
+_CPP_QPROPERTY_FLAGS = frozenset({"CONSTANT", "FINAL", "REQUIRED"})
+_CPP_QPROPERTY_VALUED = frozenset({
+    "READ", "WRITE", "NOTIFY", "RESET", "MEMBER", "STORED", "DESIGNABLE",
+    "SCRIPTABLE", "REVISION", "USER", "BINDABLE",
+})
+_CPP_QPROPERTY_KW_RE = re.compile(
+    r"\b(READ|WRITE|NOTIFY|RESET|MEMBER|STORED|DESIGNABLE|SCRIPTABLE|"
+    r"REVISION|USER|CONSTANT|FINAL|REQUIRED|BINDABLE)\b"
+)
+_CPP_QML_NAMED_ELEMENT_RE = re.compile(r'QML_NAMED_ELEMENT\s*\(\s*"([^"]+)"\s*\)')
+_CPP_QML_REGISTER_FUNCS = frozenset({
+    "qmlRegisterType", "qmlRegisterSingletonType", "qmlRegisterAnonymousType",
+    "qmlRegisterUncreatableType", "qmlRegisterExtendedType",
+    "qmlRegisterExtendedUncreatableType",
+})
+
+
+def _cpp_parse_q_property(text: str) -> dict | None:
+    """Parse Q_PROPERTY(...) into {name, prop_type, read?, write?, notify?}."""
+    m = re.search(r"Q_PROPERTY\s*\((.*)\)", text, re.DOTALL)
+    if not m:
+        return None
+    inner = m.group(1).strip()
+    if not inner:
+        return None
+    parts = _CPP_QPROPERTY_KW_RE.split(inner)
+    head_tokens = parts[0].strip().split()
+    if len(head_tokens) < 2:
+        return None
+    name = head_tokens[-1].strip("*&")
+    if not name.isidentifier():
+        return None
+    out: dict = {"name": name, "prop_type": " ".join(head_tokens[:-1])}
+    i = 1
+    while i < len(parts):
+        kw = parts[i]
+        if kw in _CPP_QPROPERTY_FLAGS:
+            out[kw.lower()] = True
+            i += 1
+        elif kw in _CPP_QPROPERTY_VALUED and i + 1 < len(parts):
+            val_tokens = parts[i + 1].strip().split()
+            if val_tokens:
+                val = val_tokens[0].strip("*&")
+                if val.isidentifier():
+                    out[kw.lower()] = val
+            i += 2
+        else:
+            i += 1
+    return out
+
+
+def _cpp_scan_qml_registrations(root, source: bytes) -> list[dict]:
+    """Collect qmlRegisterType<T>(..., "Alias") as {class_label, alias} (#1716).
+
+    Alias is the last string_literal arg so singleton forms with a trailing
+    callback still resolve. Same-name registrations are skipped (generic rewire).
+    """
+    out: list[dict] = []
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type == "call_expression":
+            func = n.child_by_field_name("function")
+            if func is not None and func.type == "template_function":
+                name_node = func.child_by_field_name("name")
+                fn_name = _read_text(name_node, source) if name_node is not None else None
+                if fn_name in _CPP_QML_REGISTER_FUNCS:
+                    targs = func.child_by_field_name("arguments")
+                    type_node = next(
+                        (c for c in (targs.children if targs is not None else [])
+                         if c.type == "type_descriptor"),
+                        None,
+                    )
+                    class_label = None
+                    if type_node is not None:
+                        inner = type_node.child_by_field_name("type") or next(
+                            (c for c in type_node.children if c.type == "type_identifier"),
+                            None,
+                        )
+                        if inner is not None:
+                            class_label = _read_text(inner, source)
+                    args = n.child_by_field_name("arguments")
+                    alias = None
+                    for c in (args.children if args is not None else []):
+                        if c.type == "string_literal":
+                            content = next(
+                                (g for g in c.children if g.type == "string_content"), None
+                            )
+                            if content is not None:
+                                alias = _read_text(content, source)
+                    if class_label and alias and class_label != alias:
+                        out.append({"class_label": class_label, "alias": alias})
+        stack.extend(n.children)
+    return out
+
+
+def _cpp_record_named_element(text: str, class_nid: str, str_path: str,
+                              cpp_qml_aliases: list[dict]) -> None:
+    m = _CPP_QML_NAMED_ELEMENT_RE.search(text)
+    if m:
+        cpp_qml_aliases.append({
+            "class_nid": class_nid, "alias": m.group(1), "source_file": str_path,
+        })
+
+
+def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                    parent_class_nid: str | None, add_node_fn, add_edge_fn,
+                    cpp_section_state: dict[str, str],
+                    cpp_qml_aliases: list[dict]) -> bool:
+    """Track signals:/slots: section state; handle QML_NAMED_ELEMENT / Q_PROPERTY."""
+    if node.type == "ERROR":
+        label = _read_text(node, source).strip().rstrip(":").strip()
+        if parent_class_nid and label in _CPP_SIGNAL_LABELS:
+            cpp_section_state[parent_class_nid] = "signal"
+            return True
+        if parent_class_nid and label in _CPP_SLOT_LABELS:
+            # access_specifier("public") sets "member" first; ERROR("slots") upgrades.
+            cpp_section_state[parent_class_nid] = "slot"
+            return True
+        return False
+
+    if node.type == "access_specifier":
+        if parent_class_nid:
+            cpp_section_state[parent_class_nid] = "member"
+        return False
+
+    if parent_class_nid and node.type == "declaration":
+        text = _read_text(node, source)
+        if "QML_NAMED_ELEMENT" in text:
+            _cpp_record_named_element(text, parent_class_nid, str_path, cpp_qml_aliases)
+            return True
+        if "Q_PROPERTY" in text:
+            _cpp_emit_q_property(
+                text, node, parent_class_nid, seen_ids, add_node_fn, add_edge_fn,
+            )
+            return True
+
+    return False
+
+
+def _cpp_emit_q_property(
+    text: str, node, parent_class_nid: str, seen_ids: set,
+    add_node_fn, add_edge_fn,
+) -> None:
+    """Emit a property node and READ/WRITE/NOTIFY edges (#1716)."""
+    parsed = _cpp_parse_q_property(text)
+    if parsed is None:
+        return
+    name = parsed["name"]
+    line = node.start_point[0] + 1
+    # Salt with "property" so READ userName doesn't collide with the property id.
+    prop_nid = _make_id(parent_class_nid, "property", name)
+    add_node_fn(
+        prop_nid, name, line, node_type="property",
+        metadata={"prop_type": parsed["prop_type"]} if parsed.get("prop_type") else None,
+    )
+    add_edge_fn(parent_class_nid, prop_nid, "defines", line, context="property")
+
+    for role, ctx in (("read", "property_read"),
+                      ("write", "property_write"),
+                      ("notify", "property_notify")):
+        accessor = parsed.get(role)
+        if not accessor:
+            continue
+        acc_nid = _make_id(parent_class_nid, accessor)
+        if acc_nid not in seen_ids:
+            label = f"{accessor}()" if role == "notify" else accessor
+            add_node_fn(acc_nid, label, line)
+        add_edge_fn(prop_nid, acc_nid, "references", line, context=ctx)
+
+
+def _cpp_tag_or_add_member(nodes, seen_ids, add_node, add_edge, class_nid, field_nid,
+                           name, line, node_type: str, context: str) -> None:
+    """Add a signal/slot node, or upgrade a prior Q_PROPERTY accessor stub."""
+    if field_nid in seen_ids:
+        for n in nodes:
+            if n["id"] == field_nid:
+                n["type"] = node_type
+                n["label"] = f"{name}()"
+                break
+    else:
+        add_node(field_nid, f"{name}()", line, node_type=node_type)
+    add_edge(class_nid, field_nid, "defines", line, context=context)
+
 def _swift_local_var_types(body_node, source: bytes, table: dict[str, str]) -> None:
     """Collect ``var -> Type`` from local ``let``/``var`` bindings in a Swift
     function body, so a member call on the local (``x.method()``) resolves to Type
@@ -2034,6 +2235,9 @@ def _extract_generic(
     # threaded out as `swift_type_table` so member calls (`vm.update()`) can be
     # resolved to the receiver's real definition in _resolve_swift_member_calls.
     type_table: dict[str, str] = {}
+    # C++/Qt section state + QML registration aliases (#1716).
+    cpp_section_state: dict[str, str] = {}
+    cpp_qml_aliases: list[dict] = []
 
     csharp_interface_names: set[str] = set()
     if config.ts_module == "tree_sitter_c_sharp":
@@ -2875,6 +3079,19 @@ def _extract_generic(
         if (config.ts_module == "tree_sitter_cpp"
                 and t == "field_declaration"
                 and parent_class_nid):
+            # Qt macros aren't grammar; match by raw text (field_declaration
+            # returns before _cpp_extra_walk can see these nodes) (#1716).
+            fused_text = _read_text(node, source)
+            if "QML_NAMED_ELEMENT" in fused_text:
+                _cpp_record_named_element(
+                    fused_text, parent_class_nid, str_path, cpp_qml_aliases,
+                )
+            if "Q_PROPERTY" in fused_text:
+                _cpp_emit_q_property(
+                    fused_text, node, parent_class_nid, seen_ids,
+                    add_node, add_edge,
+                )
+                return
             # Skip method prototypes (field_declaration with a function_declarator
             # is a member-function declaration, not a data member).
             decls = list(node.children_by_field_name("declarator"))
@@ -2884,8 +3101,14 @@ def _extract_generic(
                     and any(c.type == "function_declarator" for c in d.children))
                 for d in decls
             )
-            if not is_method:
-                type_node = node.child_by_field_name("type")
+            type_node = node.child_by_field_name("type")
+            # Macro-only decls put the macro name in the type slot; don't emit
+            # a type-reference stub for Q_OBJECT / QML_NAMED_ELEMENT / etc.
+            type_is_macro_noise = (
+                type_node is not None
+                and _read_text(type_node, source) in _CPP_MACRO_NOISE_NAMES
+            )
+            if not is_method and not type_is_macro_noise:
                 if type_node is not None:
                     line = node.start_point[0] + 1
                     refs: list[tuple[str, str]] = []
@@ -2901,11 +3124,29 @@ def _extract_generic(
             # us the type name, not the field name). Handles int x, y; via
             # multiple declarator fields and static const int MAX = 100; via the
             # init_declarator → field_identifier recursion in _get_cpp_func_name.
+            section = cpp_section_state.get(parent_class_nid, "member")
             for decl in decls:
                 name = _get_cpp_func_name(decl, source)
-                if name:
-                    line = decl.start_point[0] + 1
-                    field_nid = _make_id(parent_class_nid, name)
+                if not name or name in _CPP_MACRO_NOISE_NAMES:
+                    continue
+                line = decl.start_point[0] + 1
+                field_nid = _make_id(parent_class_nid, name)
+                decl_is_method = (
+                    decl.type == "function_declarator"
+                    or (decl.type in ("pointer_declarator", "reference_declarator")
+                        and any(c.type == "function_declarator" for c in decl.children))
+                )
+                if section == "signal" and decl_is_method:
+                    _cpp_tag_or_add_member(
+                        nodes, seen_ids, add_node, add_edge, parent_class_nid,
+                        field_nid, name, line, "signal", "signal",
+                    )
+                elif section == "slot" and decl_is_method:
+                    _cpp_tag_or_add_member(
+                        nodes, seen_ids, add_node, add_edge, parent_class_nid,
+                        field_nid, name, line, "slot", "slot",
+                    )
+                else:
                     add_node(field_nid, name, line)
                     add_edge(parent_class_nid, field_nid, "defines", line, context="field")
             return
@@ -3339,6 +3580,13 @@ def _extract_generic(
                                 callable_def_nids):
                 return
 
+        if config.ts_module == "tree_sitter_cpp":
+            if _cpp_extra_walk(node, source, file_nid, stem, str_path,
+                               nodes, edges, seen_ids, function_bodies,
+                               parent_class_nid, add_node, add_edge,
+                               cpp_section_state, cpp_qml_aliases):
+                return
+
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the
         # inner function_definition in a `decorated_definition` node. The
         # default recurse below clears parent_class_nid, which would cause the
@@ -3358,6 +3606,9 @@ def _extract_generic(
             walk(child, parent_class_nid=None)
 
     walk(root)
+
+    if config.ts_module == "tree_sitter_cpp":
+        cpp_qml_aliases.extend(_cpp_scan_qml_registrations(root, source))
 
     # ── Call-graph pass ───────────────────────────────────────────────────────
     label_to_nid: dict[str, str] = {}     # case-sensitive (Ruby, C#, Java, Kotlin, etc.)
@@ -4171,6 +4422,8 @@ def _extract_generic(
                 n["_callable"] = True
     if swift_extensions:
         result["swift_extensions"] = swift_extensions
+    if cpp_qml_aliases:
+        result["cpp_qml_aliases"] = cpp_qml_aliases
     # TS/JS: augment the constructor-injection type table with local `new`
     # bindings and type-annotated parameters, so `const s = new Svc(); s.m()` and
     # a call on a typed param (incl. inside a closure) resolve (#1630). The

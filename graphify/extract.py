@@ -1623,9 +1623,20 @@ def extract_c(path: Path) -> dict:
     return _extract_generic(path, _C_CONFIG)
 
 
+# Bare Q_OBJECT/Q_GADGET (no semicolon) fuse with the next declaration under
+# tree-sitter-cpp error recovery, mangling a following signals:/slots: section.
+# Insert a semicolon so those sections parse as normal field_declarations (#1716).
+_CPP_BARE_QOBJECT_MACRO_RE = re.compile(rb"\b(Q_OBJECT|Q_GADGET)\b(?!\s*;)")
+
+
 def extract_cpp(path: Path) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file."""
-    return _extract_generic(path, _CPP_CONFIG)
+    try:
+        source = path.read_bytes()
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+    patched = _CPP_BARE_QOBJECT_MACRO_RE.sub(rb"\1;", source)
+    return _extract_generic(path, _CPP_CONFIG, source_override=patched)
 
 
 def extract_ruby(path: Path) -> dict:
@@ -2605,6 +2616,89 @@ def _resolve_objc_member_calls(
         })
 
 
+def _resolve_cpp_qml_aliases(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Repoint QML type stubs onto C++ classes via QML_NAMED_ELEMENT / qmlRegisterType (#1716).
+
+    Same-name links are already handled by ``_rewire_unique_stub_nodes``. This
+    pass covers aliases only, and only when the alias maps to exactly one class
+    and one stub (god-node guard). Runs after rewire + id-disambiguation.
+    """
+    alias_to_class_nids: dict[str, set[str]] = {}
+    label_lookups: list[tuple[str, str]] = []
+    for result in per_file:
+        for entry in result.get("cpp_qml_aliases", []):
+            alias = entry.get("alias")
+            if not alias:
+                continue
+            class_nid = entry.get("class_nid")
+            if class_nid:
+                alias_to_class_nids.setdefault(alias, set()).add(class_nid)
+                continue
+            class_label = entry.get("class_label")
+            if class_label:
+                label_lookups.append((alias, class_label))
+    if not alias_to_class_nids and not label_lookups:
+        return
+
+    node_by_id = {n.get("id"): n for n in all_nodes if n.get("id")}
+    valid_alias_to_class: dict[str, set[str]] = {
+        alias: real
+        for alias, nids in alias_to_class_nids.items()
+        if (real := {nid for nid in nids if nid in node_by_id})
+    }
+
+    if label_lookups:
+        contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+        class_nids_by_label: dict[str, set[str]] = {}
+        for n in all_nodes:
+            if (n.get("source_file") and n.get("id") in contained
+                    and _is_type_like_definition(n)):
+                class_nids_by_label.setdefault(n.get("label", ""), set()).add(n["id"])
+        for alias, class_label in label_lookups:
+            candidates = class_nids_by_label.get(class_label)
+            if candidates:
+                valid_alias_to_class.setdefault(alias, set()).update(candidates)
+
+    stub_ids_by_label: dict[str, list[str]] = {}
+    for n in all_nodes:
+        if n.get("source_file"):
+            continue
+        label, nid = n.get("label"), n.get("id")
+        if isinstance(label, str) and isinstance(nid, str):
+            stub_ids_by_label.setdefault(label, []).append(nid)
+
+    remap: dict[str, str] = {}
+    for alias, class_nids in valid_alias_to_class.items():
+        if len(class_nids) != 1:
+            continue
+        stub_ids = stub_ids_by_label.get(alias)
+        if not stub_ids or len(stub_ids) != 1:
+            continue
+        target_nid = next(iter(class_nids))
+        stub_id = stub_ids[0]
+        if stub_id != target_nid:
+            remap[stub_id] = target_nid
+
+    if not remap:
+        return
+
+    for edge in all_edges:
+        src, tgt = edge.get("source"), edge.get("target")
+        if src in remap:
+            edge["source"] = remap[src]
+        if tgt in remap:
+            edge["target"] = remap[tgt]
+
+    referenced = {x for e in all_edges for x in (e.get("source"), e.get("target"))}
+    drop_ids = {stub_id for stub_id in remap if stub_id not in referenced}
+    if drop_ids:
+        all_nodes[:] = [n for n in all_nodes if n.get("id") not in drop_ids]
+
+
 # Register the cross-file, language-specific member-call resolvers into the shared
 # registry (framework lives in graphify.resolver_registry). A new language plugs in
 # by adding one register() call below — no edits to extract()'s body. Order
@@ -2638,6 +2732,14 @@ register_language_resolver(
         "objc_member_calls",
         frozenset({".m", ".mm", ".h"}),
         _resolve_objc_member_calls,
+    )
+)
+# C++/QML alias bridge (#1716).
+register_language_resolver(
+    LanguageResolver(
+        "cpp_qml_aliases",
+        frozenset({".cpp", ".cc", ".cxx", ".hpp", ".cu", ".cuh", ".metal", ".h"}),
+        _resolve_cpp_qml_aliases,
     )
 )
 # C# receiver-typed member-call resolution (#1609): `field/param/local.Method()`
@@ -4328,6 +4430,11 @@ def extract(
                 cn = rc.get("caller_nid")
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
+            for result in per_file:
+                for alias_entry in result.get("cpp_qml_aliases", []):
+                    cn = alias_entry.get("class_nid")
+                    if cn in sym_remap:
+                        alias_entry["class_nid"] = sym_remap[cn]
 
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
