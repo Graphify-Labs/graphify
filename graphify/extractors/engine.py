@@ -1212,6 +1212,11 @@ _CPP_QML_REGISTER_FUNCS = frozenset({
     "qmlRegisterUncreatableType", "qmlRegisterExtendedType",
     "qmlRegisterExtendedUncreatableType",
 })
+# Uncreatable forms end with a reason string after the QML name, so the alias
+# is the second-to-last string_literal, not the last.
+_CPP_QML_REGISTER_UNCREATABLE = frozenset({
+    "qmlRegisterUncreatableType", "qmlRegisterExtendedUncreatableType",
+})
 
 
 def _cpp_parse_q_property(text: str) -> dict | None:
@@ -1251,8 +1256,9 @@ def _cpp_parse_q_property(text: str) -> dict | None:
 def _cpp_scan_qml_registrations(root, source: bytes) -> list[dict]:
     """Collect qmlRegisterType<T>(..., "Alias") as {class_label, alias} (#1716).
 
-    Alias is the last string_literal arg so singleton forms with a trailing
-    callback still resolve. Same-name registrations are skipped (generic rewire).
+    Alias is normally the last string_literal (singleton's trailing callback is
+    not a string). Uncreatable forms append a reason string after the name, so
+    those use the second-to-last string. Same-name registrations are skipped.
     """
     out: list[dict] = []
     stack = [root]
@@ -1279,14 +1285,18 @@ def _cpp_scan_qml_registrations(root, source: bytes) -> list[dict]:
                         if inner is not None:
                             class_label = _read_text(inner, source)
                     args = n.child_by_field_name("arguments")
-                    alias = None
+                    strings: list[str] = []
                     for c in (args.children if args is not None else []):
                         if c.type == "string_literal":
                             content = next(
                                 (g for g in c.children if g.type == "string_content"), None
                             )
                             if content is not None:
-                                alias = _read_text(content, source)
+                                strings.append(_read_text(content, source))
+                    if fn_name in _CPP_QML_REGISTER_UNCREATABLE:
+                        alias = strings[-2] if len(strings) >= 2 else None
+                    else:
+                        alias = strings[-1] if strings else None
                     if class_label and alias and class_label != alias:
                         out.append({"class_label": class_label, "alias": alias})
         stack.extend(n.children)

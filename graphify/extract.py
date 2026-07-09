@@ -2663,13 +2663,15 @@ def _resolve_cpp_qml_aliases(
             if candidates:
                 valid_alias_to_class.setdefault(alias, set()).update(candidates)
 
-    stub_ids_by_label: dict[str, list[str]] = {}
+    # Only QML type stubs carry origin_file; import-module nodes are sourceless
+    # too but must not be remapped if an alias collides with their label.
+    stub_ids_by_label: dict[str, set[str]] = {}
     for n in all_nodes:
-        if n.get("source_file"):
+        if n.get("source_file") or not n.get("origin_file"):
             continue
         label, nid = n.get("label"), n.get("id")
         if isinstance(label, str) and isinstance(nid, str):
-            stub_ids_by_label.setdefault(label, []).append(nid)
+            stub_ids_by_label.setdefault(label, set()).add(nid)
 
     remap: dict[str, str] = {}
     for alias, class_nids in valid_alias_to_class.items():
@@ -2679,7 +2681,7 @@ def _resolve_cpp_qml_aliases(
         if not stub_ids or len(stub_ids) != 1:
             continue
         target_nid = next(iter(class_nids))
-        stub_id = stub_ids[0]
+        stub_id = next(iter(stub_ids))
         if stub_id != target_nid:
             remap[stub_id] = target_nid
 

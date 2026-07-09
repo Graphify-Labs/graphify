@@ -1,10 +1,18 @@
 """C++/QML bridge tests for #1716 (aliases, signals, slots, Q_PROPERTY)."""
 from __future__ import annotations
 
+import importlib.util as _ilu
 from pathlib import Path
+
+import pytest
 
 from graphify.build import build_from_json
 from graphify.extract import extract
+
+_needs_qml = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_qmljs") is None,
+    reason="tree-sitter-qmljs not installed (optional [qml] extra)",
+)
 
 
 def _write(path: Path, text: str) -> Path:
@@ -17,6 +25,7 @@ def _edges(result: dict, relations=("instantiates", "inherits")):
     return [e for e in result["edges"] if e.get("relation") in relations]
 
 
+@_needs_qml
 def test_qml_named_element_alias_resolves_to_real_cpp_class(tmp_path: Path):
     """QML_NAMED_ELEMENT("AppBackend") bridges QML AppBackend{} to C++ Backend."""
     base = tmp_path / "src"
@@ -46,6 +55,7 @@ def test_qml_named_element_alias_resolves_to_real_cpp_class(tmp_path: Path):
     assert any(e["target"] == backend_nid for e in _edges(result))
 
 
+@_needs_qml
 def test_bare_qml_element_still_resolves_via_generic_label_match(tmp_path: Path):
     """QML_ELEMENT (same name) still resolves via generic stub rewire."""
     base = tmp_path / "src"
@@ -72,6 +82,7 @@ def test_bare_qml_element_still_resolves_via_generic_label_match(tmp_path: Path)
     assert any(e["target"] == widget_nid for e in _edges(result))
 
 
+@_needs_qml
 def test_ambiguous_qml_alias_left_unresolved(tmp_path: Path):
     """Same alias on two classes stays unresolved (god-node guard)."""
     base = tmp_path / "src"
@@ -109,6 +120,7 @@ def test_ambiguous_qml_alias_left_unresolved(tmp_path: Path):
     assert any(n.get("label") == "Shared" for n in result["nodes"])
 
 
+@_needs_qml
 def test_qml_bridge_edge_survives_build(tmp_path: Path):
     """Repointed instantiates edge survives build_from_json."""
     base = tmp_path / "src"
@@ -134,6 +146,7 @@ def test_qml_bridge_edge_survives_build(tmp_path: Path):
     assert any(d.get("relation") == "instantiates" for _, _, d in g.edges(data=True))
 
 
+@_needs_qml
 def test_qml_register_type_alias_resolves_to_real_cpp_class(tmp_path: Path):
     """qmlRegisterType<T>(..., "Alias") bridges by corpus label lookup."""
     base = tmp_path / "src"
