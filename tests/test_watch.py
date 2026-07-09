@@ -176,6 +176,56 @@ def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
     )
 
 
+def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(tmp_path, monkeypatch, capsys):
+    """Detached hooks can inherit a CWD that no longer exists.
+
+    Without GRAPHIFY_REPO_ROOT, the rebuild should fail cleanly before creating
+    relative graphify-out queue/lock files.
+    """
+    from graphify.watch import _rebuild_code
+
+    old_cwd = Path.cwd()
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.delenv("GRAPHIFY_REPO_ROOT", raising=False)
+
+    os.chdir(gone)
+    gone.rmdir()
+    try:
+        assert _rebuild_code(Path("."), changed_paths=[Path("lib.py")]) is False
+    finally:
+        os.chdir(old_cwd)
+
+    out = capsys.readouterr().out
+    assert "current working directory no longer exists" in out
+
+
+def test_rebuild_code_deleted_cwd_uses_graphify_repo_root(tmp_path, monkeypatch):
+    """GRAPHIFY_REPO_ROOT lets detached hook rebuilds recover from a deleted CWD."""
+    from graphify.watch import _rebuild_code
+
+    old_cwd = Path.cwd()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "lib.py").write_text("def f(): pass\n", encoding="utf-8")
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.setenv("GRAPHIFY_REPO_ROOT", str(corpus))
+
+    os.chdir(gone)
+    gone.rmdir()
+    try:
+        assert _rebuild_code(
+            Path("."),
+            changed_paths=[Path("lib.py")],
+            no_cluster=True,
+        ) is True
+        assert Path.cwd().resolve() == corpus.resolve()
+        assert (corpus / "graphify-out" / "graph.json").exists()
+    finally:
+        os.chdir(old_cwd)
+
+
 def test_rebuild_code_evicts_nodes_from_deleted_files(tmp_path):
     """#1007: graphify update (_rebuild_code with no changed_paths) must remove
     nodes and edges from files deleted since the last run."""

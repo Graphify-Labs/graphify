@@ -118,7 +118,9 @@ def test_estimate_file_tokens_uses_tiktoken_when_available(tmp_path):
 
     # Force the tokenizer to be a mock that records calls and returns a known
     # token list, so we can assert the tiktoken path is taken.
-    fake_encoder = type("E", (), {"encode": staticmethod(lambda s: [0] * 999)})()
+    # Match tiktoken's real signature: encode(text, *, disallowed_special=...)
+    # so the #1685 hardening call (disallowed_special=()) reaches the mock.
+    fake_encoder = type("E", (), {"encode": staticmethod(lambda s, **kw: [0] * 999)})()
     with patch.object(llm, "_TOKENIZER", fake_encoder):
         n = llm._estimate_file_tokens(f)
     assert n == 999 + (llm._PER_FILE_OVERHEAD_CHARS // llm._CHARS_PER_TOKEN)
@@ -497,3 +499,30 @@ def test_corpus_parallel_uses_adaptive_retry(tmp_path):
     assert len(chunk_done_args) == 1
     assert chunk_done_args[0] == (0, 1, 4)
     assert len(result["nodes"]) == 4
+
+
+# ---- #1685: special-token strings in docs must not crash token estimation ----
+
+def test_estimate_file_tokens_handles_tiktoken_special_token(tmp_path):
+    """A doc containing a literal tiktoken special token (e.g. <|endoftext|>)
+    must not crash token estimation. tiktoken's default encode() raises on such
+    strings appearing as ordinary text; we pass disallowed_special=() since this
+    is only an estimate (#1685)."""
+    import graphify.llm as llm
+    if llm._TOKENIZER is None:
+        import pytest
+        pytest.skip("tiktoken not installed; estimation uses the char heuristic")
+    f = tmp_path / "tokenizer-notes.md"
+    f.write_text("The GPT end-of-text token is <|endoftext|> in the vocab.\n")
+    n = llm._estimate_file_tokens(f)  # must not raise
+    assert isinstance(n, int) and n > 0
+
+
+def test_pack_chunks_with_special_token_doc_does_not_crash(tmp_path):
+    """End to end: packing a corpus that includes a special-token doc must not
+    raise (the crash in #1685 happened during token-budget packing)."""
+    from graphify.llm import _pack_chunks_by_tokens
+    doc = tmp_path / "doc.md"; doc.write_text("see <|endoftext|> and <|im_start|> tokens\n")
+    code = tmp_path / "code.py"; code.write_text("def f():\n    return 1\n")
+    chunks = _pack_chunks_by_tokens([doc, code], token_budget=60_000)
+    assert chunks  # produced at least one chunk, no exception

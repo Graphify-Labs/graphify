@@ -276,7 +276,11 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
         root_resolved = Path(root).resolve()
     except OSError:
         return
-    for bucket in ("nodes", "edges", "hyperedges"):
+    # raw_calls (#: Pascal/Delphi cross-file inherited-call resolution) carries
+    # source_file the same way nodes/edges/hyperedges do, so it needs the same
+    # portable-path treatment for cache entries to round-trip correctly across
+    # machines/checkout directories.
+    for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
                 continue
@@ -307,7 +311,7 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
         root_resolved = Path(root).resolve()
     except OSError:
         return
-    for bucket in ("nodes", "edges", "hyperedges"):
+    for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
                 continue
@@ -400,7 +404,7 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     # source_file field's original absolute form. Mutating the input here would
     # silently break those remaps on the first extraction pass.
     on_disk = result
-    if isinstance(result, dict) and any(result.get(k) for k in ("nodes", "edges", "hyperedges")):
+    if isinstance(result, dict) and any(result.get(k) for k in ("nodes", "edges", "hyperedges", "raw_calls")):
         import copy as _copy
         on_disk = _copy.deepcopy(result)
         _relativize_source_files_in(on_disk, root)
@@ -533,12 +537,18 @@ def save_semantic_cache(
     edges: list[dict],
     hyperedges: list[dict] | None = None,
     root: Path = Path("."),
+    merge_existing: bool = False,
 ) -> int:
     """Save semantic extraction results to cache, keyed by source_file.
 
     Groups nodes and edges by source_file, then saves one cache entry per file
     under cache/semantic/ (separate from AST entries in cache/ast/) to prevent
     hash-key collisions (#582).
+
+    When ``merge_existing`` is True, any already-cached entry for a file is
+    unioned with the new results before saving instead of being overwritten.
+    This lets callers checkpoint incrementally (e.g. once per chunk) without
+    dropping a prior slice of a large file that was split across chunks.
     Returns the number of files cached.
     """
     from collections import defaultdict
@@ -563,6 +573,14 @@ def save_semantic_cache(
         if not p.is_absolute():
             p = Path(root) / p
         if p.is_file():
+            if merge_existing:
+                prev = load_cached(p, root, kind="semantic")
+                if prev:
+                    result = {
+                        "nodes": (prev.get("nodes", []) or []) + result["nodes"],
+                        "edges": (prev.get("edges", []) or []) + result["edges"],
+                        "hyperedges": (prev.get("hyperedges", []) or []) + result["hyperedges"],
+                    }
             save_cached(p, result, root, kind="semantic")
             saved += 1
     return saved

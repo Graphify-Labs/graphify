@@ -20,6 +20,7 @@ from graphify.security import (
     _MAX_FETCH_BYTES,
     _MAX_GRAPH_FILE_BYTES,
     _MAX_TEXT_BYTES,
+    _max_graph_file_bytes,
     _METADATA_MAX_LIST_ITEMS,
     _METADATA_MAX_VALUE_LEN,
     _sanitize_metadata_string,
@@ -225,6 +226,57 @@ def test_sanitize_label_safe_passthrough():
 
 def test_graph_size_cap_default_is_512_mib():
     assert _MAX_GRAPH_FILE_BYTES == 512 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# _max_graph_file_bytes — GRAPHIFY_MAX_GRAPH_BYTES env-var parsing
+# ---------------------------------------------------------------------------
+
+def test_max_graph_bytes_default_when_unset(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_MAX_GRAPH_BYTES", raising=False)
+    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
+
+
+def test_max_graph_bytes_default_when_blank(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "   ")
+    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
+
+
+def test_max_graph_bytes_plain_integer(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "671088640")
+    assert _max_graph_file_bytes() == 671088640
+
+
+def test_max_graph_bytes_mb_suffix_is_binary(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "640MB")
+    assert _max_graph_file_bytes() == 640 * 1024 * 1024
+
+
+def test_max_graph_bytes_gb_suffix_is_binary(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "2GB")
+    assert _max_graph_file_bytes() == 2 * 1024 * 1024 * 1024
+
+
+def test_max_graph_bytes_suffix_is_case_insensitive(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "3gb")
+    assert _max_graph_file_bytes() == 3 * 1024 * 1024 * 1024
+
+
+def test_max_graph_bytes_tolerates_space_before_suffix(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "5 GB")
+    assert _max_graph_file_bytes() == 5 * 1024 * 1024 * 1024
+
+
+@pytest.mark.parametrize("bad", ["not-a-number", "1.5GB", "0x10", "640KB"])
+def test_max_graph_bytes_unparseable_falls_back(monkeypatch, bad):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", bad)
+    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
+
+
+@pytest.mark.parametrize("nonpositive", ["0", "-1", "-4GB"])
+def test_max_graph_bytes_nonpositive_falls_back(monkeypatch, nonpositive):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", nonpositive)
+    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
 
 
 def test_graph_size_cap_under_limit_returns_none(tmp_path):

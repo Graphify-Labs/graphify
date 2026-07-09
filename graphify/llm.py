@@ -131,8 +131,10 @@ BACKENDS: dict[str, dict] = {
         "env_key": "DEEPSEEK_API_KEY",
         "model_env_key": "GRAPHIFY_DEEPSEEK_MODEL",
         "pricing": {"input": 0.14, "output": 0.28},  # USD per 1M tokens (v4-flash)
-        # deepseek-reasoner / thinking-mode models silently ignore temperature;
-        # deepseek-chat / v4-flash (non-thinking) accept 0-2. Safe to send 0.
+        # deepseek-reasoner silently ignores temperature; deepseek-chat / v4-flash
+        # accept 0-2, so sending 0 is safe. Note: deepseek-v4-flash (and v4-pro) have
+        # thinking ENABLED by default (verified against the live API, #1621) — set
+        # GRAPHIFY_DISABLE_THINKING=1 to turn it off (tradeoff documented on the flag).
         "temperature": 0,
         "max_tokens": 16384,
     },
@@ -387,6 +389,22 @@ def _resolve_max_retries(default: int = 6) -> int:
         except ValueError:
             pass
     return default
+
+
+def _thinking_disabled_via_env() -> bool:
+    """Opt-in (GRAPHIFY_DISABLE_THINKING) to send ``{"thinking": {"type": "disabled"}}``
+    to reasoning-capable OpenAI-compatible models such as ``deepseek-v4-flash``.
+
+    Off by default and deliberately so (#1621): a thinking-on model can occasionally
+    leak reasoning prose instead of JSON, but that response is caught and re-tried by
+    the adaptive extraction/labeling retry, so it is a rare, recoverable failure.
+    Disabling thinking removes that failure mode but, measured on real corpora, trades
+    it for far more frequent (benign) truncation AND measurably lower extraction
+    quality and file coverage. So this stays a user choice for those who value
+    run-to-run stability over extraction quality, not a forced default. The moonshot
+    (kimi) branch keeps disabling thinking unconditionally because that model returns
+    empty content otherwise."""
+    return os.environ.get("GRAPHIFY_DISABLE_THINKING", "").strip().lower() in ("1", "true", "yes", "on")
 
 _EXTRACTION_SYSTEM = """\
 You are a graphify semantic extraction agent. Extract a knowledge graph fragment from the files provided.
@@ -962,8 +980,18 @@ def _call_openai_compat(
     # default. Honour GRAPHIFY_API_TIMEOUT (seconds) for explicit override;
     # default to 600s, which is long enough for a 31B model on a 16k chunk
     # but still bounds runaway connections (issue #792 addendum).
+    # The SDK's transient-error retries (default 6) exist for cloud rate limits
+    # (429). A local Ollama server does not rate-limit, and if it wedges it will
+    # not recover by retrying, so 6 retries turn a 180s --api-timeout into a
+    # ~21min block (7 attempts x 180s) with no progress (#1686). Default ollama
+    # to 0 SDK retries so --api-timeout is the hard wall-clock bound and a hung
+    # request fails fast into the chunk-level retry/skip. An explicit
+    # GRAPHIFY_MAX_RETRIES still wins for users who want it.
+    _retries = _resolve_max_retries()
+    if backend == "ollama" and not os.environ.get("GRAPHIFY_MAX_RETRIES", "").strip():
+        _retries = 0
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=_resolve_api_timeout(),
-                    max_retries=_resolve_max_retries())
+                    max_retries=_retries)
     kwargs: dict = {
         "model": model,
         "messages": [
@@ -985,6 +1013,10 @@ def _call_openai_compat(
         kwargs["extra_body"] = extra_body
     # Kimi-k2.6 is a reasoning model — disable thinking so content isn't empty
     elif "moonshot" in base_url:
+        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    # Opt-in only: disable thinking for reasoning models like deepseek-v4-flash
+    # (#1621). Not a default — see _thinking_disabled_via_env for the tradeoff.
+    elif _thinking_disabled_via_env():
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     # Ollama defaults num_ctx to 2048 and silently truncates prompts larger
     # than that — the symptom is hollow 200 OK responses after the first few
@@ -1507,7 +1539,7 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
             content = read_slice_text(unit)[:_FILE_CHAR_CAP]
         except OSError:
             return 0
-        return len(_TOKENIZER.encode(content)) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
+        return len(_TOKENIZER.encode(content, disallowed_special=())) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
 
     path = unit
     # Raster images are not read as text; a vision model bills them at a roughly
@@ -1526,7 +1558,7 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
         content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
     except OSError:
         return 0
-    return len(_TOKENIZER.encode(content)) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
+    return len(_TOKENIZER.encode(content, disallowed_special=())) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
 
 
 def _pack_chunks_by_tokens(
@@ -1871,6 +1903,27 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
+    def _checkpoint_chunk(result: dict) -> None:
+        # Persist each chunk's semantic results to the cache as soon as it
+        # completes. Without this, the semantic cache is only written once, at
+        # the very end of the run (in __main__), so a run interrupted partway
+        # — a crash, a kill, or a claude-cli/API run that exits on a rate
+        # limit — loses every completed chunk and restarts from scratch. This
+        # is best-effort: a cache write failure must never abort extraction.
+        if os.environ.get("GRAPHIFY_NO_INCREMENTAL_CACHE"):
+            return
+        try:
+            from .cache import save_semantic_cache as _scs
+            _scs(
+                result.get("nodes", []),
+                result.get("edges", []),
+                result.get("hyperedges", []),
+                root=root,
+                merge_existing=True,
+            )
+        except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
+            print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)
+
     workers = max(1, min(max_concurrency, total))
     if workers == 1:
         # Avoid thread pool overhead for single-worker runs (and keep
@@ -1883,6 +1936,7 @@ def extract_corpus_parallel(
                 continue
             assert result is not None
             _merge_into(merged, result)
+            _checkpoint_chunk(result)
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
     else:
@@ -1907,6 +1961,7 @@ def extract_corpus_parallel(
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
+                _checkpoint_chunk(result)
                 if callable(on_chunk_done):
                     on_chunk_done(idx, total, result)
         for idx in sorted(results_by_idx):
@@ -1939,8 +1994,14 @@ def _call_llm(
     backend: str,
     max_tokens: int = 200,
     model: str | None = None,
+    usage_out: dict | None = None,
 ) -> str:
     """Send a plain-text prompt to `backend` and return the model's text reply.
+
+    When ``usage_out`` is provided it is accumulated in place with ``input`` and
+    ``output`` token counts from the response, so callers (community labeling)
+    can total the cost of otherwise-uninstrumented LLM calls (#1694). Existing
+    callers that omit it are unaffected.
 
     Used by lightweight callers (e.g. `graphify.dedup` LLM tiebreaker) that
     don't need the full extraction prompt or JSON-shaped output. Mirrors the
@@ -1965,6 +2026,11 @@ def _call_llm(
         )
     mdl = model or _default_model_for_backend(backend)
 
+    def _rec(inp, out) -> None:
+        if usage_out is not None:
+            usage_out["input"] = usage_out.get("input", 0) + int(inp or 0)
+            usage_out["output"] = usage_out.get("output", 0) + int(out or 0)
+
     if backend == "claude":
         try:
             import anthropic
@@ -1976,6 +2042,9 @@ def _call_llm(
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            _rec(getattr(u, "input_tokens", 0), getattr(u, "output_tokens", 0))
         return resp.content[0].text if resp.content else ""
 
     if backend == "claude-cli":
@@ -2009,6 +2078,14 @@ def _call_llm(
         if proc.returncode != 0:
             raise RuntimeError(f"claude -p exited {proc.returncode}: {proc.stderr.strip()[:500]}")
         envelope = _claude_cli_envelope(proc.stdout)
+        cli_usage = envelope.get("usage") or {}
+        if cli_usage:
+            _rec(
+                (cli_usage.get("input_tokens", 0) or 0)
+                + (cli_usage.get("cache_read_input_tokens", 0) or 0)
+                + (cli_usage.get("cache_creation_input_tokens", 0) or 0),
+                cli_usage.get("output_tokens", 0),
+            )
         return envelope.get("result", "")
 
 
@@ -2026,6 +2103,9 @@ def _call_llm(
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             inferenceConfig=_bedrock_inference_config(max_tokens, mdl),
         )
+        bu = resp.get("usage") or {}
+        if bu:
+            _rec(bu.get("inputTokens", 0), bu.get("outputTokens", 0))
         return resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
 
     if backend == "azure":
@@ -2046,6 +2126,9 @@ def _call_llm(
         resp = azure_client.chat.completions.create(**azure_kwargs)
         if not resp.choices or resp.choices[0].message is None:
             raise ValueError("Azure OpenAI returned empty or filtered response")
+        au = getattr(resp, "usage", None)
+        if au is not None:
+            _rec(getattr(au, "prompt_tokens", 0), getattr(au, "completion_tokens", 0))
         return resp.choices[0].message.content or ""
 
     # OpenAI-compatible (kimi, openai, gemini, ollama)
@@ -2075,9 +2158,14 @@ def _call_llm(
         kwargs["extra_body"] = cfg["extra_body"]
     elif "moonshot" in cfg["base_url"]:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    elif _thinking_disabled_via_env():
+        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
+    ou = getattr(resp, "usage", None)
+    if ou is not None:
+        _rec(getattr(ou, "prompt_tokens", 0), getattr(ou, "completion_tokens", 0))
     return resp.choices[0].message.content or ""
 
 
@@ -2247,9 +2335,25 @@ def _parse_label_response(text: str, labeled_cids: list[int]) -> dict[int, str]:
         start, end = cleaned.find("{"), cleaned.rfind("}")
         if start != -1 and end > start:
             cleaned = cleaned[start:end + 1]
-    data = json.loads(cleaned)
-    if not isinstance(data, dict):
-        raise ValueError("label response is not a JSON object")
+    data: dict | None = None
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            data = parsed
+    except (json.JSONDecodeError, ValueError):
+        data = None
+    if data is None:
+        # Salvage: pull the complete "<cid>": "<name>" pairs directly. A model
+        # can truncate its reply mid-object (a stingy token budget or a preamble
+        # eating the completion), which used to hard-fail the whole batch with
+        # e.g. `Expecting value: line 1 column 6` on a `{"0":` fragment (#1690).
+        # Recovering the pairs that DID arrive labels those communities instead
+        # of dropping the entire batch to placeholders.
+        pairs = re.findall(r'"?(-?\d+)"?\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
+        if pairs:
+            data = {k: v for k, v in pairs}
+        else:
+            raise ValueError(f"label response is not parseable JSON: {text[:120]!r}")
     out: dict[int, str] = {}
     for cid in labeled_cids:
         name = data.get(str(cid))
@@ -2268,6 +2372,7 @@ def _label_batch_with_retry(
     model: str | None,
     depth: int = 0,
     max_depth: int = 3,
+    usage_out: dict | None = None,
 ) -> dict[int, str]:
     """Label a batch of communities, splitting in half and retrying on parse failure.
 
@@ -2291,10 +2396,18 @@ def _label_batch_with_retry(
         "Respond ONLY with a JSON object mapping the community id (as a string) to "
         "its name - no prose, no markdown fences.\n\n" + "\n".join(batch_lines)
     )
-    max_tokens = _resolve_max_tokens(min(64 + 24 * len(batch_cids), 8192))
+    # Budget generously: a 2-5 word name is ~10 tokens, but models (notably
+    # gemini) often prepend a short preamble or reasoning that eats the
+    # completion and truncates the JSON mid-object, which used to fail the whole
+    # batch (#1690). The old 64 + 24*n floor left no headroom.
+    max_tokens = _resolve_max_tokens(min(256 + 48 * len(batch_cids), 8192))
     call_kwargs: dict = {"backend": backend, "max_tokens": max_tokens}
     if model is not None:
         call_kwargs["model"] = model
+    # Only forward usage_out when the caller wants accounting, so existing
+    # callers (and their test doubles) see the unchanged _call_llm signature.
+    if usage_out is not None:
+        call_kwargs["usage_out"] = usage_out
 
     try:
         text = _call_llm(prompt, **call_kwargs)
@@ -2315,10 +2428,12 @@ def _label_batch_with_retry(
         left = _label_batch_with_retry(
             batch_cids[:mid], batch_lines[:mid],
             backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+            usage_out=usage_out,
         )
         right = _label_batch_with_retry(
             batch_cids[mid:], batch_lines[mid:],
             backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+            usage_out=usage_out,
         )
         return left | right
 
@@ -2334,6 +2449,7 @@ def label_communities(
     top_k: int = _LABEL_TOP_K,
     batch_size: int = _LABEL_BATCH_SIZE,
     max_concurrency: int = 4,
+    usage_out: dict | None = None,
 ) -> dict[int, str]:
     """Return a complete ``{cid: name}`` map using ``backend`` for naming.
 
@@ -2376,19 +2492,30 @@ def label_communities(
     def _run_batch(batch_idx: int):
         start = batch_idx * batch_size
         end = min(start + batch_size, len(labeled_cids))
+        # Accumulate token usage into a per-batch dict so concurrent workers
+        # never race on the shared accumulator; it is merged on the main thread
+        # in _merge (#1694).
+        batch_usage: dict = {} if usage_out is not None else None
+        batch_kwargs = {"usage_out": batch_usage} if usage_out is not None else {}
         try:
             parsed = _label_batch_with_retry(
                 labeled_cids[start:end], lines[start:end], backend=backend, model=model,
+                **batch_kwargs,
             )
-            return batch_idx, parsed, None
+            return batch_idx, parsed, None, batch_usage
         except Exception as exc:  # noqa: BLE001 - reported per-batch; surfaced below
-            return batch_idx, None, exc
+            return batch_idx, None, exc, batch_usage
 
     written = 0
     errors: dict[int, Exception] = {}
 
-    def _merge(batch_idx: int, parsed, exc) -> None:
+    def _merge(batch_idx: int, parsed, exc, batch_usage=None) -> None:
         nonlocal written
+        # Count tokens even for a failed batch: the LLM call was billed whether
+        # or not the reply parsed.
+        if usage_out is not None and batch_usage:
+            usage_out["input"] = usage_out.get("input", 0) + batch_usage.get("input", 0)
+            usage_out["output"] = usage_out.get("output", 0) + batch_usage.get("output", 0)
         if exc is not None:
             errors[batch_idx] = exc
             start = batch_idx * batch_size
@@ -2430,6 +2557,7 @@ def generate_community_labels(
     quiet: bool = False,
     max_concurrency: int = 4,
     batch_size: int = _LABEL_BATCH_SIZE,
+    usage_out: dict | None = None,
 ) -> tuple[dict[int, str], str]:
     """CLI entry point: resolve a backend, name communities, and degrade to
     ``Community N`` placeholders on any failure (no backend, API error, malformed
@@ -2452,6 +2580,7 @@ def generate_community_labels(
         labels = label_communities(
             G, communities, backend=backend, model=model, gods=gods,
             max_concurrency=max_concurrency, batch_size=batch_size,
+            usage_out=usage_out,
         )
         return labels, "llm"
     except Exception as exc:

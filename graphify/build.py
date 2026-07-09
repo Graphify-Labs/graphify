@@ -507,7 +507,32 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # fragment (e.g. an incremental update whose fragment references a symbol in a
     # file that was NOT re-extracted) still resolves to the migrated node instead
     # of dangling. Only fills gaps — never overrides a real node id.
+    #
+    # The old-stem form drops the extension and (for the file node itself) every
+    # directory but the immediate parent, so it collapses easily: "ping.h" and
+    # "ping.php" in different directories both alias to bare "ping". Collecting
+    # every candidate for an alias BEFORE committing any of them — and only
+    # committing when exactly one candidate claims it — keeps this a precise
+    # re-keying aid instead of a silent cross-file (and cross-language) merge.
+    # Without this, a dangling edge to a bare, deliberately-unscoped fallback id
+    # (e.g. the C/C++ extractor's last-resort target for an #include it couldn't
+    # resolve to a real path) could ride this alias onto whichever unrelated
+    # same-stem file happened to be inserted first into ``node_set`` — a Python
+    # set, so "first" is hash-order, not anything meaningful.
+    #
+    # A file node's OWN id is not always a clean ``new_stem`` prefix: when a
+    # same-directory ``.h``/``.cpp`` pair collides on their shared pre-extension
+    # id, _disambiguate_colliding_node_ids salts both apart into ids like
+    # ``tools_aolserver_utility_h_tools_aolserver_utility`` — which no longer
+    # string-prefixes cleanly for the suffix math below. Detecting "this IS the
+    # file node" by label (every file node's label is its own basename,
+    # regardless of id mangling) instead of by id shape keeps a salted file node
+    # in the alias competition, so a genuine collision (a C header AND an
+    # unrelated same-named PHP script) is still caught as ambiguous instead of
+    # the header silently dropping out of the race and leaving the PHP file as
+    # the lone (wrong) "unambiguous" winner.
     from graphify.extractors.base import _file_stem as _fs
+    _alias_candidates: dict[str, set[str]] = {}
     for nid in node_set:
         attrs = G.nodes[nid]
         sf = attrs.get("source_file")
@@ -517,15 +542,21 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if rel.is_absolute():
             continue
         new_stem = make_id(_fs(rel))
-        suffix = ""
-        if _normalize_id(nid).startswith(new_stem):
-            suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
+        if str(attrs.get("label", "")) == rel.name:
+            suffix = ""  # this node IS the file, whatever its (possibly salted) id
+        else:
+            suffix = ""
+            if _normalize_id(nid).startswith(new_stem):
+                suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
         for old_stem in _old_file_stems(rel):
             if old_stem == new_stem:
                 continue
             alias = old_stem + suffix
-            norm_to_id.setdefault(_normalize_id(alias), nid)
-            norm_to_id.setdefault(alias, nid)
+            _alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
+            _alias_candidates.setdefault(alias, set()).add(nid)
+    for alias_key, candidates in _alias_candidates.items():
+        if len(candidates) == 1:
+            norm_to_id.setdefault(alias_key, next(iter(candidates)))
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
@@ -923,6 +954,34 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
         data["repo"] = repo_tag
         data.setdefault("local_id", node.split("::", 1)[1])
     return H
+
+
+def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
+    """Return a unique, human-meaningful repo tag per input graph for merge-graphs.
+
+    The naive tag (the ``graphify-out`` parent dir name) is NOT unique across
+    inputs: ``src/graphify-out`` and ``frontend/src/graphify-out`` both yield
+    ``src``. Prefixing both node sets with ``src::`` then makes same-stem nodes
+    (a backend ``src/app.js`` and a frontend ``App.jsx``, both bare ``app``)
+    collide, so ``nx.compose`` silently merges two unrelated entities and invents
+    cross-runtime edges (#1729). Colliding tags are widened with their own parent
+    dir (``frontend_src``), then an index suffix guarantees uniqueness so no two
+    graphs ever share a prefix.
+    """
+    repo_dirs = [p.parent.parent for p in graph_paths]  # graphify-out/.. → repo dir
+    tags = [d.name or "repo" for d in repo_dirs]
+    if len(set(tags)) != len(tags):
+        widened: list[str] = []
+        for d in repo_dirs:
+            parent = d.parent.name
+            widened.append(f"{parent}_{d.name}" if parent and d.name else (d.name or "repo"))
+        tags = widened
+    seen: dict[str, int] = {}
+    unique: list[str] = []
+    for t in tags:
+        seen[t] = seen.get(t, 0) + 1
+        unique.append(t if seen[t] == 1 else f"{t}-{seen[t]}")
+    return unique
 
 
 def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:

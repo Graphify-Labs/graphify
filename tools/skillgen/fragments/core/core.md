@@ -7,7 +7,7 @@ Turn any folder of files into a navigable knowledge graph with community detecti
 ## Usage
 
 ```
-/graphify                                             # full pipeline on current directory → Obsidian vault
+/graphify                                             # full pipeline on current directory (HTML viz; add --obsidian for a vault)
 /graphify <path>                                      # full pipeline on specific path
 /graphify https://github.com/<owner>/<repo>           # clone repo then run full pipeline on it
 /graphify https://github.com/<owner>/<repo> --branch <branch>  # clone a specific branch

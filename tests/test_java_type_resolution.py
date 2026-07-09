@@ -77,6 +77,58 @@ def test_java_ambiguous_implements_disambiguated_by_import(tmp_path: Path):
     assert "com/b/handler" not in tgt["source_file"]
 
 
+def test_java_ambiguous_reference_disambiguated_by_import(tmp_path: Path):
+    # #1744: two classes with the SAME simple name in different modules/packages.
+    # Both survive as distinct path-scoped nodes, but a cross-module field/type
+    # `references` edge used to dangle on a sourceless phantom stub (the
+    # implements/inherits case was handled, references was not). The importing
+    # file's `import` must re-point the reference to the right class and leave no
+    # orphan phantom.
+    payment = _write(
+        tmp_path / "payment/src/com/example/payment/FinancialEntryValidator.java",
+        "package com.example.payment;\n"
+        "public class FinancialEntryValidator {\n"
+        "    public boolean validateCurrency(String c) { return c.length() == 3; }\n"
+        "}\n",
+    )
+    core = _write(
+        tmp_path / "core/src/com/example/core/FinancialEntryValidator.java",
+        "package com.example.core;\n"
+        "public class FinancialEntryValidator {\n"
+        "    public void auditEntry(String id) {}\n"
+        "}\n",
+    )
+    consumer = _write(
+        tmp_path / "app/src/com/example/app/PaymentService.java",
+        "package com.example.app;\n"
+        "import com.example.payment.FinancialEntryValidator;\n"
+        "public class PaymentService {\n"
+        "    private FinancialEntryValidator validator = new FinancialEntryValidator();\n"
+        "}\n",
+    )
+    result = extract([payment, core, consumer], cache_root=tmp_path)
+
+    # Both real classes survive (path-scoped ids); no sourceless phantom remains.
+    fev = [n for n in result["nodes"] if n.get("label") == "FinancialEntryValidator"]
+    reals = [n for n in fev if n.get("source_file")]
+    phantoms = [n for n in fev if not n.get("source_file")]
+    assert len(reals) == 2, f"expected both real classes, got {[n.get('source_file') for n in fev]}"
+    assert not phantoms, f"orphan phantom node(s) remain: {[n['id'] for n in phantoms]}"
+
+    # The reference must resolve to the IMPORTED (payment) class, not core.
+    refs = [
+        e for e in result["edges"]
+        if e["relation"] == "references"
+        and (_node_by_id(result, e["target"]) or {}).get("label") == "FinancialEntryValidator"
+    ]
+    assert refs, "expected a references edge to FinancialEntryValidator"
+    for e in refs:
+        tgt = _node_by_id(result, e["target"])
+        assert tgt is not None and tgt.get("source_file")
+        assert "payment/" in tgt["source_file"]
+        assert "core/" not in tgt["source_file"]
+
+
 def test_java_implements_edge_survives_build(tmp_path: Path):
     # #1318: the re-pointed edge must connect real nodes after graph assembly,
     # so the interface is not classified as an isolated community.

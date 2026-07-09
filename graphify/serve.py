@@ -285,7 +285,11 @@ def _trigram_candidates(G: nx.Graph, needles: list[str], *, guard_frac: float = 
 
 def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     scored = []
-    norm_terms = [tok for t in terms for tok in _search_tokens(t)]
+    # Dedupe tokens, order-preserving (as _pick_seeds already does): a repeated
+    # query word must not double-count every tier, and with coverage scaling
+    # below it would also inflate the matched-term ratio (#1602).
+    norm_terms = list(dict.fromkeys(tok for t in terms for tok in _search_tokens(t)))
+    n_terms = len(norm_terms)
     idf = _compute_idf(G, norm_terms)
     # Whole-query string for full-label matching (mirrors _find_node's `term`).
     joined = " ".join(norm_terms)
@@ -328,18 +332,38 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
                 or label_tokens.startswith(joined)
             ):
                 score += _PREFIX_MATCH_BONUS * 10 * joined_w
+        # Term coverage (#1602): scale the per-term exact/prefix tiers by the
+        # squared fraction of query terms the node's LABEL matches, so a lone
+        # generic word that happens to equal a short label (query term "home"
+        # vs. a home() leaf) cannot bury nodes that match several of the
+        # query's terms. Squaring matters because the exact tier is 10x the
+        # prefix tier: at linear coverage a 1-of-10-terms exact match still
+        # outscores a 3-of-10 prefix+substring match. Single-term and
+        # full-coverage queries are unchanged (coverage == 1), so identifier
+        # lookups keep exact-match dominance. Source-file hits score but do
+        # not count as coverage: a colliding leaf whose directory shares
+        # tokens with the query (common near the intended target) must not
+        # win back its exact tier via path fragments. The substring/source
+        # bonuses and the full-query tier above stay unscaled.
+        matched = 0
+        tiered = 0.0
         for t in norm_terms:
             w = idf.get(t, 1.0)
             # Three-tier precedence: exact > prefix > substring (take the
             # strongest tier per term so a single term cannot double-count).
             if t == norm_label or t == bare_label:
-                score += _EXACT_MATCH_BONUS * w
+                tiered += _EXACT_MATCH_BONUS * w
+                matched += 1
             elif norm_label.startswith(t) or bare_label.startswith(t):
-                score += _PREFIX_MATCH_BONUS * w
+                tiered += _PREFIX_MATCH_BONUS * w
+                matched += 1
             elif t in norm_label:
                 score += _SUBSTRING_MATCH_BONUS * w
+                matched += 1
             if t in source:
                 score += _SOURCE_MATCH_BONUS * w
+        if tiered:
+            score += tiered * (matched / n_terms) ** 2
         if score > 0:
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
@@ -378,6 +402,12 @@ def _pick_seeds(
     collision cannot starve out the others. Ties within a term are broken by
     graph degree (structural centrality), so an isolated incidental match
     doesn't out-rank a real, well-connected hub for that term.
+
+    Coverage scaling in _score_nodes (#1602) now dampens a lone collision's
+    exact tier on multi-term queries, which brings label-matching relevant
+    nodes back inside the gap window; this per-term guarantee remains
+    load-bearing for relevant nodes matched only via substrings, whose flat
+    scores a dampened collision can still exceed.
     """
     if not scored:
         return []
@@ -664,13 +694,20 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
     term = " ".join(_search_tokens(label))
     if not term:
         return []
+    # Punctuation-preserving normalized query. `term` tokenizes on \w+ (so
+    # "blockStream.ts" -> "blockstream ts", space where the '.' was), but a node's
+    # stored `norm_label` keeps punctuation ("blockstream.ts"). Matching only via
+    # `term`/`label_tokens` works when the node label tokenizes the same way, but is
+    # fragile if `label` and `norm_label` diverge. `norm_query` matches `norm_label`
+    # symmetrically so an exactly-typed punctuated label always resolves (#1704).
+    norm_query = _strip_diacritics(str(label)).lower().strip()
     source_exact: list[str] = []
     exact: list[str] = []
     prefix: list[str] = []
     substring: list[str] = []
     # Trigram prefilter (graph-iteration order preserved so exact/prefix/substring
     # ordering — and thus matches[0] — is byte-identical to the full scan).
-    candidate_ids = _trigram_candidates(G, [term])
+    candidate_ids = _trigram_candidates(G, [term, norm_query])
     node_iter = (
         G.nodes(data=True) if candidate_ids is None
         else ((nid, G.nodes[nid]) for nid in candidate_ids)
@@ -683,16 +720,21 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
         nid_lower = nid.lower()
         if term == source_tokens:
             source_exact.append(nid)
-        elif term == norm_label or term == bare_label or term == label_tokens or term == nid_lower:
+        elif (
+            term == norm_label or term == bare_label or term == label_tokens or term == nid_lower
+            or norm_query == norm_label or norm_query == bare_label
+        ):
             exact.append(nid)
         elif (
             norm_label.startswith(term)
             or bare_label.startswith(term)
             or label_tokens.startswith(term)
             or nid_lower.startswith(term)
+            or norm_label.startswith(norm_query)
+            or bare_label.startswith(norm_query)
         ):
             prefix.append(nid)
-        elif term in norm_label or term in label_tokens:
+        elif term in norm_label or term in label_tokens or norm_query in norm_label:
             substring.append(nid)
 
     if source_exact:

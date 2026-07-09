@@ -115,6 +115,15 @@ def test_java_no_dangling_edges():
         assert e["source"] in node_ids
 
 
+def test_java_enum_constants_have_case_of_edge():
+    r = extract_java(FIXTURES / "sample.java")
+    labels = _labels(r)
+    assert "OK" in labels
+    assert "GAME_DONE" in labels
+    assert ("ErrorCode", "OK") in _edge_labels(r, "case_of")
+    assert ("ErrorCode", "GAME_DONE") in _edge_labels(r, "case_of")
+
+
 # ── C ────────────────────────────────────────────────────────────────────────
 
 def test_c_no_error():
@@ -605,6 +614,14 @@ def test_kotlin_finds_methods():
 def test_kotlin_finds_function():
     r = extract_kotlin(FIXTURES / "sample.kt")
     assert any("createClient" in l for l in _labels(r))
+
+def test_kotlin_enum_entries_have_case_of_edge():
+    # #1700 (Kotlin half): enum entries must be nodes with case_of edges to the enum.
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    labels = _labels(r)
+    assert "NORMAL" in labels and "GROUP" in labels and "SYSTEM" in labels
+    assert ("ChatType", "NORMAL") in _edge_labels(r, "case_of")
+    assert ("ChatType", "SYSTEM") in _edge_labels(r, "case_of")
 
 def test_kotlin_emits_in_file_calls():
     """Regression test for the call-walker `simple_identifier` /

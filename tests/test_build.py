@@ -505,6 +505,99 @@ def test_build_relativizes_absolute_source_file(tmp_path):
     assert sf == "src/main.py"
 
 
+def test_build_from_json_ambiguous_old_stem_alias_stays_dangling(tmp_path):
+    """The #1504 old-stem alias (e.g. "ping.h" -> bare "ping") is meant to let a
+    stale-id edge from an un-re-extracted fragment still find its own file after
+    a rekey. But the old-stem form drops the extension and most of the path, so
+    two unrelated real files easily collapse onto the same bare alias (a C header
+    and a PHP script both named "ping", in different directories). A dangling
+    edge produced by an unrelated third file's own unscoped fallback id (e.g. the
+    C/C++ extractor's last-resort target for an #include it couldn't resolve to
+    a real path) must not silently ride that alias onto an arbitrary one of them
+    — it should stay dangling and get dropped, same as any other unresolvable
+    edge, rather than wire two unrelated files/languages together by accident."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            # Ids given in their canonical (post-extract.py, extension-stripped)
+            # form, matching what a real graphify update run would already have
+            # produced before build_from_json assembles the final graph.
+            {"id": "dev_monitoring_ping", "label": "ping.h", "file_type": "code",
+             "source_file": "Dev/monitoring/ping.h"},
+            {"id": "www_pages_api_ping", "label": "ping.php", "file_type": "code",
+             "source_file": "www/pages/api/ping.php"},
+            {"id": "dev_poker_server", "label": "server.cpp", "file_type": "code",
+             "source_file": "Dev/poker/server.cpp"},
+        ],
+        "edges": [
+            # The unscoped, deliberately-unresolved fallback edge a C/C++ #include
+            # resolver leaves behind when it can't find the header on disk.
+            {"source": "dev_poker_server", "target": "ping", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "Dev/poker/server.cpp"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert not G.has_edge("dev_poker_server", "dev_monitoring_ping")
+    assert not G.has_edge("dev_poker_server", "www_pages_api_ping")
+
+
+def test_build_from_json_ambiguous_alias_detected_despite_header_impl_salting(tmp_path):
+    """A same-directory .h/.cpp pair collides on their shared pre-extension id
+    and gets salted apart into ids like "tools_aolserver_utility_h_..." — no
+    longer a clean new_stem prefix. The ambiguity check must still recognize
+    the salted header as a legitimate claimant for the bare old-stem alias (by
+    label, not id shape), so a real collision with an unrelated same-named PHP
+    file is still caught instead of the header silently dropping out of the
+    race and leaving the PHP file as the lone "unambiguous" winner (this
+    reproduced against the real depot: Tools/aolserver/utility.h and .cpp,
+    salted apart, let wwwapi.masque.com/pages/utility.php win the bare
+    "utility" alias uncontested)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            {"id": "tools_aolserver_utility_h_tools_aolserver_utility", "label": "utility.h",
+             "file_type": "code", "source_file": "Tools/aolserver/utility.h"},
+            {"id": "tools_aolserver_utility_cpp_tools_aolserver_utility", "label": "utility.cpp",
+             "file_type": "code", "source_file": "Tools/aolserver/utility.cpp"},
+            {"id": "wwwapi_masque_com_pages_utility", "label": "utility.php",
+             "file_type": "code", "source_file": "wwwapi.masque.com/pages/utility.php"},
+            {"id": "dev_poker_server", "label": "server.cpp", "file_type": "code",
+             "source_file": "Dev/poker/server.cpp"},
+        ],
+        "edges": [
+            {"source": "dev_poker_server", "target": "utility", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "Dev/poker/server.cpp"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert not G.has_edge("dev_poker_server", "wwwapi_masque_com_pages_utility")
+    assert not G.has_edge("dev_poker_server", "tools_aolserver_utility_h_tools_aolserver_utility")
+
+
+def test_build_from_json_unambiguous_old_stem_alias_still_resolves(tmp_path):
+    """Companion to the ambiguous case above: when exactly one real file claims
+    an old-stem alias, a dangling edge to that bare alias should still resolve
+    to it — the #1504 migration-compat behavior this index exists for."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            {"id": "dev_monitoring_utility", "label": "utility.h", "file_type": "code",
+             "source_file": "Dev/monitoring/utility.h"},
+            {"id": "dev_poker_server", "label": "server.cpp", "file_type": "code",
+             "source_file": "Dev/poker/server.cpp"},
+        ],
+        "edges": [
+            {"source": "dev_poker_server", "target": "utility", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "Dev/poker/server.cpp"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert G.has_edge("dev_poker_server", "dev_monitoring_utility")
+
+
 def test_build_from_json_relative_source_file_unchanged(tmp_path):
     """Already-relative source_file paths must not be modified."""
     extraction = {

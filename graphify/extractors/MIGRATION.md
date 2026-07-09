@@ -12,38 +12,31 @@ written so an AI agent can execute it in a single session.
 | zig | yes |
 | elixir | yes |
 | razor | yes |
-| csharp | partial — helpers + cross-file resolver split into `extractors/csharp*.py`; config-driven `extract_csharp` entry stays (see Middle path) |
-| (39 more in extract.py) | no |
+| csharp | partial — helpers + cross-file/member-call resolvers live in `extractors/csharp*.py`; config-driven entry point still uses shared `_extract_generic` |
+| dart | yes |
+| rust | yes |
+| go | yes |
+| powershell (ps1 + psd1 manifest) | yes |
+| fortran | yes |
+| sql | yes |
+| dm (dm/dmm/dmi/dmf) | yes |
+| bash | yes |
+| apex | yes |
+| terraform | yes |
+| sln | yes |
+| pascal_forms (dfm + lfm) | yes |
+| json_config | yes |
+| (config-driven core: python, js, java, c, cpp, kotlin, scala, php, lua, swift, groovy, vue, svelte, astro, xaml, groovy) | no — shared _extract_generic core, move as one batch |
+| (other bespoke: julia, verilog, markdown, objc, csproj, slnx, lazarus_package, pascal) | no |
 
-Note: config-driven extractors (python, js, java, c, cpp, ruby, csharp,
+Note: config-driven extractors (python, js, java, c, cpp, ruby,
 kotlin, scala, php, lua, swift, groovy) depend on the shared
-`_extract_generic` core (~1,300 lines). Do NOT move the config-driven
-`extract_<lang>` ENTRY POINT one-by-one; the core must move first as its own
-coordinated batch. Pick a bespoke extractor for a full port.
+`_extract_generic` core (~1,300 lines). Do NOT port them one-by-one; the core
+must move first as its own coordinated batch. Pick a bespoke extractor.
 
-### Middle path (config-driven helper split — the C# pattern)
-
-Even for a config-driven language you can give it a real module home *before* the
-`_extract_generic` batch: split the language-specific **helpers** (per-file
-binding / type-table / shadow model, type references, imports) and the cross-file
-**member-call resolver** into their own modules — see `extractors/csharp_extract.py`,
-`extractors/csharp_resolve.py`, and `extractors/csharp.py` — facade-re-exported
-from `extract.py`, while the thin `extract_<lang>` → `_extract_generic` entry
-point stays inline. Guardrails:
-
-- **Prove the split is behavior-preserving** with a normalized node/edge snapshot
-  over BOTH the single-file `extract_<lang>` and the multi-file `extract` entry
-  points (order-preserving — a list-sorting canonical hides a fact-order
-  regression).
-- **Lift shared config** (`LanguageConfig`) to `base.py`; keep the import
-  direction `extract.py -> extractors/` (never import `graphify.extract` here).
-- Only pull C#-only logic out of `_extract_generic` where the helper **returns
-  facts** and the core keeps emission (no `add_node`/`add_edge`/`nodes`/`seen_ids`
-  threaded in) — otherwise leave a thin inline hook.
-
-Unlike a verbatim entry-point port, a middle-path split may ship alongside a
-feature (e.g. the C# member-call resolver) with its own tests; the snapshot +
-full suite are the preservation proof.
+C# is a deliberate middle path: its config-driven entry point still uses the
+shared engine, while C#-specific helpers, scoped facts, and cross-file/member-call
+resolvers live in dedicated modules.
 
 ## Invariants (non-negotiable)
 
