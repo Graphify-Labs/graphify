@@ -31,6 +31,7 @@ import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
 from .validate import validate_extraction
+from .detect import CODE_EXTENSIONS
 
 
 # Synonym mapper for known invalid file_type values that LLM subagents commonly
@@ -633,6 +634,36 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
             if src_ext and tgt_ext and _LANG_FAMILY.get(src_ext) != _LANG_FAMILY.get(tgt_ext):
                 continue
+        # Demote prose-derived edges mis-tagged as code facts (QA defect D1).
+        # An EXTRACTED edge with no source_location whose provenance is a
+        # non-code file (markdown, yaml, image, …) is a relationship asserted
+        # in documentation, not verified against code AST. It must not carry the
+        # code-anchored EXTRACTED tag (which downstream treats as confidence 1.0).
+        # Demote to INFERRED, cap the score, and stamp `provenance=documentation`
+        # so the audit trail stays honest. Deterministic, so it survives even if
+        # the LLM subagent mislabels the edge.
+        if attrs.get("confidence") == "EXTRACTED" and not attrs.get("source_location"):
+            prov = attrs.get("source_file") or G.nodes[src].get("source_file") or ""
+            ext = Path(prov).suffix.lower()
+            # Demote only on POSITIVE evidence the provenance is non-code: a
+            # recognized non-code extension, OR no provenance at all from a node
+            # the extractor already typed as documentation/concept. A code edge
+            # that merely lost its location (ext == "" on a code node) is NOT a
+            # prose edge and is left alone.
+            src_ft = G.nodes[src].get("file_type", "")
+            is_doc_provenance = (ext != "" and ext not in CODE_EXTENSIONS) or (
+                ext == "" and src_ft in ("document", "concept", "rationale", "image", "paper")
+            )
+            if is_doc_provenance:
+                attrs["confidence"] = "INFERRED"
+                attrs["provenance"] = "documentation"
+                score = attrs.get("confidence_score")
+                try:
+                    # Coerce (LLM JSON often emits numeric strings) and only ever
+                    # LOWER the score — never raise a legitimately-low doc score.
+                    attrs["confidence_score"] = min(float(score), 0.8)
+                except (TypeError, ValueError):
+                    attrs["confidence_score"] = 0.8
         # Preserve original edge direction - undirected graphs lose it otherwise,
         # causing display functions to show edges backwards.
         attrs["_src"] = src
@@ -651,6 +682,56 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             ):
                 continue
         G.add_edge(src, tgt, **attrs)
+
+    # Re-anchor doc-concept nodes that actually carry a code module's edge set
+    # (QA defect D3). A node typed `concept`/`rationale` with no source_location
+    # but whose incident edges overwhelmingly originate from ONE code file is a
+    # code module wearing a documentation label (e.g. an "Interactive Mode" concept
+    # from docs/usage.md holding all of interactive-mode.ts's calls/imports). The
+    # ghost-merge above only fires on exact (basename,label) match and misses these.
+    # Re-type to `code` and adopt the dominant code source_file so god-node/community
+    # analysis treats it as the real code entity it structurally is. The node id is
+    # preserved (no merge), so no edges or counts change — only its type/anchor.
+    _CODE_REL = {"calls", "imports", "imports_from", "method", "contains", "extends", "implements", "uses"}
+    for nid in list(G.nodes()):
+        attrs = G.nodes[nid]
+        if attrs.get("file_type") not in ("concept", "rationale"):
+            continue
+        if attrs.get("source_location"):
+            continue
+        cur_ext = Path(str(attrs.get("source_file") or "")).suffix.lower()
+        if cur_ext in CODE_EXTENSIONS:
+            continue  # already code-anchored
+        incident = (
+            list(G.in_edges(nid, data=True)) + list(G.out_edges(nid, data=True))
+            if G.is_directed() else list(G.edges(nid, data=True))
+        )
+        if len(incident) < 3:
+            continue
+        code_srcs: dict[str, int] = {}
+        code_rel_total = 0
+        for *_ends, edata in incident:
+            sf = str(edata.get("source_file") or "")
+            if Path(sf).suffix.lower() in CODE_EXTENSIONS and edata.get("relation") in _CODE_REL:
+                code_srcs[sf] = code_srcs.get(sf, 0) + 1
+                code_rel_total += 1
+        if not code_srcs:
+            continue
+        # Deterministic winner (tie-break on file path, not dict insertion order).
+        dominant, dom_count = max(code_srcs.items(), key=lambda kv: (kv[1], kv[0]))
+        # Two independent gates so a genuinely-conceptual node that merely
+        # references one module heavily is NOT mistyped:
+        #   (a) the node is *mostly* code-relation edges (not concept-edge rich), and
+        #   (b) a single code module dominates those code edges.
+        if (
+            code_rel_total >= 3
+            and code_rel_total / len(incident) >= 0.6
+            and dom_count / code_rel_total >= 0.6
+        ):
+            attrs["file_type"] = "code"
+            attrs["source_file"] = _norm_source_file(dominant, _root)
+            attrs["_reanchored_from"] = "concept"
+
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:
         # Relativize hyperedge source_file the same way nodes and edges are

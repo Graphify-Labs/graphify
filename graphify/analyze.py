@@ -97,24 +97,47 @@ def _is_json_key_node(G: nx.Graph, node_id: str) -> bool:
     return label in _JSON_NOISE_LABELS
 
 
+# A label shared by this many or more DISTINCT node ids is a generic-name
+# collision (e.g. `main()` across 95 files, `Settings` across 23), not a single
+# architectural abstraction. Such a label is ambiguous: ranking the one highest-
+# degree instance as a "god node" misleads — the name has no single referent and
+# `explain`/`path` cannot disambiguate it. Excluded from the god-node list (QA
+# defect D2). Genuinely-distinct same-named entities (e.g. two real `AgentSession`
+# classes) stay below this threshold and are kept.
+_LABEL_COLLISION_THRESHOLD = 5
+
+
 def god_nodes(G: nx.Graph, top_n: int = 10) -> list[dict]:
     """Return the top_n most-connected real entities - the core abstractions.
 
     File-level hub nodes are excluded: they accumulate import/contains edges
     mechanically and don't represent meaningful architectural abstractions.
+    Generic-name collisions (one label shared across many distinct nodes) are
+    excluded too: their centrality is a name artifact, not a real hub (QA D2).
     """
+    # Count distinct node ids per label so generic-name collisions can be excluded.
+    _label_id_counts: dict[str, int] = {}
+    for _nid in G.nodes():
+        _lab = G.nodes[_nid].get("label", "")
+        if _lab:
+            _label_id_counts[_lab] = _label_id_counts.get(_lab, 0) + 1
     degree = dict(G.degree())
     sorted_nodes = sorted(degree.items(), key=lambda x: x[1], reverse=True)
     result = []
     for node_id, deg in sorted_nodes:
         if _is_file_node(G, node_id) or _is_concept_node(G, node_id) or _is_json_key_node(G, node_id):
             continue
-        if G.nodes[node_id].get("label", "") in _BUILTIN_NOISE_LABELS:
+        label = G.nodes[node_id].get("label", "")
+        if label in _BUILTIN_NOISE_LABELS:
             continue
+        collision = _label_id_counts.get(label, 1)
+        if collision >= _LABEL_COLLISION_THRESHOLD:
+            continue  # generic-name artifact, not a coherent abstraction
         result.append({
             "id": node_id,
-            "label": G.nodes[node_id].get("label", node_id),
+            "label": label or node_id,
             "degree": deg,
+            "collision_count": collision,  # 1 = unique label; >1 = N distinct same-named nodes
         })
         if len(result) >= top_n:
             break
