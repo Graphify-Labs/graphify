@@ -2285,3 +2285,60 @@ def _pascal_resolve_class(from_path: Path, class_name: str) -> str | None:
     if file_stem:
         return _make_id(file_stem, class_name)
     return None
+
+
+_cfml_component_cache: dict[str, dict[str, str]] = {}  # root_key -> {dotted_lower: node_id}
+
+
+def _cfml_project_root(from_path: Path) -> Path:
+    """Return the highest ancestor directory that looks like a CFML webroot.
+
+    Walks up the directory tree and tracks the topmost directory that has at
+    least 2 .cfc files as direct children (mirrors _pascal_project_root's
+    minimum-2 threshold, avoiding overshoot from a single stray .cfc). Falls
+    back to from_path.parent if nothing better is found.
+    """
+    best = from_path.parent
+    current = from_path.parent
+    for _ in range(12):
+        if len(current.parts) <= 1:
+            break  # never use a filesystem root
+        if sum(1 for _ in current.glob("*.cfc")) >= 2:
+            best = current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return best
+
+
+def _cfml_resolve_component(from_path: Path, dotted_name: str) -> str | None:
+    """Resolve a dotted CFML component path (``models.User``) to the node ID
+    of its defining .cfc file.
+
+    CFML convention: a dotted path is the file's path relative to the webroot
+    with dots standing in for path separators (``models.User`` ->
+    ``models/User.cfc``). Matching is case-insensitive (CFML component paths
+    are not case-sensitive on any supported engine). Falls back to matching
+    on the bare last segment when the full dotted path isn't found, so a
+    component referenced by an unconventional/partial path can still resolve.
+
+    Returns None when no matching file is found on disk (external library,
+    mapped alias graphify can't see, or unconventional path) -- caller should
+    create a stub node.
+    """
+    root = _cfml_project_root(from_path)
+    root_key = str(root)
+    if root_key not in _cfml_component_cache:
+        comp_map: dict[str, str] = {}
+        for f in root.rglob("*.cfc"):
+            rel = f.relative_to(root).with_suffix("")
+            comp_map[".".join(rel.parts).lower()] = _make_id(str(f))
+            comp_map.setdefault(f.stem.lower(), _make_id(str(f)))
+        _cfml_component_cache[root_key] = comp_map
+
+    key = dotted_name.strip(".").lower()
+    comp_map = _cfml_component_cache[root_key]
+    if key in comp_map:
+        return comp_map[key]
+    return comp_map.get(key.rsplit(".", 1)[-1])
