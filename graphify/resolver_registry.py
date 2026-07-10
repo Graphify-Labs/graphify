@@ -33,11 +33,25 @@ class LanguageResolver:
     mutates ``all_nodes`` / ``all_edges`` in place, matching the existing
     member-call resolvers. ``suffixes`` gates activation: the pass runs only when
     the corpus contains at least one file with one of these extensions.
+
+    Two optional hooks cover passes that suffix-gating cannot express (the Perl
+    import re-pointer needs both):
+
+    - ``activate`` overrides the suffix gate with a predicate over ``paths``. Use it
+      when membership is decided by EXTRACTOR provenance rather than extension —
+      e.g. an extensionless ``#!/usr/bin/perl`` script has no ``.pl``/``.pm`` suffix
+      to gate on, yet must still activate the pass. When ``None`` the suffix gate is
+      used.
+    - ``wants_paths`` makes the driver call ``resolve`` with a fourth positional
+      argument, the ``paths`` sequence, so a provenance-scoped pass can recompute
+      which files it owns. Default ``False`` keeps the three-argument contract.
     """
 
     name: str
     suffixes: frozenset
     resolve: Callable
+    activate: Callable | None = None
+    wants_paths: bool = False
 
 
 # Module-level registry, populated by callers via register(). Ordered: resolvers
@@ -77,9 +91,19 @@ def run_language_resolvers(
     active = _REGISTRY if resolvers is None else resolvers
     suffixes_present = {p.suffix for p in paths}
     for resolver in active:
-        if not (resolver.suffixes & suffixes_present):
+        if resolver.activate is not None:
+            try:
+                if not resolver.activate(paths):
+                    continue
+            except Exception as exc:
+                _LOG.warning("%s activation check failed, skipping: %s", resolver.name, exc)
+                continue
+        elif not (resolver.suffixes & suffixes_present):
             continue
         try:
-            resolver.resolve(per_file, all_nodes, all_edges)
+            if resolver.wants_paths:
+                resolver.resolve(per_file, all_nodes, all_edges, paths)
+            else:
+                resolver.resolve(per_file, all_nodes, all_edges)
         except Exception as exc:
             _LOG.warning("%s resolution failed, skipping: %s", resolver.name, exc)

@@ -4153,6 +4153,33 @@ register_language_resolver(
 )
 
 
+def _resolve_perl_imports_pass(per_file, all_nodes, all_edges, paths) -> None:
+    """Re-point dangling in-corpus Perl ``imports`` edges onto the real package node.
+
+    Registered LAST so it runs after the shared cross-file call pass (which reads
+    the bare module-label ``use`` targets via ``_has_package_import_evidence``) and
+    after the member-call resolvers — the same position as its former inline call at
+    the tail of ``extract()``. Scoped by extractor PROVENANCE, not suffix: an
+    extensionless ``#!/usr/bin/perl`` script is dispatched to ``extract_perl`` by
+    shebang and must be re-pointed too, which is why it declares a custom
+    ``activate`` predicate (a shebang-only corpus has no ``.pl``/``.pm`` suffix) and
+    takes ``paths`` (``wants_paths``) to recompute that provenance set.
+    """
+    perl_sources = {str(p) for p in paths if _get_extractor(p) is extract_perl}
+    _resolve_perl_imports(all_nodes, all_edges, perl_sources)
+
+
+register_language_resolver(
+    LanguageResolver(
+        "perl_import_repoint",
+        frozenset({".pl", ".pm"}),
+        _resolve_perl_imports_pass,
+        activate=lambda paths: any(_get_extractor(p) is extract_perl for p in paths),
+        wants_paths=True,
+    )
+)
+
+
 # Inline markdown link: [text](target "optional title"). The negative lookbehind
 # excludes images (![alt](src)). The target stops at whitespace/closing paren so
 # an optional "title" after the URL is dropped; an optional <...> wrapper is too.
@@ -6934,6 +6961,9 @@ def extract(
     # receiver-typed/qualified calls the shared pass skipped) with its own
     # single-definition god-node guard. Registered in graphify.resolver_registry so
     # a new language plugs in without editing this body (#1356 Swift, #1446 Python).
+    # The Perl import re-pointer (`perl_import_repoint`) is the last registered
+    # resolver, so it runs here — after the call pass and member-call resolvers,
+    # before the relativization below — the same position as its former inline call.
     #
     # #2437: on an incremental rebuild the resolvers must also see the unchanged
     # corpus — its nodes (types/methods, from resolution_nodes above) and its
@@ -6952,19 +6982,6 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
-
-    # Re-point dangling in-corpus Perl `imports` edges onto the real package node.
-    # Runs AFTER the call pass above so `_has_package_import_evidence` still sees the
-    # bare module-label ids it needs to bind bare calls to imported packages (#S5b).
-    # Scope by extractor provenance, not suffix, so extensionless `#!/usr/bin/perl`
-    # scripts (dispatched to extract_perl by shebang) are re-pointed too. Keyed on
-    # str(path) to match the nodes' source_file, set before the relativization below.
-    try:
-        _perl_sources = {str(p) for p in paths if _get_extractor(p) is extract_perl}
-        _resolve_perl_imports(all_nodes, all_edges, _perl_sources)
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("Perl import resolution failed, skipping: %s", exc)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
