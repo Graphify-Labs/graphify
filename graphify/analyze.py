@@ -504,7 +504,10 @@ def suggest_questions(
     # 4. Isolated or weakly-connected nodes → exploration questions
     isolated = [
         n for n in G.nodes()
-        if G.degree(n) <= 1 and not _is_file_node(G, n) and not _is_concept_node(G, n)
+        if G.degree(n) <= 1
+        and not _is_file_node(G, n)
+        and not _is_concept_node(G, n)
+        and G.nodes[n].get("file_type") != "rationale"
     ]
     if isolated:
         labels = [G.nodes[n].get("label", n) for n in isolated[:3]]
