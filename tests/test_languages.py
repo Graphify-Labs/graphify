@@ -4154,6 +4154,74 @@ def test_perl_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling edge source: {e}"
 
+def test_perl_inherit_stub_has_no_source_file():
+    """Inheritance parents defined outside this file (RTL / another module) must
+    not claim the child file as their source; they are external stubs with an
+    empty source_file (mirrors go/julia/objc)."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    stubs = [n for n in r["nodes"]
+             if n["label"] in ("Acme::Base", "Acme::Role", "Acme::Mixin")]
+    assert stubs, "expected external inheritance stub nodes"
+    for n in stubs:
+        assert n.get("source_file") == "", (
+            f"external parent stub {n['label']!r} must have empty source_file, "
+            f"got {n.get('source_file')!r}"
+        )
+
+def test_perl_builtins_not_called(tmp_path):
+    """Perl core builtins (open/close/system/exec/index/…) surface as call
+    expressions but are not user subs; they must not become raw-call edges."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "builtins.pm"
+    src.write_text(
+        "package B;\n"
+        "sub run {\n"
+        "    open(my $fh, '<', 'f');\n"
+        "    system('ls');\n"
+        "    my $i = index('abc', 'b');\n"
+        "    my $n = substr('abc', 1);\n"
+        "    close($fh);\n"
+        "}\n"
+        "1;\n"
+    )
+    r = extract_perl(src)
+    callees = {rc["callee"] for rc in r["raw_calls"]}
+    for b in ("open", "system", "index", "substr", "close"):
+        assert b not in callees, f"builtin {b!r} must not be a raw call, got {callees}"
+
+def test_perl_duplicate_use_dedup(tmp_path):
+    """Two identical `use Foo;` statements must dedup to a single imports edge."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "dup.pm"
+    src.write_text(
+        "package D;\n"
+        "use Foo;\n"
+        "use Foo;\n"
+        "1;\n"
+    )
+    r = extract_perl(src)
+    foo_imports = [e for e in r["edges"]
+                   if e["relation"] == "imports" and "foo" in str(e["target"]).lower()]
+    assert len(foo_imports) == 1, (
+        f"duplicate `use Foo;` must dedup to one edge, got {len(foo_imports)}: {foo_imports}"
+    )
+
+def test_perl_raw_calls_carry_package_qualifiers():
+    """The extractor half of package-aware resolution: a bare call carries its
+    caller's package (and no callee_package); a qualified `Pkg::sub()` carries
+    the qualifier as callee_package. The shared second pass reads these to bind
+    the right same-named sub."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    by_callee = {rc["callee"]: rc for rc in r["raw_calls"] if not rc.get("is_member_call")}
+    bare = by_callee["format_line"]
+    assert bare["callee_package"] is None, bare
+    assert bare["caller_package"] == "Acme::Widget", bare
+    qualified = by_callee["emit"]
+    assert qualified["callee_package"] == "Acme::Helper", qualified
+    assert qualified["caller_package"] == "Acme::Widget", qualified
+
 
 # Perl call resolution runs in the top-level `extract()` second pass (raw_calls ->
 # name-matched calls), so these drive the public multi-file dispatch, like the
@@ -4208,3 +4276,49 @@ def test_perl_method_call_no_edge():
     assert not any(tgt == "render" or tgt.endswith("::render") or tgt.endswith(".render")
                    for _src, tgt in calls), \
         f"method call $widget->render() must not produce a calls edge, got {calls}"
+
+
+# Package-aware second-pass resolution (F1/F3). Same S4 dependency as the corpus
+# tests above: the shared pass reads the raw_calls' package qualifiers, but no
+# calls edge exists until the .pl/.pm dispatch is registered — RED until S4.
+
+def _calls_with_target_pkg(r):
+    """(caller_label, target_label, target_enclosing_package_label) per calls edge."""
+    label = {n["id"]: n.get("label", "") for n in r["nodes"]}
+    contained_by = {e["target"]: e["source"] for e in r["edges"] if e["relation"] == "contains"}
+    return [
+        (label.get(e["source"], e["source"]),
+         label.get(e["target"], e["target"]),
+         label.get(contained_by.get(e["target"]), ""))
+        for e in r["edges"] if e["relation"] == "calls"
+    ]
+
+def test_perl_qualified_call_binds_correct_package(tmp_path):
+    """Two packages define `emit`; the package-qualified call `P::A::emit()` must
+    bind only to P::A's emit, never the same-named sub in P::B."""
+    from graphify.extract import extract
+    (tmp_path / "a.pm").write_text("package P::A;\nsub emit { return 1; }\n1;\n")
+    (tmp_path / "b.pm").write_text("package P::B;\nsub emit { return 2; }\n1;\n")
+    (tmp_path / "c.pm").write_text("package P::C;\nsub run { P::A::emit(); }\n1;\n")
+    r = extract([tmp_path / "a.pm", tmp_path / "b.pm", tmp_path / "c.pm"], parallel=False)
+    emit_calls = [(s, t, p) for (s, t, p) in _calls_with_target_pkg(r) if "emit" in t]
+    assert emit_calls, f"expected a calls edge into emit, got none: {_calls_with_target_pkg(r)}"
+    assert all(p == "P::A" for (_s, _t, p) in emit_calls), \
+        f"qualified P::A::emit() must bind only to P::A's emit, got {emit_calls}"
+
+def test_perl_bare_foreign_package_call_no_edge(tmp_path):
+    """A bare `helper()` call resolves to a same-package sub, never to a
+    same-named sub in a DIFFERENT, un-imported package (zero-edge, not a guess)."""
+    from graphify.extract import extract
+    (tmp_path / "x.pm").write_text("package X;\nsub helper { return 1; }\n1;\n")
+    (tmp_path / "y.pm").write_text(
+        "package Y;\nsub run { helper(); other(); }\nsub other { return 2; }\n1;\n"
+    )
+    r = extract([tmp_path / "x.pm", tmp_path / "y.pm"], parallel=False)
+    calls = _calls(r)
+    # Positive guard: the same-package bare call must resolve, so the negative
+    # assertion below is not a vacuous pass on an empty (pre-S4) graph.
+    assert any("run" in s and "other" in t for s, t in calls), \
+        f"expected run->other same-package resolution, got {calls}"
+    assert not any("helper" in t for _s, t in calls), \
+        f"bare helper() must not bind to X::helper without import evidence, got {calls}"

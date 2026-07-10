@@ -6669,6 +6669,19 @@ def extract(
     # of these files with no import evidence is gated below (#1659).
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
     _go_module_cache: dict[Path, str | None] = {}
+
+    # Enclosing-package label per node id, for the package-aware call resolution
+    # below. Only consulted for raw_calls that carry package qualifiers (Perl):
+    # a sub's direct container is its package node, whose label IS the package
+    # name (e.g. "Acme::Widget"), so the `contains` edge target->source gives
+    # sub_id -> package label. Other languages never set the package fields, so
+    # this map is built but never read for them.
+    _label_by_nid = {n["id"]: n.get("label", "") for n in all_nodes}
+    pkg_label_by_nid: dict[str, str] = {}
+    for e in all_edges:
+        if e.get("relation") == "contains":
+            pkg_label_by_nid[e["target"]] = _label_by_nid.get(e["source"], "")
+
     for rc in all_raw_calls:
         callee = rc.get("callee", "")
         if not callee:
@@ -6763,6 +6776,39 @@ def extract(
                 candidate_id in imported_symbols
                 or (candidate_file_nid is not None and candidate_file_nid in imported_modules)
             )
+
+        # Package-aware pre-filter for languages that tag calls with their
+        # package (Perl). Additive + guarded: a raw_call only reaches this branch
+        # when it carries a package field, which no other language sets, so every
+        # other language's candidate set is untouched (the existing 314 tests
+        # prove the unqualified path is unchanged). Zero-edge over a wrong guess:
+        # an unresolvable qualifier or a foreign-package bare call is dropped, not
+        # bound to a same-named sub in the wrong package (#F1/#F3).
+        callee_package = rc.get("callee_package")
+        caller_package = rc.get("caller_package")
+        if callee_package is not None or caller_package is not None:
+            if callee_package is not None:
+                # Qualified call `Pkg::sub()`: bind only to a sub whose enclosing
+                # package matches the qualifier. None or several -> drop.
+                candidates = [
+                    c for c in candidates
+                    if pkg_label_by_nid.get(c) == callee_package
+                ]
+            else:
+                # Bare call: prefer the caller's own package. If the sub is
+                # defined there, that's the target. Otherwise it can only be an
+                # imported sub — require unique import evidence, else drop (never
+                # bind a same-named sub from an unrelated package).
+                same_pkg = [
+                    c for c in candidates
+                    if pkg_label_by_nid.get(c) == caller_package
+                ]
+                if same_pkg:
+                    candidates = same_pkg
+                else:
+                    candidates = [c for c in candidates if _has_import_evidence(c)]
+            if len(candidates) != 1:
+                continue
 
         if len(candidates) == 1:
             tgt = candidates[0]

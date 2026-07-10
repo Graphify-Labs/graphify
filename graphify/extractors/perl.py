@@ -25,14 +25,32 @@ _PERL_PRAGMAS: frozenset[str] = frozenset({
 _PERL_INHERIT_PRAGMAS: frozenset[str] = frozenset({"parent", "base"})
 
 # Perl builtins that surface as function_call_expression callees; excluding them
-# keeps them from accumulating spurious calls edges as god-nodes.
+# keeps them from accumulating spurious calls edges as god-nodes. Kept to the
+# canonical perlfunc core so a user sub that happens to share a name with a
+# builtin still resolves against real definitions in the corpus.
 _PERL_BUILTINS: frozenset[str] = frozenset({
-    "print", "printf", "say", "sprintf", "die", "warn", "return", "bless",
+    # I/O & formatting
+    "print", "printf", "say", "sprintf", "open", "close", "read", "write",
+    "binmode", "eof", "seek", "tell", "sysread", "syswrite", "readline",
+    # process / system
+    "system", "exec", "fork", "wait", "waitpid", "kill", "sleep", "time",
+    "exit", "die", "warn",
+    # filesystem
+    "mkdir", "rmdir", "unlink", "rename", "chdir", "chmod", "chown", "stat",
+    "lstat", "opendir", "readdir", "closedir", "glob",
+    # list / hash ops
     "shift", "unshift", "push", "pop", "splice", "map", "grep", "sort",
     "reverse", "join", "split", "keys", "values", "each", "exists", "delete",
-    "defined", "ref", "scalar", "wantarray", "length", "uc", "lc", "ucfirst",
-    "lcfirst", "chomp", "chop", "chr", "ord", "abs", "int", "sqrt", "eval",
-    "local", "my", "our", "sub", "do", "require", "use", "no",
+    "wantarray",
+    # string ops
+    "index", "rindex", "substr", "length", "uc", "lc", "ucfirst", "lcfirst",
+    "chomp", "chop", "chr", "ord", "hex", "oct", "sprintf", "pack", "unpack",
+    "quotemeta",
+    # math
+    "abs", "int", "sqrt", "sin", "cos", "atan2", "exp", "log", "rand", "srand",
+    # scalars / refs / types
+    "defined", "ref", "scalar", "bless", "return", "eval", "local", "my",
+    "our", "sub", "do", "require", "use", "no", "wantarray",
 })
 
 
@@ -58,7 +76,12 @@ def extract_perl(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    sub_bodies: list[tuple[str, Any]] = []
+    # Dedup edges on their identity tuple so a repeated construct (e.g. two
+    # `use Foo;` in one file) yields a single edge instead of parallel dups.
+    seen_edges: set[tuple[str, str, str, str | None]] = set()
+    # sub_nid, body block, and the sub's enclosing package name (for the shared
+    # second pass's package-aware call resolution).
+    sub_bodies: list[tuple[str, Any, str | None]] = []
 
     def _text(node) -> str:
         return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
@@ -69,8 +92,27 @@ def extract_perl(path: Path) -> dict:
             nodes.append({"id": nid, "label": label, "file_type": "code",
                           "source_file": str_path, "source_location": f"L{line}"})
 
+    def add_stub_node(nid: str, label: str) -> None:
+        """External inheritance target (base class defined elsewhere / in the RTL).
+
+        Emitted with an empty ``source_file`` so it does not falsely claim this
+        child file as the parent's source and so the corpus-level cross-file
+        rewire can collapse it onto the real definition; ``origin_file`` keeps
+        distinct same-named stubs apart in the colliding-id pass. Mirrors the
+        external-stub shape used by go/julia/objc.
+        """
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": "", "source_location": "",
+                          "origin_file": str_path})
+
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", context: str | None = None) -> None:
+        key = (src, tgt, relation, context)
+        if key in seen_edges:
+            return
+        seen_edges.add(key)
         edge = {"source": src, "target": tgt, "relation": relation,
                 "confidence": confidence, "source_file": str_path,
                 "source_location": f"L{line}", "weight": 1.0}
@@ -109,10 +151,11 @@ def extract_perl(path: Path) -> dict:
 
     def add_inherits(pkg_nid: str, parent_name: str, line: int) -> None:
         parent_nid = _make_id(parent_name)
-        add_node(parent_nid, parent_name, line)
+        add_stub_node(parent_nid, parent_name)
         add_edge(pkg_nid, parent_nid, "inherits", line, context="inherit")
 
     current_pkg_nid: str | None = None
+    current_pkg_name: str | None = None
 
     def handle_use(node, line: int) -> None:
         # In a use_statement the `use` keyword is its own node type, so the
@@ -153,7 +196,7 @@ def extract_perl(path: Path) -> dict:
             add_inherits(current_pkg_nid, parent, line)
 
     def walk_statements(node) -> None:
-        nonlocal current_pkg_nid
+        nonlocal current_pkg_nid, current_pkg_name
         for child in node.children:
             line = child.start_point[0] + 1
             if child.type == "package_statement":
@@ -163,6 +206,7 @@ def extract_perl(path: Path) -> dict:
                     add_node(pkg_nid, name, line)
                     add_edge(file_nid, pkg_nid, "contains", line)
                     current_pkg_nid = pkg_nid
+                    current_pkg_name = name
             elif child.type == "use_statement":
                 handle_use(child, line)
             elif child.type == "subroutine_declaration_statement":
@@ -179,7 +223,7 @@ def extract_perl(path: Path) -> dict:
                     add_node(sub_nid, f"{name}()", line)
                     add_edge(container, sub_nid, "contains", line)
                     if block is not None:
-                        sub_bodies.append((sub_nid, block))
+                        sub_bodies.append((sub_nid, block, current_pkg_name))
             elif child.type == "expression_statement":
                 for c in child.children:
                     if c.type == "require_expression":
@@ -191,15 +235,23 @@ def extract_perl(path: Path) -> dict:
 
     raw_calls: list[dict] = []
 
-    def walk_calls(node, caller_nid: str) -> None:
+    def walk_calls(node, caller_nid: str, caller_package: str | None) -> None:
         if node.type == "function_call_expression":
             for c in node.children:
                 if c.type == "function":
-                    callee = _text(c).split("::")[-1]
+                    # `Acme::Helper::emit` -> callee `emit`, callee_package
+                    # `Acme::Helper`; a bare `emit` -> callee `emit`, no package.
+                    # The qualifier + caller package let the shared second pass
+                    # bind to the right same-named sub instead of any `emit()`.
+                    parts = _text(c).split("::")
+                    callee = parts[-1]
+                    callee_package = "::".join(parts[:-1]) or None
                     if callee and callee not in _PERL_BUILTINS:
                         raw_calls.append({
                             "caller_nid": caller_nid,
                             "callee": callee,
+                            "callee_package": callee_package,
+                            "caller_package": caller_package,
                             "is_member_call": False,
                             "source_file": str_path,
                             "source_location": f"L{node.start_point[0] + 1}",
@@ -219,10 +271,10 @@ def extract_perl(path: Path) -> dict:
                         })
                     break
         for child in node.children:
-            walk_calls(child, caller_nid)
+            walk_calls(child, caller_nid, caller_package)
 
-    for caller_nid, body in sub_bodies:
-        walk_calls(body, caller_nid)
+    for caller_nid, body, caller_package in sub_bodies:
+        walk_calls(body, caller_nid, caller_package)
 
     clean_edges = [e for e in edges if e["source"] in seen_ids and
                    (e["target"] in seen_ids or e["relation"] == "imports")]
