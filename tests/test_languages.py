@@ -4542,3 +4542,151 @@ def test_perl_import_repoints_from_shebang_perl_file(tmp_path):
     imports = [e for e in r["edges"] if e["relation"] == "imports"]
     assert any(e["target"] == pkg_id for e in imports), \
         f"use Acme::Helper in a shebang-perl file must re-point to {pkg_id}, got {[e['target'] for e in imports]}"
+
+
+# ── Perl S6c review-finding regressions ────────────────────────────────────────
+
+def test_perl_raw_calls_stamped_lang_perl():
+    """Every Perl raw_call carries `lang="perl"` so the shared second pass claims
+    exactly Perl's calls via the extractor stamp (like cpp/csharp/java/objc),
+    rather than sniffing for a `*_package` field (A1)."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    assert r["raw_calls"], "expected raw_calls from the sample module"
+    assert all(rc.get("lang") == "perl" for rc in r["raw_calls"]), \
+        f"every perl raw_call must be lang=perl, got {[rc.get('lang') for rc in r['raw_calls']]}"
+
+
+def test_perl_main_qualified_call_binds_packageless_sub(tmp_path):
+    """A package-less sub lives in Perl's default `main` package; a qualified
+    `main::helper()` call must bind to it (R1). Before main was modeled the sub
+    hung off the file node with the filename as its package label, so `main::`
+    never resolved."""
+    from graphify.extract import extract
+    (tmp_path / "s.pl").write_text(
+        "sub helper { return 1; }\nsub run { main::helper(); }\n"
+    )
+    r = extract([tmp_path / "s.pl"], parallel=False)
+    calls = _calls(r)
+    assert any("run" in s and "helper" in t for s, t in calls), \
+        f"main::helper() must bind to the package-less (main) helper, got {calls}"
+
+
+def test_perl_packageless_bare_call_no_bind_to_foreign_package(tmp_path):
+    """A bare call from a package-less (main) file must NOT bind to a same-named
+    sub in an unrelated, un-imported package (R1). Modeling `main` scopes the call
+    to main; without it the call carried no package and was generically matched to
+    the lone same-named sub in a foreign package."""
+    from graphify.extract import extract
+    (tmp_path / "b.pm").write_text("package B;\nsub helper { return 1; }\n1;\n")
+    (tmp_path / "s.pl").write_text(
+        "sub other { return 2; }\nsub run { helper(); other(); }\n"
+    )
+    r = extract([tmp_path / "b.pm", tmp_path / "s.pl"], parallel=False)
+    calls = _calls(r)
+    # Positive guard: the same-file (main) bare call resolves, so the negative
+    # assertion below is not a vacuous pass on an empty graph.
+    assert any("run" in s and "other" in t for s, t in calls), \
+        f"expected run->other within main, got {calls}"
+    assert not any("helper" in t for _s, t in calls), \
+        f"bare helper() from a main file must not bind to B::helper, got {calls}"
+
+
+def test_perl_main_package_node_emitted_for_packageless_sub(tmp_path):
+    """The lazily-created `main` package node contains the package-less sub (the
+    `contains` edge is main -> sub, not file -> sub)."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "s.pl"
+    src.write_text("sub helper { return 1; }\n")
+    r = extract_perl(src)
+    label = {n["id"]: n.get("label", "") for n in r["nodes"]}
+    container_of = {
+        label.get(e["target"]): label.get(e["source"])
+        for e in r["edges"] if e["relation"] == "contains"
+    }
+    assert "main" in label.values(), "a package-less sub must materialize a main package node"
+    assert container_of.get("helper()") == "main", \
+        f"package-less helper must be contained by main, got {container_of.get('helper()')!r}"
+
+
+def test_perl_import_repoint_survives_cache_roundtrip(tmp_path, monkeypatch):
+    """The import re-pointer must still fire on a cached (second) run (R2). A cached
+    fragment's source_file returns absolutized against the resolved root, so exact
+    string matching against the raw (relative) provenance paths missed and the
+    re-pointer silently regressed to dangling. Matching on the resolved path makes
+    both runs produce the same re-pointed edge."""
+    from graphify.extract import extract
+    monkeypatch.chdir(tmp_path)
+    Path("helper.pm").write_text("package Acme::Helper;\nsub emit { return 1; }\n1;\n")
+    Path("main.pm").write_text(
+        "package Main;\nuse Acme::Helper;\nsub run { return 1; }\n1;\n"
+    )
+    paths = [Path("helper.pm"), Path("main.pm")]
+
+    def _import_targets(r):
+        pkg_id = next(n["id"] for n in r["nodes"] if n.get("label") == "Acme::Helper")
+        return pkg_id, {e["target"] for e in r["edges"] if e["relation"] == "imports"}
+
+    r1 = extract(paths, cache_root=Path("."), parallel=False)
+    pkg1, targets1 = _import_targets(r1)
+    assert pkg1 in targets1, f"first run must re-point onto {pkg1}, got {targets1}"
+    assert (tmp_path / "graphify-out" / "cache").exists(), "AST cache must be written"
+
+    r2 = extract(paths, cache_root=Path("."), parallel=False)
+    pkg2, targets2 = _import_targets(r2)
+    assert pkg2 in targets2, \
+        f"cached run must ALSO re-point onto {pkg2} (not regress to dangling), got {targets2}"
+    assert targets1 == targets2, \
+        f"import targets must be identical across fresh and cached runs: {targets1} vs {targets2}"
+
+
+def test_perl_deeply_nested_expression_does_not_crash(tmp_path):
+    """A pathologically deep expression nest must not RecursionError (which would
+    make _safe_extract drop the whole file); the iterative walk keeps the file node
+    and the sub (S1)."""
+    from graphify.extract import extract_perl
+    depth = 12000  # > _RECURSION_LIMIT (10_000): the old recursive walk would blow up
+    body = "[" * depth + "1" + "]" * depth
+    src = tmp_path / "deep.pl"
+    src.write_text(f"sub f {{ my $x = {body}; }}\n")
+    r = extract_perl(src)
+    assert not r.get("error"), f"deep nest must not error out, got {r.get('error')!r}"
+    labels = {n["label"] for n in r["nodes"]}
+    assert "deep.pl" in labels, "file node must survive deep nesting"
+    assert "f()" in labels, "the sub must still be extracted despite deep nesting"
+
+
+def test_perl_isa_rejects_non_package_string(tmp_path):
+    """@ISA holds arbitrary string content; a value that is not a well-formed
+    package name (markdown/brackets/control chars) must not become an inherits
+    stub node or edge (S2, zero-edge over a bogus label)."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "bad.pm"
+    src.write_text(
+        'package Child;\n'
+        'our @ISA = ("weird\\nname[x](y)");\n'
+        '1;\n'
+    )
+    r = extract_perl(src)
+    inherits = [e for e in r["edges"] if e["relation"] == "inherits"]
+    assert not inherits, f"malformed @ISA string must not create an inherits edge, got {inherits}"
+    bad = [n for n in r["nodes"]
+           if any(ch in n.get("label", "") for ch in ("[", "(", "\n"))]
+    assert not bad, f"no stub node from a malformed inheritance string, got {bad}"
+
+
+def test_perl_isa_valid_package_still_inherits(tmp_path):
+    """The S2 validation must not reject legitimate package names: a normal
+    `Foo::Bar` @ISA entry still produces an inherits edge + stub."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "ok.pm"
+    src.write_text(
+        'package Child;\n'
+        'our @ISA = ("Acme::Base");\n'
+        '1;\n'
+    )
+    r = extract_perl(src)
+    inherits = [e for e in r["edges"] if e["relation"] == "inherits"]
+    assert inherits, "a well-formed @ISA package must still inherit"
+    labels = {n.get("label") for n in r["nodes"]}
+    assert "Acme::Base" in labels, "the valid base class stub must be emitted"
