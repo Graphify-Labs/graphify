@@ -2243,6 +2243,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".lua": "lua", ".luau": "lua",
     ".zig": "zig",
     ".ex": "elixir", ".exs": "elixir",
+    ".pl": "perl", ".pm": "perl",
     ".jl": "julia",
     ".dart": "dart",
     ".sh": "shell", ".bash": "shell",
@@ -5200,6 +5201,8 @@ _DISPATCH: dict[str, Any] = {
     ".psd1": extract_powershell_manifest,
     ".ex": extract_elixir,
     ".exs": extract_elixir,
+    ".pl": extract_perl,
+    ".pm": extract_perl,
     ".m": extract_objc,
     ".mm": extract_objc,
     ".jl": extract_julia,
@@ -5296,7 +5299,7 @@ _DEP_LOAD_FAILED_MARKER = "failed to load"
 # routes them to the CODE path via _shebang_interpreter; _get_extractor must
 # honor the same signal or these files are classified as code and then silently
 # dropped by extraction. Only interpreters with a real extractor are mapped —
-# detect's wider set (perl, fish, tcsh, Rscript) stays unmapped and skipped.
+# detect's wider set (fish, tcsh, Rscript) stays unmapped and skipped.
 _SHEBANG_DISPATCH: dict[str, Any] = {
     "python": extract_python,
     "python2": extract_python,
@@ -5312,6 +5315,7 @@ _SHEBANG_DISPATCH: dict[str, Any] = {
     "lua": extract_lua,
     "php": extract_php,
     "julia": extract_julia,
+    "perl": extract_perl,
 }
 
 

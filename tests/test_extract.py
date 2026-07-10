@@ -3438,6 +3438,11 @@ def test_extensionless_shebang_via_dispatch(tmp_path):
     split.write_text("#!/usr/bin/env -S bash -eu\necho hi\n")
     assert _get_extractor(split) is extract_bash
 
+    from graphify.extract import extract_perl
+    perltool = tmp_path / "legacy"
+    perltool.write_text("#!/usr/bin/perl\nprint 1;\n")
+    assert _get_extractor(perltool) is extract_perl
+
 
 def test_extensionless_without_usable_shebang_stays_unsupported(tmp_path):
     from graphify.extract import _get_extractor
@@ -3448,9 +3453,9 @@ def test_extensionless_without_usable_shebang_stays_unsupported(tmp_path):
 
     # Interpreter known to detect but with no AST extractor: stays skipped
     # rather than being mis-parsed by a wrong grammar.
-    perl = tmp_path / "legacy"
-    perl.write_text("#!/usr/bin/env perl\nprint 1;\n")
-    assert _get_extractor(perl) is None
+    tcsh = tmp_path / "legacy"
+    tcsh.write_text("#!/usr/bin/env tcsh\necho 1\n")
+    assert _get_extractor(tcsh) is None
 
 
 def test_extract_extensionless_bash_cli_end_to_end(tmp_path):
