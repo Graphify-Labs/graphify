@@ -6709,9 +6709,11 @@ def extract(
     # this map is built but never read for them.
     _label_by_nid = {n["id"]: n.get("label", "") for n in all_nodes}
     pkg_label_by_nid: dict[str, str] = {}
+    pkg_nid_by_sub_nid: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") == "contains":
             pkg_label_by_nid[e["target"]] = _label_by_nid.get(e["source"], "")
+            pkg_nid_by_sub_nid[e["target"]] = e["source"]
 
     for rc in all_raw_calls:
         callee = rc.get("callee", "")
@@ -6815,17 +6817,29 @@ def extract(
             # Bridge it: the candidate sub's enclosing package, re-idized the same
             # way the `use` target is, must be among the caller file's imports.
             pkg = pkg_label_by_nid.get(candidate_id, "")
-            return bool(pkg) and _make_id(pkg) in imported_symbols
+            if not pkg:
+                return False
+            if _make_id(pkg) in imported_symbols:
+                return True
+            # Accept the real package-node id form too. The import re-pointer rewrites
+            # a `use` target from the bare module-label id onto the package node id;
+            # matching either shape means this evidence check no longer depends on
+            # whether that re-pointer has run yet — the pass ordering stops being
+            # semantically load-bearing (A3). The current order (re-pointer after this
+            # pass) is kept regardless.
+            pkg_nid = pkg_nid_by_sub_nid.get(candidate_id)
+            return pkg_nid is not None and pkg_nid in imported_symbols
 
-        # Package-aware pre-filter for languages that tag calls with their
-        # package (Perl). Additive + guarded: a raw_call only reaches this branch
-        # when it carries a package field, which no other language sets, so every
-        # other language's candidate set is untouched. Zero-edge over a wrong
-        # guess: an unresolvable qualifier or a foreign-package bare call is
-        # dropped, not bound to a same-named sub in the wrong package.
+        # Package-aware pre-filter for Perl, which tags every call with its
+        # enclosing package. Gated on the extractor-stamped `lang` (matching the
+        # cpp/csharp/java/objc raw-call consumers) rather than field-presence, so
+        # the branch claims exactly Perl's raw_calls and another language that
+        # happened to set a `*_package` field could never fall into it. Zero-edge
+        # over a wrong guess: an unresolvable qualifier or a foreign-package bare
+        # call is dropped, not bound to a same-named sub in the wrong package.
         callee_package = rc.get("callee_package")
         caller_package = rc.get("caller_package")
-        if callee_package is not None or caller_package is not None:
+        if rc.get("lang") == "perl":
             if callee_package is not None:
                 # Qualified call `Pkg::sub()`: bind only to a sub whose enclosing
                 # package matches the qualifier. None or several -> drop.
