@@ -1497,7 +1497,8 @@ def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
         node["label"] for node in combined["nodes"] if node["file_type"] == "concept"
     }
 
-    graph = build_from_json(combined, directed=True)
+    extracted = extract([package_json, tsconfig], cache_root=tmp_path, parallel=False)
+    graph = build_from_json(extracted, directed=True)
     import_targets = {
         graph.nodes[data["_tgt"]]["label"]
         for _, _, data in graph.edges(data=True)
@@ -1508,6 +1509,11 @@ def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
         for _, _, data in graph.edges(data=True)
         if data.get("relation") == "extends"
     }
+    self_loops = [
+        data for _, _, data in graph.edges(data=True)
+        if data.get("relation") in {"imports", "extends"} and data["_src"] == data["_tgt"]
+    ]
+    assert self_loops == []
     assert {"left-pad", "bats"} <= import_targets
     assert extends_targets == {"./tsconfig.base.json"}
 
