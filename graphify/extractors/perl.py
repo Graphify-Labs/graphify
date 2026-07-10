@@ -205,8 +205,20 @@ def extract_perl(path: Path) -> dict:
                     pkg_nid = _make_id(stem, name)
                     add_node(pkg_nid, name, line)
                     add_edge(file_nid, pkg_nid, "contains", line)
-                    current_pkg_nid = pkg_nid
-                    current_pkg_name = name
+                    pkg_block = next(
+                        (c for c in child.children if c.type == "block"), None)
+                    if pkg_block is not None:
+                        # Block-form `package Foo { ... }` scopes Foo to the block
+                        # only. Walk the block under Foo, then restore the prior
+                        # package so following top-level statements are not
+                        # mis-attributed to Foo (and the block's subs are not lost).
+                        prev_nid, prev_name = current_pkg_nid, current_pkg_name
+                        current_pkg_nid, current_pkg_name = pkg_nid, name
+                        walk_statements(pkg_block)
+                        current_pkg_nid, current_pkg_name = prev_nid, prev_name
+                    else:
+                        current_pkg_nid = pkg_nid
+                        current_pkg_name = name
             elif child.type == "use_statement":
                 handle_use(child, line)
             elif child.type == "subroutine_declaration_statement":

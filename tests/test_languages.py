@@ -4299,9 +4299,56 @@ def test_perl_indirect_object_new_no_call_edge(tmp_path):
         f"indirect-object `new Widget()` must not create a calls edge, got {calls}"
 
 
-# Package-aware second-pass resolution (F1/F3). Same S4 dependency as the corpus
-# tests above: the shared pass reads the raw_calls' package qualifiers, but no
-# calls edge exists until the .pl/.pm dispatch is registered — RED until S4.
+def test_perl_block_scoped_package(tmp_path):
+    """Block-form `package Foo { ... }` scopes Foo to the block only: subs inside
+    the block belong to Foo, and a sub AFTER the block belongs to the package that
+    was current before the block (no state leak)."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "block.pm"
+    src.write_text(
+        "package Outer;\n"
+        "sub outer_sub { }\n"
+        "package Acme::Block {\n"
+        "    sub inner { }\n"
+        "}\n"
+        "sub after_block { }\n"
+        "1;\n"
+    )
+    r = extract_perl(src)
+    label = {n["id"]: n["label"] for n in r["nodes"]}
+    container_of = {
+        label.get(e["target"]): label.get(e["source"])
+        for e in r["edges"] if e["relation"] == "contains"
+    }
+    assert "Acme::Block" in label.values(), "block-form package node must be emitted"
+    assert container_of.get("inner()") == "Acme::Block", (
+        f"sub inside a block package must belong to it, got {container_of.get('inner()')!r}"
+    )
+    assert container_of.get("after_block()") == "Outer", (
+        f"block-form package must not leak: after_block belongs to Outer, "
+        f"got {container_of.get('after_block()')!r}"
+    )
+
+
+def test_perl_block_scoped_package_body_calls(tmp_path):
+    """A bare call inside a block-package sub resolves within that package —
+    proves the block body is actually walked (not silently skipped)."""
+    from graphify.extract import extract
+    (tmp_path / "b.pm").write_text(
+        "package B::Blk {\n"
+        "    sub inner { helper(); }\n"
+        "    sub helper { return 1; }\n"
+        "}\n"
+        "1;\n"
+    )
+    r = extract([tmp_path / "b.pm"], parallel=False)
+    calls = _calls(r)
+    assert any("inner" in s and "helper" in t for s, t in calls), \
+        f"expected inner->helper inside the block package, got {calls}"
+
+
+# Package-aware second-pass resolution: the shared pass reads the raw_calls'
+# package qualifiers to bind a call to the same-named sub in the right package.
 
 def _calls_with_target_pkg(r):
     """(caller_label, target_label, target_enclosing_package_label) per calls edge."""
