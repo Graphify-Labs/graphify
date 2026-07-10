@@ -6781,6 +6781,15 @@ def extract(
                 or (candidate_file_nid is not None and candidate_file_nid in imported_modules)
             )
 
+        def _has_package_import_evidence(candidate_id: str) -> bool:
+            # Perl-only: `use P::A;` emits an imports edge to the MODULE label id
+            # (`_make_id('P::A')`), never to the sub id — so a bare call to an
+            # imported package's sub has no direct symbol/module evidence above.
+            # Bridge it: the candidate sub's enclosing package, re-idized the same
+            # way the `use` target is, must be among the caller file's imports.
+            pkg = pkg_label_by_nid.get(candidate_id, "")
+            return bool(pkg) and _make_id(pkg) in imported_symbols
+
         # Package-aware pre-filter for languages that tag calls with their
         # package (Perl). Additive + guarded: a raw_call only reaches this branch
         # when it carries a package field, which no other language sets, so every
@@ -6810,7 +6819,10 @@ def extract(
                 if same_pkg:
                     candidates = same_pkg
                 else:
-                    candidates = [c for c in candidates if _has_import_evidence(c)]
+                    candidates = [
+                        c for c in candidates
+                        if _has_import_evidence(c) or _has_package_import_evidence(c)
+                    ]
             if len(candidates) != 1:
                 continue
 

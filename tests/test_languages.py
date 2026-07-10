@@ -4322,3 +4322,40 @@ def test_perl_bare_foreign_package_call_no_edge(tmp_path):
         f"expected run->other same-package resolution, got {calls}"
     assert not any("helper" in t for _s, t in calls), \
         f"bare helper() must not bind to X::helper without import evidence, got {calls}"
+
+
+def test_perl_bare_call_binds_imported_package(tmp_path):
+    """A bare `emit()` call resolves to a sub in a FOREIGN package when that
+    package is pulled in with `use P::A;` — the `use` import is the evidence that
+    disambiguates the otherwise-foreign sub. `use P::A;` emits an imports edge to
+    the module label (`_make_id('P::A')`), not to the sub id, so plain
+    symbol-import evidence misses it; package-import evidence must bridge the gap."""
+    from graphify.extract import extract
+    (tmp_path / "a.pm").write_text("package P::A;\nsub emit { return 1; }\n1;\n")
+    (tmp_path / "c.pm").write_text(
+        "package C;\nuse P::A;\nsub run { emit(); }\n1;\n"
+    )
+    r = extract([tmp_path / "a.pm", tmp_path / "c.pm"], parallel=False)
+    emit_calls = [(s, t, p) for (s, t, p) in _calls_with_target_pkg(r) if "emit" in t]
+    assert emit_calls, \
+        f"bare emit() with `use P::A;` must bind to P::A::emit, got none: {_calls_with_target_pkg(r)}"
+    assert all(p == "P::A" for (_s, _t, p) in emit_calls), \
+        f"emit() must bind only to the imported P::A::emit, got {emit_calls}"
+
+
+def test_perl_bare_call_two_imported_packages_ambiguous_no_edge(tmp_path):
+    """Two imported packages both define `emit`; a bare `emit()` is ambiguous —
+    the `use` import evidence points at two candidates, so the edge is dropped
+    (zero-edge over a guess), same discipline as the qualified-drop path."""
+    from graphify.extract import extract
+    (tmp_path / "a.pm").write_text("package P::A;\nsub emit { return 1; }\n1;\n")
+    (tmp_path / "b.pm").write_text("package P::B;\nsub emit { return 2; }\n1;\n")
+    (tmp_path / "c.pm").write_text(
+        "package C;\nuse P::A;\nuse P::B;\nsub run { emit(); }\n1;\n"
+    )
+    r = extract(
+        [tmp_path / "a.pm", tmp_path / "b.pm", tmp_path / "c.pm"], parallel=False
+    )
+    calls = _calls(r)
+    assert not any("emit" in t for _s, t in calls), \
+        f"bare emit() imported from two packages is ambiguous and must drop, got {calls}"
