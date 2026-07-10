@@ -230,12 +230,26 @@ def extract_perl(path: Path) -> dict:
                     elif c.type == "block":
                         block = c
                 if name:
-                    container = current_pkg_nid or file_nid
-                    sub_nid = _make_id(container, name)
-                    add_node(sub_nid, f"{name}()", line)
+                    if "::" in name:
+                        # Qualified declaration `sub Pkg::sub {...}` defines the sub
+                        # IN the named package, not the current one. Container = that
+                        # package (created if it has no `package` statement of its
+                        # own); the body's caller-package is the qualifier so its
+                        # calls resolve against Pkg.
+                        pkg_qual, _, sub_name = name.rpartition("::")
+                        container = _make_id(stem, pkg_qual)
+                        add_node(container, pkg_qual, line)
+                        add_edge(file_nid, container, "contains", line)
+                        sub_package = pkg_qual
+                    else:
+                        container = current_pkg_nid or file_nid
+                        sub_name = name
+                        sub_package = current_pkg_name
+                    sub_nid = _make_id(container, sub_name)
+                    add_node(sub_nid, f"{sub_name}()", line)
                     add_edge(container, sub_nid, "contains", line)
                     if block is not None:
-                        sub_bodies.append((sub_nid, block, current_pkg_name))
+                        sub_bodies.append((sub_nid, block, sub_package))
             elif child.type == "expression_statement":
                 for c in child.children:
                     if c.type == "require_expression":

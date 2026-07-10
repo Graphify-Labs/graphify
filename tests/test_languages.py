@@ -4374,6 +4374,26 @@ def test_perl_qualified_call_binds_correct_package(tmp_path):
     assert all(p == "P::A" for (_s, _t, p) in emit_calls), \
         f"qualified P::A::emit() must bind only to P::A's emit, got {emit_calls}"
 
+def test_perl_qualified_sub_declaration_call_edge(tmp_path):
+    """A qualified declaration `sub Ext::Pkg::helper {...}` defines the sub IN
+    Ext::Pkg (not the current package). A call `Ext::Pkg::helper()` from another
+    package must bind to it: the node's label is `helper()` and its enclosing
+    package is Ext::Pkg (so callee/package-qualifier resolution matches)."""
+    from graphify.extract import extract
+    (tmp_path / "q.pm").write_text(
+        "package Main::Mod;\n"
+        "sub Ext::Pkg::helper { return 1; }\n"
+        "sub run { Ext::Pkg::helper(); }\n"
+        "1;\n"
+    )
+    r = extract([tmp_path / "q.pm"], parallel=False)
+    binds = [(s, t, p) for (s, t, p) in _calls_with_target_pkg(r) if "helper" in t]
+    assert binds, f"expected run->helper via qualified sub decl, got {_calls_with_target_pkg(r)}"
+    assert all(t == "helper()" and p == "Ext::Pkg" for (_s, t, p) in binds), (
+        f"qualified sub must be labelled helper() and enclosed by Ext::Pkg, got {binds}"
+    )
+
+
 def test_perl_bare_foreign_package_call_no_edge(tmp_path):
     """A bare `helper()` call resolves to a same-package sub, never to a
     same-named sub in a DIFFERENT, un-imported package (zero-edge, not a guess)."""
