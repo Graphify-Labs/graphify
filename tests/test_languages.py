@@ -4457,3 +4457,21 @@ def test_perl_import_duplicate_package_label_stays_dangling(tmp_path):
         f"ambiguous use P::A; must stay dangling on bare id {bare_id}, got {[e['target'] for e in imports]}"
     assert not any(e["target"] in pkg_ids for e in imports), \
         f"ambiguous use P::A; must NOT bind to either P::A file node, got {[e['target'] for e in imports]}"
+
+
+def test_perl_import_repoints_from_shebang_perl_file(tmp_path):
+    """An extensionless `#!/usr/bin/perl` script is dispatched to extract_perl by
+    shebang, but its source_file has no .pl/.pm suffix. Scoping the re-pointer by
+    file suffix would silently skip such a file's imports (underreporting); scoping
+    by extractor provenance re-points them like any other Perl source."""
+    from graphify.extract import extract
+    (tmp_path / "helper.pm").write_text("package Acme::Helper;\nsub emit { return 1; }\n1;\n")
+    script = tmp_path / "runme"
+    script.write_text(
+        "#!/usr/bin/perl\npackage Main;\nuse Acme::Helper;\nsub run { return 1; }\n1;\n"
+    )
+    r = extract([tmp_path / "helper.pm", script], parallel=False)
+    pkg_id = next(n["id"] for n in r["nodes"] if n.get("label") == "Acme::Helper")
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert any(e["target"] == pkg_id for e in imports), \
+        f"use Acme::Helper in a shebang-perl file must re-point to {pkg_id}, got {[e['target'] for e in imports]}"

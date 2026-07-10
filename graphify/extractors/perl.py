@@ -294,7 +294,11 @@ def extract_perl(path: Path) -> dict:
             "input_tokens": 0, "output_tokens": 0}
 
 
-def _resolve_perl_imports(all_nodes: list[dict], all_edges: list[dict]) -> None:
+def _resolve_perl_imports(
+    all_nodes: list[dict],
+    all_edges: list[dict],
+    perl_source_files: set[str] | None = None,
+) -> None:
     """Re-point dangling in-corpus Perl ``imports`` edges onto the real package node.
 
     ``use Foo::Bar;`` / ``require Foo::Bar;`` emit an imports edge to a bare
@@ -307,12 +311,24 @@ def _resolve_perl_imports(all_nodes: list[dict], all_edges: list[dict]) -> None:
     their edge keeps its bare target — matching the dangling-stub behavior other
     languages leave on unresolved external imports.
 
+    ``perl_source_files`` (absolute-path strings, from ``extract()`` where
+    ``_get_extractor(path) is extract_perl``) scopes both the package-node scan and
+    the re-pointed edges to Perl provenance. Suffix-based scoping (``.pl``/``.pm``)
+    silently skipped extensionless ``#!/usr/bin/perl`` scripts, which are dispatched
+    to extract_perl by shebang and whose imports were never re-pointed
+    (underreporting). When ``None`` (direct callers), falls back to suffix matching.
+
     Runs AFTER the shared cross-file call pass: ``_has_package_import_evidence``
     (extract.py) reads imports targets as bare module-label ids to bind a bare call
     to an imported package's sub, so re-pointing before it would break that binding.
     Mutates ``all_edges`` in place; the bare target was never a node, so there is
     nothing to prune.
     """
+    def _is_perl_source(src: str) -> bool:
+        if perl_source_files is not None:
+            return src in perl_source_files
+        return src.endswith((".pl", ".pm"))
+
     # module-label id -> list of package node ids carrying that fully-qualified
     # label. A bare `use Foo` cannot disambiguate a package re-opened under the
     # same label across files (Foswiki-real: `package Assert;` in AssertOn.pm AND
@@ -321,7 +337,7 @@ def _resolve_perl_imports(all_nodes: list[dict], all_edges: list[dict]) -> None:
     pkg_ids_by_label_id: dict[str, list[str]] = {}
     for node in all_nodes:
         src = str(node.get("source_file") or "")
-        if not src.endswith((".pl", ".pm")):
+        if not _is_perl_source(src):
             continue
         label = node.get("label", "")
         nid = node.get("id", "")
@@ -337,7 +353,7 @@ def _resolve_perl_imports(all_nodes: list[dict], all_edges: list[dict]) -> None:
             continue
         # Scope to Perl imports only, so a same-named module-label id in another
         # language's imports edge is never re-pointed onto a Perl package node.
-        if not str(edge.get("source_file") or "").endswith((".pl", ".pm")):
+        if not _is_perl_source(str(edge.get("source_file") or "")):
             continue
         candidates = pkg_ids_by_label_id.get(edge.get("target"))
         if candidates and len(candidates) == 1 and candidates[0] != edge["target"]:

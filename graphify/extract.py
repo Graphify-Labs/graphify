@@ -6957,8 +6957,12 @@ def extract(
     # Re-point dangling in-corpus Perl `imports` edges onto the real package node.
     # Runs AFTER the call pass above so `_has_package_import_evidence` still sees the
     # bare module-label ids it needs to bind bare calls to imported packages (#S5b).
+    # Scope by extractor provenance, not suffix, so extensionless `#!/usr/bin/perl`
+    # scripts (dispatched to extract_perl by shebang) are re-pointed too. Keyed on
+    # str(path) to match the nodes' source_file, set before the relativization below.
     try:
-        _resolve_perl_imports(all_nodes, all_edges)
+        _perl_sources = {str(p) for p in paths if _get_extractor(p) is extract_perl}
+        _resolve_perl_imports(all_nodes, all_edges, _perl_sources)
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("Perl import resolution failed, skipping: %s", exc)
