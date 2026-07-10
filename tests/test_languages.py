@@ -4728,3 +4728,58 @@ def test_perl_isa_digit_start_component_no_stub(tmp_path):
     assert not inherits, f"digit-start component must not inherit, got {inherits}"
     assert "Acme::1Base" not in {n.get("label") for n in r["nodes"]}, \
         "no stub node for a digit-start component"
+
+
+def test_perl_statement_walk_charges_budget_per_sibling(tmp_path, monkeypatch):
+    """A broad, flat file (many sibling statements under one frame) must charge the
+    traversal budget per sibling, not once per stack frame (F2). Under a tiny budget
+    the walk stops early and emits a PARTIAL graph; the old code drained every
+    sibling on one charge, so all subs surfaced regardless of budget. Asserting the
+    partial output isolates walk_statements (the shared budget is also spent by the
+    later call walk, so a warning alone would not discriminate)."""
+    from graphify.extractors import perl
+    monkeypatch.setattr(perl, "_MAX_PERL_TRAVERSAL_NODES", 3)
+    src = tmp_path / "flat.pl"
+    src.write_text("package Wide;\n" + "".join(
+        f"sub s{i} {{ 1; }}\n" for i in range(30)))
+    r = perl.extract_perl(src)
+    sub_nodes = [n for n in r["nodes"] if n.get("label", "").endswith("()")]
+    assert len(sub_nodes) < 30, (
+        "walk_statements must charge per sibling and stop early under a tiny budget; "
+        f"emitting all {len(sub_nodes)} subs means siblings were traversed for free")
+
+
+def test_perl_statement_walk_no_warning_within_budget(tmp_path, caplog):
+    """Guard against a vacuous pass: a small file under the default budget extracts
+    fully and emits no traversal warning."""
+    import logging
+    from graphify.extractors import perl
+    src = tmp_path / "small.pl"
+    src.write_text("package Wide;\n" + "".join(
+        f"sub s{i} {{ return {i}; }}\n" for i in range(20)))
+    with caplog.at_level(logging.WARNING, logger="graphify.extractors.perl"):
+        r = perl.extract_perl(src)
+    assert not any("traversal budget" in rec.message for rec in caplog.records), \
+        "a small file must not trip the budget"
+    assert sum(1 for n in r["nodes"] if n.get("label", "").endswith("()")) == 20, \
+        "all 20 subs extract when the budget is ample"
+
+
+def test_perl_string_parents_charges_budget(tmp_path, monkeypatch, caplog):
+    """`_string_parents` shares the traversal budget (F2): an @ISA array of many
+    separate string literals is a per-node walk that must trip the bounded warning,
+    even though the file has only a couple of top-level statements. The old code
+    left `_string_parents` entirely unbudgeted, so it walked the whole subtree for
+    free. (Each literal is its own tree node — unlike a single qw() word list.)"""
+    import logging
+    from graphify.extractors import perl
+    # Above the ~2 top-level statement charges but far below the string-literal node
+    # count, so exhaustion can only come from _string_parents.
+    monkeypatch.setattr(perl, "_MAX_PERL_TRAVERSAL_NODES", 20)
+    parents = ", ".join(f"'P{i}'" for i in range(400))
+    src = tmp_path / "wide_isa.pm"
+    src.write_text(f"package Child;\nour @ISA = ({parents});\n1;\n")
+    with caplog.at_level(logging.WARNING, logger="graphify.extractors.perl"):
+        perl.extract_perl(src)
+    assert any("traversal budget exhausted" in rec.message for rec in caplog.records), \
+        "a wide @ISA literal array must charge the shared budget via _string_parents"

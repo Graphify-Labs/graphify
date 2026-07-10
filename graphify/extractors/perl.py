@@ -170,6 +170,8 @@ def extract_perl(path: Path) -> dict:
         out: list[str] = []
         stack = [node]
         while stack:
+            if not _spend():
+                break
             n = stack.pop()
             if n.type in ("string_literal", "interpolated_string_literal", "quoted_word_list"):
                 for c in n.children:
@@ -276,11 +278,14 @@ def extract_perl(path: Path) -> dict:
             (iter(root_node.children), current_pkg_nid, current_pkg_name)
         ]
         while stack:
-            if not _spend():
-                break
             child_iter, restore_nid, restore_name = stack[-1]
             descended = False
             for child in child_iter:
+                # Charge every visited sibling, not once per frame: a broad flat
+                # file drains an unbounded number of children under a single frame,
+                # so a per-frame charge left them effectively free.
+                if not _spend():
+                    return  # budget exhausted: keep the partial graph, stop walking
                 line = child.start_point[0] + 1
                 if child.type == "package_statement":
                     name = _package_name(child)
