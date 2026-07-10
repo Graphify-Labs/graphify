@@ -313,10 +313,12 @@ def _resolve_perl_imports(all_nodes: list[dict], all_edges: list[dict]) -> None:
     Mutates ``all_edges`` in place; the bare target was never a node, so there is
     nothing to prune.
     """
-    # module-label id -> package node id. First package with a given fully-
-    # qualified label wins (deterministic in node order); a bare `use Foo` can't
-    # disambiguate a re-opened same-name package, and picking one beats dangling.
-    pkg_by_label_id: dict[str, str] = {}
+    # module-label id -> list of package node ids carrying that fully-qualified
+    # label. A bare `use Foo` cannot disambiguate a package re-opened under the
+    # same label across files (Foswiki-real: `package Assert;` in AssertOn.pm AND
+    # AssertOff.pm), so we re-point ONLY when exactly one package node matches;
+    # >1 candidate stays dangling (zero-edge over a guessed cross-file binding).
+    pkg_ids_by_label_id: dict[str, list[str]] = {}
     for node in all_nodes:
         src = str(node.get("source_file") or "")
         if not src.endswith((".pl", ".pm")):
@@ -327,8 +329,8 @@ def _resolve_perl_imports(all_nodes: list[dict], all_edges: list[dict]) -> None:
         # (label ends in `()`); neither keys an import target.
         if not label or not nid or label.endswith(")") or label == Path(src).name:
             continue
-        pkg_by_label_id.setdefault(_make_id(label), nid)
-    if not pkg_by_label_id:
+        pkg_ids_by_label_id.setdefault(_make_id(label), []).append(nid)
+    if not pkg_ids_by_label_id:
         return
     for edge in all_edges:
         if edge.get("relation") != "imports":
@@ -337,6 +339,6 @@ def _resolve_perl_imports(all_nodes: list[dict], all_edges: list[dict]) -> None:
         # language's imports edge is never re-pointed onto a Perl package node.
         if not str(edge.get("source_file") or "").endswith((".pl", ".pm")):
             continue
-        real = pkg_by_label_id.get(edge.get("target"))
-        if real and real != edge["target"]:
-            edge["target"] = real
+        candidates = pkg_ids_by_label_id.get(edge.get("target"))
+        if candidates and len(candidates) == 1 and candidates[0] != edge["target"]:
+            edge["target"] = candidates[0]

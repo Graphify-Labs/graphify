@@ -4429,3 +4429,31 @@ def test_perl_require_repoints_to_in_corpus_package(tmp_path):
     imports = [e for e in r["edges"] if e["relation"] == "imports"]
     assert any(e["target"] == pkg_id for e in imports), \
         f"require Acme::Helper must re-point to package node {pkg_id}, got {[e['target'] for e in imports]}"
+
+
+def test_perl_import_duplicate_package_label_stays_dangling(tmp_path):
+    """A re-opened package declared under the SAME fully-qualified label in two
+    files (Foswiki-real: `package Assert;` in both AssertOn.pm and AssertOff.pm)
+    is ambiguous: a bare `use P::A;` cannot say which file it means. Binding it to
+    one file arbitrarily is a guessed edge — worse than dangling — so the imports
+    edge must stay on the bare module-label id (no package node) when >1 package
+    node carries the label. Only a unique label re-points (zero-edge over a guess)."""
+    from graphify.extract import extract
+    from graphify.extractors.base import _make_id
+    (tmp_path / "a1.pm").write_text("package P::A;\nsub emit { return 1; }\n1;\n")
+    (tmp_path / "a2.pm").write_text("package P::A;\nsub other { return 2; }\n1;\n")
+    (tmp_path / "c.pm").write_text(
+        "package C;\nuse P::A;\nsub run { return 1; }\n1;\n"
+    )
+    r = extract(
+        [tmp_path / "a1.pm", tmp_path / "a2.pm", tmp_path / "c.pm"], parallel=False
+    )
+    pkg_nodes = [n for n in r["nodes"] if n.get("label") == "P::A"]
+    assert len(pkg_nodes) == 2, f"expected two P::A package nodes, got {pkg_nodes}"
+    pkg_ids = {n["id"] for n in pkg_nodes}
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    bare_id = _make_id("P::A")
+    assert any(e["target"] == bare_id for e in imports), \
+        f"ambiguous use P::A; must stay dangling on bare id {bare_id}, got {[e['target'] for e in imports]}"
+    assert not any(e["target"] in pkg_ids for e in imports), \
+        f"ambiguous use P::A; must NOT bind to either P::A file node, got {[e['target'] for e in imports]}"
