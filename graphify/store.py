@@ -12,14 +12,16 @@ Every graphify command then makes sure ``./graphify-out`` is a **link** — a
 symlink on POSIX, a directory junction on Windows (``mklink /J`` semantics, no
 admin rights) — pointing at::
 
-    <store>/<repo>/<branch>/<module-relative-path>/graphify-out
+    <store>/<module-relative-path>/graphify-out
 
 so every write physically lands in the central store, while every literal
 ``graphify-out/...`` path (the CLI defaults, the agent skill's code blocks,
 a plain ``cat``) keeps working unchanged through the link. A monorepo gets one
-link per directory you build in, all keyed under the same store tree; the
-branch in the key means switching branches just retargets the link.
-``graphify push`` / ``pull`` (see graphify.remote) sync the store elsewhere.
+link per directory you build in, keyed only by its path within the repo; the
+repo root's link is simply ``<store>/graphify-out``. There is **no repo or
+branch segment** — the repo points at the same store location on every branch,
+and each repo names its own store path in its config. ``graphify push`` /
+``pull`` (see graphify.remote) sync the store elsewhere.
 
 The ignore entry is written in the same step that creates a link, as a bare
 ``graphify-out`` line: the usual trailing-slash form only matches directories,
@@ -81,32 +83,17 @@ def find_config(start: Path | None = None) -> tuple[dict, Path] | None:
     return None
 
 
-def _repo_name(root: Path, in_git: bool) -> str:
-    """Store key for the repo: origin-remote basename, else the folder name.
-
-    The origin URL is what clones share — a teammate who clones into a
-    differently-named folder must land on the same ``<repo>/<branch>`` key.
-    ``https://host/owner/repo.git`` and ``git@host:owner/repo.git`` both end in
-    ``repo(.git)``. A ``"repo"`` override in the config beats both.
-    """
-    url = git_out(root, "remote", "get-url", "origin") if in_git else None
-    if url:
-        name = url.rstrip("/").rsplit("/", 1)[-1]
-        if name.endswith(".git"):
-            name = name[:-4]
-        if name:
-            return name
-    return root.name
-
-
 def store_context(cwd: Path | None = None) -> dict | None:
     """Resolve the store context for ``cwd``, or None when no store is configured.
 
     Keys: ``cfg``/``cfg_dir`` (the config), ``root`` (git top-level, else the
-    config dir), ``in_git``, ``repo`` (config ``"repo"`` override, else the
-    origin-remote basename, else the root dir name — see ``_repo_name``),
-    ``branch``, ``store_base`` (the expanded ``store`` path) and ``store_root``
-    (``<store>/<repo>/<branch>`` — the tree push/pull hooks sync).
+    config dir), ``in_git``, ``store_base``/``store_root`` (the expanded ``store``
+    path — the tree push/pull hooks sync).
+
+    The store path *is* the key: the graph lives directly under it, with no
+    ``<repo>``/``<branch>`` segments. So a repo points at the same store
+    location no matter which branch is checked out, and each repo simply names
+    its own store path in its committed config (change it to whatever you like).
     """
     cwd = Path(cwd or Path.cwd()).resolve()
     found = find_config(cwd)
@@ -118,18 +105,14 @@ def store_context(cwd: Path | None = None) -> dict | None:
         return None
     toplevel = git_out(cwd, "rev-parse", "--show-toplevel")
     root = Path(toplevel).resolve() if toplevel else cfg_dir
-    repo = cfg.get("repo") or _repo_name(root, in_git=toplevel is not None)
-    branch = git_out(root, "rev-parse", "--abbrev-ref", "HEAD") or "main"
     store_base = Path(os.path.expanduser(store))
     return {
         "cfg": cfg,
         "cfg_dir": cfg_dir,
         "root": root,
         "in_git": toplevel is not None,
-        "repo": repo,
-        "branch": branch,
         "store_base": store_base,
-        "store_root": store_base / repo / branch,
+        "store_root": store_base,
     }
 
 
@@ -257,7 +240,7 @@ def materialize(ctx: dict) -> int:
     """Replace every ``graphify-out`` link with a real folder holding a copy of
     its store data — the exit path from the central store (``graphify deinit``).
 
-    Copies (never moves): the store keeps serving other branches and teammates.
+    Copies (never moves): the store keeps serving teammates who share it.
     Returns the number of links materialized.
     """
     import shutil
@@ -288,7 +271,7 @@ def materialize(ctx: dict) -> int:
 def link_all(ctx: dict) -> int:
     """Create/refresh a repo link for every module present in the store.
 
-    Walks ``<store>/<repo>/<branch>`` for ``graphify-out`` dirs and mirrors each
+    Walks the ``<store>`` tree for ``graphify-out`` dirs and mirrors each
     as a link at the matching repo path, so ``graphify pull`` recreates the whole
     working set — a fresh clone can immediately read any module's graphs (e.g.
     root-level ``merge-graphs ./services/api/graphify-out/graph.json``) without

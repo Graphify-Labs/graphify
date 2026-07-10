@@ -1,8 +1,9 @@
 """Sync the central graph store via a pluggable push/pull hook.
 
 With a ``.graphify/config.json`` store configured (see graphify.store), the
-real graph data lives in ``<store>/<repo>/<branch>/...`` and the repo only
-holds links. ``graphify push`` / ``graphify pull`` hand that store tree to a
+real graph data lives under the configured ``<store>`` path (no repo/branch
+segment) and the repo only holds links. ``graphify push`` / ``graphify pull``
+hand that store tree to a
 **hook** — a script (Python, JS, shell, PowerShell, ``.cmd``, or any
 executable) that mirrors it to a backend (S3, git-lfs, rsync, a network
 share, …). graphify itself has no backend dependency; if the store folder is
@@ -22,13 +23,11 @@ Hook resolution for action ``push``/``pull``:
 
 The hook receives (via environment):
   GRAPHIFY_ACTION     "push" | "pull"
-  GRAPHIFY_STORE_DIR  <store>/<repo>/<branch> — the tree to mirror
-  GRAPHIFY_STORE      the configured store base folder (expanded)
+  GRAPHIFY_STORE_DIR  the configured <store> path — the tree to mirror
+  GRAPHIFY_STORE      the configured store folder, expanded (same as above)
   GRAPHIFY_CONFIG     path to .graphify/config.json (extra keys are yours)
   GRAPHIFY_REPO_ROOT  the repo top-level dir (context; data is NOT here)
-  GRAPHIFY_REPO       repo name (config "repo" override, else origin basename)
-  GRAPHIFY_BRANCH     current branch
-  GRAPHIFY_PREFIX     "<repo>/<branch>" (a natural object-key / path prefix)
+  GRAPHIFY_PREFIX     the store folder's basename (a natural object-key prefix)
 
 Interpreter selection: an executable hook is run directly (its shebang wins —
 an author can pin ``#!/usr/bin/env -S uv run --with boto3 python``). Otherwise
@@ -107,9 +106,7 @@ def _run_hook(action: str) -> dict:
         "GRAPHIFY_STORE": str(ctx["store_base"]),
         "GRAPHIFY_CONFIG": str(_store.config_path(ctx["cfg_dir"])),
         "GRAPHIFY_REPO_ROOT": str(ctx["root"]),
-        "GRAPHIFY_REPO": ctx["repo"],
-        "GRAPHIFY_BRANCH": ctx["branch"],
-        "GRAPHIFY_PREFIX": f"{ctx['repo']}/{ctx['branch']}",
+        "GRAPHIFY_PREFIX": store_dir.name,
     }
     cmd = _interpreter(hook) + [str(hook)]
     print(f"{action}: running hook {hook}")
@@ -193,8 +190,9 @@ def cmd_init(argv: list[str]) -> None:
     if config.is_file():
         print(f"kept existing {config}")
     else:
-        config.write_text(json.dumps({"store": "~/graphify-store"}, indent=2) + "\n")
-        print(f"wrote {config}  (edit the store path if you want)")
+        default_store = f"~/graphify-store/{base.name}"
+        config.write_text(json.dumps({"store": default_store}, indent=2) + "\n")
+        print(f"wrote {config}  (store: {default_store} — edit the path to anything you like)")
     from graphify import remote_hook_templates as tpl
     for action, body in (("push", tpl.PUSH_S3), ("pull", tpl.PULL_S3)):
         existing = next(

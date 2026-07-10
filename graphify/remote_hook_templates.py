@@ -2,10 +2,9 @@
 
 Examples, not graphify dependencies — a hook can do anything (S3, git, rsync,
 gcs). It receives the store context in the environment (see graphify.remote):
-GRAPHIFY_ACTION / GRAPHIFY_STORE_DIR / GRAPHIFY_PREFIX / GRAPHIFY_REPO /
-GRAPHIFY_BRANCH. The contract: mirror GRAPHIFY_STORE_DIR (the
-``<store>/<repo>/<branch>`` tree holding every module's graphify-out) to the
-backend under GRAPHIFY_PREFIX. Exit non-zero on failure.
+GRAPHIFY_ACTION / GRAPHIFY_STORE_DIR / GRAPHIFY_PREFIX. The contract: mirror
+GRAPHIFY_STORE_DIR (the ``<store>`` tree holding every module's graphify-out)
+to the backend under GRAPHIFY_PREFIX. Exit non-zero on failure.
 
 The shebang pins an env with boto3 so the hook is self-contained; on Windows,
 graphify runs a ``.py`` hook with its own interpreter (shebang ignored), so
@@ -26,8 +25,8 @@ _COMMON = '''
 import os, pathlib
 
 ACTION = os.environ["GRAPHIFY_ACTION"]
-STORE  = pathlib.Path(os.environ["GRAPHIFY_STORE_DIR"])   # <store>/<repo>/<branch>
-PREFIX = os.environ["GRAPHIFY_PREFIX"]                      # <repo>/<branch>
+STORE  = pathlib.Path(os.environ["GRAPHIFY_STORE_DIR"])   # the <store> tree
+PREFIX = os.environ["GRAPHIFY_PREFIX"]                      # store folder basename
 BUCKET = os.environ.get("GRAPHIFY_BUCKET", "graphify-graphs")
 ENDPOINT = os.environ.get("GRAPHIFY_S3_ENDPOINT")           # e.g. http://127.0.0.1:9000 for MinIO
 

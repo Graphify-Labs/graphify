@@ -56,17 +56,18 @@ def test_store_context_none_without_store_key(tmp_path):
     assert store.store_context(tmp_path) is None
 
 
-def test_store_context_repo_override(tmp_path):
+def test_store_root_is_store_base_no_repo_branch(tmp_path):
+    # the store path IS the key — no <repo>/<branch> segments appended
     repo = _git_repo(tmp_path / "some-local-name")
-    _write_config(repo, store=str(tmp_path / "s"), repo="shared-name")
+    _write_config(repo, store=str(tmp_path / "s"))
     ctx = store.store_context(repo)
     assert ctx is not None
-    assert ctx["repo"] == "shared-name"
-    assert ctx["store_root"] == tmp_path / "s" / "shared-name" / "main"
+    assert ctx["store_root"] == (tmp_path / "s")
+    assert ctx["store_base"] == (tmp_path / "s")
 
 
-def test_repo_name_from_origin_remote(tmp_path):
-    # a clone under any folder name keys the store by the shared origin URL
+def test_origin_remote_does_not_affect_store_path(tmp_path):
+    # the origin URL is irrelevant now — the config's store path is the whole key
     clone = _git_repo(tmp_path / "whatever-local-name")
     subprocess.run(
         ["git", "-C", str(clone), "remote", "add", "origin",
@@ -76,8 +77,7 @@ def test_repo_name_from_origin_remote(tmp_path):
     _write_config(clone, store=str(tmp_path / "s"))
     ctx = store.store_context(clone)
     assert ctx is not None
-    assert ctx["repo"] == "mono"
-    assert ctx["store_root"] == tmp_path / "s" / "mono" / "main"
+    assert ctx["store_root"] == (tmp_path / "s")
 
 
 def test_find_config_non_dict_json_returns_none(tmp_path):
@@ -100,18 +100,6 @@ def test_store_tilde_expands_home(tmp_path, monkeypatch):
     assert ctx["store_base"] == tmp_path / "gstore"
 
 
-def test_repo_name_from_https_origin_with_trailing_slash(tmp_path):
-    clone = _git_repo(tmp_path / "x")
-    subprocess.run(
-        ["git", "-C", str(clone), "remote", "add", "origin",
-         "https://github.com/acme/mono/"],
-        check=True,
-    )
-    _write_config(clone, store=str(tmp_path / "s"))
-    ctx = store.store_context(clone)
-    assert ctx is not None and ctx["repo"] == "mono"
-
-
 # --------------------------------------------------------------- ensure_out_link
 
 def test_no_config_is_noop(tmp_path):
@@ -123,7 +111,7 @@ def test_link_created_and_writes_land_in_store(tmp_path):
     repo = _git_repo(tmp_path / "myrepo")
     _write_config(repo, store=str(tmp_path / "store"))
     target = store.ensure_out_link(repo)
-    assert target == (tmp_path / "store" / "myrepo" / "main" / "graphify-out").resolve()
+    assert target == (tmp_path / "store" / "graphify-out").resolve()
     link = repo / "graphify-out"
     assert store._is_link(link)
     # a write through the link physically lands in the store
@@ -139,7 +127,7 @@ def test_module_link_keyed_by_relpath(tmp_path):
     _write_config(repo, store=str(tmp_path / "store"))
     target = store.ensure_out_link(module)
     assert target == (
-        tmp_path / "store" / "mono" / "main" / "services" / "api" / "graphify-out"
+        tmp_path / "store" / "services" / "api" / "graphify-out"
     ).resolve()
     assert store._is_link(module / "graphify-out")
 
@@ -155,7 +143,9 @@ def test_idempotent_second_call(tmp_path):
     assert lines.count("graphify-out") == 1
 
 
-def test_branch_switch_retargets_link(tmp_path):
+def test_branch_switch_keeps_same_link(tmp_path):
+    # the repo points at the same store location on every branch — no retarget,
+    # no rebuild. The graph built on one branch is right there on the next.
     repo = _git_repo(tmp_path / "r")
     _write_config(repo, store=str(tmp_path / "store"))
     env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
@@ -163,14 +153,13 @@ def test_branch_switch_retargets_link(tmp_path):
     subprocess.run(["git", "-C", str(repo), "commit", "--allow-empty", "-q", "-m", "x"],
                    check=True, env=env)
     main_target = store.ensure_out_link(repo)
-    (main_target / "graph.json").write_text('{"branch": "main"}')
+    (main_target / "graph.json").write_text('{"built": true}')
 
     subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", "feat/x"], check=True)
     feat_target = store.ensure_out_link(repo)
-    assert feat_target == (tmp_path / "store" / "r" / "feat" / "x" / "graphify-out").resolve()
-    # the link now points at the feature branch; main's data is untouched
-    assert not (repo / "graphify-out" / "graph.json").exists()
-    assert (main_target / "graph.json").is_file()
+    assert feat_target == main_target  # same store location, regardless of branch
+    # the graph built on main is immediately visible on the new branch
+    assert (repo / "graphify-out" / "graph.json").read_text() == '{"built": true}'
 
 
 def test_migrates_existing_local_dir(tmp_path, capsys):
@@ -192,7 +181,7 @@ def test_migration_collision_local_wins(tmp_path):
     # store already has an (older) graph; the local build is freshest and wins
     repo = _git_repo(tmp_path / "r")
     _write_config(repo, store=str(tmp_path / "store"))
-    target = tmp_path / "store" / "r" / "main" / "graphify-out"
+    target = tmp_path / "store" / "graphify-out"
     target.mkdir(parents=True)
     (target / "graph.json").write_text('{"stale": true}')
     local = repo / "graphify-out"
@@ -231,7 +220,7 @@ def test_custom_relative_out_name_links_too(tmp_path, monkeypatch):
     repo = _git_repo(tmp_path / "r")
     _write_config(repo, store=str(tmp_path / "store"))
     target = store.ensure_out_link(repo)
-    assert target == (tmp_path / "store" / "r" / "main" / "graphify-out-feature").resolve()
+    assert target == (tmp_path / "store" / "graphify-out-feature").resolve()
     assert store._is_link(repo / "graphify-out-feature")
     assert "graphify-out-feature" in (repo / ".gitignore").read_text().splitlines()
 
@@ -324,12 +313,12 @@ def test_absolute_graphify_out_env_disables_linking(tmp_path, monkeypatch):
 
 
 def test_works_without_git(tmp_path):
-    # no git repo: root falls back to the config dir, branch to "main"
+    # no git repo: root falls back to the config dir; the store path is the key
     repo = tmp_path / "plain"
     repo.mkdir()
     _write_config(repo, store=str(tmp_path / "store"))
     target = store.ensure_out_link(repo)
-    assert target == (tmp_path / "store" / "plain" / "main" / "graphify-out").resolve()
+    assert target == (tmp_path / "store" / "graphify-out").resolve()
     assert not (repo / ".gitignore").exists()  # gitignore upkeep only inside git
 
 
@@ -341,7 +330,6 @@ _RECORD_HOOK = (
     "  os.environ['GRAPHIFY_ACTION'],\n"
     "  os.environ['GRAPHIFY_STORE_DIR'],\n"
     "  os.environ['GRAPHIFY_PREFIX'],\n"
-    "  os.environ['GRAPHIFY_BRANCH'],\n"
     "]))\n"
 )
 
@@ -361,11 +349,10 @@ def test_push_runs_explicit_hook_with_context(tmp_path, monkeypatch):
     repo, marker = _hook_setup(tmp_path, monkeypatch, push=str(hook))
 
     remote.cmd_push([])
-    action, store_dir, prefix, branch = marker.read_text().split("|")
+    action, store_dir, prefix = marker.read_text().split("|")
     assert action == "push"
-    assert store_dir == str(tmp_path / "store" / "repo" / "main")
-    assert prefix == "repo/main"
-    assert branch == "main"
+    assert store_dir == str(tmp_path / "store")     # the store path itself — no repo/branch
+    assert prefix == "store"                          # the store folder's basename
     assert Path(store_dir).is_dir()  # push pre-creates the store tree
 
 
@@ -396,16 +383,14 @@ def test_hook_env_includes_config_store_and_root(tmp_path, monkeypatch):
         "  os.environ['GRAPHIFY_CONFIG'],\n"
         "  os.environ['GRAPHIFY_STORE'],\n"
         "  os.environ['GRAPHIFY_REPO_ROOT'],\n"
-        "  os.environ['GRAPHIFY_REPO'],\n"
         "]))\n"
     )
     repo, marker = _hook_setup(tmp_path, monkeypatch, push=str(hook))
     remote.cmd_push([])
-    cfg_path, store_base, repo_root, repo_name = marker.read_text().split("|")
+    cfg_path, store_base, repo_root = marker.read_text().split("|")
     assert cfg_path == str(repo / ".graphify" / "config.json")
     assert store_base == str(tmp_path / "store")
     assert Path(repo_root) == repo.resolve()
-    assert repo_name == "repo"
 
 
 def test_hook_extension_priority_is_deterministic(tmp_path, monkeypatch):
@@ -501,7 +486,7 @@ def test_init_bootstraps_repo_dot_graphify(tmp_path, monkeypatch):
     monkeypatch.chdir(repo)
     remote.cmd_init([])
     cfg = json.loads((repo / ".graphify" / "config.json").read_text())
-    assert cfg["store"] == "~/graphify-store"
+    assert cfg["store"] == "~/graphify-store/r"  # default: ~/graphify-store/<folder>
     push = repo / ".graphify" / "push.py"
     pull = repo / ".graphify" / "pull.py"
     assert push.is_file() and pull.is_file()
@@ -599,7 +584,7 @@ def test_template_skip_excludes_cache_only(tmp_path, monkeypatch):
     from graphify import remote_hook_templates as tpl
     monkeypatch.setenv("GRAPHIFY_ACTION", "push")
     monkeypatch.setenv("GRAPHIFY_STORE_DIR", str(tmp_path))
-    monkeypatch.setenv("GRAPHIFY_PREFIX", "r/main")
+    monkeypatch.setenv("GRAPHIFY_PREFIX", "store")
     ns: dict = {}
     exec(tpl._COMMON, ns)
     assert ns["skip"]("graphify-out/cache/ast.json")

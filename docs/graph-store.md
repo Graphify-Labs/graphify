@@ -17,7 +17,7 @@ creates the repo's committed graphify home:
 
 ```
 .graphify/
-├── config.json     { "store": "~/graphify-store" }   ← edit if you want
+├── config.json     { "store": "~/graphify-store/<repo>" }  ← edit to any path
 ├── push.py         starter S3/MinIO hooks — swap for push.sh/.js/.ps1/.cmd
 └── pull.py         (same name) or any script via config.json {"push": "<path>"}
 ```
@@ -32,16 +32,14 @@ Any graphify command first makes sure `./graphify-out` is a **link** into the
 store:
 
 ```
-~/graphify-store/                                ← the real data (outside the repo)
-└── myrepo/
-    └── mybranch/
-        ├── graphify-out/                        ← repo-root graphs
-        └── services/api/graphify-out/           ← that module's graphs
+~/graphify-store/myrepo/                         ← the store path you set (outside the repo)
+├── graphify-out/                                ← repo-root graphs
+└── services/api/graphify-out/                   ← that module's graphs
 
 myrepo/                                          ← the git repo
 ├── .graphify/                                   ← committed (config + hooks)
-├── graphify-out         → ~/graphify-store/myrepo/mybranch/graphify-out
-└── services/api/graphify-out → …/mybranch/services/api/graphify-out
+├── graphify-out         → ~/graphify-store/myrepo/graphify-out
+└── services/api/graphify-out → …/services/api/graphify-out
 ```
 
 - POSIX: a symlink. Windows: a **directory junction** — no admin rights, but the
@@ -49,11 +47,11 @@ myrepo/                                          ← the git repo
 - Every write physically lands in the store; every literal `graphify-out/...`
   path — CLI defaults, the agent skill's code blocks, plain `cat` — keeps working
   through the link. **The skill needs no changes.**
-- `<repo>/<branch>` come from git — the repo name from the origin remote's
-  basename (so every clone keys the same, whatever its folder is called; no
-  remote → folder name; `{ "repo": "name" }` in the config overrides both).
-  Branches never collide, and switching branches retargets the link on the next
-  graphify run.
+- **The store path is the whole key** — no `<repo>`/`<branch>` segments. The repo
+  points at the same store location on *every* branch (switch branches → no
+  retarget, no rebuild; `graphify update` refreshes the graph), and each repo
+  simply names its own store path in its config. `graphify remote init` defaults
+  the path to `~/graphify-store/<folder>`; change it to anything you like.
 - A monorepo gets one link per directory you build in, keyed by its repo-relative
   path. `graphify remote pull` additionally fans links out for **every** module already
   present in the store, so a fresh clone reads any module's graphs (e.g.
@@ -79,7 +77,7 @@ commits as a ~100-byte target path — git never follows it into content.
 
 `graphify remote push` / `graphify remote pull` run a hook — any executable: Python, Node,
 shell, PowerShell, `.cmd`/`.bat`, or a binary. The contract: mirror
-`GRAPHIFY_STORE_DIR` (the `<store>/<repo>/<branch>` tree) to/from your backend and
+`GRAPHIFY_STORE_DIR` (the `<store>` tree) to/from your backend and
 exit non-zero on failure. If the store folder is already shared (NFS, Dropbox, …),
 you never need push/pull. To leave the store later, `graphify remote delete` turns every link back into a real local folder (a copy — the store is untouched); then delete `.graphify/` and commit.
 
@@ -103,12 +101,11 @@ environment (env vars, `~/.aws`, …) — the starter S3 hooks use `GRAPHIFY_BUC
 | Variable | Meaning |
 |---|---|
 | `GRAPHIFY_ACTION` | `push` or `pull` |
-| `GRAPHIFY_STORE_DIR` | `<store>/<repo>/<branch>` — the tree to mirror |
-| `GRAPHIFY_STORE` | the configured store base folder (expanded) |
+| `GRAPHIFY_STORE_DIR` | the configured `<store>` path — the tree to mirror |
+| `GRAPHIFY_STORE` | the same store path, expanded |
 | `GRAPHIFY_CONFIG` | path to `.graphify/config.json` (read your own extra keys) |
 | `GRAPHIFY_REPO_ROOT` | repo top-level dir (context only — data is not here) |
-| `GRAPHIFY_REPO` / `GRAPHIFY_BRANCH` | store key parts |
-| `GRAPHIFY_PREFIX` | `"<repo>/<branch>"` — a natural object-key / path prefix |
+| `GRAPHIFY_PREFIX` | the store folder's basename — a natural object-key prefix |
 
 ## Typical team flow
 
@@ -116,7 +113,7 @@ environment (env vars, `~/.aws`, …) — the starter S3 hooks use `GRAPHIFY_BUC
 # publisher (once)
 graphify remote init   # .graphify/ with config + hooks; edit, then commit it
 graphify .             # writes through the link into the store (per module: cd m && graphify .)
-graphify remote push   # hook uploads <store>/<repo>/<branch>/
+graphify remote push   # hook uploads the <store> tree
 
 # teammate
 git clone … && cd …
