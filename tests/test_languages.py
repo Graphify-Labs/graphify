@@ -4038,10 +4038,9 @@ def test_cl_ids_are_path_qualified_across_directories(tmp_path):
         f"got overlap {sorted(ids_a & ids_b)}"
     )
 # ── Perl ──────────────────────────────────────────────────────────────────────
-# RED (S2): the `extract_perl` extractor does not exist yet (S3) and the .pl/.pm
-# dispatch is not registered yet (S4). The `extract_perl` import is kept INSIDE
-# each test so importing this module still succeeds and the existing suite stays
-# GREEN — only the Perl tests fail (ImportError until S3, empty graph until S4).
+# `extract_perl` (and `extract`) are imported INSIDE each test rather than at
+# module top so this test module still imports even if the extractor is absent —
+# only the Perl tests would fail, not the whole suite's collection.
 
 def test_perl_no_error():
     from graphify.extract import extract_perl
@@ -4225,7 +4224,7 @@ def test_perl_raw_calls_carry_package_qualifiers():
 
 # Perl call resolution runs in the top-level `extract()` second pass (raw_calls ->
 # name-matched calls), so these drive the public multi-file dispatch, like the
-# ObjC cross-file tests. RED until BOTH S3 (extractor) and S4 (.pl/.pm dispatch).
+# ObjC cross-file tests.
 
 def _perl_corpus():
     from graphify.extract import extract
@@ -4268,12 +4267,13 @@ def test_perl_method_call_no_edge():
     r = _perl_corpus()
     calls = _calls(r)
     # Positive guard: the corpus must actually produce static/bare calls, so this
-    # test is not a vacuous pass on an empty graph (RED until S3+S4).
+    # test is not a vacuous pass on an empty graph.
     assert any("format_line" in tgt or "emit" in tgt for _src, tgt in calls), \
         f"expected the static/bare calls to resolve before asserting the negatives, got {calls}"
     assert not any("update" in tgt for _src, tgt in calls), \
         f"method call $self->update() must not produce a calls edge, got {calls}"
-    assert not any(tgt == "render" or tgt.endswith("::render") or tgt.endswith(".render")
+    assert not any(tgt in ("render", "render()")
+                   or tgt.endswith("::render") or tgt.endswith(".render")
                    for _src, tgt in calls), \
         f"method call $widget->render() must not produce a calls edge, got {calls}"
 
@@ -4405,7 +4405,7 @@ def test_perl_bare_foreign_package_call_no_edge(tmp_path):
     r = extract([tmp_path / "x.pm", tmp_path / "y.pm"], parallel=False)
     calls = _calls(r)
     # Positive guard: the same-package bare call must resolve, so the negative
-    # assertion below is not a vacuous pass on an empty (pre-S4) graph.
+    # assertion below is not a vacuous pass on an empty graph.
     assert any("run" in s and "other" in t for s, t in calls), \
         f"expected run->other same-package resolution, got {calls}"
     assert not any("helper" in t for _s, t in calls), \
@@ -4449,9 +4449,9 @@ def test_perl_bare_call_two_imported_packages_ambiguous_no_edge(tmp_path):
         f"bare emit() imported from two packages is ambiguous and must drop, got {calls}"
 
 
-# In-corpus import re-pointer (S5b Befund A): a `use`/`require` whose module is a
-# package defined elsewhere in the corpus must re-point its imports edge from the
-# bare module-label id onto the real package node; external modules stay dangling.
+# In-corpus import re-pointer: a `use`/`require` whose module is a package defined
+# elsewhere in the corpus must re-point its imports edge from the bare module-label
+# id onto the real package node; external modules stay dangling.
 
 def test_perl_import_repoints_to_in_corpus_package(tmp_path):
     """`use Acme::Helper;` from another file must re-point its imports edge onto
@@ -4500,8 +4500,8 @@ def test_perl_require_repoints_to_in_corpus_package(tmp_path):
 
 def test_perl_import_duplicate_package_label_stays_dangling(tmp_path):
     """A re-opened package declared under the SAME fully-qualified label in two
-    files (Foswiki-real: `package Assert;` in both AssertOn.pm and AssertOff.pm)
-    is ambiguous: a bare `use P::A;` cannot say which file it means. Binding it to
+    files (e.g. `package Assert;` in both AssertOn.pm and AssertOff.pm) is
+    ambiguous: a bare `use P::A;` cannot say which file it means. Binding it to
     one file arbitrarily is a guessed edge — worse than dangling — so the imports
     edge must stay on the bare module-label id (no package node) when >1 package
     node carries the label. Only a unique label re-points (zero-edge over a guess)."""

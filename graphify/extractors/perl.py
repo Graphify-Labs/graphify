@@ -41,10 +41,9 @@ _PERL_BUILTINS: frozenset[str] = frozenset({
     # list / hash ops
     "shift", "unshift", "push", "pop", "splice", "map", "grep", "sort",
     "reverse", "join", "split", "keys", "values", "each", "exists", "delete",
-    "wantarray",
     # string ops
     "index", "rindex", "substr", "length", "uc", "lc", "ucfirst", "lcfirst",
-    "chomp", "chop", "chr", "ord", "hex", "oct", "sprintf", "pack", "unpack",
+    "chomp", "chop", "chr", "ord", "hex", "oct", "pack", "unpack",
     "quotemeta",
     # math
     "abs", "int", "sqrt", "sin", "cos", "atan2", "exp", "log", "rand", "srand",
@@ -55,7 +54,7 @@ _PERL_BUILTINS: frozenset[str] = frozenset({
 
 
 def extract_perl(path: Path) -> dict:
-    """Extract packages, subs, imports and inheritance from a .pl/.pm/.t file."""
+    """Extract packages, subs, imports and inheritance from a .pl/.pm file."""
     try:
         import tree_sitter_perl as tsperl
         from tree_sitter import Language, Parser
@@ -357,7 +356,7 @@ def _resolve_perl_imports(
 
     # module-label id -> list of package node ids carrying that fully-qualified
     # label. A bare `use Foo` cannot disambiguate a package re-opened under the
-    # same label across files (Foswiki-real: `package Assert;` in AssertOn.pm AND
+    # same label across files (e.g. `package Assert;` in both AssertOn.pm and
     # AssertOff.pm), so we re-point ONLY when exactly one package node matches;
     # >1 candidate stays dangling (zero-edge over a guessed cross-file binding).
     pkg_ids_by_label_id: dict[str, list[str]] = {}

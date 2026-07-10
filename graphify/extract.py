@@ -6793,10 +6793,9 @@ def extract(
         # Package-aware pre-filter for languages that tag calls with their
         # package (Perl). Additive + guarded: a raw_call only reaches this branch
         # when it carries a package field, which no other language sets, so every
-        # other language's candidate set is untouched (the existing 314 tests
-        # prove the unqualified path is unchanged). Zero-edge over a wrong guess:
-        # an unresolvable qualifier or a foreign-package bare call is dropped, not
-        # bound to a same-named sub in the wrong package (#F1/#F3).
+        # other language's candidate set is untouched. Zero-edge over a wrong
+        # guess: an unresolvable qualifier or a foreign-package bare call is
+        # dropped, not bound to a same-named sub in the wrong package.
         callee_package = rc.get("callee_package")
         caller_package = rc.get("caller_package")
         if callee_package is not None or caller_package is not None:
