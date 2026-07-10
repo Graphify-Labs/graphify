@@ -4690,3 +4690,41 @@ def test_perl_isa_valid_package_still_inherits(tmp_path):
     assert inherits, "a well-formed @ISA package must still inherit"
     labels = {n.get("label") for n in r["nodes"]}
     assert "Acme::Base" in labels, "the valid base class stub must be emitted"
+
+
+@pytest.mark.parametrize("bad", [
+    "Acme::Basé",      # accented letter — Unicode \w matched, ASCII must not
+    "Acme::Ｂase",      # fullwidth latin letter — Unicode \w matched, ASCII must not
+    "Acme::1x",        # component starting with a digit after ::
+    "1Acme",           # leading digit
+    "Acme::Bar\n",     # trailing newline (a bare $ anchor would let this through)
+])
+def test_perl_label_validator_rejects_non_ascii_component(bad):
+    """The package-name validator is ASCII-only and anchors every `::` component to
+    a letter/underscore start (F3). Python `\\w` is Unicode-default, so accented,
+    fullwidth and digit-start names would otherwise pass and land in graph.json /
+    the Obsidian export."""
+    from graphify.extractors.perl import _is_valid_perl_package_name
+    assert not _is_valid_perl_package_name(bad), \
+        f"{bad!r} must be rejected by the ASCII package-name validator"
+
+
+@pytest.mark.parametrize("ok", ["Foo", "_priv", "Acme::Base", "A::B::C", "F0o::B4r"])
+def test_perl_label_validator_accepts_ascii_package(ok):
+    """Legitimate ASCII package names (including digits after the first char of a
+    component) still validate — the F3 tightening must not over-reject."""
+    from graphify.extractors.perl import _is_valid_perl_package_name
+    assert _is_valid_perl_package_name(ok), f"{ok!r} must validate"
+
+
+def test_perl_isa_digit_start_component_no_stub(tmp_path):
+    """End-to-end: a @ISA entry whose ::-component starts with a digit must not
+    produce an inherits edge or a stub node (F3 Unicode/digit-start bypass)."""
+    from graphify.extract import extract_perl
+    src = tmp_path / "bad.pm"
+    src.write_text('package Child;\nour @ISA = ("Acme::1Base");\n1;\n')
+    r = extract_perl(src)
+    inherits = [e for e in r["edges"] if e["relation"] == "inherits"]
+    assert not inherits, f"digit-start component must not inherit, got {inherits}"
+    assert "Acme::1Base" not in {n.get("label") for n in r["nodes"]}, \
+        "no stub node for a digit-start component"

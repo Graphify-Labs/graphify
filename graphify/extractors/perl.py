@@ -23,7 +23,14 @@ _LOG = logging.getLogger(__name__)
 # (control chars, markdown, newlines, an over-long blob) could otherwise flow raw
 # into a node label and on into graph.json / the Obsidian export. Names that do
 # not match are discarded (zero-edge over a bogus stub).
-_PERL_PKG_NAME_RE = re.compile(r"^[A-Za-z_]\w*(?:::\w+)*$")
+#
+# The classes are spelled out as explicit ASCII ranges (not ``\w``): Python's
+# ``\w`` is Unicode-default, so accented (``Basé``), fullwidth (``Ｂase``) and
+# other non-ASCII barewords would slip through. Every ``::`` component must begin
+# with a letter/underscore, which also rejects a digit-start component
+# (``Acme::1x``); ``fullmatch`` (below) anchors the whole string, so a trailing
+# newline cannot pass on a ``$`` alone.
+_PERL_PKG_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
 _MAX_PERL_PKG_NAME_LEN = 256
 
 # Coarse guard so a pathologically large or deeply nested file cannot make the
@@ -36,7 +43,7 @@ def _is_valid_perl_package_name(name: str) -> bool:
     return (
         bool(name)
         and len(name) <= _MAX_PERL_PKG_NAME_LEN
-        and _PERL_PKG_NAME_RE.match(name) is not None
+        and _PERL_PKG_NAME_RE.fullmatch(name) is not None
     )
 
 # ``use strict`` & friends are compiler pragmas, not module dependencies — they
