@@ -2952,9 +2952,7 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
 import importlib.util as _ilu2
 _needs_cfml = pytest.mark.skipif(
     _ilu2.find_spec("tree_sitter_cfml") is None,
-    # Not on PyPI yet, so there's no declared pyproject.toml extra to point at
-    # (see the `cfml` NOTE in pyproject.toml) -- install manually to run these.
-    reason="tree-sitter-cfml not installed",
+    reason="tree-sitter-cfml not installed (optional [cfml] extra)",
 )
 
 from graphify.extract import extract_cfml

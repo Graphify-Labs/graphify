@@ -80,14 +80,12 @@ pascal = ["tree-sitter-pascal"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-# NOTE: no `cfml` extra yet. extract_cfml() (.cfc/.cfm/.cfs ColdFusion/CFML)
-# uses tree-sitter-cfml, which isn't published to PyPI yet -- declaring it here
-# would make uv's lockfile resolution fail for the whole project (uv resolves
-# all extras together, and a nonexistent PyPI package fails hard, not
-# gracefully). extract_cfml()'s own try/except ImportError guard means it
-# already works today for anyone who installs tree-sitter-cfml manually. Add
-# `cfml = ["tree-sitter-cfml"]` back here (and to `all` below) once it's on PyPI.
-all = ["mcp", "starlette>=1.3.1", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal"]
+# extract_cfml() uses tree-sitter-cfml (.cfc/.cfm/.cfs ColdFusion/CFML) for AST
+# extraction. Ships prebuilt wheels (e.g. manylinux), so this stays optional
+# for the same reason pascal/sql do -- not everyone touches CFML -- rather
+# than needing a C toolchain workaround.
+cfml = ["tree-sitter-cfml>=0.26.30,<0.27"]
+all = ["mcp", "starlette>=1.3.1", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-cfml>=0.26.30,<0.27"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
