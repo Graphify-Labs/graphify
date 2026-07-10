@@ -67,6 +67,7 @@ Prefer the CLI when it is installed:
 graphify query "QUESTION"
 # or: graphify query "QUESTION" --dfs --budget 3000
 ```
+If you already have ordered graph node ids from external retrieval or reranking, pass them as `--seed-file PATH`; the file must be a JSON array of string node ids, and its order becomes the traversal seed order.
 
 If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal inline:
 

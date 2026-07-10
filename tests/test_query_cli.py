@@ -51,6 +51,74 @@ def test_query_cli_heuristic_context_filter(monkeypatch, tmp_path, capsys):
     assert "build" not in out
 
 
+def test_query_cli_seed_file_accepts_node_id_strings(monkeypatch, tmp_path, capsys):
+    graph_path = _write_graph(tmp_path)
+    seed_path = tmp_path / "seeds.json"
+    seed_path.write_text(json.dumps(["n3"]))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "extract", "--seed-file", str(seed_path), "--graph", str(graph_path)],
+    )
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "Start: ['build']" in out
+
+
+def test_query_cli_seed_file_deduplicates_node_ids(monkeypatch, tmp_path, capsys):
+    graph_path = _write_graph(tmp_path)
+    seed_path = tmp_path / "seeds.json"
+    seed_path.write_text(json.dumps(["n3", "n2", "n2"]))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "unmatched", "--seed-file", str(seed_path), "--graph", str(graph_path)],
+    )
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "Start: ['build', 'cluster']" in out
+    assert out.index("NODE build") < out.index("NODE cluster")
+
+
+def test_query_cli_seed_file_rejects_unknown_node(monkeypatch, tmp_path, capsys):
+    import pytest
+
+    graph_path = _write_graph(tmp_path)
+    seed_path = tmp_path / "seeds.json"
+    seed_path.write_text(json.dumps(["missing"]))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "extract", "--seed-file", str(seed_path), "--graph", str(graph_path)],
+    )
+    with pytest.raises(SystemExit):
+        mainmod.main()
+    err = capsys.readouterr().err
+    assert "seed node id not found" in err
+    assert "missing" in err
+
+
+def test_query_cli_seed_file_rejects_non_string_entries(monkeypatch, tmp_path, capsys):
+    import pytest
+
+    graph_path = _write_graph(tmp_path)
+    seed_path = tmp_path / "seeds.json"
+    seed_path.write_text(json.dumps([{"id": "n2"}]))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "extract", "--seed-file", str(seed_path), "--graph", str(graph_path)],
+    )
+    with pytest.raises(SystemExit):
+        mainmod.main()
+    err = capsys.readouterr().err
+    assert "seed file entries must be string node ids" in err
+
+
 def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys):
     """#F4: query CLI must refuse to parse a graph.json that exceeds the cap."""
     import pytest
