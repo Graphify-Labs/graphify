@@ -1688,8 +1688,16 @@ def dispatch_command(cmd: str) -> None:
             graphs.append(G)
         if not repo_tags:
             repo_tags = _repo_tags(graph_paths)
-            naive_tags = [gp.parent.parent.name for gp in graph_paths]
-            if len(set(naive_tags)) != len(naive_tags):
+            out_name = Path(_GRAPHIFY_OUT).name
+            repo_dir_tags = [
+                gp.parent.parent.name
+                for gp in graph_paths
+                if gp.name == "graph.json" and gp.parent.name == out_name
+            ]
+            if (
+                len(repo_dir_tags) == len(graph_paths)
+                and len(set(repo_dir_tags)) != len(repo_dir_tags)
+            ):
                 print(
                     "  note: repo dir names collide; using distinct tags: "
                     + ", ".join(repo_tags)

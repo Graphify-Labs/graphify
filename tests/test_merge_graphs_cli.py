@@ -101,7 +101,8 @@ def test_merge_graphs_same_named_repo_dirs_do_not_collapse(tmp_path):
     assert labels == {"app.js", "App.jsx"}, f"both entities preserved; got {labels}"
 
 
-def test_distinct_repo_tags_unit(tmp_path):
+def test_distinct_repo_tags_unit(tmp_path, monkeypatch):
+    from graphify import build as build_mod
     from graphify.build import distinct_repo_tags
     # distinct repo dirs pass through unchanged
     assert distinct_repo_tags([
@@ -121,6 +122,11 @@ def test_distinct_repo_tags_unit(tmp_path):
         Path("c/src/graphify-out/graph.json"),
     ])
     assert len(set(tags3)) == 3, tags3
+    monkeypatch.setattr(build_mod, "GRAPHIFY_OUT_NAME", "custom-out")
+    assert distinct_repo_tags([
+        Path("backend/custom-out/graph.json"),
+        Path("web/custom-out/graph.json"),
+    ]) == ["backend", "web"]
 
 
 def test_merge_graphs_preserves_repository_local_identity(tmp_path):
@@ -156,6 +162,7 @@ def test_merge_graphs_preserves_repository_local_identity(tmp_path):
         "a::request_flow": ["a::entry", "a::worker"],
         "b::request_flow": ["b::entry", "b::worker"],
     }
+    assert "repo dir names collide" not in r.stdout
     assert "4 nodes, 2 edges, 2 hyperedges" in r.stdout
 
 
@@ -199,18 +206,75 @@ def test_merge_graphs_community_remap_is_input_order_independent(tmp_path):
 
 
 def test_merge_graphs_disambiguates_duplicate_derived_tags(tmp_path):
+    backend = tmp_path / "backend" / "graphify-out" / "graph.json"
     a = tmp_path / "owner-a" / "service" / "graphify-out" / "graph.json"
     b = tmp_path / "owner-b" / "service" / "graphify-out" / "graph.json"
+    _write_repository_graph(backend, "Backend")
     _write_repository_graph(a, "A")
     _write_repository_graph(b, "B")
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(backend), str(a), str(b), "--out", str(out)], tmp_path)
+
+    assert r.returncode == 0, r.stderr
+    ids = {node["id"] for node in json.loads(out.read_text())["nodes"]}
+    assert "backend::entry" in ids
+    assert "owner-a_service::entry" in ids
+    assert "owner-b_service::entry" in ids
+
+
+def test_merge_graphs_duplicate_tag_suffixes_are_input_order_independent(tmp_path):
+    a = tmp_path / "owner-a" / "common" / "service.json"
+    b = tmp_path / "owner-b" / "common" / "service.json"
+    _write_repository_graph(a, "A")
+    _write_repository_graph(b, "B")
+    out_ab = tmp_path / "merged-ab.json"
+    out_ba = tmp_path / "merged-ba.json"
+
+    first = _run(["merge-graphs", str(a), str(b), "--out", str(out_ab)], tmp_path)
+    second = _run(["merge-graphs", str(b), str(a), "--out", str(out_ba)], tmp_path)
+
+    assert first.returncode == second.returncode == 0
+
+    def entry_ids_by_label(path: Path) -> dict[str, str]:
+        data = json.loads(path.read_text())
+        return {
+            node["label"]: node["id"]
+            for node in data["nodes"]
+            if node.get("local_id") == "entry"
+        }
+
+    assert entry_ids_by_label(out_ab) == entry_ids_by_label(out_ba) == {
+        "A entry": "common_service::entry",
+        "B entry": "common_service-2::entry",
+    }
+
+
+def test_merge_graphs_skips_malformed_hyperedge_entries(tmp_path):
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    _write_repository_graph(a, "A")
+    _write_repository_graph(b, "B")
+    data = json.loads(a.read_text())
+    data["hyperedges"] = [
+        None,
+        "invalid",
+        {"id": "scalar_nodes", "nodes": "entry"},
+        {"id": "ghost_member", "nodes": ["entry", "ghost"]},
+        {"id": "request_flow", "nodes": ["entry", "worker"], "relation": "flow"},
+    ]
+    a.write_text(json.dumps(data))
     out = tmp_path / "merged.json"
 
     r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
 
     assert r.returncode == 0, r.stderr
-    ids = {node["id"] for node in json.loads(out.read_text())["nodes"]}
-    assert "owner-a_service::entry" in ids
-    assert "owner-b_service::entry" in ids
+    hyperedges = json.loads(out.read_text())["hyperedges"]
+    assert all(isinstance(hyperedge, dict) for hyperedge in hyperedges)
+    assert {hyperedge["id"] for hyperedge in hyperedges} == {
+        "a::request_flow",
+        "b::request_flow",
+    }
 
 
 def test_merge_graphs_accepts_explicit_repository_tags(tmp_path):

@@ -31,7 +31,7 @@ import unicodedata
 from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
-from .paths import default_graph_json as _default_graph_json
+from .paths import GRAPHIFY_OUT_NAME, default_graph_json as _default_graph_json
 from .validate import validate_extraction
 
 
@@ -1128,7 +1128,7 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
 def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
     """Return a unique, human-meaningful repo tag per input graph for merge-graphs.
 
-    Canonical ``<repo>/graphify-out/graph.json`` inputs use the resolved
+    Canonical ``<repo>/<output-dir>/graph.json`` inputs use the resolved
     repository directory, while flat JSON inputs use their filename stem.
     Colliding tags are widened with path context, then an index suffix guarantees
     uniqueness so no two input graphs ever share a prefix (#1729).
@@ -1136,7 +1136,7 @@ def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
     tags: list[str] = []
     qualifiers: list[str] = []
     for path in graph_paths:
-        if path.name == "graph.json" and path.parent.name == "graphify-out":
+        if path.name == "graph.json" and path.parent.name == GRAPHIFY_OUT_NAME:
             repo_dir = path.parent.parent.resolve()
             tags.append(repo_dir.name or "repo")
             qualifiers.append(repo_dir.parent.name)
@@ -1145,18 +1145,27 @@ def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
             tags.append(path.stem or parent.name or "repo")
             qualifiers.append(parent.name)
 
-    if len(set(tags)) != len(tags):
+    duplicate_base_tags = {tag for tag in tags if tags.count(tag) > 1}
+    if duplicate_base_tags:
         tags = [
-            f"{qualifier}_{tag}" if qualifier and qualifier != tag else tag
+            f"{qualifier}_{tag}" if (
+                tag in duplicate_base_tags and qualifier and qualifier != tag
+            ) else tag
             for tag, qualifier in zip(tags, qualifiers)
         ]
 
-    seen: dict[str, int] = {}
-    unique: list[str] = []
-    for tag in tags:
-        seen[tag] = seen.get(tag, 0) + 1
-        unique.append(tag if seen[tag] == 1 else f"{tag}-{seen[tag]}")
-    return unique
+    tag_buckets: dict[str, list[tuple[str, int]]] = {}
+    for index, (tag, path) in enumerate(zip(tags, graph_paths)):
+        tag_buckets.setdefault(tag, []).append((path.resolve().as_posix(), index))
+
+    unique_by_index: dict[int, str] = {}
+    for tag, bucket in tag_buckets.items():
+        if len(bucket) == 1:
+            unique_by_index[bucket[0][1]] = tag
+            continue
+        for suffix, (_path_identity, index) in enumerate(sorted(bucket), start=1):
+            unique_by_index[index] = tag if suffix == 1 else f"{tag}-{suffix}"
+    return [unique_by_index[index] for index in range(len(tags))]
 
 
 def _community_identity(value: object) -> str:
@@ -1208,16 +1217,26 @@ def compose_repository_graphs(tagged_graphs: list[tuple[str, nx.Graph]]) -> nx.G
                 if data.get("community_name") == f"Community {local_community}":
                     data["community_name"] = f"Community {merged_community}"
 
-        for raw_hyperedge in graph.graph.get("hyperedges", []) or []:
-            hyperedge = copy.deepcopy(raw_hyperedge)
-            if not isinstance(hyperedge, dict):
-                merged_hyperedges.append(hyperedge)
+        raw_hyperedges = graph.graph.get("hyperedges", []) or []
+        if not isinstance(raw_hyperedges, list):
+            raw_hyperedges = []
+        for raw_hyperedge in raw_hyperedges:
+            if not isinstance(raw_hyperedge, dict):
                 continue
+            hyperedge = copy.deepcopy(raw_hyperedge)
             _normalize_hyperedge_members(hyperedge)
+            hyperedge_nodes = hyperedge.get("nodes")
+            if not isinstance(hyperedge_nodes, list):
+                continue
+            filtered_nodes = [
+                node for node in hyperedge_nodes
+                if isinstance(node, str) and node in graph
+            ]
+            if len(filtered_nodes) < 2:
+                continue
             if hyperedge.get("id") is not None:
                 hyperedge["id"] = f"{tag}::{hyperedge['id']}"
-            if isinstance(hyperedge.get("nodes"), list):
-                hyperedge["nodes"] = [f"{tag}::{node}" for node in hyperedge["nodes"]]
+            hyperedge["nodes"] = [f"{tag}::{node}" for node in filtered_nodes]
             merged_hyperedges.append(hyperedge)
 
         merged = nx.compose(merged, prefixed)
