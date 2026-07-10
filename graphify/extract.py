@@ -50,7 +50,7 @@ from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
 from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
-from graphify.extractors.perl import extract_perl  # noqa: F401
+from graphify.extractors.perl import _resolve_perl_imports, extract_perl  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
@@ -6953,6 +6953,15 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
+
+    # Re-point dangling in-corpus Perl `imports` edges onto the real package node.
+    # Runs AFTER the call pass above so `_has_package_import_evidence` still sees the
+    # bare module-label ids it needs to bind bare calls to imported packages (#S5b).
+    try:
+        _resolve_perl_imports(all_nodes, all_edges)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Perl import resolution failed, skipping: %s", exc)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a

@@ -4359,3 +4359,52 @@ def test_perl_bare_call_two_imported_packages_ambiguous_no_edge(tmp_path):
     calls = _calls(r)
     assert not any("emit" in t for _s, t in calls), \
         f"bare emit() imported from two packages is ambiguous and must drop, got {calls}"
+
+
+# In-corpus import re-pointer (S5b Befund A): a `use`/`require` whose module is a
+# package defined elsewhere in the corpus must re-point its imports edge from the
+# bare module-label id onto the real package node; external modules stay dangling.
+
+def test_perl_import_repoints_to_in_corpus_package(tmp_path):
+    """`use Acme::Helper;` from another file must re-point its imports edge onto
+    the real Acme::Helper package node (id `_make_id(stem, 'Acme::Helper')`),
+    not dangle on the bare module-label id `_make_id('Acme::Helper')`. An external
+    `use POSIX;` has no in-corpus package, so its edge keeps the bare (node-less)
+    target — mirroring how other languages leave external imports dangling."""
+    from graphify.extract import extract
+    from graphify.extractors.base import _make_id
+    (tmp_path / "helper.pm").write_text("package Acme::Helper;\nsub emit { return 1; }\n1;\n")
+    (tmp_path / "main.pm").write_text(
+        "package Main;\nuse Acme::Helper;\nuse POSIX qw(floor);\nsub run { return 1; }\n1;\n"
+    )
+    r = extract([tmp_path / "helper.pm", tmp_path / "main.pm"], parallel=False)
+    node_ids = {n["id"] for n in r["nodes"]}
+    pkg_nodes = [n for n in r["nodes"] if n.get("label") == "Acme::Helper"]
+    assert len(pkg_nodes) == 1, f"expected one Acme::Helper package node, got {pkg_nodes}"
+    pkg_id = pkg_nodes[0]["id"]
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert any(e["target"] == pkg_id for e in imports), \
+        f"use Acme::Helper must re-point to package node {pkg_id}, got {[e['target'] for e in imports]}"
+    bare_helper = _make_id("Acme::Helper")
+    assert bare_helper != pkg_id
+    assert not any(e["target"] == bare_helper for e in imports), \
+        "the in-corpus import must no longer dangle on the bare module-label id"
+    posix_id = _make_id("POSIX")
+    assert any(e["target"] == posix_id for e in imports), "external POSIX import edge missing"
+    assert posix_id not in node_ids, \
+        "external POSIX must stay a dangling label-id stub, not become a node"
+
+
+def test_perl_require_repoints_to_in_corpus_package(tmp_path):
+    """`require Acme::Helper;` (bareword require form) re-points the same way as
+    `use` when the module is an in-corpus package."""
+    from graphify.extract import extract
+    (tmp_path / "helper.pm").write_text("package Acme::Helper;\nsub emit { return 1; }\n1;\n")
+    (tmp_path / "main.pm").write_text(
+        "package Main;\nrequire Acme::Helper;\nsub run { return 1; }\n1;\n"
+    )
+    r = extract([tmp_path / "helper.pm", tmp_path / "main.pm"], parallel=False)
+    pkg_id = next(n["id"] for n in r["nodes"] if n.get("label") == "Acme::Helper")
+    imports = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert any(e["target"] == pkg_id for e in imports), \
+        f"require Acme::Helper must re-point to package node {pkg_id}, got {[e['target'] for e in imports]}"

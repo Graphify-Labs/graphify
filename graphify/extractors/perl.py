@@ -280,3 +280,51 @@ def extract_perl(path: Path) -> dict:
                    (e["target"] in seen_ids or e["relation"] == "imports")]
     return {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls,
             "input_tokens": 0, "output_tokens": 0}
+
+
+def _resolve_perl_imports(all_nodes: list[dict], all_edges: list[dict]) -> None:
+    """Re-point dangling in-corpus Perl ``imports`` edges onto the real package node.
+
+    ``use Foo::Bar;`` / ``require Foo::Bar;`` emit an imports edge to a bare
+    module-label id (``_make_id('Foo::Bar')``) that matches no node: when Foo::Bar
+    is defined in the corpus its package node's id is ``_make_id(stem, 'Foo::Bar')``
+    (and a ``package Foo::Bar;`` may live in a file whose stem is unrelated — a
+    multi-package file — so we key on the package LABEL, not the file stem). Bridge
+    module-label -> real package id so in-corpus imports connect instead of
+    dangling. External modules (POSIX, Carp, …) have no in-corpus package node, so
+    their edge keeps its bare target — matching the dangling-stub behavior other
+    languages leave on unresolved external imports.
+
+    Runs AFTER the shared cross-file call pass: ``_has_package_import_evidence``
+    (extract.py) reads imports targets as bare module-label ids to bind a bare call
+    to an imported package's sub, so re-pointing before it would break that binding.
+    Mutates ``all_edges`` in place; the bare target was never a node, so there is
+    nothing to prune.
+    """
+    # module-label id -> package node id. First package with a given fully-
+    # qualified label wins (deterministic in node order); a bare `use Foo` can't
+    # disambiguate a re-opened same-name package, and picking one beats dangling.
+    pkg_by_label_id: dict[str, str] = {}
+    for node in all_nodes:
+        src = str(node.get("source_file") or "")
+        if not src.endswith((".pl", ".pm")):
+            continue
+        label = node.get("label", "")
+        nid = node.get("id", "")
+        # package nodes only: skip the file node (label == basename) and subs
+        # (label ends in `()`); neither keys an import target.
+        if not label or not nid or label.endswith(")") or label == Path(src).name:
+            continue
+        pkg_by_label_id.setdefault(_make_id(label), nid)
+    if not pkg_by_label_id:
+        return
+    for edge in all_edges:
+        if edge.get("relation") != "imports":
+            continue
+        # Scope to Perl imports only, so a same-named module-label id in another
+        # language's imports edge is never re-pointed onto a Perl package node.
+        if not str(edge.get("source_file") or "").endswith((".pl", ".pm")):
+            continue
+        real = pkg_by_label_id.get(edge.get("target"))
+        if real and real != edge["target"]:
+            edge["target"] = real
