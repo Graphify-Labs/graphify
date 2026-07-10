@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from graphify.build import build_from_json
 from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1466,6 +1467,49 @@ def test_extract_json_extends_resolved():
     extends_edges = [e for e in result["edges"] if e["relation"] == "extends"]
     assert len(extends_edges) >= 1
     assert extends_edges[0].get("context") == "import"
+
+
+def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
+    package_json = tmp_path / "package.json"
+    package_json.write_text(json.dumps({
+        "name": "demo",
+        "dependencies": {"left-pad": "^1.3.0"},
+        "devDependencies": {"bats": "^1.11.0"},
+    }))
+    tsconfig = tmp_path / "tsconfig.json"
+    tsconfig.write_text(json.dumps({
+        "extends": "./tsconfig.base.json",
+        "compilerOptions": {"strict": True},
+    }))
+
+    results = [extract_json(package_json), extract_json(tsconfig)]
+    combined = {
+        "nodes": [node for result in results for node in result["nodes"]],
+        "edges": [edge for result in results for edge in result["edges"]],
+    }
+    node_ids = {node["id"] for node in combined["nodes"]}
+    dangling = [
+        edge for edge in combined["edges"]
+        if edge["source"] not in node_ids or edge["target"] not in node_ids
+    ]
+    assert dangling == []
+    assert {"left-pad", "bats", "./tsconfig.base.json"} <= {
+        node["label"] for node in combined["nodes"] if node["file_type"] == "concept"
+    }
+
+    graph = build_from_json(combined, directed=True)
+    import_targets = {
+        graph.nodes[data["_tgt"]]["label"]
+        for _, _, data in graph.edges(data=True)
+        if data.get("relation") == "imports"
+    }
+    extends_targets = {
+        graph.nodes[data["_tgt"]]["label"]
+        for _, _, data in graph.edges(data=True)
+        if data.get("relation") == "extends"
+    }
+    assert {"left-pad", "bats"} <= import_targets
+    assert extends_targets == {"./tsconfig.base.json"}
 
 
 def test_extract_json_large_file_skipped(tmp_path):
