@@ -194,6 +194,7 @@ def test_eight_references_render_for_claude():
     _, refs = _claude_artifacts()
     assert sorted(refs) == [
         "add-watch.md",
+        "analysis.md",
         "exports.md",
         "extraction-spec.md",
         "github-and-merge.md",
@@ -444,6 +445,7 @@ def test_every_split_host_renders_eight_references():
     platforms = gen.load_platforms()
     expected = [
         "add-watch.md",
+        "analysis.md",
         "exports.md",
         "extraction-spec.md",
         "github-and-merge.md",
