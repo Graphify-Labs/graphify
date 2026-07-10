@@ -4037,3 +4037,174 @@ def test_cl_ids_are_path_qualified_across_directories(tmp_path):
         f"same-named .lisp files in different dirs must not share ids, "
         f"got overlap {sorted(ids_a & ids_b)}"
     )
+# ── Perl ──────────────────────────────────────────────────────────────────────
+# RED (S2): the `extract_perl` extractor does not exist yet (S3) and the .pl/.pm
+# dispatch is not registered yet (S4). The `extract_perl` import is kept INSIDE
+# each test so importing this module still succeeds and the existing suite stays
+# GREEN — only the Perl tests fail (ImportError until S3, empty graph until S4).
+
+def test_perl_no_error():
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    assert "error" not in r
+
+def test_perl_finds_packages():
+    """Both the leading `package Acme::Widget` and the mid-file
+    `package Acme::Widget::Inner` switch must surface as nodes."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    labels = _labels(r)
+    assert any("Acme::Widget" in l for l in labels)
+    assert any("Acme::Widget::Inner" in l for l in labels)
+
+def test_perl_finds_subs():
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    labels = _labels(r)
+    for name in ("new", "render", "format_line", "update", "tick"):
+        assert any(name in l for l in labels), f"missing sub {name!r}"
+
+def test_perl_finds_imports():
+    """`use Module` / `require Module` become imports edges; the qw-list form
+    (`use Scalar::Util qw(blessed)`) and bareword `require` both count."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    assert "imports" in _relations(r)
+    import_edges = _edges_with_relation(r, "imports", "imports_from")
+    targets = " ".join(str(e.get("target", "")) for e in import_edges).lower()
+    assert "scalar" in targets or "util" in targets, "Scalar::Util import missing"
+    assert "carp" in targets, "Carp import missing"
+    assert "helper" in targets, "require Acme::Helper import missing"
+
+def test_perl_import_edges_have_import_context():
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    import_edges = _edges_with_relation(r, "imports", "imports_from")
+    assert import_edges
+    assert all(e.get("context") == "import" for e in import_edges)
+
+def test_perl_import_edges_are_extracted():
+    """`use`/`require` are literal in source -> EXTRACTED confidence."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    import_edges = _edges_with_relation(r, "imports", "imports_from")
+    assert import_edges
+    assert all(e.get("confidence") == "EXTRACTED" for e in import_edges)
+
+def test_perl_pragmas_not_imported():
+    """`use strict` / `use warnings` are pragmas, not module dependencies, and
+    must NOT create imports edges (matches the pragma-exclusion in other langs)."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    import_edges = _edges_with_relation(r, "imports", "imports_from")
+    targets = " ".join(str(e.get("target", "")) for e in import_edges).lower()
+    assert "strict" not in targets, "`use strict` pragma must not be an import"
+    assert "warnings" not in targets, "`use warnings` pragma must not be an import"
+
+def test_perl_isa_inherits_edge():
+    """`our @ISA = ('Acme::Base')` must emit an inherits edge to Acme::Base."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    found = any(
+        "Acme::Widget" in node_by_id.get(e["source"], "")
+        and "Acme::Base" in node_by_id.get(e["target"], "")
+        for e in r["edges"] if e["relation"] == "inherits"
+    )
+    assert found, "Acme::Widget should have inherits edge to Acme::Base (our @ISA)"
+
+def test_perl_use_parent_inherits_edge():
+    """`use parent -norequire, 'Acme::Role'` must emit an inherits edge; the
+    `-norequire` flag is not a parent."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    parents = {
+        node_by_id.get(e["target"], "")
+        for e in r["edges"] if e["relation"] == "inherits"
+        and "Acme::Widget" in node_by_id.get(e["source"], "")
+    }
+    assert any("Acme::Role" in p for p in parents), "use parent target Acme::Role missing"
+    assert not any("norequire" in p for p in parents), "-norequire flag must not be a parent"
+
+def test_perl_use_base_inherits_edge():
+    """`use base 'Acme::Mixin'` must emit an inherits edge to Acme::Mixin."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    parents = {
+        node_by_id.get(e["target"], "")
+        for e in r["edges"] if e["relation"] == "inherits"
+        and "Acme::Widget" in node_by_id.get(e["source"], "")
+    }
+    assert any("Acme::Mixin" in p for p in parents), "use base target Acme::Mixin missing"
+
+def test_perl_inherits_edges_are_extracted():
+    """@ISA / use parent / use base are literal in source -> EXTRACTED."""
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    inherits = [e for e in r["edges"] if e["relation"] == "inherits"]
+    assert inherits
+    assert all(e.get("confidence") == "EXTRACTED" for e in inherits)
+
+def test_perl_no_dangling_edges():
+    from graphify.extract import extract_perl
+    r = extract_perl(FIXTURES / "sample_module.pm")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling edge source: {e}"
+
+
+# Perl call resolution runs in the top-level `extract()` second pass (raw_calls ->
+# name-matched calls), so these drive the public multi-file dispatch, like the
+# ObjC cross-file tests. RED until BOTH S3 (extractor) and S4 (.pl/.pm dispatch).
+
+def _perl_corpus():
+    from graphify.extract import extract
+    return extract([FIXTURES / "sample.pl", FIXTURES / "sample_module.pm"], parallel=False)
+
+def test_perl_bare_sub_call_edge():
+    """`format_line()` bare call inside `render` (same file/package) must resolve
+    to a calls edge render -> format_line."""
+    r = _perl_corpus()
+    calls = _calls(r)
+    assert any("render" in src and "format_line" in tgt for src, tgt in calls), \
+        f"expected render->format_line calls edge, got {calls}"
+
+def test_perl_static_qualified_call_edge():
+    """`Acme::Helper::emit(...)` static, package-qualified call must resolve to a
+    calls edge targeting the emit sub."""
+    r = _perl_corpus()
+    calls = _calls(r)
+    assert any("emit" in tgt for _src, tgt in calls), \
+        f"expected a calls edge into Acme::Helper::emit, got {calls}"
+
+def test_perl_call_edges_are_inferred():
+    """Second-pass name-matched calls carry INFERRED confidence."""
+    r = _perl_corpus()
+    call_edges = [e for e in r["edges"] if e["relation"] == "calls"]
+    assert call_edges
+    assert all(e.get("confidence") == "INFERRED" for e in call_edges), \
+        f"perl calls should be INFERRED (second-pass), got {[e.get('confidence') for e in call_edges]}"
+
+def test_perl_call_edges_have_call_context():
+    r = _perl_corpus()
+    call_edges = _edges_with_relation(r, "calls")
+    assert call_edges
+    assert all(e.get("context") == "call" for e in call_edges)
+
+def test_perl_method_call_no_edge():
+    """`$self->update()` / `$widget->render()` are untyped method dispatch and must
+    NOT create calls edges, even though `update` and `render` are defined subs
+    (naive name-matching would wrongly connect them)."""
+    r = _perl_corpus()
+    calls = _calls(r)
+    # Positive guard: the corpus must actually produce static/bare calls, so this
+    # test is not a vacuous pass on an empty graph (RED until S3+S4).
+    assert any("format_line" in tgt or "emit" in tgt for _src, tgt in calls), \
+        f"expected the static/bare calls to resolve before asserting the negatives, got {calls}"
+    assert not any("update" in tgt for _src, tgt in calls), \
+        f"method call $self->update() must not produce a calls edge, got {calls}"
+    assert not any(tgt == "render" or tgt.endswith("::render") or tgt.endswith(".render")
+                   for _src, tgt in calls), \
+        f"method call $widget->render() must not produce a calls edge, got {calls}"
