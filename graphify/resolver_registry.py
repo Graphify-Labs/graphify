@@ -34,14 +34,15 @@ class LanguageResolver:
     member-call resolvers. ``suffixes`` gates activation: the pass runs only when
     the corpus contains at least one file with one of these extensions.
 
-    Two optional hooks cover passes that suffix-gating cannot express (the Perl
-    import re-pointer needs both):
+    Two optional hooks cover passes that suffix-gating cannot express — a
+    provenance-scoped pass (one whose file membership is decided by which
+    extractor produced a node, not by extension) may need both:
 
     - ``activate`` overrides the suffix gate with a predicate over ``paths``. Use it
-      when membership is decided by EXTRACTOR provenance rather than extension —
-      e.g. an extensionless ``#!/usr/bin/perl`` script has no ``.pl``/``.pm`` suffix
-      to gate on, yet must still activate the pass. When ``None`` the suffix gate is
-      used.
+      when membership is decided by EXTRACTOR provenance rather than extension — a
+      file dispatched to an extractor by content (e.g. a shebang) may carry no
+      matching suffix to gate on, yet must still activate the pass. When ``None``
+      the suffix gate is used.
     - ``wants_paths`` makes the driver call ``resolve`` with a fourth positional
       argument, the ``paths`` sequence, so a provenance-scoped pass can recompute
       which files it owns. Default ``False`` keeps the three-argument contract.
