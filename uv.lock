@@ -1114,6 +1114,7 @@ dependencies = [
     { name = "tree-sitter-kotlin" },
     { name = "tree-sitter-lua" },
     { name = "tree-sitter-objc" },
+    { name = "tree-sitter-perl" },
     { name = "tree-sitter-php" },
     { name = "tree-sitter-powershell" },
     { name = "tree-sitter-python" },
@@ -1329,6 +1330,7 @@ requires-dist = [
     { name = "tree-sitter-ocaml", marker = "extra == 'ocaml'" },
     { name = "tree-sitter-pascal", marker = "extra == 'all'" },
     { name = "tree-sitter-pascal", marker = "extra == 'pascal'" },
+    { name = "tree-sitter-perl", specifier = ">=1.2.0,<2.0" },
     { name = "tree-sitter-php", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-powershell", specifier = ">=0.26,<0.28" },
     { name = "tree-sitter-python", specifier = ">=0.23,<0.26" },
@@ -4801,6 +4803,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/18/80/3553a1c89441a8f78daedd6182580db4df234b6b4ddd0e9d18ac9a2f7385/tree_sitter_pascal-0.11.0-cp38-abi3-win32.whl", hash = "sha256:c898d8c2771c5da47dbab20aea1d99e3aca8878a90e24db0a5558619ac8ad5c5", size = 124205, upload-time = "2026-07-01T03:53:12.969Z" },
     { url = "https://files.pythonhosted.org/packages/19/96/695db7513510ea4fedb5e4e9b47011bf309253715c5eb9892c71486312e6/tree_sitter_pascal-0.11.0-cp38-abi3-win_amd64.whl", hash = "sha256:99346d54c928d42c820c0aa262f6acbf4fb2856d69016f1df11f834f681b45e0", size = 124349, upload-time = "2026-07-01T03:53:14.082Z" },
     { url = "https://files.pythonhosted.org/packages/45/ad/e5381365ed5b247cad2e047682b081ccbb79f84bb5c1b48642ef3385f1d3/tree_sitter_pascal-0.11.0-cp38-abi3-win_arm64.whl", hash = "sha256:9d22b974a47765f1c98629338d82d1df89c35c270a73f08dda8fbd49538e32d4", size = 124914, upload-time = "2026-07-01T03:53:15.191Z" },
+]
+
+[[package]]
+name = "tree-sitter-perl"
+version = "1.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/44/c211fda4f42c01791391928b23192b50d160b14e676f2c1fcce1850d76d9/tree_sitter_perl-1.2.1.tar.gz", hash = "sha256:7b5ce3fe9cd7d23b1619ed49d5539b106e301b68dd7139bcae6b9d4ad1e3a1d3", size = 1749866, upload-time = "2026-06-30T18:53:23.646Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/85/29/4cdb0da188ce7864507317e70db6c9dc045f41d6250f0865aef03294eeb2/tree_sitter_perl-1.2.1-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:5e77a13168ae5699ee9942aaa928920b9a2d8ce051934550ba2a4b547833a8ba", size = 347325, upload-time = "2026-06-30T18:53:14.467Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/b3/7489ac765c9d5e2a8ef75f43caaa5f1df3cbc93bbc5c0f49559bc4c2e280/tree_sitter_perl-1.2.1-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a18f09b6b76d9bb52da49f3bb4ed7fe4db0857fbf21d1aad78021abaddb47d72", size = 408980, upload-time = "2026-06-30T18:53:16.211Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/50/7340015653da77bc5d12e45678c9339cabf389aba7404d3f5e0514e04acc/tree_sitter_perl-1.2.1-cp39-abi3-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c6cd149c5f5fb5f82d337d5764d8626eecb03b00604c8c0c7ffc4e165e26b273", size = 385181, upload-time = "2026-06-30T18:53:17.741Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/77/76486f28c0d837d1424d3a314736ca2b6916a56b5adf073d6e038fb03522/tree_sitter_perl-1.2.1-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:66361e2d61467843aeb9ef1233a461e2880ed294a368d81e4b898b33c76913fe", size = 370909, upload-time = "2026-06-30T18:53:19.223Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/cd/6fbecae40fb5f78bcb95432fc41d6eb0b6a246e43bb63237544c92aa271a/tree_sitter_perl-1.2.1-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:0cfd166f0f11de834b96d99432a86b54444ccbd270d9e19eed06c2de9d6f932e", size = 373213, upload-time = "2026-06-30T18:53:20.769Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/dc/a17bd77d350cc7344baf6f3f568f297a1d1a88d2afbf3024a8e86618e96f/tree_sitter_perl-1.2.1-cp39-abi3-win_amd64.whl", hash = "sha256:168704111ed36461b1d1da1a36b16332e2c8e2693b5daec57bd8abada1e02f58", size = 320105, upload-time = "2026-06-30T18:53:22.14Z" },
 ]
 
 [[package]]
