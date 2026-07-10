@@ -352,7 +352,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--top-k N] [--explain] [--semantic] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -361,12 +361,31 @@ def dispatch_command(cmd: str) -> None:
 
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
+        explain = "--explain" in sys.argv
+        use_semantic = "--semantic" in sys.argv
+        top_k: int | None = None
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
         args = sys.argv[3:]
         i = 0
         while i < len(args):
+            if args[i] in ("--top-k", "--topk") and i + 1 < len(args):
+                try:
+                    top_k = int(args[i + 1])
+                except ValueError:
+                    print("error: --top-k must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+                continue
+            if args[i].startswith("--top-k=") or args[i].startswith("--topk="):
+                try:
+                    top_k = int(args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --top-k must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+                continue
             if args[i] == "--budget" and i + 1 < len(args):
                 try:
                     budget = int(args[i + 1])
@@ -428,6 +447,13 @@ def dispatch_command(cmd: str) -> None:
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
+        _semantic_scores = None
+        if use_semantic:
+            try:
+                from graphify.embed import semantic_scores_for_query
+                _semantic_scores = semantic_scores_for_query(G, question, graph_path=str(gp))
+            except Exception as exc:  # embeddings are strictly optional
+                print(f"[graphify] --semantic unavailable ({exc}); ranking without it.", file=sys.stderr)
         _result = _query_graph_text(
             G,
             question,
@@ -435,6 +461,9 @@ def dispatch_command(cmd: str) -> None:
             depth=2,
             token_budget=budget,
             context_filters=context_filters,
+            explain=explain,
+            top_k=top_k,
+            semantic_scores=_semantic_scores,
         )
         querylog.log_query(
             kind="query",
@@ -2759,6 +2788,298 @@ def dispatch_command(cmd: str) -> None:
         sys.argv.insert(2, sys.argv[1])
         sys.argv[1] = "extract"
         _reenter_main()
+    elif cmd == "chronicle":
+        # graphify chronicle OLD.json [NEW.json]
+        # graphify chronicle --rev REV [--rev2 REV2] [--graph PATH]
+        import json as _json
+        import subprocess as _sp
+
+        args = sys.argv[2:]
+        graph_path = _default_graph_path()
+        rev: str | None = None
+        rev2: str | None = None
+        as_json = "--json" in args
+        top_god = 15
+        positional: list[str] = []
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]; i += 2; continue
+            if a.startswith("--graph="):
+                graph_path = a.split("=", 1)[1]; i += 1; continue
+            if a == "--rev" and i + 1 < len(args):
+                rev = args[i + 1]; i += 2; continue
+            if a == "--rev2" and i + 1 < len(args):
+                rev2 = args[i + 1]; i += 2; continue
+            if a == "--top-god" and i + 1 < len(args):
+                try:
+                    top_god = int(args[i + 1])
+                except ValueError:
+                    print("error: --top-god must be an integer", file=sys.stderr); sys.exit(1)
+                i += 2; continue
+            if a.startswith("--"):
+                i += 1; continue
+            positional.append(a); i += 1
+
+        from graphify import chronicle as _chron
+
+        def _read_file(p: Path) -> str:
+            if not p.exists():
+                print(f"error: graph file not found: {p}", file=sys.stderr); sys.exit(1)
+            _enforce_graph_size_cap_or_exit(p)
+            return p.read_text(encoding="utf-8")
+
+        if rev is not None:
+            gp = Path(graph_path).resolve()
+            try:
+                top = _sp.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    cwd=str(gp.parent), capture_output=True, text=True, check=True,
+                ).stdout.strip()
+                relpath = str(gp.relative_to(Path(top).resolve()))
+            except Exception as exc:
+                print(f"error: need a git repo containing {gp} for --rev ({exc})", file=sys.stderr); sys.exit(1)
+
+            def _show(r: str) -> str:
+                res = _sp.run(["git", "show", f"{r}:{relpath}"], cwd=top, capture_output=True, text=True)
+                if res.returncode != 0:
+                    print(f"error: could not read {relpath} at {r}: {res.stderr.strip()}", file=sys.stderr)
+                    sys.exit(1)
+                return res.stdout
+
+            old_text = _show(rev)
+            new_text = _show(rev2) if rev2 else _read_file(gp)
+        else:
+            if not positional:
+                print(
+                    "Usage: graphify chronicle OLD.json [NEW.json] | --rev REV [--rev2 REV2] [--graph PATH]",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            old_text = _read_file(Path(positional[0]).resolve())
+            new_path = Path(positional[1]).resolve() if len(positional) > 1 else Path(graph_path).resolve()
+            new_text = _read_file(new_path)
+
+        try:
+            old_G = _chron.load_graph_from_text(old_text)
+            new_G = _chron.load_graph_from_text(new_text)
+        except Exception as exc:
+            print(f"error: could not parse a graph snapshot: {exc}", file=sys.stderr); sys.exit(1)
+        diff = _chron.diff_graphs(old_G, new_G, top_god=top_god)
+        if as_json:
+            print(_json.dumps(diff, indent=2))
+        else:
+            print(_chron.format_diff(diff))
+    elif cmd == "skill":
+        # graphify skill [status|check-update] [--json]
+        from graphify.install import _platform_skill_destination, _PLATFORM_CONFIG, __version__
+        from graphify.skill_migrations import applicable_migrations, drift_state
+
+        sub = sys.argv[2] if len(sys.argv) > 2 else ""
+        as_json = "--json" in sys.argv[2:]
+        if sub not in ("status", "check-update"):
+            print("Usage: graphify skill [status|check-update] [--json]", file=sys.stderr)
+            sys.exit(1)
+
+        report: list[dict] = []
+        seen: set = set()
+        for name in [*_PLATFORM_CONFIG, "gemini"]:
+            try:
+                skill_dst = _platform_skill_destination(name)
+            except Exception:
+                continue
+            if skill_dst in seen:
+                continue
+            try:
+                if not skill_dst.exists():
+                    continue
+            except OSError:
+                continue
+            seen.add(skill_dst)
+            version_file = skill_dst.parent / ".graphify_version"
+            try:
+                installed = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "unknown"
+            except OSError:
+                installed = "unknown"
+            try:
+                body = skill_dst.read_text(encoding="utf-8")
+            except OSError:
+                body = ""
+            sidecar_ok = True
+            if "references/" in body:
+                sidecar_ok = (skill_dst.parent / "references").exists()
+            state = drift_state(installed, __version__)
+            report.append({
+                "platform": name,
+                "path": str(skill_dst),
+                "installed": installed,
+                "package": __version__,
+                "state": state,
+                "sidecar_ok": sidecar_ok,
+                "migrations": [m.summary for m in applicable_migrations(installed, __version__)],
+                "needs_update": state != "current" or not sidecar_ok,
+            })
+
+        if as_json:
+            import json as _json
+            print(_json.dumps({"package": __version__, "skills": report}, indent=2))
+        elif not report:
+            print("No graphify skills installed. Run `graphify install` to add one.")
+        else:
+            print(f"graphify package: {__version__}")
+            for r in report:
+                if not r["sidecar_ok"]:
+                    status = "references/ sidecar MISSING — reinstall to repair"
+                elif r["state"] == "current":
+                    status = f"up to date ({r['installed']})"
+                elif r["state"] == "ahead":
+                    status = (
+                        f"skill {r['installed']} is AHEAD of package {__version__} "
+                        f"— this graphify may be older than the installed skill"
+                    )
+                else:
+                    status = f"behind: skill {r['installed']} < package {__version__}"
+                print(f"  [{r['platform']}] {status}")
+                print(f"      {r['path']}")
+                for m in r["migrations"]:
+                    print(f"      apply: {m}")
+            needing = [r for r in report if r["needs_update"]]
+            if needing:
+                print(f"\n{len(needing)} skill(s) need attention. Run `graphify install` to re-render them from this package.")
+            else:
+                print("\nAll installed skills are in sync with this package.")
+        if sub == "check-update" and any(r["needs_update"] for r in report):
+            sys.exit(1)
+    elif cmd == "embed":
+        # graphify embed [--graph P] [--force]
+        args = sys.argv[2:]
+        graph_path = _default_graph_path()
+        force = "--force" in args
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]; i += 2; continue
+            if a.startswith("--graph="):
+                graph_path = a.split("=", 1)[1]; i += 1; continue
+            i += 1
+        gp = Path(graph_path).resolve()
+        if not gp.exists():
+            print(f"error: graph file not found: {gp}", file=sys.stderr)
+            sys.exit(1)
+        from graphify import evals as _evals
+        from graphify import embed as _embed
+
+        G = _evals.load_graph(str(gp))
+        try:
+            summary = _embed.build_embeddings(G, str(gp), force=force)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if summary["status"] == "cached":
+            print(f"Embeddings already current for {summary['count']} nodes ({summary['model']}). Use --force to rebuild.")
+        else:
+            print(f"Embedded {summary['count']} nodes with {summary['model']} -> {summary['path']}")
+        print("Semantic ranking is now available: add --semantic to `graphify query` or `graphify bench`.")
+    elif cmd == "bench":
+        # graphify bench [FIXTURE] [--graph P] [--k N] [--json] [--save] [--replay] [--init] [--semantic]
+        import json as _json
+
+        args = sys.argv[2:]
+        fixture: str | None = None
+        graph_path = _default_graph_path()
+        k = 10
+        as_json = "--json" in args
+        do_save = "--save" in args
+        do_replay = "--replay" in args
+        do_init = "--init" in args
+        use_semantic = "--semantic" in args
+        default_fixture = str(Path(_GRAPHIFY_OUT) / "evals.jsonl")
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]; i += 2; continue
+            if a.startswith("--graph="):
+                graph_path = a.split("=", 1)[1]; i += 1; continue
+            if a == "--k" and i + 1 < len(args):
+                try:
+                    k = int(args[i + 1])
+                except ValueError:
+                    print("error: --k must be an integer", file=sys.stderr); sys.exit(1)
+                i += 2; continue
+            if a.startswith("--k="):
+                try:
+                    k = int(a.split("=", 1)[1])
+                except ValueError:
+                    print("error: --k must be an integer", file=sys.stderr); sys.exit(1)
+                i += 1; continue
+            if a.startswith("--"):
+                i += 1; continue
+            if fixture is None:
+                fixture = a
+            i += 1
+        from graphify import evals as _evals
+
+        gp = Path(graph_path).resolve()
+        if not gp.exists():
+            print(f"error: graph file not found: {gp}", file=sys.stderr)
+            sys.exit(1)
+
+        if do_init:
+            target = Path(fixture or default_fixture)
+            if target.exists():
+                print(f"error: {target} already exists (refusing to overwrite)", file=sys.stderr)
+                sys.exit(1)
+            G = _evals.load_graph(str(gp))
+            cases = _evals.scaffold_fixture(G)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("".join(_json.dumps(c) + "\n" for c in cases), encoding="utf-8")
+            print(f"Wrote {len(cases)} starter eval cases to {target}")
+            print("Edit them — each line is {\"query\": ..., \"expect\": [labels/files]} — then run `graphify bench`.")
+            sys.exit(0)
+
+        fixture_path = Path(fixture or default_fixture)
+        if not fixture_path.exists():
+            print(
+                f"error: no eval fixture at {fixture_path}. "
+                f"Create one with `graphify bench --init`, or pass a fixture path.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            cases = _evals.load_cases(fixture_path)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        G = _evals.load_graph(str(gp))
+        report = _evals.run_evals(G, cases, k=k, semantic=use_semantic, graph_path=str(gp))
+        baseline = _evals.load_last_report() if do_replay else None
+
+        if as_json:
+            out = report.to_dict()
+            if baseline is not None:
+                out["baseline_aggregate"] = baseline.get("aggregate")
+                out["delta"] = _evals.diff_aggregates(report.aggregate, baseline.get("aggregate", {}))
+            print(_json.dumps(out, indent=2, sort_keys=True))
+        else:
+            print(_evals.format_report(report, baseline=baseline))
+
+        if do_save:
+            saved = _evals.save_report(report, fixture=str(fixture_path))
+            if not as_json:
+                print(f"\nSaved run to {saved}")
+
+        if do_replay and baseline is not None:
+            delta = _evals.diff_aggregates(report.aggregate, baseline.get("aggregate", {}))
+            regressed = {kk: dv for kk, dv in delta.items() if dv < -_evals.REPLAY_TOLERANCE}
+            if regressed:
+                print(
+                    "\nREGRESSION: " + ", ".join(f"{kk} {dv:+.4f}" for kk, dv in sorted(regressed.items())),
+                    file=sys.stderr,
+                )
+                sys.exit(1)
     else:
         print(f"error: unknown command '{cmd}'", file=sys.stderr)
         print("Run 'graphify --help' for usage.", file=sys.stderr)

@@ -285,6 +285,7 @@ def test_claude_install_ships_lean_core_and_references(tmp_path):
     names = sorted(p.name for p in refs.glob("*.md"))
     assert names == [
         "add-watch.md",
+        "analysis.md",
         "exports.md",
         "extraction-spec.md",
         "github-and-merge.md",
@@ -376,7 +377,7 @@ _SPLIT_HOSTS = (
     "claw", "droid", "amp", "trae", "kiro", "pi", "vscode",
 )
 _REFERENCE_NAMES = (
-    "add-watch.md", "exports.md", "extraction-spec.md", "github-and-merge.md",
+    "add-watch.md", "analysis.md", "exports.md", "extraction-spec.md", "github-and-merge.md",
     "hooks.md", "query.md", "transcribe.md", "update.md",
 )
 _ALWAYS_ON_NAMES = (
@@ -454,7 +455,7 @@ def test_built_wheel_ships_the_full_skill_payload():
         if f"graphify/skills/{host}/references/{ref}" not in names
     ]
     assert not missing_refs, f"wheel is missing references: {missing_refs}"
-    assert len(_SPLIT_HOSTS) * len(_REFERENCE_NAMES) == 104
+    assert len(_SPLIT_HOSTS) * len(_REFERENCE_NAMES) == 117
 
     missing_always_on = [
         f"graphify/always_on/{name}"

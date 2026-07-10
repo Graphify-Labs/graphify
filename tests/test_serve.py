@@ -915,3 +915,62 @@ def test_community_header_sanitizes_name():
     out = _community_header(3, "Pay\x00ments\x1b[31m")
     assert out.startswith("Community 3 — ")
     assert "\x00" not in out and "\x1b" not in out
+
+
+# --- ranking integration (0.10.0) ---
+
+def test_query_graph_text_header_marks_ranked():
+    G = _make_graph()
+    assert "(ranked)" in _query_graph_text(G, "extract", mode="bfs", depth=2)
+
+
+def test_query_graph_text_top_k_limits_and_reports():
+    G = _make_graph()
+    text = _query_graph_text(G, "extract", mode="bfs", depth=3, top_k=2)
+    assert "top 2 of" in text
+    assert text.count("\nNODE ") == 2
+
+
+def test_query_graph_text_explain_shows_breakdown():
+    G = _make_graph()
+    text = _query_graph_text(G, "extract", mode="bfs", depth=2, explain=True)
+    assert "rank score=" in text and "lexical#" in text
+
+
+def test_query_graph_text_no_explain_by_default():
+    G = _make_graph()
+    assert "rank score=" not in _query_graph_text(G, "extract", mode="bfs", depth=2)
+
+
+def test_query_graph_text_semantic_scores_are_used():
+    G = _make_graph()
+    sem = {"n3": 0.99, "n2": 0.01, "n4": 0.01}
+    text = _query_graph_text(G, "extract", mode="bfs", depth=3, semantic_scores=sem, explain=True)
+    assert "semantic: on" in text and "semantic#" in text
+
+
+def test_query_graph_text_semantic_seed_rescue_when_lexical_misses():
+    G = _make_graph()
+    assert "No matching nodes found." in _query_graph_text(G, "zzznomatch", mode="bfs", depth=2)
+    rescued = _query_graph_text(G, "zzznomatch", mode="bfs", depth=2, semantic_scores={"n3": 0.9, "n4": 0.4})
+    assert "No matching nodes found." not in rescued
+    assert "semantic: on (seeded)" in rescued
+    assert "build" in rescued
+
+
+def test_subgraph_to_text_respects_explicit_order():
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1", "n2", "n3"}, [], order=["n3", "n1", "n2"])
+    assert text.index("build") < text.index("extract")
+
+
+def test_subgraph_to_text_top_k_trims_nodes():
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1", "n2", "n3", "n4"}, [], order=["n1", "n2", "n3", "n4"], top_k=2)
+    assert "extract" in text and "cluster" in text and "report" not in text
+
+
+def test_subgraph_to_text_explain_appended():
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1"}, [], order=["n1"], explain={"n1": "rank score=0.10"})
+    assert "rank score=0.10" in text
