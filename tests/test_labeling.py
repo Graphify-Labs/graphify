@@ -120,6 +120,63 @@ def test_label_cli_passes_model_override(tmp_path, monkeypatch):
     }
 
 
+def test_label_cli_appends_usage_to_cost_ledger(tmp_path, monkeypatch):
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "nodes": [
+            {
+                "id": "n1",
+                "label": "OrderService",
+                "community": 0,
+                "source_file": "orders.py",
+            },
+        ],
+        "links": [],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+    (out / "cost.json").write_text(
+        json.dumps({
+            "runs": [{
+                "date": "2026-07-01T00:00:00+00:00",
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "files": 1,
+            }],
+            "total_input_tokens": 10,
+            "total_output_tokens": 5,
+        }),
+        encoding="utf-8",
+    )
+
+    def fake_generate(G, communities, *, backend=None, model=None, gods=None,
+                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+        usage_out["input"] += 80
+        usage_out["output"] += 20
+        return {0: "Orders"}, "llm"
+
+    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "label", str(tmp_path), "--backend", "gemini", "--no-viz"],
+    )
+
+    cli.main()
+
+    cost = json.loads((out / "cost.json").read_text(encoding="utf-8"))
+    assert len(cost["runs"]) == 2
+    assert cost["runs"][1]["input_tokens"] == 80
+    assert cost["runs"][1]["output_tokens"] == 20
+    assert cost["runs"][1]["files"] == 1
+    assert cost["total_input_tokens"] == 90
+    assert cost["total_output_tokens"] == 25
+
+
 def test_label_cli_missing_only_preserves_existing_labels(tmp_path, monkeypatch):
     import graphify.__main__ as cli
 
