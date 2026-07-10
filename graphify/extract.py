@@ -1741,7 +1741,7 @@ def _canonicalize_csharp_namespace_nodes(all_nodes: list[dict], all_edges: list[
 # env var are distinct) and folding manufactures false edges / super-hubs (#1581).
 _CASE_INSENSITIVE_EXTS = frozenset({
     ".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps",  # PHP fns/classes
-    ".sql",                                                          # SQL identifiers
+    ".sql", ".ddl",                                                  # SQL identifiers
     ".nim", ".nims", ".nimble",                                      # Nim (style-insensitive)
 })
 
@@ -3798,6 +3798,7 @@ _DISPATCH: dict[str, Any] = {
     ".sv": extract_verilog,
     ".svh": extract_verilog,
     ".sql": extract_sql,
+    ".ddl": extract_sql,
     ".md": extract_markdown,
     ".mdx": extract_markdown,
     ".qmd": extract_markdown,
@@ -3840,6 +3841,7 @@ _DISPATCH: dict[str, Any] = {
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
     ".sql": "sql",
+    ".ddl": "sql",
     ".tf": "terraform",
     ".tfvars": "terraform",
     ".hcl": "terraform",

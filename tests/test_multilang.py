@@ -513,3 +513,70 @@ def test_sql_schema_qualified_alter_fk():
     for e in fk_edges:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
         assert e["target"] in node_ids, f"dangling target: {e['target']}"
+
+
+def _dml_lineage_pairs():
+    """(source_label, target_label) pairs of reads_from edges in the DML fixture."""
+    r = _extract_sql_or_skip("sample_dml_lineage.sql")
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    return r, {
+        (by_id[e["source"]], by_id[e["target"]])
+        for e in r["edges"] if e["relation"] == "reads_from"
+    }
+
+
+def test_sql_insert_select_lineage():
+    """#1572: INSERT INTO tgt SELECT ... FROM/JOIN src emits tgt reads_from src."""
+    _, pairs = _dml_lineage_pairs()
+    assert ("fct_daily", "raw_events") in pairs
+    assert ("fct_daily", "dim_users") in pairs
+
+
+def test_sql_ctas_lineage():
+    """#1572: CREATE TABLE tgt AS SELECT ... FROM src emits tgt reads_from src."""
+    _, pairs = _dml_lineage_pairs()
+    assert ("agg_monthly", "fct_daily") in pairs
+
+
+def test_sql_merge_lineage():
+    """#1572: MERGE INTO tgt USING src emits tgt reads_from src."""
+    _, pairs = _dml_lineage_pairs()
+    assert ("dim_users", "staging_users") in pairs
+
+
+def test_sql_update_from_lineage():
+    """#1572: UPDATE tgt ... FROM src emits tgt reads_from src."""
+    _, pairs = _dml_lineage_pairs()
+    assert ("fct_daily", "dim_users") in pairs
+
+
+def test_sql_insert_values_no_false_lineage():
+    """A plain VALUES insert materializes the target node but no reads_from edge."""
+    r, pairs = _dml_lineage_pairs()
+    labels = {n["label"] for n in r["nodes"]}
+    assert "audit_log" in labels
+    assert not any(s == "audit_log" for s, _ in pairs)
+
+
+def test_sql_self_insert_no_self_loop():
+    """INSERT INTO t SELECT ... FROM t (backfill) must not emit a self-loop."""
+    _, pairs = _dml_lineage_pairs()
+    assert ("raw_events", "raw_events") not in pairs
+
+
+def test_sql_dml_lineage_no_dangling_edges():
+    """Every lineage edge endpoint is a real node (targets are materialized)."""
+    r, _ = _dml_lineage_pairs()
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e['source']}"
+        assert e["target"] in node_ids, f"dangling target: {e['target']}"
+
+
+def test_ddl_extension_routes_to_sql_extractor():
+    """#1572 nice-to-have: .ddl files are classified as code and parsed as SQL."""
+    pytest.importorskip("tree_sitter_sql")
+    from graphify.detect import CODE_EXTENSIONS
+    from graphify.extract import _DISPATCH, extract_sql as _es
+    assert ".ddl" in CODE_EXTENSIONS
+    assert _DISPATCH[".ddl"] is _es
