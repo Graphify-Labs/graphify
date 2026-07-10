@@ -237,6 +237,18 @@ def extract_perl(path: Path) -> dict:
 
     def walk_calls(node, caller_nid: str, caller_package: str | None) -> None:
         if node.type == "function_call_expression":
+            # Indirect-object constructor `new CLASS(...)` parses as
+            # ambiguous_function_call_expression(function 'new', function_call_expression
+            # 'CLASS()'); `new CLASS` == CLASS->new, an untyped member dispatch. Mark
+            # it a member call (edge-less) so it is not wired to a sub named CLASS.
+            parent = node.parent
+            indirect_new = (
+                parent is not None
+                and parent.type == "ambiguous_function_call_expression"
+                and bool(parent.children)
+                and parent.children[0].type == "function"
+                and _text(parent.children[0]) == "new"
+            )
             for c in node.children:
                 if c.type == "function":
                     # `Acme::Helper::emit` -> callee `emit`, callee_package
@@ -252,7 +264,7 @@ def extract_perl(path: Path) -> dict:
                             "callee": callee,
                             "callee_package": callee_package,
                             "caller_package": caller_package,
-                            "is_member_call": False,
+                            "is_member_call": indirect_new,
                             "source_file": str_path,
                             "source_location": f"L{node.start_point[0] + 1}",
                         })

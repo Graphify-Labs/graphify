@@ -4278,6 +4278,27 @@ def test_perl_method_call_no_edge():
         f"method call $widget->render() must not produce a calls edge, got {calls}"
 
 
+def test_perl_indirect_object_new_no_call_edge(tmp_path):
+    """`my $x = new Widget();` is indirect-object constructor syntax (== Widget->new),
+    an untyped member dispatch; it must NOT bind to a same-named sub `Widget` as if
+    `Widget()` were a direct function call."""
+    from graphify.extract import extract
+    (tmp_path / "m.pm").write_text(
+        "package M;\n"
+        "sub Widget { return 1; }\n"
+        "sub helper { return 2; }\n"
+        "sub run { helper(); my $x = new Widget(); }\n"
+        "1;\n"
+    )
+    r = extract([tmp_path / "m.pm"], parallel=False)
+    calls = _calls(r)
+    # Positive guard: the plain bare call resolves, so the negative isn't vacuous.
+    assert any("run" in s and "helper" in t for s, t in calls), \
+        f"expected run->helper bare-call resolution, got {calls}"
+    assert not any("Widget" in t for _s, t in calls), \
+        f"indirect-object `new Widget()` must not create a calls edge, got {calls}"
+
+
 # Package-aware second-pass resolution (F1/F3). Same S4 dependency as the corpus
 # tests above: the shared pass reads the raw_calls' package qualifiers, but no
 # calls edge exists until the .pl/.pm dispatch is registered — RED until S4.
