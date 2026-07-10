@@ -278,6 +278,57 @@ def _add_unrelated_semantic_pair(graph_path):
 
 @pytest.mark.parametrize(
     "changed_paths",
+    [None, [Path("doc.md")]],
+    ids=["full-update", "incremental-doc-update"],
+)
+def test_rebuild_code_preserves_hyperedges_for_rebuilt_surviving_source(
+    tmp_path, changed_paths
+):
+    """#1755: AST-only updates must not drop semantic hyperedges whose members survive."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.md").write_text(
+        "# Design\n\n## Flow\n\nDetails.\n", encoding="utf-8"
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert {"doc", "doc_design"} <= {node["id"] for node in data["nodes"]}
+    data["hyperedges"] = [{
+        "id": "doc_flow_group",
+        "label": "Doc flow group",
+        "nodes": ["doc", "doc_design"],
+        "relation": "implements",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "doc.md",
+    }]
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert _rebuild_code(
+        corpus,
+        changed_paths=changed_paths,
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert after["hyperedges"] == [{
+        "id": "doc_flow_group",
+        "label": "Doc flow group",
+        "nodes": ["doc", "doc_design"],
+        "relation": "implements",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "doc.md",
+    }]
+
+
+@pytest.mark.parametrize(
+    "changed_paths",
     [None, [Path("only.py")]],
     ids=["full-update", "incremental-update"],
 )

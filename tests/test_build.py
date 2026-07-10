@@ -257,6 +257,41 @@ def test_ghost_merge_skipped_on_basename_collision():
     assert not G.has_edge("caller", "b_render")
 
 
+def test_ghost_merge_non_ast_different_files_both_survive():
+    """#1753: two NON-AST (semantic) nodes sharing (basename, label) but from
+    DIFFERENT files are distinct concepts with no AST canonical twin. They must
+    not be merged into an arbitrary survivor (which flipped run-to-run with the
+    hash seed); both survive, mirroring the AST/AST guard (#1257)."""
+    ext = {
+        "nodes": [
+            {"id": "dir_a_update_build_merge", "label": "build_merge() function",
+             "file_type": "concept", "source_file": "dir_a/update.md", "source_location": "L10"},
+            {"id": "dir_b_update_build_merge", "label": "build_merge() function",
+             "file_type": "concept", "source_file": "dir_b/update.md", "source_location": "L12"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(ext, directed=False)
+    assert sorted(G.nodes()) == ["dir_a_update_build_merge", "dir_b_update_build_merge"]
+
+
+def test_ghost_merge_non_ast_same_file_still_merges():
+    """A genuine duplicate — two non-AST nodes with the SAME source_file and
+    label — is a real ghost and still collapses to one node (deterministically),
+    so #1753's fix doesn't leave same-file LLM duplicates behind."""
+    ext = {
+        "nodes": [
+            {"id": "a_foo", "label": "Foo", "file_type": "concept",
+             "source_file": "x/doc.md", "source_location": "L1"},
+            {"id": "b_foo", "label": "Foo", "file_type": "concept",
+             "source_file": "x/doc.md", "source_location": "L2"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(ext, directed=False)
+    assert G.number_of_nodes() == 1
+
+
 def test_build_merge_preserves_call_edge_direction(tmp_path):
     """Regression for #760.
 
@@ -842,3 +877,50 @@ def test_semantic_rekey_relative_vs_absolute_source_file():
     # absolute path with no resolvable root → skipped, not remapped to an abs-path id
     ab = [{"id": "api_readme", "source_file": "/abs/docs/v1/api/README.md", "type": "document"}]
     assert _semantic_id_remap(ab, None) == {}
+
+
+def test_cross_language_imports_references_are_dropped():
+    """#1749: an `imports`/`references` edge must not bind across a language
+    family. A Python `import time` that resolved by bare stem onto a `time.ts`
+    file node welds the two language halves together at a phantom edge; the spec
+    forbids this for `calls` and it is equally invalid here."""
+    ext = {
+        "nodes": [
+            {"id": "backend_worker_py", "label": "worker.py", "file_type": "code",
+             "source_file": "backend/worker.py", "source_location": "L1", "_origin": "ast"},
+            {"id": "src_time_ts", "label": "time.ts", "file_type": "code",
+             "source_file": "src/time.ts", "source_location": "L1", "_origin": "ast"},
+            {"id": "src_util_ts", "label": "util.ts", "file_type": "code",
+             "source_file": "src/util.ts", "source_location": "L1", "_origin": "ast"},
+        ],
+        "edges": [
+            # phantom: Python file importing a TS file (cross-language)
+            {"source": "backend_worker_py", "target": "src_time_ts", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "backend/worker.py", "weight": 1.0},
+            # legit: TS importing TS (same family) must survive
+            {"source": "src_time_ts", "target": "src_util_ts", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "src/time.ts", "weight": 1.0},
+        ],
+    }
+    G = build_from_json(ext, directed=False)
+    assert not G.has_edge("backend_worker_py", "src_time_ts"), "cross-language import must be dropped"
+    assert G.has_edge("src_time_ts", "src_util_ts"), "same-family (TS->TS) import must survive"
+
+
+def test_cross_family_reference_to_unknown_ext_is_kept():
+    """The #1749 guard only drops when BOTH endpoints are known code languages,
+    so a reference from a config/manifest (unknown ext) to a code file is kept."""
+    ext = {
+        "nodes": [
+            {"id": "pkg_json", "label": "package.json", "file_type": "code",
+             "source_file": "package.json", "source_location": "L1", "_origin": "ast"},
+            {"id": "src_app_ts", "label": "app.ts", "file_type": "code",
+             "source_file": "src/app.ts", "source_location": "L1", "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "pkg_json", "target": "src_app_ts", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "package.json", "weight": 1.0},
+        ],
+    }
+    G = build_from_json(ext, directed=False)
+    assert G.has_edge("pkg_json", "src_app_ts"), "config->code reference (unknown ext) must be kept"

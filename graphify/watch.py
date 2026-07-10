@@ -407,6 +407,7 @@ def _reconcile_existing_graph(
             source_paths.absolute_identity(str(path), project_root) for path in extract_targets
         }
         node_evicted_source_identities = set(deleted_source_identities)
+        hyperedge_evicted_source_identities = set(deleted_source_identities)
         if not full_rebuild:
             node_evicted_source_identities.update(rebuilt_source_identities)
         edge_evicted_source_identities = (
@@ -431,6 +432,7 @@ def _reconcile_existing_graph(
                 if identity:
                     node_evicted_source_identities.add(identity)
                     edge_evicted_source_identities.add(identity)
+                    hyperedge_evicted_source_identities.add(identity)
 
         # A full re-extraction owns every AST node under watch_root. Incremental
         # extraction owns only nodes from rebuilt or deleted sources. Semantic
@@ -473,7 +475,7 @@ def _reconcile_existing_graph(
         for edge in existing.get("hyperedges", []):
             members = edge.get("nodes", edge.get("members", edge.get("node_ids", [])))
             if edge.get("id") in new_hyperedge_ids or source_paths.is_evicted(
-                edge, edge_evicted_source_identities
+                edge, hyperedge_evicted_source_identities
             ):
                 continue
             if isinstance(members, list) and any(member not in all_ids for member in members):

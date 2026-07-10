@@ -1,7 +1,12 @@
 import json
 import os
+import sys
 from collections import Counter
 from pathlib import Path
+
+import pytest
+
+from graphify.build import build_from_json
 from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1464,6 +1469,55 @@ def test_extract_json_extends_resolved():
     assert extends_edges[0].get("context") == "import"
 
 
+def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
+    package_json = tmp_path / "package.json"
+    package_json.write_text(json.dumps({
+        "name": "demo",
+        "dependencies": {"left-pad": "^1.3.0"},
+        "devDependencies": {"bats": "^1.11.0"},
+    }))
+    tsconfig = tmp_path / "tsconfig.json"
+    tsconfig.write_text(json.dumps({
+        "extends": "./tsconfig.base.json",
+        "compilerOptions": {"strict": True},
+    }))
+
+    results = [extract_json(package_json), extract_json(tsconfig)]
+    combined = {
+        "nodes": [node for result in results for node in result["nodes"]],
+        "edges": [edge for result in results for edge in result["edges"]],
+    }
+    node_ids = {node["id"] for node in combined["nodes"]}
+    dangling = [
+        edge for edge in combined["edges"]
+        if edge["source"] not in node_ids or edge["target"] not in node_ids
+    ]
+    assert dangling == []
+    assert {"left-pad", "bats", "./tsconfig.base.json"} <= {
+        node["label"] for node in combined["nodes"] if node["file_type"] == "concept"
+    }
+
+    extracted = extract([package_json, tsconfig], cache_root=tmp_path, parallel=False)
+    graph = build_from_json(extracted, directed=True)
+    import_targets = {
+        graph.nodes[data["_tgt"]]["label"]
+        for _, _, data in graph.edges(data=True)
+        if data.get("relation") == "imports"
+    }
+    extends_targets = {
+        graph.nodes[data["_tgt"]]["label"]
+        for _, _, data in graph.edges(data=True)
+        if data.get("relation") == "extends"
+    }
+    self_loops = [
+        data for _, _, data in graph.edges(data=True)
+        if data.get("relation") in {"imports", "extends"} and data["_src"] == data["_tgt"]
+    ]
+    assert self_loops == []
+    assert {"left-pad", "bats"} <= import_targets
+    assert extends_targets == {"./tsconfig.base.json"}
+
+
 def test_extract_json_large_file_skipped(tmp_path):
     big = tmp_path / "big.json"
     # Write a JSON file just over 1 MiB
@@ -1826,6 +1880,36 @@ def test_extract_no_warning_when_all_code_has_extractors(tmp_path, capsys):
     extract([py], cache_root=tmp_path)
     err = capsys.readouterr().err
     assert "no AST extractor" not in err
+
+
+def test_extract_warns_when_sql_extra_missing(tmp_path, capsys, monkeypatch):
+    # #1745: .sql HAS a dispatch entry, so the #1689 warning can't fire, and
+    # extract_sql returns an "error" result when tree-sitter-sql is absent, so
+    # the #1666 warning skips it too. The files must not vanish silently:
+    # extract() surfaces them with the [sql] extra named.
+    monkeypatch.setitem(sys.modules, "tree_sitter_sql", None)  # import -> ImportError
+    s1 = tmp_path / "schema.sql"; s1.write_text("CREATE TABLE users (id INT);\n")
+    s2 = tmp_path / "views.sql"; s2.write_text("CREATE VIEW v AS SELECT * FROM users;\n")
+    py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
+
+    result = extract([s1, s2, py], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "2 .sql file(s)" in err
+    assert "tree_sitter_sql not installed" in err
+    assert 'graphifyy[sql]' in err
+    assert "#1745" in err
+    # the Python file still extracts normally
+    labels = [n.get("label") for n in result["nodes"]]
+    assert any(str(l).startswith("main") for l in labels)
+
+
+def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
+    pytest.importorskip("tree_sitter_sql")
+    s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
+    extract([s], cache_root=tmp_path)
+    err = capsys.readouterr().err
+    assert "#1745" not in err
 
 
 def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsys):

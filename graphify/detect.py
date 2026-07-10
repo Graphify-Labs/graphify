@@ -1065,7 +1065,7 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
     return True
 
 
-def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None) -> dict:
+def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None) -> dict:
     root = root.resolve()
     if follow_symlinks is None:
         follow_symlinks = False
@@ -1082,8 +1082,10 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     def _wc(path: Path) -> int:
         # Cache word counts against each file's stat signature so unchanged
         # PDFs/docx aren't re-parsed on every run just to size the corpus (#1656).
+        # cache_root (when given, e.g. from `extract --out`) keeps this cache out
+        # of the scanned corpus (#1747).
         from graphify import cache as _cache
-        return _cache.cached_word_count(path, root, count_words)
+        return _cache.cached_word_count(path, root, count_words, cache_root=cache_root)
 
     skipped_sensitive: list[str] = []
     unclassified: list[str] = []

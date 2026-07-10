@@ -1046,7 +1046,19 @@ def dispatch_command(cmd: str) -> None:
         gods = god_nodes(G)
         surprises = surprising_connections(G, communities)
         stages.mark("analyze")
-        out = watch_path / _GRAPHIFY_OUT
+        # Where outputs (GRAPH_REPORT.md, re-clustered graph.json, labels,
+        # analysis, html) land. When `--graph` points at a graph INSIDE a
+        # graphify-out/ dir (another project/tenant's output), write beside it,
+        # not into a stray graphify-out/ in the CWD (#1747). But when `--graph`
+        # points at an arbitrary path — e.g. a `backup/graph.json` archived
+        # before re-clustering (#934) — fall back to the CWD's graphify-out/,
+        # which is the restore-into-place workflow that test pins. The default
+        # (no --graph) case already has graph_json under watch_path/graphify-out.
+        _out_name = Path(_GRAPHIFY_OUT).name
+        if graph_override is not None and graph_json.parent.name == _out_name:
+            out = graph_json.parent
+        else:
+            out = watch_path / _GRAPHIFY_OUT
         out.mkdir(parents=True, exist_ok=True)
         labels_path = out / ".graphify_labels.json"
         existing_labels: dict[int, str] = {}
@@ -2090,7 +2102,7 @@ def dispatch_command(cmd: str) -> None:
             unchanged_total = sum(len(v) for v in detection.get("unchanged_files", {}).values())
         else:
             print(f"[graphify extract] scanning {target}")
-            detection = _detect(target, google_workspace=google_workspace or None, extra_excludes=cli_excludes or None)
+            detection = _detect(target, google_workspace=google_workspace or None, extra_excludes=cli_excludes or None, cache_root=out_root)
             files_by_type = detection.get("files", {})
             code_files = [Path(p) for p in files_by_type.get("code", [])]
             doc_files = [Path(p) for p in files_by_type.get("document", [])]
