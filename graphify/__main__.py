@@ -1,6 +1,7 @@
 """graphify CLI - `graphify install` sets up the Claude Code skill."""
 
 from __future__ import annotations
+import errno
 import functools
 import json
 import os
@@ -444,7 +445,7 @@ _CODEX_HOOK = {
 
 
 
-def main() -> None:
+def _main() -> None:
     for _stream in (sys.stdout, sys.stderr):
         if _stream is not None and hasattr(_stream, "reconfigure"):
             try:
@@ -667,6 +668,32 @@ def main() -> None:
     if dispatch_install_cli(cmd):
         return
     dispatch_command(cmd)
+
+
+def main() -> None:
+    try:
+        _main()
+        # Flush explicitly, inside the guard: a pipe closed by a downstream
+        # reader surfaces here rather than during the interpreter's own shutdown
+        # flush, where the error would escape as a noisy "Exception ignored on
+        # flushing sys.stdout" and a nonzero exit.
+        sys.stdout.flush()
+    except BrokenPipeError:
+        _exit_on_closed_pipe()
+    except OSError as exc:
+        # Windows reports a closed pipe as EINVAL rather than EPIPE.
+        if exc.errno not in (errno.EPIPE, errno.EINVAL):
+            raise
+        _exit_on_closed_pipe()
+
+
+def _exit_on_closed_pipe() -> None:
+    # The reader (head, Select-Object -First N) closed the pipe: it has what
+    # it needs. Point stdout at devnull so the interpreter's shutdown flush
+    # doesn't raise a second BrokenPipeError, and exit as a success.
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, sys.stdout.fileno())
+    sys.exit(0)
 
 
 if __name__ == "__main__":
