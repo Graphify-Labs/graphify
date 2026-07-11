@@ -17,7 +17,6 @@ jobs:
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
       XDG_CACHE_HOME: "/tmp/.cache"
-      CARGO_HOME: "/tmp/.cargo"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
