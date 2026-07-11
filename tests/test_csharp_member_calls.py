@@ -141,3 +141,27 @@ def test_unqualified_call_still_resolves(tmp_path):
         )
     })
     assert any("_r_a" in s and "helper" in t for s, t in calls), "no regression on unqualified calls"
+
+
+def test_method_chained_off_new_expression_resolves(tmp_path):
+    """#1770: a method invoked directly on a `new X(...)` object-creation
+    expression (no intermediate variable) must still emit a calls edge to the
+    constructed type's method — the fluent `new X(...).M()` pattern."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Merger {\n"
+            "    public Merger(int x) {}\n"
+            "    public int Combine(int a, bool b) { return a; }\n"
+            "}\n"
+            "public class Svc {\n"
+            "    public int Run(int ctx) {\n"
+            "        return new Merger(ctx).Combine(ctx, true);\n"
+            "    }\n"
+            "}\n"
+        )
+    })
+    label = {n["id"]: n.get("label") for n in r["nodes"]}
+    assert any(
+        "run" in s and label.get(t) == ".Combine()"
+        for s, t in calls
+    ), f"chained call off new Merger(...) not captured: {[(s, label.get(t)) for s, t in calls]}"

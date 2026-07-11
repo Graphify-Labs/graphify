@@ -257,6 +257,41 @@ def test_ghost_merge_skipped_on_basename_collision():
     assert not G.has_edge("caller", "b_render")
 
 
+def test_ghost_merge_non_ast_different_files_both_survive():
+    """#1753: two NON-AST (semantic) nodes sharing (basename, label) but from
+    DIFFERENT files are distinct concepts with no AST canonical twin. They must
+    not be merged into an arbitrary survivor (which flipped run-to-run with the
+    hash seed); both survive, mirroring the AST/AST guard (#1257)."""
+    ext = {
+        "nodes": [
+            {"id": "dir_a_update_build_merge", "label": "build_merge() function",
+             "file_type": "concept", "source_file": "dir_a/update.md", "source_location": "L10"},
+            {"id": "dir_b_update_build_merge", "label": "build_merge() function",
+             "file_type": "concept", "source_file": "dir_b/update.md", "source_location": "L12"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(ext, directed=False)
+    assert sorted(G.nodes()) == ["dir_a_update_build_merge", "dir_b_update_build_merge"]
+
+
+def test_ghost_merge_non_ast_same_file_still_merges():
+    """A genuine duplicate — two non-AST nodes with the SAME source_file and
+    label — is a real ghost and still collapses to one node (deterministically),
+    so #1753's fix doesn't leave same-file LLM duplicates behind."""
+    ext = {
+        "nodes": [
+            {"id": "a_foo", "label": "Foo", "file_type": "concept",
+             "source_file": "x/doc.md", "source_location": "L1"},
+            {"id": "b_foo", "label": "Foo", "file_type": "concept",
+             "source_file": "x/doc.md", "source_location": "L2"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(ext, directed=False)
+    assert G.number_of_nodes() == 1
+
+
 def test_build_merge_preserves_call_edge_direction(tmp_path):
     """Regression for #760.
 
@@ -505,6 +540,99 @@ def test_build_relativizes_absolute_source_file(tmp_path):
     assert sf == "src/main.py"
 
 
+def test_build_from_json_ambiguous_old_stem_alias_stays_dangling(tmp_path):
+    """The #1504 old-stem alias (e.g. "ping.h" -> bare "ping") is meant to let a
+    stale-id edge from an un-re-extracted fragment still find its own file after
+    a rekey. But the old-stem form drops the extension and most of the path, so
+    two unrelated real files easily collapse onto the same bare alias (a C header
+    and a PHP script both named "ping", in different directories). A dangling
+    edge produced by an unrelated third file's own unscoped fallback id (e.g. the
+    C/C++ extractor's last-resort target for an #include it couldn't resolve to
+    a real path) must not silently ride that alias onto an arbitrary one of them
+    — it should stay dangling and get dropped, same as any other unresolvable
+    edge, rather than wire two unrelated files/languages together by accident."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            # Ids given in their canonical (post-extract.py, extension-stripped)
+            # form, matching what a real graphify update run would already have
+            # produced before build_from_json assembles the final graph.
+            {"id": "dev_monitoring_ping", "label": "ping.h", "file_type": "code",
+             "source_file": "Dev/monitoring/ping.h"},
+            {"id": "www_pages_api_ping", "label": "ping.php", "file_type": "code",
+             "source_file": "www/pages/api/ping.php"},
+            {"id": "dev_poker_server", "label": "server.cpp", "file_type": "code",
+             "source_file": "Dev/poker/server.cpp"},
+        ],
+        "edges": [
+            # The unscoped, deliberately-unresolved fallback edge a C/C++ #include
+            # resolver leaves behind when it can't find the header on disk.
+            {"source": "dev_poker_server", "target": "ping", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "Dev/poker/server.cpp"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert not G.has_edge("dev_poker_server", "dev_monitoring_ping")
+    assert not G.has_edge("dev_poker_server", "www_pages_api_ping")
+
+
+def test_build_from_json_ambiguous_alias_detected_despite_header_impl_salting(tmp_path):
+    """A same-directory .h/.cpp pair collides on their shared pre-extension id
+    and gets salted apart into ids like "tools_aolserver_utility_h_..." — no
+    longer a clean new_stem prefix. The ambiguity check must still recognize
+    the salted header as a legitimate claimant for the bare old-stem alias (by
+    label, not id shape), so a real collision with an unrelated same-named PHP
+    file is still caught instead of the header silently dropping out of the
+    race and leaving the PHP file as the lone "unambiguous" winner (this
+    reproduced against the real depot: Tools/aolserver/utility.h and .cpp,
+    salted apart, let wwwapi.masque.com/pages/utility.php win the bare
+    "utility" alias uncontested)."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            {"id": "tools_aolserver_utility_h_tools_aolserver_utility", "label": "utility.h",
+             "file_type": "code", "source_file": "Tools/aolserver/utility.h"},
+            {"id": "tools_aolserver_utility_cpp_tools_aolserver_utility", "label": "utility.cpp",
+             "file_type": "code", "source_file": "Tools/aolserver/utility.cpp"},
+            {"id": "wwwapi_masque_com_pages_utility", "label": "utility.php",
+             "file_type": "code", "source_file": "wwwapi.masque.com/pages/utility.php"},
+            {"id": "dev_poker_server", "label": "server.cpp", "file_type": "code",
+             "source_file": "Dev/poker/server.cpp"},
+        ],
+        "edges": [
+            {"source": "dev_poker_server", "target": "utility", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "Dev/poker/server.cpp"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert not G.has_edge("dev_poker_server", "wwwapi_masque_com_pages_utility")
+    assert not G.has_edge("dev_poker_server", "tools_aolserver_utility_h_tools_aolserver_utility")
+
+
+def test_build_from_json_unambiguous_old_stem_alias_still_resolves(tmp_path):
+    """Companion to the ambiguous case above: when exactly one real file claims
+    an old-stem alias, a dangling edge to that bare alias should still resolve
+    to it — the #1504 migration-compat behavior this index exists for."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    extraction = {
+        "nodes": [
+            {"id": "dev_monitoring_utility", "label": "utility.h", "file_type": "code",
+             "source_file": "Dev/monitoring/utility.h"},
+            {"id": "dev_poker_server", "label": "server.cpp", "file_type": "code",
+             "source_file": "Dev/poker/server.cpp"},
+        ],
+        "edges": [
+            {"source": "dev_poker_server", "target": "utility", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "Dev/poker/server.cpp"},
+        ],
+    }
+    G = build_from_json(extraction, root=root)
+    assert G.has_edge("dev_poker_server", "dev_monitoring_utility")
+
+
 def test_build_from_json_relative_source_file_unchanged(tmp_path):
     """Already-relative source_file paths must not be modified."""
     extraction = {
@@ -749,3 +877,50 @@ def test_semantic_rekey_relative_vs_absolute_source_file():
     # absolute path with no resolvable root → skipped, not remapped to an abs-path id
     ab = [{"id": "api_readme", "source_file": "/abs/docs/v1/api/README.md", "type": "document"}]
     assert _semantic_id_remap(ab, None) == {}
+
+
+def test_cross_language_imports_references_are_dropped():
+    """#1749: an `imports`/`references` edge must not bind across a language
+    family. A Python `import time` that resolved by bare stem onto a `time.ts`
+    file node welds the two language halves together at a phantom edge; the spec
+    forbids this for `calls` and it is equally invalid here."""
+    ext = {
+        "nodes": [
+            {"id": "backend_worker_py", "label": "worker.py", "file_type": "code",
+             "source_file": "backend/worker.py", "source_location": "L1", "_origin": "ast"},
+            {"id": "src_time_ts", "label": "time.ts", "file_type": "code",
+             "source_file": "src/time.ts", "source_location": "L1", "_origin": "ast"},
+            {"id": "src_util_ts", "label": "util.ts", "file_type": "code",
+             "source_file": "src/util.ts", "source_location": "L1", "_origin": "ast"},
+        ],
+        "edges": [
+            # phantom: Python file importing a TS file (cross-language)
+            {"source": "backend_worker_py", "target": "src_time_ts", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "backend/worker.py", "weight": 1.0},
+            # legit: TS importing TS (same family) must survive
+            {"source": "src_time_ts", "target": "src_util_ts", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "src/time.ts", "weight": 1.0},
+        ],
+    }
+    G = build_from_json(ext, directed=False)
+    assert not G.has_edge("backend_worker_py", "src_time_ts"), "cross-language import must be dropped"
+    assert G.has_edge("src_time_ts", "src_util_ts"), "same-family (TS->TS) import must survive"
+
+
+def test_cross_family_reference_to_unknown_ext_is_kept():
+    """The #1749 guard only drops when BOTH endpoints are known code languages,
+    so a reference from a config/manifest (unknown ext) to a code file is kept."""
+    ext = {
+        "nodes": [
+            {"id": "pkg_json", "label": "package.json", "file_type": "code",
+             "source_file": "package.json", "source_location": "L1", "_origin": "ast"},
+            {"id": "src_app_ts", "label": "app.ts", "file_type": "code",
+             "source_file": "src/app.ts", "source_location": "L1", "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "pkg_json", "target": "src_app_ts", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "package.json", "weight": 1.0},
+        ],
+    }
+    G = build_from_json(ext, directed=False)
+    assert G.has_edge("pkg_json", "src_app_ts"), "config->code reference (unknown ext) must be kept"

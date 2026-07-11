@@ -58,33 +58,42 @@ def introspect_postgres(dsn: str | None = None) -> dict:
             """)
             routines = cur.fetchall()
 
-            # 4. Query foreign keys — grouped by constraint to handle composites
+            # 4. Query foreign keys — grouped by constraint to handle composites.
+            # Read pg_catalog.pg_constraint, NOT information_schema.referential_
+            # constraints: that view only shows constraints where the current
+            # user has WRITE access to the referencing table (owner or a
+            # privilege other than SELECT), so a read-only introspection role
+            # sees zero FK rows while tables/views/routines all appear — the
+            # graph then silently loses every 'references' edge (#1746).
+            # pg_constraint is not privilege-filtered. It also keys constraints
+            # by oid rather than by name (constraint names are only unique per
+            # table, so the old name-based key_column_usage joins could
+            # cross-match same-named constraints on sibling tables).
             cur.execute("""
                 SELECT
-                    tc.constraint_name,
-                    kcu1.table_schema,
-                    kcu1.table_name,
-                    ARRAY_AGG(kcu1.column_name ORDER BY kcu1.ordinal_position) AS columns,
-                    kcu2.table_schema AS foreign_table_schema,
-                    kcu2.table_name AS foreign_table_name,
-                    ARRAY_AGG(kcu2.column_name ORDER BY kcu2.ordinal_position) AS foreign_columns
-                FROM
-                    information_schema.table_constraints AS tc
-                    JOIN information_schema.referential_constraints AS rc
-                      ON tc.constraint_name = rc.constraint_name
-                      AND tc.table_schema = rc.constraint_schema
-                    JOIN information_schema.key_column_usage AS kcu1
-                      ON tc.constraint_name = kcu1.constraint_name
-                      AND tc.table_schema = kcu1.table_schema
-                    JOIN information_schema.key_column_usage AS kcu2
-                      ON rc.unique_constraint_name = kcu2.constraint_name
-                      AND rc.unique_constraint_schema = kcu2.table_schema
-                      AND kcu1.position_in_unique_constraint = kcu2.ordinal_position
-                WHERE tc.constraint_type = 'FOREIGN KEY'
-                  AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')
-                GROUP BY tc.constraint_name, kcu1.table_schema, kcu1.table_name,
-                         kcu2.table_schema, kcu2.table_name
-                ORDER BY kcu1.table_schema, kcu1.table_name;
+                    con.conname AS constraint_name,
+                    ns.nspname AS table_schema,
+                    rel.relname AS table_name,
+                    (SELECT ARRAY_AGG(att.attname ORDER BY k.ord)
+                       FROM UNNEST(con.conkey) WITH ORDINALITY AS k(attnum, ord)
+                       JOIN pg_catalog.pg_attribute att
+                         ON att.attrelid = con.conrelid AND att.attnum = k.attnum
+                    ) AS columns,
+                    fns.nspname AS foreign_table_schema,
+                    frel.relname AS foreign_table_name,
+                    (SELECT ARRAY_AGG(att.attname ORDER BY k.ord)
+                       FROM UNNEST(con.confkey) WITH ORDINALITY AS k(attnum, ord)
+                       JOIN pg_catalog.pg_attribute att
+                         ON att.attrelid = con.confrelid AND att.attnum = k.attnum
+                    ) AS foreign_columns
+                FROM pg_catalog.pg_constraint con
+                JOIN pg_catalog.pg_class rel ON rel.oid = con.conrelid
+                JOIN pg_catalog.pg_namespace ns ON ns.oid = rel.relnamespace
+                JOIN pg_catalog.pg_class frel ON frel.oid = con.confrelid
+                JOIN pg_catalog.pg_namespace fns ON fns.oid = frel.relnamespace
+                WHERE con.contype = 'f'
+                  AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
+                ORDER BY ns.nspname, rel.relname, con.conname;
             """)
             fks = cur.fetchall()
     finally:

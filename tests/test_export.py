@@ -603,3 +603,54 @@ def test_backup_env_disable(tmp_path, monkeypatch):
     (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
     (tmp_path / ".graphify_semantic_marker").write_text("{}")
     assert backup_if_protected(tmp_path) is None
+
+
+def _mkG(n):
+    import networkx as nx
+    G = nx.Graph()
+    for i in range(n):
+        G.add_node(f"n{i}", label=f"n{i}", community=0)
+    return G
+
+
+def test_to_json_refuses_shrink(tmp_path):
+    """#479: refuse to silently overwrite an existing graph with fewer nodes."""
+    p = tmp_path / "graph.json"
+    json.dump({"nodes": [{"id": f"n{i}"} for i in range(5)]}, p.open("w"))
+    assert to_json(_mkG(2), {}, str(p), force=False) is False
+    assert to_json(_mkG(2), {}, str(p), force=True) is True  # force overrides
+
+
+def test_to_json_fails_safe_on_corrupt_existing(tmp_path):
+    """A non-empty but unparseable existing graph.json (corrupt or mid-write)
+    must NOT be silently overwritten — we can't verify the new graph isn't a
+    partial shrink, so fail safe (refuse) unless force is given."""
+    p = tmp_path / "graph.json"
+    p.write_text("{ this has content but is not valid json")
+    assert to_json(_mkG(10), {}, str(p), force=False) is False
+    assert to_json(_mkG(10), {}, str(p), force=True) is True
+
+
+def test_to_json_proceeds_on_empty_existing(tmp_path):
+    """An empty/whitespace existing file has no nodes to lose, so it is not a
+    shrink risk — the write proceeds."""
+    p = tmp_path / "graph.json"
+    p.write_text("")
+    assert to_json(_mkG(3), {}, str(p), force=False) is True
+    data = json.loads(p.read_text())
+    assert len(data["nodes"]) == 3
+
+
+def test_to_html_handles_null_source_file_and_label(tmp_path):
+    """#1775: a node with source_file=None or label=None must not crash to_html
+    (synthetic/aggregate nodes legitimately carry null source_file; JSON `null`
+    survives .get()'s default). Regression guard — fixed via sanitize_label's
+    None-coercion + the str(source_file or "") call-site guard."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label="Foo", source_file=None, community=0)
+    G.add_node("n2", label=None, source_file="a.py", community=0)
+    G.add_node("n3", label=None, source_file=None, community=0)
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n1", "n2", "n3"]}, str(out))
+    assert out.exists() and out.stat().st_size > 0

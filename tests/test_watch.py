@@ -176,6 +176,56 @@ def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
     )
 
 
+def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(tmp_path, monkeypatch, capsys):
+    """Detached hooks can inherit a CWD that no longer exists.
+
+    Without GRAPHIFY_REPO_ROOT, the rebuild should fail cleanly before creating
+    relative graphify-out queue/lock files.
+    """
+    from graphify.watch import _rebuild_code
+
+    old_cwd = Path.cwd()
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.delenv("GRAPHIFY_REPO_ROOT", raising=False)
+
+    os.chdir(gone)
+    gone.rmdir()
+    try:
+        assert _rebuild_code(Path("."), changed_paths=[Path("lib.py")]) is False
+    finally:
+        os.chdir(old_cwd)
+
+    out = capsys.readouterr().out
+    assert "current working directory no longer exists" in out
+
+
+def test_rebuild_code_deleted_cwd_uses_graphify_repo_root(tmp_path, monkeypatch):
+    """GRAPHIFY_REPO_ROOT lets detached hook rebuilds recover from a deleted CWD."""
+    from graphify.watch import _rebuild_code
+
+    old_cwd = Path.cwd()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "lib.py").write_text("def f(): pass\n", encoding="utf-8")
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.setenv("GRAPHIFY_REPO_ROOT", str(corpus))
+
+    os.chdir(gone)
+    gone.rmdir()
+    try:
+        assert _rebuild_code(
+            Path("."),
+            changed_paths=[Path("lib.py")],
+            no_cluster=True,
+        ) is True
+        assert Path.cwd().resolve() == corpus.resolve()
+        assert (corpus / "graphify-out" / "graph.json").exists()
+    finally:
+        os.chdir(old_cwd)
+
+
 def test_rebuild_code_evicts_nodes_from_deleted_files(tmp_path):
     """#1007: graphify update (_rebuild_code with no changed_paths) must remove
     nodes and edges from files deleted since the last run."""
@@ -224,6 +274,57 @@ def _add_unrelated_semantic_pair(graph_path):
         "nodes": ["docs_topic", "shared_concept"],
     }]
     graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "changed_paths",
+    [None, [Path("doc.md")]],
+    ids=["full-update", "incremental-doc-update"],
+)
+def test_rebuild_code_preserves_hyperedges_for_rebuilt_surviving_source(
+    tmp_path, changed_paths
+):
+    """#1755: AST-only updates must not drop semantic hyperedges whose members survive."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "doc.md").write_text(
+        "# Design\n\n## Flow\n\nDetails.\n", encoding="utf-8"
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert {"doc", "doc_design"} <= {node["id"] for node in data["nodes"]}
+    data["hyperedges"] = [{
+        "id": "doc_flow_group",
+        "label": "Doc flow group",
+        "nodes": ["doc", "doc_design"],
+        "relation": "implements",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "doc.md",
+    }]
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert _rebuild_code(
+        corpus,
+        changed_paths=changed_paths,
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert after["hyperedges"] == [{
+        "id": "doc_flow_group",
+        "label": "Doc flow group",
+        "nodes": ["doc", "doc_design"],
+        "relation": "implements",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "doc.md",
+    }]
 
 
 @pytest.mark.parametrize(

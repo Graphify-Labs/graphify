@@ -33,6 +33,26 @@ from .paths import default_graph_json as _default_graph_json
 from .validate import validate_extraction
 
 
+# Language interop families, keyed by extension, for the cross-language phantom-edge
+# guard in the edge loop below. Families group by REAL interop (JS/TS share a module
+# graph; C/C++/ObjC share a compilation unit via headers; JVM langs share bytecode),
+# so a legitimate TS->JS import or C impl->header call survives, while a Python
+# `import time` binding to a `time.ts` (#1749) or a cross-language INFERRED `calls`
+# edge (#1547/#1556) is dropped. Kept local to build.py (not imported from extract.py,
+# which imports build.py — a cycle) and deliberately mirrors extract._LANG_FAMILY_BY_EXT.
+_EDGE_LANG_FAMILY: dict[str, str] = {
+    ".py": "py", ".pyi": "py",
+    ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js",
+    ".ts": "js", ".tsx": "js", ".mts": "js", ".cts": "js",
+    ".go": "go", ".rs": "rs",
+    ".java": "jvm", ".kt": "jvm", ".scala": "jvm", ".groovy": "jvm",
+    ".c": "c", ".h": "c", ".cc": "c", ".cpp": "c", ".hpp": "c",
+    ".cxx": "c", ".hh": "c", ".hxx": "c",
+    ".cu": "c", ".cuh": "c", ".metal": "c", ".m": "c", ".mm": "c",
+    ".rb": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
+}
+
+
 # Synonym mapper for known invalid file_type values that LLM subagents commonly
 # emit. Keeps semantic intent close (markdown→document, tool→code) and falls
 # back to "concept" for any other invalid value (see #840).
@@ -449,7 +469,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # ghost would pick an arbitrary winner via set-iteration order (#1257). Track
     # those keys so Pass 2 skips them — same conservatism as
     # _rewire_unique_stub_nodes, which only merges when exactly one real def exists.
-    for nid in node_set:
+    # Iterate in a deterministic (sorted) order, not set-iteration order, so the
+    # canonical winner and the ambiguity decisions below don't flip run-to-run
+    # with CPython's per-process string-hash seed (#1753) — the same reason the
+    # edge-iteration loop further down sorts on purpose.
+    for nid in sorted(node_set):
         attrs = G.nodes[nid]
         label = str(attrs.get("label", "")).strip()
         sf = str(attrs.get("source_file", ""))
@@ -465,11 +489,27 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                     _loc_collisions.add(key)
                 # AST-origin nodes always overwrite a prior non-AST entry.
                 _loc_nodes[key] = nid
-            elif key not in _loc_nodes:
-                _loc_nodes[key] = nid
+            else:
+                existing = _loc_nodes.get(key)
+                if existing is None:
+                    _loc_nodes[key] = nid
+                elif (
+                    G.nodes[existing].get("_origin") != "ast"
+                    and str(G.nodes[existing].get("source_file", "")) != sf
+                ):
+                    # Two NON-AST nodes sharing (basename, label) but coming from
+                    # DIFFERENT files are distinct concepts (e.g. a same-named
+                    # concept in dir_a/update.md and dir_b/update.md), not an AST
+                    # ghost/canonical twin. Merging them would drop a real node
+                    # and pick the survivor arbitrarily via iteration order
+                    # (#1753). Mark the key ambiguous so Pass 2 leaves both, the
+                    # same conservatism the AST/AST case uses (#1257). A genuine
+                    # same-file duplicate (identical source_file) is not flagged
+                    # and still collapses.
+                    _loc_collisions.add(key)
 
     # Pass 2: find ghosts — non-AST nodes that have an AST canonical twin.
-    for nid in node_set:
+    for nid in sorted(node_set):
         attrs = G.nodes[nid]
         if attrs.get("_origin") == "ast":
             continue  # AST nodes are never ghosts
@@ -507,7 +547,32 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # fragment (e.g. an incremental update whose fragment references a symbol in a
     # file that was NOT re-extracted) still resolves to the migrated node instead
     # of dangling. Only fills gaps — never overrides a real node id.
+    #
+    # The old-stem form drops the extension and (for the file node itself) every
+    # directory but the immediate parent, so it collapses easily: "ping.h" and
+    # "ping.php" in different directories both alias to bare "ping". Collecting
+    # every candidate for an alias BEFORE committing any of them — and only
+    # committing when exactly one candidate claims it — keeps this a precise
+    # re-keying aid instead of a silent cross-file (and cross-language) merge.
+    # Without this, a dangling edge to a bare, deliberately-unscoped fallback id
+    # (e.g. the C/C++ extractor's last-resort target for an #include it couldn't
+    # resolve to a real path) could ride this alias onto whichever unrelated
+    # same-stem file happened to be inserted first into ``node_set`` — a Python
+    # set, so "first" is hash-order, not anything meaningful.
+    #
+    # A file node's OWN id is not always a clean ``new_stem`` prefix: when a
+    # same-directory ``.h``/``.cpp`` pair collides on their shared pre-extension
+    # id, _disambiguate_colliding_node_ids salts both apart into ids like
+    # ``tools_aolserver_utility_h_tools_aolserver_utility`` — which no longer
+    # string-prefixes cleanly for the suffix math below. Detecting "this IS the
+    # file node" by label (every file node's label is its own basename,
+    # regardless of id mangling) instead of by id shape keeps a salted file node
+    # in the alias competition, so a genuine collision (a C header AND an
+    # unrelated same-named PHP script) is still caught as ambiguous instead of
+    # the header silently dropping out of the race and leaving the PHP file as
+    # the lone (wrong) "unambiguous" winner.
     from graphify.extractors.base import _file_stem as _fs
+    _alias_candidates: dict[str, set[str]] = {}
     for nid in node_set:
         attrs = G.nodes[nid]
         sf = attrs.get("source_file")
@@ -517,15 +582,21 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if rel.is_absolute():
             continue
         new_stem = make_id(_fs(rel))
-        suffix = ""
-        if _normalize_id(nid).startswith(new_stem):
-            suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
+        if str(attrs.get("label", "")) == rel.name:
+            suffix = ""  # this node IS the file, whatever its (possibly salted) id
+        else:
+            suffix = ""
+            if _normalize_id(nid).startswith(new_stem):
+                suffix = _normalize_id(nid)[len(new_stem):]  # leading "_entity" or ""
         for old_stem in _old_file_stems(rel):
             if old_stem == new_stem:
                 continue
             alias = old_stem + suffix
-            norm_to_id.setdefault(_normalize_id(alias), nid)
-            norm_to_id.setdefault(alias, nid)
+            _alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
+            _alias_candidates.setdefault(alias, set()).add(nid)
+    for alias_key, candidates in _alias_candidates.items():
+        if len(candidates) == 1:
+            norm_to_id.setdefault(alias_key, next(iter(candidates)))
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
@@ -577,31 +648,31 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             )
         if "source_file" in attrs:
             attrs["source_file"] = _norm_source_file(attrs["source_file"], _root)
-        # Drop cross-language INFERRED `calls` edges — same short names (render,
-        # parse, etc.) appear across language boundaries in multi-language chunks,
-        # producing phantom edges that don't represent real call relationships.
-        if attrs.get("relation") == "calls" and attrs.get("confidence") == "INFERRED":
-            _LANG_FAMILY: dict[str, str] = {
-                ".py": "py", ".pyi": "py",
-                ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js",
-                ".ts": "js", ".tsx": "js", ".mts": "js", ".cts": "js",
-                ".go": "go", ".rs": "rs",
-                ".java": "jvm", ".kt": "jvm", ".scala": "jvm", ".groovy": "jvm",
-                # C, C++, and ObjC interoperate within one compilation unit: a method
-                # declared in a shared `.h` is defined/called from a `.c`/`.cpp`/`.m`
-                # sibling, so a cross-file INFERRED call from impl to its header decl
-                # is legitimate, not a phantom name-collision across languages. Treat
-                # the whole C family as one so the receiver-typed C++/ObjC member-call
-                # resolvers' header-targeting edges survive build (#1547/#1556).
-                ".c": "c", ".h": "c", ".cc": "c", ".cpp": "c", ".hpp": "c",
-                ".cxx": "c", ".hh": "c", ".hxx": "c",
-                ".cu": "c", ".cuh": "c", ".metal": "c", ".m": "c", ".mm": "c",
-                ".rb": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
-            }
+        # Drop cross-language phantom edges — the same short names (render, parse,
+        # time, ...) recur across language boundaries, so an unresolved target can
+        # bind to a same-named node in another language. The extraction spec forbids
+        # this for `calls`; it is equally invalid for `imports`/`references` (a
+        # Python `import time` must not bind to a `time.ts`, #1749).
+        _edge_rel = attrs.get("relation")
+        if _edge_rel in ("calls", "imports", "imports_from", "references"):
             src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
             tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
-            if src_ext and tgt_ext and _LANG_FAMILY.get(src_ext) != _LANG_FAMILY.get(tgt_ext):
-                continue
+            src_fam = _EDGE_LANG_FAMILY.get(src_ext)
+            tgt_fam = _EDGE_LANG_FAMILY.get(tgt_ext)
+            if _edge_rel == "calls":
+                # Unchanged #1547/#1556 behavior: only INFERRED calls, and drop as
+                # soon as either family differs (an unknown ext counts as different).
+                if (
+                    attrs.get("confidence") == "INFERRED"
+                    and src_ext and tgt_ext and src_fam != tgt_fam
+                ):
+                    continue
+            else:
+                # imports/references: drop only when BOTH endpoints are known code
+                # languages of different families, so a config->code reference
+                # (unknown ext, e.g. a manifest) is never mistaken for a phantom.
+                if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam:
+                    continue
         # Preserve original edge direction - undirected graphs lose it otherwise,
         # causing display functions to show edges backwards.
         attrs["_src"] = src
@@ -923,6 +994,34 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
         data["repo"] = repo_tag
         data.setdefault("local_id", node.split("::", 1)[1])
     return H
+
+
+def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
+    """Return a unique, human-meaningful repo tag per input graph for merge-graphs.
+
+    The naive tag (the ``graphify-out`` parent dir name) is NOT unique across
+    inputs: ``src/graphify-out`` and ``frontend/src/graphify-out`` both yield
+    ``src``. Prefixing both node sets with ``src::`` then makes same-stem nodes
+    (a backend ``src/app.js`` and a frontend ``App.jsx``, both bare ``app``)
+    collide, so ``nx.compose`` silently merges two unrelated entities and invents
+    cross-runtime edges (#1729). Colliding tags are widened with their own parent
+    dir (``frontend_src``), then an index suffix guarantees uniqueness so no two
+    graphs ever share a prefix.
+    """
+    repo_dirs = [p.parent.parent for p in graph_paths]  # graphify-out/.. → repo dir
+    tags = [d.name or "repo" for d in repo_dirs]
+    if len(set(tags)) != len(tags):
+        widened: list[str] = []
+        for d in repo_dirs:
+            parent = d.parent.name
+            widened.append(f"{parent}_{d.name}" if parent and d.name else (d.name or "repo"))
+        tags = widened
+    seen: dict[str, int] = {}
+    unique: list[str] = []
+    for t in tags:
+        seen[t] = seen.get(t, 0) + 1
+        unique.append(t if seen[t] == 1 else f"{t}-{seen[t]}")
+    return unique
 
 
 def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:

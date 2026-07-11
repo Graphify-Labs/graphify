@@ -510,3 +510,33 @@ def test_semantic_prune_ignores_ast_and_tmp(tmp_path):
     assert not (semantic_dir / "deadbeef.json").exists()
     assert tmp_entry.exists(), "*.tmp temporaries must not be swept"
     assert len(list(ast_dir.glob("*.json"))) == 1, "AST entries must not be touched"
+
+
+def test_save_semantic_cache_overwrites_by_default(tmp_path):
+    """Default save_semantic_cache replaces a file's cached entry (the final,
+    authoritative write in the extract pipeline)."""
+    from graphify.cache import save_semantic_cache
+    f = tmp_path / "doc.md"; f.write_text("# Doc\n")
+    save_semantic_cache([{"id": "a", "source_file": "doc.md"}], [], root=tmp_path)
+    save_semantic_cache([{"id": "b", "source_file": "doc.md"}], [], root=tmp_path)
+    cached = load_cached(f, root=tmp_path, kind="semantic")
+    ids = {n["id"] for n in cached["nodes"]}
+    assert ids == {"b"}, "default must overwrite, not accumulate"
+
+
+def test_save_semantic_cache_merge_existing_unions(tmp_path):
+    """#1715: merge_existing=True unions with the prior entry so a file split
+    across chunks (checkpointed per chunk) keeps every slice."""
+    from graphify.cache import save_semantic_cache
+    f = tmp_path / "big.md"; f.write_text("# Big\n")
+    # chunk 1 slice
+    save_semantic_cache([{"id": "a", "source_file": "big.md"}],
+                        [{"source": "a", "target": "x", "source_file": "big.md"}],
+                        root=tmp_path, merge_existing=True)
+    # chunk 2 slice for the same file
+    save_semantic_cache([{"id": "b", "source_file": "big.md"}], [],
+                        root=tmp_path, merge_existing=True)
+    cached = load_cached(f, root=tmp_path, kind="semantic")
+    ids = {n["id"] for n in cached["nodes"]}
+    assert ids == {"a", "b"}, "merge_existing must union both chunk slices"
+    assert len(cached["edges"]) == 1
