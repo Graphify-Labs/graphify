@@ -168,14 +168,14 @@ pip install graphifyy  # may need PATH setup — see note below
 
 Run directly without installing:
 ```bash
-nix run github:safishamsi/graphify
+nix run github:caniko/graphify
 ```
 
 To expose `graphify` as a package inside another flake, add it as an input and reference its default package:
 ```nix
 {
   inputs = {
-    graphify.url = "github:safishamsi/graphify";
+    graphify.url = "github:caniko/graphify";
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
 
@@ -191,6 +191,21 @@ To expose `graphify` as a package inside another flake, add it as an input and r
   };
 }
 ```
+
+The flake and GitHub Actions workflow are generated and checked by
+[simit](https://codeberg.org/caniko/simit). After changing the flake outputs,
+refresh the generated wiring and verify the same checks CI runs:
+
+```bash
+simit init flake --check --diff
+simit init ci --platform github --runtime nix --check --diff
+nix flake check --no-build
+nix build .#checks.x86_64-linux.pytest
+```
+
+Keep `simit.toml`, `nix/pre-commit.nix`, and `.github/workflows/ci.yaml` in
+sync; the workflow intentionally builds the named `pytest` check instead of
+duplicating a second Python dependency installation path.
 
 ---
 
