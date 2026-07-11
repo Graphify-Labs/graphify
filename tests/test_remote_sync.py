@@ -591,3 +591,32 @@ def test_template_skip_excludes_cache_only(tmp_path, monkeypatch):
     assert ns["skip"]("services/api/graphify-out/cache/x.json")
     assert not ns["skip"]("graphify-out/graph.json")
     assert not ns["skip"]("services/api/graphify-out/wiki/index.md")
+
+
+def test_init_backend_s3_public(tmp_path, monkeypatch):
+    # --backend s3-public → .py hooks + a store_url config key; pull is URL-only (no boto3)
+    repo = _git_repo(tmp_path / "r")
+    monkeypatch.chdir(repo)
+    remote.cmd_init(["--backend", "s3-public"])
+    cfg = json.loads((repo / ".graphify" / "config.json").read_text())
+    assert "store_url" in cfg
+    pull = (repo / ".graphify" / "pull.py").read_text()
+    assert "urllib" in pull and "boto3" not in pull
+    assert "_manifest.json" in (repo / ".graphify" / "push.py").read_text()
+
+
+def test_init_backend_git_lfs_and_rsync_write_shell(tmp_path, monkeypatch):
+    for backend, marker in (("git-lfs", "GRAPHIFY_GIT_REMOTE"), ("rsync", "GRAPHIFY_RSYNC_DEST")):
+        repo = _git_repo(tmp_path / backend)
+        monkeypatch.chdir(repo)
+        remote.cmd_init(["--backend", backend])
+        assert (repo / ".graphify" / "push.sh").is_file()
+        assert (repo / ".graphify" / "pull.sh").is_file()
+        assert not (repo / ".graphify" / "push.py").exists()
+        assert marker in (repo / ".graphify" / "push.sh").read_text()
+
+
+def test_init_unknown_backend_errors(tmp_path, monkeypatch):
+    monkeypatch.chdir(_git_repo(tmp_path / "r"))
+    with pytest.raises(SystemExit):
+        remote.cmd_init(["--backend", "carrier-pigeon"])

@@ -130,7 +130,7 @@ def cmd_remote(argv: list[str]) -> None:
     else:
         print(
             "Usage: graphify remote <command>\n"
-            "  remote init      scaffold .graphify/ (store config + push/pull hooks)\n"
+            "  remote init      scaffold .graphify/ (config + hooks; --backend s3|s3-public|git-lfs|rsync)\n"
             "  remote push      run the push hook — upload the central graph store\n"
             "  remote pull      run the pull hook — download the store + recreate links\n"
             "  remote delete    leave the store — links become real local folders",
@@ -169,14 +169,24 @@ def cmd_deinit(argv: list[str]) -> None:
 # ---------------------------------------------------------------- scaffolding
 
 def cmd_init(argv: list[str]) -> None:
-    """`graphify remote init` — bootstrap the repo's committed ``.graphify/`` folder.
+    """`graphify remote init [--backend s3|s3-public|git-lfs|rsync]` — bootstrap ``.graphify/``.
 
-    Writes ``.graphify/config.json`` (if missing, with the default store) plus
-    starter ``push.py``/``pull.py`` hooks, so one command + one commit onboards
-    the whole team. Existing files are never overwritten, and a hook already
-    present under another extension (``push.sh``, ``pull.js``, …) is respected.
+    Writes ``.graphify/config.json`` (if missing) plus starter ``push``/``pull``
+    hooks for the chosen backend, so one command + one commit onboards the whole
+    team. Existing files are never overwritten, and a hook already present under
+    another extension (``push.sh``, ``pull.js``, …) is respected.
     """
     import json
+    from graphify import remote_hook_templates as tpl
+
+    backend = tpl.DEFAULT_BACKEND
+    if "--backend" in argv:
+        i = argv.index("--backend")
+        backend = argv[i + 1] if i + 1 < len(argv) else ""
+    if backend not in tpl.TEMPLATES:
+        opts = "\n".join(f"  {n:10} {t['desc']}" for n, t in tpl.TEMPLATES.items())
+        sys.exit(f"unknown --backend {backend!r}. Choose one:\n{opts}")
+    spec = tpl.TEMPLATES[backend]
 
     found = _store.find_config()
     if found:
@@ -186,15 +196,17 @@ def cmd_init(argv: list[str]) -> None:
         base = Path(toplevel) if toplevel else Path.cwd()
     dest_dir = base / _store.CONFIG_DIR
     dest_dir.mkdir(parents=True, exist_ok=True)
+
     config = _store.config_path(base)
     if config.is_file():
         print(f"kept existing {config}")
     else:
-        default_store = f"~/graphify-store/{base.name}"
-        config.write_text(json.dumps({"store": default_store}, indent=2) + "\n")
-        print(f"wrote {config}  (store: {default_store} — edit the path to anything you like)")
-    from graphify import remote_hook_templates as tpl
-    for action, body in (("push", tpl.PUSH_S3), ("pull", tpl.PULL_S3)):
+        cfg = {"store": f"~/graphify-store/{base.name}"}
+        cfg.update(spec.get("config", {}))
+        config.write_text(json.dumps(cfg, indent=2) + "\n")
+        print(f"wrote {config}  (backend: {backend} — edit the store path / keys to taste)")
+
+    for action in ("push", "pull"):
         existing = next(
             (dest_dir / f"{action}{ext}" for ext in _HOOK_EXTS
              if (dest_dir / f"{action}{ext}").is_file()),
@@ -203,11 +215,15 @@ def cmd_init(argv: list[str]) -> None:
         if existing:
             print(f"kept existing {existing}")
             continue
-        dest = dest_dir / f"{action}.py"
+        ext, body = spec[action]
+        dest = dest_dir / f"{action}{ext}"
         dest.write_text(body)
         os.chmod(dest, 0o755)
         print(f"wrote {dest}")
+
+    others = ", ".join(n for n in tpl.TEMPLATES if n != backend)
     print(
-        "edit the hooks (bucket via GRAPHIFY_BUCKET / GRAPHIFY_S3_ENDPOINT, creds stay in the "
-        "env — never in the repo), then commit .graphify/. Teammates just: graphify remote pull"
+        "edit the hooks (secrets stay in the env — never in the repo), then commit .graphify/. "
+        f"Teammates just: graphify remote pull.  Other backends: {others} "
+        "(graphify remote init --backend <name>)."
     )

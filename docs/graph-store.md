@@ -10,7 +10,10 @@ anything) and a clone carries its own sync behaviour.
 ## One-command setup
 
 ```bash
-graphify remote init
+graphify remote init                       # private S3/MinIO (default)
+graphify remote init --backend s3-public   # authenticated push, URL-only pull — readers need NO creds
+graphify remote init --backend git-lfs     # a git repo with git-lfs
+graphify remote init --backend rsync       # rsync / SSH / a mounted network share
 ```
 
 creates the repo's committed graphify home:
@@ -93,7 +96,9 @@ interpreter by extension, so it also works on Windows where shebangs are ignored
 **Secrets stay out of the repo.** The committed hooks read credentials from the
 environment (env vars, `~/.aws`, …) — the starter S3 hooks use `GRAPHIFY_BUCKET`
 / `GRAPHIFY_S3_ENDPOINT` plus boto3's standard credential chain, and skip
-`cache/` (a local-only accelerator). Extra non-secret keys you add to
+`cache/` (a local-only accelerator). With the **`s3-public`** backend only
+*pushers* need creds — readers pull from the committed public `store_url` over plain
+HTTP (a `_manifest.json` lists the keys, so no listing, no SDK, no keys). Extra non-secret keys you add to
 `config.json` are yours to read — hooks get its path as `GRAPHIFY_CONFIG`.
 
 ### Hook environment
