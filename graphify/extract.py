@@ -3478,7 +3478,14 @@ def _xaml_csharp_class_nodes(path: Path) -> dict[str, list[dict]]:
     except OSError:
         return classes
     for cs_path in cs_files:
-        if any(_is_noise_dir(part) for part in cs_path.parts):
+        # Check only project-relative components.  Absolute build sandboxes
+        # commonly mount sources below ``/build``; treating that ancestor as a
+        # project noise directory would hide every ViewModel from XAML linking.
+        try:
+            relative_parts = cs_path.relative_to(root).parts
+        except ValueError:
+            relative_parts = cs_path.parts
+        if any(_is_noise_dir(part) for part in relative_parts[:-1]):
             continue
         if patterns and _is_ignored(cs_path, root, patterns, _cache=ignore_cache):
             continue
