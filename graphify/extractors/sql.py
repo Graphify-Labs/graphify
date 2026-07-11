@@ -61,6 +61,19 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                        "confidence": "EXTRACTED", "source_file": str_path,
                        "source_location": f"L{line}", "weight": 1.0})
 
+    def _ensure_table(name: str, line: int) -> str:
+        """Return the nid for a table name, creating its node on first sight.
+
+        DML write targets (INSERT/UPDATE/MERGE) are often defined in another
+        file (or not in the corpus at all), so the node may not exist yet —
+        mirror the alter_table behavior and materialize it."""
+        nid = table_nids.get(name.lower())
+        if not nid:
+            nid = _make_id(stem, name)
+            _add_node(nid, name, line)
+            table_nids[name.lower()] = nid
+        return nid
+
     def walk(node) -> None:
         t = node.type
         line = node.start_point[0] + 1
@@ -119,6 +132,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                     ref_nid = table_nids.get(ref_name.lower()) or _make_id(stem, ref_name)
                                     _add_edge(nid, ref_nid, "references", line)
                                     seen_refs.add(ref_name.lower())
+                # CTAS: CREATE TABLE <tgt> AS SELECT ... FROM/JOIN <src> — the
+                # SELECT lives in a create_query child; walk it for lineage
+                # edges just like create_view does (#1572).
+                if any(c.type == "create_query" for c in node.children):
+                    _walk_from_refs(node, nid, line)
 
         elif t == "create_view":
             name = _obj_name(node)
@@ -169,6 +187,35 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                 if not ref_nid:
                                     ref_nid = _make_id(stem, ref_name)
                                 _add_edge(src_nid, ref_nid, "references", line)
+
+        elif t == "insert":
+            # INSERT INTO <tgt> ... SELECT ... FROM/JOIN <src> — ETL lineage
+            # (#1572). The target is the first object_reference child; VALUES
+            # inserts have no `from` node, so _walk_from_refs emits nothing.
+            tgt_name = None
+            for c in node.children:
+                if c.type == "object_reference":
+                    tgt_name = _read(c)
+                    break
+            if tgt_name:
+                tgt_nid = _ensure_table(tgt_name, line)
+                _walk_from_refs(node, tgt_nid, line)
+
+        elif t == "update":
+            # UPDATE <tgt> SET ... FROM <src> — the target is the relation
+            # directly under update; sources live in the `from` child, so
+            # _walk_from_refs never sees the target itself (#1572).
+            tgt_name = None
+            for c in node.children:
+                if c.type == "relation":
+                    for cc in c.children:
+                        if cc.type == "object_reference":
+                            tgt_name = _read(cc)
+                            break
+                    break
+            if tgt_name:
+                tgt_nid = _ensure_table(tgt_name, line)
+                _walk_from_refs(node, tgt_nid, line)
 
         elif t == "create_trigger":
             trig_name: str | None = None
@@ -240,13 +287,50 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                         if cc.type == "object_reference":
                             tbl = _read(cc)
                             tbl_nid = _make_id(stem, tbl)
-                            _add_edge(caller_nid, tbl_nid, "reads_from",
-                                      c.start_point[0] + 1)
+                            # Skip self-loops: INSERT INTO t SELECT ... FROM t
+                            # (dedup/backfill patterns) reads its own target.
+                            if tbl_nid != caller_nid:
+                                _add_edge(caller_nid, tbl_nid, "reads_from",
+                                          c.start_point[0] + 1)
         for child in node.children:
             _walk_from_refs(child, caller_nid, line)
 
+    def _handle_merge(stmt_node) -> None:
+        """MERGE INTO <tgt> USING <src> — lineage edge tgt reads_from src (#1572).
+
+        tree-sitter-sql has no dedicated merge node: the keywords sit directly
+        under `statement`, so this runs on the statement itself. Only direct
+        children are scanned for the target/source object_references — nested
+        ones (ON-clause fields, WHEN-clause assignments) never surface here.
+        """
+        line = stmt_node.start_point[0] + 1
+        tgt_name: str | None = None
+        src_names: list[str] = []
+        after_using = False
+        for c in stmt_node.children:
+            if c.type == "keyword_using":
+                after_using = True
+            elif c.type == "object_reference":
+                if after_using:
+                    src_names.append(_read(c))
+                    after_using = False
+                elif tgt_name is None:
+                    tgt_name = _read(c)
+        if not tgt_name:
+            return
+        tgt_nid = _ensure_table(tgt_name, line)
+        for src_name in src_names:
+            src_nid = _ensure_table(src_name, line)
+            if src_nid != tgt_nid:
+                _add_edge(tgt_nid, src_nid, "reads_from", line)
+        # USING (SELECT ... FROM <src>) subqueries carry their sources in a
+        # nested `from` node instead of a direct object_reference.
+        _walk_from_refs(stmt_node, tgt_nid, line)
+
     for stmt in root.children:
         if stmt.type == "statement":
+            if any(c.type == "keyword_merge" for c in stmt.children):
+                _handle_merge(stmt)
             for child in stmt.children:
                 walk(child)
         elif stmt.type in ("fb_proc_or_trigger", "set_term", "declare_external_function"):
