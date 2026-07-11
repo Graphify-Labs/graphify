@@ -418,6 +418,17 @@ def _reconcile_existing_graph(
         # lists can contain only a rename destination, so explicit paths alone
         # cannot identify the stale source. Keep the comparison scoped to the
         # watched root so subfolder updates preserve records outside that subtree.
+        #
+        # Fail-closed eviction: a source identity missing from the corpus is only
+        # DELETION evidence when the file is actually gone from disk. A file that
+        # still exists but stopped being collected was *excluded* (ignore rules or
+        # filters changed — e.g. a .gitignore the scanner newly honors), and
+        # treating that as deletion silently mass-evicts good nodes. Preserve
+        # instead and say so; a full re-extraction still purges deliberately
+        # excluded sources via the AST ownership rule below.
+        excluded_alive_files: set[str] = set()
+        excluded_alive_nodes = 0
+        _alive_cache: dict[str, bool] = {}
         for node in existing.get("nodes", []):
             source_file = node.get("source_file")
             if not source_file or _get_extractor(Path(source_file)) is None:
@@ -426,6 +437,15 @@ def _reconcile_existing_graph(
             if not source_paths.in_watch_root(source_file):
                 continue
             if identity not in current_sources:
+                if identity:
+                    alive = _alive_cache.get(identity)
+                    if alive is None:
+                        alive = Path(identity).exists()
+                        _alive_cache[identity] = alive
+                    if alive:
+                        excluded_alive_files.add(identity)
+                        excluded_alive_nodes += 1
+                        continue
                 normalized = source_paths.normalize(source_file)
                 if normalized:
                     deleted_paths.add(normalized)
@@ -433,6 +453,13 @@ def _reconcile_existing_graph(
                     node_evicted_source_identities.add(identity)
                     edge_evicted_source_identities.add(identity)
                     hyperedge_evicted_source_identities.add(identity)
+        if excluded_alive_files:
+            print(
+                f"[graphify watch] fail-closed: kept {excluded_alive_nodes} node(s) "
+                f"from {len(excluded_alive_files)} file(s) that left the scan corpus "
+                "but still exist on disk (ignore rules or filters changed?). "
+                "Run a full re-extraction to purge them if the exclusion is intentional."
+            )
 
         # A full re-extraction owns every AST node under watch_root. Incremental
         # extraction owns only nodes from rebuilt or deleted sources. Semantic

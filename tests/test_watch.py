@@ -1410,3 +1410,59 @@ def test_merge_changed_paths_dedupes_in_order():
         [Path("a.py")],
     )
     assert [p.as_posix() for p in merged] == ["a.py", "b.py", "c.py"]
+
+
+def test_rebuild_code_preserves_nodes_from_excluded_but_alive_file(tmp_path, capsys):
+    """Fail-closed eviction: a file that leaves the scan corpus (newly ignored)
+    but still exists on disk was EXCLUDED, not deleted — its nodes must survive
+    an incremental rebuild, with a loud message, instead of being silently
+    mass-evicted as stale sources (the docs/brainstorms incident: an upgrade
+    started honoring .gitignore and evicted 655 nodes whose files were present).
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "notes").mkdir(parents=True)
+    (corpus / "auth.py").write_text("def login(): pass\n", encoding="utf-8")
+    (corpus / "notes" / "brainstorm.md").write_text(
+        "# Brainstorm\n\nA local-only design note.\n", encoding="utf-8"
+    )
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "brainstorm.md" in labels
+
+    # The file becomes ignored (leaves the corpus) but stays on disk.
+    (corpus / ".graphifyignore").write_text("notes/\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert _rebuild_code(corpus, changed_paths=[Path("auth.py")], acquire_lock=False) is True
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "brainstorm.md" in labels, (
+        "nodes from an excluded-but-alive file must be preserved, not evicted"
+    )
+    assert "fail-closed: kept" in capsys.readouterr().out
+
+
+def test_rebuild_code_still_evicts_when_excluded_file_is_also_deleted(tmp_path):
+    """The fail-closed preserve must not weaken true-deletion eviction: once the
+    excluded file is actually gone from disk, its nodes are evicted as before."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "notes").mkdir(parents=True)
+    (corpus / "auth.py").write_text("def login(): pass\n", encoding="utf-8")
+    (corpus / "notes" / "brainstorm.md").write_text("# Brainstorm\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    (corpus / "notes" / "brainstorm.md").unlink()
+
+    assert _rebuild_code(corpus, changed_paths=[Path("auth.py")], acquire_lock=False) is True
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "brainstorm.md" not in labels, "deleted file's nodes must still be evicted"
+    assert "login()" in labels
