@@ -67,9 +67,10 @@ def _refresh_all_version_stamps() -> None:
 def _platform_skill_destination(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Return the skill destination for a platform and scope."""
     if platform_name in ("gemini", "antigravity", "antigravity-windows"):
-        # Gemini CLI and Antigravity both read global skills from
-        # ~/.gemini/config/skills/ (all workspaces, every OS). Keeping gemini
-        # here (rather than ~/.gemini/skills) is the #1185 fix.
+        # Since Antigravity 2.0, the Antigravity IDE, the Antigravity CLI and the
+        # Gemini CLI all read global skills from ~/.gemini/config/skills/ (every
+        # workspace, every OS) — the old ~/.gemini/skills path is not scanned.
+        # Routing gemini here (not ~/.gemini/skills) is the #1185 fix.
         return Path.home() / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
 
     if platform_name == "opencode":
