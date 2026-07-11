@@ -1,6 +1,7 @@
 [flake]
 mode = "custom"
 scope = "hooks-only"
+components = ["treefmt", "nix-flake-check", "uv-ruff-format"]
 
 [flake.expected_outputs]
 checks = ["pytest"]
@@ -8,3 +9,4 @@ checks = ["pytest"]
 [ci]
 runtime = "nix"
 runner = "ubuntu-latest"
+components = ["flake-wiring", "flake-evaluation", "checks"]
