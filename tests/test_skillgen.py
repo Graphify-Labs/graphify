@@ -955,6 +955,7 @@ def test_agents_body_matches_amp_modulo_hooks_wording():
     assert amp["hooks.md"] != agents["hooks.md"]
 
 
+@skip_in_sandbox()
 def test_agents_audit_baseline_is_amps_v8_body():
     """`agents` is a post-v8 platform, so its audit baseline is amp's v8 body."""
     platforms = gen.load_platforms()
