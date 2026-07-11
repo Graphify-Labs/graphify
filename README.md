@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://graphifylabs.ai"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/logo.png" width="300" height="140" alt="Graphify"/></a>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/logo.png" width="300" height="140" alt="Graphify"/></a>
 </p>
 
 <p align="center">
@@ -772,11 +772,11 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 
 ## Built on graphify: Penpax
 
-[**Penpax**](https://graphifylabs.ai) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working life: meetings, browser history, emails, files, and code, updating continuously in the background.
+[**Penpax**](https://graphify.com) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working life: meetings, browser history, emails, files, and code, updating continuously in the background.
 
 Built for people whose work lives across hundreds of conversations and documents they can never fully reconstruct. No cloud, fully on-device.
 
-**Free trial launching soon.** [Join the waitlist →](https://graphifylabs.ai)
+**Free trial launching soon.** [Join the waitlist →](https://www.graphify.com)
 
 ---
 

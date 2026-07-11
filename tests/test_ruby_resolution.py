@@ -348,3 +348,21 @@ def test_mixin_is_not_emitted_as_calls_edge(tmp_path: Path) -> None:
              for e in g["edges"] if e.get("relation") == "calls"}
     assert ("K", "C") not in calls
     assert ("K", "C") in _mixes_in(g)
+
+
+def test_rake_files_extract_and_resolve_like_rb(tmp_path):
+    """#1784: `.rake` files are plain Ruby and must route to the Ruby extractor
+    and participate in Ruby cross-file resolution exactly like `.rb`."""
+    rake = _write(tmp_path, "ops.rake",
+                  "class RakeHelper\n  def self.run\n    Widget.tally\n  end\nend\n")
+    rb = _write(tmp_path, "widget.rb",
+                "class Widget\n  def self.tally\n    42\n  end\nend\n")
+    result = extract([rake, rb], cache_root=tmp_path / ".cache")
+    label = {n["id"]: n.get("label") for n in result["nodes"]}
+    labels = set(label.values())
+    # the .rake file's symbols are extracted
+    assert "RakeHelper" in labels and ".run()" in labels
+    # and the cross-file member call resolves .rake -> .rb
+    calls = {(label.get(e["source"]), label.get(e["target"]))
+             for e in result["edges"] if e["relation"] == "calls"}
+    assert (".run()", ".tally()") in calls

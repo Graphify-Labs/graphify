@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://graphifylabs.ai"><img src="https://raw.githubusercontent.com/safishamsi/graphify/v4/docs/logo-text.svg" width="260" height="64" alt="Graphify"/></a>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/safishamsi/graphify/v4/docs/logo-text.svg" width="260" height="64" alt="Graphify"/></a>
 </p>
 
 <p align="center">
@@ -777,11 +777,11 @@ graphify label ./my-project --backend=openai --model gpt-4o   # כפיית backe
 
 ## נבנה על graphify — ‏Penpax
 
-[**Penpax**](https://graphifylabs.ai) היא השכבה התמידית שנבנתה מעל graphify — היא מיישמת את אותה גישת גרף על כל חיי העבודה שלכם: פגישות, היסטוריית דפדפן, מיילים, קבצים וקוד, ומתעדכנת ברציפות ברקע.
+[**Penpax**](https://graphify.com) היא השכבה התמידית שנבנתה מעל graphify — היא מיישמת את אותה גישת גרף על כל חיי העבודה שלכם: פגישות, היסטוריית דפדפן, מיילים, קבצים וקוד, ומתעדכנת ברציפות ברקע.
 
 נבנתה לאנשים שהעבודה שלהם מפוזרת על פני מאות שיחות ומסמכים שהם לעולם לא יוכלו לשחזר במלואם. ללא ענן, לגמרי על המכשיר.
 
-**גרסת ניסיון חינמית תושק בקרוב.** [הצטרפו לרשימת ההמתנה ←](https://graphifylabs.ai)
+**גרסת ניסיון חינמית תושק בקרוב.** [הצטרפו לרשימת ההמתנה ←](https://graphify.com)
 
 ---
 

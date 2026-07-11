@@ -149,3 +149,61 @@ def test_prune_matches_across_symlinked_root(tmp_path):
                     prune_sources=[str(link / "HANDOFF.md")], root=str(real), dedup=False)
     labels = {d["label"] for _, d in G.nodes(data=True)}
     assert "handoff" not in labels and "keep" in labels
+
+
+def test_reextracted_file_in_prune_sources_is_not_deleted(tmp_path):
+    """#1796: a file present in BOTH new_chunks (re-extracted) and prune_sources
+    must be REPLACED, not deleted. The old edit-workflow passed the changed file
+    in prune_sources; combined with dedup keeping a same-label node, that used to
+    silently delete the freshly re-extracted concept. Replace wins over delete."""
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+    _write_graph(
+        graph_path,
+        nodes=[
+            {"id": "foo_widget_cache", "label": "Widget Cache Design",
+             "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L1"},
+            {"id": "bar_other", "label": "Other",
+             "file_type": "concept", "source_file": "docs/bar.md", "source_location": "L1"},
+        ],
+        edges=[],
+        hyperedges=[],
+    )
+    # foo.md edited: same-label node re-extracted (new content/line)
+    new_chunk = {"nodes": [
+        {"id": "foo_widget_cache", "label": "Widget Cache Design",
+         "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L2"}
+    ], "edges": []}
+
+    G = build_merge([new_chunk], graph_path=str(graph_path),
+                    prune_sources=["docs/foo.md"], root=str(tmp_path))
+    labels = {G.nodes[n].get("label") for n in G.nodes()}
+    assert "Widget Cache Design" in labels, "re-extracted node was wrongly pruned"
+
+
+def test_genuine_deletion_still_prunes(tmp_path):
+    """#1796 guard must not break real deletions: a file in prune_sources but NOT
+    in new_chunks is still removed."""
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+    _write_graph(
+        graph_path,
+        nodes=[
+            {"id": "foo_widget_cache", "label": "Widget Cache Design",
+             "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L1"},
+            {"id": "bar_other", "label": "Other",
+             "file_type": "concept", "source_file": "docs/bar.md", "source_location": "L1"},
+        ],
+        edges=[],
+        hyperedges=[],
+    )
+    new_chunk = {"nodes": [
+        {"id": "foo_widget_cache", "label": "Widget Cache Design",
+         "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L2"}
+    ], "edges": []}
+    # bar.md genuinely deleted (not re-extracted)
+    G = build_merge([new_chunk], graph_path=str(graph_path),
+                    prune_sources=["docs/bar.md"], root=str(tmp_path))
+    labels = {G.nodes[n].get("label") for n in G.nodes()}
+    assert "Other" not in labels, "genuinely deleted file's node should be pruned"
+    assert "Widget Cache Design" in labels

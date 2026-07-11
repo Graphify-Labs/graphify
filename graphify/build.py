@@ -49,7 +49,7 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".c": "c", ".h": "c", ".cc": "c", ".cpp": "c", ".hpp": "c",
     ".cxx": "c", ".hh": "c", ".hxx": "c",
     ".cu": "c", ".cuh": "c", ".metal": "c", ".m": "c", ".mm": "c",
-    ".rb": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
+    ".rb": "rb", ".rake": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
 }
 
 
@@ -908,6 +908,13 @@ def build_merge(
         norm = _norm_source_file(p, _eff_root)
         if norm:
             prune_set.add(norm)
+    # A file that was just re-extracted (present in new_chunks) is being REPLACED,
+    # never deleted — so never prune it, even if the caller also lists it in
+    # prune_sources. Otherwise its fresh, just-built nodes are silently removed
+    # (data loss): common when an edit keeps a node's label and the caller follows
+    # the old edit-workflow of passing the changed file in prune_sources (#1796).
+    # "replace" wins over a contradictory "delete" of the same source.
+    prune_set -= new_sources
 
     # Carry forward hyperedges from files that were neither re-extracted nor
     # deleted (#1574). build() only sees the new chunks' hyperedges, so without
