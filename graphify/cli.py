@@ -602,7 +602,7 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _score_nodes
+        from graphify.serve import _pick_scored_endpoint, _score_nodes
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -635,7 +635,8 @@ def dispatch_command(cmd: str) -> None:
         if not tgt_scored:
             print(f"No node matching '{target_label}' found.", file=sys.stderr)
             sys.exit(1)
-        src_nid, tgt_nid = src_scored[0][1], tgt_scored[0][1]
+        src_nid = _pick_scored_endpoint(G, src_scored, source_label)
+        tgt_nid = _pick_scored_endpoint(G, tgt_scored, target_label)
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
@@ -646,8 +647,14 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        for _name, _scored in (("source", src_scored), ("target", tgt_scored)):
-            if len(_scored) >= 2:
+        for _name, _scored, _nid in (
+            ("source", src_scored, src_nid),
+            ("target", tgt_scored, tgt_nid),
+        ):
+            # A close runner-up only made the resolution ambiguous when the raw
+            # score head is what got picked; a full-token override was chosen on
+            # token coverage, not score, so the head's margin is irrelevant.
+            if len(_scored) >= 2 and _nid == _scored[0][1]:
                 _top, _runner = _scored[0][0], _scored[1][0]
                 if _top > 0 and (_top - _runner) / _top < 0.10:
                     print(
