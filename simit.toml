@@ -1,0 +1,10 @@
+[flake]
+mode = "custom"
+scope = "hooks-only"
+
+[flake.expected_outputs]
+checks = ["pytest"]
+
+[ci]
+runtime = "nix"
+runner = "ubuntu-latest"
