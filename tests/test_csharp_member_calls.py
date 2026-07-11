@@ -935,3 +935,16 @@ def test_method_return_var_property_and_field_rhs_skip(tmp_path: Path):
                  "void M(){ var a = field; a.Run(); var b = Prop; b.Run(); } } }\n")
     result = extract([src], cache_root=tmp_path)
     _assert_no_call_label_from(result, "C", ".M()", ".Run()")
+
+
+def test_method_chained_off_new_expression_resolves(tmp_path: Path):
+    src = _write(tmp_path / "s.cs",
+                 "namespace N { class Merger {\n"
+                 "public Merger(int x) {}\n"
+                 "public int Combine(int a, bool b) { return a; } }\n"
+                 "class Svc { public int Run(int ctx) {\n"
+                 "return new Merger(ctx).Combine(ctx, true); } } }\n")
+    result = extract([src], cache_root=tmp_path)
+    edge = _edge_from_to_owner(result, "Svc", ".Run()", "Merger", ".Combine()")
+    assert edge.get("confidence") == "EXTRACTED"
+    assert "metadata" not in edge

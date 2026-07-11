@@ -7,6 +7,7 @@ from graphify.extractors.csharp import (
     _metadata,
     build_csharp_name_resolver,
 )
+from graphify.extractors.csharp_extract import _CSHARP_NEW_RECEIVER_PREFIX
 from graphify.security import sanitize_metadata
 
 
@@ -516,6 +517,9 @@ def _resolve_csharp_member_calls(
         enclosing_nid = enclosing_type.get(caller)
         enclosing_group = member_key_by_nid.get(enclosing_nid) if enclosing_nid else None
         active_type_tables = type_table_by_file if type_tables is None else type_tables
+        if isinstance(receiver, str) and receiver.startswith(_CSHARP_NEW_RECEIVER_PREFIX):
+            type_name = receiver[len(_CSHARP_NEW_RECEIVER_PREFIX):]
+            return _declared_type_group(type_name, source_node, src_file, enclosing_nid), False, {}, None
         if receiver == "this":
             return enclosing_group, False, {}, None
         if receiver == "base":

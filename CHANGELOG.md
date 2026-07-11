@@ -2,7 +2,9 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.12 (unreleased)
+## 0.9.13 (unreleased)
+
+- Fix: cross-module references to a function now resolve to its definition instead of dangling on a name-only stub (#1781, thanks @EmilNyg). `_rewire_unique_stub_nodes` gated merge targets through `_is_type_like_definition`, which rejects any label ending in `)` — so function/method defs could never absorb their reference stubs, and "who references this function" returned nothing on the definition node while a sourceless stub held all the edges. Top-level function defs are now eligible rewire targets when the label match is globally unique, gated by a language-family match with the referrers (a Python `get_db` reference can't bind to a unique Go `get_db()`) and excluding stubs used as a supertype (`inherits`/`implements`/`extends` — you don't inherit from a function). Types are unchanged.
 
 - Fix: live PostgreSQL introspection (`--postgres`) now emits foreign-key `references` edges under a read-only role (#1746, thanks @rithyKabir). The FK query read `information_schema.referential_constraints`, which is privilege-filtered — a role with only SELECT sees zero FK rows while tables/views/routines still appear, so every `references` edge silently vanished. It now reads the world-readable `pg_catalog.pg_constraint` (keyed by oid, which also fixes same-named constraints on sibling tables cross-matching in the old name-based joins), preserving composite-FK column order via `UNNEST ... WITH ORDINALITY`.
 

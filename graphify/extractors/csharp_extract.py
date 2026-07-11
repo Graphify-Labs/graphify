@@ -984,6 +984,7 @@ def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
 
 CsharpTypeRefFact = tuple[str, str, bool, str]
 CsharpBaseListFact = tuple[str, bool, str, str, list[tuple[str, bool, str]]]
+_CSHARP_NEW_RECEIVER_PREFIX = "__csharp_new__:"
 
 
 def csharp_class_member_metadata(type_node, source: bytes, parent_class_nid: str | None) -> dict:
@@ -1123,12 +1124,41 @@ def csharp_invocation_callee(node, source: bytes) -> tuple[str | None, bool, str
     is_member_call = False
     member_receiver: str | None = None
 
+    def _receiver_text(recv_node) -> str:
+        if recv_node.type in ("object_creation_expression", "implicit_object_creation_expression"):
+            type_node = recv_node.child_by_field_name("type")
+            if type_node is None:
+                type_node = next(
+                    (
+                        child
+                        for child in recv_node.named_children
+                        if child.type in ("identifier", "qualified_name", "generic_name")
+                    ),
+                    None,
+                )
+            info = _read_csharp_type_name(type_node, source)
+            if info:
+                return f"{_CSHARP_NEW_RECEIVER_PREFIX}{info[0]}"
+        return _read_text(recv_node, source)
+
+    def _member_access_parts(access_node) -> tuple[str | None, str | None]:
+        recv_node = access_node.child_by_field_name("expression")
+        name_node = access_node.child_by_field_name("name")
+        if recv_node is None or name_node is None:
+            named = [child for child in access_node.named_children if child.is_named]
+            if len(named) >= 2:
+                recv_node = named[-2]
+                name_node = named[-1]
+        if recv_node is None or name_node is None:
+            return None, None
+        return _csharp_base_identifier(_read_text(name_node, source)), _receiver_text(recv_node)
+
     func_node = node.child_by_field_name("function")
     if func_node is not None and func_node.type == "conditional_access_expression":
         is_member_call = True
         recv_node = func_node.child_by_field_name("condition")
         if recv_node is not None:
-            member_receiver = _read_text(recv_node, source)
+            member_receiver = _receiver_text(recv_node)
         binding_node = next(
             (child for child in func_node.named_children if child.type == "member_binding_expression"),
             None,
@@ -1138,12 +1168,7 @@ def csharp_invocation_callee(node, source: bytes) -> tuple[str | None, bool, str
             callee_name = _csharp_base_identifier(_read_text(name_node, source))
     elif func_node is not None and func_node.type == "member_access_expression":
         is_member_call = True
-        recv_node = func_node.child_by_field_name("expression")
-        if recv_node is not None:
-            member_receiver = _read_text(recv_node, source)
-        name_node = func_node.child_by_field_name("name")
-        if name_node is not None:
-            callee_name = _csharp_base_identifier(_read_text(name_node, source))
+        callee_name, member_receiver = _member_access_parts(func_node)
     else:
         if func_node is not None and func_node.type in ("identifier", "generic_name"):
             callee_name = _csharp_base_identifier(_read_text(func_node, source))
@@ -1156,6 +1181,10 @@ def csharp_invocation_callee(node, source: bytes) -> tuple[str | None, bool, str
             else:
                 for child in node.children:
                     if child.is_named:
+                        if child.type == "member_access_expression":
+                            callee_name, member_receiver = _member_access_parts(child)
+                            is_member_call = bool(callee_name)
+                            break
                         raw = _read_text(child, source)
                         if "." in raw:
                             callee_name = _csharp_base_identifier(raw.split(".")[-1])

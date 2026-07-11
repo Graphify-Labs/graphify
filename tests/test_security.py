@@ -219,6 +219,12 @@ def test_sanitize_label_safe_passthrough():
     assert sanitize_label("MyClass") == "MyClass"
     assert sanitize_label("extract_python") == "extract_python"
 
+def test_sanitize_label_none_returns_empty():
+    # #1775: a node with source_file=None / label=None (synthetic/aggregate
+    # nodes, or JSON `null`) must not raise — .get() returns None, not the
+    # default, when the key is present-but-null.
+    assert sanitize_label(None) == ""
+
 
 # ---------------------------------------------------------------------------
 # check_graph_file_size_cap (#F4 — graph-load memory bomb protection)
