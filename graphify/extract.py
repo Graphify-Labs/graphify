@@ -4245,9 +4245,12 @@ def extract(
 
     Args:
         paths: files to extract from
-        cache_root: explicit root for graphify-out/cache/ (overrides the
-            inferred common path prefix). Pass Path('.') when running on a
-            subdirectory so the cache stays at ./graphify-out/cache/.
+        cache_root: explicit root for graphify-out/cache/. Defaults to the
+            current working directory — the cache is an output, so it must
+            not land inside the analyzed source tree (#1774). The inferred
+            common path prefix of ``paths`` still anchors node ids and
+            symbol resolution; it just no longer decides where the cache
+            is written.
         parallel: if True and there are >= _PARALLEL_THRESHOLD uncached files,
             use ProcessPoolExecutor for multi-core extraction.
         max_workers: max subprocess count. Defaults to cpu_count (or the
@@ -4281,7 +4284,10 @@ def extract(
         root = cache_root
     root = root.resolve()
 
-    effective_root = cache_root or root
+    # #1774: the cache is an output, so it defaults to CWD — never the
+    # analyzed source tree. `root` (inferred above) still anchors node ids
+    # and symbol resolution; only the cache location diverges from it.
+    effective_root = cache_root if cache_root is not None else Path(".")
     total = len(paths)
 
     # Phase 1: separate cached hits from uncached work
