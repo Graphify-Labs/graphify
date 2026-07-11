@@ -25,7 +25,8 @@ from graphify.serve import (
     _resolve_context_filters,
     _subgraph_to_text,
     _load_graph,
-    _community_header,
+_community_header,
+    _read_source_slice,
 )
 
 
@@ -915,3 +916,100 @@ def test_community_header_sanitizes_name():
     out = _community_header(3, "Pay\x00ments\x1b[31m")
     assert out.startswith("Community 3 — ")
     assert "\x00" not in out and "\x1b" not in out
+
+
+# --- _read_source_slice (read_source tool core) ---
+
+def _write_source(tmp_path, rel, lines):
+    """Write a file under tmp_path and return its POSIX repo-relative path."""
+    p = tmp_path / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return rel.replace("\\", "/")
+
+
+def test_read_source_slice_file_range(tmp_path):
+    rel = _write_source(tmp_path, "src/auth/x.py", [f"line {i}" for i in range(1, 11)])
+    out = _read_source_slice(tmp_path, rel, start=2, end=4)
+    assert "File: src/auth/x.py (lines 2-4 of 10)" in out
+    assert "     2: line 2" in out
+    assert "     4: line 4" in out
+    assert "line 1" not in out  # before the range
+    assert "line 5" not in out  # after the range
+
+
+def test_read_source_slice_default_window(tmp_path):
+    rel = _write_source(tmp_path, "doc.md", [f"l{i}" for i in range(1, 200)])
+    out = _read_source_slice(tmp_path, rel, start=10)  # end defaults to start + 50
+    assert "(lines 10-60 of 199)" in out
+
+
+def test_read_source_slice_path_traversal_rejected(tmp_path):
+    _write_source(tmp_path, "escape.py", ["secret"])
+    # ../escape.py resolves outside source_root -> must be refused.
+    out = _read_source_slice(tmp_path, "../escape.py")
+    assert "escapes the server's source-root" in out
+    assert "secret" not in out
+
+
+def test_read_source_slice_absolute_path_rejected(tmp_path):
+    _write_source(tmp_path, "x.py", ["content"])
+    out = _read_source_slice(tmp_path, str((tmp_path / "x.py").resolve()))
+    assert "repo-relative path" in out
+    assert "content" not in out
+
+
+def test_read_source_slice_truncation_cap(tmp_path):
+    rel = _write_source(tmp_path, "big.txt", [f"line {i}" for i in range(1, 1001)])
+    out = _read_source_slice(tmp_path, rel, start=1, end=1000)
+    assert "truncated" in out
+    # The cap is 500 lines; line 600 must not appear.
+    assert "line 600" not in out
+    assert "line 1" in out
+
+
+def test_read_source_slice_missing_file_message(tmp_path):
+    out = _read_source_slice(tmp_path, "does/not/exist.py")
+    assert "Source file not found on server" in out
+    assert "--source-root" in out  # the Docker-misconfig hint
+
+
+def test_read_source_slice_empty_file(tmp_path):
+    (tmp_path / "empty.txt").write_text("", encoding="utf-8")
+    out = _read_source_slice(tmp_path, "empty.txt")
+    assert out == "File: empty.txt (empty)"
+
+
+def test_read_source_slice_sanitises_control_chars(tmp_path):
+    # Source content is attacker-controllable (F-010); control chars must be
+    # stripped from emitted lines so they cannot forge log lines / escapes.
+    rel = _write_source(tmp_path, "evil.py", ["clean\x1b[31mbad\x00"])
+    out = _read_source_slice(tmp_path, rel, start=1, end=1)
+    assert "\x1b" not in out
+    assert "\x00" not in out
+    assert "clean" in out and "bad" in out
+
+
+def test_read_source_slice_start_clamped(tmp_path):
+    rel = _write_source(tmp_path, "x.py", ["only line"])
+    out = _read_source_slice(tmp_path, rel, start=-5, end=1)
+    assert "(lines 1-1 of 1)" in out
+    assert "only line" in out
+
+
+def test_read_source_label_resolution_via_find_node(tmp_path):
+    # End-to-end label resolution: a graph node points at a real file; the
+    # read_source wrapper resolves label -> source_file + source_location and
+    # centres a context window. _find_node is the same matcher the wrapper uses.
+    rel = _write_source(tmp_path, "src/svc.py", [f"line {i}" for i in range(1, 31)])
+    G = nx.Graph()
+    G.add_node("svc", label="UserService", source_file=rel, source_location="L15", community=0)
+    matches = _find_node(G, "UserService")
+    assert matches  # label resolves
+    d = G.nodes[matches[0]]
+    center = 15
+    context = 2
+    out = _read_source_slice(tmp_path, d["source_file"], center - context, center + context)
+    assert "(lines 13-17 of 30)" in out
+    assert "line 15" in out
+    assert "line 12" not in out  # outside the context window

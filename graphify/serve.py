@@ -752,6 +752,99 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
     return source_exact + exact + prefix + substring
 
 
+# Caps for read_source output — source content is corpus-derived and may be
+# huge or attacker-crafted, so every response is line- and byte-bounded.
+_READ_SOURCE_MAX_LINES = 500
+_READ_SOURCE_MAX_BYTES = 64 * 1024
+_READ_SOURCE_DEFAULT_WINDOW = 50
+
+
+def _read_source_slice(
+    source_root: Path,
+    source_file: str,
+    start: int | None = None,
+    end: int | None = None,
+    *,
+    max_lines: int = _READ_SOURCE_MAX_LINES,
+    max_bytes: int = _READ_SOURCE_MAX_BYTES,
+    default_window: int = _READ_SOURCE_DEFAULT_WINDOW,
+) -> str:
+    """Read and format a line slice of an original source file.
+
+    ``source_file`` is repo-root-relative (POSIX, as stored in graph.json);
+    ``source_root`` anchors it. The resolved path must stay inside
+    ``source_root`` (blocks ``../`` and symlink escapes). Every emitted line is
+    passed through :func:`sanitize_label` because source content is
+    corpus-derived / attacker-controllable (F-010). Returns a friendly message
+    string for expected misses (absolute path, escape, missing file, empty),
+    never raises on those.
+    """
+    if not source_file:
+        return "No source_file to read."
+
+    # source_file is meant to be repo-relative; reject absolute client input.
+    # (resolve() below still enforces containment regardless.)
+    if Path(source_file).is_absolute():
+        return "read_source requires a repo-relative path, not an absolute path."
+
+    try:
+        start = max(1, int(start)) if start is not None else 1
+    except (TypeError, ValueError):
+        start = 1
+    if end is None:
+        end = start + default_window
+    try:
+        end = int(end)
+    except (TypeError, ValueError):
+        end = start + default_window
+    if end < start:
+        end = start
+
+    full = (source_root / source_file).resolve()
+    try:
+        full.relative_to(source_root)
+    except ValueError:
+        return (
+            f"Path '{source_file}' escapes the server's source-root "
+            f"({source_root}). read_source is confined to the repo."
+        )
+    if not full.is_file():
+        return (
+            f"Source file not found on server: {source_file}. The server's "
+            f"source-root is {source_root}; ensure the repo is mounted or "
+            f"checked out there (e.g. --source-root /repo in a container)."
+        )
+
+    text = full.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    total = len(lines)
+    if total == 0:
+        return f"File: {source_file} (empty)"
+
+    slice_start = max(1, start)
+    slice_end = min(end, total)
+    out_lines: list[str] = []
+    total_bytes = 0
+    rendered = 0
+    truncated = False
+    for n in range(slice_start, slice_end + 1):
+        if rendered >= max_lines:
+            truncated = True
+            break
+        line = f"{n:>6}: {sanitize_label(lines[n - 1])}"
+        if total_bytes + len(line) + 1 > max_bytes:
+            truncated = True
+            break
+        out_lines.append(line)
+        total_bytes += len(line) + 1
+        rendered += 1
+
+    header = f"File: {source_file} (lines {slice_start}-{slice_end} of {total})"
+    if truncated:
+        header += f" — truncated at {max_lines} lines / {max_bytes // 1024} KiB cap"
+    return header + "\n" + "\n".join(out_lines)
+
+
 def _filter_blank_stdin() -> None:
     """Filter blank lines from stdin before MCP reads it.
 
@@ -797,13 +890,19 @@ def _community_header(cid: int, community_name) -> str:
     return base
 
 
-def _build_server(graph_path: str):
+def _build_server(graph_path: str, source_root: str | None = None):
     """Build the configured low-level MCP Server (shared by every transport).
 
     All graph query tools and resources are registered here over a single
     ``mcp.server.Server`` instance; the caller picks the transport (stdio or
     Streamable HTTP) and runs it. Hot-reload of graph.json works the same way
     regardless of transport, since reloads happen inside the tool handlers.
+
+    ``source_root`` is the directory ``read_source`` resolves repo-relative
+    ``source_file`` paths against. When omitted it is inferred: the parent of
+    ``graphify-out/`` if the graph lives there, else the current working
+    directory. Pass an explicit path for containerised deployments where the
+    repo is mounted somewhere other than next to ``graphify-out``.
     """
     import threading
 
@@ -815,6 +914,17 @@ def _build_server(graph_path: str):
         raise ImportError('mcp not installed. Run: pip install "graphifyy[mcp]"') from e
 
     from graphify import paths as _paths
+
+# Directory read_source resolves source_file paths against. source_file is
+    # stored POSIX repo-root-relative (extract.py relativises it), and the repo
+    # root is not persisted in graph.json, so we infer it here unless told.
+    _graphify_out = Path(graph_path).resolve().parent
+    if source_root:
+        _source_root = Path(source_root).resolve()
+    elif _graphify_out.name == "graphify-out":
+        _source_root = _graphify_out.parent
+    else:
+        _source_root = Path.cwd().resolve()
 
     # Per-graph context cache: resolved graph.json path -> {key, G, communities}.
     # The server's default graph is just the first entry; a tool call carrying a
@@ -916,6 +1026,27 @@ def _build_server(graph_path: str):
                     "type": "object",
                     "properties": {"label": {"type": "string", "description": "Node label or ID to look up"}},
                     "required": ["label"],
+                },
+            ),
+            types.Tool(
+                name="read_source",
+                description=(
+                    "Read a slice of an original source file (text files only). "
+                    "Pass either `label` (a graph node name — resolves its source_file "
+                    "+ source_location and returns a window of context lines around "
+                    "that location) or `file` (a repo-relative source_file path, e.g. "
+                    "'src/auth/x.py') with optional start/end line numbers. Source "
+                    "files must be reachable from the server's source-root."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "Node label — resolves source_file + source_location from the graph"},
+                        "file": {"type": "string", "description": "Repo-relative source_file path (POSIX, e.g. src/auth/x.py)"},
+                        "start": {"type": "integer", "description": "1-indexed start line (inclusive). Defaults to 1."},
+                        "end": {"type": "integer", "description": "1-indexed end line (inclusive). Defaults to start + window."},
+                        "context": {"type": "integer", "default": 20, "description": "Lines of context around a label-resolved location"},
+                    },
                 },
             ),
             types.Tool(
@@ -1069,6 +1200,45 @@ def _build_server(graph_path: str):
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
         ])
+
+    def _tool_read_source(arguments: dict) -> str:
+        # Read a slice of an original source file. source_file is stored
+        # repo-root-relative (POSIX); _source_root (inferred or --source-root)
+        # anchors it. The path-resolve / slice / sanitise logic lives in the
+        # module-level _read_source_slice helper so it can be tested without
+        # the mcp package; this closure just resolves a node label to its
+        # source_file + source_location first.
+        label = arguments.get("label")
+        file_arg = arguments.get("file")
+
+        if not label and not file_arg:
+            return "read_source requires 'label' or 'file'."
+
+        if label:
+            matches = _find_node(G, label)
+            if not matches:
+                return f"No node matching '{label}' found."
+            d = G.nodes[matches[0]]
+            source_file = d.get("source_file") or ""
+            if not source_file:
+                return f"Node '{label}' has no source_file to read."
+            # source_location is "L{n}"; centre the window on it.
+            loc = str(d.get("source_location") or "")
+            m = re.search(r"\d+", loc)
+            center = int(m.group()) if m else 1
+            context = arguments.get("context", 20) or 20
+            try:
+                context = max(1, int(context))
+            except (TypeError, ValueError):
+                context = 20
+            start = max(1, center - context)
+            end = center + context
+        else:
+            source_file = str(file_arg)
+            start = arguments.get("start")
+            end = arguments.get("end")
+
+        return _read_source_slice(_source_root, source_file, start, end)
 
     def _tool_get_neighbors(arguments: dict) -> str:
         label = arguments["label"].lower()
@@ -1276,6 +1446,7 @@ def _build_server(graph_path: str):
     _handlers = {
         "query_graph": _tool_query_graph,
         "get_node": _tool_get_node,
+        "read_source": _tool_read_source,
         "get_neighbors": _tool_get_neighbors,
         "get_community": _tool_get_community,
         "god_nodes": _tool_god_nodes,
@@ -1374,7 +1545,7 @@ def _build_server(graph_path: str):
     return server
 
 
-def serve(graph_path: str | None = None) -> None:
+def serve(graph_path: str | None = None, source_root: str | None = None) -> None:
     """Start the MCP server over stdio (the default, per-developer transport)."""
     graph_path = graph_path or _default_graph_json()
     try:
@@ -1383,7 +1554,7 @@ def serve(graph_path: str | None = None) -> None:
         raise ImportError('mcp not installed. Run: pip install "graphifyy[mcp]"') from e
     import asyncio
 
-    server = _build_server(graph_path)
+    server = _build_server(graph_path, source_root)
 
     async def main() -> None:
         async with stdio_server() as streams:
@@ -1460,6 +1631,7 @@ def _build_http_app(
     json_response: bool = False,
     stateless: bool = False,
     session_timeout: float | None = 3600.0,
+    source_root: str | None = None,
 ):
     """Build the Starlette ASGI app for the Streamable HTTP transport.
 
@@ -1490,7 +1662,7 @@ def _build_http_app(
     # mistaken for "auth on" — normalize it to None so the gate is unambiguous.
     api_key = (api_key or "").strip() or None
 
-    server = _build_server(graph_path)
+    server = _build_server(graph_path, source_root)
 
     # DNS-rebinding protection. When the operator binds a wildcard address they
     # are intentionally exposing the server, so accept any Host header; for a
@@ -1542,6 +1714,7 @@ def serve_http(
     json_response: bool = False,
     stateless: bool = False,
     session_timeout: float | None = 3600.0,
+    source_root: str | None = None,
 ) -> None:
     """Start the MCP server over Streamable HTTP (MCP spec 2025-03-26).
 
@@ -1574,6 +1747,7 @@ def serve_http(
         json_response=json_response,
         stateless=stateless,
         session_timeout=session_timeout,
+        source_root=source_root,
     )
 
     auth_note = "api-key required" if api_key else "no auth (set --api-key to require one)"
@@ -1641,6 +1815,12 @@ def _main(argv: list[str] | None = None) -> None:
         default=3600.0,
         help="Reap stateful sessions idle this many seconds (default: 3600; 0 disables)",
     )
+    parser.add_argument(
+        "--source-root",
+        default=os.environ.get("GRAPHIFY_SOURCE_ROOT"),
+        help="Root directory read_source resolves source_file paths against "
+             "(default: parent of graphify-out, or CWD). env: GRAPHIFY_SOURCE_ROOT",
+    )
     args = parser.parse_args(argv)
     graph_path = args.graph_flag or args.graph_path or _default_graph_json()
 
@@ -1654,9 +1834,10 @@ def _main(argv: list[str] | None = None) -> None:
             json_response=args.json_response,
             stateless=args.stateless,
             session_timeout=args.session_timeout,
+            source_root=args.source_root,
         )
     else:
-        serve(graph_path)
+        serve(graph_path, source_root=args.source_root)
 
 
 if __name__ == "__main__":
