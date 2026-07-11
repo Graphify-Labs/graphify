@@ -110,14 +110,20 @@
                   # group (which carries pytest and friends).
                   testVenv = final.mkVirtualEnv "graphify-test-env" (workspace.deps.default
                     // {
-                      graphifyy = ["dev"];
+                      # The retry-cap tests exercise the OpenAI-compatible Ollama
+                      # path, so include that optional extra in the test-only
+                      # environment without pulling every runtime extra.
+                      graphifyy = ["dev" "ollama"];
                     });
                 in
                   (old.passthru.tests or {})
                   // {
                     pytest = pkgs.stdenv.mkDerivation {
                       name = "${final.graphifyy.name}-pytest";
-                      inherit (final.graphifyy) src;
+                      # Test the repository tree rather than the wheel source:
+                      # skillgen's fixtures and extraction-spec fragments are
+                      # intentionally repository assets, not package payload.
+                      src = ./.;
                       nativeBuildInputs = [testVenv pkgs.git];
                       dontConfigure = true;
 
