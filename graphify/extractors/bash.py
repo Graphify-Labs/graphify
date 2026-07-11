@@ -62,6 +62,7 @@ def extract_bash(path: Path) -> dict:
     add_edge(file_nid, entry_nid, "contains", 1)
 
     _BASH_SOURCE_COMMANDS = frozenset({"source", "."})
+    _BASH_SCRIPT_RUNNERS = frozenset({"bash", "sh", "zsh", "ksh", "dash"})
     # Parent node types that mean a contained command is part of a substitution
     # or expansion, not a real function call. Token-level filtering misses
     # these because `$(build)` exposes `build` as a child command whose name
@@ -161,11 +162,11 @@ def extract_bash(path: Path) -> dict:
                 cmd_name_node = node.children[0]
             if cmd_name_node:
                 cmd = literal(cmd_name_node)
+                args = [c for c in node.children
+                        if c.type in ("word", "string", "concatenation")
+                        and c != cmd_name_node]
                 if cmd in _BASH_SOURCE_COMMANDS and cmd not in defined_functions:
                     # find the path argument (first word after command name)
-                    args = [c for c in node.children
-                            if c.type in ("word", "string", "concatenation")
-                            and c != cmd_name_node]
                     if args:
                         raw = _read_text(args[0], source).strip().strip("'\"")
                         line = node.start_point[0] + 1
@@ -184,6 +185,23 @@ def extract_bash(path: Path) -> dict:
                             if tgt_nid:
                                 add_edge(file_nid, tgt_nid, "imports", line,
                                          context="import")
+                elif cmd and cmd not in defined_functions:
+                    raw = cmd if cmd.endswith(".sh") else None
+                    if cmd in _BASH_SCRIPT_RUNNERS and args:
+                        raw = literal(args[0])
+                    if raw and raw.endswith(".sh"):
+                        resolved = (path.parent / raw).resolve()
+                        if resolved.is_file():
+                            target_path = resolved
+                            if not path.is_absolute():
+                                try:
+                                    target_path = resolved.relative_to(Path.cwd().resolve())
+                                except ValueError:
+                                    pass
+                            caller_nid = entry_nid if parent_nid == file_nid else parent_nid
+                            add_edge(caller_nid, _make_id(str(target_path)) + "__entry",
+                                     "calls", node.start_point[0] + 1,
+                                     context="script_invocation")
             return
 
         if t == "declaration_command":

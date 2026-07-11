@@ -1790,7 +1790,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".py": "python",
     ".go": "go",
     ".rs": "rust",
-    ".rb": "ruby",
+    ".rb": "ruby", ".rake": "ruby",
     ".php": "php", ".phtml": "php", ".php3": "php", ".php4": "php",
     ".php5": "php", ".php7": "php", ".phps": "php",
     ".cs": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
@@ -1818,10 +1818,27 @@ def _node_label_key(node: dict, fold: bool = False) -> str:
     return key.lower() if fold else key
 
 
+def _is_top_level_function_definition(node: dict) -> bool:
+    """A free/top-level function def (label ``name()``), not a method or type.
+
+    Methods carry a leading dot (``.foo()``) or a qualifier (``Class.foo()``);
+    excluding those keeps a bare-name reference from binding to a receiver-scoped
+    method, which the receiver-typed resolvers own (#1781).
+    """
+    label = str(node.get("label", "")).strip()
+    return (
+        node.get("file_type") == "code"
+        and label.endswith(")")
+        and not label.startswith(".")
+        and "." not in label
+    )
+
+
 def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
     """Map unresolved no-source stubs to a unique real definition with the same label."""
-    real_by_label: dict[str, list[dict]] = {}       # exact-case (all languages)
+    real_by_label: dict[str, list[dict]] = {}       # exact-case type-like (all languages)
     real_by_label_ci: dict[str, list[dict]] = {}    # case-INSENSITIVE-language reals only
+    func_by_label: dict[str, list[dict]] = {}       # top-level function defs (#1781)
     stubs: list[dict] = []
 
     for node in nodes:
@@ -1837,8 +1854,33 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
                 if _lang_is_case_insensitive(node.get("source_file")):
                     real_by_label_ci.setdefault(
                         _node_label_key(node, fold=True), []).append(node)
+            elif _is_top_level_function_definition(node):
+                func_by_label.setdefault(key, []).append(node)
             continue
         stubs.append(node)
+
+    # Language families referencing each stub, for the function-merge guard (#1781):
+    # a cross-module `references` edge to a function used to dangle on a sourceless
+    # name-only stub because functions were excluded as rewire targets. We now allow
+    # a UNIQUE function definition to absorb it, but only when it shares a language
+    # family with the stub's referrers — so a Python `get_db` reference can't bind to
+    # a unique Go `get_db()` (mirrors the #1718/#1749 interop guard).
+    stub_ids = {str(s.get("id")) for s in stubs if s.get("id")}
+    stub_families: dict[str, set] = {}
+    supertype_stub_ids: set[str] = set()  # stubs used as a base type — never a function
+    _SUPERTYPE_RELATIONS = {"inherits", "implements", "extends"}
+    for edge in edges:
+        rel = edge.get("relation")
+        for endpoint in ("source", "target"):
+            nid = edge.get(endpoint)
+            if nid in stub_ids:
+                fam = _lang_family(edge.get("source_file"))
+                if fam is not None:
+                    stub_families.setdefault(str(nid), set()).add(fam)
+                # A stub referenced as a supertype must resolve to a class/type,
+                # not a same-named function (you don't inherit from a function).
+                if endpoint == "target" and rel in _SUPERTYPE_RELATIONS:
+                    supertype_stub_ids.add(str(nid))
 
     remap: dict[str, str] = {}
     for stub in stubs:
@@ -1847,12 +1889,22 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             continue
         candidates = real_by_label.get(_node_label_key(stub), [])
         if len(candidates) != 1:
-            # No unique exact match — fall back to a case-insensitive match, but
+            # No unique exact type match — fall back to a case-insensitive match, but
             # only against case-insensitive-language definitions (so a case-sensitive
             # `PATH` can never absorb a `Path` reference).
             candidates = real_by_label_ci.get(_node_label_key(stub, fold=True), [])
-            if len(candidates) != 1:
-                continue
+        if len(candidates) != 1:
+            # #1781: no unique type — try a unique top-level FUNCTION definition,
+            # gated by (a) the stub not being used as a supertype and (b) a
+            # language-family match with the stub's referrers.
+            fcands = func_by_label.get(_node_label_key(stub), [])
+            if len(fcands) == 1 and stub_id not in supertype_stub_ids:
+                fams = stub_families.get(stub_id, set())
+                cand_fam = _lang_family(fcands[0].get("source_file"))
+                if not fams or cand_fam is None or cand_fam in fams:
+                    candidates = fcands
+        if len(candidates) != 1:
+            continue
         target_id = candidates[0].get("id")
         if isinstance(target_id, str) and target_id and target_id != stub_id:
             remap[stub_id] = target_id
@@ -2506,6 +2558,95 @@ def _resolve_csharp_member_calls(
         })
 
 
+def _resolve_java_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve Java member calls against the receiver's declared type.
+
+    Explicit type receivers and ``this`` are exact. Fields declared on the
+    caller's class plus method parameters and explicit locals are inferred from
+    the extractor's method-scoped type table. A missing or ambiguous receiver
+    type is skipped rather than falling back to a bare method-name match.
+    """
+    def key(label: str) -> str:
+        return str(label).strip().removeprefix(".").removesuffix("()")
+
+    contained = {edge.get("target") for edge in all_edges
+                 if edge.get("relation") == "contains"}
+    node_by_id = {node.get("id"): node for node in all_nodes}
+
+    type_def_nids: dict[str, list[str]] = {}
+    for node in all_nodes:
+        if (
+            node.get("source_file")
+            and node.get("id") in contained
+            and _is_type_like_definition(node)
+        ):
+            type_def_nids.setdefault(key(node.get("label", "")), []).append(node["id"])
+
+    method_index: dict[tuple[str, str], set[str]] = {}
+    enclosing_type: dict[str, str] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "method":
+            continue
+        owner, method = edge.get("source"), edge.get("target")
+        method_node = node_by_id.get(method)
+        if method_node is None:
+            continue
+        enclosing_type.setdefault(method, owner)
+        method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
+
+    existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
+    for result in per_file:
+        for raw_call in result.get("raw_calls", []):
+            if raw_call.get("lang") != "java" or not raw_call.get("is_member_call"):
+                continue
+            receiver = raw_call.get("receiver")
+            callee = raw_call.get("callee")
+            caller = raw_call.get("caller_nid")
+            if not receiver or not callee or not caller:
+                continue
+
+            exact = False
+            if receiver == "this":
+                type_nid = enclosing_type.get(caller)
+                exact = True
+                if not type_nid:
+                    continue
+            else:
+                type_name = raw_call.get("receiver_type")
+                if not type_name and receiver[:1].isupper():
+                    type_name = receiver
+                    exact = True
+                if not type_name:
+                    continue
+                type_defs = type_def_nids.get(key(type_name), [])
+                if len(type_defs) != 1:
+                    continue
+                type_nid = type_defs[0]
+
+            method_nids = method_index.get((type_nid, key(callee)), set())
+            if len(method_nids) != 1:
+                continue
+            method_nid = next(iter(method_nids))
+            if method_nid == caller or (caller, method_nid) in existing_pairs:
+                continue
+            existing_pairs.add((caller, method_nid))
+            all_edges.append({
+                "source": caller,
+                "target": method_nid,
+                "relation": "calls",
+                "context": "call",
+                "confidence": "EXTRACTED" if exact else "INFERRED",
+                "confidence_score": 1.0 if exact else 0.8,
+                "source_file": raw_call.get("source_file", ""),
+                "source_location": raw_call.get("source_location"),
+                "weight": 1.0,
+            })
+
+
 def _resolve_objc_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -2714,7 +2855,7 @@ register_language_resolver(
 # Ruby type-aware member-call resolution (Class.new + typed var.method). Lives in
 # graphify.ruby_resolution; registered here as a second consumer of the framework.
 register_language_resolver(
-    LanguageResolver("ruby_member_calls", frozenset({".rb"}), resolve_ruby_member_calls)
+    LanguageResolver("ruby_member_calls", frozenset({".rb", ".rake"}), resolve_ruby_member_calls)
 )
 register_language_resolver(
     LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
@@ -2748,6 +2889,9 @@ register_language_resolver(
 # bound to the receiver's declared type instead of a bare same-named match.
 register_language_resolver(
     LanguageResolver("csharp_member_calls", frozenset({".cs"}), _resolve_csharp_member_calls)
+)
+register_language_resolver(
+    LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
 )
 # Pascal/Delphi cross-file inherited-method-call resolution: a call from a
 # manual descendant class to a method it inherits from an ancestor declared
@@ -3775,7 +3919,7 @@ _DISPATCH: dict[str, Any] = {
     ".cu": extract_cpp,
     ".cuh": extract_cpp,
     ".metal": extract_cpp,
-    ".rb": extract_ruby,
+    ".rb": extract_ruby, ".rake": extract_ruby,
     ".cs": extract_csharp,
     ".kt": extract_kotlin,
     ".kts": extract_kotlin,
@@ -3846,6 +3990,20 @@ _DISPATCH: dict[str, Any] = {
     ".cls": extract_apex,
     ".trigger": extract_apex,
     ".qml": extract_qml,
+}
+
+
+# Extensions whose extractor depends on an optional-dependency extra
+# (pyproject [project.optional-dependencies]) and hard-fails without it,
+# rather than falling back like Pascal does. Used by the #1745 warning in
+# extract() to tell the user which extra restores the language.
+_EXTRA_FOR_EXTENSION = {
+    ".sql": "sql",
+    ".tf": "terraform",
+    ".tfvars": "terraform",
+    ".hcl": "terraform",
+    ".dm": "dm",
+    ".dme": "dm",
 }
 
 
@@ -4305,6 +4463,35 @@ def extract(
             f"  warning: {_tot} file(s) are classified as code but graphify has no AST "
             f"extractor for their language, so they contributed nothing to the graph: "
             f"{_by_count}. Please open an issue to request support for these (#1689).",
+            file=sys.stderr, flush=True,
+        )
+
+    # #1745: an extractor IS wired up for these files but bailed out because its
+    # dependency is missing (e.g. .sql needs tree-sitter-sql from the [sql]
+    # extra). Neither warning above fires — #1666 skips results that carry an
+    # error, #1689 only covers files with no extractor — so the graph builds
+    # "successfully" while every such file silently contributes nothing.
+    # Surface them grouped by extension, naming the extra that provides the
+    # dependency when there is one.
+    _missing_dep_count: dict[str, int] = {}
+    _missing_dep_error: dict[str, str] = {}
+    for i, _p in enumerate(paths):
+        _err = (per_file[i] or {}).get("error") or ""
+        if "not installed" in _err:
+            _ext = _p.suffix.lower()
+            _missing_dep_count[_ext] = _missing_dep_count.get(_ext, 0) + 1
+            _missing_dep_error.setdefault(_ext, _err)
+    for _ext, _n in sorted(_missing_dep_count.items(), key=lambda kv: (-kv[1], kv[0])):
+        _extra = _EXTRA_FOR_EXTENSION.get(_ext)
+        if _extra:
+            _reason = _missing_dep_error[_ext].split(". ")[0]
+            _hint = f' Install it with: pip install "graphifyy[{_extra}]"'
+        else:
+            _reason = _missing_dep_error[_ext]
+            _hint = ""
+        print(
+            f"  warning: {_n} {_ext} file(s) contributed nothing to the graph "
+            f"because a dependency is missing: {_reason}.{_hint} (#1745)",
             file=sys.stderr, flush=True,
         )
 

@@ -1,7 +1,12 @@
 import json
 import os
+import sys
 from collections import Counter
 from pathlib import Path
+
+import pytest
+
+from graphify.build import build_from_json
 from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1205,6 +1210,86 @@ def test_extract_bash_emits_source_imports_from(tmp_path):
     assert import_edges[0].get("context") == "import"
 
 
+@pytest.mark.parametrize("command", ["./helpers.sh", "bash ./helpers.sh"])
+def test_extract_bash_emits_script_invocation_calls(tmp_path, command):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(f"#!/bin/bash\n{command}\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    invocation = [
+        edge for edge in result["edges"]
+        if edge.get("relation") == "calls" and edge.get("context") == "script_invocation"
+    ]
+
+    assert invocation == [{
+        "source": _make_id(str(script)) + "__entry",
+        "target": _make_id(str(helpers.resolve())) + "__entry",
+        "relation": "calls",
+        "confidence": "EXTRACTED",
+        "source_file": str(script),
+        "source_location": "L2",
+        "weight": 1.0,
+        "context": "script_invocation",
+    }]
+
+
+def test_extract_bash_skips_missing_and_shadowed_script_invocations(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        "bash() { echo custom; }\n"
+        "bash ./helpers.sh\n"
+        "./missing.sh\n",
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
+def test_extract_bash_skips_dynamic_script_invocation(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text('#!/bin/bash\nbash "./$SCRIPT.sh"\n', encoding="utf-8")
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
+def test_extract_bash_relative_script_invocation_targets_existing_entrypoint(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    helpers = Path("helpers.sh")
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = Path("deploy.sh")
+    script.write_text("#!/bin/bash\n./helpers.sh\n", encoding="utf-8")
+
+    result = extract([script, helpers], cache_root=tmp_path, parallel=False)
+    node_ids = {node["id"] for node in result["nodes"]}
+    invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
+
+    assert invocation["target"] in node_ids
+
+
+def test_extract_bash_attributes_script_invocation_to_function(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text("#!/bin/bash\ndeploy() { bash ./helpers.sh; }\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    deploy = next(node for node in result["nodes"] if node["label"] == "deploy()")
+    invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
+
+    assert invocation["source"] == deploy["id"]
+
+
 def test_extract_bash_no_self_loops():
     result = extract_bash(FIXTURES / "sample.sh")
     for e in result["edges"]:
@@ -1462,6 +1547,55 @@ def test_extract_json_extends_resolved():
     extends_edges = [e for e in result["edges"] if e["relation"] == "extends"]
     assert len(extends_edges) >= 1
     assert extends_edges[0].get("context") == "import"
+
+
+def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
+    package_json = tmp_path / "package.json"
+    package_json.write_text(json.dumps({
+        "name": "demo",
+        "dependencies": {"left-pad": "^1.3.0"},
+        "devDependencies": {"bats": "^1.11.0"},
+    }))
+    tsconfig = tmp_path / "tsconfig.json"
+    tsconfig.write_text(json.dumps({
+        "extends": "./tsconfig.base.json",
+        "compilerOptions": {"strict": True},
+    }))
+
+    results = [extract_json(package_json), extract_json(tsconfig)]
+    combined = {
+        "nodes": [node for result in results for node in result["nodes"]],
+        "edges": [edge for result in results for edge in result["edges"]],
+    }
+    node_ids = {node["id"] for node in combined["nodes"]}
+    dangling = [
+        edge for edge in combined["edges"]
+        if edge["source"] not in node_ids or edge["target"] not in node_ids
+    ]
+    assert dangling == []
+    assert {"left-pad", "bats", "./tsconfig.base.json"} <= {
+        node["label"] for node in combined["nodes"] if node["file_type"] == "concept"
+    }
+
+    extracted = extract([package_json, tsconfig], cache_root=tmp_path, parallel=False)
+    graph = build_from_json(extracted, directed=True)
+    import_targets = {
+        graph.nodes[data["_tgt"]]["label"]
+        for _, _, data in graph.edges(data=True)
+        if data.get("relation") == "imports"
+    }
+    extends_targets = {
+        graph.nodes[data["_tgt"]]["label"]
+        for _, _, data in graph.edges(data=True)
+        if data.get("relation") == "extends"
+    }
+    self_loops = [
+        data for _, _, data in graph.edges(data=True)
+        if data.get("relation") in {"imports", "extends"} and data["_src"] == data["_tgt"]
+    ]
+    assert self_loops == []
+    assert {"left-pad", "bats"} <= import_targets
+    assert extends_targets == {"./tsconfig.base.json"}
 
 
 def test_extract_json_large_file_skipped(tmp_path):
@@ -1828,6 +1962,36 @@ def test_extract_no_warning_when_all_code_has_extractors(tmp_path, capsys):
     assert "no AST extractor" not in err
 
 
+def test_extract_warns_when_sql_extra_missing(tmp_path, capsys, monkeypatch):
+    # #1745: .sql HAS a dispatch entry, so the #1689 warning can't fire, and
+    # extract_sql returns an "error" result when tree-sitter-sql is absent, so
+    # the #1666 warning skips it too. The files must not vanish silently:
+    # extract() surfaces them with the [sql] extra named.
+    monkeypatch.setitem(sys.modules, "tree_sitter_sql", None)  # import -> ImportError
+    s1 = tmp_path / "schema.sql"; s1.write_text("CREATE TABLE users (id INT);\n")
+    s2 = tmp_path / "views.sql"; s2.write_text("CREATE VIEW v AS SELECT * FROM users;\n")
+    py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
+
+    result = extract([s1, s2, py], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "2 .sql file(s)" in err
+    assert "tree_sitter_sql not installed" in err
+    assert 'graphifyy[sql]' in err
+    assert "#1745" in err
+    # the Python file still extracts normally
+    labels = [n.get("label") for n in result["nodes"]]
+    assert any(str(l).startswith("main") for l in labels)
+
+
+def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
+    pytest.importorskip("tree_sitter_sql")
+    s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
+    extract([s], cache_root=tmp_path)
+    err = capsys.readouterr().err
+    assert "#1745" not in err
+
+
 def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsys):
     # #1693: intermediate progress lines count against uncached_work; the final
     # "100%" line must NOT switch to total_files (which includes cached hits and
@@ -1875,3 +2039,64 @@ def test_matlab_m_not_extracted_as_garbage(tmp_path, capsys):
     result = extract([m], cache_root=tmp_path)
     assert result["nodes"] == []                           # no garbage ObjC nodes
     assert "no AST extractor" in capsys.readouterr().err    # surfaced, not silent
+
+
+def test_rewire_binds_cross_module_function_reference_to_definition():
+    """#1781: a cross-module reference to a function must land on the real
+    definition, not a sourceless name-only stub (functions were excluded as
+    rewire targets)."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "pkg_dep_get_db", "label": "get_db()", "file_type": "code",
+         "source_file": "pkg/dep.py", "source_location": "L1"},
+        {"id": "get_db", "label": "get_db()", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_ep_route", "target": "get_db", "relation": "references",
+              "source_file": "pkg/ep.py", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "pkg_dep_get_db"
+    assert "get_db" not in {n["id"] for n in nodes}  # stub dropped
+
+
+def test_rewire_does_not_bind_function_reference_across_language():
+    """#1781 safety: a Python reference stub must not bind to a unique Go
+    function of the same name (mirrors the #1749 interop guard)."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "svc_get_db", "label": "get_db()", "file_type": "code",
+         "source_file": "svc/main.go", "source_location": "L1"},
+        {"id": "get_db", "label": "get_db()", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "app_route", "target": "get_db", "relation": "references",
+              "source_file": "app/route.py", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "get_db"  # unchanged — cross-language blocked
+
+
+def test_rewire_does_not_bind_ambiguous_function_reference():
+    """#1781 safety: two same-named functions leave the reference on the stub."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "a_get_db", "label": "get_db()", "file_type": "code", "source_file": "a.py", "source_location": "L1"},
+        {"id": "b_get_db", "label": "get_db()", "file_type": "code", "source_file": "b.py", "source_location": "L1"},
+        {"id": "get_db", "label": "get_db()", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "c_route", "target": "get_db", "relation": "references",
+              "source_file": "c.py", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "get_db"  # ambiguous — not merged
+
+
+def test_rewire_does_not_bind_supertype_stub_to_function():
+    """#1781 safety: a stub used as a base type must never resolve to a
+    same-named, same-language function."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "factory_BookStore", "label": "BookStore()", "file_type": "code",
+         "source_file": "factory.py", "source_location": "L1"},
+        {"id": "BookStore", "label": "BookStore", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "store_Sqlite", "target": "BookStore", "relation": "inherits",
+              "source_file": "store.py", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function

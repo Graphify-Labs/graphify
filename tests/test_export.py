@@ -639,3 +639,18 @@ def test_to_json_proceeds_on_empty_existing(tmp_path):
     assert to_json(_mkG(3), {}, str(p), force=False) is True
     data = json.loads(p.read_text())
     assert len(data["nodes"]) == 3
+
+
+def test_to_html_handles_null_source_file_and_label(tmp_path):
+    """#1775: a node with source_file=None or label=None must not crash to_html
+    (synthetic/aggregate nodes legitimately carry null source_file; JSON `null`
+    survives .get()'s default). Regression guard — fixed via sanitize_label's
+    None-coercion + the str(source_file or "") call-site guard."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label="Foo", source_file=None, community=0)
+    G.add_node("n2", label=None, source_file="a.py", community=0)
+    G.add_node("n3", label=None, source_file=None, community=0)
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n1", "n2", "n3"]}, str(out))
+    assert out.exists() and out.stat().st_size > 0

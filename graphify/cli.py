@@ -602,7 +602,7 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _score_nodes
+        from graphify.serve import _pick_scored_endpoint, _score_nodes
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -635,7 +635,8 @@ def dispatch_command(cmd: str) -> None:
         if not tgt_scored:
             print(f"No node matching '{target_label}' found.", file=sys.stderr)
             sys.exit(1)
-        src_nid, tgt_nid = src_scored[0][1], tgt_scored[0][1]
+        src_nid = _pick_scored_endpoint(G, src_scored, source_label)
+        tgt_nid = _pick_scored_endpoint(G, tgt_scored, target_label)
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
@@ -646,8 +647,14 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        for _name, _scored in (("source", src_scored), ("target", tgt_scored)):
-            if len(_scored) >= 2:
+        for _name, _scored, _nid in (
+            ("source", src_scored, src_nid),
+            ("target", tgt_scored, tgt_nid),
+        ):
+            # A close runner-up only made the resolution ambiguous when the raw
+            # score head is what got picked; a full-token override was chosen on
+            # token coverage, not score, so the head's margin is irrelevant.
+            if len(_scored) >= 2 and _nid == _scored[0][1]:
                 _top, _runner = _scored[0][0], _scored[1][0]
                 if _top > 0 and (_top - _runner) / _top < 0.10:
                     print(
@@ -1046,7 +1053,19 @@ def dispatch_command(cmd: str) -> None:
         gods = god_nodes(G)
         surprises = surprising_connections(G, communities)
         stages.mark("analyze")
-        out = watch_path / _GRAPHIFY_OUT
+        # Where outputs (GRAPH_REPORT.md, re-clustered graph.json, labels,
+        # analysis, html) land. When `--graph` points at a graph INSIDE a
+        # graphify-out/ dir (another project/tenant's output), write beside it,
+        # not into a stray graphify-out/ in the CWD (#1747). But when `--graph`
+        # points at an arbitrary path — e.g. a `backup/graph.json` archived
+        # before re-clustering (#934) — fall back to the CWD's graphify-out/,
+        # which is the restore-into-place workflow that test pins. The default
+        # (no --graph) case already has graph_json under watch_path/graphify-out.
+        _out_name = Path(_GRAPHIFY_OUT).name
+        if graph_override is not None and graph_json.parent.name == _out_name:
+            out = graph_json.parent
+        else:
+            out = watch_path / _GRAPHIFY_OUT
         out.mkdir(parents=True, exist_ok=True)
         labels_path = out / ".graphify_labels.json"
         existing_labels: dict[int, str] = {}
@@ -2090,7 +2109,7 @@ def dispatch_command(cmd: str) -> None:
             unchanged_total = sum(len(v) for v in detection.get("unchanged_files", {}).values())
         else:
             print(f"[graphify extract] scanning {target}")
-            detection = _detect(target, google_workspace=google_workspace or None, extra_excludes=cli_excludes or None)
+            detection = _detect(target, google_workspace=google_workspace or None, extra_excludes=cli_excludes or None, cache_root=out_root)
             files_by_type = detection.get("files", {})
             code_files = [Path(p) for p in files_by_type.get("code", [])]
             doc_files = [Path(p) for p in files_by_type.get("document", [])]
