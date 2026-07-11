@@ -1148,6 +1148,7 @@ all = [
     { name = "tree-sitter-dm" },
     { name = "tree-sitter-hcl" },
     { name = "tree-sitter-pascal" },
+    { name = "tree-sitter-qmljs" },
     { name = "tree-sitter-sql" },
     { name = "watchdog" },
     { name = "yt-dlp" },
@@ -1321,7 +1322,8 @@ requires-dist = [
     { name = "tree-sitter-php", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-powershell", specifier = ">=0.26,<0.28" },
     { name = "tree-sitter-python", specifier = ">=0.23,<0.26" },
-    { name = "tree-sitter-qmljs", marker = "extra == 'qml'" },
+    { name = "tree-sitter-qmljs", marker = "extra == 'all'", specifier = ">=0.3.1" },
+    { name = "tree-sitter-qmljs", marker = "extra == 'qml'", specifier = ">=0.3.1" },
     { name = "tree-sitter-ruby", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-rust", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-scala", specifier = ">=0.23,<0.27" },
@@ -1354,7 +1356,7 @@ dev = [
     { name = "setuptools", specifier = ">=82.0.1" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "tree-sitter-hcl", specifier = ">=1.2.0" },
-    { name = "tree-sitter-qmljs", git = "https://github.com/yuja/tree-sitter-qmljs.git?rev=565872b" },
+    { name = "tree-sitter-qmljs", specifier = ">=0.3.1" },
     { name = "wheel", specifier = ">=0.47.0" },
 ]
 
@@ -4808,8 +4810,9 @@ wheels = [
 
 [[package]]
 name = "tree-sitter-qmljs"
-version = "0.0.1"
-source = { git = "https://github.com/yuja/tree-sitter-qmljs.git?rev=565872b#565872b5c100dfa32c1dd1a63a10ce7ac48d31a6" }
+version = "0.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/7a/6299e4da0a02b6a792c28caaf03c128f42349a0c154cf77ab16fd5627ffc/tree_sitter_qmljs-0.3.1.tar.gz", hash = "sha256:8cf59d0a94fb4d593db2cfe5b66eb90e1accb98f47d10abe4b10ff78438716b0", size = 440095, upload-time = "2026-07-11T11:43:56.921Z" }
 
 [[package]]
 name = "tree-sitter-ruby"
