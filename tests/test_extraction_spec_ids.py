@@ -38,7 +38,8 @@ def _spec_files() -> list[Path]:
         for p in root.rglob("extraction-spec.md"):
             # build/ is a packaging artifact; expected/ is skillgen's own golden
             # output and is already covered by `skillgen --check`.
-            if "/build/" in p.as_posix() or "/expected/" in p.as_posix():
+            relative = p.relative_to(REPO_ROOT).parts
+            if "build" in relative or "expected" in relative:
                 continue
             files.append(p)
     return sorted(files)
