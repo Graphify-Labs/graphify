@@ -2945,3 +2945,136 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
     r = _corpus("cpp_samedir/Alpha.h", "cpp_samedir/Beta.h")
     dups = _nodes_with_label(r, "Dup")
     assert len(dups) == 2, f"same-dir distinct Dups must stay distinct, got {[n['id'] for n in dups]}"
+
+
+# ---------------CFML / ColdFusion (.cfc tag & script syntax, .cfm)-------------
+
+import importlib.util as _ilu2
+_needs_cfml = pytest.mark.skipif(
+    _ilu2.find_spec("tree_sitter_cfml") is None,
+    reason="tree-sitter-cfml not installed (optional [cfml] extra)",
+)
+
+from graphify.extract import extract_cfml
+
+
+@_needs_cfml
+def test_cfml_tag_no_error():
+    r = extract_cfml(FIXTURES / "sample.cfc")
+    assert "error" not in r
+
+
+@_needs_cfml
+def test_cfml_tag_finds_inherits_and_implements():
+    r = extract_cfml(FIXTURES / "sample.cfc")
+    assert "inherits" in _relations(r)
+    assert "implements" in _relations(r)
+
+
+@_needs_cfml
+def test_cfml_tag_finds_functions_and_property():
+    r = extract_cfml(FIXTURES / "sample.cfc")
+    labels = _labels(r)
+    assert any("init" in l for l in labels)
+    assert any("load" in l for l in labels)
+    assert "id" in labels
+
+
+@_needs_cfml
+def test_cfml_tag_finds_nested_cfscript_function():
+    """The <cfscript> block's queryFetch() is parsed with the cfscript grammar
+    (the cfml/tag grammar leaves <cfscript> content opaque) and merged in."""
+    r = extract_cfml(FIXTURES / "sample.cfc")
+    labels = _labels(r)
+    assert any("queryFetch" in l for l in labels)
+
+
+@_needs_cfml
+def test_cfml_tag_finds_instantiation():
+    r = extract_cfml(FIXTURES / "sample.cfc")
+    assert "instantiates" in _relations(r)
+    labels = _labels(r)
+    assert any("utils.Helper" in l for l in labels)
+
+
+@_needs_cfml
+def test_cfml_tag_resolves_same_file_call():
+    """load() calls queryFetch(), defined later in the same file (inside the
+    nested <cfscript> block) -- must resolve to a direct `calls` edge, not be
+    left for cross-file raw_calls resolution."""
+    r = extract_cfml(FIXTURES / "sample.cfc")
+    assert ("load()", "queryFetch()") in _calls(r)
+    assert r.get("raw_calls") == []
+
+
+@_needs_cfml
+def test_cfml_tag_no_dangling_edges():
+    r = extract_cfml(FIXTURES / "sample.cfc")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids
+
+
+@_needs_cfml
+def test_cfml_script_no_error():
+    r = extract_cfml(FIXTURES / "sample_script.cfc")
+    assert "error" not in r
+
+
+@_needs_cfml
+def test_cfml_script_finds_inherits_and_implements():
+    """Script-syntax `component extends="..." implements="..." { }` -- the cfml
+    grammar treats this as opaque, so it must be re-parsed with cfscript."""
+    r = extract_cfml(FIXTURES / "sample_script.cfc")
+    assert "inherits" in _relations(r)
+    assert "implements" in _relations(r)
+
+
+@_needs_cfml
+def test_cfml_script_resolves_same_file_call():
+    r = extract_cfml(FIXTURES / "sample_script.cfc")
+    assert ("load()", "queryFetch()") in _calls(r)
+    assert r.get("raw_calls") == []
+
+
+@_needs_cfml
+def test_cfml_script_no_dangling_edges():
+    r = extract_cfml(FIXTURES / "sample_script.cfc")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids
+
+
+@_needs_cfml
+def test_cfml_template_finds_includes_and_instantiation():
+    r = extract_cfml(FIXTURES / "sample.cfm")
+    assert "imports" in _relations(r)
+    assert "instantiates" in _relations(r)
+    labels = _labels(r)
+    assert any("header.cfm" in l for l in labels)
+    assert any("models.User" in l for l in labels)
+
+
+@_needs_cfml
+def test_cfml_template_no_dangling_edges():
+    r = extract_cfml(FIXTURES / "sample.cfm")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids
+
+
+def test_cfml_missing_grammar_returns_error_not_crash(monkeypatch):
+    """Without tree-sitter-cfml installed, extract_cfml degrades to an error
+    dict instead of raising -- exercised unconditionally (monkeypatches the
+    import), unlike the tests above which need the real optional dependency."""
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tree_sitter_cfml":
+            raise ImportError("simulated missing optional dependency")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    r = extract_cfml(FIXTURES / "sample.cfc")
+    assert r == {"nodes": [], "edges": [], "error": "tree-sitter-cfml not installed"}

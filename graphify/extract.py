@@ -32,6 +32,7 @@ from graphify.extractors.base import (  # noqa: F401
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
+from graphify.extractors.cfml import extract_cfml  # noqa: F401
 from graphify.extractors.csharp import (
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
@@ -1743,6 +1744,7 @@ _CASE_INSENSITIVE_EXTS = frozenset({
     ".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps",  # PHP fns/classes
     ".sql",                                                          # SQL identifiers
     ".nim", ".nims", ".nimble",                                      # Nim (style-insensitive)
+    ".cfc", ".cfm", ".cfs",                                          # CFML tags/functions
 })
 
 
@@ -1783,6 +1785,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".php5": "php", ".php7": "php", ".phps": "php",
     ".cs": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
     ".lua": "lua", ".luau": "lua",
+    ".cfc": "cfml", ".cfm": "cfml", ".cfs": "cfml",
     ".zig": "zig",
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
@@ -3883,6 +3886,9 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".cfc": extract_cfml,
+    ".cfm": extract_cfml,
+    ".cfs": extract_cfml,
 }
 
 
