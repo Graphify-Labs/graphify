@@ -1,5 +1,6 @@
 """Tests for hooks.py - git hook install/uninstall."""
 import os
+import shutil
 import subprocess
 from types import SimpleNamespace
 from pathlib import Path
@@ -200,7 +201,7 @@ def test_install_fallback_is_loud_not_silent(tmp_path):
 
 
 def test_hook_check_no_additionalContext(tmp_path):
-    """graphify hook-check must not emit additionalContext — Codex Desktop rejects it."""
+    """graphify hook-check must not emit additionalContext -- Codex Desktop rejects it."""
     import sys
     out = tmp_path / "graphify-out"
     out.mkdir()
@@ -261,6 +262,48 @@ def test_hooks_limit_windows_workers_by_default(name, script):
     worker there, while still allowing explicit user overrides."""
     assert '[ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]' in script
     assert 'export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"' in script
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_skip_linked_worktrees(name, script):
+    """Rebuilding from a linked worktree (git worktree add) is wasteful -- the
+    canonical graphify-out/ belongs to the primary checkout -- and deploy/CI
+    flows that `git clean` a worktree race the background rebuild against the
+    cleanup. Both hooks must short-circuit when git-dir != git-common-dir, using
+    an ABSOLUTE-path compare so an exported GIT_DIR env var cannot false-positive
+    and skip the primary checkout."""
+    assert "git rev-parse --absolute-git-dir" in script, f"{name} missing worktree guard"
+    assert "git rev-parse --git-common-dir" in script, f"{name} missing worktree guard"
+    # Exactly one guard, not accidentally duplicated across shared includes.
+    assert script.count("_GFY_GITDIR=$(git rev-parse --absolute-git-dir") == 1
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+def test_worktree_guard_skips_only_linked_worktree(tmp_path):
+    """End-to-end: the guard snippet exits 0 (skip) inside a linked worktree but
+    runs through on the primary checkout, exercised against a real git worktree."""
+    from graphify.hooks import _WORKTREE_GUARD
+
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    subprocess.run(["git", "init", "-q", str(primary)], check=True)
+    (primary / "f.txt").write_text("x")
+    subprocess.run(["git", "-C", str(primary), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(primary), "commit", "-qm", "init"], check=True, env=env)
+    linked = tmp_path / "linked"
+    subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", str(linked)],
+                   check=True, env=env)
+
+    probe = _WORKTREE_GUARD + "echo RAN\n"
+
+    def _run(cwd):
+        return subprocess.run(["sh", "-c", probe], cwd=str(cwd),
+                              capture_output=True, text=True)
+
+    assert _run(primary).stdout.strip() == "RAN", "primary checkout must rebuild"
+    assert _run(linked).stdout.strip() == "", "linked worktree must be skipped"
 
 
 def _launcher_payload(script: str) -> str:
@@ -392,8 +435,8 @@ def test_default_hooks_dir_unaffected(tmp_path):
 # ── foreground hook cost: probes must be cheap and quiet ─────────────────────
 
 def test_probes_use_find_spec_not_full_import():
-    """`python -c "import graphify"` executes the FULL package import — 10s+ on a
-    cold cache or AV-scanned site-packages — and could run up to four times
+    """`python -c "import graphify"` executes the FULL package import -- 10s+ on a
+    cold cache or AV-scanned site-packages -- and could run up to four times
     synchronously before the detached launch even started, so every commit
     stalled for tens of seconds. Probes must locate the package with
     importlib.util.find_spec (no execution); the detached rebuild still reports
@@ -418,7 +461,7 @@ def test_shebang_read_is_null_byte_safe():
 def test_probe_prefers_sibling_python_exe_on_windows_layouts():
     """pip on Windows puts Scripts/graphify(.exe) beside ..\\python.exe (or
     .\\python.exe in a venv). Resolving that directly beats shebang-parsing a
-    binary launcher — and works whether or not command -v kept the suffix."""
+    binary launcher -- and works whether or not command -v kept the suffix."""
     from graphify.hooks import _PYTHON_DETECT
     assert "/../python.exe" in _PYTHON_DETECT
     assert "/python.exe" in _PYTHON_DETECT
@@ -427,6 +470,6 @@ def test_probe_prefers_sibling_python_exe_on_windows_layouts():
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
 def test_hooks_reuse_git_dir_from_env(name, script):
     """git exports GIT_DIR to hooks, so the rev-parse fallback should only run
-    when the script is invoked by hand — each extra git exec costs 1s+ on
+    when the script is invoked by hand -- each extra git exec costs 1s+ on
     AV-scanned Windows machines and lands in the commit's foreground."""
     assert "GIT_DIR=${GIT_DIR:-" in script, f"{name} always re-runs git rev-parse"

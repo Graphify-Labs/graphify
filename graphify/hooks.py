@@ -14,7 +14,7 @@ _CHECKOUT_MARKER_END = "# graphify-checkout-hook-end"
 # __PINNED_PYTHON__ is replaced at install time with the absolute path of the
 # Python interpreter that ran `graphify hook install`.  For uv-tool and pipx
 # installs the interpreter lives inside an isolated venv, so the launcher on
-# PATH is the only entry point — and GUI git clients / CI runners often have a
+# PATH is the only entry point -- and GUI git clients / CI runners often have a
 # minimal PATH that omits ~/.local/bin.  Pinning sys.executable at install time
 # makes the hook work regardless of PATH at git-trigger time.
 _PYTHON_DETECT = """\
@@ -65,7 +65,7 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         fi
     fi
     if [ -z "$GRAPHIFY_PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
-        # POSIX launcher: parse the shebang. head -c + tr strip NUL bytes first —
+        # POSIX launcher: parse the shebang. head -c + tr strip NUL bytes first --
         # when the launcher is a Windows binary reached without its .exe suffix,
         # a raw `head -1` reads binary into the command substitution and the
         # shell warns about ignored null bytes on every commit.
@@ -97,6 +97,22 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         echo "[graphify hook] could not locate a Python with graphify installed. Add the graphify bin dir to PATH or re-run 'graphify hook install' from the env where graphify lives." >&2
         exit 0
     fi
+fi
+"""
+
+# Skip the rebuild in a linked worktree (git worktree add), shared by both hooks.
+# In a linked worktree the canonical graphify-out/ belongs to the primary
+# checkout; rebuilding from every worktree is wasteful and, for deploy/CI flows
+# that `git clean` a worktree, races the background rebuild against the cleanup
+# ("failed to remove graphify-out/: Directory not empty"). A linked worktree has
+# git-dir != git-common-dir. Compare ABSOLUTE paths so the exported GIT_DIR env
+# var (which git sets for hooks, sometimes absolute) cannot false-positive and
+# skip the primary checkout.
+_WORKTREE_GUARD = """\
+_GFY_GITDIR=$(git rev-parse --absolute-git-dir 2>/dev/null)
+_GFY_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
+if [ -n "$_GFY_COMMONDIR" ] && [ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]; then
+    exit 0
 fi
 """
 
@@ -195,7 +211,7 @@ except Exception as exc:
 # Cross-platform detached-launch shim (#1161). The hooks used to background the
 # rebuild with `nohup "$GRAPHIFY_PYTHON" -c "..." &`, but Git for Windows' bundled
 # MSYS shell ships no nohup (nor setsid), so that line died with
-# 'nohup: command not found' and the rebuild silently never ran — git commit/pull
+# 'nohup: command not found' and the rebuild silently never ran -- git commit/pull
 # still returned 0, so the graph just went stale with no signal. graphify already
 # requires Python, so we let Python do the detaching: a tiny outer process spawns
 # the real rebuild fully detached and returns immediately, so the hook never
@@ -266,6 +282,7 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
 [ -f "$GIT_DIR/CHERRY_PICK_HEAD" ] && exit 0
 
+""" + _WORKTREE_GUARD + """
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
 CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD 2>/dev/null)
@@ -334,7 +351,7 @@ GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
 [ -f "$GIT_DIR/CHERRY_PICK_HEAD" ] && exit 0
 
-""" + _PYTHON_DETECT + """
+""" + _WORKTREE_GUARD + _PYTHON_DETECT + """
 _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
@@ -406,11 +423,11 @@ def _hooks_dir(root: Path) -> Path:
         )
     # In a linked worktree .git is a file not a directory, so constructing
     # root/.git/hooks directly fails. Ask git for the real hooks path instead.
-    # NOTE: do NOT pass --path-format=absolute — added in git 2.31; older git
+    # NOTE: do NOT pass --path-format=absolute -- added in git 2.31; older git
     # echoes it back as a literal argument, contaminating stdout and causing a
     # phantom directory to be created (#907). git -C <root> already returns an
     # absolute path for worktree/external-gitdir cases, and a path relative to
-    # <root> for normal repos — anchoring on root covers both.
+    # <root> for normal repos -- anchoring on root covers both.
     import subprocess as _sp
     try:
         res = _sp.run(
@@ -505,7 +522,7 @@ def install(path: Path = Path(".")) -> str:
     if _re.search(r"[^a-zA-Z0-9/_.@:\\-]", _safe):
         # Path contains characters outside the allowlist (spaces, quotes, etc.).
         # Embed an empty string so the pinned probe is skipped and the hook
-        # falls through to the dynamic detection — safe degradation.
+        # falls through to the dynamic detection -- safe degradation.
         _safe = ""
     pinned = _safe
     hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned)
