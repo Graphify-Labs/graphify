@@ -17,6 +17,7 @@ written so an AI agent can execute it in a single session.
 | go | yes |
 | powershell (ps1 + psd1 manifest) | yes |
 | fortran | yes |
+| gdscript | yes (added directly as a per-language extractor) |
 | sql | yes |
 | dm (dm/dmm/dmi/dmf) | yes |
 | bash | yes |
