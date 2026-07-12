@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 # Output directory name — override with GRAPHIFY_OUT env var for worktrees or
@@ -542,6 +543,7 @@ def save_semantic_cache(
     hyperedges: list[dict] | None = None,
     root: Path = Path("."),
     merge_existing: bool = False,
+    allowed_source_files: Iterable[str | Path] | None = None,
 ) -> int:
     """Save semantic extraction results to cache, keyed by source_file.
 
@@ -553,6 +555,11 @@ def save_semantic_cache(
     unioned with the new results before saving instead of being overwritten.
     This lets callers checkpoint incrementally (e.g. once per chunk) without
     dropping a prior slice of a large file that was split across chunks.
+
+    When ``allowed_source_files`` is provided, only those files may be used as
+    cache-write keys. Semantic nodes can legitimately mention another corpus
+    file, but a model must not be able to replace that file's complete cache
+    entry unless the file was part of the current extraction batch (#1757).
     Returns the number of files cached.
     """
     from collections import defaultdict
@@ -571,12 +578,37 @@ def save_semantic_cache(
         if src:
             by_file[src]["hyperedges"].append(h)
 
+    root_path = Path(root).resolve()
+
+    def resolved_source_path(value: str | Path) -> Path:
+        path = Path(value)
+        if not path.is_absolute():
+            path = root_path / path
+        try:
+            return path.resolve()
+        except (OSError, RuntimeError):
+            # Keep the cache write best-effort for inaccessible paths or a
+            # symlink loop emitted by an untrusted semantic result.
+            return Path(os.path.abspath(path))
+
+    allowed_paths = None
+    if allowed_source_files is not None:
+        allowed_paths = {resolved_source_path(path) for path in allowed_source_files}
+
     saved = 0
     for fpath, result in by_file.items():
-        p = Path(fpath)
-        if not p.is_absolute():
-            p = Path(root) / p
+        p = resolved_source_path(fpath)
         if p.is_file():
+            if allowed_paths is not None and p not in allowed_paths:
+                import warnings
+
+                warnings.warn(
+                    "semantic cache skipped out-of-scope source_file "
+                    f"{fpath!r}; the file was not dispatched for extraction",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
             if merge_existing:
                 prev = load_cached(p, root, kind="semantic")
                 if prev:

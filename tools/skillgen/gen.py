@@ -902,6 +902,22 @@ def _is_uv_from_interpreter_fix_line(line: str) -> bool:
     return "uv tool run" in line and "graphifyy python" in line
 
 
+def _is_semantic_cache_scope_fix_line(line: str) -> bool:
+    """Whether a line scopes semantic cache writes to dispatched files (#1757).
+
+    A semantic subagent can mention a corpus file outside its assigned chunk and
+    misattribute a node to that file. The final cache write now passes the B0
+    uncached-file list as an allowlist, so an incidental mention cannot replace
+    another file's complete cached extraction. Both the old unscoped call
+    (removed) and the allowlist read/call (added) are sanctioned here.
+    """
+    stripped = line.strip()
+    return (
+        stripped.startswith("uncached = [line for line in Path(")
+        and ".graphify_uncached.txt" in stripped
+    ) or stripped.startswith("saved = save_semantic_cache(")
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -919,6 +935,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_shebang_allowlist_fix_line,
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,
+    _is_semantic_cache_scope_fix_line,
 )
 
 
@@ -935,8 +952,9 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     arbitrary edit (even a blessed one) from drifting them. Sanctioned changes are
     enumerated as predicates in ``_SANCTIONED_MONOLITH_DIFFS``: the file_type enum
     unification, the unified frontmatter description, the chunk-cleanup rewrite
-    (#1172), and the four #1392 runbook fixes (directed propagation, content-only
-    semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering).
+    (#1172), the four #1392 runbook fixes (directed propagation, content-only
+    semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
+    and semantic-cache source scoping (#1757).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``

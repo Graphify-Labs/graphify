@@ -524,6 +524,52 @@ def test_save_semantic_cache_overwrites_by_default(tmp_path):
     assert ids == {"b"}, "default must overwrite, not accumulate"
 
 
+def test_save_semantic_cache_rejects_out_of_scope_source_file(tmp_path):
+    """#1757: an undispatched file must keep its complete cache entry when a
+    semantic result misattributes a node to it."""
+    from graphify.cache import save_semantic_cache
+
+    intended = tmp_path / "intended.md"
+    intended.write_text("# Intended\n")
+    protected = tmp_path / "protected.md"
+    protected.write_text("# Protected\n")
+
+    save_semantic_cache(
+        [{"id": "original", "source_file": "protected.md"}],
+        [],
+        root=tmp_path,
+    )
+
+    nodes = [
+        {"id": "expected", "source_file": str(intended.resolve())},
+        {"id": "stray", "source_file": "protected.md"},
+    ]
+    edges = [
+        {"source": "stray", "target": "expected", "source_file": "protected.md"},
+    ]
+    hyperedges = [
+        {"id": "stray_hyperedge", "nodes": ["stray"], "source_file": "protected.md"},
+    ]
+
+    with pytest.warns(RuntimeWarning, match="out-of-scope source_file 'protected.md'"):
+        saved = save_semantic_cache(
+            nodes,
+            edges,
+            hyperedges,
+            root=tmp_path,
+            allowed_source_files=["intended.md"],
+        )
+
+    assert saved == 1
+    intended_cache = load_cached(intended, root=tmp_path, kind="semantic")
+    assert {node["id"] for node in intended_cache["nodes"]} == {"expected"}
+
+    protected_cache = load_cached(protected, root=tmp_path, kind="semantic")
+    assert {node["id"] for node in protected_cache["nodes"]} == {"original"}
+    assert protected_cache["edges"] == []
+    assert protected_cache["hyperedges"] == []
+
+
 def test_save_semantic_cache_merge_existing_unions(tmp_path):
     """#1715: merge_existing=True unions with the prior entry so a file split
     across chunks (checkpointed per chunk) keeps every slice."""

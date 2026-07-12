@@ -2354,6 +2354,7 @@ def dispatch_command(cmd: str) -> None:
                         fresh.get("edges", []),
                         fresh.get("hyperedges", []),
                         root=out_root,
+                        allowed_source_files=uncached_paths,
                     )
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write semantic cache: {exc}", file=sys.stderr)
