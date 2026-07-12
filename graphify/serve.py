@@ -285,6 +285,14 @@ def _trigram_candidates(G: nx.Graph, needles: list[str], *, guard_frac: float = 
 
 def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     scored = []
+    # Compute label counts for multiplicity check (cached on G)
+    label_counts = G.graph.setdefault("_label_counts_cache", {})
+    if not label_counts:
+        for _, data in G.nodes(data=True):
+            lbl = (data.get("norm_label") or _strip_diacritics(data.get("label") or "")).lower()
+            if lbl:
+                label_counts[lbl] = label_counts.get(lbl, 0) + 1
+
     # Dedupe tokens, order-preserving (as _pick_seeds already does): a repeated
     # query word must not double-count every tier, and with coverage scaling
     # below it would also inflate the matched-term ratio (#1602).
@@ -364,6 +372,11 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
                 score += _SOURCE_MATCH_BONUS * w
         if tiered:
             score += tiered * (matched / n_terms) ** 2
+        # Apply label multiplicity penalty to prevent generic framework conventions
+        # (like GET, POST, handler) from flooding seeds.
+        multiplicity = label_counts.get(norm_label, 1)
+        if score > 0 and multiplicity > 1:
+            score /= multiplicity
         if score > 0:
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
@@ -437,9 +450,16 @@ def _pick_seeds(
         return []
     top_score = scored[0][0]
     seeds = []
-    for score, nid in scored[:max_k]:
+    seen_labels = set()
+    for score, nid in scored:
+        if len(seeds) >= max_k:
+            break
         if seeds and score < top_score * gap_ratio:
             break
+        lbl = G.nodes[nid].get("label") or nid if G else nid
+        if lbl in seen_labels:
+            continue
+        seen_labels.add(lbl)
         seeds.append(nid)
 
     if G is not None and terms:
@@ -452,7 +472,10 @@ def _pick_seeds(
             tied = [nid for s, nid in term_scored if s == best_score]
             best_nid = max(tied, key=lambda n: G.degree(n)) if len(tied) > 1 else term_scored[0][1]
             if best_nid not in seeds:
-                seeds.append(best_nid)
+                lbl = G.nodes[best_nid].get("label") or best_nid
+                if lbl not in seen_labels:
+                    seen_labels.add(lbl)
+                    seeds.append(best_nid)
     return seeds
 
 
