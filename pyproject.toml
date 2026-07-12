@@ -145,8 +145,3 @@ select = ["E9", "F63", "F7", "F82"]
 include = ["graphify", "tests"]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
-||||||| parent of e56c9f1 (feat: package skill-enrich.md; add install test)
-graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-claw.md"]
-=======
-graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-claw.md", "skill-enrich.md"]
->>>>>>> e56c9f1 (feat: package skill-enrich.md; add install test)
