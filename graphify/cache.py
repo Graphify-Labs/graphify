@@ -352,6 +352,17 @@ def cache_dir(root: Path = Path("."), kind: str = "ast") -> Path:
     return d
 
 
+def _reanchor_source_file(p: str, root: Path) -> str:
+    """If p is a relative path, resolve it against root; otherwise return as-is."""
+    try:
+        candidate = Path(p)
+        if not candidate.is_absolute():
+            return str((root.resolve() / candidate).resolve())
+    except (OSError, ValueError):
+        pass
+    return p
+
+
 def load_cached(path: Path, root: Path = Path("."), kind: str = "ast") -> dict | None:
     """Return cached extraction for this file if hash matches, else None.
 
