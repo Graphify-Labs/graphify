@@ -2527,10 +2527,26 @@ def _extract_generic(
                 # in another file, so defer resolution to the cross-file Ruby
                 # resolver (reusing the #1634 candidate logic and the #1640 module
                 # nodes as targets). Only bare/namespaced constant arguments count;
-                # `extend self`, `include some_var`, etc. are skipped.
+                # `extend self`, `include some_var`, etc. are skipped. A `class <<
+                # self` block is scanned too: an `include`/`prepend` there injects
+                # the module's methods as the class's own singleton (class) methods
+                # — the same relationship `extend <Mod>` expresses in the body — so
+                # it must mix in likewise. `class << other` opens a different
+                # object's singleton, not the enclosing class's, so only `self`
+                # counts.
                 _rb_body = _find_body(node, config)
                 if _rb_body is not None:
-                    for _stmt in _rb_body.children:
+                    _rb_mixin_stmts = list(_rb_body.children)
+                    for _sc in _rb_body.children:
+                        if _sc.type != "singleton_class":
+                            continue
+                        _sc_value = _sc.child_by_field_name("value")
+                        if _sc_value is None or _sc_value.type != "self":
+                            continue
+                        _sc_body = _sc.child_by_field_name("body")
+                        if _sc_body is not None:
+                            _rb_mixin_stmts.extend(_sc_body.children)
+                    for _stmt in _rb_mixin_stmts:
                         if _stmt.type != "call" or _stmt.child_by_field_name("receiver") is not None:
                             continue
                         _m = _stmt.child_by_field_name("method")
