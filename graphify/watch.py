@@ -1138,17 +1138,48 @@ def _rebuild_code(
 
 
 def check_update(watch_path: Path) -> bool:
-    """Check for pending semantic update flag and notify the user if set.
+    """Report corpus drift and any pending semantic-update flag.
 
     Cron-safe: always returns True so cron jobs do not alarm.
-    Non-code file changes (docs, papers, images) require LLM-backed
-    re-extraction via `/graphify --update` — this function only signals
-    that the update is needed.
+    Uses the same discovery and ignore rules as extraction, comparing code
+    against its AST hash and content files against their semantic hash.
     """
-    flag = Path(watch_path) / _GRAPHIFY_OUT / "needs_update"
-    if flag.exists():
+    root = Path(watch_path).resolve()
+    out = Path(_GRAPHIFY_OUT)
+    if not out.is_absolute():
+        out = root / out
+    flag = out / "needs_update"
+    manifest = out / "manifest.json"
+
+    from graphify.detect import detect_incremental
+
+    incremental = detect_incremental(root, str(manifest), kind="graph")
+    added = int(incremental.get("added_total", 0))
+    modified = int(incremental.get("modified_total", 0))
+    deleted = len(incremental.get("deleted_files", []))
+    scan_errors = incremental.get("walk_errors", [])
+    has_drift = bool(added or modified or deleted)
+    has_flag = flag.exists()
+
+    if has_drift:
+        print(
+            f"[graphify check-update] Corpus drift in {root}: "
+            f"{added} added, {modified} changed, {deleted} removed."
+        )
+    if scan_errors:
+        print(
+            f"[graphify check-update] Scan incomplete: {len(scan_errors)} "
+            "directory scan error(s); freshness is unknown."
+        )
+    if has_flag:
         print(f"[graphify check-update] Pending non-code changes in {watch_path}.")
+    if has_drift or has_flag:
         print("[graphify check-update] Run `/graphify --update` to apply semantic re-extraction.")
+    elif not scan_errors:
+        print(
+            f"[graphify check-update] Up to date in {root}: "
+            "0 added, 0 changed, 0 removed."
+        )
     return True
 
 

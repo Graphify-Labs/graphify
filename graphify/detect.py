@@ -1489,6 +1489,9 @@ def detect_incremental(
         semantically.
     kind="ast": a file is "changed" when its ast_hash is missing or its
         content has changed. Use this for `graphify update`.
+    kind="graph": use ast_hash for code and semantic_hash for content files.
+        This reports whether the queryable graph is stale without treating an
+        AST-only code update as pending semantic work.
 
     Fast path: mtime unchanged + hash matches → unchanged (free, no disk IO
     beyond stat). Slow path: mtime bumped → compare MD5 against the relevant
@@ -1512,12 +1515,20 @@ def detect_incremental(
         # No previous run - treat everything as new
         full["incremental"] = True
         full["new_files"] = full["files"]
+        full["added_files"] = {k: list(v) for k, v in full["files"].items()}
+        full["modified_files"] = {k: [] for k in full["files"]}
         full["unchanged_files"] = {k: [] for k in full["files"]}
         full["new_total"] = full["total_files"]
+        full["added_total"] = full["total_files"]
+        full["modified_total"] = 0
+        full["deleted_files"] = []
         return full
 
     new_files: dict[str, list[str]] = {k: [] for k in full["files"]}
+    added_files: dict[str, list[str]] = {k: [] for k in full["files"]}
+    modified_files: dict[str, list[str]] = {k: [] for k in full["files"]}
     unchanged_files: dict[str, list[str]] = {k: [] for k in full["files"]}
+    semantic_types = {"document", "paper", "image", "video"}
 
     for ftype, file_list in full["files"].items():
         for f in file_list:
@@ -1534,7 +1545,11 @@ def detect_incremental(
                 # Normalise legacy {mtime, hash} to new schema
                 if "hash" in stored and "ast_hash" not in stored:
                     stored = {"mtime": stored.get("mtime", 0), "ast_hash": stored["hash"], "semantic_hash": ""}
-                hash_key = "semantic_hash" if kind == "semantic" else "ast_hash"
+                hash_key = (
+                    "semantic_hash"
+                    if kind == "semantic" or (kind == "graph" and ftype in semantic_types)
+                    else "ast_hash"
+                )
                 stored_hash = stored.get(hash_key, "")
                 # Missing semantic_hash means update ran but extract hasn't — always re-extract
                 if not stored_hash:
@@ -1557,6 +1572,10 @@ def detect_incremental(
 
             if changed:
                 new_files[ftype].append(f)
+                if stored is None:
+                    added_files[ftype].append(f)
+                else:
+                    modified_files[ftype].append(f)
             else:
                 unchanged_files[ftype].append(f)
 
@@ -1567,7 +1586,11 @@ def detect_incremental(
     new_total = sum(len(v) for v in new_files.values())
     full["incremental"] = True
     full["new_files"] = new_files
+    full["added_files"] = added_files
+    full["modified_files"] = modified_files
     full["unchanged_files"] = unchanged_files
     full["new_total"] = new_total
+    full["added_total"] = sum(len(v) for v in added_files.values())
+    full["modified_total"] = sum(len(v) for v in modified_files.values())
     full["deleted_files"] = deleted_files
     return full
