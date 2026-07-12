@@ -912,14 +912,24 @@ def to_graphml(
         for k in [k for k in attrs if k.startswith("_")]:
             del attrs[k]
     # nx.write_graphml raises ValueError on None attribute values; replace with "".
+    # It also only accepts scalar attribute values, so dict/list-valued
+    # attributes (e.g. per-node "metadata", graph-level "hyperedges") must be
+    # serialized to a JSON string first, or the writer raises TypeError.
+    def _scrub(val):
+        if val is None:
+            return ""
+        if isinstance(val, (dict, list)):
+            return json.dumps(val)
+        return val
+
+    for key, val in list(H.graph.items()):
+        H.graph[key] = _scrub(val)
     for node_id in H.nodes():
         for key, val in list(H.nodes[node_id].items()):
-            if val is None:
-                H.nodes[node_id][key] = ""
+            H.nodes[node_id][key] = _scrub(val)
     for u, v in H.edges():
         for key, val in list(H.edges[u, v].items()):
-            if val is None:
-                H.edges[u, v][key] = ""
+            H.edges[u, v][key] = _scrub(val)
     nx.write_graphml(H, output_path)
 
 

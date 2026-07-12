@@ -99,6 +99,25 @@ def test_to_graphml_tolerates_none_attribute_values():
         content = out.read_text()
         assert "<graphml" in content
 
+def test_to_graphml_tolerates_dict_and_list_attribute_values():
+    """nx.write_graphml only accepts scalar attribute values and raises
+    TypeError on a dict or list — e.g. a node's "metadata" dict, or a
+    graph-level "hyperedges" list (attach_hyperedges()). to_graphml must
+    JSON-serialize these instead of passing them through unmodified."""
+    G = make_graph()
+    communities = cluster(G)
+    a_node = next(iter(G.nodes()))
+    G.nodes[a_node]["metadata"] = {"kind": "file"}
+    if G.number_of_edges():
+        u, v = next(iter(G.edges()))
+        G.edges[u, v]["tags"] = ["a", "b"]
+    G.graph["hyperedges"] = [{"nodes": [a_node], "label": "x"}]
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.graphml"
+        to_graphml(G, communities, str(out))  # must not raise
+        content = out.read_text()
+        assert "<graphml" in content
+
 def test_to_html_creates_file():
     G = make_graph()
     communities = cluster(G)
