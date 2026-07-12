@@ -25,7 +25,7 @@
 
 Введіть `/graphify` у своєму ШІ-асистенті для кодингу, і він нанесе весь ваш проект — код, документи, PDF, зображення, відео — на граф знань, який можна запитувати замість того, щоб шукати по файлах.
 
-Працює в Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kimi Code, Kiro, Pi та Google Antigravity.
+Працює в Claude Code, Codex, OpenCode, Cursor, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kimi Code, Kiro, Pi та Google Antigravity.
 
 ```
 /graphify .
@@ -126,7 +126,6 @@ graphify install --project --platform codex
 | Factory Droid | `graphify install --platform droid` |
 | Trae | `graphify install --platform trae` |
 | Trae CN | `graphify install --platform trae-cn` |
-| Gemini CLI | `graphify install --platform gemini` |
 | Hermes | `graphify install --platform hermes` |
 | Kimi Code | `graphify install --platform kimi` |
 | Kiro IDE/CLI | `graphify kiro install` |
@@ -177,14 +176,13 @@ graphify install --project --platform codex
 | Trae | `graphify trae install` |
 | Trae CN | `graphify trae-cn install` |
 | Cursor | `graphify cursor install` |
-| Gemini CLI | `graphify gemini install` |
 | Hermes | `graphify hermes install` |
 | Kimi Code | `graphify install --platform kimi` |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify pi install` |
 | Google Antigravity | `graphify antigravity install` |
 
-Це записує невеликий конфігураційний файл, який каже асистенту звертатися до графу знань для питань про кодову базу — надаючи перевагу локалізованим запитам на кшталт `graphify query "<питання>"` замість читання повного звіту або пошуку по сирих файлах. На платформах, що підтримують хуки з корисним навантаженням (Claude Code, Gemini CLI), хук спрацьовує автоматично перед пошуковими викликами інструментів і спрямовує асистента до графу. На інших (Codex, OpenCode, Cursor тощо) постійні файли інструкцій (`AGENTS.md`, `.cursor/rules/` тощо) забезпечують таке саме керівництво. `GRAPH_REPORT.md` все ще доступний для загального огляду архітектури.
+Це записує невеликий конфігураційний файл, який каже асистенту звертатися до графу знань для питань про кодову базу — надаючи перевагу локалізованим запитам на кшталт `graphify query "<питання>"` замість читання повного звіту або пошуку по сирих файлах. На платформах, що підтримують хуки з корисним навантаженням (Claude Code), хук спрацьовує автоматично перед пошуковими викликами інструментів і спрямовує асистента до графу. На інших (Codex, OpenCode, Cursor тощо) постійні файли інструкцій (`AGENTS.md`, `.cursor/rules/` тощо) забезпечують таке саме керівництво. `GRAPH_REPORT.md` все ще доступний для загального огляду архітектури.
 
 Щоб видалити graphify з усіх платформ одразу: `graphify uninstall` (додайте `--purge`, щоб також видалити `graphify-out/`). Або скористайтеся командою для конкретної платформи (напр. `graphify claude uninstall`).
 
@@ -452,7 +450,6 @@ graphify claude install / uninstall
 graphify codex install / uninstall
 graphify opencode install
 graphify cursor install / uninstall
-graphify gemini install / uninstall
 graphify copilot install / uninstall
 graphify aider install / uninstall
 graphify claw install / uninstall

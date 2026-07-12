@@ -13,7 +13,7 @@
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
 </p>
 
-**Kasanayan para sa mga AI coding assistant.** I-type ang `/graphify` sa Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, o Google Antigravity — binabasa nito ang iyong mga file, gumagawa ng knowledge graph, at ibinabalik sa iyo ang mga istrukturang hindi mo alam na nandoon pala. Maunawaan ang codebase nang mas mabilis. Tuklasin ang "bakit" sa likod ng mga desisyon sa arkitektura.
+**Kasanayan para sa mga AI coding assistant.** I-type ang `/graphify` sa Claude Code, Codex, OpenCode, Cursor, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, o Google Antigravity — binabasa nito ang iyong mga file, gumagawa ng knowledge graph, at ibinabalik sa iyo ang mga istrukturang hindi mo alam na nandoon pala. Maunawaan ang codebase nang mas mabilis. Tuklasin ang "bakit" sa likod ng mga desisyon sa arkitektura.
 
 Ganap na multimodal. Magdagdag ng code, PDF, markdown, mga screenshot, diagram, larawan ng whiteboard, mga imahe sa ibang wika, o mga video at audio file — kine-extract ng graphify ang mga konsepto at relasyon mula sa lahat ng ito at pinag-uugnay ang mga ito sa iisang graph. Ang mga video ay tina-transcribe nang lokal gamit ang Whisper. Sumusuporta ng 25 na programming language sa pamamagitan ng tree-sitter AST.
 
