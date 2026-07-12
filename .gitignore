@@ -40,3 +40,8 @@ paper/
 
 # macOS Finder metadata
 .DS_Store
+docs/
+.gitnexus
+.serena/
+CLAUDE.md
+AGENTS.md

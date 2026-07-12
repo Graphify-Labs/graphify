@@ -1842,6 +1842,36 @@ def dispatch_command(cmd: str) -> None:
         result = run_benchmark(graph_path, corpus_words=corpus_words)
         print_benchmark(result)
 
+    elif cmd == "enrich-skill":
+        from graphify.__main__ import enrich_skill_install
+
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            enrich_skill_install()
+        else:
+            print("Usage: graphify enrich-skill install", file=sys.stderr)
+            sys.exit(1)
+
+    elif cmd == "enrich":
+        from graphify.enrich import enrich as _enrich
+
+        if len(sys.argv) < 3:
+            print("Usage: graphify enrich <path> [--index-dir <dir>] [--watch] [--dry-run] [--master-only]", file=sys.stderr)
+            sys.exit(1)
+
+        corpus_path = Path(sys.argv[2])
+        args = sys.argv[3:]
+        watch = "--watch" in args
+        dry_run = "--dry-run" in args
+        master_only = "--master-only" in args
+        index_dir = None
+        if "--index-dir" in args:
+            idx = args.index("--index-dir")
+            if idx + 1 < len(args):
+                index_dir = Path(args[idx + 1])
+
+        _enrich(corpus_path, index_dir=index_dir, watch=watch, dry_run=dry_run, master_only=master_only)
+
     elif cmd == "global":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         from graphify.global_graph import (

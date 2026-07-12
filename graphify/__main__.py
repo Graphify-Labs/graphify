@@ -444,6 +444,23 @@ _CODEX_HOOK = {
 
 
 
+def enrich_skill_install() -> None:
+    """Copy skill-enrich.md to ~/.claude/skills/graphify-enrich/SKILL.md."""
+    skill_src = Path(__file__).parent / "skill-enrich.md"
+    if not skill_src.exists():
+        print("error: skill-enrich.md not found in package - reinstall graphify", file=sys.stderr)
+        sys.exit(1)
+    skill_dst = Path.home() / ".claude" / "skills" / "graphify-enrich" / "SKILL.md"
+    skill_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(skill_src, skill_dst)
+    print(f"  skill installed  →  {skill_dst}")
+    print()
+    print("Done. In Claude Code type:")
+    print()
+    print("  /graphify-enrich <corpus_path> --index-dir <index_dir>")
+    print()
+
+
 def main() -> None:
     for _stream in (sys.stdout, sys.stderr):
         if _stream is not None and hasattr(_stream, "reconfigure"):
@@ -649,6 +666,10 @@ def main() -> None:
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
+        print(
+            "  enrich <path> [--index-dir <dir>] [--watch] [--dry-run] [--master-only]  enrich INDEX.md files from graph.json"
+        )
+        print("  enrich-skill install        install /graphify-enrich skill for Claude Code")
         print()
         return
 
