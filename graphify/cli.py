@@ -11,7 +11,7 @@ import os
 import sys
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path
-
+import concurrent.futures
 
 _SEARCH_NUDGE = json.dumps({
     "hookSpecificOutput": {
@@ -2249,170 +2249,155 @@ def dispatch_command(cmd: str) -> None:
                     )
                     sys.exit(1)
 
-        # AST extraction on code files. Empty code list (docs-only corpus) is
-        # the issue #698 case — skip cleanly instead of crashing inside extract().
-        ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
-        if code_files:
-            from graphify.extract import extract as _ast_extract
-            # Anchor the cache at the output root, not the scanned project:
-            # with --out, a <target>/graphify-out/cache/ would leak a
-            # graphify-out/ dir into a project that asked for external output.
-            ast_kwargs: dict = {"cache_root": out_root}
-            if cli_max_workers is not None:
-                ast_kwargs["max_workers"] = cli_max_workers
-            print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
-            try:
-                ast_result = _ast_extract(code_files, **ast_kwargs)
-            except Exception as exc:
-                print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
-                ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
-        stages.mark("AST extract")
+        
 
-        # Semantic extraction on docs/papers/images. Check cache first.
-        from graphify.cache import (
-            check_semantic_cache as _check_semantic_cache,
-            prune_semantic_cache as _prune_semantic_cache,
-            save_semantic_cache as _save_semantic_cache,
-        )
-        sem_result: dict = {
-            "nodes": [], "edges": [], "hyperedges": [],
-            "input_tokens": 0, "output_tokens": 0,
-        }
-        sem_cache_hits = 0
-        sem_cache_misses = 0
-        if semantic_files:
-            sem_paths_str = [str(p) for p in semantic_files]
-            cached_nodes, cached_edges, cached_hyperedges, uncached_paths = (
-                _check_semantic_cache(sem_paths_str, root=out_root)
-            )
-            sem_cache_hits = len(semantic_files) - len(uncached_paths)
-            sem_cache_misses = len(uncached_paths)
-            sem_result["nodes"].extend(cached_nodes)
-            sem_result["edges"].extend(cached_edges)
-            sem_result["hyperedges"].extend(cached_hyperedges)
-            if sem_cache_hits:
-                print(f"[graphify extract] semantic cache: {sem_cache_hits} hit / {sem_cache_misses} miss")
-
-            if uncached_paths:
-                print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {backend}...")
-                corpus_kwargs: dict = {
-                    "backend": backend,
-                    "model": model,
-                    "root": target,
-                }
-                if deep_mode:
-                    corpus_kwargs["deep_mode"] = True
-                if cli_token_budget is not None:
-                    corpus_kwargs["token_budget"] = cli_token_budget
-                if cli_max_concurrency is not None:
-                    corpus_kwargs["max_concurrency"] = cli_max_concurrency
-
-                # Minimal progress callback so the CLI is no longer silent
-                # during long local-inference runs (issue #792 addendum).
-                # Also track per-chunk success so we can fail loudly when
-                # every chunk errors (e.g. missing backend SDK package).
-                _chunk_stats = {"total": 0, "succeeded": 0}
-                def _progress(idx: int, total: int, _result: dict) -> None:
-                    _chunk_stats["total"] = total
-                    _chunk_stats["succeeded"] += 1
-                    print(
-                        f"[graphify extract] chunk {idx + 1}/{total} done",
-                        flush=True,
-                    )
-                corpus_kwargs["on_chunk_done"] = _progress
-
+        def run_ast():
+            res = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
+            if code_files:
+                from graphify.extract import extract as _ast_extract
+                ast_kwargs: dict = {"cache_root": out_root}
+                if cli_max_workers is not None:
+                    ast_kwargs["max_workers"] = cli_max_workers
+                print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
                 try:
-                    fresh = _extract_corpus_parallel(
-                        [Path(p) for p in uncached_paths],
-                        **corpus_kwargs,
-                    )
-                except ImportError as exc:
+                    res = _ast_extract(code_files, **ast_kwargs)
+                except Exception as exc:
+                    print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
+            return res
+
+        def run_semantic():
+            res = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+            sem_cache_hits = 0
+            sem_cache_misses = 0
+            if semantic_files:
+                from graphify.cache import (
+                    check_semantic_cache as _check_semantic_cache,
+                    save_semantic_cache as _save_semantic_cache,
+                )
+                sem_paths_str = [str(p) for p in semantic_files]
+                cached_nodes, cached_edges, cached_hyperedges, uncached_paths = (
+                    _check_semantic_cache(sem_paths_str, root=out_root)
+                )
+                sem_cache_hits = len(semantic_files) - len(uncached_paths)
+                sem_cache_misses = len(uncached_paths)
+                res["nodes"].extend(cached_nodes)
+                res["edges"].extend(cached_edges)
+                res["hyperedges"].extend(cached_hyperedges)
+                if sem_cache_hits:
+                    print(f"[graphify extract] semantic cache: {sem_cache_hits} hit / {sem_cache_misses} miss")
+
+                if uncached_paths:
+                    print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {backend}...")
+                    corpus_kwargs: dict = {
+                        "backend": backend,
+                        "model": model,
+                        "root": target,
+                    }
+                    if deep_mode:
+                        corpus_kwargs["deep_mode"] = True
+                    if cli_token_budget is not None:
+                        corpus_kwargs["token_budget"] = cli_token_budget
+                    if cli_max_concurrency is not None:
+                        corpus_kwargs["max_concurrency"] = cli_max_concurrency
+
+                    _chunk_stats = {"total": 0, "succeeded": 0}
+                    def _progress(idx: int, total: int, _result: dict) -> None:
+                        _chunk_stats["total"] = total
+                        _chunk_stats["succeeded"] += 1
+                        print(f"[graphify extract] chunk {idx + 1}/{total} done", flush=True)
+                    corpus_kwargs["on_chunk_done"] = _progress
+
+                    try:
+                        fresh = _extract_corpus_parallel([Path(p) for p in uncached_paths], **corpus_kwargs)
+                    except ImportError as exc:
+                        print(f"error: {exc}", file=sys.stderr)
+                        sys.exit(1)
+                    except Exception as exc:
+                        print(f"[graphify extract] semantic extraction failed: {exc}", file=sys.stderr)
+                        fresh = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+
+                    if uncached_paths and _chunk_stats["succeeded"] == 0:
+                        print(
+                            f"[graphify extract] error: all semantic chunks failed "
+                            f"for backend '{backend}' ({len(uncached_paths)} uncached files) - "
+                            f"see per-chunk errors above. If you see 'requires the X package', "
+                            f"run `pip install X` and retry.",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                    try:
+                        _save_semantic_cache(
+                            fresh.get("nodes", []),
+                            fresh.get("edges", []),
+                            fresh.get("hyperedges", []),
+                            root=out_root,
+                        )
+                    except Exception as exc:
+                        print(f"[graphify extract] warning: could not write semantic cache: {exc}", file=sys.stderr)
+                    res["nodes"].extend(fresh.get("nodes", []))
+                    res["edges"].extend(fresh.get("edges", []))
+                    res["hyperedges"].extend(fresh.get("hyperedges", []))
+                    res["input_tokens"] += fresh.get("input_tokens", 0)
+                    res["output_tokens"] += fresh.get("output_tokens", 0)
+            return res, sem_cache_hits, sem_cache_misses
+
+        def run_pg():
+            res = {"nodes": [], "edges": []}
+            if cli_postgres_dsn is not None:
+                from graphify.pg_introspect import introspect_postgres
+                print(f"[graphify extract] introspecting PostgreSQL schema...")
+                try:
+                    res = introspect_postgres(cli_postgres_dsn)
+                except (ConnectionError, ImportError) as exc:
                     print(f"error: {exc}", file=sys.stderr)
                     sys.exit(1)
-                except Exception as exc:
-                    print(
-                        f"[graphify extract] semantic extraction failed: {exc}",
-                        file=sys.stderr,
-                    )
-                    fresh = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+                print(f"[graphify extract] PostgreSQL: {len(res['nodes'])} nodes, {len(res['edges'])} edges")
+            return res
 
-                # on_chunk_done only fires after a chunk succeeds. If fresh
-                # semantic extraction was requested and no chunks completed,
-                # fail instead of writing an AST-only graph with exit 0.
-                if uncached_paths and _chunk_stats["succeeded"] == 0:
-                    print(
-                        f"[graphify extract] error: all semantic chunks failed "
-                        f"for backend '{backend}' ({len(uncached_paths)} uncached files) - "
-                        f"see per-chunk errors above. If you see 'requires the X package', "
-                        f"run `pip install X` and retry.",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
+        def run_cargo():
+            res = {"nodes": [], "edges": []}
+            if cli_cargo:
+                from graphify.cargo_introspect import introspect_cargo
+                print("[graphify extract] introspecting Cargo workspace...")
                 try:
-                    _save_semantic_cache(
-                        fresh.get("nodes", []),
-                        fresh.get("edges", []),
-                        fresh.get("hyperedges", []),
-                        root=out_root,
-                    )
-                except Exception as exc:
-                    print(f"[graphify extract] warning: could not write semantic cache: {exc}", file=sys.stderr)
-                sem_result["nodes"].extend(fresh.get("nodes", []))
-                sem_result["edges"].extend(fresh.get("edges", []))
-                sem_result["hyperedges"].extend(fresh.get("hyperedges", []))
-                sem_result["input_tokens"] += fresh.get("input_tokens", 0)
-                sem_result["output_tokens"] += fresh.get("output_tokens", 0)
+                    res = introspect_cargo(target)
+                except (ConnectionError, ImportError, OSError) as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+                    sys.exit(1)
+                print(f"[graphify extract] Cargo: {len(res['nodes'])} nodes, {len(res['edges'])} edges")
+            return res
 
-        # Prune orphaned semantic cache entries. The semantic cache is
-        # content-hash-keyed and unversioned, so it is never swept by the AST
-        # version-cleanup: every content change or file deletion leaves a
-        # permanent orphan that accumulates unbounded (#1527). Sweep it against
-        # the FULL live document set (``files_by_type`` — present in both the
-        # incremental and full branches), NOT the incremental ``semantic_files``
-        # changed-subset, which would delete every unchanged doc's valid entry.
-        # Best-effort: a prune failure must never break extraction.
-        try:
-            from graphify.cache import file_hash as _file_hash
-            _live_hashes: set[str] = set()
-            for _kind in ("document", "paper", "image"):
-                for _fp in files_by_type.get(_kind, []):
-                    _abs = Path(_fp)
-                    if not _abs.is_absolute():
-                        _abs = Path(out_root) / _abs
-                    if not _abs.is_file():
-                        continue  # deleted/missing — leave out so its entry is pruned
-                    try:
-                        _live_hashes.add(_file_hash(_abs, out_root))
-                    except OSError:
-                        pass
-            _prune_semantic_cache(out_root, _live_hashes)
-        except Exception as exc:
-            print(f"[graphify extract] warning: could not prune semantic cache: {exc}", file=sys.stderr)
-        stages.mark("semantic extract")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            fut_ast = executor.submit(run_ast)
+            fut_sem = executor.submit(run_semantic)
+            fut_pg = executor.submit(run_pg)
+            fut_cargo = executor.submit(run_cargo)
 
-        pg_result: dict = {"nodes": [], "edges": []}
-        if cli_postgres_dsn is not None:
-            from graphify.pg_introspect import introspect_postgres
-            print(f"[graphify extract] introspecting PostgreSQL schema...")
+            ast_result = fut_ast.result()
+            stages.mark("AST extract")
+            
+            sem_result, sem_cache_hits, sem_cache_misses = fut_sem.result()
             try:
-                pg_result = introspect_postgres(cli_postgres_dsn)
-            except (ConnectionError, ImportError) as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                sys.exit(1)
-            print(f"[graphify extract] PostgreSQL: {len(pg_result['nodes'])} nodes, "
-                  f"{len(pg_result['edges'])} edges")
+                from graphify.cache import prune_semantic_cache as _prune_semantic_cache, file_hash as _file_hash
+                _live_hashes: set[str] = set()
+                for _kind in ("document", "paper", "image"):
+                    for _fp in files_by_type.get(_kind, []):
+                        _abs = Path(_fp)
+                        if not _abs.is_absolute():
+                            _abs = Path(out_root) / _abs
+                        if not _abs.is_file():
+                            continue
+                        try:
+                            _live_hashes.add(_file_hash(_abs, out_root))
+                        except OSError:
+                            pass
+                _prune_semantic_cache(out_root, _live_hashes)
+            except Exception as exc:
+                print(f"[graphify extract] warning: could not prune semantic cache: {exc}", file=sys.stderr)
+            stages.mark("semantic extract")
 
-        cargo_result: dict = {"nodes": [], "edges": []}
-        if cli_cargo:
-            from graphify.cargo_introspect import introspect_cargo
-            print("[graphify extract] introspecting Cargo workspace...")
-            try:
-                cargo_result = introspect_cargo(target)
-            except (ConnectionError, ImportError, OSError) as exc:
-                print(f"error: {exc}", file=sys.stderr)
-                sys.exit(1)
-            print(f"[graphify extract] Cargo: {len(cargo_result['nodes'])} nodes, "
-                  f"{len(cargo_result['edges'])} edges")
+            pg_result = fut_pg.result()
+            cargo_result = fut_cargo.result()
 
         # Merge AST + semantic + pg_result + cargo_result. Order matters for deduplication: passing AST
         # first means semantic node attributes win on collision (richer labels
