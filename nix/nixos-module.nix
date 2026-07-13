@@ -679,7 +679,6 @@ in {
                 description = "Watch Graphify corpus ${name}";
                 wantedBy = ["multi-user.target"];
                 after = ["${extractUnit}.service"];
-                requires = ["${extractUnit}.service"];
                 environment = baseEnvironment instance // {GRAPHIFY_OUT = graphOut instance;};
                 path = instance.runtimePackages;
                 serviceConfig =
@@ -696,7 +695,6 @@ in {
                 description = "Graphify MCP server ${name}";
                 wantedBy = ["multi-user.target"];
                 after = optional instance.extraction.enable "${extractUnit}.service";
-                requires = optional instance.extraction.enable "${extractUnit}.service";
                 environment = baseEnvironment instance;
                 path = instance.runtimePackages;
                 unitConfig.ConditionPathExists = graphPath instance;
