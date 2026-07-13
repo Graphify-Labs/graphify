@@ -2373,6 +2373,7 @@ def _label_batch_with_retry(
     depth: int = 0,
     max_depth: int = 3,
     usage_out: dict | None = None,
+    label_language: str | None = None,
 ) -> dict[int, str]:
     """Label a batch of communities, splitting in half and retrying on parse failure.
 
@@ -2389,11 +2390,14 @@ def _label_batch_with_retry(
     missing config, programming bug) propagates unchanged — those are never
     split-retried.
     """
+    _lang = label_language or os.environ.get("GRAPHIFY_LABEL_LANGUAGE", "")
+    _lang_clause = f" Respond in {_lang}." if _lang else ""
     prompt = (
         "You are naming clusters in a knowledge graph. For each community below, "
         "return a concise 2-5 word plain-language name describing what it is about "
-        "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\"). "
-        "Respond ONLY with a JSON object mapping the community id (as a string) to "
+        "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\")."
+        + _lang_clause
+        + " Respond ONLY with a JSON object mapping the community id (as a string) to "
         "its name - no prose, no markdown fences.\n\n" + "\n".join(batch_lines)
     )
     # Budget generously: a 2-5 word name is ~10 tokens, but models (notably
@@ -2428,12 +2432,12 @@ def _label_batch_with_retry(
         left = _label_batch_with_retry(
             batch_cids[:mid], batch_lines[:mid],
             backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
-            usage_out=usage_out,
+            usage_out=usage_out, label_language=label_language,
         )
         right = _label_batch_with_retry(
             batch_cids[mid:], batch_lines[mid:],
             backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
-            usage_out=usage_out,
+            usage_out=usage_out, label_language=label_language,
         )
         return left | right
 
@@ -2450,6 +2454,7 @@ def label_communities(
     batch_size: int = _LABEL_BATCH_SIZE,
     max_concurrency: int = 4,
     usage_out: dict | None = None,
+    label_language: str | None = None,
 ) -> dict[int, str]:
     """Return a complete ``{cid: name}`` map using ``backend`` for naming.
 
@@ -2500,7 +2505,7 @@ def label_communities(
         try:
             parsed = _label_batch_with_retry(
                 labeled_cids[start:end], lines[start:end], backend=backend, model=model,
-                **batch_kwargs,
+                label_language=label_language, **batch_kwargs,
             )
             return batch_idx, parsed, None, batch_usage
         except Exception as exc:  # noqa: BLE001 - reported per-batch; surfaced below
@@ -2558,6 +2563,7 @@ def generate_community_labels(
     max_concurrency: int = 4,
     batch_size: int = _LABEL_BATCH_SIZE,
     usage_out: dict | None = None,
+    label_language: str | None = None,
 ) -> tuple[dict[int, str], str]:
     """CLI entry point: resolve a backend, name communities, and degrade to
     ``Community N`` placeholders on any failure (no backend, API error, malformed
@@ -2580,7 +2586,7 @@ def generate_community_labels(
         labels = label_communities(
             G, communities, backend=backend, model=model, gods=gods,
             max_concurrency=max_concurrency, batch_size=batch_size,
-            usage_out=usage_out,
+            usage_out=usage_out, label_language=label_language,
         )
         return labels, "llm"
     except Exception as exc:
