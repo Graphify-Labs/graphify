@@ -220,6 +220,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
+| IBM Bob | `graphify install --platform bob` |
 | Pi coding agent | `graphify install --platform pi` |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
@@ -290,6 +291,7 @@ Run this once in your project after building a graph:
 | Amp | `graphify amp install` |
 | Agent Skills (cross-framework) | `graphify agents install` (alias `graphify skills install`) |
 | Kiro IDE/CLI | `graphify kiro install` |
+| IBM Bob | `graphify bob install` |
 | Pi coding agent | `graphify pi install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -686,6 +688,8 @@ graphify agents install            # ~/.agents/skills/ + AGENTS.md (cross-framew
 graphify agents uninstall
 graphify kiro install               # .kiro/skills/ + .kiro/steering/graphify.md (Kiro IDE/CLI)
 graphify kiro uninstall
+graphify bob install               # .bob/skills/ + .bob/rules/graphify.md (IBM Bob)
+graphify bob uninstall
 graphify pi install                # skill file (Pi coding agent)
 graphify pi uninstall
 graphify devin install             # skill file + .windsurf/rules/graphify.md (Devin CLI)
