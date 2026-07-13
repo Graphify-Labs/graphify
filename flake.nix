@@ -38,6 +38,15 @@
     flake-parts.lib.mkFlake {inherit inputs;} {
       systems = ["x86_64-linux" "aarch64-linux" "aarch64-darwin"];
 
+      flake.nixosModules.default = {
+        lib,
+        pkgs,
+        ...
+      }: {
+        imports = [./nix/nixos-module.nix];
+        services.graphify.package = lib.mkDefault inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.full;
+      };
+
       perSystem = {
         pkgs,
         lib,
@@ -155,37 +164,161 @@
         virtualenv = editablePythonSet.mkVirtualEnv "graphify-dev-env" workspace.deps.all;
 
         graphifyEnv = pythonSet.mkVirtualEnv "graphify-env" workspace.deps.default;
+        graphifyFullEnv = pythonSet.mkVirtualEnv "graphify-full-env" (workspace.deps.default
+          // {
+            graphifyy = ["all"];
+          });
 
-        # Wrap the virtualenv so the default package exposes the `graphify`
-        # entry point directly while still carrying metadata from pyproject.toml.
-        graphifyPackage = pkgs.stdenv.mkDerivation {
-          pname = projectMeta.name;
-          version = projectMeta.version;
+        # Wrap a virtualenv so consumers receive stable public entry points while
+        # the environment remains available for smoke checks and composition.
+        mkGraphifyPackage = {
+          environment,
+          suffix ? "",
+        }:
+          pkgs.stdenv.mkDerivation {
+            pname = projectMeta.name + suffix;
+            version = projectMeta.version;
 
-          dontUnpack = true;
-          dontBuild = true;
-          dontConfigure = true;
+            dontUnpack = true;
+            dontBuild = true;
+            dontConfigure = true;
 
-          nativeBuildInputs = [pkgs.makeWrapper];
+            nativeBuildInputs = [pkgs.makeWrapper];
 
-          installPhase = ''
-            mkdir -p $out/bin
-            makeWrapper ${graphifyEnv}/bin/graphify $out/bin/graphify
-          '';
+            installPhase = ''
+              mkdir -p $out/bin
+              makeWrapper ${environment}/bin/graphify $out/bin/graphify
+              if [ -x ${environment}/bin/graphify-mcp ]; then
+                makeWrapper ${environment}/bin/graphify-mcp $out/bin/graphify-mcp
+              fi
+            '';
 
-          passthru = {
-            inherit graphifyEnv;
+            passthru = {
+              graphifyEnv = environment;
+            };
+
+            meta = {
+              description = projectMeta.description;
+              homepage = projectMeta.urls.Homepage;
+              license = lib.licenses.mit;
+              mainProgram = "graphify";
+              platforms = lib.platforms.unix;
+            };
           };
 
-          meta = {
-            description = projectMeta.description;
-            homepage = projectMeta.urls.Homepage;
-            license = lib.licenses.mit;
-            mainProgram = "graphify";
-            platforms = lib.platforms.unix;
-          };
+        graphifyPackage = mkGraphifyPackage {environment = graphifyEnv;};
+        graphifyFullPackage = mkGraphifyPackage {
+          environment = graphifyFullEnv;
+          suffix = "-full";
+        };
+
+        moduleSample = inputs.nixpkgs.lib.nixosSystem {
+          system = pkgs.stdenv.hostPlatform.system;
+          specialArgs.graphifyPackage = graphifyFullPackage;
+          modules = [
+            ./nix/nixos-module.nix
+            {
+              system.stateVersion = "24.11";
+              services.graphify = {
+                enable = true;
+                instances.postgres-only = {
+                  source.postgresql = {
+                    enable = true;
+                    database = "catalog";
+                  };
+                  extraction.noCluster = true;
+                };
+                instances.matrix = {
+                  source = {
+                    path = "/srv/source";
+                    cargo = true;
+                    postgresql = {
+                      enable = true;
+                      host = "/run/postgresql";
+                      database = "app";
+                      user = "graphify";
+                      sslMode = "disable";
+                      pgpassFile = "/run/keys/pgpass";
+                      systemdService = "postgresql.service";
+                    };
+                  };
+                  extraction = {
+                    mode = "deep";
+                    codeOnly = true;
+                    noCluster = true;
+                    dedup = true;
+                    googleWorkspace = true;
+                    global = true;
+                    tag = "matrix";
+                    maxWorkers = 2;
+                    tokenBudget = 4096;
+                    maxConcurrency = 2;
+                    apiTimeout = 30;
+                    resolution = 1.25;
+                    excludeHubs = 0.95;
+                    excludes = ["vendor" "target"];
+                    timing = true;
+                    onCalendar = "hourly";
+                  };
+                  llm = {
+                    backend = "openai";
+                    model = "test-model";
+                    baseUrl = "http://127.0.0.1:8081/v1";
+                    apiKeyFile = "/run/keys/openai";
+                  };
+                  watch = {
+                    enable = true;
+                    debounce = 1.5;
+                  };
+                  server = {
+                    enable = true;
+                    host = "0.0.0.0";
+                    port = 8080;
+                    path = "/mcp";
+                    jsonResponse = true;
+                    stateless = true;
+                    sessionTimeout = 0;
+                    apiKeyFile = "/run/keys/mcp";
+                    openFirewall = true;
+                  };
+                  exports = {
+                    neo4j = {
+                      enable = true;
+                      uri = "bolt://127.0.0.1:7687";
+                      passwordFile = "/run/keys/neo4j";
+                    };
+                    falkordb = {
+                      enable = true;
+                      uri = "falkordb://127.0.0.1:6379";
+                      onCalendar = "daily";
+                    };
+                  };
+                  environment.GRAPHIFY_MAX_RETRIES = "3";
+                  environmentFiles = ["/run/keys/graphify.env"];
+                };
+              };
+            }
+          ];
         };
       in {
+        formatter = pkgs.writeShellApplication {
+          name = "graphify-nix-format";
+          runtimeInputs = [pkgs.alejandra];
+          text = ''
+            has_path=0
+            for argument in "$@"; do
+              case "$argument" in
+                -*) ;;
+                *) has_path=1 ;;
+              esac
+            done
+            if [ "$has_path" -eq 0 ]; then
+              set -- "$@" .
+            fi
+            exec alejandra "$@"
+          '';
+        };
+
         devShells.default = pkgs.mkShell {
           packages = [
             virtualenv
@@ -206,10 +339,32 @@
           '';
         };
 
-        packages.default = graphifyPackage;
+        packages = {
+          default = graphifyPackage;
+          full = graphifyFullPackage;
+        };
 
         checks = {
           inherit (pythonSet.graphifyy.passthru.tests) pytest;
+          full-package = pkgs.runCommand "graphify-full-package-check" {} ''
+            test -x ${graphifyFullPackage}/bin/graphify
+            test -x ${graphifyFullPackage}/bin/graphify-mcp
+            ${graphifyFullEnv}/bin/python -c 'import anthropic, boto3, falkordb, mcp, neo4j, openai, psycopg'
+            touch $out
+          '';
+          nixos-module = pkgs.runCommand "graphify-nixos-module-check" {} ''
+            test '${moduleSample.config.services.graphify.instances.matrix.source.postgresql.database}' = app
+            test '${toString moduleSample.config.services.graphify.instances.matrix.server.port}' = 8080
+            test '${toString moduleSample.config.networking.firewall.allowedTCPPorts}' = 8080
+            case ${lib.escapeShellArg (toString moduleSample.config.systemd.services.graphify-matrix-extract.serviceConfig.ExecStart)} in
+              *graphify-matrix-extract*) ;;
+              *) echo 'missing Graphify extract service' >&2; exit 1 ;;
+            esac
+            test '${moduleSample.config.services.graphify.instances.matrix.exports.neo4j.uri}' = 'bolt://127.0.0.1:7687'
+            test -n '${toString moduleSample.config.systemd.services.graphify-matrix-neo4j.serviceConfig.ExecStart}'
+            test '${toString moduleSample.config.systemd.timers.graphify-matrix-falkordb.timerConfig.OnCalendar}' = daily
+            touch $out
+          '';
         };
 
         apps.default = {

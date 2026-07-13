@@ -1090,7 +1090,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.6"
+version = "0.9.13"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1141,6 +1141,7 @@ all = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "openai" },
     { name = "openpyxl" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pypdf" },
     { name = "python-docx" },
     { name = "starlette" },
@@ -1280,6 +1281,7 @@ requires-dist = [
     { name = "openpyxl", marker = "extra == 'all'" },
     { name = "openpyxl", marker = "extra == 'google'" },
     { name = "openpyxl", marker = "extra == 'office'" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'all'" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'" },
     { name = "pypdf", marker = "extra == 'all'", specifier = ">=6.12.0" },
     { name = "pypdf", marker = "extra == 'pdf'", specifier = ">=6.12.0" },
