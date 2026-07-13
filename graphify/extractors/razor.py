@@ -7,6 +7,14 @@ from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
 
 
+def _simple_type_name(name: str) -> str:
+    """Reduce a (possibly namespaced/generic/array) type ref to its simple class
+    name: `Some.Deep.Namespace.MyViewModel` -> `MyViewModel`,
+    `List<Foo>` -> `List`, `Foo[]` -> `Foo`."""
+    core = name.split("<", 1)[0].split("[", 1)[0].strip()
+    return core.rsplit(".", 1)[-1]
+
+
 def extract_razor(path: Path) -> dict:
     """Extract directives, component refs, and @code methods from .razor/.cshtml."""
     try:
@@ -22,15 +30,24 @@ def extract_razor(path: Path) -> dict:
     seen_ids: set[str] = set()
     seen_ids.add(file_nid)
 
-    def _add_ref(target_name: str, relation: str, line: int) -> None:
-        tgt_nid = _make_id(target_name)
+    def _add_ref(target_name: str, relation: str, line: int, *, type_ref: bool = False) -> None:
+        # Type-reference directives (@model/@inherits/@inject) name a class defined
+        # in another file. Record it like the C# extractor's cross-file type refs:
+        # the simple type name (namespace/generics/array stripped) on a SOURCELESS
+        # stub, so the corpus-level _rewire_unique_stub_nodes collapses it onto the
+        # real class node. A sourced, fully-qualified node (e.g.
+        # `Some.Deep.Namespace.MyViewModel`) never matches the real class
+        # (label `MyViewModel`) and the edge dangles.
+        label = _simple_type_name(target_name) if type_ref else target_name
+        tgt_nid = _make_id(label)
         if not tgt_nid:
             return
         if tgt_nid not in seen_ids:
             seen_ids.add(tgt_nid)
-            nodes.append({"id": tgt_nid, "label": target_name,
-                          "file_type": "code", "source_file": str_path,
-                          "source_location": f"L{line}"})
+            nodes.append({"id": tgt_nid, "label": label,
+                          "file_type": "code",
+                          "source_file": "" if type_ref else str_path,
+                          "source_location": "" if type_ref else f"L{line}"})
         edges.append({"source": file_nid, "target": tgt_nid,
                       "relation": relation, "confidence": "EXTRACTED",
                       "source_file": str_path, "source_location": f"L{line}",
@@ -44,17 +61,17 @@ def extract_razor(path: Path) -> dict:
 
         m = re.match(r'@inject\s+([\w.<>\[\]]+)\s+(\w+)', line)
         if m:
-            _add_ref(m.group(1), "imports", i)
+            _add_ref(m.group(1), "imports", i, type_ref=True)
             continue
 
         m = re.match(r'@inherits\s+([\w.<>\[\]]+)', line)
         if m:
-            _add_ref(m.group(1), "inherits", i)
+            _add_ref(m.group(1), "inherits", i, type_ref=True)
             continue
 
         m = re.match(r'@model\s+([\w.<>\[\]]+)', line)
         if m:
-            _add_ref(m.group(1), "references", i)
+            _add_ref(m.group(1), "references", i, type_ref=True)
             continue
 
         m = re.match(r'@page\s+"([^"]+)"', line)

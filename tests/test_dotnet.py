@@ -490,6 +490,45 @@ def test_razor_code_methods():
     assert "LoadData" in labels
 
 
+def test_razor_model_directive_emits_sourceless_simple_type_stub():
+    """A fully-qualified `@model` must reference the SIMPLE class name on a
+    sourceless stub so the corpus rewire can collapse it onto the real class.
+    Previously it created a sourced, fully-qualified orphan node that never
+    matched the real class (label `MyViewModel`) and the edge dangled.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "View.cshtml"
+        p.write_text("@model Some.Deep.Namespace.MyViewModel\n<div>@Model.Name</div>\n",
+                     encoding="utf-8")
+        r = extract_razor(p)
+    stub = next(n for n in r["nodes"] if n["label"] == "MyViewModel")
+    model_targets = [e["target"] for e in r["edges"] if e["relation"] == "references"]
+    assert stub["id"] in model_targets, "@model edge should target the simple-name node"
+    assert stub["source_file"] == "", "type-ref stub must be sourceless for the rewire"
+    # No fully-qualified orphan node should remain.
+    assert not any(n["label"] == "Some.Deep.Namespace.MyViewModel" for n in r["nodes"])
+
+
+def test_razor_model_resolves_to_real_class_via_stub_rewire():
+    """End-to-end: the sourceless `@model` stub collapses onto the unique real
+    class of the same simple name via _rewire_unique_stub_nodes (the corpus pass)."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    from graphify.extractors.base import _make_id
+    with tempfile.TemporaryDirectory() as d:
+        view = Path(d) / "View.cshtml"
+        view.write_text("@model Some.Deep.Namespace.MyViewModel\n", encoding="utf-8")
+        r = extract_razor(view)
+    real = {"id": _make_id("models", "MyViewModel"), "label": "MyViewModel",
+            "file_type": "code", "source_file": "/app/Models/MyViewModel.cs",
+            "source_location": "L3"}
+    nodes = r["nodes"] + [real]
+    edges = list(r["edges"])
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert any(e["relation"] == "references" and e["target"] == real["id"] for e in edges), \
+        "@model edge should be rewired onto the real class node"
+    assert real["id"] in {n["id"] for n in nodes}
+
+
 def test_razor_missing_file():
     r = extract_razor(Path("/nonexistent/file.razor"))
     assert "error" in r
