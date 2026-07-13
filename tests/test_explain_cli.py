@@ -1,6 +1,7 @@
 """Regression tests for `graphify explain` arrow direction (#853)."""
 from __future__ import annotations
 import json
+import pytest
 import graphify.__main__ as mainmod
 
 
@@ -54,6 +55,22 @@ def test_caller_shows_callee_as_outbound(monkeypatch, tmp_path, capsys):
     out = _run(monkeypatch, p, "createPatchHandler", capsys)
     assert "--> validateSanitySession() [calls]" in out
     assert "<-- " not in out
+
+
+def test_unknown_node_exits_usage_error(monkeypatch, tmp_path, capsys):
+    p = _write_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "explain", "missing", "--graph", str(p)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 2
+    assert "No node matching node 'missing' found." in capsys.readouterr().err
 
 
 def test_explain_source_file_path_prefers_file_level_node(monkeypatch, tmp_path, capsys):

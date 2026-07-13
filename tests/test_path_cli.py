@@ -49,6 +49,22 @@ def test_reverse_arrow(monkeypatch, tmp_path, capsys):
     assert "validateSanitySession() --calls [EXTRACTED]--> createPatchHandler()" not in out
 
 
+def test_unknown_endpoint_exits_usage_error(monkeypatch, tmp_path, capsys):
+    p = _write_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "path", "missing", "validate", "--graph", str(p)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 2
+    assert "No node matching source 'missing' found." in capsys.readouterr().err
+
+
 def _write_misranking_graph(tmp_path):
     """Graph where IDF scoring ranks a partial-token decoy above the full match.
 

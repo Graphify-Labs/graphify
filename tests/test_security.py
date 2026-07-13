@@ -211,6 +211,33 @@ def test_sanitize_label_strips_control_chars():
     assert "\x1f" not in result
     assert "helloworld" in result
 
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "\x00",  # NUL (C0)
+        "\n",
+        "\r",
+        "\x1b",  # ESC
+        "\x85",  # NEXT LINE (C1)
+        "\u2028",  # line separator
+        "\u2029",  # paragraph separator
+        "\u200e",  # left-to-right mark
+        "\u202e",  # right-to-left override
+        "\u2066",  # left-to-right isolate
+        "\u2069",  # pop directional isolate
+        "\ud800",  # isolated high surrogate
+        "\udfff",  # isolated low surrogate
+    ],
+)
+def test_sanitize_label_strips_record_forging_unicode(unsafe):
+    assert sanitize_label(f"before{unsafe}after") == "beforeafter"
+
+
+def test_sanitize_label_preserves_printable_unicode():
+    text = "café 東京 Ελληνικά العربية 😀"
+    assert sanitize_label(text) == text
+
 def test_sanitize_label_caps_at_256():
     long_label = "a" * 300
     assert len(sanitize_label(long_label)) <= 256

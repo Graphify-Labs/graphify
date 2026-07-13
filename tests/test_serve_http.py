@@ -7,6 +7,7 @@ unchanged and covered elsewhere.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -191,13 +192,173 @@ def _init_session(client) -> dict:
     return headers
 
 
-def _call_tool(client, headers, name, arguments, rid) -> str:
+def _call_tool_result(client, headers, name, arguments, rid) -> dict:
     resp = client.post("/mcp", headers=headers, json={
         "jsonrpc": "2.0", "id": rid, "method": "tools/call",
         "params": {"name": name, "arguments": arguments},
     })
     assert resp.status_code == 200
-    return resp.json()["result"]["content"][0]["text"]
+    return resp.json()["result"]
+
+
+def _call_tool(client, headers, name, arguments, rid) -> str:
+    result = _call_tool_result(client, headers, name, arguments, rid)
+    return result["content"][0]["text"]
+
+
+def test_mcp_query_reloads_adjacent_community_labels_and_returns_diagnostics(
+    tmp_path,
+):
+    graph_path = Path(_graph_file(tmp_path))
+    labels_path = tmp_path / ".graphify_labels.json"
+    labels_path.write_text(json.dumps({"0": "First Runtime Label"}), encoding="utf-8")
+    app = serve_mod._build_http_app(str(graph_path), json_response=True)
+
+    with _client(app) as client:
+        headers = _init_session(client)
+        first = _call_tool(
+            client,
+            headers,
+            "query_graph",
+            {"question": 'Alpha community:"First Runtime Label"'},
+            rid=2,
+        )
+        original_stat = labels_path.stat()
+        replacement = tmp_path / "replacement-labels.json"
+        replacement.write_text(json.dumps({"0": "Other Runtime Label"}), encoding="utf-8")
+        assert replacement.stat().st_size == original_stat.st_size
+        os.utime(
+            replacement,
+            ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+        )
+        os.replace(replacement, labels_path)
+        replaced_stat = labels_path.stat()
+        assert replaced_stat.st_size == original_stat.st_size
+        assert replaced_stat.st_mtime_ns == original_stat.st_mtime_ns
+        second = _call_tool(
+            client,
+            headers,
+            "query_graph",
+            {"question": 'Alpha community:"Other Runtime Label"'},
+            rid=3,
+        )
+        unknown = _call_tool(
+            client,
+            headers,
+            "query_graph",
+            {"question": "Alpha community:MissingRuntime"},
+            rid=4,
+        )
+        empty = _call_tool(
+            client,
+            headers,
+            "query_graph",
+            {"question": 'Alpha community:" "'},
+            rid=5,
+        )
+        labels_path.write_text("{not-json", encoding="utf-8")
+        numeric = _call_tool(
+            client,
+            headers,
+            "query_graph",
+            {"question": "Alpha community:0"},
+            rid=6,
+        )
+
+    assert "Filter: community:0 (First Runtime Label)" in first
+    assert "Filter: community:0 (Other Runtime Label)" in second
+    assert unknown.startswith("Error: Unknown or ambiguous community filter")
+    assert "community:0" in unknown
+    assert empty.startswith("Error: Community filter value cannot be empty")
+    assert "Filter: community:0 (Community 0)" in numeric
+
+
+def test_mcp_node_and_path_use_shared_ambiguity_safe_resolver(tmp_path):
+    graph_path = tmp_path / "duplicates.json"
+    graph_path.write_text(json.dumps({
+        "directed": True,
+        "multigraph": False,
+        "nodes": [
+            {"id": "a_run", "label": "run()", "source_file": "src/a.py"},
+            {"id": "b_run", "label": "run()", "source_file": "src/b.py"},
+            {"id": "target", "label": "target()", "source_file": "src/target.py"},
+        ],
+        "links": [
+            {"source": "b_run", "target": "target", "relation": "calls"},
+        ],
+    }), encoding="utf-8")
+    app = serve_mod._build_http_app(str(graph_path), json_response=True)
+
+    with _client(app) as client:
+        headers = _init_session(client)
+        node_result = _call_tool_result(
+            client, headers, "get_node", {"label": "run"}, rid=2
+        )
+        path_result = _call_tool_result(
+            client,
+            headers,
+            "shortest_path",
+            {"source": "run", "target": "target"},
+            rid=3,
+        )
+        qualified = _call_tool(
+            client,
+            headers,
+            "get_node",
+            {"label": "src/b.py::run()"},
+            rid=4,
+        )
+
+    assert node_result.get("isError", False) is False
+    assert path_result.get("isError", False) is False
+    node_error = node_result["content"][0]["text"]
+    path_error = path_result["content"][0]["text"]
+    assert "src/a.py::run() [id=a_run]" in node_error
+    assert "src/b.py::run() [id=b_run]" in node_error
+    assert "src/a.py::run() [id=a_run]" in path_error
+    assert "src/b.py::run() [id=b_run]" in path_error
+    assert "ID: b_run" in qualified
+
+
+def test_mcp_ambiguity_diagnostics_strip_control_characters(tmp_path):
+    graph_path = tmp_path / "hostile-duplicates.json"
+    graph_path.write_text(json.dumps({
+        "directed": True,
+        "multigraph": False,
+        "nodes": [
+            {
+                "id": "a_run\nid",
+                "label": "run()\nFORGED",
+                "source_file": "src/a.py\rINJECT",
+            },
+            {
+                "id": "b_run\x1bid",
+                "label": "run()\x00SECOND",
+                "source_file": "src/b.py\nSPOOF",
+            },
+            {"id": "target", "label": "target()", "source_file": "src/target.py"},
+        ],
+        "links": [],
+    }), encoding="utf-8")
+    app = serve_mod._build_http_app(str(graph_path), json_response=True)
+
+    with _client(app) as client:
+        headers = _init_session(client)
+        node_error = _call_tool(client, headers, "get_node", {"label": "run"}, rid=2)
+        path_error = _call_tool(
+            client,
+            headers,
+            "shortest_path",
+            {"source": "run", "target": "target"},
+            rid=3,
+        )
+
+    for output in (node_error, path_error):
+        assert "\r" not in output
+        assert "\x00" not in output
+        assert "\x1b" not in output
+        assert "src/a.pyINJECT::run()FORGED [id=a_runid]" in output
+        assert "src/b.pySPOOF::run()SECOND [id=b_runid]" in output
 
 
 def test_project_path_is_optional_on_every_tool(tmp_path):

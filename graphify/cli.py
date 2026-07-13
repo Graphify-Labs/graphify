@@ -352,9 +352,17 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print(
+                "Usage: graphify query \"<question> [include:memory] "
+                "[community:<id|label>] [god:<label>]\" "
+                "[--dfs] [--context C] [--budget N] [--graph path]",
+                file=sys.stderr,
+            )
             sys.exit(1)
-        from graphify.serve import _query_graph_text
+        from graphify.serve import (
+            _attach_adjacent_community_labels,
+            _query_graph_text,
+        )
         from graphify.security import sanitize_label
         from networkx.readwrite import json_graph
         from graphify import querylog
@@ -411,6 +419,7 @@ def dispatch_command(cmd: str) -> None:
                 G = json_graph.node_link_graph(_raw, edges="links")
             except TypeError:
                 G = json_graph.node_link_graph(_raw)
+            _attach_adjacent_community_labels(G, gp)
             try:
                 from graphify.build import graph_has_legacy_ids as _legacy
                 if _legacy(_raw.get("nodes", [])):
@@ -446,6 +455,9 @@ def dispatch_command(cmd: str) -> None:
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )
+        if _result.startswith("Error:"):
+            print(_result, file=sys.stderr)
+            sys.exit(2)
         print(_result)
     elif cmd == "affected":
         if len(sys.argv) < 3:
@@ -602,7 +614,8 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _pick_scored_endpoint, _score_nodes
+        from graphify.serve import _format_resolution_error, _resolve_node
+        from graphify.security import sanitize_label as _sl
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -627,41 +640,32 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
-        src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
-        tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
-        if not src_scored:
-            print(f"No node matching '{source_label}' found.", file=sys.stderr)
-            sys.exit(1)
-        if not tgt_scored:
-            print(f"No node matching '{target_label}' found.", file=sys.stderr)
-            sys.exit(1)
-        src_nid = _pick_scored_endpoint(G, src_scored, source_label)
-        tgt_nid = _pick_scored_endpoint(G, tgt_scored, target_label)
+        src_resolution = _resolve_node(G, source_label)
+        tgt_resolution = _resolve_node(G, target_label)
+        if src_resolution.node_id is None:
+            print(
+                _format_resolution_error(G, source_label, src_resolution, role="source"),
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if tgt_resolution.node_id is None:
+            print(
+                _format_resolution_error(G, target_label, tgt_resolution, role="target"),
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        src_nid = src_resolution.node_id
+        tgt_nid = tgt_resolution.node_id
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
         if src_nid == tgt_nid:
             print(
-                f"'{source_label}' and '{target_label}' both resolved to the same "
-                f"node '{src_nid}'. Use a more specific label or the exact node ID.",
+                f"'{_sl(source_label)}' and '{_sl(target_label)}' both resolved to the same "
+                f"node '{_sl(str(src_nid))}'. Use a more specific label or the exact node ID.",
                 file=sys.stderr,
             )
             sys.exit(1)
-        for _name, _scored, _nid in (
-            ("source", src_scored, src_nid),
-            ("target", tgt_scored, tgt_nid),
-        ):
-            # A close runner-up only made the resolution ambiguous when the raw
-            # score head is what got picked; a full-token override was chosen on
-            # token coverage, not score, so the head's margin is irrelevant.
-            if len(_scored) >= 2 and _nid == _scored[0][1]:
-                _top, _runner = _scored[0][0], _scored[1][0]
-                if _top > 0 and (_top - _runner) / _top < 0.10:
-                    print(
-                        f"warning: {_name} match was ambiguous "
-                        f"(top score {_top:g}, runner-up {_runner:g})",
-                        file=sys.stderr,
-                    )
         try:
             path_nodes = _nx.shortest_path(G.to_undirected(as_view=True), src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
@@ -681,13 +685,15 @@ def dispatch_command(cmd: str) -> None:
                 forward = False
             rel = edata.get("relation", "")
             conf = edata.get("confidence", "")
-            conf_str = f" [{conf}]" if conf else ""
+            safe_rel = _sl(str(rel))
+            conf_str = f" [{_sl(str(conf))}]" if conf else ""
             if i == 0:
-                segments.append(G.nodes[u].get("label", u))
+                segments.append(_sl(str(G.nodes[u].get("label") or u)))
+            neighbor = _sl(str(G.nodes[v].get("label") or v))
             if forward:
-                segments.append(f"--{rel}{conf_str}--> {G.nodes[v].get('label', v)}")
+                segments.append(f"--{safe_rel}{conf_str}--> {neighbor}")
             else:
-                segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
+                segments.append(f"<--{safe_rel}{conf_str}-- {neighbor}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
         from graphify import querylog
         querylog.log_query(
@@ -701,7 +707,12 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _find_node
+        from graphify.serve import (
+            _format_resolution_error,
+            _resolve_node,
+            _source_display,
+        )
+        from graphify.security import sanitize_label as _sl
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -724,19 +735,17 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
-        matches = _find_node(G, label)
-        if not matches:
-            print(f"No node matching '{label}' found.")
-            sys.exit(0)
-        nid = matches[0]
+        resolution = _resolve_node(G, label)
+        if resolution.node_id is None:
+            print(_format_resolution_error(G, label, resolution), file=sys.stderr)
+            sys.exit(2)
+        nid = resolution.node_id
         d = G.nodes[nid]
-        print(f"Node: {d.get('label', nid)}")
-        print(f"  ID:        {nid}")
-        print(
-            f"  Source:    {d.get('source_file', '')} {d.get('source_location', '')}".rstrip()
-        )
-        print(f"  Type:      {d.get('file_type', '')}")
-        print(f"  Community: {d.get('community_name') or d.get('community', '')}")
+        print(f"Node: {_sl(str(d.get('label') or nid))}")
+        print(f"  ID:        {_sl(str(nid))}")
+        print(f"  Source:    {_sl(_source_display(d))}")
+        print(f"  Type:      {_sl(str(d.get('file_type', '')))}")
+        print(f"  Community: {_sl(str(d.get('community_name') or d.get('community', '')))}")
         # Work-memory overlay: a derived experiential hint from `graphify reflect`,
         # merged in display-only from the .graphify_learning.json sidecar next to
         # graph.json. No line when the node has no overlay entry.
@@ -775,7 +784,8 @@ def dispatch_command(cmd: str) -> None:
                 rel = edata.get("relation", "")
                 conf = edata.get("confidence", "")
                 arrow = "-->" if direction == "out" else "<--"
-                print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]")
+                neighbor = _sl(str(G.nodes[nb].get("label") or nb))
+                print(f"  {arrow} {neighbor} [{_sl(str(rel))}] [{_sl(str(conf))}]")
             if len(connections) > 20:
                 print(f"  ... and {len(connections) - 20} more")
         from graphify import querylog

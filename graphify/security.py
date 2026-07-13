@@ -8,6 +8,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -388,18 +389,28 @@ def check_graph_file_size_cap(path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+_UNSAFE_LABEL_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
 _MAX_LABEL_LEN = 256
 
 
 def sanitize_label(text: str | None) -> str:
-    """Strip control characters and cap length.
+    """Strip record-forging Unicode controls/formats and cap length.
 
     Safe for embedding in JSON data (inside <script> tags) and plain text.
     For direct HTML injection, wrap the result with html.escape().
+
+    Unicode categories Cc/Cf/Cs/Zl/Zp cover C0/C1 controls, bidi and invisible
+    formatting controls, isolated surrogates, and Unicode line/paragraph
+    separators. Printable letters, marks, symbols, punctuation, and normal
+    spaces are preserved.
     """
     if text is None:
         return ""
-    text = _CONTROL_CHAR_RE.sub("", str(text))
+    text = "".join(
+        char
+        for char in str(text)
+        if unicodedata.category(char) not in _UNSAFE_LABEL_CATEGORIES
+    )
     if len(text) > _MAX_LABEL_LEN:
         text = text[:_MAX_LABEL_LEN]
     return text
