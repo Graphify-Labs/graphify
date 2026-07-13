@@ -31,7 +31,7 @@ CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', 
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
-OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
+OFFICE_EXTENSIONS = {'.docx', '.xlsx', '.pptx'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
 
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
@@ -621,8 +621,30 @@ def xlsx_extract_structure(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+def pptx_to_markdown(path: Path) -> str:
+    """Convert a .pptx file to markdown text using python-pptx."""
+    if not _zip_within_caps(path):
+        return ""
+    try:
+        from pptx import Presentation
+        prs = Presentation(str(path))
+        lines = []
+        for i, slide in enumerate(prs.slides, start=1):
+            lines.append(f"## Slide {i}")
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    text = shape.text_frame.text.strip()
+                    if text:
+                        lines.append(text)
+        return "\n".join(lines)
+    except ImportError:
+        return ""
+    except Exception:
+        return ""
+
+
 def convert_office_file(path: Path, out_dir: Path) -> Path | None:
-    """Convert a .docx or .xlsx to a markdown sidecar in out_dir.
+    """Convert a .docx, .xlsx, or .pptx to a markdown sidecar in out_dir.
 
     Returns the path of the converted .md file, or None if conversion failed
     or the required library is not installed.
@@ -632,6 +654,8 @@ def convert_office_file(path: Path, out_dir: Path) -> Path | None:
         text = docx_to_markdown(path)
     elif ext == ".xlsx":
         text = xlsx_to_markdown(path)
+    elif ext == ".pptx":
+        text = pptx_to_markdown(path)
     else:
         return None
 
@@ -679,6 +703,8 @@ def count_words(path: Path) -> int:
             return len(docx_to_markdown(path).split())
         if ext == ".xlsx":
             return len(xlsx_to_markdown(path).split())
+        if ext == ".pptx":
+            return len(pptx_to_markdown(path).split())
         with open(_os_path(path), encoding="utf-8", errors="ignore") as f:
             return len(f.read().split())
     except Exception:

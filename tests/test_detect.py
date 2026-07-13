@@ -1674,3 +1674,73 @@ def test_detect_surfaces_unreadable_dir_instead_of_silent_skip(tmp_path, capsys)
     assert any(f.endswith("a.py") for f in code)  # rest of tree still enumerated
     assert len(res["walk_errors"]) >= 1
     assert "could not scan" in capsys.readouterr().err
+
+def test_classify_docx():
+    assert classify_file(Path("report.docx")) == FileType.DOCUMENT
+
+def test_classify_xlsx():
+    assert classify_file(Path("data.xlsx")) == FileType.DOCUMENT
+
+def test_classify_pptx():
+    assert classify_file(Path("slides.pptx")) == FileType.DOCUMENT
+
+import pytest
+
+def test_docx_to_markdown(tmp_path):
+    pytest.importorskip("docx")
+    from docx import Document
+    from graphify.detect import docx_to_markdown
+    doc = Document()
+    doc.add_heading("Title", level=1)
+    doc.add_paragraph("Hello world content here.")
+    path = tmp_path / "test.docx"
+    doc.save(path)
+    text = docx_to_markdown(path)
+    assert "Hello" in text or "Title" in text
+
+def test_xlsx_to_markdown(tmp_path):
+    pytest.importorskip("openpyxl")
+    import openpyxl
+    from graphify.detect import xlsx_to_markdown
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Revenue"
+    ws.append(["Month", "Amount", "Region"])
+    ws.append(["Jan", 1000, "North"])
+    path = tmp_path / "data.xlsx"
+    wb.save(path)
+    text = xlsx_to_markdown(path)
+    assert "Revenue" in text
+    assert "Month" in text
+    assert "Amount" in text
+
+def test_pptx_to_markdown(tmp_path):
+    pytest.importorskip("pptx")
+    from pptx import Presentation
+    from graphify.detect import pptx_to_markdown
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[0])
+    slide.shapes.title.text = "Q4 Strategy"
+    path = tmp_path / "deck.pptx"
+    prs.save(path)
+    text = pptx_to_markdown(path)
+    assert "Q4 Strategy" in text
+
+def test_pptx_to_markdown_returns_empty_on_error(tmp_path):
+    from graphify.detect import pptx_to_markdown
+    fake = tmp_path / "corrupt.pptx"
+    fake.write_bytes(b"not a real pptx")
+    result = pptx_to_markdown(fake)
+    assert isinstance(result, str)
+    assert result == ""
+
+def test_count_words_docx(tmp_path):
+    pytest.importorskip("docx")
+    from docx import Document
+    doc = Document()
+    doc.add_heading("Title", level=1)
+    doc.add_paragraph("This document has several words in it.")
+    docx = tmp_path / "test.docx"
+    doc.save(docx)
+    from graphify.detect import count_words
+    assert count_words(docx) > 5
