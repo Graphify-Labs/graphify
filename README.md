@@ -430,6 +430,37 @@ graphify-out/cost.json        # local only
 
 ---
 
+## Curating the graph
+
+Extraction is not perfect. Sometimes an LLM asserts an edge that doesn't exist, and sometimes it misses one you can prove is real. Fixing `graph.json` by hand does not stick:
+
+- **A deleted edge comes back.** The semantic cache is keyed by file *content*, not by graph state, so an unchanged doc keeps its cached edges and the next `graphify extract` re-injects the edge you deleted.
+- **An added edge is destroyed.** `build_merge` replaces per `source_file`: everything belonging to a re-extracted file is dropped from the base graph before merging. A hand-authored edge on that file is dropped, and no extractor re-emits it. The node count *grows* while this happens, so nothing warns you.
+
+`graphify curate` records the correction in `graphify-out/curation.json` and re-applies it on **every** build:
+
+```bash
+# an edge the extractor keeps inventing
+graphify curate deny page_not_found patient_search --relation semantically_similar_to \
+  --reason "lexical collision on 'not found'; no shared service, model, or import"
+
+# an edge you verified in the source but extraction missed
+graphify curate pin usage_table medicare_table --relation shares_data_with --score 0.95 \
+  --source-file src/usage_table.py --source-location L45 \
+  --reason "both read CareManagementReport via subReportLoaded"
+
+graphify curate list     # review the overlay
+graphify curate apply    # apply to graph.json now, without waiting for a rebuild
+```
+
+The overlay is applied when the graph is *built*, not when it is written — so clustering, god nodes and `GRAPH_REPORT.md` all see the corrected graph. A disproved edge stops being re-advertised in Surprising Connections, rather than merely vanishing from `graph.json`.
+
+Denies are matched on the unordered pair, so endpoint order doesn't matter; omit `--relation` to deny every edge between two nodes. A pinned edge whose endpoints aren't both in the graph is skipped, never invented. `curation.json` is small, reviewable, and worth committing — it is the record of what your team has actually verified. Set `GRAPHIFY_NO_CURATION=1` to ignore it for one run.
+
+This complements `save-result --outcome dead_end`, which records *that* a path was false for future readers of `LESSONS.md`. Curation makes the graph itself stop asserting it.
+
+---
+
 ## Using the graph directly
 
 ```bash
@@ -636,6 +667,13 @@ graphify-out/
 /graphify query "..." --dfs --budget 1500
 /graphify path "DigestAuth" "Response"
 /graphify explain "SwinTransformer"
+
+graphify curate deny Foo Bar --relation calls --reason "lexical collision; no call site"   # mark an edge false — removed on every build
+graphify curate deny Foo Bar        # deny every edge between the pair, whatever the relation
+graphify curate pin Foo Bar --relation shares_data_with --score 0.95   # add a verified edge — re-added on every build
+graphify curate list                # show the overlay (graphify-out/curation.json)
+graphify curate apply               # apply it to graph.json without a rebuild
+GRAPHIFY_NO_CURATION=1 graphify update .   # ignore the overlay for one run
 
 graphify save-result --question "Q" --answer "A" --nodes Foo Bar --outcome useful   # record how a Q&A turned out (work memory; outcome ∈ useful|dead_end|corrected)
 graphify reflect                   # aggregate graphify-out/memory/ outcomes into reflections/LESSONS.md

@@ -29,6 +29,7 @@ _BACKUP_ARTIFACTS = [
     "manifest.json",
     ".graphify_semantic_marker",
     "cost.json",
+    "curation.json",
 ]
 
 
