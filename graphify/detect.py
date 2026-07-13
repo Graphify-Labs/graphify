@@ -1581,9 +1581,15 @@ def detect_incremental(
             except Exception:
                 current_mtime = 0
 
-            # Legacy manifest: plain float value — treat as ast_hash only
+            # Legacy manifest: plain float value stores only mtime.
+            # Compare with `!=` so backwards mtime motion (git checkout of an
+            # older commit, tarball restore, rsync --times) still triggers a
+            # re-extract; the previous `>` silently kept the stale cache and
+            # the graph drifted from disk (#1859). No stored hash means we
+            # cannot verify content — any mtime delta forces a re-extract,
+            # and the next save promotes the entry into the dict schema.
             if isinstance(stored, (int, float)):
-                changed = stored is None or current_mtime > stored
+                changed = current_mtime != stored
             elif isinstance(stored, dict):
                 # Normalise legacy {mtime, hash} to new schema
                 if "hash" in stored and "ast_hash" not in stored:

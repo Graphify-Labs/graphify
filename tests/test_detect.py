@@ -369,6 +369,67 @@ def test_detect_incremental_survives_dict_valued_mtime(tmp_path, monkeypatch):
     assert not any("mod.py" in f for f in result["unchanged_files"]["code"])
 
 
+def test_detect_incremental_legacy_float_reextracts_on_backwards_mtime(tmp_path, monkeypatch):
+    """Legacy float manifests must re-extract when mtime moves BACKWARDS (#1859).
+
+    Pre-fix the legacy branch used `current_mtime > stored`, which silently kept
+    the cached entry after operations that restore older mtimes: `git checkout`
+    of an older commit, `tar -xf` restore, or `rsync --times`. The graph then
+    reflected the newer content while disk held the older content. The dict
+    branch has always used `!=`; this test pins the legacy branch to the same
+    contract.
+    """
+    import json
+
+    monkeypatch.chdir(tmp_path)
+
+    src = tmp_path / "mod.py"
+    src.write_text("def old_content():\n    return 1\n", encoding="utf-8")
+    current_mtime = os.stat(src).st_mtime
+
+    manifest_dir = tmp_path / "graphify-out"
+    manifest_dir.mkdir()
+    manifest_path = str(manifest_dir / "manifest.json")
+
+    # Legacy schema (pre-dict-migration): the value is a bare float mtime.
+    # Store a mtime FROM THE FUTURE, simulating a checkout of an older
+    # revision that restored the file to an earlier timestamp.
+    future_mtime = current_mtime + 3600
+    legacy = {str(src.resolve()): future_mtime}
+    Path(manifest_path).write_text(json.dumps(legacy), encoding="utf-8")
+
+    result = detect_incremental(tmp_path, manifest_path)
+
+    assert any("mod.py" in f for f in result["new_files"]["code"]), (
+        "backwards-moving mtime on a legacy manifest entry must trigger re-extract"
+    )
+    assert not any("mod.py" in f for f in result["unchanged_files"]["code"])
+
+
+def test_detect_incremental_legacy_float_skips_when_mtime_matches(tmp_path, monkeypatch):
+    """Non-regression for the fix above: legacy float branch still skips when
+    the stored mtime equals the current mtime."""
+    import json
+
+    monkeypatch.chdir(tmp_path)
+
+    src = tmp_path / "mod.py"
+    src.write_text("def stable():\n    return 1\n", encoding="utf-8")
+
+    manifest_dir = tmp_path / "graphify-out"
+    manifest_dir.mkdir()
+    manifest_path = str(manifest_dir / "manifest.json")
+
+    # Legacy schema with the exact current mtime → no change → skip.
+    legacy = {str(src.resolve()): os.stat(src).st_mtime}
+    Path(manifest_path).write_text(json.dumps(legacy), encoding="utf-8")
+
+    result = detect_incremental(tmp_path, manifest_path)
+
+    assert not any("mod.py" in f for f in result["new_files"]["code"])
+    assert any("mod.py" in f for f in result["unchanged_files"]["code"])
+
+
 def test_classify_video_extensions():
     """Video and audio file extensions should classify as VIDEO."""
     from graphify.detect import FileType
