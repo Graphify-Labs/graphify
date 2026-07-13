@@ -417,11 +417,16 @@ def deduplicate_entities(
 
     total = len(remap)
     msg = f"[graphify] Deduplicated {total} node(s)"
+    # Both counters are reported when non-zero. Previous form nested the fuzzy
+    # branch inside `if exact_merges`, silently dropping the fuzzy count on
+    # doc/semantic-heavy runs where Pass 1 finds nothing (#1857).
+    parts: list[str] = []
     if exact_merges:
-        msg += f" ({exact_merges} exact"
-        if fuzzy_merges:
-            msg += f", {fuzzy_merges} fuzzy"
-        msg += ")"
+        parts.append(f"{exact_merges} exact")
+    if fuzzy_merges:
+        parts.append(f"{fuzzy_merges} fuzzy")
+    if parts:
+        msg += f" ({', '.join(parts)})"
     print(msg + ".", flush=True)
 
     deduped_nodes = [n for n in unique_nodes if n["id"] not in remap]

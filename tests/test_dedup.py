@@ -404,3 +404,39 @@ def test_same_id_same_source_file_no_warning(capsys):
     assert len(result_nodes) == 1
     captured = capsys.readouterr()
     assert "WARNING" not in captured.err
+
+
+# ── #1857: dedup summary log breakdown ────────────────────────────────────────
+
+def test_dedup_summary_prints_fuzzy_count_when_no_exact_merges(capsys):
+    """A fuzzy-only run must still report the fuzzy count (#1857).
+
+    Two long, high-entropy, non-code labels on different files. Pass 1 (exact,
+    same-file) finds nothing; Pass 2 (Jaro-Winkler cross-file) merges them.
+    Previously the fuzzy count was nested inside `if exact_merges`, so this
+    line printed as `Deduplicated 1 node(s).` with no breakdown.
+    """
+    nodes = [
+        {"id": "g1", "label": "GraphExtractor", "file_type": "concept", "source_file": "a.md"},
+        {"id": "g2", "label": "Graph Extractor", "file_type": "concept", "source_file": "b.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+    captured = capsys.readouterr()
+    assert "Deduplicated" in captured.out
+    assert "fuzzy" in captured.out
+    assert "exact" not in captured.out
+
+
+def test_dedup_summary_still_reports_exact_only(capsys):
+    """Non-regression: an exact-only run still prints `(N exact)` and no fuzzy."""
+    # Same file + same normalized label → Pass 1 exact merge.
+    nodes = [
+        {"id": "u1", "label": "User Service", "file_type": "concept", "source_file": "svc.md"},
+        {"id": "u2", "label": "user service", "file_type": "concept", "source_file": "svc.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+    captured = capsys.readouterr()
+    assert "exact" in captured.out
+    assert "fuzzy" not in captured.out
