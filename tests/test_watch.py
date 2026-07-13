@@ -1466,3 +1466,65 @@ def test_rebuild_code_still_evicts_when_excluded_file_is_also_deleted(tmp_path):
     labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
     assert "brainstorm.md" not in labels, "deleted file's nodes must still be evicted"
     assert "login()" in labels
+
+
+def test_rebuild_code_evicts_legacy_ast_ghost_without_origin_marker(tmp_path):
+    """A full rebuild must reconcile away a legacy AST node that predates the
+    `_origin` marker (older graph.json, or a node-id-scheme migration) when the
+    fresh AST pass re-produces the same symbol under the canonical id.
+
+    Regression: such a node carries no `_origin=="ast"`, so the AST-ownership
+    eviction rule misses it, and build_from_json's (basename, label) ghost-merge
+    cannot reconcile it in a monorepo where that key is ambiguous across
+    same-named files (app_a/... and app_b/... both define SolicitudComponent).
+    The node then survives forever as an orphan with zero edges. Genuine
+    semantic nodes on the same file (different label) must still be preserved.
+    """
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "app_a").mkdir(parents=True)
+    (corpus / "app_b").mkdir(parents=True)
+    src = "export class SolicitudComponent {\n  constructor() {}\n}\n"
+    (corpus / "app_a" / "solicitud.component.ts").write_text(src, encoding="utf-8")
+    (corpus / "app_b" / "solicitud.component.ts").write_text(src, encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+
+    # Seed a legacy ghost (no `_origin`, old doubled-stem id) for app_a's
+    # component, plus a genuine semantic node on the same file that must survive.
+    ghost_id = "app_a_solicitud_component_ts_solicitud_component_solicitudcomponent"
+    data["nodes"].append({
+        "id": ghost_id,
+        "label": "SolicitudComponent",
+        "file_type": "code",
+        "source_file": "app_a/solicitud.component.ts",
+        "source_location": "L1",
+    })
+    data["nodes"].append({
+        "id": "app_a_solicitud_component_wizard_pattern",
+        "label": "Wizard Multi-Step Pattern",
+        "file_type": "rationale",
+        "source_file": "app_a/solicitud.component.ts",
+        "source_location": None,
+    })
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, force=True, acquire_lock=False) is True
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    ids = {n["id"] for n in after["nodes"]}
+
+    assert ghost_id not in ids, "legacy AST ghost must be evicted on full rebuild"
+    assert "app_a_solicitud_component_wizard_pattern" in ids, (
+        "genuine semantic node on the same file must be preserved"
+    )
+    # The canonical freshly-extracted node survives and still carries its edges.
+    canonical = "app_a_solicitud_component_solicitudcomponent"
+    assert canonical in ids
+    degree = 0
+    for edge in after.get("links", after.get("edges", [])):
+        if canonical in (edge.get("source"), edge.get("target")):
+            degree += 1
+    assert degree > 0, "canonical node must retain its structural edges"

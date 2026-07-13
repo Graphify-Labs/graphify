@@ -400,6 +400,21 @@ def _reconcile_existing_graph(
             normalize_source=_nsf,
         )
         new_ast_ids = {n["id"] for n in result["nodes"]}
+        # Identity of every symbol the fresh AST pass just re-produced, keyed by
+        # (canonical source path, label). A preserved node that matches one of
+        # these but carries a *different* id is a stale twin of the freshly
+        # extracted node — typically a legacy node from a graph.json written
+        # before the `_origin` marker (#1116) or before an id-scheme change, so
+        # the AST-ownership rule below (which gates on `_origin == "ast"`) can't
+        # see it, and build_from_json's (basename, label) ghost-merge can't
+        # reconcile it in a monorepo where that key is ambiguous across
+        # same-named files. Evict it here by exact source+label identity so the
+        # next full rebuild self-heals instead of accumulating orphan ghosts.
+        fresh_ast_identities = {
+            (source_paths.identity(node.get("source_file")), node.get("label"))
+            for node in result["nodes"]
+            if node.get("source_file") and node.get("label")
+        }
         current_sources = {
             source_paths.absolute_identity(str(path), project_root) for path in code_files
         }
@@ -482,6 +497,11 @@ def _reconcile_existing_graph(
                 )
             )
             and not source_paths.is_evicted(node, node_evicted_source_identities)
+            and (
+                source_paths.identity(node.get("source_file")),
+                node.get("label"),
+            )
+            not in fresh_ast_identities
         ]
         all_ids = new_ast_ids | {node["id"] for node in preserved_nodes}
 
