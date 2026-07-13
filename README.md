@@ -207,6 +207,42 @@ Keep `simit.toml`, `nix/pre-commit.nix`, and `.github/workflows/ci.yaml` in
 sync; the workflow intentionally builds the named `pytest` check instead of
 duplicating a second Python dependency installation path.
 
+For a long-running NixOS deployment, import `graphify.nixosModules.default`.
+The module uses the full runtime package (including MCP, PostgreSQL, graph
+database exports, and every built-in LLM provider) while `packages.default`
+stays lean for interactive AST-only use. Each named instance owns independent
+state, source selection, extraction schedule, optional file watcher, HTTP MCP
+listener, and Neo4j/FalkorDB sinks:
+
+```nix
+{
+  imports = [inputs.graphify.nixosModules.default];
+
+  services.graphify = {
+    enable = true;
+    instances.database = {
+      source.postgresql = {
+        enable = true;
+        host = "/run/postgresql";
+        database = "app";
+        user = "graphify";
+        systemdService = "postgresql.service";
+      };
+      extraction.onCalendar = "daily";
+      server.enable = true; # loopback HTTP MCP on port 8080
+    };
+  };
+}
+```
+
+PostgreSQL is a read-only schema input, not Graphify's persistence backend;
+the resulting graph remains
+`/var/lib/graphify/<instance>/graphify-out/graph.json`. The reusable module
+does not create database roles or grants. Host policy must provision a role
+that can see the selected schema. Passwords, pgpass files, provider keys, MCP
+keys, and graph-database passwords have file-backed options and are loaded as
+systemd credentials instead of appearing on process command lines.
+
 ---
 
 **Step 2 — register the skill with your AI assistant:**
