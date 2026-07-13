@@ -529,6 +529,88 @@ def test_razor_model_resolves_to_real_class_via_stub_rewire():
     assert real["id"] in {n["id"] for n in nodes}
 
 
+def test_razor_using_alias_emits_sourceless_aliased_type_stub():
+    """`@using Alias = Qualified.Type` names a TYPE: it must reference the
+    ALIASED type's simple name on a SOURCELESS stub (so the corpus rewire can
+    collapse it onto the real class), NOT record the alias as a sourced node.
+    A sourced alias node is a type-like decoy that blocks the rewire."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "View.cshtml"
+        p.write_text(
+            "@using Alias = Some.Deep.Namespace.MyEnum\n"
+            "<div>@Alias.SomeValue</div>\n",
+            encoding="utf-8")
+        r = extract_razor(p)
+    stub = next(n for n in r["nodes"] if n["label"] == "MyEnum")
+    assert stub["source_file"] == "", "aliased-type stub must be sourceless for the rewire"
+    import_targets = [e["target"] for e in r["edges"] if e["relation"] == "imports"]
+    assert stub["id"] in import_targets, "@using-alias edge should target the aliased-type stub"
+    # No fully-qualified orphan and no sourced alias decoy should remain.
+    assert not any(n["label"] == "Some.Deep.Namespace.MyEnum" for n in r["nodes"])
+    assert not any(n["label"] == "MyEnum" and n["source_file"] for n in r["nodes"])
+
+
+def test_razor_using_alias_resolves_to_rhs_type_not_alias_name():
+    """When the alias name differs from the aliased type, the stub is named for
+    the RHS type (the real class), not the left-hand alias."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "View.cshtml"
+        p.write_text("@using FF = Some.Deep.Namespace.MyEnum\n", encoding="utf-8")
+        r = extract_razor(p)
+    labels = {n["label"] for n in r["nodes"]}
+    assert "MyEnum" in labels, "stub should be named for the aliased (RHS) type"
+    assert "FF" not in labels, "the alias name must not become a node"
+
+
+def test_razor_plain_using_namespace_still_sourced():
+    """A plain namespace import `@using Ns.Sub` is NOT a type alias and keeps its
+    prior behavior: a sourced node labeled with the namespace."""
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "View.cshtml"
+        p.write_text("@using Some.Other.Namespace\n", encoding="utf-8")
+        r = extract_razor(p)
+    node = next(n for n in r["nodes"] if n["label"] == "Some.Other.Namespace")
+    assert node["source_file"] != "", "plain @using namespace import stays sourced"
+
+
+def test_razor_using_alias_decoys_no_longer_block_stub_rewire():
+    """End-to-end regression: several views aliasing the same enum used to emit
+    one SOURCED decoy each, so the enum label was ambiguous (>1 'real def') and
+    _rewire_unique_stub_nodes refused to collapse a consumer's stub onto the real
+    enum. With the alias emitted sourceless, the real enum is the unique def and
+    the consumer stub collapses onto it."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    from graphify.extractors.base import _make_id
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    with tempfile.TemporaryDirectory() as d:
+        for name in ("ViewOne.cshtml", "ViewTwo.cshtml", "ViewThree.cshtml"):
+            v = Path(d) / name
+            v.write_text(
+                "@using Alias = Some.Deep.Namespace.MyEnum\n",
+                encoding="utf-8")
+            r = extract_razor(v)
+            nodes += r["nodes"]
+            edges += list(r["edges"])
+    # The one real enum definition (sourced, simple-name label).
+    real = {"id": _make_id("enums", "MyEnum"), "label": "MyEnum",
+            "file_type": "code", "source_file": "/app/Enums/MyEnum.cs",
+            "source_location": "L5"}
+    # A consumer (e.g. a helper class) referencing the enum via a sourceless stub.
+    consumer_stub = {"id": _make_id("stub", "myenum"), "label": "MyEnum",
+                     "file_type": "code", "source_file": "", "source_location": ""}
+    helper = _make_id("helpers", "WidgetHelper")
+    nodes += [real, consumer_stub]
+    edges.append({"source": helper, "target": consumer_stub["id"],
+                  "relation": "references", "confidence": "EXTRACTED", "weight": 1.0})
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert any(e["source"] == helper and e["target"] == real["id"] for e in edges), \
+        "consumer stub should collapse onto the unique real enum once alias decoys are sourceless"
+    assert real["id"] in {n["id"] for n in nodes}
+    # No sourced MyEnum node other than the real enum survives.
+    assert [n for n in nodes if n["label"] == "MyEnum" and n["source_file"]] == [real]
+
+
 def test_razor_missing_file():
     r = extract_razor(Path("/nonexistent/file.razor"))
     assert "error" in r

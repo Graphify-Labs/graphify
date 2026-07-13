@@ -54,6 +54,17 @@ def extract_razor(path: Path) -> dict:
                       "weight": 1.0})
 
     for i, line in enumerate(src.splitlines(), 1):
+        # A using-alias `@using Alias = Qualified.Type` names a TYPE, not a
+        # namespace. Resolve it to the ALIASED type as a sourceless simple-name
+        # stub (like @model/@inherits) so the corpus rewire collapses it onto
+        # the real class. Recording the alias itself as a sourced node creates a
+        # type-like decoy per view, which blocks _rewire_unique_stub_nodes from
+        # collapsing the real stub (it only merges when exactly one def exists).
+        m = re.match(r'@using\s+\w+\s*=\s*([\w.]+)', line)
+        if m:
+            _add_ref(m.group(1), "imports", i, type_ref=True)
+            continue
+
         m = re.match(r'@using\s+([\w.]+)', line)
         if m:
             _add_ref(m.group(1), "imports", i)
