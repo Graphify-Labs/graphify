@@ -6,6 +6,7 @@ Jaro-Winkler verification → same-community boost → union-find merge.
 from __future__ import annotations
 import math
 import re
+import sys
 import unicodedata
 from collections import defaultdict
 
@@ -219,12 +220,29 @@ def deduplicate_entities(
     if len(nodes) <= 1:
         return nodes, edges
 
-    # Pre-deduplicate: keep first occurrence of each id
+    # Pre-deduplicate: keep first occurrence of each id.
+    # Warn when two nodes share an ID but originate from different source files —
+    # this indicates a cross-chunk ID collision (#1504) where silent data loss occurs.
     seen_ids: dict[str, dict] = {}
     for node in nodes:
         nid = node.get("id", "")
-        if nid and nid not in seen_ids:
+        if not nid:
+            continue
+        if nid not in seen_ids:
             seen_ids[nid] = node
+        else:
+            existing_sf = seen_ids[nid].get("source_file") or ""
+            new_sf = node.get("source_file") or ""
+            if existing_sf != new_sf:
+                print(
+                    f"[graphify] WARNING: node '{nid}' from '{new_sf}' collides with "
+                    f"node from '{existing_sf}' — the second node will be dropped. "
+                    f"This is a cross-chunk ID collision caused by two files with the "
+                    f"same name in different directories. To avoid data loss, run "
+                    f"'graphify extract' per subfolder and merge with "
+                    f"'graphify merge-graphs'.",
+                    file=sys.stderr,
+                )
     unique_nodes = list(seen_ids.values())
 
     if len(unique_nodes) <= 1:

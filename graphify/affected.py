@@ -11,6 +11,7 @@ import networkx as nx
 
 DEFAULT_AFFECTED_RELATIONS = (
     "calls",
+    "indirect_call",
     "references",
     "imports",
     "imports_from",
@@ -148,6 +149,27 @@ def affected_nodes(
     queue: deque[tuple[str, int]] = deque([(seed, 0)])
     hits: list[AffectedHit] = []
 
+    # #1669: seed the reverse walk with the root's own member nodes (one outward
+    # `method`/`contains` hop). A caller can bind to a class's method node rather
+    # than the class node itself (e.g. `Service.call` resolves to the `def
+    # self.call` node, #1634), so those callers are unreachable from the class
+    # otherwise. The member nodes are seeds only (not reported as hits), and
+    # `method`/`contains` stay out of the general relation-filtered walk, so this
+    # adds no forward noise anywhere else.
+    if hasattr(graph, "out_edges"):
+        member_edges = graph.out_edges(seed, data=True)
+    else:
+        member_edges = (
+            (s, t, d) for s, t, d in graph.edges(data=True) if s == seed
+        )
+    for _s, member, data in member_edges:
+        if str(data.get("relation", "")) not in ("method", "contains"):
+            continue
+        member = str(member)
+        if member not in seen:
+            seen.add(member)
+            queue.append((member, 0))
+
     while queue:
         current, current_depth = queue.popleft()
         if current_depth >= depth:
@@ -209,7 +231,13 @@ def load_graph(path: Path) -> nx.Graph:
     import json
     from networkx.readwrite import json_graph
 
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"Cannot read graph file {path}: {exc}. "
+            "Re-run 'graphify extract' to regenerate it."
+        ) from exc
     # Force directed so stored caller→callee direction survives the round-trip;
     # mirrors serve.py and __main__.py (#1174).
     raw = {**raw, "directed": True}

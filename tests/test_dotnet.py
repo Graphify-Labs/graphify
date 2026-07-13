@@ -45,6 +45,35 @@ def test_sln_project_dependency():
     assert "imports" in _relations(r)
 
 
+def test_sln_solution_folder_ids_are_relative(tmp_path):
+    """Solution folders are virtual groupings, not files. Their node ids must be
+    derived from the folder name only — never the resolved absolute scan path,
+    which would leak the local username into a committed graph.json (#1789)."""
+    sln = tmp_path / "App.sln"
+    sln.write_text(
+        'Microsoft Visual Studio Solution File, Format Version 12.00\n'
+        # a solution folder: type GUID 2150E333-... , name == path, no real file
+        'Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Plugins", "Plugins", '
+        '"{11111111-1111-1111-1111-111111111111}"\n'
+        'EndProject\n'
+        # a real project resolves to an absolute path as before
+        'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\\App.csproj", '
+        '"{22222222-2222-2222-2222-222222222222}"\n'
+        'EndProject\n',
+        encoding="utf-8",
+    )
+    r = extract_sln(sln)
+    assert "error" not in r
+    # The virtual solution folder must be keyed off its name, with no trace of the
+    # absolute scan path. (Real-file nodes — the .sln and .csproj — legitimately
+    # carry absolute ids here; the CLI's id-relativization pass remaps those, but
+    # never the virtual folder, which is why the leak had to be fixed at source.)
+    folder = next(n for n in r["nodes"] if n["label"] == "Plugins")
+    assert folder["id"] == "plugins"
+    assert folder["source_file"] == "Plugins"
+    assert str(tmp_path) not in folder["id"]
+
+
 # ── .slnx ────────────────────────────────────────────────────────────────────
 
 def test_slnx_extracts_projects():

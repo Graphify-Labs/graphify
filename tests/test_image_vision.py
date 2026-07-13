@@ -70,6 +70,22 @@ def test_non_pdf_still_read_as_plain_text(tmp_path):
     assert "# hello" in llm._file_to_text(md)
 
 
+def test_read_files_skips_out_of_root_symlink(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.md"
+    secret.write_text("SECRET SHOULD NOT REACH THE PROMPT")
+    link = root / "secret.md"
+    link.symlink_to(secret)
+
+    out = llm._read_files([link], root)
+
+    assert out == ""
+    assert "SECRET SHOULD NOT REACH THE PROMPT" not in out
+
+
 def test_partition_splits_raster_from_text(tmp_path):
     img, svg, doc = _make_corpus(tmp_path)
     text_files, image_files = llm._partition_semantic_files([doc, img, svg])
@@ -86,6 +102,21 @@ def test_build_image_refs_sets_rel_media_and_bytes(tmp_path):
     assert ref.raw == _PNG_BYTES
     assert ref.b64  # non-empty base64
     assert ref.bedrock_format == "png"
+
+
+def test_build_image_refs_skips_out_of_root_symlink(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.png"
+    secret.write_bytes(_PNG_BYTES)
+    link = root / "secret.png"
+    link.symlink_to(secret)
+
+    refs = llm._build_image_refs([link], root)
+
+    assert refs == []
 
 
 def test_build_image_refs_drops_oversized(tmp_path, monkeypatch):

@@ -1,5 +1,6 @@
 """Tests for hooks.py - git hook install/uninstall."""
 import os
+import shutil
 import subprocess
 from types import SimpleNamespace
 from pathlib import Path
@@ -254,12 +255,21 @@ def test_hooks_use_cross_platform_detach(name, script):
     assert "0x00000200" in script, f"{name} missing CREATE_NEW_PROCESS_GROUP flag"
 
 
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_limit_windows_workers_by_default(name, script):
+    """Git for Windows/MSYS hooks can expose fragile pipe handles to spawned
+    ProcessPoolExecutor children. Hook-triggered rebuilds should default to one
+    worker there, while still allowing explicit user overrides."""
+    assert '[ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]' in script
+    assert 'export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"' in script
+
+
 def _launcher_payload(script: str) -> str:
     """Extract the `python -c "<payload>"` the hook hands to GRAPHIFY_PYTHON.
 
     The launcher is the only `-c` invocation whose body begins with
     `import os, subprocess, sys` (the interpreter-detection probes in
-    _PYTHON_DETECT use `-c "import graphify"`)."""
+    _PYTHON_DETECT use `-c "$_GFY_PROBE"`)."""
     m = re.search(r'-c "(import os, subprocess, sys.*?)"\n', script, re.DOTALL)
     assert m, "launcher payload not found"
     return m.group(1)
@@ -351,9 +361,10 @@ def _set_hookspath(repo: Path, value: str) -> None:
     r"D:\hooks",
     r"some\back\slashed\path",
 ])
-def test_windows_hookspath_rejected_no_junk_dir(tmp_path, winpath):
+def test_windows_hookspath_rejected_no_junk_dir_on_posix(tmp_path, monkeypatch, winpath):
     """A Windows-style core.hooksPath must raise (loud failure), not silently
-    create a backslash-named junk directory and report success (#1385)."""
+    create a backslash-named junk directory and report success on POSIX/WSL (#1385)."""
+    monkeypatch.setattr("graphify.hooks.os.name", "posix")
     repo = _make_git_repo(tmp_path)
     _set_hookspath(repo, winpath)
     with pytest.raises(RuntimeError, match="Windows path"):
@@ -377,3 +388,103 @@ def test_default_hooks_dir_unaffected(tmp_path):
     repo = _make_git_repo(tmp_path)
     install(repo)
     assert (repo / ".git" / "hooks" / "post-commit").exists()
+
+
+# ── foreground hook cost: probes must be cheap and quiet ─────────────────────
+
+def test_probes_use_find_spec_not_full_import():
+    """`python -c "import graphify"` executes the FULL package import — 10s+ on a
+    cold cache or AV-scanned site-packages — and could run up to four times
+    synchronously before the detached launch even started, so every commit
+    stalled for tens of seconds. Probes must locate the package with
+    importlib.util.find_spec (no execution); the detached rebuild still reports
+    a broken install loudly in its log."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert '-c "import graphify"' not in _PYTHON_DETECT, (
+        "interpreter probe still imports the full package in the hook foreground"
+    )
+    assert "find_spec" in _PYTHON_DETECT
+
+
+def test_shebang_read_is_null_byte_safe():
+    """On Windows, `command -v graphify` can return the launcher path WITHOUT its
+    .exe suffix, so the `*.exe)` guard misses and the shebang probe reads a
+    BINARY: the shell then warns 'ignored null byte in input' on every commit and
+    the extracted garbage always falls through to the slow fallbacks. The read
+    must strip NULs before the command substitution sees them."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert "tr -d '\\000'" in _PYTHON_DETECT, "shebang read is not NUL-safe"
+
+
+def test_probe_prefers_sibling_python_exe_on_windows_layouts():
+    """pip on Windows puts Scripts/graphify(.exe) beside ..\\python.exe (or
+    .\\python.exe in a venv). Resolving that directly beats shebang-parsing a
+    binary launcher — and works whether or not command -v kept the suffix."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert "/../python.exe" in _PYTHON_DETECT
+    assert "/python.exe" in _PYTHON_DETECT
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_reuse_git_dir_from_env(name, script):
+    """git exports GIT_DIR to hooks, so the rev-parse fallback should only run
+    when the script is invoked by hand — each extra git exec costs 1s+ on
+    AV-scanned Windows machines and lands in the commit's foreground."""
+    assert "GIT_DIR=${GIT_DIR:-" in script, f"{name} always re-runs git rev-parse"
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_honor_skip_env(name, script):
+    """GRAPHIFY_SKIP_HOOK=1 must suppress BOTH hooks. post-checkout previously
+    lacked the check, so the var stopped commit rebuilds but not branch-switch
+    ones (#1809)."""
+    assert '[ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0' in script, (
+        f"{name} does not honor GRAPHIFY_SKIP_HOOK"
+    )
+
+
+@pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
+def test_hooks_skip_linked_worktrees(name, script):
+    """Both hooks must short-circuit in a linked worktree (git-dir != common-dir),
+    and must compare ABSOLUTE paths so the primary checkout (where --git-common-dir
+    is the relative ".git") is not false-positived and wrongly skipped (#1809, #1806)."""
+    assert script.count("_GFY_GITDIR=") == 1, f"{name} guard not present exactly once"
+    assert "git rev-parse --git-common-dir" in script
+    # absolute-normalized compare, not a raw string compare of git output
+    assert 'cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd' in script
+    assert '[ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]' in script
+
+
+def _worktree_guard_snippet() -> str:
+    from graphify.hooks import _WORKTREE_GUARD
+    return _WORKTREE_GUARD + "echo RAN\n"
+
+
+def test_worktree_guard_runs_on_primary_skips_linked(tmp_path):
+    """End-to-end against a real `git worktree`: the guard falls through on the
+    primary checkout and exits early inside a linked worktree (#1809, #1806)."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+    primary = tmp_path / "primary"
+    primary.mkdir()
+
+    def _git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True,
+                       capture_output=True, text=True)
+
+    _git("init", "-q", ".", cwd=primary)
+    _git("config", "user.email", "t@t.co", cwd=primary)
+    _git("config", "user.name", "t", cwd=primary)
+    (primary / "a.txt").write_text("x")
+    _git("add", "-A", cwd=primary)
+    _git("commit", "-qm", "init", cwd=primary)
+    linked = tmp_path / "linked"
+    _git("worktree", "add", "-q", str(linked), "-b", "feature", cwd=primary)
+
+    snippet = _worktree_guard_snippet()
+    r_primary = subprocess.run(["sh", "-c", snippet], cwd=primary,
+                               capture_output=True, text=True)
+    r_linked = subprocess.run(["sh", "-c", snippet], cwd=linked,
+                              capture_output=True, text=True)
+    assert "RAN" in r_primary.stdout, "guard wrongly skipped the primary checkout"
+    assert "RAN" not in r_linked.stdout, "guard failed to skip the linked worktree"

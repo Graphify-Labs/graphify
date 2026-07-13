@@ -51,6 +51,7 @@ enum NetworkError {
     case timeout
     case connectionFailed
     case unauthorized
+    case failed(Config)
 
     func describe() -> String {
         return "error"

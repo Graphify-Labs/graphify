@@ -1,38 +1,54 @@
 <p align="center">
-  <a href="https://graphifylabs.ai"><img src="https://raw.githubusercontent.com/safishamsi/graphify/v4/docs/logo-text.svg" width="260" height="64" alt="Graphify"/></a>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/logo.png" width="300" height="140" alt="Graphify"/></a>
 </p>
 
 <p align="center">
-  🇺🇸 <a href="README.md">English</a> | 🇨🇳 <a href="docs/translations/README.zh-CN.md">简体中文</a> | 🇯🇵 <a href="docs/translations/README.ja-JP.md">日本語</a> | 🇰🇷 <a href="docs/translations/README.ko-KR.md">한국어</a> | 🇩🇪 <a href="docs/translations/README.de-DE.md">Deutsch</a> | 🇫🇷 <a href="docs/translations/README.fr-FR.md">Français</a> | 🇪🇸 <a href="docs/translations/README.es-ES.md">Español</a> | 🇮🇳 <a href="docs/translations/README.hi-IN.md">हिन्दी</a> | 🇧🇷 <a href="docs/translations/README.pt-BR.md">Português</a> | 🇷🇺 <a href="docs/translations/README.ru-RU.md">Русский</a> | 🇸🇦 <a href="docs/translations/README.ar-SA.md">العربية</a> | 🇮🇷 <a href="docs/translations/README.fa-IR.md">فارسی</a> | 🇮🇹 <a href="docs/translations/README.it-IT.md">Italiano</a> | 🇵🇱 <a href="docs/translations/README.pl-PL.md">Polski</a> | 🇳🇱 <a href="docs/translations/README.nl-NL.md">Nederlands</a> | 🇹🇷 <a href="docs/translations/README.tr-TR.md">Türkçe</a> | 🇺🇦 <a href="docs/translations/README.uk-UA.md">Українська</a> | 🇻🇳 <a href="docs/translations/README.vi-VN.md">Tiếng Việt</a> | 🇮🇩 <a href="docs/translations/README.id-ID.md">Bahasa Indonesia</a> | 🇸🇪 <a href="docs/translations/README.sv-SE.md">Svenska</a> | 🇬🇷 <a href="docs/translations/README.el-GR.md">Ελληνικά</a> | 🇷🇴 <a href="docs/translations/README.ro-RO.md">Română</a> | 🇨🇿 <a href="docs/translations/README.cs-CZ.md">Čeština</a> | 🇫🇮 <a href="docs/translations/README.fi-FI.md">Suomi</a> | 🇩🇰 <a href="docs/translations/README.da-DK.md">Dansk</a> | 🇳🇴 <a href="docs/translations/README.no-NO.md">Norsk</a> | 🇭🇺 <a href="docs/translations/README.hu-HU.md">Magyar</a> | 🇹🇭 <a href="docs/translations/README.th-TH.md">ภาษาไทย</a> | 🇺🇿 <a href="docs/translations/README.uz-UZ.md">Oʻzbekcha</a> | 🇹🇼 <a href="docs/translations/README.zh-TW.md">繁體中文</a> | 🇵🇭 <a href="docs/translations/README.fil-PH.md">Filipino</a>
+  <a href="https://trendshift.io/repositories/25296?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-25296" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/25296" alt="Graphify-Labs%2Fgraphify | Trendshift" width="250" height="55"/></a>
 </p>
 
+<div align="center">
+<details><summary><b>Read this in other languages</b></summary>
+
+🇺🇸 <a href="README.md">English</a> | 🇨🇳 <a href="docs/translations/README.zh-CN.md">简体中文</a> | 🇯🇵 <a href="docs/translations/README.ja-JP.md">日本語</a> | 🇰🇷 <a href="docs/translations/README.ko-KR.md">한국어</a> | 🇩🇪 <a href="docs/translations/README.de-DE.md">Deutsch</a> | 🇫🇷 <a href="docs/translations/README.fr-FR.md">Français</a> | 🇪🇸 <a href="docs/translations/README.es-ES.md">Español</a> | 🇮🇳 <a href="docs/translations/README.hi-IN.md">हिन्दी</a> | 🇧🇷 <a href="docs/translations/README.pt-BR.md">Português</a> | 🇷🇺 <a href="docs/translations/README.ru-RU.md">Русский</a> | 🇸🇦 <a href="docs/translations/README.ar-SA.md">العربية</a> | 🇮🇷 <a href="docs/translations/README.fa-IR.md">فارسی</a> | 🇮🇹 <a href="docs/translations/README.it-IT.md">Italiano</a> | 🇵🇱 <a href="docs/translations/README.pl-PL.md">Polski</a> | 🇳🇱 <a href="docs/translations/README.nl-NL.md">Nederlands</a> | 🇹🇷 <a href="docs/translations/README.tr-TR.md">Türkçe</a> | 🇺🇦 <a href="docs/translations/README.uk-UA.md">Українська</a> | 🇻🇳 <a href="docs/translations/README.vi-VN.md">Tiếng Việt</a> | 🇮🇩 <a href="docs/translations/README.id-ID.md">Bahasa Indonesia</a> | 🇸🇪 <a href="docs/translations/README.sv-SE.md">Svenska</a> | 🇬🇷 <a href="docs/translations/README.el-GR.md">Ελληνικά</a> | 🇷🇴 <a href="docs/translations/README.ro-RO.md">Română</a> | 🇨🇿 <a href="docs/translations/README.cs-CZ.md">Čeština</a> | 🇫🇮 <a href="docs/translations/README.fi-FI.md">Suomi</a> | 🇩🇰 <a href="docs/translations/README.da-DK.md">Dansk</a> | 🇳🇴 <a href="docs/translations/README.no-NO.md">Norsk</a> | 🇭🇺 <a href="docs/translations/README.hu-HU.md">Magyar</a> | 🇹🇭 <a href="docs/translations/README.th-TH.md">ภาษาไทย</a> | 🇺🇿 <a href="docs/translations/README.uz-UZ.md">Oʻzbekcha</a> | 🇹🇼 <a href="docs/translations/README.zh-TW.md">繁體中文</a> | 🇵🇭 <a href="docs/translations/README.fil-PH.md">Filipino</a> | 🇮🇱 <a href="docs/translations/README.he-IL.md">עברית</a>
+
+</details>
+</div>
+
 <p align="center">
-  <a href="https://www.ycombinator.com/companies/graphify"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
-  <a href="https://discord.gg/598Ad9zQZ"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
-  <a href="https://safishamsi.gumroad.com/l/qetvlo"><img src="https://img.shields.io/badge/Book-The%20Memory%20Layer-2ea44f?style=flat&logo=gitbook&logoColor=white" alt="The Memory Layer"/></a>
-  <a href="https://github.com/safishamsi/graphify/actions/workflows/ci.yml"><img src="https://github.com/safishamsi/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
-  <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
-  <a href="https://www.linkedin.com/in/safi-shamsi"><img src="https://img.shields.io/badge/LinkedIn-Safi%20Shamsi-0077B5?logo=linkedin" alt="LinkedIn"/></a>
-  <a href="https://x.com/graphifyy"><img src="https://img.shields.io/badge/X-graphifyy-000000?logo=x&logoColor=white" alt="X"/></a>
+  <a href="https://discord.gg/598Ad9zQZ"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
+  <img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/>
 </p>
+
+Type `/graphify` in your AI coding assistant and it maps your entire project (code, docs, PDFs, images, videos) into a **knowledge graph** you can **query instead of grepping** through files.
+
+- **Code maps for free, fully local.** Code is parsed with tree-sitter AST: deterministic, no LLM, nothing leaves your machine. (Docs, PDFs, images and video use your assistant's model, or a configured API key, for a semantic pass.)
+- **Every edge is explained.** Each connection is tagged `EXTRACTED` (explicit in the source) or `INFERRED` (resolved by graphify), so you can tell what was read directly from what was inferred.
+- **Not a vector index.** No embeddings, no vector store: a real graph you traverse. Ask a question, trace the path between two things, or explain one concept.
 
 <p align="center">
-  <a href="https://star-history.com/#safishamsi/graphify&Date">
-    <img src="https://api.star-history.com/svg?repos=safishamsi/graphify&type=Date" alt="Star History Chart" width="370"/>
-  </a>
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
+</p>
+<p align="center">
+  <em>The FastAPI codebase mapped by graphify. Every node is a concept, colors are detected communities, and the whole thing is clickable in graph.html.</em>
 </p>
 
-Type `/graphify` in your AI coding assistant and it maps your entire project — code, docs, PDFs, images, videos — into a knowledge graph you can query instead of grepping through files.
+**Get started** (30 seconds):
 
-Works in Claude Code, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, Amp, OpenClaw, Factory Droid, Trae, Hermes, Kimi Code, Kiro, Pi, Devin CLI, and Google Antigravity.
+```bash
+uv tool install graphifyy      # install the CLI (or: pipx install graphifyy)
+graphify install               # register the skill with your AI assistant
+```
+
+Then, in your AI assistant:
 
 ```
 /graphify .
 ```
 
-That's it. You get three files:
+That's it. You get **three files**:
 
 ```
 graphify-out/
@@ -41,11 +57,67 @@ graphify-out/
 └── graph.json       the full graph — query it anytime without re-reading your files
 ```
 
-For a readable architecture page with Mermaid call-flow diagrams, run:
+**Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
 
-```bash
-graphify export callflow-html
+---
+
+## See it in action
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/demo-path.svg" alt="graphify path query: a terminal asks for the shortest path between FastAPI and ModelField, and the answer lights up hop by hop across the knowledge graph" width="900">
+</p>
+
+Once the graph is built you query it instead of reading files. Real output, graphify run on the FastAPI codebase shown above:
+
+```text
+$ graphify explain "APIRouter"
+Node: APIRouter
+  Source:    routing.py L2210
+  Community: 2
+  Degree:    47
+
+Connections (47):
+  --> RequestValidationError [uses] [INFERRED]
+  --> Dependant [uses] [INFERRED]
+  --> .get() [method] [EXTRACTED]
+  <-- __init__.py [imports] [EXTRACTED]
+  ...
+
+$ graphify path "FastAPI" "ModelField"
+Shortest path (3 hops):
+  FastAPI --uses--> DefaultPlaceholder <--references-- get_request_handler() --references--> ModelField
 ```
+
+Every edge carries a **confidence tag** (`EXTRACTED` = explicit in the source, `INFERRED` = derived by resolution), so you can tell what was read directly from what was inferred. `graphify query "<question>"` returns a scoped subgraph for a plain-language question, and `graphify path A B` traces how any two things connect.
+
+---
+
+## What it does
+
+What you get out of the box:
+
+| Capability | What you get |
+|---|---|
+| **God nodes** | The most-connected concepts, so you see what everything flows through |
+| **Communities** | The graph split into subsystems (Leiden), with LLM-free labels |
+| **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` resolved across ~40 languages via tree-sitter AST |
+| **Query, path, explain** | Ask a question, trace the path between two things, or explain one concept, all against `graph.json` |
+| **Rationale + doc refs** | `# NOTE:` / `# WHY:` comments and ADR/RFC citations become first-class nodes linked to the code |
+| **Beyond code** | Docs, PDFs, images, and video/audio all map into the same graph |
+| **Local-first** | Code is parsed locally with tree-sitter (no LLM, nothing leaves your machine); only the semantic pass over docs/media calls a backend, and only if you configure one |
+
+---
+
+## Benchmarks
+
+| Benchmark | Metric | graphify | Field |
+|---|---|---|---|
+| LOCOMO (n=300) | recall@10 | **0.497** | mem0 0.048, supermemory 0.149 |
+| LOCOMO (n=300) | QA accuracy | 45.3% | supermemory 49.7%, mem0 27.3% |
+| LongMemEval-S (n=50) | QA accuracy | **76%** | tied with dense RAG |
+| Graph build | LLM credits | **0** | per-token for most systems |
+
+Every system ran on the same harness with the same model and budgets, scored by a judge blind-validated against a second judge (90.6% agreement, Cohen's kappa 0.81). Full per-system tables, the code-intelligence result, and reproduction commands: **[BENCHMARKS.md](./BENCHMARKS.md)**.
 
 ---
 
@@ -124,7 +196,8 @@ for example `graphify claude install --project` or `graphify codex install --pro
 
 > **Git hooks and uv tool / pipx:** `graphify hook install` embeds the current interpreter path directly into the hook scripts at install time, so the post-commit hook fires correctly even in GUI git clients and CI runners where `~/.local/bin` is not on PATH. If you reinstall or upgrade graphify, re-run `graphify hook install` to refresh the embedded path.
 
-### Pick your platform
+<details>
+<summary><b>Pick your platform</b> (20+ assistants, click to expand)</summary>
 
 | Platform | Install command |
 |----------|----------------|
@@ -152,15 +225,16 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
-Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support PreToolUse hooks — AGENTS.md is the always-on mechanism.
+Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
 
 `--platform agents` (alias `--platform skills`) targets the generic cross-framework [Agent-Skills](https://github.com/anthropics/skills) locations: the spec's user-global `~/.agents/skills/` (read by `npx skills` and spec-compliant frameworks) for a global install, and `./.agents/skills/` for a project (`--project`) install. The bare `graphify install` stays single-platform (Claude Code) by design — use the named `agents` platform when you want the skill discoverable by any framework that reads `.agents/skills`.
 
 > Codex uses `$graphify` instead of `/graphify`.
 
-### Optional extras
+</details>
 
-Install only what you need:
+<details>
+<summary><b>Optional extras</b> (install only what you need)</summary>
 
 | Extra | What it adds | Install |
 |---|---|---|
@@ -175,8 +249,6 @@ Install only what you need:
 | `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
 | `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
-| `minimax` | MiniMax OpenAI-compatible API (`--backend minimax`) | `uv tool install "graphifyy[minimax]"` |
-| `nim` | NVIDIA NIM / AI Catalog OpenAI-compatible API (`--backend nim`) | `uv tool install "graphifyy[nim]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
 | `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
@@ -185,8 +257,11 @@ Install only what you need:
 | `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
 | `dm` | BYOND DreamMaker `.dm`/`.dme` AST extraction (may need a C compiler + `python3-dev` if no wheel matches your platform) | `uv tool install "graphifyy[dm]"` |
 | `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST extraction | `uv tool install "graphifyy[terraform]"` |
+| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST extraction (more accurate `calls`/`inherits` edges; falls back to a regex extractor when absent) | `uv tool install "graphifyy[pascal]"` |
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
 | `all` | Everything above | `uv tool install "graphifyy[all]"` |
+
+</details>
 
 ---
 
@@ -219,19 +294,24 @@ Run this once in your project after building a graph:
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
-This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions — preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files. On platforms that support payload-bearing hooks (Claude Code, Gemini CLI), a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path. On the others (Codex, OpenCode, Cursor, etc.), the persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance. `GRAPH_REPORT.md` is still available for broad architecture review.
+This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions, preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files.
 
-**CodeBuddy** does the same two things as Claude Code: writes a `CODEBUDDY.md` section telling CodeBuddy to read `graphify-out/GRAPH_REPORT.md` before answering architecture questions, and installs **PreToolUse hooks** (`.codebuddy/settings.json`) that fire before Bash search commands and file reads, nudging toward `graphify query` instead.
+- **Hook platforms** (Claude Code, Gemini CLI): a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path.
+- **Instruction-file platforms** (Codex, OpenCode, Cursor, etc.): persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance.
 
-**Codex** writes to `AGENTS.md` and also installs a **PreToolUse hook** in `.codex/hooks.json` that fires before every Bash tool call — same always-on mechanism as Claude Code.
+`GRAPH_REPORT.md` is still available for broad architecture review.
+
+**CodeBuddy** does the same two things as Claude Code: writes a `CODEBUDDY.md` section telling CodeBuddy to read `graphify-out/GRAPH_REPORT.md` before answering architecture questions, and installs `PreToolUse` hooks (`.codebuddy/settings.json`) that fire before Bash search commands and file reads, nudging toward `graphify query` instead.
+
+**Codex** writes to `AGENTS.md` and also installs a `PreToolUse` hook in `.codex/hooks.json` that fires before every Bash tool call, same always-on mechanism as Claude Code.
+
+**Kilo Code** installs the Graphify skill to `~/.config/kilo/skills/graphify/SKILL.md` and a native `/graphify` command to `~/.config/kilo/command/graphify.md`. `graphify kilo install` also writes `AGENTS.md` plus a native `tool.execute.before` plugin (`.kilo/plugins/graphify.js` + `.kilo/kilo.json` or `.kilo/kilo.jsonc` registration) so Kilo gets the same always-on graph reminder behavior through native `.kilo` config.
+
+**Cursor** writes `.cursor/rules/graphify.mdc` with `alwaysApply: true`, so Cursor includes it in every conversation automatically, no hook needed.
 
 To remove graphify from all platforms at once: `graphify uninstall` (add `--purge` to also delete `graphify-out/`). Or use the per-platform command (e.g. `graphify claude uninstall`).
 
 ---
-
-**Kilo Code** installs the Graphify skill to `~/.config/kilo/skills/graphify/SKILL.md` and a native `/graphify` command to `~/.config/kilo/command/graphify.md`. `graphify kilo install` also writes `AGENTS.md` plus a native **`tool.execute.before` plugin** (`.kilo/plugins/graphify.js` + `.kilo/kilo.json` or `.kilo/kilo.jsonc` registration) so Kilo gets the same always-on graph reminder behavior through native `.kilo` config.
-
-**Cursor** writes `.cursor/rules/graphify.mdc` with `alwaysApply: true` — Cursor includes it in every conversation automatically, no hook needed.
 
 ## What's in the report
 
@@ -247,7 +327,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 
 | Type | Extensions |
 |------|-----------|
-| Code (36 tree-sitter grammars) | `.py .ts .js .jsx .tsx .mjs .go .rs .java .c .cpp .h .hpp .cu .cuh .metal .rb .cs .kt .scala .php .swift .lua .luau .zig .ps1 .psm1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`; CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
+| Code (36 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
 | Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
@@ -260,7 +340,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | Video / Audio | `.mp4 .mov .mp3 .wav` and more (requires `uv tool install graphifyy[video]`) |
 | YouTube / URLs | any video URL (requires `uv tool install graphifyy[video]`) |
 
-Code is extracted locally with no API calls (AST via tree-sitter). Everything else goes through your AI assistant's model API.
+Code is extracted **locally with no API calls** (AST via tree-sitter). Everything else goes through your AI assistant's model API.
 
 Google Drive for desktop `.gdoc`, `.gsheet`, and `.gslides` files are shortcut
 pointers, not document content. To include native Google Docs, Sheets, and Slides
@@ -314,7 +394,7 @@ See the [full command reference](#full-command-reference) below.
 
 Create a `.graphifyignore` in your project root — same syntax as `.gitignore`, including `!` negation.
 
-**`.gitignore` is respected automatically.** Graphify loads `.gitignore` first, then `.graphifyignore`, so project-wide data/log/vendor exclusions apply and graphify-specific rules can override them with normal last-match-wins semantics. Subdirectory scoping works the same way as git — an ignore file only affects its own subtree.
+**`.gitignore` is respected automatically.** graphify reads the `.gitignore` in each directory. If a `.graphifyignore` is also present, the two are **merged** — `.graphifyignore` patterns are evaluated last, so they win on conflicts (including `!` negations). Adding a `.graphifyignore` only ever excludes more; it never re-includes a file your `.gitignore` already excluded. Subdirectory scoping works the same way as git — an ignore file only affects its own subtree.
 
 ```
 # .graphifyignore
@@ -403,36 +483,25 @@ docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
 
 ## Environment variables
 
-These are only needed for **headless / CI extraction** (`graphify extract`) or when you want the `/graphify` skill to use a direct backend instead of the host assistant's own model. Automatic semantic extraction starts with local Ollama for laptop-safe <=8B-class models, tries the local fallback chain (`qwen2.5-coder:3b` → `gemma3:4b` by default), and uses MiniMax as the final spillover when local chunks are slow, too large, or laptop load is high. NVIDIA NIM remains available only when explicitly selected.
+These are only needed for **headless / CI extraction** (`graphify extract`). When running via the `/graphify` skill inside your IDE, the model API is provided by your IDE session — no extra keys needed.
 
 | Variable | Used for | When required |
 |---|---|---|
-| `OLLAMA_BASE_URL` | Ollama local inference URL | optional — default `http://localhost:11434/v1` |
-| `GRAPHIFY_OLLAMA_MODEL` or `OLLAMA_MODEL` | Ollama model name | optional — default `qwen2.5-coder:3b`; must include a size and stay within the <=8B local safety class |
-| `GRAPHIFY_OLLAMA_FALLBACK_MODELS` | Ordered local Ollama fallback models | optional — default `qwen2.5-coder:3b,gemma3:4b`; set `none` to disable local model fallback |
-| `GRAPHIFY_OLLAMA_TOKEN_BUDGET` | Ollama semantic chunk packing cap | optional — default `20000`; keeps prompt + output inside the 32k local context before adaptive retry |
-| `GRAPHIFY_OLLAMA_NUM_CTX` | Override Ollama KV-cache window size | optional — auto-sized by default |
-| `GRAPHIFY_OLLAMA_KEEP_ALIVE` | Time to keep Ollama model loaded | optional — default `30s`; set `0` to unload after each chunk |
-| `GRAPHIFY_OLLAMA_NUM_GPU` | Ollama GPU layer offload target | optional — default `999` to keep the local model on GPU |
-| `GRAPHIFY_OLLAMA_MAIN_GPU` | Ollama GPU index | optional — default `0` |
-| `GRAPHIFY_OLLAMA_NUM_THREAD` | Ollama CPU helper thread cap | optional — default `min(4, CPU/4)` with floor `2`; keeps GPU-fed local runs responsive without stealing daily-driving CPU |
-| `GRAPHIFY_OLLAMA_BALANCE` | Ollama/MiniMax balancing | optional — `auto` (default), `local`, `remote`, or `defer` |
-| `GRAPHIFY_OLLAMA_MINIMAX_MAX_FRACTION` | Cost cap for dynamic MiniMax spillover | optional — default `0.25` |
-| `GRAPHIFY_DISABLE_MINIMAX_FALLBACK` | Disable Ollama→MiniMax cloud fallback | optional — set `1` for strict local-only semantic extraction |
-| `MINIMAX_API_KEY` or `GRAPHIFY_MINIMAX_API_KEY` | MiniMax OpenAI-compatible token-plan fallback | `--backend minimax` or dynamic spill/fallback when Ollama is slow or fails |
-| `GRAPHIFY_MINIMAX_MODEL` or `MINIMAX_MODEL` | MiniMax model override | optional — default `MiniMax-M3` |
-| `NVIDIA_NIM_API_KEY`, `GRAPHIFY_NVIDIA_NIM_API_KEY`, `NVIDIA_API_KEY`, or `NGC_API_KEY` | NVIDIA NIM / AI Catalog backend | explicit `--backend nim` only |
-| `GRAPHIFY_NVIDIA_NIM_MODEL`, `NVIDIA_NIM_MODEL`, or `NIM_MODEL` | NVIDIA NIM model override | optional — default `meta/llama-3.1-8b-instruct` |
-| `NVIDIA_NIM_BASE_URL` or `NIM_BASE_URL` | NVIDIA NIM endpoint override | optional — default `https://integrate.api.nvidia.com/v1` |
 | `ANTHROPIC_API_KEY` | Claude (Anthropic) backend | `--backend claude` |
 | `ANTHROPIC_BASE_URL` | Anthropic-compatible endpoint URL (LiteLLM proxy, gateways, ...) | `--backend claude` (default: `https://api.anthropic.com`) |
 | `ANTHROPIC_MODEL` | Model name for the Claude backend — for custom endpoints, use the model name/alias your server exposes | `--backend claude` (default: `claude-sonnet-4-6`) |
 | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Google Gemini backend | `--backend gemini` |
 | `OPENAI_API_KEY` | OpenAI or OpenAI-compatible APIs | `--backend openai` (local servers accept any non-empty value) |
 | `OPENAI_BASE_URL` | OpenAI-compatible server URL (llama.cpp, vLLM, LM Studio, ...) | `--backend openai` (default: `https://api.openai.com/v1`) |
-| `OPENAI_MODEL` | Model name for the OpenAI backend — for self-hosted servers, use the model name/alias your server exposes | `--backend openai` (default: `gpt-4.1-mini`) |
+| `OPENAI_MODEL` | Model name for the OpenAI backend — for self-hosted servers, use the model name/alias your server exposes (check its `/v1/models` endpoint), e.g. `LFM2.5-8B-A1B-UD-Q4_K_XL` for llama.cpp | `--backend openai` (default: `gpt-4.1-mini`) |
 | `DEEPSEEK_API_KEY` | DeepSeek backend | `--backend deepseek` |
 | `MOONSHOT_API_KEY` | Kimi Code backend | `--backend kimi` |
+| `MINIMAX_API_KEY` or `GRAPHIFY_MINIMAX_API_KEY` | MiniMax fallback backend | `--backend minimax` or automatic Ollama spill/fallback |
+| `NVIDIA_NIM_API_KEY` or `NVIDIA_API_KEY` | NVIDIA NIM backend | `--backend nim` |
+| `OLLAMA_BASE_URL` | Ollama local inference URL | auto-detected first, or `--backend ollama` (default: `http://localhost:11434/v1`) |
+| `GRAPHIFY_OLLAMA_MODEL` or `OLLAMA_MODEL` | Ollama model name | `--backend ollama` (default: `qwen2.5-coder:3b`) |
+| `GRAPHIFY_OLLAMA_NUM_CTX` | Override Ollama KV-cache window size | optional — auto-sized by default |
+| `GRAPHIFY_OLLAMA_KEEP_ALIVE` | Minutes to keep Ollama model loaded | optional — set `0` to unload after each chunk |
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI Service backend | `--backend azure` |
 | `AZURE_OPENAI_ENDPOINT` | Azure resource endpoint URL | `--backend azure` (required alongside API key) |
 | `AZURE_OPENAI_API_VERSION` | Azure API version override | optional — default `2024-12-01-preview` |
@@ -446,15 +515,12 @@ These are only needed for **headless / CI extraction** (`graphify extract`) or w
 | `GRAPHIFY_GOOGLE_WORKSPACE` | Auto-enable Google Workspace export | optional — set to `1` |
 | `GRAPHIFY_TRIAGE_BACKEND` | Backend for `graphify prs --triage` | optional — auto-detected from available keys |
 | `GRAPHIFY_TRIAGE_MODEL` | Model override for triage | optional — e.g. `claude-opus-4-7` |
-| `GRAPHIFY_QUERY_LOG` | Override query log path (default: `~/.cache/graphify-queries.log`) | optional — set to empty or `/dev/null` to silence |
-| `GRAPHIFY_QUERY_LOG_DISABLE` | Set to `1` to disable query logging entirely | optional |
-| `GRAPHIFY_QUERY_LOG_RESPONSES` | Set to `1` to also log full subgraph responses (off by default) | optional |
+| `GRAPHIFY_QUERY_LOG_ENABLE` | Set to `1` to turn on the local query log at `~/.cache/graphify-queries.log` (records each query/path/explain question + corpus path). Off by default — nothing is written unless you opt in (#1797) | optional |
+| `GRAPHIFY_QUERY_LOG` | Enable the query log and write it to this path instead of the default | optional — off unless this or `_ENABLE` is set |
+| `GRAPHIFY_QUERY_LOG_DISABLE` | Set to `1` to force the query log off (wins over the enable vars) | optional |
+| `GRAPHIFY_QUERY_LOG_RESPONSES` | When the log is enabled, also record full subgraph responses (off by default) | optional |
 | `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
-
-For user-wide MiniMax defaults that work even when a coding agent is launched without your shell environment, put the key in `~/.graphify/credentials.json` as `{"api_keys":{"MINIMAX_API_KEY":"..."}}` and keep that file out of git.
-
-For semantic rebuilds that can wait, run daytime commands with `GRAPHIFY_OLLAMA_BALANCE=defer`; graphify writes `graphify-out/semantic-rebuild-queue.jsonl` with the night-window rebuild hint. Use `graphify update .` immediately for low-load AST indexing, then run queued semantic rebuilds after 20:00 when the laptop is idle (03:00-06:00 remains the safest window).
 
 ---
 
@@ -464,7 +530,7 @@ For semantic rebuilds that can wait, run daytime commands with `GRAPHIFY_OLLAMA_
 - **Video / audio** — transcribed locally with faster-whisper. Nothing leaves your machine.
 - **Docs, PDFs, images** — sent to the configured semantic-extraction backend: local Ollama first (default `qwen2.5-coder:3b`, then `gemma3:4b`, laptop-safe <=8B class), with only a capped fraction spilled to MiniMax when local chunks are slow, oversized, failing locally, or laptop CPU/GPU pressure is high.
 - **Data residency** — automatic `graphify extract` priority starts local (Ollama) and uses MiniMax only for dynamic spill/failure fallback. Ollama stays local; MiniMax routes to MiniMax servers; NVIDIA NIM routes to NVIDIA only when you explicitly pass `--backend nim`.
-- No telemetry, no usage tracking, no analytics.
+- **No telemetry**, no usage tracking, no analytics.
 - **Query logging** — every `graphify query`, `graphify path`, `graphify explain`, and MCP `query_graph` call is logged to `~/.cache/graphify-queries.log` in JSON Lines format (timestamp, question, corpus, nodes returned, duration). Full subgraph responses are **not** stored by default. Set `GRAPHIFY_QUERY_LOG_DISABLE=1` to opt out, or `GRAPHIFY_QUERY_LOG=/dev/null` to silence without disabling the code path.
 
 ---
@@ -532,6 +598,14 @@ uv tool upgrade graphifyy
 graphify install  # overwrites the skill file
 ```
 
+**Claude Code prompt cache invalidated after every `graphify extract`**
+Graphify writes output files (`graph.json`, `graphify-out/`) into the workspace. If those paths aren't ignored, every write invalidates Claude Code's prompt cache, forcing a full re-upload at cache-write rates on the next turn. Add them to `.claudeignore`:
+```text
+# .claudeignore
+graph.json
+graphify-out/
+```
+
 ---
 
 ## Full command reference
@@ -569,7 +643,9 @@ graphify save-result --question "Q" --answer "A" --nodes Foo Bar --outcome usefu
 graphify reflect                   # aggregate graphify-out/memory/ outcomes into reflections/LESSONS.md
 graphify reflect --if-stale        # no-op when LESSONS.md is already newer than every input (cheap to run each session)
 graphify reflect --out docs/LESSONS.md    # write the lessons doc somewhere else
-graphify reflect --graph graphify-out/graph.json  # also group lessons by community
+graphify reflect --graph graphify-out/graph.json  # group lessons by community + write the work-memory overlay (.graphify_learning.json)
+                                   # the overlay tags nodes preferred/tentative/contested (recency-weighted, with provenance);
+                                   # graphify explain / query then show a "Lesson:" hint, flagged "code changed — re-verify" when the source moved on
 
 graphify uninstall                 # remove from all platforms in one shot
 graphify uninstall --purge         # also delete graphify-out/
@@ -619,10 +695,10 @@ graphify devin uninstall
 graphify antigravity install       # .agents/rules + .agents/workflows (Google Antigravity)
 graphify antigravity uninstall
 
-graphify extract ./docs                        # headless LLM extraction; auto: laptop-safe Ollama primary, capped MiniMax spillover
+graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
 graphify extract ./docs --backend gemini       # explicit backend: ollama, minimax, nim, gemini, kimi, claude, openai, deepseek, bedrock, or claude-cli
 graphify extract ./docs --backend gemini --model gemini-3.1-pro-preview
-graphify extract ./docs --backend ollama       # local Ollama (default qwen2.5-coder:3b) - no API key needed for loopback
+graphify extract ./docs --backend ollama       # local Ollama (set OLLAMA_BASE_URL / OLLAMA_MODEL) - no API key needed for loopback
 OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_MODEL=my-model graphify extract ./docs --backend openai   # any OpenAI-compatible server (llama.cpp, vLLM, LM Studio)
 ANTHROPIC_BASE_URL=http://localhost:4000 ANTHROPIC_MODEL=my-model graphify extract ./docs --backend claude   # any Anthropic-compatible endpoint (LiteLLM proxy, gateways)
 GRAPHIFY_OLLAMA_NUM_CTX=32768 graphify extract ./docs --backend ollama   # override KV-cache window (auto-sized by default)
@@ -668,7 +744,7 @@ graphify clone https://github.com/karpathy/nanoGPT
 graphify merge-graphs a.json b.json --out merged.json
 graphify --version                                    # print installed version
 graphify watch ./src
-graphify check-update ./src           # prints pending semantic/night-window hints; never runs heavy work
+graphify check-update ./src
 graphify update ./src
 graphify update ./src --no-cluster  # skip reclustering, write raw AST graph only
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
@@ -678,7 +754,8 @@ graphify cluster-only ./my-project --max-concurrency 16 --batch-size 200  # para
 graphify cluster-only ./my-project --resolution 1.5            # more, smaller communities
 graphify cluster-only ./my-project --exclude-hubs 99           # exclude p99 degree nodes from partitioning
 graphify cluster-only ./my-project --no-label                  # keep "Community N" placeholders
-graphify cluster-only ./my-project --backend=ollama            # backend for community naming
+graphify cluster-only ./my-project --backend=gemini            # backend for community naming
+graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # specific model
 graphify label ./my-project                                    # (re)name communities with the configured backend
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
 ```
@@ -692,16 +769,17 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 - [How it works](docs/how-it-works.md) — the extraction pipeline, community detection, confidence scoring, benchmarks
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module breakdown, how to add a language
 - [Optional integrations](docs/docker-mcp-sqlite.md) — Docker MCP Toolkit + SQLite
+- [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo) — the book on the ideas behind graphify, the architecture end to end
 
 ---
 
-## Built on graphify — Penpax
+## Built on graphify: Penpax
 
-[**Penpax**](https://graphifylabs.ai) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working life: meetings, browser history, emails, files, and code, updating continuously in the background.
+[**Penpax**](https://graphify.com) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working life: meetings, browser history, emails, files, and code, updating continuously in the background.
 
 Built for people whose work lives across hundreds of conversations and documents they can never fully reconstruct. No cloud, fully on-device.
 
-**Free trial launching soon.** [Join the waitlist →](https://graphifylabs.ai)
+**Free trial launching soon.** [Join the waitlist →](https://www.graphify.com)
 
 ---
 
@@ -755,3 +833,22 @@ uv run pytest tests/ -q -k "python"    # filter by name
 See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities and how to add a language.
 
 </details>
+
+---
+
+<p align="center">
+  <a href="https://star-history.com/#safishamsi/graphify&Date">
+    <img src="https://api.star-history.com/svg?repos=safishamsi/graphify&type=Date" alt="Star History Chart" width="370"/>
+  </a>
+</p>
+
+---
+
+## Community and links
+
+<p align="center">
+  <a href="https://discord.gg/598Ad9zQZ"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://x.com/graphifyy"><img src="https://img.shields.io/badge/X-graphifyy-000000?logo=x&logoColor=white" alt="X"/></a>
+  <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
+  <a href="https://safishamsi.gumroad.com/l/qetvlo"><img src="https://img.shields.io/badge/Book-The%20Memory%20Layer-2ea44f?style=flat&logo=gitbook&logoColor=white" alt="The Memory Layer"/></a>
+</p>

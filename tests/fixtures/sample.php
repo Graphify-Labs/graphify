@@ -28,7 +28,7 @@ class ApiClient
 
     private function fetch(string $path, string $method): string
     {
-        $token = $this->auth->getToken();
+        $sessionValue = $this->auth->getToken();
         return $method . ' ' . $this->baseUrl . $path;
     }
 }
@@ -62,6 +62,13 @@ class DataProcessor extends BaseProcessor implements Loggable
     }
 
     public function log(): void
+    {
+    }
+}
+
+class Service
+{
+    public function __construct(private Result $result, string $label)
     {
     }
 }

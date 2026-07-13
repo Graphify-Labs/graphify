@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://graphifylabs.ai"><img src="https://raw.githubusercontent.com/safishamsi/graphify/v4/docs/logo-text.svg" width="260" height="64" alt="Graphify"/></a>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/safishamsi/graphify/v4/docs/logo-text.svg" width="260" height="64" alt="Graphify"/></a>
 </p>
 
 <p align="center">
@@ -12,7 +12,7 @@
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
-  <a href="https://www.linkedin.com/in/safi-shamsi"><img src="https://img.shields.io/badge/LinkedIn-Safi%20Shamsi-0077B5?logo=linkedin" alt="LinkedIn"/></a>
+  <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://x.com/graphifyy"><img src="https://img.shields.io/badge/X-graphifyy-000000?logo=x&logoColor=white" alt="X"/></a>
 </p>
 
@@ -511,11 +511,11 @@ graphify --version
 
 ## ساخته‌شده روی graphify — Penpax
 
-[**Penpax**](https://graphifylabs.ai) لایه همیشه‌روشن ساخته‌شده روی graphify است — همان رویکرد گراف را بر کل زندگی کاری شما اعمال می‌کند: جلسات، تاریخچه مرورگر، ایمیل‌ها، فایل‌ها و کد، به‌صورت مداوم در پس‌زمینه به‌روزرسانی می‌شود.
+[**Penpax**](https://graphify.com) لایه همیشه‌روشن ساخته‌شده روی graphify است — همان رویکرد گراف را بر کل زندگی کاری شما اعمال می‌کند: جلسات، تاریخچه مرورگر، ایمیل‌ها، فایل‌ها و کد، به‌صورت مداوم در پس‌زمینه به‌روزرسانی می‌شود.
 
 ساخته‌شده برای کسانی که کارشان در صدها مکالمه و سند پراکنده است. بدون ابر، کاملاً روی دستگاه.
 
-**آزمایش رایگان به‌زودی راه‌اندازی می‌شود.** [به لیست انتظار بپیوندید ←](https://graphifylabs.ai)
+**آزمایش رایگان به‌زودی راه‌اندازی می‌شود.** [به لیست انتظار بپیوندید ←](https://graphify.com)
 
 ---
 

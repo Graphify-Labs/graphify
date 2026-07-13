@@ -45,7 +45,6 @@ _OLLAMA_DEFAULT_KEEP_ALIVE = "30s"
 _OLLAMA_DEFAULT_FALLBACK_MODELS = ("qwen2.5-coder:3b", "gemma3:4b")
 _OLLAMA_MODEL_SIZE_RE = re.compile(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*([bm])\b", re.IGNORECASE)
 _OLLAMA_DAYTIME_HEAVY_FILE_LIMIT = 25
-_OLLAMA_NIGHTLY_START_HOUR = 3
 _OLLAMA_NIGHTLY_END_HOUR = 6
 _OLLAMA_LOW_LOAD_START_HOUR = 20
 _OLLAMA_SLOW_CHUNK_SECONDS = 45.0
@@ -54,11 +53,8 @@ _OLLAMA_MAX_MINIMAX_FRACTION = 0.25
 _OLLAMA_LOAD_RATIO_THRESHOLD = 0.75
 _OLLAMA_GPU_UTIL_THRESHOLD = 85
 _OLLAMA_GPU_MEM_THRESHOLD = 0.90
-
 _BACKEND_UNAVAILABLE_WARNED: set[str] = set()
 _OPENAI_COMPAT_BACKENDS = {"minimax", "nim", "kimi", "gemini", "openai", "deepseek"}
-
-
 
 
 def _get_tokenizer():
@@ -95,8 +91,6 @@ BACKENDS: dict[str, dict] = {
         "vision": True,
     },
     "minimax": {
-        # MiniMax's Chat Completions API is OpenAI-compatible:
-        # https://platform.minimax.io/docs/api-reference/text-chat-openai
         "base_url": "https://api.minimax.io/v1",
         "default_model": os.environ.get("MINIMAX_MODEL", "MiniMax-M3"),
         "env_keys": ["MINIMAX_API_KEY", "GRAPHIFY_MINIMAX_API_KEY"],
@@ -106,13 +100,9 @@ BACKENDS: dict[str, dict] = {
         "temperature": 0,
         "max_completion_tokens": 16384,
         "vision": True,
-        # MiniMax-M3 enables adaptive thinking by default and includes <think>
-        # text in the content stream. Disable it for graphify's JSON-only calls.
         "extra_body": {"thinking": {"type": "disabled"}},
     },
     "nim": {
-        # NVIDIA NIM/AI Catalog exposes an OpenAI-compatible /v1 chat API.
-        # nim-anywhere uses the same public endpoint and nvapi-* personal keys.
         "base_url": os.environ.get("NVIDIA_NIM_BASE_URL", os.environ.get("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")),
         "default_model": os.environ.get("NVIDIA_NIM_MODEL", os.environ.get("NIM_MODEL", "meta/llama-3.1-8b-instruct")),
         "env_keys": ["NVIDIA_NIM_API_KEY", "GRAPHIFY_NVIDIA_NIM_API_KEY", "NVIDIA_API_KEY", "NGC_API_KEY"],
@@ -120,8 +110,6 @@ BACKENDS: dict[str, dict] = {
         "credential_keys": ["nim", "nvidia_nim", "nvidia_nim_api_key"],
         "pricing": {"input": 0.0, "output": 0.0},
         "temperature": 0,
-        # NVIDIA's OpenAI-compatible examples use max_tokens rather than the
-        # newer OpenAI max_completion_tokens field.
         "completion_token_param": "max_tokens",
         "max_tokens": 8192,
     },
@@ -188,8 +176,10 @@ BACKENDS: dict[str, dict] = {
         "env_key": "DEEPSEEK_API_KEY",
         "model_env_key": "GRAPHIFY_DEEPSEEK_MODEL",
         "pricing": {"input": 0.14, "output": 0.28},  # USD per 1M tokens (v4-flash)
-        # deepseek-reasoner / thinking-mode models silently ignore temperature;
-        # deepseek-chat / v4-flash (non-thinking) accept 0-2. Safe to send 0.
+        # deepseek-reasoner silently ignores temperature; deepseek-chat / v4-flash
+        # accept 0-2, so sending 0 is safe. Note: deepseek-v4-flash (and v4-pro) have
+        # thinking ENABLED by default (verified against the live API, #1621) — set
+        # GRAPHIFY_DISABLE_THINKING=1 to turn it off (tradeoff documented on the flag).
         "temperature": 0,
         "max_tokens": 16384,
     },
@@ -246,15 +236,6 @@ def _credentials_path() -> Path:
 
 
 def _load_global_credentials() -> dict[str, str]:
-    """Load user-owned graphify API keys from ~/.graphify/credentials.json.
-
-    The file is intentionally outside any project tree so a system-wide default
-    backend can work for every coding-agent surface without placing credentials
-    in repo config or requiring GUI-launched agents to inherit shell rc files.
-    Supported shapes:
-      {"MINIMAX_API_KEY": "..."}
-      {"api_keys": {"MINIMAX_API_KEY": "...", "minimax": "..."}}
-    """
     if os.environ.get("GRAPHIFY_DISABLE_CREDENTIALS", "").strip().lower() in ("1", "true", "yes"):
         return {}
     path = _credentials_path()
@@ -483,6 +464,22 @@ def _resolve_max_retries(default: int = 6) -> int:
             pass
     return default
 
+
+def _thinking_disabled_via_env() -> bool:
+    """Opt-in (GRAPHIFY_DISABLE_THINKING) to send ``{"thinking": {"type": "disabled"}}``
+    to reasoning-capable OpenAI-compatible models such as ``deepseek-v4-flash``.
+
+    Off by default and deliberately so (#1621): a thinking-on model can occasionally
+    leak reasoning prose instead of JSON, but that response is caught and re-tried by
+    the adaptive extraction/labeling retry, so it is a rare, recoverable failure.
+    Disabling thinking removes that failure mode but, measured on real corpora, trades
+    it for far more frequent (benign) truncation AND measurably lower extraction
+    quality and file coverage. So this stays a user choice for those who value
+    run-to-run stability over extraction quality, not a forced default. The moonshot
+    (kimi) branch keeps disabling thinking unconditionally because that model returns
+    empty content otherwise."""
+    return os.environ.get("GRAPHIFY_DISABLE_THINKING", "").strip().lower() in ("1", "true", "yes", "on")
+
 _EXTRACTION_SYSTEM = """\
 You are a graphify semantic extraction agent. Extract a knowledge graph fragment from the files provided.
 Output ONLY valid JSON — no explanation, no markdown fences, no preamble.
@@ -544,6 +541,17 @@ def _file_to_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def _resolve_under_root(path: Path, root: Path) -> Path | None:
+    """Return the resolved path only when it stays inside ``root``."""
+    try:
+        resolved_root = root.resolve()
+        resolved_path = path.resolve()
+        resolved_path.relative_to(resolved_root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return resolved_path
+
+
 # Known prompt-injection / chat-template sentinels that a hostile source file
 # might embed to try to break out of the untrusted_source block or impersonate a
 # system/role turn. Neutralised (not deleted — we keep byte offsets stable enough
@@ -600,6 +608,10 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
     parts: list[str] = []
     for u in units:
         p = unit_path(u)
+        safe_path = _resolve_under_root(p, root)
+        if safe_path is None:
+            print(f"[graphify] skipping {p}: symlink target outside corpus root", file=sys.stderr)
+            continue
         try:
             rel = str(p.relative_to(root))
         except ValueError:
@@ -608,7 +620,7 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
             if isinstance(u, FileSlice):
                 content = read_slice_text(u)
             else:
-                content = _file_to_text(p)
+                content = _file_to_text(safe_path)
         except OSError:
             continue
         # Whole files are still capped (covers non-splittable large files like
@@ -706,6 +718,10 @@ def _build_image_refs(image_files: list[Path], root: Path, *, read_bytes: bool =
     """
     refs: list[_ImageRef] = []
     for p in image_files:
+        abs_path = _resolve_under_root(p, root)
+        if abs_path is None:
+            print(f"[graphify] skipping image {p}: symlink target outside corpus root", file=sys.stderr)
+            continue
         try:
             rel = str(p.relative_to(root))
         except ValueError:
@@ -714,7 +730,7 @@ def _build_image_refs(image_files: list[Path], root: Path, *, read_bytes: bool =
         raw: bytes | None = None
         if read_bytes:
             try:
-                raw = p.read_bytes()
+                raw = abs_path.read_bytes()
             except OSError as exc:
                 print(f"[graphify] could not read image {rel}: {exc}", file=sys.stderr)
                 raw = None
@@ -726,10 +742,6 @@ def _build_image_refs(image_files: list[Path], root: Path, *, read_bytes: bool =
                     file=sys.stderr,
                 )
                 raw = None
-        try:
-            abs_path = p.resolve()
-        except OSError:
-            abs_path = p
         refs.append(_ImageRef(abs_path, rel, media, raw))
     return refs
 
@@ -839,6 +851,30 @@ def _bedrock_content(user_message: str, refs: list[_ImageRef]) -> list[dict]:
 _LLM_JSON_MAX_BYTES = 10 * 1024 * 1024  # 10 MB hard cap before json.loads (F-016)
 
 
+def _sanitize_fragment(parsed: dict) -> dict:
+    """Force ``nodes``/``edges``/``hyperedges`` to lists of dicts, in place.
+
+    A model can return a well-formed top-level object whose ``edges`` (or
+    ``nodes``/``hyperedges``) array contains a stray non-dict entry — most often
+    a nested list where an edge object belongs, or the whole value being a bare
+    array/scalar instead of a list. Those entries slip past JSON parsing but
+    blow up every downstream consumer that calls ``.get()`` per entry
+    (semantic-cache write and the AST+semantic merge both did — #1631, crashing
+    with ``'list' object has no attribute 'get'`` and discarding all successful
+    chunks). Sanitizing here, at the single parse chokepoint, protects the cache
+    writer, the adaptive-retry merge, and the CLI merge in one place.
+    """
+    for key in ("nodes", "edges", "hyperedges"):
+        value = parsed.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, list):
+            parsed[key] = []
+            continue
+        parsed[key] = [entry for entry in value if isinstance(entry, dict)]
+    return parsed
+
+
 def _parse_llm_json(raw: str) -> dict:
     """Strip optional markdown fences and parse JSON. Returns empty fragment on failure.
 
@@ -872,7 +908,7 @@ def _parse_llm_json(raw: str) -> dict:
     try:
         parsed = json.loads(stripped)
         if isinstance(parsed, dict):
-            return parsed
+            return _sanitize_fragment(parsed)
         # Top-level array/scalar (common LLM output) is not a usable graph
         # fragment; fall through to the next strategy rather than returning a
         # non-dict that callers will try to subscript (e.g. result["input_tokens"]).
@@ -907,7 +943,7 @@ def _parse_llm_json(raw: str) -> dict:
                     try:
                         parsed = json.loads(stripped[start : i + 1])
                         if isinstance(parsed, dict):
-                            return parsed
+                            return _sanitize_fragment(parsed)
                         break
                     except json.JSONDecodeError:
                         break
@@ -975,7 +1011,6 @@ def _format_backend_env_keys(backend: str) -> str:
 
 
 def _ollama_model_parameter_billions(model: str) -> float | None:
-    """Best-effort parameter-count extraction from an Ollama model tag."""
     matches = list(_OLLAMA_MODEL_SIZE_RE.finditer(model))
     if not matches:
         return None
@@ -985,7 +1020,6 @@ def _ollama_model_parameter_billions(model: str) -> float | None:
 
 
 def _validate_ollama_model_size(model: str) -> None:
-    """Hard-stop Ollama models above the laptop-safe local parameter ceiling."""
     params_b = _ollama_model_parameter_billions(model)
     if params_b is None:
         raise ValueError(
@@ -1031,10 +1065,7 @@ def _ollama_model_chain(model: str | None = None) -> list[str]:
             _validate_ollama_model_size(candidate)
         except ValueError as exc:
             rejected.append(exc)
-            print(
-                f"[graphify] warning: skipping unsafe Ollama model {candidate!r}: {exc}",
-                file=sys.stderr,
-            )
+            print(f"[graphify] warning: skipping unsafe Ollama model {candidate!r}: {exc}", file=sys.stderr)
             continue
         chain.append(candidate)
     if not chain and rejected:
@@ -1096,14 +1127,10 @@ def _warn_backend_unavailable_once(backend: str, reason: str) -> None:
     if backend in _BACKEND_UNAVAILABLE_WARNED:
         return
     _BACKEND_UNAVAILABLE_WARNED.add(backend)
-    print(
-        f"[graphify] {backend} fallback disabled for this run: {reason}",
-        file=sys.stderr,
-    )
+    print(f"[graphify] {backend} fallback disabled for this run: {reason}", file=sys.stderr)
 
 
 def _automatic_fallback_backend(backend: str, *, allow: bool, model: str | None = None) -> str | None:
-    """Return the configured automatic fallback for an auto-selected backend."""
     if not allow:
         return None
     if backend == "ollama":
@@ -1118,20 +1145,11 @@ def _automatic_fallback_backend(backend: str, *, allow: bool, model: str | None 
     return None
 
 
-def _in_ollama_nightly_window(now: time.struct_time | None = None) -> bool:
-    """Whether local heavy Ollama work is in the preferred 03:00-06:00 window."""
-    current = now or time.localtime()
-    return _OLLAMA_NIGHTLY_START_HOUR <= current.tm_hour < _OLLAMA_NIGHTLY_END_HOUR
-
-
 def _ollama_balance_mode() -> str:
     mode = os.environ.get("GRAPHIFY_OLLAMA_BALANCE", "").strip().lower()
-    # Backward-compatible alias from the first implementation. "fallback"
-    # now means dynamic spill, not all-or-none remote routing.
     if not mode:
         mode = os.environ.get("GRAPHIFY_OLLAMA_DAYTIME_POLICY", "auto").strip().lower()
-    aliases = {"fallback": "auto", "allow": "local", "block": "defer"}
-    mode = aliases.get(mode, mode)
+    mode = {"fallback": "auto", "allow": "local", "block": "defer"}.get(mode, mode)
     return mode if mode in ("auto", "local", "remote", "defer") else "auto"
 
 
@@ -1143,6 +1161,7 @@ def _daytime_ollama_heavy_limit() -> int:
         return max(1, int(raw))
     except ValueError:
         return _OLLAMA_DAYTIME_HEAVY_FILE_LIMIT
+
 
 def _in_ollama_low_load_window(now: time.struct_time | None = None) -> bool:
     current = now or time.localtime()
@@ -1161,18 +1180,15 @@ def _ollama_float_option(env_key: str, default: float) -> float:
 
 
 def _ollama_system_pressure() -> str:
-    """Return 'high' when local inference should spill some chunks to MiniMax."""
     try:
         load_ratio = os.getloadavg()[0] / max(1, os.cpu_count() or 1)
     except (AttributeError, OSError):
         load_ratio = 0.0
-    load_threshold = _ollama_float_option("GRAPHIFY_OLLAMA_LOAD_RATIO_THRESHOLD", _OLLAMA_LOAD_RATIO_THRESHOLD)
-    if load_ratio >= load_threshold:
+    if load_ratio >= _ollama_float_option("GRAPHIFY_OLLAMA_LOAD_RATIO_THRESHOLD", _OLLAMA_LOAD_RATIO_THRESHOLD):
         return "high"
 
     try:
         import subprocess
-
         proc = subprocess.run(
             [
                 "nvidia-smi",
@@ -1202,6 +1218,7 @@ def _ollama_system_pressure() -> str:
             return "high"
     return "normal"
 
+
 def _ollama_int_option(env_key: str, default: int) -> int:
     raw = os.environ.get(env_key, "").strip()
     if not raw:
@@ -1209,10 +1226,7 @@ def _ollama_int_option(env_key: str, default: int) -> int:
     try:
         return int(raw)
     except ValueError:
-        print(
-            f"[graphify] {env_key}={raw!r} is not a valid integer; using {default}.",
-            file=sys.stderr,
-        )
+        print(f"[graphify] {env_key}={raw!r} is not a valid integer; using {default}.", file=sys.stderr)
         return default
 
 
@@ -1223,7 +1237,6 @@ def _ollama_token_budget(token_budget: int | None) -> int | None:
 
 
 def _ollama_default_num_thread() -> int:
-    """Small dynamic CPU helper budget for the local Ollama model."""
     return max(2, min(4, (os.cpu_count() or 4) // 4))
 
 
@@ -1234,9 +1247,7 @@ def _ollama_native_base_url(base_url: str) -> str:
     path = parsed.path.rstrip("/")
     if path.endswith("/v1"):
         path = path[:-3]
-    return urllib.parse.urlunparse(
-        (parsed.scheme, parsed.netloc, path.rstrip("/"), "", "", "")
-    ).rstrip("/")
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path.rstrip("/"), "", "", "")).rstrip("/")
 
 
 def _ollama_auto_num_ctx(user_message: str, max_completion_tokens: int) -> int:
@@ -1246,30 +1257,24 @@ def _ollama_auto_num_ctx(user_message: str, max_completion_tokens: int) -> int:
 
 
 def _ollama_resolve_num_ctx(user_message: str, max_completion_tokens: int) -> int:
-    num_ctx_raw = os.environ.get("GRAPHIFY_OLLAMA_NUM_CTX", "").strip()
+    raw = os.environ.get("GRAPHIFY_OLLAMA_NUM_CTX", "").strip()
     auto_num_ctx = _ollama_auto_num_ctx(user_message, max_completion_tokens)
     estimated_input = len(user_message) // _CHARS_PER_TOKEN + 400
-    if not num_ctx_raw:
+    if not raw:
         return auto_num_ctx
     try:
-        num_ctx = int(num_ctx_raw)
+        num_ctx = int(raw)
     except ValueError:
-        print(
-            f"[graphify] GRAPHIFY_OLLAMA_NUM_CTX={num_ctx_raw!r} is not a valid integer; "
-            f"using auto-derived value ({auto_num_ctx}).",
-            file=sys.stderr,
-        )
+        print(f"[graphify] GRAPHIFY_OLLAMA_NUM_CTX={raw!r} is not a valid integer; using auto-derived value ({auto_num_ctx}).", file=sys.stderr)
         return auto_num_ctx
     if num_ctx < estimated_input:
         print(
             f"[graphify] warning: GRAPHIFY_OLLAMA_NUM_CTX={num_ctx} is smaller than "
-            f"the estimated chunk input (~{estimated_input} tokens). Ollama will "
-            f"silently truncate the prompt and return empty responses. "
+            f"the estimated chunk input (~{estimated_input} tokens). Ollama will silently truncate the prompt and return empty responses. "
             f"Try --token-budget {max(1024, num_ctx // 3)} or increase NUM_CTX.",
             file=sys.stderr,
         )
     return num_ctx
-
 
 
 def _ollama_request_extra_body(num_ctx: int | None = None) -> dict:
@@ -1285,22 +1290,18 @@ def _ollama_request_extra_body(num_ctx: int | None = None) -> dict:
         "keep_alive": os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", _OLLAMA_DEFAULT_KEEP_ALIVE),
     }
 
+
 def _ollama_response_format() -> dict:
-    """Force Ollama's OpenAI-compatible endpoint into JSON mode."""
     if os.environ.get("GRAPHIFY_OLLAMA_JSON_MODE", "1").strip().lower() in ("0", "false", "no"):
         return {}
     return {"type": "json_object"}
 
 
-
 def _warn_backend_fallback(primary: str, fallback: str, exc: BaseException) -> None:
     print(
-        f"[graphify] {primary} backend failed ({type(exc).__name__}: {exc}); "
-        f"retrying with {fallback}.",
+        f"[graphify] {primary} backend failed ({type(exc).__name__}: {exc}); retrying with {fallback}.",
         file=sys.stderr,
     )
-
-
 
 
 def _call_openai_compat(
@@ -1330,12 +1331,23 @@ def _call_openai_compat(
     # default. Honour GRAPHIFY_API_TIMEOUT (seconds) for explicit override;
     # default to 600s, which is long enough for a 31B model on a 16k chunk
     # but still bounds runaway connections (issue #792 addendum).
-    client = OpenAI(
-        base_url=base_url,
-        timeout=_resolve_api_timeout(),
-        max_retries=_resolve_max_retries(),
-        **{"api_key": api_key},
-    )
+    # The SDK's transient-error retries (default 6) exist for cloud rate limits
+    # (429). A local Ollama server does not rate-limit, and if it wedges it will
+    # not recover by retrying, so 6 retries turn a 180s --api-timeout into a
+    # ~21min block (7 attempts x 180s) with no progress (#1686). Default ollama
+    # to 0 SDK retries so --api-timeout is the hard wall-clock bound and a hung
+    # request fails fast into the chunk-level retry/skip. An explicit
+    # GRAPHIFY_MAX_RETRIES still wins for users who want it.
+    _retries = _resolve_max_retries()
+    if backend == "ollama" and not os.environ.get("GRAPHIFY_MAX_RETRIES", "").strip():
+        _retries = 0
+    client_kwargs = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "timeout": _resolve_api_timeout(),
+        "max_retries": _retries,
+    }
+    client = OpenAI(**client_kwargs)
     kwargs: dict = {
         "model": model,
         "messages": [
@@ -1358,11 +1370,10 @@ def _call_openai_compat(
     # Kimi-k2.6 is a reasoning model — disable thinking so content isn't empty
     elif "moonshot" in base_url:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-    # Ollama will happily answer a JSON-looking prompt with explanatory prose
-    # unless the OpenAI-compatible request enables JSON mode. The native API
-    # calls this `format: "json"`; `/v1/chat/completions` exposes it as
-    # `response_format={"type":"json_object"}`. Keep this separate from
-    # extra_body because extra_body maps to Ollama native request fields.
+    # Opt-in only: disable thinking for reasoning models like deepseek-v4-flash
+    # (#1621). Not a default — see _thinking_disabled_via_env for the tradeoff.
+    elif _thinking_disabled_via_env():
+        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     if backend == "ollama":
         response_format = _ollama_response_format()
         if response_format:
@@ -1370,9 +1381,17 @@ def _call_openai_compat(
     # Ollama defaults num_ctx to 2048 and silently truncates prompts larger
     # than that — the symptom is hollow 200 OK responses after the first few
     # chunks (#798). We derive num_ctx from the actual prompt size so we don't
+    # over-allocate KV-cache VRAM. Over-allocation (e.g. 128k slots for an 8k
+    # prompt on a 31B model) exhausts VRAM by chunk 4 and produces the same
+    # hollow-200 symptom — just from a different direction (#798 follow-up).
+    # Formula: actual input tokens + output cap + system prompt headroom.
+    # Capped at 131072 (enough for the default 60k token_budget); env var wins.
+    # The ollama num_ctx auto-derive is a default. A custom provider that
+    # explicitly sets extra_body has opted out — respect their request shape.
     if backend == "ollama" and extra_body is None:
-        num_ctx = _ollama_resolve_num_ctx(user_message, max_completion_tokens)
-        kwargs["extra_body"] = _ollama_request_extra_body(num_ctx)
+        kwargs["extra_body"] = _ollama_request_extra_body(
+            _ollama_resolve_num_ctx(user_message, max_completion_tokens)
+        )
     resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
@@ -1454,10 +1473,9 @@ def _call_ollama_native(
     if _ollama_response_format():
         payload["format"] = "json"
 
-    data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         native_url,
-        data=data,
+        data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -1486,8 +1504,7 @@ def _call_ollama_native(
         print(
             "[graphify] ollama returned a hollow response "
             f"(content={'empty' if not (raw_content or '').strip() else 'no nodes/edges'}, "
-            f"output_tokens={result['output_tokens']}); "
-            "treating as truncation so adaptive retry can bisect the chunk.",
+            f"output_tokens={result['output_tokens']}); treating as truncation so adaptive retry can bisect the chunk.",
             file=sys.stderr,
         )
         result["finish_reason"] = "length"
@@ -1495,8 +1512,7 @@ def _call_ollama_native(
         print(
             "[graphify] warning: ollama returned very few tokens — likely causes: "
             "(1) VRAM pressure: check `nvidia-smi` and reduce chunk size with "
-            "--token-budget (e.g. --token-budget 4096) or set "
-            "GRAPHIFY_OLLAMA_NUM_CTX to a smaller value; "
+            "--token-budget (e.g. --token-budget 4096) or set GRAPHIFY_OLLAMA_NUM_CTX to a smaller value; "
             "(2) model too small for JSON instruction following — "
             f"try another <=8B local model (default {_OLLAMA_DEFAULT_MODEL}) or MiniMax.",
             file=sys.stderr,
@@ -1512,10 +1528,10 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
         raise ImportError(_backend_pkg_hint("anthropic", "anthropic")) from exc
 
     client = anthropic.Anthropic(
+        **{"api_key": api_key},
         base_url=BACKENDS["claude"]["base_url"],
         timeout=_resolve_api_timeout(),
         max_retries=_resolve_max_retries(),
-        **{"api_key": api_key},
     )
     resp = client.messages.create(
         model=model,
@@ -1611,14 +1627,23 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
             "https://claude.ai/code and run `claude` once to authenticate."
         )
 
-    # Use --system-prompt (replaces) instead of --append-system-prompt (adds
-    # to Claude Code's default coding-agent prompt). The default prompt
-    # pushes the model towards markdown + prose explanations, which conflict
-    # with the "raw JSON only" extraction instruction and cause ~30-50% of
-    # responses to come back wrapped in ```json fences or prefixed with a
-    # preamble — both of which fail the strict json.loads in _parse_llm_json.
-    # Replacing the default prompt eliminates the conflict at the source.
-    # Side benefit: cache-creation tokens per call drop ~19% in practice.
+    # Deliver the extraction instructions in the USER turn rather than via
+    # --system-prompt. Newer Claude Code CLIs (>= ~2.1) do not treat a
+    # --system-prompt as the sole authority: they still layer in the local
+    # coding-agent context (CLAUDE.md/AGENTS.md in cwd, skills, MCP) and, when
+    # the user turn is only a raw file dump with no request, reply
+    # conversationally ("I see the file, but there's no actual request
+    # attached — what would you like me to do with it?"). That prose parses to
+    # zero nodes/edges, so _response_is_hollow flags it as truncation and the
+    # adaptive-retry path bisects the chunk indefinitely, never converging and
+    # never writing graph.json (verified against Claude Code 2.1.197).
+    #
+    # Putting the full extraction schema plus an explicit imperative in the
+    # user turn — and dropping --system-prompt — makes the CLI emit the JSON
+    # object directly. The <untrusted_source> guardrails in _extraction_system
+    # still apply because the schema text is carried verbatim; only its
+    # delivery channel changes.
+    #
     # When images are present, append the Read-the-paths instruction and
     # allowlist each containing directory so the CLI's Read tool can open them.
     add_dir_args: list[str] = []
@@ -1631,12 +1656,19 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
                 seen_dirs.add(d)
                 add_dir_args.extend(["--add-dir", d])
 
+    combined_message = (
+        _extraction_system(deep=deep_mode)
+        + "\n\n---\n"
+        + "Now extract the knowledge graph from the following source file(s) "
+        + "and output ONLY the JSON object described above. No prose, no "
+        + "preamble, no markdown fences.\n\n"
+        + user_message
+    )
     cli_args = [
         claude_cmd, "-p",
         "--output-format", "json",
         "--no-session-persistence",
         *add_dir_args,
-        "--system-prompt", _extraction_system(deep=deep_mode),
     ]
     # claude-cli defaults to Opus, which is overkill for the structured-JSON
     # extraction graphify performs. GRAPHIFY_CLAUDE_CLI_MODEL=haiku (or
@@ -1648,7 +1680,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
         cli_args.extend(["--model", cli_model])
     proc = subprocess.run(
         cli_args,
-        input=user_message,
+        input=combined_message,
         capture_output=True,
         text=True,
         encoding="utf-8",  # Force UTF-8 — prevents UnicodeEncodeError on Windows cp1252
@@ -1706,11 +1738,11 @@ def _azure_client(api_key: str, endpoint: str):
         except ValueError:
             pass
     return AzureOpenAI(
+        **{"api_key": api_key},
         azure_endpoint=endpoint,
         api_version=api_version,
         timeout=timeout_s,
         max_retries=_resolve_max_retries(),
-        **{"api_key": api_key},
     )
 
 
@@ -1844,9 +1876,6 @@ def extract_files_direct(
         cfg = BACKENDS[current_backend]
         key = current_key or _get_backend_api_key(current_backend)
         if not key and current_backend == "ollama":
-            # Ollama ignores auth but the OpenAI client library requires a non-empty
-            # string. Use a placeholder and surface a visible warning so this never
-            # silently routes traffic without the user realising — see F-029.
             ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
             _validate_ollama_base_url(ollama_url)
             print(
@@ -1864,9 +1893,6 @@ def extract_files_direct(
         mdl = current_model or _default_model_for_backend(current_backend)
         if current_backend == "ollama":
             _validate_ollama_model_size(mdl)
-        # Images become structured refs for vision backends or text references
-        # for text-only backends. Recompute on fallback because capabilities can
-        # differ between the primary and fallback provider.
         vision = _backend_supports_vision(current_backend)
         read_bytes = vision and current_backend not in _PATH_IMAGE_BACKENDS
         image_refs = _build_image_refs(image_files, root, read_bytes=read_bytes) if image_files else []
@@ -1996,7 +2022,7 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
             content = read_slice_text(unit)[:_FILE_CHAR_CAP]
         except OSError:
             return 0
-        return len(_TOKENIZER.encode(content)) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
+        return len(_TOKENIZER.encode(content, disallowed_special=())) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
 
     path = unit
     # Raster images are not read as text; a vision model bills them at a roughly
@@ -2015,7 +2041,7 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
         content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
     except OSError:
         return 0
-    return len(_TOKENIZER.encode(content)) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
+    return len(_TOKENIZER.encode(content, disallowed_special=())) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
 
 
 def _pack_chunks_by_tokens(
@@ -2140,10 +2166,12 @@ def _extract_with_adaptive_retry(
     """
     def _merge_two(left_units, right_units) -> dict:
         left = _extract_with_adaptive_retry(
-            left_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            left_units, backend, api_key, model, root, max_depth, _depth + 1,
+            deep_mode=deep_mode, allow_minimax_fallback=allow_minimax_fallback,
         )
         right = _extract_with_adaptive_retry(
-            right_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode
+            right_units, backend, api_key, model, root, max_depth, _depth + 1,
+            deep_mode=deep_mode, allow_minimax_fallback=allow_minimax_fallback,
         )
         return {
             "nodes": left.get("nodes", []) + right.get("nodes", []),
@@ -2166,11 +2194,11 @@ def _extract_with_adaptive_retry(
         result = extract_files_direct(
             chunk,
             backend=backend,
+            **{"api_key": api_key},
             model=model,
             root=root,
             deep_mode=deep_mode,
             allow_minimax_fallback=allow_minimax_fallback,
-            **{"api_key": api_key},
         )
     except Exception as exc:  # noqa: BLE001 — re-raise unless it's a known context overflow
         if not _looks_like_context_exceeded(exc):
@@ -2204,26 +2232,12 @@ def _extract_with_adaptive_retry(
         )
         mid = len(chunk) // 2
         left = _extract_with_adaptive_retry(
-            chunk[:mid],
-            backend,
-            api_key,
-            model,
-            root,
-            max_depth,
-            _depth + 1,
-            deep_mode=deep_mode,
-            allow_minimax_fallback=allow_minimax_fallback,
+            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1,
+            deep_mode=deep_mode, allow_minimax_fallback=allow_minimax_fallback,
         )
         right = _extract_with_adaptive_retry(
-            chunk[mid:],
-            backend,
-            api_key,
-            model,
-            root,
-            max_depth,
-            _depth + 1,
-            deep_mode=deep_mode,
-            allow_minimax_fallback=allow_minimax_fallback,
+            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1,
+            deep_mode=deep_mode, allow_minimax_fallback=allow_minimax_fallback,
         )
         return {
             "nodes": left.get("nodes", []) + right.get("nodes", []),
@@ -2270,26 +2284,12 @@ def _extract_with_adaptive_retry(
     )
     mid = len(chunk) // 2
     left = _extract_with_adaptive_retry(
-        chunk[:mid],
-        backend,
-        api_key,
-        model,
-        root,
-        max_depth,
-        _depth + 1,
-        deep_mode=deep_mode,
-        allow_minimax_fallback=allow_minimax_fallback,
+        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1,
+        deep_mode=deep_mode, allow_minimax_fallback=allow_minimax_fallback,
     )
     right = _extract_with_adaptive_retry(
-        chunk[mid:],
-        backend,
-        api_key,
-        model,
-        root,
-        max_depth,
-        _depth + 1,
-        deep_mode=deep_mode,
-        allow_minimax_fallback=allow_minimax_fallback,
+        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1,
+        deep_mode=deep_mode, allow_minimax_fallback=allow_minimax_fallback,
     )
 
     return {
@@ -2374,13 +2374,11 @@ def extract_corpus_parallel(
     if backend == "ollama":
         fallback = _automatic_fallback_backend("ollama", allow=allow_minimax_fallback, model=None)
         try:
-            mdl = model or _default_model_for_backend("ollama")
-            _validate_ollama_model_size(mdl)
+            _validate_ollama_model_size(model or _default_model_for_backend("ollama"))
         except ValueError as exc:
             if fallback:
                 print(
-                    f"[graphify] local Ollama model is outside the laptop-safe boundary ({exc}); "
-                    "routing semantic chunks to MiniMax.",
+                    f"[graphify] local Ollama model is outside the laptop-safe boundary ({exc}); routing semantic chunks to MiniMax.",
                     file=sys.stderr,
                 )
                 backend = str(fallback)
@@ -2421,9 +2419,7 @@ def extract_corpus_parallel(
                 }
             if fallback and remote_cap:
                 print(
-                    f"[graphify] dynamic Ollama/MiniMax balance enabled: use local only while responsive, "
-                    f"spill at most {remote_cap}/{total} chunk(s) to MiniMax when local chunks are slow "
-                    "or laptop load is high.",
+                    f"[graphify] dynamic Ollama/MiniMax balance enabled: spill at most {remote_cap}/{total} chunk(s).",
                     file=sys.stderr,
                 )
 
@@ -2449,23 +2445,19 @@ def extract_corpus_parallel(
             ollama_balance["remote_used"] = remote_used + 1
             reason = "slow local chunk" if slow else ("high laptop load" if pressure == "high" else "forced remote mode")
             print(
-                f"[graphify] chunk {idx + 1}/{total}: using MiniMax ({reason}); "
-                "continuing to prefer local Ollama for remaining chunks.",
+                f"[graphify] chunk {idx + 1}/{total}: using MiniMax ({reason}); continuing to prefer local Ollama for remaining chunks.",
                 file=sys.stderr,
             )
             return str(fallback), None, None
         return "ollama", api_key, model
 
     def _disable_spill_backend(run_backend: str, exc: Exception) -> None:
-        if ollama_balance is None:
-            return
-        if run_backend == "ollama":
+        if ollama_balance is None or run_backend == "ollama":
             return
         ollama_balance["fallback"] = None
         ollama_balance["remote_cap"] = 0
         print(
-            f"[graphify] {run_backend} spill failed ({type(exc).__name__}: {exc}); "
-            "disabling remote spill for this run and retrying the chunk locally.",
+            f"[graphify] {run_backend} spill failed ({type(exc).__name__}: {exc}); disabling remote spill for this run and retrying the chunk locally.",
             file=sys.stderr,
         )
 
@@ -2476,12 +2468,12 @@ def extract_corpus_parallel(
             result = _extract_with_adaptive_retry(
                 chunk,
                 backend=run_backend,
+                **{"api_key": run_api_key},
                 model=run_model,
                 root=root,
                 max_depth=max_retry_depth,
                 deep_mode=deep_mode,
                 allow_minimax_fallback=allow_minimax_fallback and run_backend == "ollama",
-                **{"api_key": run_api_key},
             )
             elapsed = round(time.time() - t0, 2)
             result["elapsed_seconds"] = elapsed
@@ -2498,12 +2490,12 @@ def extract_corpus_parallel(
                     result = _extract_with_adaptive_retry(
                         chunk,
                         backend="ollama",
+                        **{"api_key": api_key},
                         model=model,
                         root=root,
                         max_depth=max_retry_depth,
                         deep_mode=deep_mode,
                         allow_minimax_fallback=False,
-                        **{"api_key": api_key},
                     )
                     elapsed = round(time.time() - retry_t0, 2)
                     result["elapsed_seconds"] = elapsed
@@ -2523,6 +2515,35 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
+    def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
+        # Persist each chunk's semantic results to the cache as soon as it
+        # completes. Without this, the semantic cache is only written once, at
+        # the very end of the run (in __main__), so a run interrupted partway
+        # — a crash, a kill, or a claude-cli/API run that exits on a rate
+        # limit — loses every completed chunk and restarts from scratch. This
+        # is best-effort: a cache write failure must never abort extraction.
+        if os.environ.get("GRAPHIFY_NO_INCREMENTAL_CACHE"):
+            return
+        try:
+            from .cache import save_semantic_cache as _scs
+            # Scope the write to the files actually dispatched in this chunk
+            # (#1757). The model can attribute a node's source_file to another
+            # corpus file; without this bound, that stray node would clobber the
+            # other file's complete cache entry (or, with merge_existing, pollute
+            # it). A FileSlice reports its file via `.rel`; a bare Path is the
+            # relative source_file itself.
+            allowed = [getattr(item, "rel", None) or item for item in chunk]
+            _scs(
+                result.get("nodes", []),
+                result.get("edges", []),
+                result.get("hyperedges", []),
+                root=root,
+                merge_existing=True,
+                allowed_source_files=allowed,
+            )
+        except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
+            print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)
+
     workers = max(1, min(max_concurrency, total))
     if workers == 1:
         # Avoid thread pool overhead for single-worker runs (and keep
@@ -2537,9 +2558,18 @@ def extract_corpus_parallel(
             if result.get("backend") == "minimax":
                 merged["minimax_chunks"] += 1
             _merge_into(merged, result)
+            _checkpoint_chunk(result, chunk)
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
     else:
+        # Merge in deterministic submission order, NOT completion order. Merging
+        # as chunks finish makes the node/edge ordering in the returned corpus
+        # (and therefore graph.json) depend on which network call happened to
+        # return first — so identical input churned run-to-run (#1632). Collect
+        # results keyed by chunk index and merge in sorted order after the pool
+        # drains; this matches the serial path's order. The progress callback
+        # still fires in completion order so long local runs aren't silent.
+        results_by_idx: dict[int, dict] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(_run_one, idx, chunk) for idx, chunk in enumerate(chunks)]
             for future in as_completed(futures):
@@ -2552,11 +2582,14 @@ def extract_corpus_parallel(
                     merged["failed_chunks"] += 1
                     continue
                 assert result is not None
+                results_by_idx[idx] = result
                 if result.get("backend") == "minimax":
                     merged["minimax_chunks"] += 1
-                _merge_into(merged, result)
+                _checkpoint_chunk(result, chunks[idx])
                 if callable(on_chunk_done):
                     on_chunk_done(idx, total, result)
+        for idx in sorted(results_by_idx):
+            _merge_into(merged, results_by_idx[idx])
 
     # Loud failure summary — surface chunk failures at end so they're never
     # buried mid-log. Exit 0 preserved for caller compatibility; the
@@ -2585,8 +2618,14 @@ def _call_llm(
     backend: str,
     max_tokens: int = 200,
     model: str | None = None,
+    usage_out: dict | None = None,
 ) -> str:
     """Send a plain-text prompt to `backend` and return the model's text reply.
+
+    When ``usage_out`` is provided it is accumulated in place with ``input`` and
+    ``output`` token counts from the response, so callers (community labeling)
+    can total the cost of otherwise-uninstrumented LLM calls (#1694). Existing
+    callers that omit it are unaffected.
 
     Used by lightweight callers (e.g. `graphify.dedup` LLM tiebreaker) that
     don't need the full extraction prompt or JSON-shaped output. Mirrors the
@@ -2610,8 +2649,11 @@ def _call_llm(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
     mdl = model or _default_model_for_backend(backend)
-    if backend == "ollama":
-        _validate_ollama_model_size(mdl)
+
+    def _rec(inp, out) -> None:
+        if usage_out is not None:
+            usage_out["input"] = usage_out.get("input", 0) + int(inp or 0)
+            usage_out["output"] = usage_out.get("output", 0) + int(out or 0)
 
     if backend == "claude":
         try:
@@ -2624,6 +2666,9 @@ def _call_llm(
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            _rec(getattr(u, "input_tokens", 0), getattr(u, "output_tokens", 0))
         return resp.content[0].text if resp.content else ""
 
     if backend == "claude-cli":
@@ -2657,6 +2702,14 @@ def _call_llm(
         if proc.returncode != 0:
             raise RuntimeError(f"claude -p exited {proc.returncode}: {proc.stderr.strip()[:500]}")
         envelope = _claude_cli_envelope(proc.stdout)
+        cli_usage = envelope.get("usage") or {}
+        if cli_usage:
+            _rec(
+                (cli_usage.get("input_tokens", 0) or 0)
+                + (cli_usage.get("cache_read_input_tokens", 0) or 0)
+                + (cli_usage.get("cache_creation_input_tokens", 0) or 0),
+                cli_usage.get("output_tokens", 0),
+            )
         return envelope.get("result", "")
 
 
@@ -2674,6 +2727,9 @@ def _call_llm(
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             inferenceConfig=_bedrock_inference_config(max_tokens, mdl),
         )
+        bu = resp.get("usage") or {}
+        if bu:
+            _rec(bu.get("inputTokens", 0), bu.get("outputTokens", 0))
         return resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
 
     if backend == "azure":
@@ -2694,9 +2750,12 @@ def _call_llm(
         resp = azure_client.chat.completions.create(**azure_kwargs)
         if not resp.choices or resp.choices[0].message is None:
             raise ValueError("Azure OpenAI returned empty or filtered response")
+        au = getattr(resp, "usage", None)
+        if au is not None:
+            _rec(getattr(au, "prompt_tokens", 0), getattr(au, "completion_tokens", 0))
         return resp.choices[0].message.content or ""
 
-    # OpenAI-compatible (minimax, kimi, openai, gemini, ollama, custom providers)
+    # OpenAI-compatible (kimi, openai, gemini, ollama)
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -2723,18 +2782,14 @@ def _call_llm(
         kwargs["extra_body"] = cfg["extra_body"]
     elif "moonshot" in cfg["base_url"]:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-    elif backend == "ollama":
-        kwargs["extra_body"] = _ollama_request_extra_body()
-    try:
-        resp = client.chat.completions.create(**kwargs)
-    except Exception as exc:
-        fallback = _automatic_fallback_backend(backend, allow=True)
-        if fallback is None:
-            raise
-        _warn_backend_fallback(backend, fallback, exc)
-        return _call_llm(prompt, backend=fallback, max_tokens=max_tokens)
+    elif _thinking_disabled_via_env():
+        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
+    ou = getattr(resp, "usage", None)
+    if ou is not None:
+        _rec(getattr(ou, "prompt_tokens", 0), getattr(ou, "completion_tokens", 0))
     return resp.choices[0].message.content or ""
 
 
@@ -2821,17 +2876,6 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
 
 
 def detect_backend() -> str | None:
-    """Return the preferred backend for unattended graphify LLM work.
-
-    Priority: ollama (local <=8B primary) → minimax (token-plan fallback) →
-    gemini → kimi → claude → openai → deepseek → azure → bedrock → custom
-    providers. NVIDIA NIM remains available by explicit `--backend nim`, but is
-    no longer part of automatic selection or retry fallback on this workstation.
-
-    Ollama is selected first even without an API key because the local OpenAI
-    endpoint ignores auth and keeps corpus data on the laptop. Runtime failures
-    fall back to MiniMax when its token-plan key is configured.
-    """
     ollama_url = os.environ.get("OLLAMA_BASE_URL", BACKENDS["ollama"].get("base_url", ""))
     if os.environ.get("GRAPHIFY_DISABLE_OLLAMA_PRIMARY", "").strip().lower() not in ("1", "true", "yes"):
         _validate_ollama_base_url(ollama_url)
@@ -2840,8 +2884,7 @@ def detect_backend() -> str | None:
         except ValueError as exc:
             if _get_backend_api_key("minimax"):
                 print(
-                    f"[graphify] no laptop-safe Ollama model is configured ({exc}); "
-                    "using MiniMax instead.",
+                    f"[graphify] no laptop-safe Ollama model is configured ({exc}); using MiniMax instead.",
                     file=sys.stderr,
                 )
                 return "minimax"
@@ -2916,9 +2959,25 @@ def _parse_label_response(text: str, labeled_cids: list[int]) -> dict[int, str]:
         start, end = cleaned.find("{"), cleaned.rfind("}")
         if start != -1 and end > start:
             cleaned = cleaned[start:end + 1]
-    data = json.loads(cleaned)
-    if not isinstance(data, dict):
-        raise ValueError("label response is not a JSON object")
+    data: dict | None = None
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            data = parsed
+    except (json.JSONDecodeError, ValueError):
+        data = None
+    if data is None:
+        # Salvage: pull the complete "<cid>": "<name>" pairs directly. A model
+        # can truncate its reply mid-object (a stingy token budget or a preamble
+        # eating the completion), which used to hard-fail the whole batch with
+        # e.g. `Expecting value: line 1 column 6` on a `{"0":` fragment (#1690).
+        # Recovering the pairs that DID arrive labels those communities instead
+        # of dropping the entire batch to placeholders.
+        pairs = re.findall(r'"?(-?\d+)"?\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
+        if pairs:
+            data = {k: v for k, v in pairs}
+        else:
+            raise ValueError(f"label response is not parseable JSON: {text[:120]!r}")
     out: dict[int, str] = {}
     for cid in labeled_cids:
         name = data.get(str(cid))
@@ -2937,6 +2996,7 @@ def _label_batch_with_retry(
     model: str | None,
     depth: int = 0,
     max_depth: int = 3,
+    usage_out: dict | None = None,
 ) -> dict[int, str]:
     """Label a batch of communities, splitting in half and retrying on parse failure.
 
@@ -2960,10 +3020,18 @@ def _label_batch_with_retry(
         "Respond ONLY with a JSON object mapping the community id (as a string) to "
         "its name - no prose, no markdown fences.\n\n" + "\n".join(batch_lines)
     )
-    max_tokens = _resolve_max_tokens(min(64 + 24 * len(batch_cids), 8192))
+    # Budget generously: a 2-5 word name is ~10 tokens, but models (notably
+    # gemini) often prepend a short preamble or reasoning that eats the
+    # completion and truncates the JSON mid-object, which used to fail the whole
+    # batch (#1690). The old 64 + 24*n floor left no headroom.
+    max_tokens = _resolve_max_tokens(min(256 + 48 * len(batch_cids), 8192))
     call_kwargs: dict = {"backend": backend, "max_tokens": max_tokens}
     if model is not None:
         call_kwargs["model"] = model
+    # Only forward usage_out when the caller wants accounting, so existing
+    # callers (and their test doubles) see the unchanged _call_llm signature.
+    if usage_out is not None:
+        call_kwargs["usage_out"] = usage_out
 
     try:
         text = _call_llm(prompt, **call_kwargs)
@@ -2984,10 +3052,12 @@ def _label_batch_with_retry(
         left = _label_batch_with_retry(
             batch_cids[:mid], batch_lines[:mid],
             backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+            usage_out=usage_out,
         )
         right = _label_batch_with_retry(
             batch_cids[mid:], batch_lines[mid:],
             backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+            usage_out=usage_out,
         )
         return left | right
 
@@ -3003,6 +3073,7 @@ def label_communities(
     top_k: int = _LABEL_TOP_K,
     batch_size: int = _LABEL_BATCH_SIZE,
     max_concurrency: int = 4,
+    usage_out: dict | None = None,
 ) -> dict[int, str]:
     """Return a complete ``{cid: name}`` map using ``backend`` for naming.
 
@@ -3045,19 +3116,30 @@ def label_communities(
     def _run_batch(batch_idx: int):
         start = batch_idx * batch_size
         end = min(start + batch_size, len(labeled_cids))
+        # Accumulate token usage into a per-batch dict so concurrent workers
+        # never race on the shared accumulator; it is merged on the main thread
+        # in _merge (#1694).
+        batch_usage: dict = {} if usage_out is not None else None
+        batch_kwargs = {"usage_out": batch_usage} if usage_out is not None else {}
         try:
             parsed = _label_batch_with_retry(
                 labeled_cids[start:end], lines[start:end], backend=backend, model=model,
+                **batch_kwargs,
             )
-            return batch_idx, parsed, None
+            return batch_idx, parsed, None, batch_usage
         except Exception as exc:  # noqa: BLE001 - reported per-batch; surfaced below
-            return batch_idx, None, exc
+            return batch_idx, None, exc, batch_usage
 
     written = 0
     errors: dict[int, Exception] = {}
 
-    def _merge(batch_idx: int, parsed, exc) -> None:
+    def _merge(batch_idx: int, parsed, exc, batch_usage=None) -> None:
         nonlocal written
+        # Count tokens even for a failed batch: the LLM call was billed whether
+        # or not the reply parsed.
+        if usage_out is not None and batch_usage:
+            usage_out["input"] = usage_out.get("input", 0) + batch_usage.get("input", 0)
+            usage_out["output"] = usage_out.get("output", 0) + batch_usage.get("output", 0)
         if exc is not None:
             errors[batch_idx] = exc
             start = batch_idx * batch_size
@@ -3099,6 +3181,7 @@ def generate_community_labels(
     quiet: bool = False,
     max_concurrency: int = 4,
     batch_size: int = _LABEL_BATCH_SIZE,
+    usage_out: dict | None = None,
 ) -> tuple[dict[int, str], str]:
     """CLI entry point: resolve a backend, name communities, and degrade to
     ``Community N`` placeholders on any failure (no backend, API error, malformed
@@ -3113,7 +3196,7 @@ def generate_community_labels(
         if not quiet:
             print(
                 "[graphify label] no LLM backend configured; keeping Community N "
-                "placeholders. Set an API key (e.g. MINIMAX_API_KEY) or pass --backend.",
+                "placeholders. Set an API key (e.g. GOOGLE_API_KEY) or pass --backend.",
                 file=sys.stderr,
             )
         return _placeholder_community_labels(communities), "placeholder"
@@ -3121,6 +3204,7 @@ def generate_community_labels(
         labels = label_communities(
             G, communities, backend=backend, model=model, gods=gods,
             max_concurrency=max_concurrency, batch_size=batch_size,
+            usage_out=usage_out,
         )
         return labels, "llm"
     except Exception as exc:

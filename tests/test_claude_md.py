@@ -134,3 +134,72 @@ def test_uninstall_removes_settings_hook(tmp_path):
         settings = json.loads(settings_path.read_text())
         hooks = settings.get("hooks", {}).get("PreToolUse", [])
         assert not any(h.get("matcher") == "Bash" and "graphify" in str(h) for h in hooks)
+
+
+# ---------------------------------------------------------------------------
+# local-only variants: settings.local.json / CLAUDE.local.md (#1731)
+# ---------------------------------------------------------------------------
+
+def test_uninstall_removes_hook_from_settings_local_json(tmp_path):
+    """A hook relocated to .claude/settings.local.json is removed on uninstall."""
+    import json
+    claude_install(tmp_path)
+    # User moved the hook out of the committed settings.json into the local-only file.
+    (tmp_path / ".claude" / "settings.json").rename(tmp_path / ".claude" / "settings.local.json")
+    claude_uninstall(tmp_path)
+    local = tmp_path / ".claude" / "settings.local.json"
+    hooks = json.loads(local.read_text()).get("hooks", {}).get("PreToolUse", [])
+    assert not any("graphify" in str(h) for h in hooks)
+
+
+def test_uninstall_removes_section_from_dot_claude_local_md(tmp_path):
+    """Instructions relocated to .claude/CLAUDE.local.md are removed on uninstall."""
+    claude_install(tmp_path)
+    local_md = tmp_path / ".claude" / "CLAUDE.local.md"
+    local_md.write_text((tmp_path / "CLAUDE.md").read_text())
+    (tmp_path / "CLAUDE.md").unlink()
+    claude_uninstall(tmp_path)
+    assert not local_md.exists() or _CLAUDE_MD_MARKER not in local_md.read_text()
+
+
+def test_uninstall_removes_section_from_root_claude_local_md(tmp_path):
+    """Instructions relocated to root CLAUDE.local.md are removed on uninstall."""
+    claude_install(tmp_path)
+    local_md = tmp_path / "CLAUDE.local.md"
+    local_md.write_text((tmp_path / "CLAUDE.md").read_text())
+    (tmp_path / "CLAUDE.md").unlink()
+    claude_uninstall(tmp_path)
+    assert not local_md.exists() or _CLAUDE_MD_MARKER not in local_md.read_text()
+
+
+def test_uninstall_cleans_both_standard_and_local(tmp_path):
+    """When the section lives in both CLAUDE.md and a local variant, both are cleaned."""
+    claude_install(tmp_path)
+    claude_md = tmp_path / "CLAUDE.md"
+    local_md = tmp_path / ".claude" / "CLAUDE.local.md"
+    local_md.write_text(claude_md.read_text())  # duplicated into the local file too
+    claude_uninstall(tmp_path)
+    for f in (claude_md, local_md):
+        assert not f.exists() or _CLAUDE_MD_MARKER not in f.read_text()
+
+
+def test_uninstall_preserves_other_content_in_local_md(tmp_path):
+    """Uninstall keeps non-graphify content in CLAUDE.local.md."""
+    claude_install(tmp_path)
+    local_md = tmp_path / ".claude" / "CLAUDE.local.md"
+    local_md.write_text("# Local notes\n\nkeep me\n\n" + (tmp_path / "CLAUDE.md").read_text())
+    claude_uninstall(tmp_path)
+    assert local_md.exists()
+    content = local_md.read_text()
+    assert "Local notes" in content
+    assert "keep me" in content
+    assert _CLAUDE_MD_MARKER not in content
+
+
+def test_uninstall_tolerates_unreadable_local_md(tmp_path):
+    """A non-UTF-8 CLAUDE.local.md must not abort uninstall (it has no marker to strip)."""
+    claude_install(tmp_path)
+    local_md = tmp_path / ".claude" / "CLAUDE.local.md"
+    local_md.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+    claude_uninstall(tmp_path)  # must not raise
+    assert local_md.read_bytes() == b"\xff\xfe not valid utf-8 \x80\x81"  # left untouched

@@ -58,6 +58,35 @@ def extract_elixir(path: Path) -> dict:
                 return source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
         return None
 
+    def _get_alias_modules(node) -> list[str]:
+        """Every module named by an alias/import/require/use argument.
+
+        Handles the single form (``alias Foo.Bar`` -> ``["Foo.Bar"]``) and the
+        multi-alias brace form (``alias Foo.{Bar, Baz}`` ->
+        ``["Foo.Bar", "Foo.Baz"]``), which the grammar represents as a ``dot``
+        node holding the base alias and a trailing ``tuple`` of member aliases.
+        """
+        def _text(n) -> str:
+            return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
+
+        for child in node.children:
+            if child.type == "alias":
+                return [_text(child)]
+            if child.type == "dot":
+                base = None
+                tuple_node = None
+                for sub in child.children:
+                    if sub.type == "alias" and base is None:
+                        base = _text(sub)
+                    elif sub.type == "tuple":
+                        tuple_node = sub
+                if base and tuple_node is not None:
+                    members = [_text(m) for m in tuple_node.children if m.type == "alias"]
+                    if members:
+                        return [f"{base}.{m}" for m in members]
+                return [_text(child)]
+        return []
+
     def walk(node, parent_module_nid: str | None = None) -> None:
         if node.type != "call":
             for child in node.children:
@@ -121,8 +150,7 @@ def extract_elixir(path: Path) -> dict:
             return
 
         if keyword in _IMPORT_KEYWORDS and arguments_node:
-            module_name = _get_alias_text(arguments_node)
-            if module_name:
+            for module_name in _get_alias_modules(arguments_node):
                 tgt_nid = _make_id(module_name)
                 add_edge(file_nid, tgt_nid, "imports", line, context="import")
             return

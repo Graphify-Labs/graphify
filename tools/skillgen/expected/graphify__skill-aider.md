@@ -10,7 +10,7 @@ Turn any folder of files into a navigable knowledge graph with community detecti
 ## Usage
 
 ```
-/graphify                                             # full pipeline on current directory → Obsidian vault
+/graphify                                             # full pipeline on current directory (HTML viz; add --obsidian for a vault)
 /graphify <path>                                      # full pipeline on specific path
 /graphify <path> --mode deep                          # thorough extraction, richer INFERRED edges
 /graphify <path> --update                             # incremental - re-extract only new/changed files
@@ -64,14 +64,14 @@ PYTHON=""
 GRAPHIFY_BIN=$(which graphify 2>/dev/null)
 # 1. uv tool installs — most reliable on modern Mac/Linux
 if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
-    _UV_PY=$(uv tool run graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
+    _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
     if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
 fi
 # 2. Read shebang from graphify binary (pipx and direct pip installs)
 if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
     _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
     case "$_SHEBANG" in
-        *[!a-zA-Z0-9/_.-]*) ;;
+        *[!a-zA-Z0-9/_.@-]*) ;;
         *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
     esac
 fi
@@ -80,7 +80,7 @@ if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
 if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
     if command -v uv >/dev/null 2>&1; then
         uv tool install --upgrade graphifyy -q 2>&1 | tail -3
-        _UV_PY=$(uv tool run graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
+        _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
         if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
     else
         "$PYTHON" -m pip install graphifyy -q 2>/dev/null \
@@ -313,7 +313,8 @@ from graphify.cache import save_semantic_cache
 from pathlib import Path
 
 new = json.loads(Path('.graphify_semantic_new.json').read_text()) if Path('.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []))
+uncached = [line for line in Path('.graphify_uncached.txt').read_text().splitlines() if line]
+saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), allowed_source_files=uncached)
 print(f'Cached {saved} files')
 "
 ```

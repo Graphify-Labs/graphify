@@ -24,6 +24,8 @@ def _make_mock_psycopg(tables, views, routines, fks,
     ``connect_raises``, if set, is an exception *instance* raised by connect().
     """
 
+    executed_queries: list[str] = []
+
     class MockCursor:
         def __enter__(self):
             return self
@@ -33,6 +35,7 @@ def _make_mock_psycopg(tables, views, routines, fks,
 
         def execute(self, query, params=None):
             self.query = query
+            executed_queries.append(query)
 
         def fetchall(self):
             q = self.query.strip().lower()
@@ -42,7 +45,7 @@ def _make_mock_psycopg(tables, views, routines, fks,
                 return views
             elif "information_schema.routines" in q:
                 return routines
-            elif "information_schema.referential_constraints" in q:
+            elif "pg_constraint" in q:
                 return fks
             return []
 
@@ -75,6 +78,7 @@ def _make_mock_psycopg(tables, views, routines, fks,
         "host": host,
         "dbname": dbname,
     }
+    mock_psycopg._executed_queries = executed_queries
     return mock_psycopg
 
 
@@ -244,6 +248,41 @@ def test_pg_introspect_composite_fk():
     )
 
 
+def test_pg_introspect_fk_query_avoids_privilege_filtered_view():
+    """#1746: information_schema.referential_constraints only shows constraints
+    where the current user has WRITE access to the referencing table (owner or
+    a privilege other than SELECT). A read-only introspection role therefore
+    gets zero FK rows — while tables/views/routines all still appear, since
+    SELECT is enough for those views — and the graph silently loses every
+    'references' edge. The FK query must read pg_catalog.pg_constraint, which
+    is not privilege-filtered."""
+    mock_tables = [
+        ("public", "users", "BASE TABLE"),
+        ("public", "orders", "BASE TABLE"),
+    ]
+    mock_fks = [
+        ("fk_orders_user_id", "public", "orders", ["user_id"], "public", "users", ["id"]),
+    ]
+
+    mock_psycopg = _make_mock_psycopg(mock_tables, [], [], mock_fks)
+
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        res = introspect_postgres("postgresql://readonly:secret@myhost/mydb")
+
+    constraint_queries = [
+        q for q in mock_psycopg._executed_queries if "constraint" in q.lower()
+    ]
+    assert constraint_queries, "no FK query was executed"
+    assert all(
+        "referential_constraints" not in q.lower() for q in constraint_queries
+    ), "FK query must not read information_schema.referential_constraints (privilege-filtered, #1746)"
+    assert any("pg_constraint" in q.lower() for q in constraint_queries)
+
+    # And the FK still becomes a references edge end-to-end
+    ref_edges = [e for e in res["edges"] if e["relation"] == "references"]
+    assert len(ref_edges) == 1
+
+
 def test_pg_introspect_connection_error():
     """A psycopg.OperationalError must be re-raised as ConnectionError with a
     sanitized message (no DSN/credentials) and no stack-trace noise."""
@@ -276,3 +315,17 @@ def test_pg_introspect_import_error():
     with patch.dict("sys.modules", {"psycopg": None}):
         with pytest.raises(ImportError, match="psycopg is required"):
             introspect_postgres("postgresql://localhost/db")
+
+
+def test_pg_introspect_uri_forward_slashes():
+    """Assert that the virtual path in postgresql introspection output uses forward slashes on all platforms."""
+    mock_psycopg = _make_mock_psycopg([], [], [], [], host="some-host", dbname="some-db")
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        res = introspect_postgres("postgresql://some-host/some-db")
+    
+    # We should have at least the file node
+    assert len(res["nodes"]) > 0
+    for node in res["nodes"]:
+        assert "\\" not in node["source_file"]
+        assert "postgresql:/some-host/some-db" in node["source_file"]
+

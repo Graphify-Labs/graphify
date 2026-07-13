@@ -8,6 +8,8 @@ from graphify.serve import (
     _communities_from_graph,
     _score_nodes,
     _compute_idf,
+    _EXACT_MATCH_BONUS,
+    _SOURCE_MATCH_BONUS,
     _pick_seeds,
     _bfs,
     _dfs,
@@ -123,6 +125,66 @@ def test_score_nodes_multiword_exact_label_outranks_superset():
     assert scored[0][0] > scored[1][0], "exact label must strictly outrank superset/token-bag matches"
 
 
+def test_score_nodes_coverage_lone_generic_exact_hit_loses_to_multi_term_match():
+    """A lone generic-word exact match must not bury a multi-term match.
+
+    Reproduces #1602: in a multi-term query, a single generic term that
+    exactly equals a short leaf label (query term "list" vs a list() function
+    node) received the full exact-tier bonus and outranked every node matching
+    several of the query's terms, even when the query contained the target's
+    literal identifier. The per-term exact/prefix tiers are now scaled by
+    squared term coverage, so a 1-of-5-terms collision drops below a
+    multi-term match. The leaves live in the same directory as the target
+    (the realistic case) to pin that source-path hits do not count as
+    coverage and hand the collision its exact tier back.
+    """
+    G = nx.Graph()
+
+    def _add(nid, label, src):
+        G.add_node(nid, label=label, norm_label=label.lower(),
+                   source_file=src, community=0)
+
+    _add("target", "ClientLive.Index", "lib/clients_live/index.ex")
+    _add("form", "ClientLive.Form", "lib/clients_live/form.ex")
+    _add("show", "ClientLive.Show", "lib/clients_live/show.ex")
+    # Same-named tiny leaf functions: "list" == bare label fires the exact
+    # tier. Placed in the target's own directory so their source paths also
+    # substring-match the query term "clients": a path hit must not inflate
+    # the coverage that multiplies the exact tier.
+    for i in range(3):
+        _add(f"leaf{i}", "list()", f"lib/clients_live/helpers{i}.ex")
+    # Filler making "list" a common (low-IDF) token, as in a real graph where
+    # list()/get()/new() style names are ubiquitous.
+    for i in range(24):
+        _add(f"filler{i}", f"shopping list {i}", f"lib/filler{i}.ex")
+
+    # The user pastes the real identifier plus context words; tokenization
+    # yields 5 terms: clientlive, index, clients, list, columns.
+    scored = _score_nodes(G, [t.lower() for t in "ClientLive.Index clients list columns".split()])
+    by_id = {nid: s for s, nid in scored}
+
+    assert scored[0][1] == "target"
+    assert by_id["target"] > by_id["leaf0"], (
+        "a 1-of-5-terms exact collision must not outrank the node matching 3 of 5 terms"
+    )
+
+
+def test_score_nodes_coverage_full_coverage_query_is_unchanged():
+    """Coverage scaling must not touch full-coverage queries (coverage == 1).
+
+    A single-term identifier lookup keeps the exact tier's full magnitude, so
+    `query "FooBarService"` behavior is byte-identical to before #1602.
+    """
+    G = _make_graph()
+    scored = _score_nodes(G, ["extract"])
+    w = _compute_idf(G, ["extract"])["extract"]
+    assert scored[0][1] == "n1"
+    # Full-query exact tier (10x) + per-term exact tier + source hit
+    # ("extract" in "extract.py"), all undampened.
+    expected = (_EXACT_MATCH_BONUS * 10 + _EXACT_MATCH_BONUS + _SOURCE_MATCH_BONUS) * w
+    assert scored[0][0] == pytest.approx(expected)
+
+
 def test_find_node_ignores_trailing_punctuation():
     G = _make_graph()
     assert _find_node(G, "extract?") == ["n1"]
@@ -133,6 +195,30 @@ def test_find_node_matches_full_punctuated_unicode_label():
     G.add_node("n1", label="Skill /auditar — Auditoría inquisitiva de enlaces")
 
     assert _find_node(G, "Skill /auditar — Auditoría inquisitiva de enlaces") == ["n1"]
+
+
+def test_find_node_matches_punctuated_file_label_exactly():
+    # #1704: an exactly-typed punctuated file label must resolve through explain,
+    # just like it does through path/query.
+    G = nx.Graph()
+    G.add_node("f1", label="blockStream.ts", norm_label="blockstream.ts",
+               source_file="lib/blockStream.ts", source_location="L1")
+    G.add_node("f2", label="blockStream.test.ts", norm_label="blockstream.test.ts",
+               source_file="lib/blockStream.test.ts", source_location="L1")
+    assert _find_node(G, "blockStream.ts")[0] == "f1"
+    assert _find_node(G, "blockStream.test.ts")[0] == "f2"
+
+
+def test_find_node_resolves_when_label_and_norm_label_diverge():
+    # #1704 hardening: the tokenized-label tier only rescues the match by
+    # coincidence (label tokenizes the same as the query). When `label` and
+    # `norm_label` diverge, only the symmetric `norm_query == norm_label` match
+    # resolves it. Here label tokenizes to "blockstream" but norm_label is
+    # "blockstream.ts" — this fails without the norm_query path.
+    G = nx.Graph()
+    G.add_node("n1", label="BlockStream", norm_label="blockstream.ts",
+               source_file="lib/x.ts", source_location="L1")
+    assert _find_node(G, "blockStream.ts") == ["n1"]
 
 
 # --- trigram candidate prefilter (the trigram index that shrinks the O(N) scan) ---
@@ -262,7 +348,20 @@ def test_trigram_index_cached_and_rebuilt_per_graph():
 
 
 def test_query_terms_strips_search_punctuation():
-    assert _query_terms("what calls extract?") == ["what", "calls", "extract"]
+    # "what" is a question stopword (dropped); punctuation is still stripped from "extract?".
+    assert _query_terms("what calls extract?") == ["calls", "extract"]
+
+
+def test_query_terms_drops_question_stopwords():
+    # Natural-language question words are dropped so content words drive seeding:
+    # "how does the frontier cache work" must reduce to the content terms, or it
+    # seeds on "how"/"the"/"work" (which prefix-match prose labels) instead.
+    assert _query_terms("how does the frontier cache work") == ["frontier", "cache"]
+
+
+def test_query_terms_all_stopwords_falls_back_to_unfiltered():
+    # An all-stopword query keeps its terms rather than seeding on nothing.
+    assert _query_terms("how does it work") == ["how", "does", "work"]
 
 
 def test_query_terms_filters_only_short_english_terms(monkeypatch):
@@ -377,6 +476,54 @@ def test_subgraph_to_text_includes_edge_context():
     G = _make_graph()
     text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
     assert "context=call" in text
+
+
+# --- work-memory overlay annotation on NODE lines -----------------------------
+
+def test_subgraph_to_text_annotates_node_with_learning_status():
+    """An annotated node gets a `learning=<status>` suffix inside its NODE
+    bracket; an un-annotated node gets none."""
+    G = _make_graph()
+    G.graph["_learning_overlay"] = {
+        "n1": {"status": "preferred", "stale": False},
+    }
+    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    lines = {l.split()[1]: l for l in text.splitlines() if l.startswith("NODE ")}
+    assert "learning=preferred]" in lines["extract"]
+    assert "learning=" not in lines["cluster"]  # un-annotated node
+
+
+def test_subgraph_to_text_marks_stale_status():
+    G = _make_graph()
+    G.graph["_learning_overlay"] = {"n1": {"status": "contested", "stale": True}}
+    text = _subgraph_to_text(G, {"n1"}, [])
+    assert "learning=contested:stale]" in text
+
+
+def test_subgraph_to_text_learning_suffix_counts_against_budget():
+    """The learning= suffix is part of the NODE line BEFORE the budget cut, so it
+    is included in the char_budget accounting (a budget tight enough to fit the
+    bare line but not the suffixed line forces truncation)."""
+    G = _make_graph()
+    bare = _subgraph_to_text(G, {"n1", "n2", "n3"}, [])
+    # token_budget chosen so the un-annotated render fits without truncation...
+    budget = (len(bare) // 3) + 1
+    assert "truncated" not in _subgraph_to_text(G, {"n1", "n2", "n3"}, [],
+                                                token_budget=budget)
+    # ...but once every node carries a learning= suffix, the same budget overflows.
+    G.graph["_learning_overlay"] = {
+        n: {"status": "preferred", "stale": False} for n in ("n1", "n2", "n3")
+    }
+    annotated = _subgraph_to_text(G, {"n1", "n2", "n3"}, [], token_budget=budget)
+    assert "learning=preferred" in annotated
+    assert "truncated" in annotated
+
+
+def test_subgraph_to_text_no_overlay_is_unchanged():
+    """With no overlay on the graph, NODE lines carry no learning= suffix."""
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    assert "learning=" not in text
 
 
 def test_query_graph_text_explicit_context_filter_changes_traversal():
@@ -584,6 +731,101 @@ def test_pick_seeds_respects_max_k():
     scored = [(10.0, f"n{i}") for i in range(10)]
     seeds = _pick_seeds(scored, max_k=3)
     assert len(seeds) == 3
+
+
+def test_pick_seeds_without_diversity_args_is_unchanged():
+    """G/terms are optional and default to None: existing callers see identical
+    behavior to before this change."""
+    scored = [(1000.0, "fbs"), (1.0, "err1"), (0.9, "err2")]
+    assert _pick_seeds(scored) == ["fbs"]
+
+
+def test_pick_seeds_diversity_recovers_starved_term(monkeypatch):
+    """Reproduces #1445: a vague natural-language query where one term's
+    incidental EXACT match on an unrelated node (e.g. a common word also used
+    as an unrelated field/identifier) outscores every SUBSTRING match on the
+    query's other, actually-relevant terms by ~1000x. Without G/terms, the
+    20%-gap cutoff discards the relevant candidate entirely; with them, it is
+    recovered as a guaranteed per-term seed.
+    """
+    G = nx.DiGraph()
+    # "unrelated" is an exact label match for the query term "unrelated" and
+    # has no connection to the actually-relevant "target" node.
+    G.add_node("noise", label="unrelated", source_file="design_tokens.json")
+    # "target" only substring-matches the query term "widget" via its label.
+    G.add_node("target", label="rate_limit_widget", source_file="src/widget.py")
+    G.add_node("other", label="something_else", source_file="src/other.py")
+    G.add_edge("other", "target")
+
+    terms = ["unrelated", "widget"]
+    scored = _score_nodes(G, terms)
+
+    # Sanity check the premise: without diversity, only the exact match survives.
+    seeds_before = _pick_seeds(scored)
+    assert seeds_before == ["noise"]
+
+    seeds_after = _pick_seeds(scored, G=G, terms=terms)
+    assert "noise" in seeds_after
+    assert "target" in seeds_after
+
+
+# --- generic-symbol seed flooding (#1766) ---
+
+def test_pick_seeds_dedups_homonymous_generic_labels():
+    """Many nodes sharing one generic label (e.g. framework `GET` handlers)
+    must contribute at most ONE seed, not consume every slot (#1766). A
+    distinct, relevant label still gets its own seed."""
+    G = nx.DiGraph()
+    for i in range(5):
+        G.add_node(f"get{i}", label="GET", source_file=f"routes/r{i}.py")
+    G.add_node("um", label="users_model", source_file="models/users.py")
+    # Score all the GET nodes above users_model so, pre-fix, they'd take every slot.
+    scored = [(1000.0, f"get{i}") for i in range(5)] + [(900.0, "um")]
+    seeds = _pick_seeds(scored, G=G)
+    get_seeds = [s for s in seeds if s.startswith("get")]
+    assert len(get_seeds) == 1, f"expected one GET representative, got {get_seeds}"
+    # A different, well-within-gap label is not starved out by the GET flood.
+    assert "um" in seeds
+
+
+def test_pick_seeds_dedup_key_is_case_and_diacritic_normalized():
+    """`GET`/`Get`/`get` are the same generic label and must dedup together."""
+    G = nx.DiGraph()
+    G.add_node("a", label="GET", source_file="a.py")
+    G.add_node("b", label="Get", source_file="b.py")
+    G.add_node("c", label="get", source_file="c.py")
+    scored = [(1000.0, "a"), (990.0, "b"), (980.0, "c")]
+    seeds = _pick_seeds(scored, G=G)
+    assert len(seeds) == 1, f"case-variant duplicates not collapsed: {seeds}"
+
+
+def test_pick_seeds_per_term_guarantee_does_not_reintroduce_generic_dupe(monkeypatch):
+    """The per-term guarantee loop must honor the same per-label cap, so it can't
+    add a second `GET` after dedup already seeded one (#1766)."""
+    G = nx.DiGraph()
+    for i in range(3):
+        G.add_node(f"get{i}", label="GET", source_file=f"r{i}.py")
+    G.add_node("um", label="users_model", source_file="users.py")
+    G.add_edge("um", "get0")
+    scored = _score_nodes(G, ["get", "users"])
+    seeds = _pick_seeds(scored, G=G, terms=["get", "users"])
+    get_seeds = [s for s in seeds if s.startswith("get")]
+    assert len(get_seeds) == 1, f"per-term guarantee reintroduced a GET dupe: {seeds}"
+
+
+def test_score_nodes_scores_identical_labels_equally():
+    """Guard against a per-label multiplicity penalty leaking into _score_nodes
+    (shared by shortest_path / explain endpoint resolution): two nodes with the
+    SAME label must receive the SAME score for a query, i.e. the fix lives in
+    seed selection, not in the shared scorer (#1766 followup)."""
+    G = nx.DiGraph()
+    G.add_node("g1", label="GET", source_file="a.py")
+    G.add_node("g2", label="GET", source_file="b.py")
+    G.add_node("g3", label="GET", source_file="c.py")
+    by_id = {nid: s for s, nid in _score_nodes(G, ["get"])}
+    assert by_id["g1"] == by_id["g2"] == by_id["g3"], (
+        f"identical-label nodes scored differently: {by_id}"
+    )
 
 
 # --- actionable truncation hint (#897) ---

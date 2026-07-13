@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from graphify.extract import _file_node_id, _file_stem, _make_id, extract
 
 
@@ -135,6 +137,90 @@ def test_ts_export_star_from_index_resolves_imported_symbol_to_origin(tmp_path: 
     result = _extract_for([target, barrel, consumer], tmp_path)
 
     assert _has_edge(result, "src/lib/index.ts", "src/lib/foo.ts", "re_exports")
+    assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
+
+
+@pytest.mark.parametrize("suffix", ["ts", "js"])
+def test_js_namespace_reexport_import_targets_real_binding(
+    tmp_path: Path,
+    monkeypatch,
+    suffix: str,
+):
+    monkeypatch.chdir(tmp_path)
+    target = _write(Path(f"src/lib/foo.{suffix}"), "export class Foo { id = '' }\n")
+    barrel = _write(Path(f"src/lib/index.{suffix}"), "export * as ns from './foo'\n")
+    consumer = _write(
+        Path(f"src/routes/page.{suffix}"),
+        "import { ns } from '../lib/index'\nexport const use = () => ns.Foo\n",
+    )
+
+    result = _extract_for([target, barrel, consumer], Path("."))
+
+    namespace_id = _make_id(_file_stem(Path(f"src/lib/index.{suffix}")), "ns")
+    node_ids = {node["id"] for node in result["nodes"]}
+    assert namespace_id in node_ids
+    assert _has_symbol_edge(
+        result,
+        f"src/routes/page.{suffix}",
+        f"src/lib/index.{suffix}",
+        "ns",
+    )
+    assert _has_edge(
+        result,
+        f"src/lib/index.{suffix}",
+        f"src/lib/foo.{suffix}",
+        "re_exports",
+    )
+    assert (
+        _file_node_id(Path(f"src/lib/index.{suffix}")),
+        namespace_id,
+        "contains",
+    ) in {
+        (edge["source"], edge["target"], edge["relation"])
+        for edge in result["edges"]
+    }
+    assert not [
+        edge
+        for edge in result["edges"]
+        if edge["source"] not in node_ids or edge["target"] not in node_ids
+    ]
+
+
+def test_ts_reexport_cycle_resolves_symbol_from_non_cycle_branch(tmp_path: Path):
+    target = _write(tmp_path / "src/lib/foo.ts", "export class Foo { id = '' }\n")
+    first = _write(
+        tmp_path / "src/lib/first.ts",
+        "export * from './second'\nexport * from './foo'\n",
+    )
+    second = _write(tmp_path / "src/lib/second.ts", "export * from './first'\n")
+    consumer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import type { Foo } from '../lib/first'\nexport type X = Foo\n",
+    )
+
+    result = _extract_for([target, first, second, consumer], tmp_path)
+
+    assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
+
+
+def test_ts_reexport_chain_beyond_sixteen_hops_resolves_origin(tmp_path: Path):
+    target = _write(tmp_path / "src/lib/foo.ts", "export class Foo { id = '' }\n")
+    barrels: list[Path] = []
+    previous = "foo"
+    for index in range(20):
+        barrel = _write(
+            tmp_path / f"src/lib/barrel_{index}.ts",
+            f"export * from './{previous}'\n",
+        )
+        barrels.append(barrel)
+        previous = f"barrel_{index}"
+    consumer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import type { Foo } from '../lib/barrel_19'\nexport type X = Foo\n",
+    )
+
+    result = extract([target, *barrels, consumer], cache_root=tmp_path, parallel=False)
+
     assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
 
 
@@ -316,6 +402,52 @@ def test_svelte_rune_import_resolves_svelte_ts_file(tmp_path: Path):
     result = _extract_for([target, importer], tmp_path)
 
     assert _has_edge(result, "src/routes/page.ts", "src/lib/hooks/is-mobile.svelte.ts")
+
+
+def test_ts_dynamic_import_does_not_create_phantom_cycle(tmp_path: Path):
+    # A deferred `import('./x')` is not a static import: it must be emitted as a
+    # `dynamic_import` edge (like the Svelte/Astro/Vue emitters), not
+    # `imports_from`. Otherwise two files that reference each other via one static
+    # import + one dynamic import are reported as a phantom circular dependency.
+    # Regression test for #1241.
+    import networkx as nx
+
+    from graphify.analyze import find_import_cycles
+
+    actions = _write(
+        tmp_path / "actions.ts",
+        'export function doThing() {}\n'
+        'export async function lazy() {\n'
+        '  const m = await import("./modal");\n'
+        '  return m.openModal();\n'
+        '}\n',
+    )
+    modal = _write(
+        tmp_path / "modal.ts",
+        'import { doThing } from "./actions";\n'
+        'export function openModal() { doThing(); }\n',
+    )
+
+    result = _extract_for([actions, modal], tmp_path)
+
+    # The deferred import() edge stays in the graph as an `imports_from` edge
+    # marked `deferred` (the dependency remains visible); the real static import
+    # (modal.ts -> actions.ts) is unaffected.
+    deferred = [edge for edge in result["edges"] if edge.get("deferred")]
+    assert deferred and all(edge["relation"] == "imports_from" for edge in deferred)
+    assert _has_edge(result, "modal.ts", "actions.ts", "imports_from")
+
+    # End to end: the deferred import must not manufacture a file cycle.
+    graph = nx.DiGraph()
+    for node in result["nodes"]:
+        graph.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+    for edge in result["edges"]:
+        graph.add_edge(
+            edge["source"],
+            edge["target"],
+            **{k: v for k, v in edge.items() if k not in ("source", "target")},
+        )
+    assert find_import_cycles(graph) == []
 
 
 def test_tsconfig_alias_import_resolves_existing_ts_file(tmp_path: Path):
@@ -883,6 +1015,171 @@ def test_tsconfig_alias_none_exist_creates_no_false_edge(tmp_path: Path):
 
     assert not _has_edge(result, "src/routes/page.ts", "generated/utils.ts")
     assert not _has_edge(result, "src/routes/page.ts", "src/lib/utils.ts")
+
+
+# ── #927: wildcard tsconfig path patterns ────────────────────────────────────
+
+
+def test_tsconfig_wildcard_alias_substitutes_captured_path(tmp_path, monkeypatch):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"@*": ["features/*/src/"]},
+            }
+        }),
+    )
+    _write(
+        tmp_path / "features/communicate/documentv2/src/index.ts",
+        "export const FileChipComponent = {}\n",
+    )
+    _write(
+        tmp_path / "src/routes/page.ts",
+        "import { FileChipComponent } from '@communicate/documentv2'\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = extract(
+        [
+            Path("features/communicate/documentv2/src/index.ts"),
+            Path("src/routes/page.ts"),
+        ],
+        cache_root=Path("."),
+    )
+
+    assert _has_edge(
+        result,
+        "src/routes/page.ts",
+        "features/communicate/documentv2/src/index.ts",
+    )
+
+
+def test_tsconfig_wildcard_alias_substitutes_before_suffix(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"@*/interfaces": ["features/*/src/interfaces.ts"]},
+            }
+        }),
+    )
+    target = _write(
+        tmp_path / "features/communicate/src/interfaces.ts",
+        "export interface Message { id: string }\n",
+    )
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import type { Message } from '@communicate/interfaces'\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(
+        result,
+        "src/routes/page.ts",
+        "features/communicate/src/interfaces.ts",
+    )
+
+
+def test_tsconfig_wildcard_alias_substitutes_before_normalizing_target(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"@/*": ["generated/*/../shared"]},
+            }
+        }),
+    )
+    target = _write(
+        tmp_path / "generated/feature/shared/index.ts",
+        "export const shared = 1\n",
+    )
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { shared } from '@/feature/nested'\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(
+        result,
+        "src/routes/page.ts",
+        "generated/feature/shared/index.ts",
+    )
+
+
+def test_tsconfig_wildcard_alias_allows_empty_capture(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"app*": ["src/config/index.ts"]},
+            }
+        }),
+    )
+    target = _write(tmp_path / "src/config/index.ts", "export const config = {}\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { config } from 'app'\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "src/config/index.ts")
+
+
+def test_tsconfig_wildcard_alias_prefers_longest_matching_prefix(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {
+                    "@/*": ["fallback/*"],
+                    "@/common/integration/*": ["preferred/*"],
+                },
+            }
+        }),
+    )
+    fallback = _write(
+        tmp_path / "fallback/common/integration/foo.ts",
+        "export const Foo = 1\n",
+    )
+    preferred = _write(tmp_path / "preferred/foo.ts", "export const Foo = 2\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { Foo } from '@/common/integration/foo'\n",
+    )
+
+    result = _extract_for([fallback, preferred, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "preferred/foo.ts")
+    assert not _has_edge(result, "src/routes/page.ts", "fallback/common/integration/foo.ts")
+
+
+def test_tsconfig_exact_alias_still_resolves(tmp_path: Path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({
+            "compilerOptions": {
+                "baseUrl": ".",
+                "paths": {"app-config": ["src/config/index.ts"]},
+            }
+        }),
+    )
+    target = _write(tmp_path / "src/config/index.ts", "export const config = {}\n")
+    importer = _write(
+        tmp_path / "src/routes/page.ts",
+        "import { config } from 'app-config'\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "src/routes/page.ts", "src/config/index.ts")
 
 
 # ── #1529: alias/workspace import targets orphaned by the full-path migration ──

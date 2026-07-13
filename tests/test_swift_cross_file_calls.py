@@ -152,3 +152,28 @@ def test_swift_unknown_receiver_emits_no_edge(tmp_path: Path):
 
     edges = _edge_labels(result, relations=("calls",))
     assert (".run()", "calls", ".help()") not in edges
+
+
+def test_deferred_singleton_local_var_resolves(tmp_path):
+    """#1604: `let x = Type.shared` cached into a local var, then `x.method()` on a
+    later line, must resolve to Type's method. This static-member (navigation) init
+    was previously untyped, so the singleton-into-local idiom produced zero edges.
+    The constructor form `let x = Type()` is exercised alongside it."""
+    base = tmp_path / "src"
+    _write(base / "NetworkManager.swift",
+           "class NetworkManager {\n    static let shared = NetworkManager()\n"
+           "    func fetchData() { }\n    func isLoading() -> Bool { return false }\n}\n")
+    _write(base / "ViewController.swift",
+           "class ViewControllerA {\n    func loadIfNeeded() {\n"
+           "        let manager = NetworkManager.shared\n"
+           "        if manager.isLoading() { return }\n"
+           "        manager.fetchData()\n    }\n"
+           "    func makeFresh() {\n        let m = NetworkManager()\n        m.fetchData()\n    }\n}\n")
+    result = extract(sorted(base.glob("*.swift")), cache_root=tmp_path / "cache", parallel=False)
+    calls = {(s, t) for s, r, t in _edge_labels(result, ("calls",))}
+    # deferred singleton local var -> both later member calls resolve (method
+    # labels carry a leading dot, e.g. ".loadIfNeeded()")
+    assert any("loadIfNeeded" in s and "fetchData" in t for s, t in calls)
+    assert any("loadIfNeeded" in s and "isLoading" in t for s, t in calls)
+    # constructor-into-local still resolves
+    assert any("makeFresh" in s and "fetchData" in t for s, t in calls)

@@ -176,3 +176,48 @@ def test_kind_mcp_query(tmp_path, monkeypatch):
 
     rec = json.loads(log_file.read_text())
     assert rec["kind"] == "mcp_query"
+
+
+# ---------------------------------------------------------------------------
+# #1797 — query log is opt-in (default OFF)
+# ---------------------------------------------------------------------------
+
+def _clear_log_env(monkeypatch):
+    for k in ("GRAPHIFY_QUERY_LOG", "GRAPHIFY_QUERY_LOG_ENABLE", "GRAPHIFY_QUERY_LOG_DISABLE"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_query_log_off_by_default(monkeypatch):
+    from graphify.querylog import _log_path
+    _clear_log_env(monkeypatch)
+    assert _log_path() is None
+
+
+def test_query_log_enabled_by_explicit_flag(monkeypatch):
+    from graphify.querylog import _log_path
+    _clear_log_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG_ENABLE", "1")
+    assert str(_log_path()).endswith("graphify-queries.log")
+
+
+def test_query_log_enabled_by_explicit_path(monkeypatch, tmp_path):
+    from graphify.querylog import _log_path
+    _clear_log_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(tmp_path / "q.log"))
+    assert _log_path() == tmp_path / "q.log"
+
+
+def test_query_log_disable_wins(monkeypatch):
+    from graphify.querylog import _log_path
+    _clear_log_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG_ENABLE", "1")
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG_DISABLE", "1")
+    assert _log_path() is None
+
+
+def test_log_query_writes_nothing_by_default(monkeypatch, tmp_path):
+    """End-to-end: with no opt-in, log_query must not create the default log."""
+    _clear_log_env(monkeypatch)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    log_query(kind="query", question="secret internal ticket TICKET-123", corpus=".", result="1 node found")
+    assert not (tmp_path / ".cache" / "graphify-queries.log").exists()

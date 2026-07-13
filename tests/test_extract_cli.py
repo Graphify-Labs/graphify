@@ -102,6 +102,15 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     monkeypatch.setattr(
         "graphify.llm.extract_corpus_parallel", _one_chunk_succeeded
     )
+    cache_call = {}
+
+    def _capture_semantic_cache(*args, **kwargs):
+        cache_call.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        "graphify.cache.save_semantic_cache", _capture_semantic_cache
+    )
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -121,6 +130,9 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     assert (out_dir / "graphify-out" / "graph.json").exists(), (
         "graph.json must be written on the happy path"
     )
+    assert {
+        str(path) for path in cache_call["allowed_source_files"]
+    } == {str(corpus / "README.md")}
 
 
 def _code_only_corpus(tmp_path):
