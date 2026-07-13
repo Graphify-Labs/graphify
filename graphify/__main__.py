@@ -39,6 +39,8 @@ from graphify.install import (  # noqa: E402,F401
     _antigravity_finalize,
     _antigravity_install,
     _antigravity_uninstall,
+    _bob_install,
+    _bob_uninstall,
     _canonical_platform,
     _claude_pretooluse_hooks,
     _copy_skill_file,
@@ -107,6 +109,8 @@ from graphify.install import (  # noqa: E402,F401
     _ANTIGRAVITY_WORKFLOW,
     _CURSOR_RULE_PATH,
     _CURSOR_RULE,
+    _BOB_RULES_PATH,
+    _BOB_RULES,
     _DEVIN_RULES_PATH,
     _DEVIN_RULES,
     _KILO_PLUGIN_JS,
@@ -507,7 +511,7 @@ def _run_cli() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|bob|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -681,6 +685,8 @@ def _run_cli() -> None:
             "  kiro install            write skill to .kiro/skills/graphify/ + steering file (Kiro IDE/CLI)"
         )
         print("  kiro uninstall          remove skill + steering file")
+        print("  bob install             write skill to .bob/skills/graphify/ + rules file (IBM Bob)")
+        print("  bob uninstall           remove skill + rules file")
         print("  pi install              write skill to ~/.pi/agent/skills/graphify/ (Pi coding agent)")
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")

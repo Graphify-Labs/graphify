@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: IBM Bob support (#1725). `graphify install --platform bob` installs the skill to `~/.bob/skills/graphify/` (Bob's global skills dir); `graphify bob install` writes the project-scoped skill to `.bob/skills/graphify/` plus an always-on rules file at `.bob/rules/graphify.md` (Bob loads every file under `.bob/rules/` as always-on context; it has no PreToolUse-hook equivalent, so the rules file is the always-on mechanism). Rides kiro's host-neutral skill bundle; `graphify bob uninstall` and the all-platform `graphify uninstall` remove both files.
+
 ## 0.9.14 (2026-07-12)
 
 - Fix: Visual Studio *solution folder* nodes no longer embed the absolute scan path (including the local username) in their `id` and `source_file` (#1789, thanks @fremat79). A solution folder is a virtual grouping, not a file — VS writes its name as both the display name and the "path" — but `extract_sln` resolved it to an absolute filesystem path anyway and keyed the node id off that. The CLI's id-relativization pass only remaps ids of real files in the scan set, so a virtual folder never matched and its absolute id survived into a committed `graph.json` (e.g. `id=/Users/<name>/proj/Plugins` instead of `id=plugins`). Solution folders are now detected (name == path) and keyed off the folder name only; real project files still resolve as before. (The earlier fix covered `.csproj`/`.sln` file nodes but missed the virtual folders — this completes it.)

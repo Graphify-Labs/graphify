@@ -386,6 +386,15 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "kiro",
     },
+    "bob": {
+        # IBM Bob. Reuses kiro's split bundle (host-neutral body + references).
+        # Bob reads .bob/skills/<name>/SKILL.md (project) and ~/.bob/skills/
+        # (global), which the generic destination fallback already produces.
+        "skill_file": "skill-kiro.md",
+        "skill_dst": Path(".bob") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "kiro",
+    },
     "pi": {
         "skill_file": "skill-pi.md",
         "skill_dst": Path(".pi") / "agent" / "skills" / "graphify" / "SKILL.md",
@@ -866,6 +875,60 @@ def _kiro_uninstall(project_dir: Path) -> None:
     if steering_dst.exists():
         steering_dst.unlink()
         removed.append(str(steering_dst.relative_to(project_dir)))
+
+    print("Removed: " + (", ".join(removed) if removed else "nothing to remove"))
+# IBM Bob — .bob/skills/graphify/SKILL.md (skill) + .bob/rules/graphify.md
+# (always-on rules). Bob loads every file under .bob/rules/ alphabetically as
+# always-on context and auto-triggers skills by frontmatter description; it has
+# no PreToolUse-hook equivalent, so the rules file is the always-on mechanism.
+_BOB_RULES_PATH = Path(".bob") / "rules" / "graphify.md"
+_BOB_RULES = """\
+## graphify
+
+This project has a graphify knowledge graph at graphify-out/.
+
+Rules:
+- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (or `graphify path "<A>" "<B>"` / `graphify explain "<concept>"`). These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
+"""
+def _bob_install(project_dir: Path) -> None:
+    """Write graphify skill + always-on rules file for IBM Bob."""
+    project_dir = project_dir or Path(".")
+
+    # Skill file + references/ sidecar + .graphify_version stamp via the shared
+    # progressive-disclosure helper.
+    _copy_skill_file("bob", project=True, project_dir=project_dir)
+
+    # Rules file → .bob/rules/graphify.md (always-on)
+    rules_dst = project_dir / _BOB_RULES_PATH
+    rules_dst.parent.mkdir(parents=True, exist_ok=True)
+    if rules_dst.exists() and rules_dst.read_text(encoding="utf-8") == _BOB_RULES:
+        print("  .bob/rules/graphify.md  ->  already configured (no change)")
+    else:
+        # File is wholly graphify-owned. Overwrite on upgrade so older wording
+        # does not silently linger.
+        action = "updated" if rules_dst.exists() else "written"
+        rules_dst.write_text(_BOB_RULES, encoding="utf-8")
+        print(f"  .bob/rules/graphify.md  ->  always-on rules {action}")
+
+    print()
+    print("Bob will now read the knowledge graph before every conversation.")
+    print("Use /graphify to build or update the graph.")
+def _bob_uninstall(project_dir: Path) -> None:
+    """Remove graphify skill + rules file for IBM Bob."""
+    project_dir = project_dir or Path(".")
+    removed = []
+
+    skill_dst = _platform_skill_destination("bob", project=True, project_dir=project_dir)
+    if _remove_skill_file("bob", project=True, project_dir=project_dir):
+        removed.append(str(skill_dst.relative_to(project_dir)))
+
+    rules_dst = project_dir / _BOB_RULES_PATH
+    if rules_dst.exists():
+        rules_dst.unlink()
+        removed.append(str(rules_dst.relative_to(project_dir)))
 
     print("Removed: " + (", ".join(removed) if removed else "nothing to remove"))
 def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
@@ -1440,6 +1503,9 @@ def _project_install(platform_name: str, project_dir: Path | None = None) -> Non
     elif platform_name == "kiro":
         _kiro_install(project_dir)
         _print_project_git_add_hint([project_dir / ".kiro"])
+    elif platform_name == "bob":
+        _bob_install(project_dir)
+        _print_project_git_add_hint([project_dir / ".bob"])
     elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_install(project_dir, platform_name)
@@ -1481,6 +1547,8 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _cursor_uninstall(project_dir)
     elif platform_name == "kiro":
         _kiro_uninstall(project_dir)
+    elif platform_name == "bob":
+        _bob_uninstall(project_dir)
     elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_uninstall(project_dir, platform=platform_name)
@@ -1668,6 +1736,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     vscode_uninstall(pd)
     _cursor_uninstall(pd)
     _kiro_uninstall(pd)
+    _bob_uninstall(pd)
     _antigravity_uninstall(pd)
     # AGENTS.md covers: codex, aider, opencode, claw, droid, trae, trae-cn, hermes, copilot
     _agents_uninstall(pd)
@@ -1858,6 +1927,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "aider",
     "amp",
     "antigravity",
+    "bob",
     "claude",
     "claw",
     "codebuddy",
@@ -2051,6 +2121,15 @@ def dispatch_install_cli(cmd: str) -> bool:
             _kiro_uninstall(Path("."))
         else:
             print("Usage: graphify kiro [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "bob":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            _bob_install(Path("."))
+        elif subcmd == "uninstall":
+            _bob_uninstall(Path("."))
+        else:
+            print("Usage: graphify bob [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "devin":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
