@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: a full `_rebuild_code`/`graphify update` now reconciles away legacy AST nodes that predate the `_origin` provenance marker (#1116) — or that were minted under an older node-id scheme — instead of leaving them as permanent orphans. Such a node carries no `_origin=="ast"`, so the AST-ownership eviction rule in `_reconcile_existing_graph` skipped it, and `build_from_json`'s ghost-merge (which keys on `(basename, label)`) could not reconcile it in a monorepo where that key is ambiguous across same-named files — e.g. `apps/aga/.../solicitud.component.ts` and `apps/se/.../solicitud.component.ts` both defining `SolicitudComponent`. On a real Nx monorepo this stranded ~52k zero-degree ghost nodes (35% of the graph), which inflated the community count and diluted cohesion. The reconcile pass now also evicts a preserved node when the fresh AST extraction re-produced the same symbol under the canonical id, matched by exact `(canonical source path, label)` identity; genuine semantic nodes on the same file (distinct label) are still preserved.
+
 ## 0.9.14 (2026-07-12)
 
 - Fix: Visual Studio *solution folder* nodes no longer embed the absolute scan path (including the local username) in their `id` and `source_file` (#1789, thanks @fremat79). A solution folder is a virtual grouping, not a file — VS writes its name as both the display name and the "path" — but `extract_sln` resolved it to an absolute filesystem path anyway and keyed the node id off that. The CLI's id-relativization pass only remaps ids of real files in the scan set, so a virtual folder never matched and its absolute id survived into a committed `graph.json` (e.g. `id=/Users/<name>/proj/Plugins` instead of `id=plugins`). Solution folders are now detected (name == path) and keyed off the folder name only; real project files still resolve as before. (The earlier fix covered `.csproj`/`.sln` file nodes but missed the virtual folders — this completes it.)
