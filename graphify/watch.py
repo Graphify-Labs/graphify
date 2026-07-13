@@ -10,6 +10,11 @@ import time
 from pathlib import Path
 
 # Single source of truth in graphify.paths (#1423); re-exported as _GRAPHIFY_OUT.
+from graphify.curation import (
+    apply_curation_to_payload,
+    format_stats as _format_curation_stats,
+    load_curation,
+)
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
@@ -940,6 +945,14 @@ def _rebuild_code(
                 "nodes": _dedupe_nodes(result.get("nodes", [])),
                 "links": _dedupe_edges(result.get("edges", [])),
             }
+            # --no-cluster dumps the payload directly and never builds a NetworkX
+            # graph, so it bypasses build_from_json's curation pass. Apply here too,
+            # or a denied edge survives on exactly this path.
+            _cur_msg = _format_curation_stats(
+                apply_curation_to_payload(candidate_graph_data, load_curation(out))
+            )
+            if _cur_msg:
+                print(_cur_msg)
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
             if existing_graph.exists():
@@ -993,7 +1006,9 @@ def _rebuild_code(
             "total_words": detected.get("total_words", 0),
         }
 
-        G = build_from_json(result)
+        # Pass the overlay explicitly: watch's out dir is not always CWD-relative,
+        # and build_from_json's default lookup is.
+        G = build_from_json(result, curation=load_curation(out))
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:

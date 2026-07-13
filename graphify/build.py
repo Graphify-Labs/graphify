@@ -28,6 +28,7 @@ import sys
 import unicodedata
 from pathlib import Path
 import networkx as nx
+from .curation import apply_curation, format_stats, load_curation
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
 from .validate import validate_extraction
@@ -380,13 +381,24 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     return remap
 
 
-def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
+def build_from_json(
+    extraction: dict,
+    *,
+    directed: bool = False,
+    root: str | Path | None = None,
+    curation: dict | None = None,
+) -> nx.Graph:
     """Build a NetworkX graph from an extraction dict.
 
     directed=True produces a DiGraph that preserves edge direction (source→target).
     directed=False (default) produces an undirected Graph for backward compatibility.
     root: if given, absolute source_file paths from semantic subagents are made
         relative to root so all nodes share a consistent path key (#932).
+    curation: user-owned overlay applied last (denied edges removed, verified edges
+        pinned). Defaults to loading ``graphify-out/curation.json``; pass an explicit
+        dict to override, or ``{}`` to skip. Applied here rather than at write time so
+        clustering, god-nodes and GRAPH_REPORT.md all see the corrected graph — a
+        disproved edge must stop being re-advertised, not merely stop being written.
     """
     _root = str(Path(root).resolve()) if root else None
     # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
@@ -759,6 +771,17 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             if isinstance(he, dict) and he.get("source_file"):
                 he["source_file"] = _norm_source_file(he["source_file"], _root)
         G.graph["hyperedges"] = hyperedges
+
+    # Curation is applied LAST, on every build path (build, build_merge, watch, and
+    # the skill's agent path all funnel through here). Human corrections are otherwise
+    # transient: build_merge's replace-per-source drops pinned edges belonging to a
+    # re-extracted file, and the content-keyed semantic cache resurrects denied ones.
+    _curation = load_curation() if curation is None else curation
+    if _curation:
+        _stats = apply_curation(G, _curation)
+        _msg = format_stats(_stats)
+        if _msg:
+            print(_msg, file=sys.stderr)
     return G
 
 
@@ -769,6 +792,7 @@ def build(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
+    curation: dict | None = None,
 ) -> nx.Graph:
     """Merge multiple extraction results into one graph.
 
@@ -797,7 +821,7 @@ def build(
             combined["nodes"], combined["edges"], communities={},
             dedup_llm_backend=dedup_llm_backend,
         )
-    return build_from_json(combined, directed=directed, root=root)
+    return build_from_json(combined, directed=directed, root=root, curation=curation)
 
 
 def _norm_label(label: str | None) -> str:
@@ -870,6 +894,7 @@ def build_merge(
     directed: bool = False,
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
+    curation: dict | None = None,
     root: str | Path | None = None,
 ) -> nx.Graph:
     """Load existing graph.json, merge new chunks into it, and save back.
@@ -952,7 +977,10 @@ def build_merge(
     base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
 
     all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
+    G = build(
+        all_chunks, directed=directed, dedup=dedup,
+        dedup_llm_backend=dedup_llm_backend, root=root, curation=curation,
+    )
 
     # Prune set for deleted source files — both the raw form (matches nodes that
     # kept absolute source_file) and the normalised relative form (matches nodes

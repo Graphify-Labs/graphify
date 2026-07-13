@@ -538,6 +538,161 @@ def dispatch_command(cmd: str) -> None:
             correction=opts.correction,
         )
         print(f"Saved to {out}")
+    elif cmd == "curate":
+        # graphify curate deny  SRC TGT [--relation R] [--reason TEXT] [--evidence REF]
+        # graphify curate pin   SRC TGT --relation R [--confidence C] [--score F]
+        #                       [--source-file F] [--source-location L] [--reason TEXT]
+        # graphify curate list
+        # graphify curate apply [--graph PATH]
+        import argparse as _ap
+
+        from graphify.curation import (
+            CURATION_SCHEMA_VERSION,
+            apply_curation_to_payload,
+            curation_path,
+            empty_curation,
+            format_stats,
+            load_curation,
+            save_curation,
+        )
+
+        p = _ap.ArgumentParser(
+            prog="graphify curate",
+            description=(
+                "Durable human corrections. Denied edges stay denied and pinned edges "
+                "stay pinned across rebuilds, which delete-from-graph.json alone does not."
+            ),
+        )
+        sub = p.add_subparsers(dest="action", required=True)
+
+        p_deny = sub.add_parser("deny", help="mark an edge false; it is removed on every build")
+        p_deny.add_argument("source")
+        p_deny.add_argument("target")
+        p_deny.add_argument("--relation", default=None,
+                            help="deny only this relation (default: every edge between the pair)")
+        p_deny.add_argument("--reason", default=None)
+        p_deny.add_argument("--evidence", default=None, help="e.g. src/foo.py:42")
+
+        p_pin = sub.add_parser("pin", help="add a verified edge; it is re-added on every build")
+        p_pin.add_argument("source")
+        p_pin.add_argument("target")
+        p_pin.add_argument("--relation", required=True)
+        p_pin.add_argument("--confidence", default="INFERRED",
+                           choices=("EXTRACTED", "INFERRED", "AMBIGUOUS"))
+        p_pin.add_argument("--score", type=float, default=None, dest="confidence_score")
+        p_pin.add_argument("--source-file", default=None, dest="source_file")
+        p_pin.add_argument("--source-location", default=None, dest="source_location")
+        p_pin.add_argument("--reason", default=None)
+
+        sub.add_parser("list", help="show the current overlay")
+
+        p_apply = sub.add_parser(
+            "apply", help="apply the overlay to an existing graph.json without a rebuild")
+        p_apply.add_argument("--graph", default=str(Path(_GRAPHIFY_OUT) / "graph.json"))
+
+        for _sp in (p_deny, p_pin):
+            _sp.add_argument("--out-dir", default=_GRAPHIFY_OUT)
+
+        opts = p.parse_args(sys.argv[2:])
+
+        if opts.action == "list":
+            cur = load_curation(_GRAPHIFY_OUT)
+            if not cur:
+                print(f"No curation overlay at {curation_path(_GRAPHIFY_OUT)}")
+                return
+            denies = cur.get("deny_edges", [])
+            adds = cur.get("add_edges", [])
+            print(f"{curation_path(_GRAPHIFY_OUT)} (schema v{cur.get('version', '?')})")
+            print(f"\nDENIED ({len(denies)}):")
+            for e in denies:
+                rel = e.get("relation") or "*"
+                why = f"  — {e['reason']}" if e.get("reason") else ""
+                ev = f"  [{e['evidence']}]" if e.get("evidence") else ""
+                print(f"  {e.get('source')} --{rel}-- {e.get('target')}{why}{ev}")
+            print(f"\nPINNED ({len(adds)}):")
+            for e in adds:
+                why = f"  — {e['reason']}" if e.get("reason") else ""
+                print(
+                    f"  {e.get('source')} --{e.get('relation')}--> {e.get('target')} "
+                    f"[{e.get('confidence', 'INFERRED')}]{why}"
+                )
+            return
+
+        if opts.action == "apply":
+            graph_path = Path(opts.graph)
+            if not graph_path.exists():
+                print(f"error: no graph at {graph_path}", file=sys.stderr)
+                raise SystemExit(1)
+            cur = load_curation(graph_path.parent)
+            if not cur:
+                print(f"No curation overlay at {curation_path(graph_path.parent)}")
+                return
+            data = json.loads(graph_path.read_text(encoding="utf-8"))
+            stats = apply_curation_to_payload(data, cur)
+            msg = format_stats(stats)
+            if msg is None:
+                print("[graphify] curation: graph already matches the overlay")
+                return
+            graph_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            print(msg)
+            print(f"[graphify] wrote {graph_path}")
+            return
+
+        # deny / pin — mutate the overlay file
+        cur = load_curation(opts.out_dir) or empty_curation()
+        cur.setdefault("version", CURATION_SCHEMA_VERSION)
+        cur.setdefault("deny_edges", [])
+        cur.setdefault("add_edges", [])
+
+        if opts.action == "deny":
+            entry = {"source": opts.source, "target": opts.target}
+            if opts.relation:
+                entry["relation"] = opts.relation
+            if opts.reason:
+                entry["reason"] = opts.reason
+            if opts.evidence:
+                entry["evidence"] = opts.evidence
+            dupe = any(
+                e.get("source") == entry["source"]
+                and e.get("target") == entry["target"]
+                and e.get("relation") == entry.get("relation")
+                for e in cur["deny_edges"]
+            )
+            if dupe:
+                print("[graphify] curation: already denied")
+                return
+            cur["deny_edges"].append(entry)
+            path = save_curation(cur, opts.out_dir)
+            rel = opts.relation or "*"
+            print(f"[graphify] denied {opts.source} --{rel}-- {opts.target} in {path}")
+            print("[graphify] the edge is removed on every build from now on")
+            return
+
+        entry = {
+            "source": opts.source,
+            "target": opts.target,
+            "relation": opts.relation,
+            "confidence": opts.confidence,
+        }
+        if opts.confidence_score is not None:
+            entry["confidence_score"] = opts.confidence_score
+        for k in ("source_file", "source_location", "reason"):
+            if getattr(opts, k, None):
+                entry[k] = getattr(opts, k)
+        dupe = any(
+            e.get("source") == entry["source"]
+            and e.get("target") == entry["target"]
+            and e.get("relation") == entry["relation"]
+            for e in cur["add_edges"]
+        )
+        if dupe:
+            print("[graphify] curation: already pinned")
+            return
+        cur["add_edges"].append(entry)
+        path = save_curation(cur, opts.out_dir)
+        print(f"[graphify] pinned {opts.source} --{opts.relation}--> {opts.target} in {path}")
+        print("[graphify] the edge is re-added on every build from now on")
+        return
     elif cmd == "reflect":
         import argparse as _ap
 
@@ -2487,6 +2642,16 @@ def dispatch_command(cmd: str) -> None:
                         _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
                     )
             _backup(graphify_out)
+            # --no-cluster never builds a NetworkX graph, so it bypasses
+            # build_from_json's curation pass. Apply to the payload directly.
+            from graphify.curation import (
+                apply_curation_to_payload as _apply_cur,
+                format_stats as _cur_stats,
+                load_curation as _load_cur,
+            )
+            _cur_msg = _cur_stats(_apply_cur(merged, _load_cur(graphify_out)))
+            if _cur_msg:
+                print(_cur_msg)
             graph_json_path.write_text(
                 json.dumps(merged, indent=2), encoding="utf-8"
             )
