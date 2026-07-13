@@ -1274,9 +1274,10 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
         **_no_window_kwargs(),
     )
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"claude -p exited {proc.returncode}: {proc.stderr.strip()[:500]}"
-        )
+        # The CLI writes usage-limit and auth errors to stdout, not stderr.
+        # Fall back to the stdout tail when stderr is empty.
+        detail = proc.stderr.strip()[:500] or proc.stdout.strip()[-500:]
+        raise RuntimeError(f"claude -p exited {proc.returncode}: {detail}")
 
     envelope = _claude_cli_envelope(proc.stdout)
 
@@ -2076,7 +2077,9 @@ def _call_llm(
             **_no_window_kwargs(),
         )
         if proc.returncode != 0:
-            raise RuntimeError(f"claude -p exited {proc.returncode}: {proc.stderr.strip()[:500]}")
+            # See _call_claude_cli: the CLI writes these errors to stdout.
+            _detail = proc.stderr.strip()[:500] or proc.stdout.strip()[-500:]
+            raise RuntimeError(f"claude -p exited {proc.returncode}: {_detail}")
         envelope = _claude_cli_envelope(proc.stdout)
         cli_usage = envelope.get("usage") or {}
         if cli_usage:
