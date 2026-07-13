@@ -227,6 +227,67 @@ def test_graphifyignore_at_git_root_is_included(tmp_path):
     assert result["graphifyignore_patterns"] == 1
 
 
+def test_gitignore_nested_below_root_excludes_file(tmp_path):
+    """A .gitignore in a subdirectory below the scan root is honored too (#1206).
+
+    Previously only the scan root and its ancestors were read, so a
+    .gitignore sitting inside e.g. vendor/sub/ was silently skipped.
+    """
+    (tmp_path / ".gitignore").write_text("*.log\n")
+    sub = tmp_path / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("secret.txt\n")
+    (tmp_path / "root.py").write_text("x = 1")
+    (tmp_path / "root.log").write_text("noise")
+    (sub / "keep.py").write_text("y = 2")
+    (sub / "secret.txt").write_text("shh")
+
+    result = detect(tmp_path)
+    code_files = result["files"]["code"]
+    assert any("root.py" in f for f in code_files)
+    assert any("keep.py" in f for f in code_files)
+    assert not any("root.log" in f for f in code_files)
+    assert not any("secret.txt" in f for f in code_files)
+    assert result["graphifyignore_patterns"] == 2
+
+
+def test_gitignore_nested_below_root_prunes_whole_directory(tmp_path):
+    """A nested .gitignore excluding a directory prevents descending into it."""
+    sub = tmp_path / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("build/\n")
+    build = sub / "build"
+    build.mkdir()
+    (build / "generated.py").write_text("x = 1")
+    (sub / "keep.py").write_text("y = 2")
+
+    result = detect(tmp_path)
+    code_files = result["files"]["code"]
+    assert any("keep.py" in f for f in code_files)
+    assert not any("generated.py" in f for f in code_files)
+
+
+def test_gitignore_nested_negation_overrides_broader_root_rule(tmp_path):
+    """A closer (nested) .gitignore's `!` re-include wins over a root exclude,
+    matching git's closer-file-wins precedence."""
+    (tmp_path / ".gitignore").write_text("*.txt\n")
+    sub = tmp_path / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("!important.txt\n")
+    (tmp_path / "root.txt").write_text("a")
+    (sub / "important.txt").write_text("b")
+    (sub / "other.txt").write_text("c")
+
+    result = detect(tmp_path)
+    # .txt is not a code extension so check the document bucket instead
+    doc_files = result["files"]["document"] if "document" in result["files"] else []
+    unclassified = result.get("unclassified", [])
+    all_seen = doc_files + unclassified
+    assert any("important.txt" in f for f in all_seen)
+    assert not any(f.endswith("root.txt") for f in all_seen)
+    assert not any(f.endswith("other.txt") for f in all_seen)
+
+
 def test_detect_handles_circular_symlinks(tmp_path):
     sub = tmp_path / "a"
     sub.mkdir()

@@ -832,6 +832,33 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     return exclude if exclude.is_file() else None
 
 
+def _load_dir_own_ignore(d: Path) -> list[tuple[Path, str]]:
+    """Read .gitignore/.graphifyignore directly inside *d* (not its ancestors).
+
+    Merges .gitignore and .graphifyignore for this one directory (#1363):
+    .gitignore is read first and .graphifyignore last, so .graphifyignore
+    patterns (including `!` negations) win on conflict via last-match-wins;
+    adding a .graphifyignore can only ever exclude MORE, never re-include a
+    .gitignore-excluded file (#945 kept: a dir with only a .gitignore still
+    gets sensible defaults).
+
+    Shared by `_load_graphifyignore` (ancestor chain, loaded once before the
+    scan) and the live os.walk loop in `detect()` (called per-directory as
+    each descendant is visited), so nested ignore files *below* the scan
+    root are honored too — previously only the scan root and its ancestors
+    were read, so e.g. `vendor/sub/.gitignore` was silently ignored (#1206).
+    """
+    patterns: list[tuple[Path, str]] = []
+    for fname in (".gitignore", ".graphifyignore"):
+        ignore_file = d / fname
+        if ignore_file.exists():
+            for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = _parse_gitignore_line(raw)
+                if line:
+                    patterns.append((d, line))
+    return patterns
+
+
 def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
     """Read .graphifyignore files and return (anchor_dir, pattern) pairs.
 
@@ -841,6 +868,10 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
 
     Walk ceiling: the nearest VCS root if inside a repo, otherwise the scan
     root itself (hermetic — no leakage across unrelated sibling projects).
+
+    Covers the scan root and its ancestors only — directories *below* the
+    scan root are picked up live during the os.walk in `detect()` instead,
+    since they aren't known until the walk reaches them (#1206).
     """
     root = root.resolve()
     ceiling = _find_vcs_root(root) or root
@@ -869,23 +900,7 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
                 patterns.append((ceiling, line))
 
     for d in dirs:
-        # Merge .gitignore and .graphifyignore for this dir (#1363). Previously
-        # the presence of a .graphifyignore made graphify skip that dir's
-        # .gitignore entirely, so a file excluded only by .gitignore (e.g. a
-        # neutrally-named secret like prod-dump.sql) silently got indexed into
-        # the graph — whose artifacts embed file contents and are often
-        # committed. .gitignore is read first and .graphifyignore last, so
-        # .graphifyignore patterns (including `!` negations) win on conflict via
-        # last-match-wins; adding a .graphifyignore can only ever exclude MORE,
-        # never re-include a .gitignore-excluded file (#945 kept: a project with
-        # only a .gitignore still gets sensible defaults).
-        for fname in (".gitignore", ".graphifyignore"):
-            ignore_file = d / fname
-            if ignore_file.exists():
-                for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                    line = _parse_gitignore_line(raw)
-                    if line:
-                        patterns.append((d, line))
+        patterns.extend(_load_dir_own_ignore(d))
     return patterns
 
 
@@ -1194,6 +1209,14 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     dirnames.clear()
                     continue
             if not in_memory_tree:
+                # dp == root was already loaded by _load_graphifyignore (root is
+                # the last entry in its ancestor chain); every other directory
+                # reached by the walk is a descendant below the scan root, whose
+                # own .gitignore/.graphifyignore is unknown until we get here.
+                # Load it now, before pruning dp's children, so a nested ignore
+                # file governs its own subtree the same way git honors it (#1206).
+                if dp != root:
+                    ignore_patterns.extend(_load_dir_own_ignore(dp))
                 # Prune noise dirs in-place so os.walk never descends into them.
                 # Dot dirs are allowed — users often want .github/, .claude/, etc.
                 # Framework caches (.next, .nuxt, …) are caught by _is_noise_dir.
