@@ -347,6 +347,13 @@ def test_csharp_finds_interface():
     r = extract_csharp(FIXTURES / "sample.cs")
     assert any("IProcessor" in l for l in _labels(r))
 
+def test_csharp_finds_delegate():
+    """A C# delegate declaration is a named, referenceable type and must be a node,
+    like class/interface. Without this, a parameter/field typed as the delegate
+    references a non-existent node and the edge dangles (pruned)."""
+    r = extract_csharp(FIXTURES / "sample.cs")
+    assert "Transformer" in _labels(r), "delegate declaration should be a node"
+
 def test_csharp_finds_methods():
     r = extract_csharp(FIXTURES / "sample.cs")
     labels = _labels(r)
