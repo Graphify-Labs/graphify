@@ -392,6 +392,20 @@ def test_csharp_parameter_return_and_generic_contexts():
     assert ("Build", "DataProcessor") in _edge_labels(result, "references", "generic_arg")
 
 
+def test_csharp_field_generic_type_arguments_have_generic_arg_context():
+    """A field like `Dictionary<string, IProcessor> _registry` must reference both
+    the outer collection (field context) and its generic type arguments
+    (generic_arg context). Previously the field handler read only the outer type
+    name, so a generic field produced an edge to the collection but none to its
+    type arguments, breaking definition->usage traceability. Mirrors the behavior
+    already applied to the property handler."""
+    result = extract_csharp(FIXTURES / "sample.cs")
+    # Outer collection type still referenced with field context.
+    assert ("DataProcessor", "Dictionary") in _edge_labels(result, "references", "field")
+    # Generic type argument is now referenced (string is a predefined type, skipped).
+    assert ("DataProcessor", "IProcessor") in _edge_labels(result, "references", "generic_arg")
+
+
 def test_java_normalizes_inherits_and_implements():
     result = extract_java(FIXTURES / "sample.java")
     assert ("DataProcessor", "BaseProcessor") in _edge_labels(result, "inherits")

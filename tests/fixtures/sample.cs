@@ -23,6 +23,8 @@ namespace GraphifyDemo
     {
         private readonly HttpClient _client;
 
+        private readonly Dictionary<string, IProcessor> _registry;
+
         public Processor Owner { get; set; }
 
         public List<Processor> Workers { get; set; }
