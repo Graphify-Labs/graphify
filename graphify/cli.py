@@ -2328,6 +2328,12 @@ def dispatch_command(cmd: str) -> None:
             )
 
         if not has_path:
+            # PostgreSQL-only extraction has no filesystem corpus to detect, but
+            # the common reporting/manifest path below still consumes the
+            # detection result.  Keep the same shape as detect() returns so
+            # ``graphify extract --postgres DSN`` can continue through database
+            # introspection without reading an unbound local.
+            detection = {"files": {}, "unclassified": []}
             code_files = []
             doc_files = []
             paper_files = []
