@@ -408,11 +408,11 @@ def _reconcile_existing_graph(
         }
         node_evicted_source_identities = set(deleted_source_identities)
         hyperedge_evicted_source_identities = set(deleted_source_identities)
+        # Deletion evicts edges regardless of tier; re-extraction only owns a
+        # source's AST-tier edges (checked per-edge below, #1865).
+        edge_evicted_source_identities = set(deleted_source_identities)
         if not full_rebuild:
             node_evicted_source_identities.update(rebuilt_source_identities)
-        edge_evicted_source_identities = (
-            node_evicted_source_identities | rebuilt_source_identities
-        )
 
         # Reconcile every rebuild against the current watched corpus. Hook change
         # lists can contain only a rename destination, so explicit paths alone
@@ -485,14 +485,22 @@ def _reconcile_existing_graph(
         ]
         all_ids = new_ast_ids | {node["id"] for node in preserved_nodes}
 
-        # Edges are owned by source_file. Re-extraction must replace an owner's
-        # previous edges, while edges from unchanged or semantic sources survive.
+        # Edges are owned by source_file, but ownership is tier-scoped: the AST
+        # pass replaces a re-extracted source's AST edges, while that source's
+        # semantic/LLM edges — which the AST pass cannot regenerate — survive
+        # until a semantic re-extraction supersedes them. Same provenance rule
+        # the node reconciliation above applies via _origin (#1865). Deletion
+        # eviction stays provenance-blind.
         preserved_edges = [
             edge
             for edge in existing.get("links", existing.get("edges", []))
             if edge.get("source") in all_ids
             and edge.get("target") in all_ids
             and not source_paths.is_evicted(edge, edge_evicted_source_identities)
+            and not (
+                edge.get("_origin") == "ast"
+                and source_paths.is_evicted(edge, rebuilt_source_identities)
+            )
         ]
 
         new_hyperedge_ids = {

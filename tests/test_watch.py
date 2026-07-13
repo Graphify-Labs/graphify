@@ -329,6 +329,72 @@ def test_rebuild_code_preserves_hyperedges_for_rebuilt_surviving_source(
 
 @pytest.mark.parametrize(
     "changed_paths",
+    [None, [Path("auth.md")]],
+    ids=["full-update", "incremental-doc-update"],
+)
+def test_rebuild_code_preserves_semantic_edges_from_reextracted_doc(
+    tmp_path, changed_paths
+):
+    """#1865: AST-only updates must not evict semantic edges whose source_file
+    is a re-extracted document; only that source's AST-tier edges are replaced."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "auth.md").write_text(
+        "# Token Validation\n\nVerifies bearer tokens.\n", encoding="utf-8"
+    )
+    (corpus / "login.md").write_text(
+        "# Session Verification\n\nVerifies login sessions.\n", encoding="utf-8"
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    node_ids = {n["id"] for n in data["nodes"]}
+    assert {"auth_token_validation", "login_session_verification"} <= node_ids
+
+    data["links"].extend([
+        {
+            "source": "auth_token_validation",
+            "target": "login_session_verification",
+            "relation": "semantically_similar_to",
+            "confidence": "INFERRED",
+            "source_file": "auth.md",
+        },
+        # A stale AST-tier edge of the same source must still be evicted.
+        {
+            "source": "auth_token_validation",
+            "target": "login_session_verification",
+            "relation": "references",
+            "_origin": "ast",
+            "source_file": "auth.md",
+        },
+    ])
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert _rebuild_code(
+        corpus,
+        changed_paths=changed_paths,
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    relations = {
+        (e.get("source"), e.get("target"), e.get("relation"))
+        for e in after["links"]
+    }
+    assert (
+        "auth_token_validation", "login_session_verification", "semantically_similar_to"
+    ) in relations, "semantic edge from a re-extracted doc must survive an AST-only update"
+    assert (
+        "auth_token_validation", "login_session_verification", "references"
+    ) not in relations, "stale AST-tier edge of a re-extracted source must be evicted"
+
+
+@pytest.mark.parametrize(
+    "changed_paths",
     [None, [Path("only.py")]],
     ids=["full-update", "incremental-update"],
 )
