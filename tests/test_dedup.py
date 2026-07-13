@@ -1,7 +1,7 @@
 """Tests for graphify/dedup.py entity deduplication pipeline."""
 from __future__ import annotations
 import pytest
-from graphify.dedup import deduplicate_entities, _entropy, _shingles
+from graphify.dedup import deduplicate_entities, _defines_id, _entropy, _shingles
 
 
 # ── entropy gate ─────────────────────────────────────────────────────────────
@@ -404,3 +404,85 @@ def test_same_id_same_source_file_no_warning(capsys):
     assert len(result_nodes) == 1
     captured = capsys.readouterr()
     assert "WARNING" not in captured.err
+
+
+# ── ID collisions: definition vs cross-reference ──────────────────────────────
+
+# The defining node and a doc that merely mentions the entity. Both mint the ID
+# encoded from the *defining* file's path, so they collide by construction.
+_DEFINING = {"id": "agents_make_batch_fixtures_make_batch_fixtures",
+             "label": "make-batch-fixtures agent", "file_type": "concept",
+             "source_file": "agents/make-batch-fixtures.md"}
+_REFERENCING = {"id": "agents_make_batch_fixtures_make_batch_fixtures",
+                "label": "make-batch-fixtures", "file_type": "concept",
+                "source_file": "available/diagnose-issue/SKILL.md"}
+
+
+@pytest.mark.parametrize("nodes", [
+    [_DEFINING, _REFERENCING],
+    [_REFERENCING, _DEFINING],
+], ids=["definition-first", "reference-first"])
+def test_defining_file_wins_over_referencing_file(nodes, capsys):
+    """The node whose source_file is the file its ID encodes survives, whichever
+    chunk order the nodes arrive in — the survivor must not depend on it."""
+    result_nodes, _ = deduplicate_entities(list(nodes), [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["source_file"] == "agents/make-batch-fixtures.md"
+    assert result_nodes[0]["label"] == "make-batch-fixtures agent"
+
+
+def test_reference_collision_is_silent(capsys):
+    """A cross-reference collapsing into the entity it references loses nothing —
+    edges are keyed by ID and rewire to the survivor — so it must not be reported."""
+    edges = _make_edges("agents_make_batch_fixtures_make_batch_fixtures", "other")
+    result_nodes, result_edges = deduplicate_entities(
+        [_DEFINING, _REFERENCING], edges, communities={})
+
+    assert len(result_nodes) == 1
+    assert len(result_edges) == 1
+    captured = capsys.readouterr()
+    assert "WARNING" not in captured.err
+    assert "note:" not in captured.err
+
+
+def test_absolute_source_path_still_defines_id(capsys):
+    """source_file is absolute in some pipelines and repo-relative in others; the
+    defining file is recognised either way."""
+    absolute = dict(_DEFINING, source_file="/home/u/proj/agents/make-batch-fixtures.md")
+    result_nodes, _ = deduplicate_entities([_REFERENCING, absolute], [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["label"] == "make-batch-fixtures agent"
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_same_file_relabel_is_noted(capsys):
+    """Two labels for one ID from one file: the loser's label is discarded, which is
+    the one drop that used to be silent. It is a note, not a collision warning."""
+    nodes = [
+        {"id": "agents_make_batch_fixtures_make_batch_fixtures",
+         "label": "make-batch-fixtures agent", "file_type": "concept",
+         "source_file": "agents/make-batch-fixtures.md"},
+        {"id": "agents_make_batch_fixtures_make_batch_fixtures",
+         "label": "make-batch-fixtures helper agent", "file_type": "concept",
+         "source_file": "agents/make-batch-fixtures.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+
+    assert len(result_nodes) == 1
+    captured = capsys.readouterr()
+    assert "note:" in captured.err
+    assert "make-batch-fixtures helper agent" in captured.err
+    assert "WARNING" not in captured.err
+
+
+def test_defines_id_helper():
+    assert _defines_id(_DEFINING)
+    assert not _defines_id(_REFERENCING)
+    # Pre-#1504 IDs keyed off the bare filename stem.
+    assert _defines_id({"id": "readme_booking_service",
+                        "source_file": "module-a/README.md"})
+    # A path that is merely a string-prefix of the ID's path does not define it.
+    assert not _defines_id({"id": "agents_foo", "source_file": "agent/foo.md"})
+    assert not _defines_id({"id": "docs_intro_foo", "source_file": ""})

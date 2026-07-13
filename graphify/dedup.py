@@ -187,6 +187,76 @@ def _is_code(node: dict) -> bool:
     return node.get("file_type") == "code"
 
 
+# ── ID collisions ─────────────────────────────────────────────────────────────
+
+_ID_SEGMENT = re.compile(r"[^a-z0-9]+")
+_EXTENSION = re.compile(r"\.[^./]+$")
+
+
+def _id_prefixes(source_file: str) -> set[str]:
+    """The ID prefixes a node extracted from ``source_file`` may legitimately mint.
+
+    An ID is ``<path>_<entity>``, where the path is the extension-stripped source
+    path, each segment slugified and joined with ``_``. Every trailing slice of the
+    path counts as a prefix: the stored path may be absolute or repo-relative, and
+    graphs built under the pre-#1504 scheme keyed off the bare filename stem.
+    """
+    stem = _EXTENSION.sub("", source_file.replace("\\", "/"))
+    segments = [s for s in (_ID_SEGMENT.sub("_", p.casefold()).strip("_")
+                            for p in stem.split("/")) if s]
+    return {"_".join(segments[i:]) for i in range(len(segments))}
+
+
+def _defines_id(node: dict) -> bool:
+    """True when the node's own source_file is the file its ID encodes.
+
+    A doc that *references* an entity mints the ID of the entity's own file, not one
+    derived from the doc's path — so the referencing node collides with the defining
+    node by construction. This separates the two: the definer owns the ID.
+    """
+    nid = node.get("id") or ""
+    source_file = node.get("source_file") or ""
+    if not nid or not source_file:
+        return False
+    return any(nid.startswith(f"{prefix}_") for prefix in _id_prefixes(source_file))
+
+
+def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
+    """Report an ID collision in proportion to what dropping the loser actually costs.
+
+    Cross-reference to a defining node: same entity, edges are keyed by ID and rewire
+    to the survivor — nothing is lost, so say nothing. Same file, different labels: the
+    extractor emitted two labels for one entity and one is discarded — note it. Two
+    files that both encode this ID: they are distinct entities and one is genuinely
+    lost — warn, and point at the extraction split that keeps them apart (#1504).
+    """
+    keep_file = survivor.get("source_file") or ""
+    keep_label = survivor.get("label") or ""
+    for loser in losers:
+        lose_file = loser.get("source_file") or ""
+        lose_label = loser.get("label") or ""
+        if lose_file == keep_file:
+            if _norm(lose_label) != _norm(keep_label):
+                print(
+                    f"[graphify] note: node '{nid}' was extracted twice from "
+                    f"'{keep_file}' under different labels — keeping '{keep_label}', "
+                    f"dropping '{lose_label}'.",
+                    file=sys.stderr,
+                )
+        elif _defines_id(survivor) and not _defines_id(loser):
+            continue  # the loser only references the entity the survivor defines
+        else:
+            print(
+                f"[graphify] WARNING: node '{nid}' is minted by two different files — "
+                f"keeping '{keep_label}' from '{keep_file}', dropping '{lose_label}' "
+                f"from '{lose_file}'. An ID is derived from the source path plus the "
+                f"entity name, so this one does not identify a single entity and the "
+                f"dropped node is lost. To keep them distinct, run 'graphify extract' "
+                f"per subfolder and merge with 'graphify merge-graphs'.",
+                file=sys.stderr,
+            )
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 def deduplicate_entities(
@@ -220,29 +290,29 @@ def deduplicate_entities(
     if len(nodes) <= 1:
         return nodes, edges
 
-    # Pre-deduplicate: keep first occurrence of each id.
-    # Warn when two nodes share an ID but originate from different source files —
-    # this indicates a cross-chunk ID collision (#1504) where silent data loss occurs.
+    # Pre-deduplicate: one node per ID. The survivor is the node that *defines* the
+    # ID (its source_file is the file the ID encodes), not merely the first seen —
+    # otherwise chunk order decides whether an entity keeps its own attributes or a
+    # passing cross-reference's. Warnings are then emitted for what is actually lost
+    # (#1504); a same-entity merge costs nothing and stays quiet.
     seen_ids: dict[str, dict] = {}
+    dropped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
         nid = node.get("id", "")
         if not nid:
             continue
-        if nid not in seen_ids:
+        incumbent = seen_ids.get(nid)
+        if incumbent is None:
             seen_ids[nid] = node
+        elif _defines_id(node) and not _defines_id(incumbent):
+            seen_ids[nid] = node
+            dropped[nid].append(incumbent)
         else:
-            existing_sf = seen_ids[nid].get("source_file") or ""
-            new_sf = node.get("source_file") or ""
-            if existing_sf != new_sf:
-                print(
-                    f"[graphify] WARNING: node '{nid}' from '{new_sf}' collides with "
-                    f"node from '{existing_sf}' — the second node will be dropped. "
-                    f"This is a cross-chunk ID collision caused by two files with the "
-                    f"same name in different directories. To avoid data loss, run "
-                    f"'graphify extract' per subfolder and merge with "
-                    f"'graphify merge-graphs'.",
-                    file=sys.stderr,
-                )
+            dropped[nid].append(node)
+
+    for nid, losers in dropped.items():
+        _report_id_collision(nid, seen_ids[nid], losers)
+
     unique_nodes = list(seen_ids.values())
 
     if len(unique_nodes) <= 1:
