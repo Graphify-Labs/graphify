@@ -9,8 +9,10 @@ import re
 import sys
 import unicodedata
 from collections import defaultdict
+from pathlib import Path
 
 from graphify._minhash import MinHash, MinHashLSH
+from graphify.ids import make_id, normalize_id
 from rapidfuzz.distance import Jaro, JaroWinkler
 
 
@@ -187,6 +189,42 @@ def _is_code(node: dict) -> bool:
     return node.get("file_type") == "code"
 
 
+def _node_defines_id(node: dict, nid: str) -> bool:
+    """True when ``node``'s own ``source_file`` is the file encoded in ``nid``.
+
+    Non-AST node ids are ``make_id(_file_stem(source_file), <label>)``, so the
+    entity's *defining* node has an id equal to its file stem (the file node) or
+    beginning with ``stem + "_"`` (a symbol in that file). A node that merely
+    *references* the entity was extracted from a different file, so its own
+    source_file yields a different stem and this returns False — which is how we
+    tell the authoritative node from a cross-reference that collided onto the
+    same id (#1851)."""
+    sf = node.get("source_file")
+    if not sf:
+        return False
+    from graphify.extractors.base import _file_stem  # local: avoid import cost at module load
+
+    try:
+        stem = make_id(_file_stem(Path(str(sf))))
+    except ValueError:
+        return False
+    if not stem:
+        return False
+    norm_nid = normalize_id(nid)
+    return norm_nid == stem or norm_nid.startswith(stem + "_")
+
+
+def _materially_differs(a: dict, b: dict) -> bool:
+    """True when two same-id nodes carry different content worth surfacing.
+
+    Compares the normalized label and the description: if either differs, keeping
+    one and dropping the other silently discards information. Same-entity copies
+    (identical label and description) return False so the merge stays quiet."""
+    if _norm(a.get("label")) != _norm(b.get("label")):
+        return True
+    return (a.get("description") or "").strip() != (b.get("description") or "").strip()
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 def deduplicate_entities(
@@ -220,30 +258,63 @@ def deduplicate_entities(
     if len(nodes) <= 1:
         return nodes, edges
 
-    # Pre-deduplicate: keep first occurrence of each id.
-    # Warn when two nodes share an ID but originate from different source files —
-    # this indicates a cross-chunk ID collision (#1504) where silent data loss occurs.
-    seen_ids: dict[str, dict] = {}
+    # Pre-deduplicate: collapse the nodes sharing each id down to one survivor.
+    #
+    # Non-AST node ids are '<slug(source_file_stem)>_<slug(label)>', so a doc that
+    # *references* an entity can mint the same id as the entity's own node, and the
+    # two collide by construction (#1504). Two things follow:
+    #   * Survivor selection prefers the node whose own source_file defines the id
+    #     (see _node_defines_id), falling back to first-seen order — deterministic,
+    #     and independent of the chunk-merge order (#1851).
+    #   * We warn only when a *dropped* node would actually lose information — a
+    #     different label/description, or a genuine cross-file collision — instead
+    #     of on every source_file mismatch. Same-file duplicates that differ are
+    #     now surfaced (previously silent), and same-entity copies stay quiet.
+    id_groups: dict[str, list[dict]] = {}
     for node in nodes:
         nid = node.get("id", "")
         if not nid:
             continue
-        if nid not in seen_ids:
-            seen_ids[nid] = node
-        else:
-            existing_sf = seen_ids[nid].get("source_file") or ""
-            new_sf = node.get("source_file") or ""
-            if existing_sf != new_sf:
+        id_groups.setdefault(nid, []).append(node)
+
+    unique_nodes: list[dict] = []
+    for nid, group in id_groups.items():
+        survivor = next((n for n in group if _node_defines_id(n, nid)), group[0])
+        unique_nodes.append(survivor)
+        if len(group) == 1:
+            continue
+        survivor_sf = survivor.get("source_file") or ""
+        for dropped in group:
+            if dropped is survivor:
+                continue
+            dropped_sf = dropped.get("source_file") or ""
+            cross_file = dropped_sf != survivor_sf
+            if not cross_file and not _materially_differs(survivor, dropped):
+                continue  # redundant same-file copy — nothing lost, stay quiet
+            drop_label = dropped.get("label") or nid
+            keep_label = survivor.get("label") or nid
+            if cross_file:
                 print(
-                    f"[graphify] WARNING: node '{nid}' from '{new_sf}' collides with "
-                    f"node from '{existing_sf}' — the second node will be dropped. "
-                    f"This is a cross-chunk ID collision caused by two files with the "
-                    f"same name in different directories. To avoid data loss, run "
-                    f"'graphify extract' per subfolder and merge with "
-                    f"'graphify merge-graphs'.",
+                    f"[graphify] WARNING: node id '{nid}' is emitted from more than "
+                    f"one file — keeping '{keep_label}' (from '{survivor_sf or '?'}') "
+                    f"and dropping '{drop_label}' (from '{dropped_sf or '?'}'). Node "
+                    f"ids are '<source-path>_<label>', so a doc that references an "
+                    f"entity reuses the id of the entity's own node; when it is the "
+                    f"same entity, edges are preserved and only the dropped node's "
+                    f"label/description is lost. If these are genuinely different "
+                    f"entities sharing a path stem, extract each subfolder separately "
+                    f"and combine with 'graphify merge-graphs'.",
                     file=sys.stderr,
                 )
-    unique_nodes = list(seen_ids.values())
+            else:
+                print(
+                    f"[graphify] WARNING: '{survivor_sf or '?'}' produced multiple "
+                    f"nodes with id '{nid}' but different content — keeping "
+                    f"'{keep_label}' and dropping '{drop_label}'. Edges are preserved "
+                    f"(they key on the id); the dropped node's label/description is "
+                    f"discarded.",
+                    file=sys.stderr,
+                )
 
     if len(unique_nodes) <= 1:
         return unique_nodes, edges

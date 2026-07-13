@@ -366,12 +366,14 @@ def test_dedup_still_merges_crossfile_true_duplicates():
     assert len(result_nodes) == 1
 
 
-# ── #1504: cross-chunk node ID collision warning ──────────────────────────────
+# ── #1504 / #1851: cross-chunk node ID collision warning ──────────────────────
 
 def test_cross_chunk_id_collision_emits_warning(capsys):
-    """When two nodes share the same ID but come from different source files
-    (a cross-chunk LLM ID collision), a WARNING must be printed to stderr
-    and only the first node survives (#1504)."""
+    """Two nodes sharing an ID but coming from different source files
+    (a cross-chunk collision, #1504) still warn, and only one survives. Neither
+    file defines the id, so first-seen order is the tiebreak. The reworded
+    message must state the id-scheme cause rather than the old — frequently
+    wrong — 'same name in different directories' claim (#1851)."""
     nodes = [
         {"id": "readme_booking_service", "label": "Booking Service",
          "file_type": "concept", "source_file": "module-a/README.md"},
@@ -388,15 +390,18 @@ def test_cross_chunk_id_collision_emits_warning(capsys):
     assert "readme_booking_service" in captured.err
     assert "module-b/README.md" in captured.err
     assert "module-a/README.md" in captured.err
+    # #1851: drop the misdiagnosis; a genuine cross-file drop still offers the workaround.
+    assert "same name in different directories" not in captured.err
+    assert "merge-graphs" in captured.err
 
 
-def test_same_id_same_source_file_no_warning(capsys):
-    """When two nodes share both ID and source_file (same-file dedup),
-    no collision warning should be emitted."""
+def test_same_id_same_source_file_identical_no_warning(capsys):
+    """Same ID, same source_file, identical content — a redundant copy with
+    nothing to lose — stays quiet."""
     nodes = [
         {"id": "readme_booking_service", "label": "Booking Service",
          "file_type": "concept", "source_file": "module-a/README.md"},
-        {"id": "readme_booking_service", "label": "Booking Service (dupe)",
+        {"id": "readme_booking_service", "label": "Booking Service",
          "file_type": "concept", "source_file": "module-a/README.md"},
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
@@ -404,3 +409,43 @@ def test_same_id_same_source_file_no_warning(capsys):
     assert len(result_nodes) == 1
     captured = capsys.readouterr()
     assert "WARNING" not in captured.err
+
+
+def test_same_id_same_source_file_different_content_warns(capsys):
+    """#1851: two same-ID nodes from the *same* file but with different
+    labels/descriptions were previously dropped silently, discarding a
+    description unseen. This must now warn — without pushing the per-subfolder
+    re-extraction workaround, which is irrelevant within a single file."""
+    nodes = [
+        {"id": "readme_booking_service", "label": "Booking Service",
+         "description": "Handles reservations.",
+         "file_type": "concept", "source_file": "module-a/README.md"},
+        {"id": "readme_booking_service", "label": "Booking Service helper",
+         "description": "A different summary entirely.",
+         "file_type": "concept", "source_file": "module-a/README.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+
+    assert len(result_nodes) == 1
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert "readme_booking_service" in captured.err
+    assert "merge-graphs" not in captured.err
+
+
+def test_collision_survivor_prefers_defining_file():
+    """#1851: when a cross-reference node collides with the entity's own node,
+    the node defined by the file encoded in the id survives regardless of which
+    one was seen first (removing the old insertion-order dependence)."""
+    defining = {"id": "agents_make_batch_fixtures_make_batch_fixtures",
+                "label": "make-batch-fixtures agent", "file_type": "concept",
+                "source_file": "agents/make-batch-fixtures.md"}
+    reference = {"id": "agents_make_batch_fixtures_make_batch_fixtures",
+                 "label": "make-batch-fixtures", "file_type": "concept",
+                 "source_file": "available/diagnose-issue/SKILL.md"}
+
+    # Reference chunk merged first — the defining node must still win.
+    result_nodes, _ = deduplicate_entities([reference, defining], [], communities={})
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["source_file"] == "agents/make-batch-fixtures.md"
+    assert result_nodes[0]["label"] == "make-batch-fixtures agent"
