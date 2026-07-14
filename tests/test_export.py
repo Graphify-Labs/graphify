@@ -159,6 +159,27 @@ def test_to_html_contains_visjs():
         assert "vis-network" in content
 
 
+def test_to_html_neighbor_links_have_no_inline_onclick_xss():
+    """#1838: neighbor links dropped an unescaped JSON.stringify(nid) into a
+    quoted inline onclick — which broke every link (the value's own quotes
+    truncated the attribute) and let a node id/label containing a double-quote
+    (from a document or a scraped `graphify add` URL) inject a live event handler
+    into the local report (stored XSS). The template must instead carry the id in
+    an escaped data attribute and dispatch via one delegated listener."""
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out))
+        html = out.read_text()
+    # The vulnerable inline handler is gone entirely...
+    assert 'onclick="focusNode(' not in html
+    assert "JSON.stringify(nid)" not in html
+    # ...replaced by an escaped data attribute + a single delegated listener.
+    assert 'data-nid="${esc(nid)}"' in html
+    assert "closest('.neighbor-link')" in html
+
+
 def test_to_html_pins_visjs_version_with_sri():
     """vis-network script tag must use a pinned versioned URL with a sha384
     Subresource Integrity hash and crossorigin=anonymous. Without this,

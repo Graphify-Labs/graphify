@@ -566,6 +566,7 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
                 continue
             n = dict(node)
             n.pop("community", None)
+            n.pop("community_name", None)
             n.pop("norm_label", None)
             norm_nodes.append(n)
         canonical["nodes"] = sorted(
@@ -1043,7 +1044,7 @@ def _rebuild_code(
         report_path = out / "GRAPH_REPORT.md"
         labels_json = json.dumps({str(k): v for k, v in sorted(labels.items())}, ensure_ascii=False, indent=2) + "\n"
         graph_tmp = out / ".graph.tmp.json"
-        json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit)
+        json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit, community_labels=labels)
         if not json_written:
             return False
         candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))

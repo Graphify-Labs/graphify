@@ -160,6 +160,34 @@ def test_graphify_root_preserves_relative_when_invoked_with_relative_path(tmp_pa
     )
 
 
+def test_rebuild_code_writes_community_name(tmp_path):
+    """#1808: `graphify update` / _rebuild_code must forward community_labels to
+    to_json, so graph.json nodes carry a human-readable community_name (hub-derived
+    for a code-only rebuild) — not just a numeric community id. Before the fix,
+    _rebuild_code called to_json without community_labels, so the labels a
+    cluster-only pass writes were stripped again on every incremental rebuild."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n", encoding="utf-8"
+    )
+    (corpus / "b.py").write_text(
+        "import a\n\ndef gamma():\n    return a.alpha()\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph = json.loads((corpus / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+    clustered = [n for n in graph["nodes"] if n.get("community") is not None]
+    assert clustered, "expected clustered nodes in the rebuilt graph"
+    assert all(n.get("community_name") for n in clustered), (
+        "clustered nodes missing community_name — the update rebuild stripped the "
+        "labels that cluster-only writes (#1808)"
+    )
+
+
 def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
     """When the caller supplies an absolute path, ``.graphify_root`` stores
     that absolute form verbatim — preserving explicit-absolute intent."""
