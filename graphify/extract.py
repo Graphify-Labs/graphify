@@ -1051,9 +1051,10 @@ def extract_python(path: Path) -> dict:
 
 def extract_js(path: Path) -> dict:
     """Extract classes, functions, arrow functions, and imports from a .js/.ts/.tsx/.mts/.cts file."""
-    if path.suffix == ".tsx":
+    suffix = path.suffix.lower()
+    if suffix == ".tsx":
         config = _TSX_CONFIG
-    elif path.suffix in (".ts", ".mts", ".cts"):
+    elif suffix in (".ts", ".mts", ".cts"):
         config = _TS_CONFIG
     else:
         config = _JS_CONFIG
