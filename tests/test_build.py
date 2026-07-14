@@ -907,6 +907,51 @@ def test_cross_language_imports_references_are_dropped():
     assert G.has_edge("src_time_ts", "src_util_ts"), "same-family (TS->TS) import must survive"
 
 
+def test_explicit_language_family_disambiguates_matlab_from_objc_m_files():
+    extraction = {
+        "nodes": [
+            {
+                "id": "matlab_fn", "label": "solve()", "file_type": "code",
+                "source_file": "solve.m", "language": "matlab", "language_family": "matlab",
+            },
+            {
+                "id": "objc_method", "label": ".solve()", "file_type": "code",
+                "source_file": "Controller.m", "language": "objective-c", "language_family": "native",
+            },
+            {
+                "id": "c_helper", "label": "helper()", "file_type": "code",
+                "source_file": "helper.c",
+            },
+            {
+                "id": "swift_helper", "label": "swiftHelper()", "file_type": "code",
+                "source_file": "App.swift",
+            },
+        ],
+        "edges": [
+            {
+                "source": "matlab_fn", "target": "objc_method", "relation": "calls",
+                "confidence": "INFERRED", "source_file": "solve.m", "weight": 1.0,
+                "language": "matlab", "language_family": "matlab",
+            },
+            {
+                "source": "objc_method", "target": "c_helper", "relation": "calls",
+                "confidence": "INFERRED", "source_file": "Controller.m", "weight": 1.0,
+                "language": "objective-c", "language_family": "native",
+            },
+            {
+                "source": "swift_helper", "target": "c_helper", "relation": "calls",
+                "confidence": "INFERRED", "source_file": "App.swift", "weight": 1.0,
+            },
+        ],
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+    graph = build_from_json(extraction)
+    assert not graph.has_edge("matlab_fn", "objc_method")
+    assert graph.has_edge("objc_method", "c_helper")
+    assert not graph.has_edge("swift_helper", "c_helper")
+
+
 def test_cross_family_reference_to_unknown_ext_is_kept():
     """The #1749 guard only drops when BOTH endpoints are known code languages,
     so a reference from a config/manifest (unknown ext) to a code file is kept."""

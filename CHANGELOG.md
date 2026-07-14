@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: MATLAB `.m` files now have a dedicated, offline tree-sitter extractor, completing the follow-up to #1702. Content sniffing still routes Objective-C `.m` files to their existing extractor, while MATLAB scripts, functions, nested/local functions, `classdef` classes, inheritance, properties, events, enumerations, `+package` folders, `@Class` folders, private functions, imports, typed receivers, function handles, and conservative cross-file calls are represented structurally. Call resolution preserves MATLAB's call-vs-index ambiguity instead of inventing edges, respects lexical/package/private scope, and cannot merge or resolve into same-named Objective-C/native symbols.
+
 ## 0.9.15 (2026-07-13)
 
 - Fix: detection now honors nested `.gitignore`/`.graphifyignore` files below the scan root, not just those at the scan root and above (#1847, thanks @Mohak-Agrawal). git applies a `.gitignore` to everything under its own directory, but graphify only loaded ignore files from the VCS-root-down-to-scan-root chain — so a `vendor/sub/.gitignore` deeper in the tree was never read and its exclusions leaked into the graph. Each directory's own ignore files are now read during the walk and anchored to that directory, preserving last-match-wins precedence (nearer files win, including over `.git/info/exclude`) and the parent-exclusion rule.

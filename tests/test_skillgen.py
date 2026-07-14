@@ -497,6 +497,7 @@ def test_monoliths_change_only_sanctioned_lines():
         rendered = gen.render(platforms[key])[0].content
         assert gen.ENUM_VALUES in rendered
         assert UNIFIED_DESCRIPTION in rendered
+        assert "'.swift','.m','.mm','.kt'" in rendered
 
 
 def test_monoliths_carry_the_1392_runbook_fixes():

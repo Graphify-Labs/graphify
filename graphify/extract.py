@@ -138,6 +138,7 @@ from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _P
 from graphify.extractors.objc import _objc_local_var_types, extract_objc  # noqa: E402,F401
 
 from graphify.extractors.julia import extract_julia  # noqa: E402,F401
+from graphify.extractors.matlab import extract_matlab, resolve_matlab_calls  # noqa: E402,F401
 
 _RECURSION_LIMIT = 10_000
 
@@ -165,6 +166,33 @@ def _safe_extract(extractor: Callable, path: Path) -> dict:
             traceback.print_exc(file=sys.stderr)
         print(f"  warning: skipped {path} ({type(e).__name__}: {e})", file=sys.stderr, flush=True)
         return {"nodes": [], "edges": [], "error": f"{type(e).__name__}: {e}"}
+
+
+def _stamp_result_language(result: dict, path: Path) -> None:
+    """Attach explicit provenance for the ambiguous ``.m`` suffix.
+
+    This runs for both fresh and cached results, so old cache entries cannot
+    classify MATLAB as Objective-C merely because the languages share a suffix.
+    """
+    language = result.get("language")
+    family = result.get("language_family")
+    if not language or not family:
+        suffix = path.suffix.lower()
+        if suffix == ".mm" or (suffix == ".m" and _is_objc_source(path)):
+            language, family = "objective-c", "native"
+        elif suffix == ".m":
+            language, family = "matlab", "matlab"
+    if not language or not family:
+        return
+    result["language"] = language
+    result["language_family"] = family
+    for item in (
+        list(result.get("nodes", []))
+        + list(result.get("edges", []))
+        + list(result.get("raw_calls", []))
+    ):
+        item.setdefault("language", language)
+        item.setdefault("language_family", family)
 
 
 def _file_node_id(rel_path: Path) -> str:
@@ -1792,11 +1820,36 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
 }
 
 
-def _lang_family(source_file: object) -> str | None:
-    """Interop family of the file's language, or None when unknown/not code."""
+_LANG_FAMILY_BY_NAME: dict[str, str] = {
+    "matlab": "matlab",
+    "objective-c": "native",
+    "objc": "native",
+}
+
+
+def _lang_family(
+    source_file: object,
+    language: object = None,
+    language_family: object = None,
+) -> str | None:
+    """Interop family, preferring extractor provenance over file suffix."""
+    if language_family:
+        return str(language_family)
+    if language:
+        named = _LANG_FAMILY_BY_NAME.get(str(language).lower())
+        if named is not None:
+            return named
     if not source_file:
         return None
     return _LANG_FAMILY_BY_EXT.get(Path(str(source_file)).suffix.lower())
+
+
+def _is_matlab_node(node: dict) -> bool:
+    """Return whether a graph node came from the MATLAB extractor."""
+    return (
+        str(node.get("language", "")).lower() == "matlab"
+        or str(node.get("language_family", "")).lower() == "matlab"
+    )
 
 
 def _node_label_key(node: dict, fold: bool = False) -> str:
@@ -1861,7 +1914,11 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         for endpoint in ("source", "target"):
             nid = edge.get(endpoint)
             if nid in stub_ids:
-                fam = _lang_family(edge.get("source_file"))
+                fam = _lang_family(
+                    edge.get("source_file"),
+                    edge.get("language"),
+                    edge.get("language_family"),
+                )
                 if fam is not None:
                     stub_families.setdefault(str(nid), set()).add(fam)
                 # A stub referenced as a supertype must resolve to a class/type,
@@ -1874,20 +1931,41 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         stub_id = str(stub.get("id", ""))
         if not stub_id:
             continue
-        candidates = real_by_label.get(_node_label_key(stub), [])
+        fams = stub_families.get(stub_id, set())
+
+        def _family_candidates(items: list[dict]) -> list[dict]:
+            # Keep legacy permissive behavior for unstamped extractors. MATLAB
+            # stamps every stub, so its definitions cannot absorb ObjC symbols.
+            if not fams or not stub.get("language_family"):
+                return items
+            return [
+                item for item in items
+                if _lang_family(
+                    item.get("source_file"),
+                    item.get("language"),
+                    item.get("language_family"),
+                ) in fams
+            ]
+
+        candidates = _family_candidates(real_by_label.get(_node_label_key(stub), []))
         if len(candidates) != 1:
             # No unique exact type match — fall back to a case-insensitive match, but
             # only against case-insensitive-language definitions (so a case-sensitive
             # `PATH` can never absorb a `Path` reference).
-            candidates = real_by_label_ci.get(_node_label_key(stub, fold=True), [])
+            candidates = _family_candidates(
+                real_by_label_ci.get(_node_label_key(stub, fold=True), [])
+            )
         if len(candidates) != 1:
             # #1781: no unique type — try a unique top-level FUNCTION definition,
             # gated by (a) the stub not being used as a supertype and (b) a
             # language-family match with the stub's referrers.
             fcands = func_by_label.get(_node_label_key(stub), [])
             if len(fcands) == 1 and stub_id not in supertype_stub_ids:
-                fams = stub_families.get(stub_id, set())
-                cand_fam = _lang_family(fcands[0].get("source_file"))
+                cand_fam = _lang_family(
+                    fcands[0].get("source_file"),
+                    fcands[0].get("language"),
+                    fcands[0].get("language_family"),
+                )
                 if not fams or cand_fam is None or cand_fam in fams:
                     candidates = fcands
         if len(candidates) != 1:
@@ -2056,7 +2134,12 @@ def _resolve_swift_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (
+            n.get("source_file")
+            and n.get("id") in contained
+            and _is_type_like_definition(n)
+            and not _is_matlab_node(n)
+        ):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     # (type_node_id, method_key) -> method_node_id, from `method` edges.
@@ -2242,7 +2325,12 @@ def _resolve_typescript_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (
+            n.get("source_file")
+            and n.get("id") in contained
+            and _is_type_like_definition(n)
+            and not _is_matlab_node(n)
+        ):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
@@ -2348,7 +2436,12 @@ def _resolve_cpp_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (
+            n.get("source_file")
+            and n.get("id") in contained
+            and _is_type_like_definition(n)
+            and not _is_matlab_node(n)
+        ):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     # (type_node_id, method_key) -> method_node_id, and caller -> enclosing type
@@ -2469,7 +2562,12 @@ def _resolve_csharp_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (
+            n.get("source_file")
+            and n.get("id") in contained
+            and _is_type_like_definition(n)
+            and not _is_matlab_node(n)
+        ):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     # (type_node_id, method_key) -> method_node_id, and caller -> enclosing type.
@@ -2570,6 +2668,7 @@ def _resolve_java_member_calls(
             node.get("source_file")
             and node.get("id") in contained
             and _is_type_like_definition(node)
+            and not _is_matlab_node(node)
         ):
             type_def_nids.setdefault(key(node.get("label", "")), []).append(node["id"])
 
@@ -2673,7 +2772,12 @@ def _resolve_objc_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (
+            n.get("source_file")
+            and n.get("id") in contained
+            and _is_type_like_definition(n)
+            and not _is_matlab_node(n)
+        ):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
@@ -2778,6 +2882,9 @@ register_language_resolver(
         frozenset({".m", ".mm", ".h"}),
         _resolve_objc_member_calls,
     )
+)
+register_language_resolver(
+    LanguageResolver("matlab_calls", frozenset({".m"}), resolve_matlab_calls)
 )
 # C# receiver-typed member-call resolution (#1609): `field/param/local.Method()`
 # bound to the receiver's declared type instead of a bare same-named match.
@@ -3968,18 +4075,42 @@ _CPP_HEADER_MARKERS = (
 )
 
 
+_OBJC_SOURCE_DIRECTIVE_RE = re.compile(
+    rb"^[ \t]*(?:\#[ \t]*import\b|@(?:interface|protocol|implementation|import|class)\b)",
+    re.MULTILINE,
+)
+_OBJC_SOURCE_SYNTAX_RE = re.compile(
+    rb'@"|@(?:selector|autoreleasepool|try|catch|finally|throw|synchronized|encode)\b'
+    rb"|^[ \t]*[-+][ \t]*\([^\r\n)]*\)[ \t]*[A-Za-z_]",
+    re.MULTILINE,
+)
+_OBJC_MESSAGE_FUNCTION_RE = re.compile(
+    rb"\b[A-Za-z_]\w*(?:[ \t]+[A-Za-z_]\w*)?[ \t*]+"
+    rb"[A-Za-z_]\w*[ \t]*\([^;{}]*\)[ \t]*\{[^{}]*"
+    rb"\[[ \t]*[A-Za-z_]\w*[ \t]+[A-Za-z_]",
+    re.DOTALL,
+)
+
+
 def _is_objc_source(path: Path) -> bool:
     """Whether a `.m` file is Objective-C rather than MATLAB/Octave (#1702).
 
     `.m` is shared by Objective-C implementation files and MATLAB (also Octave).
-    The suffix map routes `.m` to extract_objc unconditionally, which force-parses
-    MATLAB through the Objective-C tree-sitter grammar and emits garbage nodes/edges
-    (worse than skipping). A genuine ObjC `.m` always carries an ObjC directive
-    (@implementation/@interface/@import/#import); MATLAB has none of them. Reuses
-    the same marker set as the `.h` sniff. `.mm` is unambiguously Objective-C++ and
-    is not sniffed.
+    Content sniffing selects between the dedicated MATLAB and Objective-C
+    extractors. It recognizes line-anchored ObjC directives, ObjC-only `@`
+    syntax/method declarations, and conservative C-function message sends while
+    ignoring MATLAB comments, strings, and function handles that merely contain
+    those words. `.mm` is unambiguously Objective-C++ and is not sniffed.
     """
-    return _is_objc_header(path)
+    try:
+        head = path.read_bytes()[:256 * 1024]
+    except OSError:
+        return False
+    return bool(
+        _OBJC_SOURCE_DIRECTIVE_RE.search(head)
+        or _OBJC_SOURCE_SYNTAX_RE.search(head)
+        or _OBJC_MESSAGE_FUNCTION_RE.search(head)
+    )
 
 
 def _is_cpp_header(path: Path) -> bool:
@@ -4025,13 +4156,10 @@ def _get_extractor(path: Path) -> Any | None:
         # grammar has no class_specifier). Reroute to extract_cpp (#1547).
         if _is_cpp_header(path):
             return extract_cpp
-    # `.m` is Objective-C OR MATLAB. extract_objc unconditionally would force-parse
-    # MATLAB through the ObjC grammar into garbage (#1702). Route to extract_objc
-    # only when the file actually looks like Objective-C; otherwise leave it without
-    # an extractor (surfaced by the no-AST-extractor warning, #1689) rather than
-    # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
+    # `.m` is Objective-C OR MATLAB. Objective-C keeps the directive-based route;
+    # every other `.m` uses the dedicated MATLAB parser. `.mm` stays ObjC++.
     if suffix == ".m" and not _is_objc_source(path):
-        return None
+        return extract_matlab
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
     # extraction returns no extractor and the file silently contributes nothing.
@@ -4334,6 +4462,7 @@ def extract(
     for i in range(total):
         if per_file[i] is None:
             per_file[i] = {"nodes": [], "edges": []}
+        _stamp_result_language(per_file[i], paths[i])
 
     # #1666: surface any source file an extractor accepted but that produced zero
     # nodes (not even a file node). Such a file is silently absent from the graph,
@@ -4483,11 +4612,22 @@ def extract(
         for n in all_nodes:
             if n.get("id") in id_remap:
                 n["id"] = id_remap[n["id"]]
+            if n.get("parent_function_nid") in id_remap:
+                n["parent_function_nid"] = id_remap[n["parent_function_nid"]]
         for e in all_edges:
             if e.get("source") in id_remap:
                 e["source"] = id_remap[e["source"]]
             if e.get("target") in id_remap:
                 e["target"] = id_remap[e["target"]]
+        # Script-level calls use the file node as caller; keep that caller in
+        # sync with the same portable file-id remap applied to edge endpoints.
+        for rc in all_raw_calls:
+            if rc.get("caller_nid") in id_remap:
+                rc["caller_nid"] = id_remap[rc["caller_nid"]]
+        for result in per_file:
+            for item in result.get("matlab_imports", []):
+                if item.get("caller_nid") in id_remap:
+                    item["caller_nid"] = id_remap[item["caller_nid"]]
     if prefix_remap:
         sym_remap: dict[str, str] = {}
         for n in all_nodes:
@@ -4520,6 +4660,8 @@ def extract(
             for n in all_nodes:
                 if n.get("id") in sym_remap:
                     n["id"] = sym_remap[n["id"]]
+                if n.get("parent_function_nid") in sym_remap:
+                    n["parent_function_nid"] = sym_remap[n["parent_function_nid"]]
             for e in all_edges:
                 if e.get("source") in sym_remap:
                     e["source"] = sym_remap[e["source"]]
@@ -4532,6 +4674,11 @@ def extract(
                 cn = rc.get("caller_nid")
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
+            for result in per_file:
+                for item in result.get("matlab_imports", []):
+                    caller_nid = item.get("caller_nid")
+                    if caller_nid in sym_remap:
+                        item["caller_nid"] = sym_remap[caller_nid]
 
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
@@ -4647,8 +4794,14 @@ def extract(
     # (test/non-test classification + path proximity). Kept separate from the
     # file-node-id map because tie-breaking compares the actual file paths.
     nid_to_source_file: dict[str, str] = {}
+    nid_to_language_family: dict[str, str] = {}
     for n in all_nodes:
         sf = n.get("source_file")
+        explicit_family = _lang_family(
+            sf, n.get("language"), n.get("language_family")
+        )
+        if explicit_family is not None:
+            nid_to_language_family[n["id"]] = explicit_family
         if not sf:
             continue
         nid_to_source_file[n["id"]] = str(sf)
@@ -4678,6 +4831,8 @@ def extract(
     # of these files with no import evidence is gated below (#1659).
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
     for rc in all_raw_calls:
+        if rc.get("defer_to_language_resolver"):
+            continue
         callee = rc.get("callee", "")
         if not callee:
             continue
@@ -4710,11 +4865,15 @@ def extract(
         # non-code nodes) are kept, preserving the previous permissive behavior;
         # real interop pairs (Kotlin↔Java, C↔C++↔ObjC, JS↔TS) share a family and
         # still resolve.
-        caller_family = _lang_family(rc.get("source_file"))
+        caller_family = _lang_family(
+            rc.get("source_file"),
+            rc.get("language"),
+            rc.get("language_family"),
+        )
         if caller_family is not None:
             candidates = [
                 c for c in candidates
-                if (candidate_family := _lang_family(nid_to_source_file.get(c))) is None
+                if (candidate_family := nid_to_language_family.get(c)) is None
                 or candidate_family == caller_family
             ]
             if not candidates:

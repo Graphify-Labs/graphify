@@ -27,7 +27,7 @@ _LANG_FAMILY: dict[str, str] = {
     **{e: "go" for e in (".go",)},
     **{e: "rust" for e in (".rs",)},
     **{e: "jvm" for e in (".java", ".kt", ".kts", ".scala")},
-    **{e: "c" for e in (".c", ".h", ".cpp", ".cc", ".cxx", ".hpp")},
+    **{e: "c" for e in (".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".m", ".mm")},
     **{e: "ruby" for e in (".rb", ".rake")},
     **{e: "swift" for e in (".swift",)},
     **{e: "dotnet" for e in (".cs",)},
@@ -36,12 +36,17 @@ _LANG_FAMILY: dict[str, str] = {
 }
 
 
-def _cross_language(src_a: str, src_b: str) -> bool:
+def _cross_language(
+    src_a: str,
+    src_b: str,
+    family_a: str | None = None,
+    family_b: str | None = None,
+) -> bool:
     """Return True if two source files belong to different language families."""
     ext_a = Path(src_a).suffix.lower()
     ext_b = Path(src_b).suffix.lower()
-    fam_a = _LANG_FAMILY.get(ext_a)
-    fam_b = _LANG_FAMILY.get(ext_b)
+    fam_a = family_a if family_a and family_a != "native" else _LANG_FAMILY.get(ext_a)
+    fam_b = family_b if family_b and family_b != "native" else _LANG_FAMILY.get(ext_b)
     if fam_a is None or fam_b is None:
         return False
     return fam_a != fam_b
@@ -222,7 +227,15 @@ def _surprise_score(
     _suppress_structural = (
         conf == "INFERRED"
         and relation in ("calls", "uses")
-        and (_cross_language(u_source, v_source) or {cat_u, cat_v} == {"code", "doc"})
+        and (
+            _cross_language(
+                u_source,
+                v_source,
+                G.nodes[u].get("language_family"),
+                G.nodes[v].get("language_family"),
+            )
+            or {cat_u, cat_v} == {"code", "doc"}
+        )
     )
     if _suppress_structural:
         conf_bonus = 0

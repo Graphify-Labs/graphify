@@ -424,7 +424,11 @@ def extract_objc(path: Path) -> dict:
         walk_calls(body_node)
 
     result = {"nodes": nodes, "edges": edges, "raw_calls": raw_calls,
-              "input_tokens": 0, "output_tokens": 0}
+              "input_tokens": 0, "output_tokens": 0,
+              "language": "objective-c", "language_family": "native"}
+    for item in nodes + edges + raw_calls:
+        item.setdefault("language", "objective-c")
+        item.setdefault("language_family", "native")
     if objc_type_table:
         result["objc_type_table"] = {"path": str_path, "table": objc_type_table}
     return result

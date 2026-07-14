@@ -716,8 +716,22 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
             src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
             tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
-            src_fam = _EDGE_LANG_FAMILY.get(src_ext)
-            tgt_fam = _EDGE_LANG_FAMILY.get(tgt_ext)
+            # ``.m`` is shared by Objective-C and MATLAB. Extractors stamp an
+            # explicit family for ambiguous suffixes; legacy data falls back to
+            # the extension map for backwards compatibility.
+            src_explicit = G.nodes[src].get("language_family")
+            tgt_explicit = G.nodes[tgt].get("language_family")
+            # ``native`` is the extraction resolver's broad interop family. The
+            # build guard intentionally keeps its existing C-vs-Swift boundary;
+            # only MATLAB needs to override the ambiguous `.m` suffix here.
+            src_fam = (
+                src_explicit if src_explicit and src_explicit != "native"
+                else _EDGE_LANG_FAMILY.get(src_ext)
+            )
+            tgt_fam = (
+                tgt_explicit if tgt_explicit and tgt_explicit != "native"
+                else _EDGE_LANG_FAMILY.get(tgt_ext)
+            )
             if _edge_rel == "calls":
                 # Unchanged #1547/#1556 behavior: only INFERRED calls, and drop as
                 # soon as either family differs (an unknown ext counts as different).

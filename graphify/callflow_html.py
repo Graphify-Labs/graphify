@@ -515,10 +515,13 @@ def node_kind(node: dict) -> str:
     if any(word in label for word in ("component", "props", "hook", "store")) or hook_like or source_file.endswith((".tsx", ".jsx", ".vue", ".svelte")):
         return "ui"
     raw = raw_label
+    if raw.lower().endswith((
+        ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt",
+        ".rb", ".php", ".cs", ".swift", ".m", ".mm", ".vue", ".svelte",
+    )):
+        return "module"
     if raw[:1].isupper() and not raw.endswith("()"):
         return "klass"
-    if raw.endswith((".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".cs", ".swift", ".vue", ".svelte")):
-        return "module"
     return "function"
 
 

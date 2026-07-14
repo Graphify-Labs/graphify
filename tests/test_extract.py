@@ -2011,10 +2011,9 @@ def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsy
 
 
 def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
-    # #1702: .m is shared by Objective-C and MATLAB. A real ObjC .m still routes to
-    # extract_objc, but a MATLAB .m must NOT be force-parsed by the ObjC grammar
-    # (which produces garbage) — it gets no extractor instead.
-    from graphify.extract import _get_extractor, extract_objc
+    # #1702: .m is shared by Objective-C and MATLAB. Content sniffing sends each
+    # file to its own grammar rather than force-parsing MATLAB as Objective-C.
+    from graphify.extract import _get_extractor, extract_matlab, extract_objc
 
     objc = tmp_path / "Foo.m"
     objc.write_text('#import "Foo.h"\n@implementation Foo\n- (void)bar {}\n@end\n')
@@ -2026,19 +2025,19 @@ def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
     mm.write_text("#import <F/F.h>\n@implementation X\n@end\n")
 
     assert _get_extractor(objc) is extract_objc            # real ObjC .m -> objc
-    assert _get_extractor(matlab_fn) is None               # MATLAB function -> no garbage
-    assert _get_extractor(matlab_cls) is None              # MATLAB classdef -> no garbage
+    assert _get_extractor(matlab_fn) is extract_matlab     # MATLAB function -> MATLAB
+    assert _get_extractor(matlab_cls) is extract_matlab    # MATLAB classdef -> MATLAB
     assert _get_extractor(mm) is extract_objc              # .mm is unambiguously ObjC++
 
 
-def test_matlab_m_not_extracted_as_garbage(tmp_path, capsys):
-    # End to end: a MATLAB .m produces no (garbage) nodes and is surfaced by the
-    # no-AST-extractor warning (#1702 + #1689), rather than mis-parsed as ObjC.
+def test_matlab_m_uses_real_extractor_not_objc_garbage(tmp_path, capsys):
+    # End to end: MATLAB produces structural nodes through its own grammar.
     m = tmp_path / "controller.m"
     m.write_text("function u = controller(x)\n  u = -x;\nend\n")
     result = extract([m], cache_root=tmp_path)
-    assert result["nodes"] == []                           # no garbage ObjC nodes
-    assert "no AST extractor" in capsys.readouterr().err    # surfaced, not silent
+    assert any(n.get("label") == "controller()" for n in result["nodes"])
+    assert all(n.get("language") == "matlab" for n in result["nodes"])
+    assert "no AST extractor" not in capsys.readouterr().err
 
 
 def test_rewire_binds_cross_module_function_reference_to_definition():
