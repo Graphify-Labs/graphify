@@ -1,6 +1,8 @@
 """Tests for `graphify extract` CLI dispatch path in graphify.__main__."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import graphify.__main__ as mainmod
@@ -135,6 +137,87 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     } == {str(corpus / "README.md")}
 
 
+def test_extract_appends_cost_run_across_incremental_refreshes(
+    monkeypatch, tmp_path
+):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    _make_corpus(corpus)
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    def _successful_chunk(paths, **kwargs):
+        kwargs["on_chunk_done"](0, 1, {})
+        return {
+            "nodes": [],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 100,
+            "output_tokens": 50,
+        }
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _successful_chunk)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    for _ in range(2):
+        monkeypatch.setattr(
+            mainmod.sys,
+            "argv",
+            ["graphify", "extract", str(corpus), "--backend", "claude",
+             "--out", str(out_dir)],
+        )
+        mainmod.main()
+
+    cost = json.loads(
+        (out_dir / "graphify-out" / "cost.json").read_text(encoding="utf-8")
+    )
+    assert len(cost["runs"]) == 2
+    assert [run["input_tokens"] for run in cost["runs"]] == [100, 100]
+    assert [run["output_tokens"] for run in cost["runs"]] == [50, 50]
+    assert [run["files"] for run in cost["runs"]] == [2, 2]
+    assert cost["total_input_tokens"] == 200
+    assert cost["total_output_tokens"] == 100
+
+
+def test_extract_no_cluster_records_cost_before_clean_exit(monkeypatch, tmp_path):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    _make_corpus(corpus)
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    def _successful_chunk(paths, **kwargs):
+        kwargs["on_chunk_done"](0, 1, {})
+        return {
+            "nodes": [],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 75,
+            "output_tokens": 20,
+        }
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _successful_chunk)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude",
+         "--out", str(out_dir), "--no-cluster"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == 0
+
+    cost = json.loads(
+        (out_dir / "graphify-out" / "cost.json").read_text(encoding="utf-8")
+    )
+    assert len(cost["runs"]) == 1
+    assert cost["runs"][0]["input_tokens"] == 75
+    assert cost["runs"][0]["output_tokens"] == 20
+    assert cost["runs"][0]["files"] == 2
+
+
 def _code_only_corpus(tmp_path):
     """A corpus with only code — no docs/papers/images."""
     (tmp_path / "auth.py").write_text(
@@ -155,6 +238,36 @@ def _clear_backend_keys(monkeypatch):
         "OLLAMA_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+def test_extract_no_cluster_records_unchanged_incremental_run(
+    monkeypatch, tmp_path
+):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    _code_only_corpus(corpus)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--out", str(out_dir),
+         "--no-cluster"],
+    )
+
+    for _ in range(2):
+        with pytest.raises(SystemExit) as exc_info:
+            mainmod.main()
+        assert exc_info.value.code == 0
+
+    cost = json.loads(
+        (out_dir / "graphify-out" / "cost.json").read_text(encoding="utf-8")
+    )
+    assert len(cost["runs"]) == 2
+    assert [run["input_tokens"] for run in cost["runs"]] == [0, 0]
+    assert [run["output_tokens"] for run in cost["runs"]] == [0, 0]
+    assert [run["files"] for run in cost["runs"]] == [1, 1]
 
 
 def test_extract_codeonly_succeeds_without_api_key(monkeypatch, tmp_path):

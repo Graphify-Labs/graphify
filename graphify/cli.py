@@ -52,6 +52,29 @@ _GEMINI_NUDGE_TEXT = (
 
 def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
+
+
+def _record_cost_run(
+    output_dir: Path,
+    tokens: dict,
+    *,
+    files: int,
+    prefix: str,
+) -> None:
+    """Persist one successful CLI run without turning telemetry into a failure."""
+    from graphify.cost import record_cost_run
+
+    try:
+        record_cost_run(
+            output_dir,
+            input_tokens=tokens.get("input", 0),
+            output_tokens=tokens.get("output", 0),
+            files=files,
+        )
+    except Exception as exc:
+        print(f"{prefix} warning: could not update cost.json: {exc}", file=sys.stderr)
+
+
 class _StageTimer:
     """Print per-stage wall-clock timings to stderr when --timing is set (#1490).
 
@@ -1233,6 +1256,16 @@ def dispatch_command(cmd: str) -> None:
                 print(f"Skipped graph.html: {viz_err}")
                 stages.mark("export"); stages.total()
                 print(f"Done - {len(communities)} communities. GRAPH_REPORT.md and graph.json updated.")
+        _record_cost_run(
+            out,
+            tokens,
+            files=len({
+                str(data.get("source_file"))
+                for _, data in G.nodes(data=True)
+                if data.get("source_file")
+            }),
+            prefix="[graphify]",
+        )
 
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
@@ -2145,6 +2178,7 @@ def dispatch_command(cmd: str) -> None:
                 f"{len(doc_files)} docs, {len(paper_files)} papers, "
                 f"{len(image_files)} images"
             )
+        corpus_file_count = sum(len(file_list) for file_list in files_by_type.values())
         # Surface files that were seen but not classified (extensionless non-shebang
         # project files like Dockerfile/Makefile, or unsupported extensions), so they
         # are no longer invisible in graphify's own output (#1692).
@@ -2467,12 +2501,18 @@ def dispatch_command(cmd: str) -> None:
             ):
                 print(
                     "[graphify extract] no incremental changes detected "
-                    "(--no-cluster); outputs left untouched."
+                    "(--no-cluster); graph outputs left untouched."
                 )
                 try:
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+                _record_cost_run(
+                    graphify_out,
+                    {"input": 0, "output": 0},
+                    files=corpus_file_count,
+                    prefix="[graphify extract]",
+                )
                 stages.total()
                 sys.exit(0)
 
@@ -2510,6 +2550,12 @@ def dispatch_command(cmd: str) -> None:
                 _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+            _record_cost_run(
+                graphify_out,
+                {"input": merged["input_tokens"], "output": merged["output_tokens"]},
+                files=corpus_file_count,
+                prefix="[graphify extract]",
+            )
             if global_merge:
                 from graphify.global_graph import global_add as _global_add
                 _tag = global_repo_tag or target.name
@@ -2604,6 +2650,13 @@ def dispatch_command(cmd: str) -> None:
             _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+
+        _record_cost_run(
+            graphify_out,
+            {"input": merged["input_tokens"], "output": merged["output_tokens"]},
+            files=corpus_file_count,
+            prefix="[graphify extract]",
+        )
 
         cost = _estimate_cost(backend, merged["input_tokens"], merged["output_tokens"])
         print(
