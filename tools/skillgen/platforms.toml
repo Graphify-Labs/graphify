@@ -189,8 +189,8 @@ extraction = "verbose"
 
 # Monoliths: rendered inline as a single body, no split, no references/. The
 # render must be diff-clean against the v8 blob in roundtrip_ref except for the
-# file_type enum unification (5-value -> 6-value superset). monolith-roundtrip
-# guards that.
+# exact shared query usage/query-reference blocks and explicitly sanctioned
+# runbook fixes. monolith-roundtrip guards those narrow exceptions.
 
 [platform.aider]
 bucket = "monolith"

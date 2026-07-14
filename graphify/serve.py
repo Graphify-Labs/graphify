@@ -5,6 +5,9 @@ import math
 import re
 import sys
 from array import array
+from collections import OrderedDict
+from dataclasses import dataclass
+from difflib import get_close_matches
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -16,6 +19,102 @@ try:
     import jieba as _jieba  # type: ignore[import-untyped]
 except ImportError:
     _jieba = None
+
+
+_COMMUNITY_LABELS_FILENAME = ".graphify_labels.json"
+_MAX_COMMUNITY_LABELS_BYTES = 1024 * 1024
+_MAX_COMMUNITY_LABEL_ENTRIES = 4096
+_MAX_COMMUNITY_LABEL_LENGTH = 1024
+
+
+def _load_adjacent_community_labels(graph_path: str | Path) -> dict[int, str]:
+    """Load the canonical label artifact beside graph.json, if it is usable."""
+    labels_path = Path(graph_path).resolve().parent / _COMMUNITY_LABELS_FILENAME
+    try:
+        if labels_path.stat().st_size > _MAX_COMMUNITY_LABELS_BYTES:
+            return {}
+        with labels_path.open("rb") as stream:
+            payload = stream.read(_MAX_COMMUNITY_LABELS_BYTES + 1)
+        if len(payload) > _MAX_COMMUNITY_LABELS_BYTES:
+            return {}
+        data = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    wrappers = [key for key in ("labels", "communities") if key in data]
+    if len(wrappers) > 1:
+        return {}
+    if wrappers:
+        data = data[wrappers[0]]
+        if not isinstance(data, dict):
+            return {}
+    if len(data) > _MAX_COMMUNITY_LABEL_ENTRIES:
+        return {}
+    labels: dict[int, str] = {}
+    for raw_cid, raw_label in data.items():
+        try:
+            cid = int(raw_cid)
+        except (TypeError, ValueError):
+            return {}
+        if cid < 0 or cid in labels:
+            return {}
+        if isinstance(raw_label, dict):
+            raw_label = next(
+                (
+                    raw_label[key]
+                    for key in ("label", "name", "title")
+                    if raw_label.get(key) not in (None, "")
+                ),
+                "",
+            )
+        if not isinstance(raw_label, str) or len(raw_label) > _MAX_COMMUNITY_LABEL_LENGTH:
+            return {}
+        label = sanitize_label(raw_label).strip()
+        if not label:
+            return {}
+        labels[cid] = label
+    return labels
+
+
+def _attach_adjacent_community_labels(G: nx.Graph, graph_path: str | Path) -> None:
+    """Overlay canonical labels in memory without rewriting graph.json.
+
+    The adjacent artifact wins over embedded ``community_name`` values for IDs
+    present in the current graph. Missing, malformed, partial, or stale extra
+    entries are ignored, preserving embedded names and numeric community lookup.
+    """
+    labels = _load_adjacent_community_labels(graph_path)
+    present = set(_communities_from_graph(G))
+    current = {cid: label for cid, label in labels.items() if cid in present}
+    G.graph["_community_labels"] = current
+    for _, data in G.nodes(data=True):
+        try:
+            cid = int(data.get("community"))
+        except (TypeError, ValueError):
+            continue
+        if cid in current:
+            data["community_name"] = current[cid]
+
+
+def _query_context_key(
+    graph_path: str | Path,
+) -> tuple[int, int, int | None, int | None, int | None, int | None]:
+    """Return a cache key that invalidates on graph or label artifact changes."""
+    graph = Path(graph_path)
+    stat = graph.stat()
+    labels_path = graph.resolve().parent / _COMMUNITY_LABELS_FILENAME
+    try:
+        labels_stat = labels_path.stat()
+        labels_key = (
+            labels_stat.st_mtime_ns,
+            labels_stat.st_size,
+            labels_stat.st_ctime_ns,
+            labels_stat.st_ino,
+        )
+    except OSError:
+        labels_key = (None, None, None, None)
+    return stat.st_mtime_ns, stat.st_size, *labels_key
 
 
 def _load_graph(graph_path: str) -> nx.Graph:
@@ -45,6 +144,7 @@ def _load_graph(graph_path: str) -> nx.Graph:
             G = json_graph.node_link_graph(data, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(data)
+        _attach_adjacent_community_labels(G, resolved)
         # Attach the work-memory overlay (derived sidecar next to graph.json) so
         # the query/MCP read surface can annotate NODE lines display-only. Empty
         # when no sidecar exists, leaving un-annotated output byte-identical.
@@ -107,6 +207,29 @@ def _is_searchable(term: str) -> bool:
     return True
 
 
+# Bound untrusted query normalization and graph-local IDF state. These limits are
+# well above normal natural-language/symbol queries while preventing one request
+# or a stream of unique requests from retaining unbounded work or cache entries.
+_MAX_QUERY_TERMS = 32
+_MAX_QUERY_TERM_LENGTH = 128
+_MAX_IDF_CACHE_ENTRIES = 512
+
+
+def _bounded_normalized_terms(terms) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in terms:
+        bounded = str(raw)[:_MAX_QUERY_TERM_LENGTH * 2]
+        for match in re.finditer(r"\w+", _strip_diacritics(bounded).lower()):
+            token = match.group(0)[:_MAX_QUERY_TERM_LENGTH]
+            if token and token not in seen:
+                seen.add(token)
+                normalized.append(token)
+                if len(normalized) >= _MAX_QUERY_TERMS:
+                    return normalized
+    return normalized
+
+
 # English question/filler words dropped from query terms so content words drive
 # BFS seeding. Without this, "how does the frontier cache work" seeds on "how"/
 # "the"/"work" (which prefix-match prose labels like "Working Principles" at 100x)
@@ -131,19 +254,105 @@ def _query_terms(question: str) -> list[str]:
     seeding. Falls back to the unfiltered terms if the query is all stopwords, so
     a question like "how does it work" still seeds on something."""
     terms: list[str] = []
-    for raw in question.split():
+    for raw_match in re.finditer(r"\S+", str(question)):
+        raw = raw_match.group(0)[:_MAX_QUERY_TERM_LENGTH]
         if _has_chinese(raw):
             for seg in _segment_chinese(raw.lower().strip()):
-                seg = seg.strip()
+                seg = seg.strip()[:_MAX_QUERY_TERM_LENGTH]
                 if seg and _is_searchable(seg):
                     terms.append(seg)
+                    if len(terms) >= _MAX_QUERY_TERMS:
+                        break
         else:
             # Strip punctuation without touching Unicode characters (avoid NFKD mangling non-Latin scripts)
-            for tok in re.findall(r"\w+", raw.lower()):
+            for match in re.finditer(r"\w+", raw.lower()):
+                tok = match.group(0)[:_MAX_QUERY_TERM_LENGTH]
                 if _is_searchable(tok):
                     terms.append(tok)
+                    if len(terms) >= _MAX_QUERY_TERMS:
+                        break
+        if len(terms) >= _MAX_QUERY_TERMS:
+            break
     content = [t for t in terms if t not in _QUERY_STOPWORDS]
     return content or terms
+
+
+@dataclass(frozen=True)
+class _QueryDirectives:
+    text: str
+    include_memory: bool = False
+    community: str | None = None
+    god: str | None = None
+
+
+_QUERY_SCOPE_RE = re.compile(
+    r"(?<!\w)(community|god):(?:\"([^\"]*)\"|'([^']*)'|([^\s]*))",
+    re.IGNORECASE,
+)
+
+
+def _parse_query_directives(question: str) -> _QueryDirectives:
+    """Remove search directives while preserving their values for scoping."""
+    include_memory = bool(re.search(r"(?<!\w)include:memory\b", question, re.IGNORECASE))
+    values: dict[str, str] = {}
+
+    def capture(match: re.Match) -> str:
+        values[match.group(1).lower()] = next(
+            value for value in match.groups()[1:] if value is not None
+        ).strip()
+        return " "
+
+    text = _QUERY_SCOPE_RE.sub(capture, question)
+    text = re.sub(r"(?<!\w)include:memory\b", " ", text, flags=re.IGNORECASE)
+    return _QueryDirectives(
+        text=" ".join(text.split()),
+        include_memory=include_memory,
+        community=values.get("community"),
+        god=values.get("god"),
+    )
+
+
+def _is_memory_node(data: dict) -> bool:
+    source = str(data.get("source_file") or "").replace("\\", "/").lower()
+    parts = [part for part in source.split("/") if part and part != "."]
+    return any(
+        parts[index:index + 2] == ["graphify-out", "memory"]
+        for index in range(len(parts) - 1)
+    )
+
+
+def _node_scope(data: dict) -> str:
+    if _is_memory_node(data):
+        return "memory"
+    source = str(data.get("source_file") or "").replace("\\", "/").lower()
+    parts = [part for part in source.split("/") if part]
+    name = parts[-1] if parts else ""
+    if (
+        any(part in {"test", "tests", "spec", "specs", "__tests__"} for part in parts)
+        or name.startswith("test_")
+        or ".test." in name
+        or ".spec." in name
+    ):
+        return "tests"
+    file_type = str(data.get("file_type") or "").lower()
+    if (
+        file_type in {"document", "paper", "rationale"}
+        or any(part in {"doc", "docs", "documentation"} for part in parts)
+        or Path(name).suffix in {".md", ".mdx", ".rst", ".txt", ".adoc"}
+    ):
+        return "docs"
+    return "code"
+
+
+def _query_scope_order(question: str, include_memory: bool) -> list[str]:
+    terms = set(_search_tokens(question))
+    if include_memory:
+        return ["memory", "code", "docs", "tests"]
+    if terms & {"test", "tests", "testing", "spec", "specs", "fixture", "fixtures"}:
+        return ["tests", "code", "docs"]
+    if terms & {"doc", "docs", "documentation", "readme", "guide", "paper"}:
+        return ["docs", "code", "tests"]
+    return ["code", "docs", "tests"]
 
 
 _EXACT_MATCH_BONUS = 1000.0
@@ -153,16 +362,26 @@ _SOURCE_MATCH_BONUS = 0.5
 
 
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
-    """IDF weights for query terms, cached in G.graph['_idf_cache'].
+    """IDF weights in a deterministic graph-local least-recently-used cache.
 
     Common terms like 'error' or 'exception' that match hundreds of nodes get
     low weights; rare identifiers like 'FooBarService' get high weights.
     Cache is stored on the graph object itself so it auto-invalidates when
     a hot-reload replaces G with a new object.
     """
-    cache: dict[str, float] = G.graph.setdefault("_idf_cache", {})
+    terms = _bounded_normalized_terms(terms)
+    existing = G.graph.get("_idf_cache")
+    if not isinstance(existing, OrderedDict):
+        existing = OrderedDict(existing or {})
+        G.graph["_idf_cache"] = existing
+    cache: OrderedDict[str, float] = existing
+    while len(cache) > _MAX_IDF_CACHE_ENTRIES:
+        cache.popitem(last=False)
     N = G.number_of_nodes() or 1
     uncached = [t for t in terms if t not in cache]
+    for term in terms:
+        if term in cache:
+            cache.move_to_end(term)
     if uncached:
         df: dict[str, int] = {t: 0 for t in uncached}
         for _, data in G.nodes(data=True):
@@ -174,6 +393,9 @@ def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
                     df[t] += 1
         for t in uncached:
             cache[t] = math.log(1 + N / (1 + df[t]))
+            cache.move_to_end(t)
+            while len(cache) > _MAX_IDF_CACHE_ENTRIES:
+                cache.popitem(last=False)
     return {t: cache.get(t, math.log(1 + N)) for t in terms}
 
 
@@ -219,14 +441,37 @@ def _get_trigram_index(G: nx.Graph) -> dict:
         return idx
     ids = list(G.nodes())
     postings: dict[str, array] = {}
+    scopes: dict[str, str] = {}
+    memory_ids: set[str] = set()
+    community_names: dict[object, str] = {}
+    community_nodes: dict[object, set[str]] = {}
     for i, nid in enumerate(ids):
-        for g in _trigrams(_node_search_text(G.nodes[nid], nid)):
+        data = G.nodes[nid]
+        for g in _trigrams(_node_search_text(data, nid)):
             bucket = postings.get(g)
             if bucket is None:
                 bucket = array("i")
                 postings[g] = bucket
             bucket.append(i)
-    idx = {"ids": ids, "postings": postings, "set_cache": {}}
+        scope = _node_scope(data)
+        scopes[nid] = scope
+        if scope == "memory":
+            memory_ids.add(nid)
+        cid = data.get("community")
+        if cid is not None:
+            community_names.setdefault(
+                cid, str(data.get("community_name") or f"Community {cid}")
+            )
+            community_nodes.setdefault(cid, set()).add(nid)
+    idx = {
+        "ids": ids,
+        "postings": postings,
+        "set_cache": {},
+        "scopes": scopes,
+        "memory_ids": frozenset(memory_ids),
+        "community_names": community_names,
+        "community_nodes": community_nodes,
+    }
     G.graph["_trigram_index"] = idx
     return idx
 
@@ -288,7 +533,7 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     # Dedupe tokens, order-preserving (as _pick_seeds already does): a repeated
     # query word must not double-count every tier, and with coverage scaling
     # below it would also inflate the matched-term ratio (#1602).
-    norm_terms = list(dict.fromkeys(tok for t in terms for tok in _search_tokens(t)))
+    norm_terms = _bounded_normalized_terms(terms)
     n_terms = len(norm_terms)
     idf = _compute_idf(G, norm_terms)
     # Whole-query string for full-label matching (mirrors _find_node's `term`).
@@ -372,6 +617,84 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
     return scored
 
 
+def _stage_candidates(
+    G: nx.Graph,
+    scored: list[tuple[float, str]],
+    question: str,
+    *,
+    include_memory: bool = False,
+    limit: int = 24,
+    global_quota: int = 2,
+) -> tuple[list[tuple[float, str]], dict]:
+    """Retain global, per-scope, and likely-community candidates in score order."""
+    if not scored:
+        return [], {"scopes": [], "communities": [], "global": 0, "cross_community": 0}
+
+    scope_order = _query_scope_order(question, include_memory)
+    ranked_scopes = {scope: rank for rank, scope in enumerate(scope_order)}
+    globally_ranked = sorted(
+        scored,
+        key=lambda item: (
+            -item[0],
+            len(str(G.nodes[item[1]].get("label") or item[1])),
+            str(G.nodes[item[1]].get("source_file") or ""),
+            str(item[1]),
+        ),
+    )
+    scope_preferred = sorted(
+        globally_ranked,
+        key=lambda item: (
+            ranked_scopes.get(_lookup_node_scope(G, item[1]), len(ranked_scopes)),
+            -item[0],
+            str(G.nodes[item[1]].get("source_file") or ""),
+            str(item[1]),
+        ),
+    )
+
+    likely_communities: list[object] = []
+    for _, nid in globally_ranked:
+        community = G.nodes[nid].get("community")
+        if community is not None and community not in likely_communities:
+            likely_communities.append(community)
+        if len(likely_communities) == 2:
+            break
+
+    limit = max(0, limit)
+    global_top = globally_ranked[:min(limit, max(0, global_quota))]
+    selected_ids = {nid for _, nid in global_top}
+
+    for scope in scope_order:
+        head = next(
+            (item for item in globally_ranked if _lookup_node_scope(G, item[1]) == scope),
+            None,
+        )
+        if head is not None and head[1] not in selected_ids and len(selected_ids) < limit:
+            selected_ids.add(head[1])
+
+    cross_community = [
+        item for item in globally_ranked
+        if likely_communities and G.nodes[item[1]].get("community") not in likely_communities
+    ][:max(0, global_quota)]
+    for _, nid in cross_community:
+        if len(selected_ids) >= limit:
+            break
+        selected_ids.add(nid)
+
+    for _, nid in scope_preferred:
+        if len(selected_ids) >= limit:
+            break
+        selected_ids.add(nid)
+
+    staged = [item for item in globally_ranked if item[1] in selected_ids]
+    scopes = list(dict.fromkeys(_lookup_node_scope(G, nid) for _, nid in staged))
+    return staged, {
+        "scopes": scopes,
+        "communities": likely_communities,
+        "global": len(global_top),
+        "cross_community": sum(nid in selected_ids for _, nid in cross_community),
+    }
+
+
 def _pick_scored_endpoint(G: nx.Graph, scored: list[tuple[float, str]], query: str) -> str:
     """Pick a path endpoint from a _score_nodes result, preferring full-token matches.
 
@@ -403,6 +726,7 @@ def _pick_seeds(
     *,
     G: "nx.Graph | None" = None,
     terms: list[str] | None = None,
+    eligible_ids: set[str] | None = None,
 ) -> list[str]:
     """Select BFS seed nodes, stopping when score drops too far below the top.
 
@@ -468,6 +792,8 @@ def _pick_seeds(
         norm_terms = sorted({tok for t in terms for tok in _search_tokens(t)})
         for term in norm_terms:
             term_scored = _score_nodes(G, [term])
+            if eligible_ids is not None:
+                term_scored = [item for item in term_scored if item[1] in eligible_ids]
             if not term_scored:
                 continue
             best_score = term_scored[0][0]
@@ -573,6 +899,7 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     if not filters:
         return G
     H = G.__class__()
+    H.graph.update(G.graph)
     H.add_nodes_from(G.nodes(data=True))
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         for u, v, key, data in G.edges(keys=True, data=True):
@@ -585,10 +912,27 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     return H
 
 
-def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
+def _traversal_node_key(G: nx.Graph, nid: str) -> tuple:
+    data = G.nodes[nid]
+    return (
+        -G.degree(nid),
+        _strip_diacritics(str(data.get("label") or nid)).lower(),
+        str(data.get("source_file") or "").replace("\\", "/").lower(),
+        str(nid),
+    )
+
+
+def _bfs(
+    G: nx.Graph,
+    start_nodes: list[str],
+    depth: int,
+    max_nodes: int | None = None,
+    excluded_nodes: frozenset[str] | set[str] | None = None,
+) -> tuple[set[str], list[tuple]]:
     # Compute hub threshold: nodes above this degree are not expanded as transit.
     # p99 of degree distribution, floored at 50 to avoid over-blocking small graphs.
-    degrees = [G.degree(n) for n in G.nodes()]
+    excluded = excluded_nodes or frozenset()
+    degrees = [G.degree(n) for n in G.nodes() if n not in excluded]
     if degrees:
         degrees_sorted = sorted(degrees)
         p99_idx = int(len(degrees_sorted) * 0.99)
@@ -599,24 +943,44 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     visited: set[str] = set(start_nodes)
     frontier = set(start_nodes)
     edges_seen: list[tuple] = []
+    edge_keys: set[object] = set()
+    node_limit = max(max_nodes or len(G), len(visited))
+    edge_limit = max(node_limit * 2, len(start_nodes))
     for _ in range(depth):
         next_frontier: set[str] = set()
-        for n in frontier:
+        for n in sorted(frontier, key=lambda nid: _traversal_node_key(G, nid)):
             # Don't expand through high-degree hubs (except seeds - a hub that
             # is the starting node should still be explored).
             if n not in seed_set and G.degree(n) >= hub_threshold:
                 continue
-            for neighbor in G.neighbors(n):
-                if neighbor not in visited:
+            neighbors = sorted(G.neighbors(n), key=lambda nid: _traversal_node_key(G, nid))
+            for neighbor in neighbors:
+                if neighbor in excluded:
+                    continue
+                edge_key = (n, neighbor) if G.is_directed() else frozenset((n, neighbor))
+                selected = neighbor in visited or neighbor in next_frontier
+                if not selected and len(visited) + len(next_frontier) < node_limit:
                     next_frontier.add(neighbor)
+                    selected = True
+                if selected and edge_key not in edge_keys and len(edges_seen) < edge_limit:
+                    edge_keys.add(edge_key)
                     edges_seen.append((n, neighbor))
         visited.update(next_frontier)
         frontier = next_frontier
+        if not frontier:
+            break
     return visited, edges_seen
 
 
-def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
-    degrees = [G.degree(n) for n in G.nodes()]
+def _dfs(
+    G: nx.Graph,
+    start_nodes: list[str],
+    depth: int,
+    max_nodes: int | None = None,
+    excluded_nodes: frozenset[str] | set[str] | None = None,
+) -> tuple[set[str], list[tuple]]:
+    excluded = excluded_nodes or frozenset()
+    degrees = [G.degree(n) for n in G.nodes() if n not in excluded]
     if degrees:
         degrees_sorted = sorted(degrees)
         p99_idx = int(len(degrees_sorted) * 0.99)
@@ -626,19 +990,59 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     seed_set = set(start_nodes)
     visited: set[str] = set()
     edges_seen: list[tuple] = []
+    edge_keys: set[object] = set()
     stack = [(n, 0) for n in reversed(start_nodes)]
+    node_limit = max(max_nodes or len(G), len(start_nodes))
+    edge_limit = max(node_limit * 2, len(start_nodes))
     while stack:
         node, d = stack.pop()
         if node in visited or d > depth:
             continue
+        if len(visited) >= node_limit:
+            break
         visited.add(node)
         if node not in seed_set and G.degree(node) >= hub_threshold:
             continue
-        for neighbor in G.neighbors(node):
+        neighbors = sorted(
+            G.neighbors(node),
+            key=lambda nid: _traversal_node_key(G, nid),
+            reverse=True,
+        )
+        for neighbor in neighbors:
+            if neighbor in excluded:
+                continue
             if neighbor not in visited:
                 stack.append((neighbor, d + 1))
+                edge_key = (
+                    (node, neighbor) if G.is_directed() else frozenset((node, neighbor))
+                )
+                if edge_key in edge_keys or len(edges_seen) >= edge_limit:
+                    continue
+                edge_keys.add(edge_key)
                 edges_seen.append((node, neighbor))
     return visited, edges_seen
+
+
+def _source_display(data: dict) -> str:
+    source = str(data.get("source_file") or "")
+    location = str(data.get("source_location") or "")
+    if source:
+        return f"{source} {location}" if location else f"{source} (file only)"
+    origin = str(data.get("origin_file") or "")
+    if origin:
+        return f"external/reference (unowned; referenced from {origin})"
+    return "unowned (no source)"
+
+
+def _source_fields(data: dict) -> tuple[str, str]:
+    source = str(data.get("source_file") or "")
+    location = str(data.get("source_location") or "")
+    if source:
+        return source, location or "file-only"
+    origin = str(data.get("origin_file") or "")
+    if origin:
+        return "external/reference", f"unowned; origin={origin}"
+    return "unowned", "no-source"
 
 
 def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
@@ -654,7 +1058,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     overlay = getattr(G, "graph", {}).get("_learning_overlay", {}) or {}
     seed_set = set(seeds or [])
     ordered = [n for n in (seeds or []) if n in nodes] + \
-              sorted(nodes - seed_set, key=lambda n: G.degree(n), reverse=True)
+              sorted(nodes - seed_set, key=lambda nid: _traversal_node_key(G, nid))
     for nid in ordered:
         d = G.nodes[nid]
         # Every LLM-derived field passes through sanitize_label before being
@@ -670,10 +1074,11 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             status = sanitize_label(str(entry.get("status", "")))
             if status:
                 learning_suffix = f" learning={status}{':stale' if entry.get('stale') else ''}"
+        source, location = _source_fields(d)
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
-            f"[src={sanitize_label(str(d.get('source_file', '')))} "
-            f"loc={sanitize_label(str(d.get('source_location', '')))} "
+            f"[src={sanitize_label(source)} "
+            f"loc={sanitize_label(location)} "
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
             f"{learning_suffix}]"
         )
@@ -715,23 +1120,91 @@ def _query_graph_text(
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
 ) -> str:
-    terms = _query_terms(question)
+    directives = _parse_query_directives(question)
+    scoped_nodes, scope_labels, scope_error = _resolve_query_scope(G, directives)
+    if scope_error:
+        return f"Error: {scope_error}"
+
+    search_text = directives.text or directives.god or ""
+    terms = _query_terms(search_text)
+    if not terms:
+        return "No searchable terms found after applying query filters."
     scored = _score_nodes(G, terms)
-    start_nodes = _pick_seeds(scored, G=G, terms=terms)
+    if scoped_nodes is not None:
+        scored = [item for item in scored if item[1] in scoped_nodes]
+
+    memory_mode = None
+    exclude_memory = False
+    memory_ids = _get_trigram_index(G)["memory_ids"]
+    if directives.include_memory:
+        memory_mode = "included"
+    else:
+        non_memory = [item for item in scored if item[1] not in memory_ids]
+        if non_memory:
+            scored = non_memory
+            exclude_memory = True
+        elif scored:
+            memory_mode = "fallback"
+
+    scored, stage = _stage_candidates(
+        G,
+        scored,
+        search_text,
+        include_memory=directives.include_memory,
+        global_quota=0 if scope_labels else 2,
+    )
+    eligible_ids = {nid for _, nid in scored}
+    start_nodes = _pick_seeds(
+        scored,
+        G=G,
+        terms=terms,
+        eligible_ids=eligible_ids,
+    )
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
-    traversal_graph = _filter_graph_by_context(G, resolved_filters)
-    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    traversal_graph = G if scoped_nodes is None else G.subgraph(scoped_nodes).copy()
+    traversal_graph = _filter_graph_by_context(traversal_graph, resolved_filters)
+    node_budget = max(len(start_nodes), max(4, token_budget // 24))
+    traversal = _dfs if mode == "dfs" else _bfs
+    nodes, edges = traversal(
+        traversal_graph,
+        start_nodes,
+        depth,
+        max_nodes=node_budget,
+        excluded_nodes=memory_ids if exclude_memory else None,
+    )
+    safe_starts = [sanitize_label(str(G.nodes[n].get("label") or n)) for n in start_nodes]
     header_parts = [
-        f"Traversal: {mode.upper()} depth={depth}",
-        f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
+        f"Traversal: {sanitize_label(mode.upper())} depth={depth}",
+        f"Start: {safe_starts}",
     ]
+    if scope_labels:
+        header_parts.append(f"Filter: {', '.join(scope_labels)}")
+    if memory_mode:
+        header_parts.append(f"Memory: {memory_mode}")
+    if stage["scopes"]:
+        header_parts.append(f"Scopes: {', '.join(stage['scopes'])}")
+    if stage["communities"]:
+        header_parts.append(
+            "Candidate communities: "
+            + ", ".join(sanitize_label(str(cid)) for cid in stage["communities"])
+        )
+    if stage["global"]:
+        header_parts.append(f"Global candidates: {stage['global']}")
+    if stage["cross_community"]:
+        header_parts.append(f"Cross-community candidates: {stage['cross_community']}")
     if resolved_filters:
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
-    header_parts.append(f"{len(nodes)} nodes found")
+    header_parts.append(f"{len(nodes)} nodes found (budget cap {node_budget})")
     header = " | ".join(header_parts) + "\n\n"
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget)
+    return header + _subgraph_to_text(
+        traversal_graph,
+        nodes,
+        edges,
+        token_budget,
+        seeds=start_nodes,
+    )
 
 
 def _find_node(G: nx.Graph, label: str) -> list[str]:
@@ -800,6 +1273,364 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
             source_exact = preferred + [nid for nid in source_exact if nid != preferred[0]]
 
     return source_exact + exact + prefix + substring
+
+
+@dataclass(frozen=True)
+class _NodeResolution:
+    node_id: str | None
+    candidates: tuple[str, ...] = ()
+
+
+def _node_identity(G: nx.Graph, nid: str) -> str:
+    data = G.nodes[nid]
+    label = str(data.get("label") or nid)
+    source = str(data.get("source_file") or "")
+    return f"{source}::{label}" if source else label
+
+
+_MAX_LOOKUP_PATH_LENGTH = 4096
+_MAX_LOOKUP_PATH_COMPONENTS = 256
+_MAX_LOOKUP_PATH_COMPONENT_LENGTH = 255
+
+
+def _normalize_lookup_path(value) -> str | None:
+    """Return a bounded, case-folded path for exact and suffix comparisons."""
+    raw = str(value).replace("\\", "/").strip()
+    if not raw or len(raw) > _MAX_LOOKUP_PATH_LENGTH:
+        return None
+    raw = _strip_diacritics(raw).lower()
+    if len(raw) > _MAX_LOOKUP_PATH_LENGTH:
+        return None
+    parts: list[str] = []
+    for part in raw.split("/"):
+        if not part or part == ".":
+            continue
+        if len(part) > _MAX_LOOKUP_PATH_COMPONENT_LENGTH:
+            return None
+        parts.append(part)
+        if len(parts) > _MAX_LOOKUP_PATH_COMPONENTS:
+            return None
+    return "/".join(parts) or None
+
+
+def _bounded_source_basename(value) -> str | None:
+    raw = str(value).replace("\\", "/").rstrip("/")
+    basename = raw.rsplit("/", 1)[-1]
+    if (
+        not basename
+        or basename in {".", ".."}
+        or len(basename) > _MAX_LOOKUP_PATH_COMPONENT_LENGTH
+    ):
+        return None
+    basename = _strip_diacritics(basename).lower()
+    return (
+        basename
+        if len(basename) <= _MAX_LOOKUP_PATH_COMPONENT_LENGTH
+        else None
+    )
+
+
+def _get_node_lookup_index(G: nx.Graph) -> dict:
+    """Graph-scoped exact lookup tables, invalidated when the graph object is replaced."""
+    cached = G.graph.get("_node_lookup_index")
+    if cached is not None and cached.get("node_count") == len(G):
+        return cached
+
+    folded_ids: dict[str, list[str]] = {}
+    source_exact: dict[str, list[str]] = {}
+    source_basenames: dict[str, list[str]] = {}
+    labels: dict[str, list[str]] = {}
+
+    def add(index: dict, key: str, nid: str) -> None:
+        if key:
+            index.setdefault(key, []).append(nid)
+
+    for nid, data in G.nodes(data=True):
+        nid_text = str(nid)
+        add(folded_ids, nid_text.lower(), nid)
+
+        label = _strip_diacritics(str(data.get("label") or nid)).lower()
+        for key in {label, label.rstrip("()"), " ".join(_search_tokens(label))}:
+            add(labels, key, nid)
+
+        source = data.get("source_file") or ""
+        normalized_source = _normalize_lookup_path(source)
+        if normalized_source:
+            add(source_exact, normalized_source, nid)
+        basename = _bounded_source_basename(source)
+        if basename:
+            add(source_basenames, basename, nid)
+
+    result = {
+        "node_count": len(G),
+        "folded_ids": folded_ids,
+        "source_exact": source_exact,
+        "source_basenames": source_basenames,
+        "labels": labels,
+    }
+    G.graph["_node_lookup_index"] = result
+    return result
+
+
+def _lookup_node_scope(G: nx.Graph, nid: str) -> str:
+    return _get_trigram_index(G)["scopes"][nid]
+
+
+def _eligible_candidates(candidates, eligible_ids: set[str] | None) -> list[str]:
+    if eligible_ids is None:
+        return list(candidates)
+    return [nid for nid in candidates if nid in eligible_ids]
+
+
+def _rank_resolution_candidates(G: nx.Graph, node_ids) -> tuple[str, ...]:
+    return tuple(sorted(
+        dict.fromkeys(node_ids),
+        key=lambda nid: (
+            str(G.nodes[nid].get("source_file") or ""),
+            str(G.nodes[nid].get("source_location") or ""),
+            str(nid),
+        ),
+    ))
+
+
+def _resolve_node(
+    G: nx.Graph,
+    query: str,
+    *,
+    eligible_ids: set[str] | None = None,
+) -> _NodeResolution:
+    """Resolve an ID, path-qualified identity, or readable label without guessing."""
+    raw = str(query).strip()
+    if not raw:
+        return _NodeResolution(None)
+
+    if raw in G and (eligible_ids is None or raw in eligible_ids):
+        return _NodeResolution(raw)
+    lookup = _get_node_lookup_index(G)
+    folded_ids = _eligible_candidates(lookup["folded_ids"].get(raw.lower(), ()), eligible_ids)
+    if len(folded_ids) == 1:
+        return _NodeResolution(folded_ids[0])
+    if len(folded_ids) > 1:
+        return _NodeResolution(None, _rank_resolution_candidates(G, folded_ids))
+
+    if "::" in raw:
+        source_query, label_query = raw.rsplit("::", 1)
+        normalized_source = _normalize_lookup_path(source_query)
+        if normalized_source is None:
+            return _NodeResolution(None)
+        normalized_label = _strip_diacritics(label_query).lower().strip()
+        exact_source = lookup["source_exact"].get(normalized_source, ())
+        source_candidates = exact_source or lookup["source_basenames"].get(
+            normalized_source.rsplit("/", 1)[-1], ()
+        )
+        qualified = []
+        for nid in _eligible_candidates(
+            source_candidates, eligible_ids
+        ):
+            data = G.nodes[nid]
+            candidate_source = _normalize_lookup_path(data.get("source_file") or "")
+            if candidate_source is None or (
+                candidate_source != normalized_source
+                and not candidate_source.endswith(f"/{normalized_source}")
+            ):
+                continue
+            label = _strip_diacritics(str(data.get("label") or nid)).lower()
+            if normalized_label in {label, label.rstrip("()"), " ".join(_search_tokens(label))}:
+                qualified.append(nid)
+        if len(qualified) == 1:
+            return _NodeResolution(qualified[0])
+        return _NodeResolution(None, _rank_resolution_candidates(G, qualified))
+
+    normalized_source = _normalize_lookup_path(raw)
+    source_matches: list[str] = []
+    if normalized_source:
+        exact_source = lookup["source_exact"].get(normalized_source, ())
+        source_candidates = exact_source or lookup["source_basenames"].get(
+            normalized_source.rsplit("/", 1)[-1], ()
+        )
+        source_matches = [
+            nid
+            for nid in _eligible_candidates(source_candidates, eligible_ids)
+            if (candidate_source := _normalize_lookup_path(
+                G.nodes[nid].get("source_file") or ""
+            )) is not None
+            and (
+                candidate_source == normalized_source
+                or candidate_source.endswith(f"/{normalized_source}")
+            )
+        ]
+    if source_matches:
+        basename = _strip_diacritics(Path(raw).name).lower()
+        file_nodes = [
+            nid for nid in source_matches
+            if str(G.nodes[nid].get("source_location") or "") == "L1"
+            and _strip_diacritics(str(G.nodes[nid].get("label") or "")).lower() == basename
+        ]
+        if len(file_nodes) == 1:
+            return _NodeResolution(file_nodes[0])
+        if len(source_matches) == 1:
+            return _NodeResolution(source_matches[0])
+        return _NodeResolution(None, _rank_resolution_candidates(G, source_matches))
+
+    normalized = _strip_diacritics(raw).lower()
+    exact_labels = _eligible_candidates(lookup["labels"].get(normalized, ()), eligible_ids)
+    if len(exact_labels) == 1:
+        return _NodeResolution(exact_labels[0])
+    if len(exact_labels) > 1:
+        return _NodeResolution(None, _rank_resolution_candidates(G, exact_labels))
+
+    scored = _score_nodes(G, _query_terms(raw))
+    if eligible_ids is not None:
+        scored = [item for item in scored if item[1] in eligible_ids]
+    if not scored:
+        return _NodeResolution(None)
+    selected = _pick_scored_endpoint(G, scored, raw)
+    query_tokens = set(_search_tokens(raw))
+    full_token_matches = [
+        nid for _, nid in scored
+        if query_tokens <= set(_search_tokens(G.nodes[nid].get("label") or nid))
+    ]
+    if len(full_token_matches) == 1:
+        return _NodeResolution(full_token_matches[0])
+    if len(full_token_matches) > 1:
+        return _NodeResolution(None, _rank_resolution_candidates(G, full_token_matches))
+    tied = [nid for score, nid in scored if score == scored[0][0]]
+    if len(tied) > 1:
+        return _NodeResolution(None, _rank_resolution_candidates(G, tied))
+    return _NodeResolution(selected)
+
+
+def _format_resolution_error(
+    G: nx.Graph,
+    query: str,
+    resolution: _NodeResolution,
+    role: str = "node",
+) -> str:
+    safe_query = sanitize_label(str(query))
+    safe_role = sanitize_label(str(role))
+    if not resolution.candidates:
+        return f"No node matching {safe_role} '{safe_query}' found."
+    lines = [
+        f"Ambiguous {safe_role} '{safe_query}'. Use a path-qualified identity or exact node ID:"
+    ]
+    for nid in resolution.candidates[:8]:
+        identity = sanitize_label(_node_identity(G, nid))
+        safe_nid = sanitize_label(str(nid))
+        lines.append(f"  - {identity} [id={safe_nid}]")
+    return "\n".join(lines)
+
+
+def _filter_directive(kind: str, value: object) -> str | None:
+    raw = str(value)
+    clean = sanitize_label(raw)
+    if not clean or clean != raw:
+        return None
+    if not re.search(r"[\s\"']", clean):
+        return f"{kind}:{clean}"
+    if '"' not in clean:
+        return f'{kind}:"{clean}"'
+    if "'" not in clean:
+        return f"{kind}:'{clean}'"
+    return None
+
+
+def _filter_suggestions(value: str, choices: list[tuple[str, str | None]]) -> list[str]:
+    if not choices:
+        return []
+    by_search = {search: directive for search, directive in choices if directive}
+    matches = get_close_matches(value, list(by_search), n=5, cutoff=0.2)
+    ranked = matches or list(by_search)[:5]
+    return list(dict.fromkeys(by_search[match] for match in ranked))
+
+
+def _get_god_records(G: nx.Graph) -> list[dict]:
+    cached = G.graph.get("_god_filter_records")
+    if cached is not None and cached.get("node_count") == len(G):
+        return cached["records"]
+    from graphify.analyze import god_nodes
+
+    records = god_nodes(G, top_n=len(G))
+    G.graph["_god_filter_records"] = {"node_count": len(G), "records": records}
+    return records
+
+
+def _resolve_query_scope(
+    G: nx.Graph,
+    directives: _QueryDirectives,
+) -> tuple[set[str] | None, list[str], str | None]:
+    if directives.community is None and directives.god is None:
+        return None, [], None
+
+    lookup = _get_trigram_index(G)
+    allowed: set[str] | None = None
+    labels: list[str] = []
+
+    if directives.community is not None:
+        communities = lookup["community_names"]
+        value = directives.community.strip()
+        if not value:
+            return set(), [], (
+                "Community filter value cannot be empty. "
+                "Use community:<id|label>."
+            )
+        matched = [cid for cid, name in communities.items() if str(cid) == value]
+        if not matched:
+            folded = _strip_diacritics(value).lower()
+            matched = [
+                cid for cid, name in communities.items()
+                if _strip_diacritics(name).lower() == folded
+            ]
+        if len(matched) != 1:
+            choices = [
+                (f"{cid} {name}", _filter_directive("community", cid))
+                for cid, name in sorted(communities.items(), key=lambda item: str(item[0]))
+            ]
+            suggestions = _filter_suggestions(value, choices)
+            suffix = f" Suggestions: {', '.join(suggestions)}." if suggestions else ""
+            safe_value = sanitize_label(value)
+            return set(), [], f"Unknown or ambiguous community filter '{safe_value}'.{suffix}"
+        cid = matched[0]
+        allowed = set(lookup["community_nodes"][cid])
+        safe_cid = sanitize_label(str(cid))
+        labels.append(f"community:{safe_cid} ({sanitize_label(communities[cid])})")
+
+    if directives.god is not None:
+        if not directives.god.strip():
+            return set(), [], (
+                "God filter value cannot be empty. Use god:<label|id>."
+            )
+        god_records = _get_god_records(G)
+        god_ids = {record["id"] for record in god_records}
+        resolution = _resolve_node(G, directives.god, eligible_ids=god_ids)
+        if resolution.node_id is None:
+            if resolution.candidates:
+                suggestions = [
+                    directive
+                    for nid in resolution.candidates[:5]
+                    if (directive := _filter_directive("god", nid)) is not None
+                ]
+                suffix = f" Suggestions: {', '.join(suggestions)}." if suggestions else ""
+                safe_value = sanitize_label(directives.god)
+                return set(), [], f"Ambiguous god filter '{safe_value}'.{suffix}"
+            choices = [
+                (
+                    f"{record['id']} {record['label']}",
+                    _filter_directive("god", record["id"]),
+                )
+                for record in god_records
+            ]
+            suggestions = _filter_suggestions(directives.god, choices)
+            suffix = f" Suggestions: {', '.join(suggestions)}." if suggestions else ""
+            safe_value = sanitize_label(directives.god)
+            return set(), [], f"Unknown god filter '{safe_value}'.{suffix}"
+        god_id = resolution.node_id
+        neighborhood = {god_id, *G.to_undirected(as_view=True).neighbors(god_id)}
+        allowed = neighborhood if allowed is None else allowed & neighborhood
+        labels.append(f"god:{sanitize_label(str(G.nodes[god_id].get('label') or god_id))}")
+
+    if allowed is not None and not allowed:
+        return set(), labels, "The requested community/god filters have no nodes in common."
+    return allowed, labels, None
 
 
 def _filter_blank_stdin() -> None:
@@ -883,8 +1714,7 @@ def _build_server(graph_path: str):
         tool error instead of killing a server that is happily serving other
         projects."""
         try:
-            s = Path(path).stat()
-            key = (s.st_mtime_ns, s.st_size)
+            key = _query_context_key(path)
         except FileNotFoundError:
             raise FileNotFoundError(f"graph.json not found: {path}")
         ent = _ctx_cache.get(path)
@@ -901,6 +1731,7 @@ def _build_server(graph_path: str):
             # Warm the trigram index before exposing the graph so the first query
             # against it is fast (same rationale as the original startup warm-up).
             _get_trigram_index(new_G)
+            _get_node_lookup_index(new_G)
             comm = _communities_from_graph(new_G)
             _ctx_cache[path] = {"key": key, "G": new_G, "communities": comm}
             return new_G, comm
@@ -941,7 +1772,10 @@ def _build_server(graph_path: str):
         _tools = [
             types.Tool(
                 name="query_graph",
-                description="Search the knowledge graph using BFS or DFS. Returns relevant nodes and edges as text context.",
+                description=(
+                    "Search the knowledge graph using staged BFS or DFS. Query filters: "
+                    "include:memory, community:<id|label>, god:<label>."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -961,7 +1795,7 @@ def _build_server(graph_path: str):
             ),
             types.Tool(
                 name="get_node",
-                description="Get full details for a specific node by label or ID.",
+                description="Get a node by label, exact ID, or path::label identity.",
                 inputSchema={
                     "type": "object",
                     "properties": {"label": {"type": "string", "description": "Node label or ID to look up"}},
@@ -1104,29 +1938,29 @@ def _build_server(graph_path: str):
         return result
 
     def _tool_get_node(arguments: dict) -> str:
-        label = arguments["label"].lower()
-        matches = [(nid, d) for nid, d in G.nodes(data=True)
-                   if label in (d.get("label") or "").lower() or label == nid.lower()]
-        if not matches:
-            return f"No node matching '{label}' found."
-        nid, d = matches[0]
+        label = arguments["label"]
+        resolution = _resolve_node(G, label)
+        if resolution.node_id is None:
+            return _format_resolution_error(G, label, resolution)
+        nid = resolution.node_id
+        d = G.nodes[nid]
         # Sanitise every LLM-derived field before concatenation (F-010).
         return "\n".join([
             f"Node: {sanitize_label(d.get('label', nid))}",
             f"  ID: {sanitize_label(nid)}",
-            f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
+            f"  Source: {sanitize_label(_source_display(d))}",
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
         ])
 
     def _tool_get_neighbors(arguments: dict) -> str:
-        label = arguments["label"].lower()
+        label = arguments["label"]
         rel_filter = arguments.get("relation_filter", "").lower()
-        matches = _find_node(G, label)
-        if not matches:
-            return f"No node matching '{label}' found."
-        nid = matches[0]
+        resolution = _resolve_node(G, label)
+        if resolution.node_id is None:
+            return _format_resolution_error(G, label, resolution)
+        nid = resolution.node_id
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
         for nb in G.successors(nid):
             d = edge_data(G, nid, nb)
@@ -1168,7 +2002,10 @@ def _build_server(graph_path: str):
         from graphify.analyze import god_nodes as _god_nodes
         nodes = _god_nodes(G, top_n=int(arguments.get("top_n", 10)))
         lines = ["God nodes (most connected):"]
-        lines += [f"  {i}. {n['label']} - {n['degree']} edges" for i, n in enumerate(nodes, 1)]
+        lines += [
+            f"  {i}. {sanitize_label(str(n['label']))} - {n['degree']} edges"
+            for i, n in enumerate(nodes, 1)
+        ]
         return "\n".join(lines)
 
     def _tool_graph_stats(_: dict) -> str:
@@ -1184,42 +2021,36 @@ def _build_server(graph_path: str):
         )
 
     def _tool_shortest_path(arguments: dict) -> str:
-        src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
-        tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
-        if not src_scored:
-            return f"No node matching source '{arguments['source']}' found."
-        if not tgt_scored:
-            return f"No node matching target '{arguments['target']}' found."
-        src_nid = _pick_scored_endpoint(G, src_scored, arguments["source"])
-        tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
+        src_resolution = _resolve_node(G, arguments["source"])
+        tgt_resolution = _resolve_node(G, arguments["target"])
+        if src_resolution.node_id is None:
+            return _format_resolution_error(
+                G, arguments["source"], src_resolution, role="source"
+            )
+        if tgt_resolution.node_id is None:
+            return _format_resolution_error(
+                G, arguments["target"], tgt_resolution, role="target"
+            )
+        src_nid = src_resolution.node_id
+        tgt_nid = tgt_resolution.node_id
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
         if src_nid == tgt_nid:
             return (
-                f"'{arguments['source']}' and '{arguments['target']}' both resolved to "
-                f"the same node '{src_nid}'. Use a more specific label or the exact node ID."
+                f"'{sanitize_label(str(arguments['source']))}' and "
+                f"'{sanitize_label(str(arguments['target']))}' both resolved to "
+                f"the same node '{sanitize_label(str(src_nid))}'. "
+                "Use a more specific label or the exact node ID."
             )
-        warnings: list[str] = []
-        for name, scored, nid in (
-            ("source", src_scored, src_nid),
-            ("target", tgt_scored, tgt_nid),
-        ):
-            # Only meaningful when the raw score head is what got picked — a
-            # full-token override was chosen on token coverage, not score.
-            if len(scored) >= 2 and nid == scored[0][1]:
-                top, runner = scored[0][0], scored[1][0]
-                if top > 0 and (top - runner) / top < 0.10:
-                    warnings.append(
-                        f"warning: {name} match was ambiguous "
-                        f"(top score {top:g}, runner-up {runner:g})"
-                    )
         max_hops = int(arguments.get("max_hops", 8))
         try:
             # Use undirected view for path-finding (works regardless of query src/tgt order)
             path_nodes = nx.shortest_path(G.to_undirected(as_view=True), src_nid, tgt_nid)
         except (nx.NetworkXNoPath, nx.NodeNotFound):
-            return f"No path found between '{G.nodes[src_nid].get('label', src_nid)}' and '{G.nodes[tgt_nid].get('label', tgt_nid)}'."
+            source = sanitize_label(str(G.nodes[src_nid].get("label") or src_nid))
+            target = sanitize_label(str(G.nodes[tgt_nid].get("label") or tgt_nid))
+            return f"No path found between '{source}' and '{target}'."
         hops = len(path_nodes) - 1
         if hops > max_hops:
             return f"Path exceeds max_hops={max_hops} ({hops} hops found)."
@@ -1234,15 +2065,16 @@ def _build_server(graph_path: str):
                 forward = False
             rel = edata.get("relation", "")
             conf = edata.get("confidence", "")
-            conf_str = f" [{conf}]" if conf else ""
+            safe_rel = sanitize_label(str(rel))
+            conf_str = f" [{sanitize_label(str(conf))}]" if conf else ""
             if i == 0:
-                segments.append(G.nodes[u].get("label", u))
+                segments.append(sanitize_label(str(G.nodes[u].get("label") or u)))
+            neighbor = sanitize_label(str(G.nodes[v].get("label") or v))
             if forward:
-                segments.append(f"--{rel}{conf_str}--> {G.nodes[v].get('label', v)}")
+                segments.append(f"--{safe_rel}{conf_str}--> {neighbor}")
             else:
-                segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
-        prefix = ("\n".join(warnings) + "\n") if warnings else ""
-        return prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
+                segments.append(f"<--{safe_rel}{conf_str}-- {neighbor}")
+        return f"Shortest path ({hops} hops):\n  " + " ".join(segments)
 
     def _tool_list_prs(arguments: dict) -> str:
         from graphify.prs import fetch_prs, fetch_worktrees, format_prs_text, _detect_default_branch

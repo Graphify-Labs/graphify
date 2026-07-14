@@ -20,6 +20,9 @@ from graphify.serve import (
     _trigram_candidates,
     _filter_graph_by_context,
     _infer_context_filters,
+    _MAX_IDF_CACHE_ENTRIES,
+    _MAX_QUERY_TERM_LENGTH,
+    _MAX_QUERY_TERMS,
     _query_terms,
     _query_graph_text,
     _resolve_context_filters,
@@ -364,6 +367,16 @@ def test_query_terms_all_stopwords_falls_back_to_unfiltered():
     assert _query_terms("how does it work") == ["how", "does", "work"]
 
 
+def test_query_terms_bound_count_and_length():
+    query = " ".join(["x" * 1000] + [f"unique{index}" for index in range(1000)])
+
+    terms = _query_terms(query)
+
+    assert len(terms) == _MAX_QUERY_TERMS
+    assert max(map(len, terms)) == _MAX_QUERY_TERM_LENGTH
+    assert terms[-1] == f"unique{_MAX_QUERY_TERMS - 2}"
+
+
 def test_query_terms_filters_only_short_english_terms(monkeypatch):
     import graphify.serve as serve_mod
 
@@ -680,6 +693,40 @@ def test_idf_new_graph_starts_fresh():
     G2 = _make_graph()
     _score_nodes(G1, ["extract"])
     assert "_idf_cache" not in G2.graph
+
+
+def test_idf_cache_is_bounded_and_evicts_least_recently_used():
+    G = _make_graph()
+    for start in range(0, _MAX_IDF_CACHE_ENTRIES, _MAX_QUERY_TERMS):
+        _compute_idf(
+            G,
+            [
+                f"hostile{index}"
+                for index in range(start, min(start + _MAX_QUERY_TERMS, _MAX_IDF_CACHE_ENTRIES))
+            ],
+        )
+
+    _compute_idf(G, ["hostile0"])
+    _compute_idf(G, [f"hostile{_MAX_IDF_CACHE_ENTRIES}"])
+    cache = G.graph["_idf_cache"]
+
+    assert len(cache) == _MAX_IDF_CACHE_ENTRIES
+    assert "hostile0" in cache
+    assert "hostile1" not in cache
+    assert f"hostile{_MAX_IDF_CACHE_ENTRIES}" in cache
+
+
+def test_hostile_unique_query_stream_keeps_bounded_idf_state():
+    G = _make_graph()
+    for batch in range(40):
+        terms = [
+            (f"batch{batch}token{index}" + "x" * 1000)
+            for index in range(_MAX_QUERY_TERMS * 2)
+        ]
+        _compute_idf(G, terms)
+
+    assert len(G.graph["_idf_cache"]) == _MAX_IDF_CACHE_ENTRIES
+    assert all(len(term) <= _MAX_QUERY_TERM_LENGTH for term in G.graph["_idf_cache"])
 
 
 def test_idf_rare_term_gets_high_weight():

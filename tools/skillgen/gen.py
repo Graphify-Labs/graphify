@@ -13,7 +13,7 @@ Usage (from the repo root)::
     python -m tools.skillgen --check         # byte-diff render vs committed + expected/, exit 1 on drift
     python -m tools.skillgen --audit-coverage# per host: assert every heading of that host's own v8 body single-homes in its render
     python -m tools.skillgen --schema-singleton  # assert the file_type enum is byte-identical everywhere
-    python -m tools.skillgen --monolith-roundtrip# assert each monolith == v8 modulo the enum unification
+    python -m tools.skillgen --monolith-roundtrip# assert each monolith == v8 modulo exact sanctioned blocks/fixes
     python -m tools.skillgen --always-on-roundtrip# assert each always_on/*.md reproduces its former constant
     python -m tools.skillgen --bless         # rewrite expected/ from the current render
 
@@ -140,6 +140,18 @@ _EXTRACTION_SOURCE = {
 # weaker matcher (#1325).
 _QUERY_REFERENCE = "references/query/default.md"
 _QUERY_STUB = "query-stub/default.md"
+_QUERY_CONTRACT = "query-contract/default.md"
+_QUERY_USAGE = "query-usage/default.md"
+_QUERY_REFERENCE_SPLIT_HEADING = "# graphify reference: query, path, explain"
+_QUERY_REFERENCE_MONOLITH_HEADING = "## For /graphify query"
+_QUERY_SECTION_END = "## For /graphify add"
+_V8_QUERY_USAGE_LINES = (
+    '/graphify query "<question>"                          # BFS traversal - broad context',
+    '/graphify query "<question>" --dfs                    # DFS - trace a specific path',
+    '/graphify query "<question>" --budget 1500            # cap answer at N tokens',
+    '/graphify path "AuthModule" "Database"                # shortest path between two concepts',
+    '/graphify explain "SwinTransformer"                   # plain-language explanation of a node',
+)
 # The hooks reference is host-flavored. Most hosts read CLAUDE.md and wire
 # always-on via `graphify claude install` (the shared body). The agents-md hosts
 # (trae, trae-cn, amp) read AGENTS.md and wire it via `graphify <host> install`.
@@ -228,6 +240,14 @@ SHARED_INTRO_ALLOWLIST: frozenset[str] = frozenset({
     "## What graphify is for",  # lean intro; v8 hosts had verbose intro prose, no heading.
 })
 
+# The new query runbook keeps the v8 behavior but removes two implementation-led
+# step names. Vocabulary retry now lives under ``### Query`` and is fallback-only;
+# traversal choice and CLI execution live under that same decision-first heading.
+SHARED_QUERY_CONSOLIDATION_ALLOWLIST: frozenset[str] = frozenset({
+    "### Step 0 — Constrained query expansion (REQUIRED before traversal)",
+    "### Step 1 — Traversal",
+})
+
 _CONSOLIDATION_ALLOWLIST: dict[str, frozenset[str]] = {
     # kilo's terse v8 step/part/section headings, renamed/re-leveled by the
     # shared lean core. Content is preserved under the core's richer headings
@@ -258,7 +278,11 @@ _CONSOLIDATION_ALLOWLIST: dict[str, frozenset[str]] = {
 
 def _audit_allowlist(platform_key: str) -> frozenset[str]:
     """The full set of v8 headings the audit may skip for this host."""
-    return SHARED_INTRO_ALLOWLIST | _CONSOLIDATION_ALLOWLIST.get(platform_key, frozenset())
+    return (
+        SHARED_INTRO_ALLOWLIST
+        | SHARED_QUERY_CONSOLIDATION_ALLOWLIST
+        | _CONSOLIDATION_ALLOWLIST.get(platform_key, frozenset())
+    )
 
 
 @dataclass(frozen=True)
@@ -336,6 +360,74 @@ def _normalise(text: str) -> str:
     return text.rstrip("\n") + "\n"
 
 
+def _require_exact_slot(text: str, slot: str, context: str) -> None:
+    """Require one template slot so missing/duplicate content cannot vanish."""
+    count = text.count(slot)
+    if count != 1:
+        raise ValueError(
+            f"{context} must contain exactly one {slot} slot; found {count}"
+        )
+
+
+def _render_query_reference(*, monolith: bool) -> str:
+    """Render the shared query runbook for a split reference or inline monolith."""
+    template = _read_fragment(_QUERY_REFERENCE)
+    _require_exact_slot(
+        template, "@@QUERY_REFERENCE_HEADING@@", "query reference"
+    )
+    _require_exact_slot(template, "@@QUERY_CONTRACT@@", "query reference")
+    contract = _read_fragment(_QUERY_CONTRACT).rstrip("\n")
+    heading = (
+        _QUERY_REFERENCE_MONOLITH_HEADING
+        if monolith
+        else _QUERY_REFERENCE_SPLIT_HEADING
+    )
+    body = (
+        template.replace("@@QUERY_REFERENCE_HEADING@@", heading)
+        .replace("@@QUERY_CONTRACT@@", contract)
+    )
+    if "@@" in body:
+        leftover = sorted(set(re.findall(r"@@\w+@@", body)))
+        raise ValueError(f"unfilled query-reference slots: {leftover}")
+    return _normalise(body)
+
+
+def _render_monolith(platform: Platform) -> str:
+    """Render a monolith by filling its exact usage and query-reference slots."""
+    body = _read_fragment(f"core/{platform.monolith}.md")
+    context = f"monolith '{platform.key}'"
+    _require_exact_slot(body, "@@QUERY_USAGE@@", context)
+    _require_exact_slot(body, "@@QUERY_REFERENCE@@", context)
+    usage = _read_fragment(_QUERY_USAGE).rstrip("\n")
+    body = body.replace("@@QUERY_USAGE@@", usage)
+
+    marker = "@@QUERY_REFERENCE@@"
+    if (
+        body.count(_QUERY_REFERENCE_MONOLITH_HEADING) != 1
+        or body.count(_QUERY_SECTION_END) != 1
+    ):
+        raise ValueError(
+            f"{context} must contain exactly one query heading and one add heading"
+        )
+    query_start = body.index(_QUERY_REFERENCE_MONOLITH_HEADING)
+    query_end = body.index(_QUERY_SECTION_END, query_start)
+    marker_index = body.index(marker)
+    if not query_start < marker_index < query_end:
+        raise ValueError(
+            f"{context} query marker must be between the query and add headings"
+        )
+    query = _render_query_reference(monolith=True)
+    heading_prefix = _QUERY_REFERENCE_MONOLITH_HEADING + "\n\n"
+    if not query.startswith(heading_prefix):
+        raise ValueError("rendered monolith query reference is missing its heading")
+    query_body = query.removeprefix(heading_prefix).rstrip("\n")
+    body = body.replace(marker, query_body)
+    if "@@" in body:
+        leftover = sorted(set(re.findall(r"@@\w+@@", body)))
+        raise ValueError(f"unfilled monolith slots for '{platform.key}': {leftover}")
+    return _normalise(body)
+
+
 @dataclass(frozen=True)
 class RenderedArtifact:
     """A single generated file: its repo-relative path and exact bytes."""
@@ -360,13 +452,22 @@ def _render_frontmatter(platform: Platform) -> str:
 def _render_core(platform: Platform) -> str:
     """Fill the shared core template's per-platform slots for this platform."""
     template = _read_fragment(f"core/{platform.core}.md")
+    context = f"split core '{platform.key}'"
+    _require_exact_slot(template, "@@QUERY_USAGE@@", context)
+    _require_exact_slot(template, "@@QUERY_STUB@@", context)
 
     if platform.dispatch is None:
         raise ValueError(f"split platform '{platform.key}' is missing a dispatch variant")
 
     install = _read_fragment(f"shell/{platform.shell}.md").rstrip("\n")
     dispatch = _read_fragment(f"dispatch/{platform.dispatch}.md").rstrip("\n")
-    query_stub = _read_fragment(_QUERY_STUB).rstrip("\n")
+    query_contract = _read_fragment(_QUERY_CONTRACT).rstrip("\n")
+    query_stub_template = _read_fragment(_QUERY_STUB)
+    _require_exact_slot(query_stub_template, "@@QUERY_CONTRACT@@", "query stub")
+    query_stub = query_stub_template.replace(
+        "@@QUERY_CONTRACT@@", query_contract
+    ).rstrip("\n")
+    query_usage = _read_fragment(_QUERY_USAGE).rstrip("\n")
 
     if platform.extra_sections:
         extra = "".join(
@@ -381,6 +482,7 @@ def _render_core(platform: Platform) -> str:
         .replace("@@INSTALL@@", install)
         .replace("@@DISPATCH@@", dispatch)
         .replace("@@QUERY_STUB@@", query_stub)
+        .replace("@@QUERY_USAGE@@", query_usage)
         .replace("@@HOOKS_TARGET@@", platform.hooks_target)
         .replace("@@EXTRA@@", extra)
     )
@@ -428,7 +530,7 @@ def render(platform: Platform) -> list[RenderedArtifact]:
     yields a single inline skill body.
     """
     if platform.bucket == "monolith":
-        body = _read_fragment(f"core/{platform.monolith}.md")
+        body = _render_monolith(platform)
         return [RenderedArtifact(platform.skill_dst, body)]
 
     if platform.bucket != "split":
@@ -448,6 +550,8 @@ def render(platform: Platform) -> list[RenderedArtifact]:
         # read verbatim.
         if name == "hooks" and platform.hooks_variant == "agents-md":
             body = _render_agents_md_hooks(platform)
+        elif name == "query":
+            body = _render_query_reference(monolith=False)
         else:
             body = _read_fragment(references[name])
         rel = f"{platform.refs_dst}/{name}.md"
@@ -944,12 +1048,47 @@ def _is_sanctioned_monolith_diff(line: str) -> bool:
     return not line.strip() or any(pred(line) for pred in _SANCTIONED_MONOLITH_DIFFS)
 
 
+def _remove_exact_block(
+    lines: list[str], block: tuple[str, ...], label: str
+) -> tuple[list[str], str | None]:
+    """Remove one exact contiguous block or return a strict roundtrip error."""
+    starts = [
+        index
+        for index in range(len(lines) - len(block) + 1)
+        if tuple(lines[index:index + len(block)]) == block
+    ]
+    if len(starts) != 1:
+        return lines, f"expected exactly one {label} block, found {len(starts)}"
+    start = starts[0]
+    return lines[:start] + lines[start + len(block):], None
+
+
+def _remove_heading_section(
+    lines: list[str], start_heading: str, end_heading: str, label: str
+) -> tuple[list[str], str | None]:
+    """Remove one frozen heading range, preserving the end heading."""
+    starts = [index for index, line in enumerate(lines) if line == start_heading]
+    if len(starts) != 1:
+        return lines, f"expected exactly one {label} start heading, found {len(starts)}"
+    start = starts[0]
+    ends = [
+        index for index, line in enumerate(lines[start + 1:], start + 1)
+        if line == end_heading
+    ]
+    if len(ends) != 1:
+        return lines, f"expected exactly one {label} end heading, found {len(ends)}"
+    return lines[:start] + lines[ends[0]:], None
+
+
 def monolith_roundtrip(platform: Platform) -> list[str]:
     """Assert a monolith renders diff-clean vs its v8 blob modulo allowed changes.
 
     The monolith bodies are hand-maintained single files frozen against a pinned
     pristine v8 blob (``roundtrip_ref``); this is the guard that stops an
-    arbitrary edit (even a blessed one) from drifting them. Sanctioned changes are
+    arbitrary edit (even a blessed one) from drifting them. The generated query
+    usage and query/path/explain sections are removed only when they byte-match
+    their canonical shared fragments; the corresponding frozen-v8 blocks are then
+    removed before the remaining multiset diff. Other sanctioned changes are
     enumerated as predicates in ``_SANCTIONED_MONOLITH_DIFFS``: the file_type enum
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
@@ -966,7 +1105,8 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     if platform.roundtrip_ref is None:
         return [f"[{platform.key}] monolith is missing roundtrip_ref"]
 
-    rendered_lines = render(platform)[0].content.splitlines()
+    rendered_content = render(platform)[0].content
+    rendered_lines = rendered_content.splitlines()
     # Strip trigger lines from the original — they are non-spec and their removal
     # (#1180) is a permitted diff.
     original_lines = [
@@ -974,10 +1114,62 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
         if not _is_trigger_line(l)
     ]
 
+    problems: list[str] = []
+    rendered_usage = tuple(_read_fragment(_QUERY_USAGE).splitlines())
+    rendered_lines, error = _remove_exact_block(
+        rendered_lines, rendered_usage, "canonical query usage"
+    )
+    if error:
+        problems.append(f"[{platform.key}] {error}")
+    original_lines, error = _remove_exact_block(
+        original_lines, _V8_QUERY_USAGE_LINES, "frozen-v8 query usage"
+    )
+    if error:
+        problems.append(f"[{platform.key}] {error}")
+
+    if (
+        rendered_content.count(_QUERY_REFERENCE_MONOLITH_HEADING) != 1
+        or rendered_content.count(_QUERY_SECTION_END) != 1
+    ):
+        problems.append(
+            f"[{platform.key}] rendered query section must have exactly one start and end heading"
+        )
+        return problems
+    query_start = rendered_content.index(_QUERY_REFERENCE_MONOLITH_HEADING)
+    query_end = rendered_content.index(_QUERY_SECTION_END, query_start)
+    rendered_query_section = rendered_content[query_start:query_end]
+    canonical_query_section = (
+        _render_query_reference(monolith=True).rstrip("\n") + "\n\n"
+    )
+    if rendered_query_section != canonical_query_section:
+        problems.append(
+            f"[{platform.key}] rendered query/path/explain section differs from canonical reference"
+        )
+        return problems
+
+    # Strip only after the complete rendered section has matched the canonical
+    # bytes. This prevents an extra line that happens to match another sanctioned
+    # monolith predicate from hiding inside the query replacement.
+    rendered_query = tuple(canonical_query_section.splitlines())
+    rendered_lines, error = _remove_exact_block(
+        rendered_lines, rendered_query, "canonical query/path/explain"
+    )
+    if error:
+        problems.append(f"[{platform.key}] {error}")
+    original_lines, error = _remove_heading_section(
+        original_lines,
+        _QUERY_REFERENCE_MONOLITH_HEADING,
+        _QUERY_SECTION_END,
+        "frozen-v8 query/path/explain",
+    )
+    if error:
+        problems.append(f"[{platform.key}] {error}")
+    if problems:
+        return problems
+
     added = Counter(rendered_lines) - Counter(original_lines)
     removed = Counter(original_lines) - Counter(rendered_lines)
 
-    problems: list[str] = []
     for line in list(added.elements()) + list(removed.elements()):
         if _is_sanctioned_monolith_diff(line):
             continue
@@ -1055,7 +1247,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--check", action="store_true", help="byte-diff render vs committed + expected/, exit 1 on drift")
     p.add_argument("--audit-coverage", action="store_true", help="per host: assert every heading of that host's own v8 body single-homes in its render")
     p.add_argument("--schema-singleton", action="store_true", help="assert the file_type enum is byte-identical everywhere")
-    p.add_argument("--monolith-roundtrip", action="store_true", help="assert each monolith == v8 modulo the enum unification")
+    p.add_argument("--monolith-roundtrip", action="store_true", help="assert each monolith == v8 modulo exact sanctioned blocks/fixes")
     p.add_argument("--always-on-roundtrip", action="store_true", help="assert each always_on/*.md reproduces its former __main__.py constant byte for byte")
     p.add_argument("--bless", action="store_true", help="rewrite expected/ from the current render")
     return p.parse_args(argv)
@@ -1115,7 +1307,7 @@ def main(argv: list[str] | None = None) -> int:
             for m in all_problems:
                 print(f"  {m}", file=sys.stderr)
             return 1
-        print("monolith-roundtrip OK: each monolith matches v8 modulo the enum unification.")
+        print("monolith-roundtrip OK: each monolith matches v8 modulo exact sanctioned blocks/fixes.")
         return 0
 
     if args.always_on_roundtrip:

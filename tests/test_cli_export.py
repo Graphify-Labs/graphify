@@ -254,10 +254,11 @@ def test_path_uses_graphify_out_env(tmp_path):
 
 # ── graphify explain ─────────────────────────────────────────────────────────
 
-def test_explain_runs_without_error(tmp_path):
+def test_explain_unknown_node_returns_usage_error(tmp_path):
     _make_graph(tmp_path)
     r = _run(["explain", "test"], tmp_path)
-    assert r.returncode == 0, r.stderr
+    assert r.returncode == 2
+    assert "No node matching node 'test' found." in r.stderr
 
 
 def test_explain_missing_graph_fails(tmp_path):
@@ -265,7 +266,7 @@ def test_explain_missing_graph_fails(tmp_path):
     assert r.returncode != 0
 
 
-def test_explain_uses_graphify_out_env(tmp_path):
+def test_explain_unknown_uses_graphify_out_env_and_returns_usage_error(tmp_path):
     out = _make_graph(tmp_path)
     custom_out = tmp_path / "custom-graph"
     out.rename(custom_out)
@@ -274,7 +275,8 @@ def test_explain_uses_graphify_out_env(tmp_path):
 
     r = _run(["explain", "test"], tmp_path, env=env)
 
-    assert r.returncode == 0, r.stderr
+    assert r.returncode == 2
+    assert "No node matching node 'test' found." in r.stderr
 
 
 # ── graphify export unknown format ───────────────────────────────────────────

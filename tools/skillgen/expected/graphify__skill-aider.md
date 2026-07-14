@@ -26,11 +26,14 @@ Turn any folder of files into a navigable knowledge graph with community detecti
 /graphify add <url>                                   # fetch URL, save to ./raw, update graph
 /graphify add <url> --author "Name"                   # tag who wrote it
 /graphify add <url> --contributor "Name"              # tag who added it to the corpus
-/graphify query "<question>"                          # BFS traversal - broad context
-/graphify query "<question>" --dfs                    # DFS - trace a specific path
-/graphify query "<question>" --budget 1500            # cap answer at N tokens
-/graphify path "AuthModule" "Database"                # shortest path between two concepts
-/graphify explain "SwinTransformer"                   # plain-language explanation of a node
+/graphify query "<question-argv>"                     # pass the question as one data argument; never interpolate shell text
+/graphify query "<question-argv>" --dfs               # trace a specific chain with staged retrieval
+/graphify query "<question-argv>" --budget 1500       # bound deterministic traversal and final output
+/graphify query 'community:"Main Runtime" target flow' # scope to a named community (quote spaces)
+/graphify query 'god:"Auth Gateway" request flow'      # scope to a named god node
+/graphify query "include:memory prior decision"        # explicitly include saved Q&A in retrieval
+/graphify path "src/auth.py::AuthModule" "Database"   # qualify an ambiguous label with its source file
+/graphify explain "src/model.py::SwinTransformer"      # explain one source-qualified node
 ```
 
 ## What graphify is for
@@ -906,269 +909,108 @@ Then run Steps 5–9 as normal (label communities, generate viz, benchmark, clea
 
 ## For /graphify query
 
-Two traversal modes - choose based on the question:
+Load this for questions against an existing graph and for `query`, `path`, or `explain`.
+
+**Search contract**
+
+- **Shell safety:** User-controlled question text is data, never shell syntax. Use an MCP/structured argument API or a process API with an argument list. If a shell is unavoidable, correctly escape or encode the question as one argv value. Never interpolate raw user text into a quoted command or code template.
+- **Reserved directives:** `include:memory`, `community:...`, and `god:...` are control syntax, not semantic search text. Append them only when intentionally activating that behavior. If the user asks about the literal syntax, answer from documentation or paraphrase the search without the reserved token; forwarding it would activate the parser.
+- **Default retrieval:** Query retrieval is staged across code, documentation, tests, and likely communities. Saved `graphify-out/memory` Q&A nodes are fallback-only unless `include:memory` is intentionally active.
+
+| Need | Action |
+|------|--------|
+| Use prior saved Q&A as candidates | Add `include:memory`. |
+| Limit retrieval to a community or god node | Add `community:<id|label>` or `god:<label|id>`; quote labels containing spaces. Named communities come from `.graphify_labels.json` beside `graph.json`. Prefer names in durable instructions because numeric community IDs can change after rebuilds. |
+| Control work and output size | Pass `--budget N`; it bounds deterministic traversal as well as final text. |
+| Resolve an ambiguous `path` or `explain` label | The CLI exits 2 and prints ranked candidates. MCP/HTTP return the ambiguity diagnostic as successful text. In both cases, never guess; rerun with `<source-file>::<label>` or the exact node ID. |
+| Cite a result | Preserve Graphify's truthful source display: a known span, `(file only)`, external/reference provenance from `origin_file`, or `(no source)`. Fallback code must call `graphify.serve._source_display` rather than inventing locations or a separate provenance contract. |
+
+Advanced directives require the Graphify CLI or MCP implementation. The inline NetworkX fallback cannot emulate them: never pass `include:memory`, `community:...`, or `god:...` into fallback label matching.
+
+### Query
+
+Choose traversal mode from the question:
 
 | Mode | Flag | Best for |
 |------|------|----------|
-| BFS (default) | _(none)_ | "What is X connected to?" - broad context, nearest neighbors first |
-| DFS | `--dfs` | "How does X reach Y?" - trace a specific chain or dependency path |
+| BFS (default) | _(none)_ | Broad context and nearest related concepts. |
+| DFS | `--dfs` | A specific chain, dependency, or data flow. |
 
-First check the graph exists:
-```bash
-$(cat graphify-out/.graphify_python) -c "
-from pathlib import Path
-if not Path('graphify-out/graph.json').exists():
-    print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
-    raise SystemExit(1)
-"
-```
-If it fails, stop and tell the user to run `/graphify <path>` first.
-
-Load `graphify-out/graph.json`, then:
-
-1. Find the 1-3 nodes whose label best matches key terms in the question.
-2. Run the appropriate traversal from each starting node.
-3. Read the subgraph - node labels, edge relations, confidence tags, source locations.
-4. Answer using **only** what the graph contains. Quote `source_location` when citing a specific fact.
-5. If the graph lacks enough information, say so - do not hallucinate edges.
+Use the CLI or MCP through a structured argument API whenever possible. If launching a process, put the complete semantic question in one argv element and add reserved directives only as an intentional part of that same argument. The commands below contain fixed literals; they are not templates for raw string interpolation.
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
-import sys, json
-from networkx.readwrite import json_graph
-import networkx as nx
-from pathlib import Path
-
-data = json.loads(Path('graphify-out/graph.json').read_text())
-G = json_graph.node_link_graph(data, edges='links')
-
-question = 'QUESTION'
-mode = 'MODE'  # 'bfs' or 'dfs'
-terms = [t.lower() for t in question.split() if len(t) > 3]
-
-# Find best-matching start nodes
-scored = []
-for nid, ndata in G.nodes(data=True):
-    label = ndata.get('label', '').lower()
-    score = sum(1 for t in terms if t in label)
-    if score > 0:
-        scored.append((score, nid))
-scored.sort(reverse=True)
-start_nodes = [nid for _, nid in scored[:3]]
-
-if not start_nodes:
-    print('No matching nodes found for query terms:', terms)
-    sys.exit(0)
-
-subgraph_nodes = set()
-subgraph_edges = []
-
-if mode == 'dfs':
-    # DFS: follow one path as deep as possible before backtracking.
-    # Depth-limited to 6 to avoid traversing the whole graph.
-    visited = set()
-    stack = [(n, 0) for n in reversed(start_nodes)]
-    while stack:
-        node, depth = stack.pop()
-        if node in visited or depth > 6:
-            continue
-        visited.add(node)
-        subgraph_nodes.add(node)
-        for neighbor in G.neighbors(node):
-            if neighbor not in visited:
-                stack.append((neighbor, depth + 1))
-                subgraph_edges.append((node, neighbor))
-else:
-    # BFS: explore all neighbors layer by layer up to depth 3.
-    frontier = set(start_nodes)
-    subgraph_nodes = set(start_nodes)
-    for _ in range(3):
-        next_frontier = set()
-        for n in frontier:
-            for neighbor in G.neighbors(n):
-                if neighbor not in subgraph_nodes:
-                    next_frontier.add(neighbor)
-                    subgraph_edges.append((n, neighbor))
-        subgraph_nodes.update(next_frontier)
-        frontier = next_frontier
-
-# Token-budget aware output: rank by relevance, cut at budget (~4 chars/token)
-token_budget = BUDGET  # default 2000
-char_budget = token_budget * 4
-
-# Score each node by term overlap for ranked output
-def relevance(nid):
-    label = G.nodes[nid].get('label', '').lower()
-    return sum(1 for t in terms if t in label)
-
-ranked_nodes = sorted(subgraph_nodes, key=relevance, reverse=True)
-
-lines = [f'Traversal: {mode.upper()} | Start: {[G.nodes[n].get(\"label\",n) for n in start_nodes]} | {len(subgraph_nodes)} nodes']
-for nid in ranked_nodes:
-    d = G.nodes[nid]
-    lines.append(f'  NODE {d.get(\"label\", nid)} [src={d.get(\"source_file\",\"\")} loc={d.get(\"source_location\",\"\")}]')
-for u, v in subgraph_edges:
-    if u in subgraph_nodes and v in subgraph_nodes:
-        _raw = G[u][v]; d = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
-        lines.append(f'  EDGE {G.nodes[u].get(\"label\",u)} --{d.get(\"relation\",\"\")} [{d.get(\"confidence\",\"\")}]--> {G.nodes[v].get(\"label\",v)}')
-
-output = '\n'.join(lines)
-if len(output) > char_budget:
-    output = output[:char_budget] + f'\n... (truncated at ~{token_budget} token budget - use --budget N for more)'
-print(output)
-"
+graphify query "Where is authentication validated?"
+graphify query "How does capture reach inference?" --dfs --budget 3000
+graphify query 'controller latency community:"Main Runtime"'
+graphify query 'request flow god:"Auth Gateway"'
+graphify query "why was polling retained? include:memory"
 ```
 
-Replace `QUESTION` with the user's actual question, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above.
+Keep semantic text separate from reserved control syntax. For example, if the user asks what `include:memory` means, answer from these instructions or query for `memory inclusion behavior`; do not forward the literal reserved token unless the user intends to include saved Q&A.
 
-After writing the answer, save it back into the graph so it improves future queries:
+Answer only from the returned subgraph. Preserve source display exactly; never turn file-only, external/reference, or missing provenance into an invented line number.
+
+If a plain query returns no useful match because the user's wording differs from graph labels, inspect labels already present in `graph.json` and retry with the closest relevant graph vocabulary. Do not invent labels, synonyms, nodes, or edges.
+
+### Inline NetworkX fallback
+
+Use fallback only when the CLI and MCP implementation are unavailable and the request is a plain, unscoped query. It cannot emulate staged scope selection, advanced directives, label-sidecar resolution, or CLI budget semantics.
+
+- Pass the question into fallback code as structured data, never by inserting it into shell or Python source.
+- If intentional behavior requires `include:memory`, `community:...`, or `god:...`, stop and report that CLI/MCP is required. Do not pass directive text into fallback matching.
+- If the user is discussing a directive literally, paraphrase the semantic terms before matching so the reserved token is not activated.
+- Keep fallback traversal deterministic and bounded, and label its display cap as different from CLI `--budget` semantics.
+- Delegate source rendering to the implementation helper so fallback and CLI stay aligned:
+
+```python
+from graphify.serve import _source_display
+
+display = _source_display(node_data)
+```
+
+`_source_display` preserves known spans and file-only locations, recognizes `origin_file` as external/reference provenance, and marks unowned nodes honestly. Do not create a separate `source_url`-only provenance rule; if runtime URL handling evolves, the shared helper remains the source of truth.
+
+### Save useful results
+
+After answering, save the original question and cited node labels through structured arguments. This fixed-literal example records a useful result:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
+graphify save-result --question "Where is authentication validated?" --answer "AuthGuard validates authentication." --type query --nodes AuthGuard --outcome useful
 ```
 
-Replace `QUESTION` with the question, `ANSWER` with your full answer text, `SOURCE_NODES` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
-
----
+Use `--outcome dead_end` when traversal did not answer the question. Use `--outcome corrected` with a correction argument when replacing a wrong result. Before graph work, run `graphify reflect --if-stale` and read `graphify-out/reflections/LESSONS.md` when it exists.
 
 ## For /graphify path
 
-Find the shortest path between two named concepts in the graph.
-
-First check the graph exists:
-```bash
-$(cat graphify-out/.graphify_python) -c "
-from pathlib import Path
-if not Path('graphify-out/graph.json').exists():
-    print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
-    raise SystemExit(1)
-"
-```
-If it fails, stop and tell the user to run `/graphify <path>` first.
+Prefer the CLI/MCP resolver. Plain labels are allowed only when unique:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
-import json, sys
-import networkx as nx
-from networkx.readwrite import json_graph
-from pathlib import Path
-
-data = json.loads(Path('graphify-out/graph.json').read_text())
-G = json_graph.node_link_graph(data, edges='links')
-
-a_term = 'NODE_A'
-b_term = 'NODE_B'
-
-def find_node(term):
-    term = term.lower()
-    scored = sorted(
-        [(sum(1 for w in term.split() if w in G.nodes[n].get('label','').lower()), n)
-         for n in G.nodes()],
-        reverse=True
-    )
-    return scored[0][1] if scored and scored[0][0] > 0 else None
-
-src = find_node(a_term)
-tgt = find_node(b_term)
-
-if not src or not tgt:
-    print(f'Could not find nodes matching: {a_term!r} or {b_term!r}')
-    sys.exit(0)
-
-try:
-    path = nx.shortest_path(G, src, tgt)
-    print(f'Shortest path ({len(path)-1} hops):')
-    for i, nid in enumerate(path):
-        label = G.nodes[nid].get('label', nid)
-        if i < len(path) - 1:
-            _raw = G[nid][path[i+1]]; edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
-            rel = edge.get('relation', '')
-            conf = edge.get('confidence', '')
-            print(f'  {label} --{rel}--> [{conf}]')
-        else:
-            print(f'  {label}')
-except nx.NetworkXNoPath:
-    print(f'No path found between {a_term!r} and {b_term!r}')
-except nx.NodeNotFound as e:
-    print(f'Node not found: {e}')
-"
+graphify path "AuthModule" "Database"
+graphify path "src/auth.py::AuthModule" "src/db.py::Database"
 ```
 
-Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then explain the path in plain language - what each hop means, why it's significant.
+Transport behavior differs only in how ambiguity is returned:
 
-After writing the explanation, save it back:
+- CLI: exits with status 2 and prints ranked candidates.
+- MCP/HTTP: returns the same ambiguity diagnostic as successful tool-result text; it does not turn ambiguity into a transport error.
 
-```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
-```
+Both require the same response: never choose a candidate by position or score. Rerun with the printed `<source-file>::<label>` selector or exact node ID.
 
----
+If CLI/MCP is unavailable, use NetworkX only after obtaining exact node IDs from `graph.json`; do not fuzzy-match labels in fallback code. Explain every hop using only returned relations and confidence, preserve truthful source markers, and save useful explanations with `--type path_query`.
 
 ## For /graphify explain
 
-Give a plain-language explanation of a single node - everything connected to it.
-
-First check the graph exists:
-```bash
-$(cat graphify-out/.graphify_python) -c "
-from pathlib import Path
-if not Path('graphify-out/graph.json').exists():
-    print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
-    raise SystemExit(1)
-"
-```
-If it fails, stop and tell the user to run `/graphify <path>` first.
+Prefer the CLI/MCP resolver:
 
 ```bash
-$(cat graphify-out/.graphify_python) -c "
-import json, sys
-import networkx as nx
-from networkx.readwrite import json_graph
-from pathlib import Path
-
-data = json.loads(Path('graphify-out/graph.json').read_text())
-G = json_graph.node_link_graph(data, edges='links')
-
-term = 'NODE_NAME'
-term_lower = term.lower()
-
-# Find best matching node
-scored = sorted(
-    [(sum(1 for w in term_lower.split() if w in G.nodes[n].get('label','').lower()), n)
-     for n in G.nodes()],
-    reverse=True
-)
-if not scored or scored[0][0] == 0:
-    print(f'No node matching {term!r}')
-    sys.exit(0)
-
-nid = scored[0][1]
-data_n = G.nodes[nid]
-print(f'NODE: {data_n.get(\"label\", nid)}')
-print(f'  source: {data_n.get(\"source_file\",\"unknown\")}')
-print(f'  type: {data_n.get(\"file_type\",\"unknown\")}')
-print(f'  degree: {G.degree(nid)}')
-print()
-print('CONNECTIONS:')
-for neighbor in G.neighbors(nid):
-    _raw = G[nid][neighbor]; edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
-    nlabel = G.nodes[neighbor].get('label', neighbor)
-    rel = edge.get('relation', '')
-    conf = edge.get('confidence', '')
-    src_file = G.nodes[neighbor].get('source_file', '')
-    print(f'  --{rel}--> {nlabel} [{conf}] ({src_file})')
-"
+graphify explain "SwinTransformer"
+graphify explain "src/model.py::SwinTransformer"
+graphify explain "EXACT_NODE_ID"
 ```
 
-Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
+The same transport rule applies: CLI ambiguity exits 2; MCP/HTTP ambiguity is successful diagnostic text. In both cases, rerun with a ranked source-qualified label or exact ID and never guess. If CLI/MCP is unavailable, inspect only an exact node ID in NetworkX and stop if it does not exist.
 
-After writing the explanation, save it back:
-
-```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
-```
-
----
+Write a concise explanation of what the node is, what it connects to, and why those connections matter. Render provenance through `graphify.serve._source_display` so the explanation matches CLI semantics.
 
 ## For /graphify add
 

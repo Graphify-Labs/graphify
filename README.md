@@ -634,8 +634,22 @@ graphify-out/
 
 /graphify query "what connects attention to the optimizer?"
 /graphify query "..." --dfs --budget 1500
+/graphify query "authentication community:Backend"
+/graphify query "Q: stale cache include:memory"
+/graphify query "callers god:RequestRouter"
 /graphify path "DigestAuth" "Response"
+/graphify path "src/auth.py::validate()" "src/http.py::respond()"  # disambiguate duplicate labels
 /graphify explain "SwinTransformer"
+
+# Query retrieval is staged across code, docs, tests, and likely communities.
+# Saved Q: work-memory nodes are fallback-only unless include:memory is present.
+# community:<id|label> and god:<label> scope both retrieval and traversal.
+# Quote filter labels containing spaces, for example community:"Authentication Flow".
+# Query normalization keeps the first 32 terms and at most 128 characters per term.
+# Ambiguous path/explain labels return ranked source-file::label identities and IDs; CLI lookup errors exit 2.
+# Source-qualified lookup bounds paths to 4,096 characters, 256 components, and 255 characters per component.
+# Query loads adjacent .graphify_labels.json names; canonical sidecar names override embedded community_name values.
+# Label sidecars are accepted atomically up to 1 MiB and 4,096 validated entries; invalid artifacts fall back safely.
 
 graphify save-result --question "Q" --answer "A" --nodes Foo Bar --outcome useful   # record how a Q&A turned out (work memory; outcome ∈ useful|dead_end|corrected)
 graphify reflect                   # aggregate graphify-out/memory/ outcomes into reflections/LESSONS.md

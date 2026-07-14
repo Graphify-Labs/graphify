@@ -336,21 +336,167 @@ def test_codex_uses_compact_extraction_windows_uses_verbose():
     assert "(compact)" not in windows_refs["extraction-spec.md"]
 
 
-def test_every_platform_query_has_expansion_and_fallback():
-    """#1325: the unified query reference ships BOTH the vocab-expansion step and
-    the inline NetworkX fallback to every platform (previously split so no host
-    got both — Claude had expansion but no fallback; the rest the reverse)."""
-    for key in ("claude", "codex", "windows", "opencode"):
+def _canonical_query_contract():
+    return gen._read_fragment(gen._QUERY_CONTRACT).rstrip("\n")
+
+
+def test_all_fourteen_split_variants_render_the_exact_contract_block():
+    """Split cores and references derive one byte-identical canonical contract."""
+    platforms = gen.load_platforms()
+    split = {key: platform for key, platform in platforms.items() if platform.bucket == "split"}
+    assert len(split) == 14
+    contract = _canonical_query_contract()
+    for key in split:
         core, refs = _platform_artifacts(key)
-        # Core stub mentions both the vocab-expansion step and the inline fallback.
-        assert "expand the question against the graph's own vocabulary" in core
-        assert "NetworkX traversal" in core
-        # The query reference carries expansion, fallback, and path/explain.
-        q = refs["query.md"]
-        assert "Constrained query expansion" in q
-        assert "If the CLI is unavailable" in q
-        assert "## For /graphify path" in q
-        assert "## For /graphify explain" in q
+        assert core.count(contract) == 1, f"[{key}] core contract drift"
+        assert refs["query.md"].count(contract) == 1, f"[{key}] reference contract drift"
+
+
+def test_both_monolith_variants_render_the_exact_contract_block():
+    """Aider and Devin inline the same byte-identical canonical contract."""
+    platforms = gen.load_platforms()
+    monoliths = {key: platform for key, platform in platforms.items() if platform.bucket == "monolith"}
+    assert set(monoliths) == {"aider", "devin"}
+    contract = _canonical_query_contract()
+    for key, platform in monoliths.items():
+        body = gen.render(platform)[0].content
+        assert body.count(contract) == 1, f"[{key}] monolith contract drift"
+        assert "@@QUERY_REFERENCE@@" not in body
+
+
+def test_generated_guidance_requires_safe_question_arguments():
+    """Question text is data and is never prescribed as raw shell interpolation."""
+    contract = _canonical_query_contract()
+    reference = gen._render_query_reference(monolith=False)
+
+    assert "User-controlled question text is data, never shell syntax" in contract
+    assert "process API with an argument list" in contract
+    assert "Never interpolate raw user text" in contract
+    assert "Pass the user's question and directives to the CLI unchanged" not in reference
+    assert "question = 'QUESTION'" not in reference
+    assert "replace `QUESTION`" not in reference
+    platforms = gen.load_platforms()
+    for key, platform in platforms.items():
+        body = gen.render(platform)[0].content
+        assert 'graphify query "<question>"' not in body, key
+
+
+@pytest.mark.parametrize(
+    ("fragment", "slot"),
+    (
+        ("core/core.md", "@@QUERY_USAGE@@"),
+        ("core/core.md", "@@QUERY_STUB@@"),
+        ("query-stub/default.md", "@@QUERY_CONTRACT@@"),
+        ("references/query/default.md", "@@QUERY_CONTRACT@@"),
+    ),
+)
+@pytest.mark.parametrize("mutation", ("missing", "duplicate"))
+def test_split_render_rejects_missing_or_duplicate_query_slots(
+    monkeypatch, fragment, slot, mutation
+):
+    """Mandatory split query slots fail clearly before replacement."""
+    platforms = gen.load_platforms()
+    original_read = gen._read_fragment
+
+    def read_with_mutated_slot(rel):
+        content = original_read(rel)
+        if rel != fragment:
+            return content
+        if mutation == "missing":
+            return content.replace(slot, "", 1)
+        return content + f"\n{slot}\n"
+
+    monkeypatch.setattr(gen, "_read_fragment", read_with_mutated_slot)
+    with pytest.raises(ValueError, match=f"exactly one {slot} slot"):
+        gen.render(platforms["claude"])
+
+
+def test_reserved_directive_guidance_matches_real_parser():
+    """Literal directive tokens activate the parser, so docs must not forward them."""
+    from graphify.serve import _parse_query_directives
+
+    literal = _parse_query_directives("What does include:memory do?")
+    assert literal.include_memory is True
+    assert literal.text == "What does do?"
+
+    intentional = _parse_query_directives(
+        'target flow include:memory community:"Main Runtime" god:router'
+    )
+    assert intentional.text == "target flow"
+    assert intentional.include_memory is True
+    assert intentional.community == "Main Runtime"
+    assert intentional.god == "router"
+
+    contract = _canonical_query_contract()
+    assert "Reserved directives" in contract
+    assert "If the user asks about the literal syntax" in contract
+    assert "paraphrase the search without the reserved token" in contract
+
+
+def test_fallback_source_guidance_delegates_to_real_source_formatter():
+    """Fallback provenance stays aligned with CLI origin_file semantics."""
+    from graphify.serve import _source_display
+
+    external = {
+        "label": "ExternalType",
+        "source_file": "",
+        "source_location": "",
+        "origin_file": "src/consumer.py",
+        "source_url": "https://example.invalid/type",
+    }
+    assert _source_display(external) == (
+        "external/reference (unowned; referenced from src/consumer.py)"
+    )
+
+    reference = gen._render_query_reference(monolith=False)
+    assert "from graphify.serve import _source_display" in reference
+    assert "recognizes `origin_file` as external/reference provenance" in reference
+    assert "node.get('source_url')" not in reference
+
+
+def test_search_contract_matches_cli_ambiguity_exit_two(
+    tmp_path, monkeypatch, capsys
+):
+    """The documented CLI ambiguity status is linked to the real resolver path."""
+    import json
+    import graphify.__main__ as mainmod
+
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps({
+        "directed": True,
+        "multigraph": False,
+        "nodes": [
+            {"id": "a_run", "label": "run()", "source_file": "src/a.py"},
+            {"id": "b_run", "label": "run()", "source_file": "src/b.py"},
+        ],
+        "links": [],
+    }), encoding="utf-8")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "explain", "run", "--graph", str(graph_path)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 2
+    error = capsys.readouterr().err
+    assert "src/a.py::run() [id=a_run]" in error
+    assert "src/b.py::run() [id=b_run]" in error
+    contract = _canonical_query_contract()
+    assert "The CLI exits 2 and prints ranked candidates" in contract
+    assert "MCP/HTTP return the ambiguity diagnostic as successful text" in contract
+
+
+def test_all_sixteen_rendered_variants_are_drift_free():
+    """Committed files and expected snapshots match every platform render."""
+    platforms = gen.load_platforms()
+    assert len(platforms) == 16
+    for key in platforms:
+        problems = gen.check(gen.render_all(platforms, only=key))
+        assert problems == [], f"[{key}]\n" + "\n".join(problems)
 
 
 def test_schema_singleton_passes_across_all_platforms():
@@ -440,7 +586,7 @@ def test_compact_extraction_hosts_use_the_compact_spec():
 
 
 def test_every_split_host_renders_eight_references():
-    """All twelve split hosts render exactly the eight on-demand references."""
+    """All fourteen split hosts render exactly the eight on-demand references."""
     platforms = gen.load_platforms()
     expected = [
         "add-watch.md",
@@ -473,8 +619,18 @@ def test_monoliths_render_inline_single_file_no_references():
         assert "references/" not in arts[0].content or "see `references/" not in arts[0].content.lower()
 
 
+def test_monolith_sources_single_home_the_query_reference_slot():
+    """Canonical monolith sources contain no dead query/path/explain body."""
+    expected = "## For /graphify query\n\n@@QUERY_REFERENCE@@\n\n"
+    for key in ("aider", "devin"):
+        source = gen._read_fragment(f"core/{key}.md")
+        start = source.index("## For /graphify query")
+        end = source.index("## For /graphify add", start)
+        assert source[start:end] == expected, key
+
+
 def test_monolith_roundtrip_passes_for_aider_and_devin():
-    """Each monolith is diff-clean vs v8 except the file_type enum unification."""
+    """Each monolith is diff-clean vs v8 modulo exact sanctioned blocks/fixes."""
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
         problems = gen.monolith_roundtrip(platforms[key])
@@ -497,6 +653,70 @@ def test_monoliths_change_only_sanctioned_lines():
         rendered = gen.render(platforms[key])[0].content
         assert gen.ENUM_VALUES in rendered
         assert UNIFIED_DESCRIPTION in rendered
+
+
+def test_monolith_roundtrip_rejects_query_block_drift(monkeypatch):
+    """The shared query exception is exact: one changed line fails roundtrip."""
+    platforms = gen.load_platforms()
+    original_render = gen.render
+
+    def render_with_drift(platform):
+        artifacts = original_render(platform)
+        if platform.key != "aider":
+            return artifacts
+        artifact = artifacts[0]
+        content = artifact.content.replace(
+            "Load this for questions against an existing graph",
+            "Load this only for questions against an existing graph",
+            1,
+        )
+        return [gen.RenderedArtifact(artifact.path, content)]
+
+    monkeypatch.setattr(gen, "render", render_with_drift)
+    problems = gen.monolith_roundtrip(platforms["aider"])
+    assert any("differs from canonical reference" in problem for problem in problems)
+
+
+@pytest.mark.parametrize("slot", ("@@QUERY_USAGE@@", "@@QUERY_REFERENCE@@"))
+@pytest.mark.parametrize("mutation", ("missing", "duplicate"))
+def test_monolith_render_rejects_missing_or_duplicate_markers(
+    monkeypatch, slot, mutation
+):
+    """Every monolith query marker has exact cardinality."""
+    platforms = gen.load_platforms()
+    original_read = gen._read_fragment
+
+    def read_with_tampered_marker(rel):
+        content = original_read(rel)
+        if rel == "core/aider.md":
+            if mutation == "missing":
+                return content.replace(slot, "", 1)
+            return content + f"\n{slot}\n"
+        return content
+
+    monkeypatch.setattr(gen, "_read_fragment", read_with_tampered_marker)
+    with pytest.raises(ValueError, match=f"exactly one {slot} slot"):
+        gen.render(platforms["aider"])
+
+
+def test_monolith_renderer_preserves_prose_and_roundtrip_rejects_it(monkeypatch):
+    """Editable prose around the slot is rendered, never silently discarded."""
+    platforms = gen.load_platforms()
+    original_read = gen._read_fragment
+    added = "UNEXPECTED EDITABLE QUERY PROSE"
+
+    def read_with_extra_prose(rel):
+        content = original_read(rel)
+        if rel == "core/aider.md":
+            return content.replace(
+                "@@QUERY_REFERENCE@@", f"@@QUERY_REFERENCE@@\n\n{added}", 1
+            )
+        return content
+
+    monkeypatch.setattr(gen, "_read_fragment", read_with_extra_prose)
+    assert added in gen.render(platforms["aider"])[0].content
+    problems = gen.monolith_roundtrip(platforms["aider"])
+    assert any("differs from canonical reference" in problem for problem in problems)
 
 
 def test_monoliths_carry_the_1392_runbook_fixes():

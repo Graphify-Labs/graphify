@@ -35,11 +35,14 @@ Turn any folder of files into a navigable knowledge graph with community detecti
 /graphify add <url>                                   # fetch URL, save to ./raw, update graph
 /graphify add <url> --author "Name"                   # tag who wrote it
 /graphify add <url> --contributor "Name"              # tag who added it to the corpus
-/graphify query "<question>"                          # BFS traversal - broad context
-/graphify query "<question>" --dfs                    # DFS - trace a specific path
-/graphify query "<question>" --budget 1500            # cap answer at N tokens
-/graphify path "AuthModule" "Database"                # shortest path between two concepts
-/graphify explain "SwinTransformer"                   # plain-language explanation of a node
+/graphify query "<question-argv>"                     # pass the question as one data argument; never interpolate shell text
+/graphify query "<question-argv>" --dfs               # trace a specific chain with staged retrieval
+/graphify query "<question-argv>" --budget 1500       # bound deterministic traversal and final output
+/graphify query 'community:"Main Runtime" target flow' # scope to a named community (quote spaces)
+/graphify query 'god:"Auth Gateway" request flow'      # scope to a named god node
+/graphify query "include:memory prior decision"        # explicitly include saved Q&A in retrieval
+/graphify path "src/auth.py::AuthModule" "Database"   # qualify an ambiguous label with its source file
+/graphify explain "src/model.py::SwinTransformer"      # explain one source-qualified node
 ```
 
 ## What graphify is for
@@ -50,7 +53,7 @@ Drop any folder of code, docs, papers, images, or video into graphify and get a 
 
 If the user invoked `/graphify --help` or `/graphify -h` (with no other arguments), print the contents of the `## Usage` section above verbatim and stop. Do not run any commands, do not detect files, do not default the path to `.`. Just print the Usage block and return.
 
-**Fast path — existing graph:** Before doing anything else, check whether `graphify-out/graph.json` exists. The expected location is `graphify-out/graph.json` relative to the **current working directory** (i.e. the project root where you are running commands). If it exists AND the user's request is a natural-language question about the codebase (e.g. "How does X work?", "What calls Y?", "Trace the data flow through Z") and NOT an explicit rebuild command (`--update`, `--cluster-only`, or a bare path/URL that implies fresh extraction): **skip Steps 1–5 entirely and jump straight to `## For /graphify query`.** Run `graphify query "<question>"` immediately. Do not run detect. Do not check corpus size. Do not ask the user to narrow. The graph is already built — use it.
+**Fast path — existing graph:** Before doing anything else, check whether `graphify-out/graph.json` exists. The expected location is `graphify-out/graph.json` relative to the **current working directory** (i.e. the project root where you are running commands). If it exists AND the user's request is a natural-language question about the codebase (e.g. "How does X work?", "What calls Y?", "Trace the data flow through Z") and NOT an explicit rebuild command (`--update`, `--cluster-only`, or a bare path/URL that implies fresh extraction): **skip Steps 1–5 entirely and jump straight to `## For /graphify query`.** Run `graphify query` with the user's question as one structured argument immediately. Do not run detect. Do not check corpus size. Do not ask the user to narrow. The graph is already built — use it.
 
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
@@ -646,10 +649,26 @@ Both are non-default subcommands. `--update` re-extracts only new or changed fil
 When `graphify-out/graph.json` already exists and the user asks a question about the corpus, answer from the graph rather than rebuilding it:
 
 ```bash
-graphify query "<question>"
+graphify query "Where is authentication validated?"
 ```
 
-Before traversal, expand the question against the graph's own vocabulary so a wording mismatch does not collapse the answer to noise. If the `graphify query` CLI is unavailable, fall back to an inline NetworkX traversal of `graphify-out/graph.json`. Answer using only what the graph output contains, and quote `source_location` when citing a specific fact. For that vocab-expansion step, the BFS/DFS traversal modes, the `--budget` cap, the NetworkX fallback, `save-result` feedback, and the `/graphify path` and `/graphify explain` flows, see `references/query.md`.
+**Search contract**
+
+- **Shell safety:** User-controlled question text is data, never shell syntax. Use an MCP/structured argument API or a process API with an argument list. If a shell is unavoidable, correctly escape or encode the question as one argv value. Never interpolate raw user text into a quoted command or code template.
+- **Reserved directives:** `include:memory`, `community:...`, and `god:...` are control syntax, not semantic search text. Append them only when intentionally activating that behavior. If the user asks about the literal syntax, answer from documentation or paraphrase the search without the reserved token; forwarding it would activate the parser.
+- **Default retrieval:** Query retrieval is staged across code, documentation, tests, and likely communities. Saved `graphify-out/memory` Q&A nodes are fallback-only unless `include:memory` is intentionally active.
+
+| Need | Action |
+|------|--------|
+| Use prior saved Q&A as candidates | Add `include:memory`. |
+| Limit retrieval to a community or god node | Add `community:<id|label>` or `god:<label|id>`; quote labels containing spaces. Named communities come from `.graphify_labels.json` beside `graph.json`. Prefer names in durable instructions because numeric community IDs can change after rebuilds. |
+| Control work and output size | Pass `--budget N`; it bounds deterministic traversal as well as final text. |
+| Resolve an ambiguous `path` or `explain` label | The CLI exits 2 and prints ranked candidates. MCP/HTTP return the ambiguity diagnostic as successful text. In both cases, never guess; rerun with `<source-file>::<label>` or the exact node ID. |
+| Cite a result | Preserve Graphify's truthful source display: a known span, `(file only)`, external/reference provenance from `origin_file`, or `(no source)`. Fallback code must call `graphify.serve._source_display` rather than inventing locations or a separate provenance contract. |
+
+Advanced directives require the Graphify CLI or MCP implementation. The inline NetworkX fallback cannot emulate them: never pass `include:memory`, `community:...`, or `god:...` into fallback label matching.
+
+The example is a fixed literal, not an interpolation template. If a plain query finds no useful vocabulary match, retry with relevant labels that actually exist in the graph; do not invent nodes or edges. For CLI examples, the constrained inline NetworkX fallback, `save-result` feedback, and the `/graphify path` and `/graphify explain` flows, see `references/query.md`.
 
 ---
 
