@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import re
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
@@ -804,13 +805,69 @@ def _swift_property_type_node(property_node):
             return c
     return None
 
+
+def _swift_property_declared_type(property_node, source: bytes) -> str:
+    annotation = _swift_property_type_node(property_node)
+    if annotation is None:
+        return ""
+    value = next((child for child in annotation.children if child.is_named), None)
+    return _read_text(value, source).strip() if value is not None else ""
+
+
+def _swift_descendant_has_type(node, type_name: str) -> bool:
+    if node.type == type_name:
+        return True
+    return any(_swift_descendant_has_type(child, type_name) for child in node.children)
+
+
+def _swift_property_is_settable(property_node) -> bool:
+    if _swift_descendant_has_type(property_node, "setter_specifier"):
+        return True
+    computed = next(
+        (child for child in property_node.children if child.type == "computed_property"),
+        None,
+    )
+    if computed is not None:
+        return False
+    return any(
+        child.type == "value_binding_pattern"
+        and any(grandchild.type == "var" for grandchild in child.children)
+        for child in property_node.children
+    )
+
+
+def _swift_declaration_is_static(node, source: bytes) -> bool:
+    modifiers = " ".join(
+        _read_text(child, source)
+        for child in node.children
+        if child.type == "modifiers"
+    )
+    return bool(re.search(r"\bstatic\b", modifiers)) or any(
+        not child.is_named and child.type == "class" for child in node.children
+    )
+
+
+def _swift_typealias_declared_type(node, source: bytes) -> str:
+    equals_seen = False
+    for child in node.children:
+        if not child.is_named and child.type == "=":
+            equals_seen = True
+            continue
+        if equals_seen and child.is_named:
+            return _read_text(child, source).strip()
+    return ""
+
+
 def _swift_property_name(property_node, source: bytes) -> str | None:
     """Return the bound name of a Swift property (``let x``/``var x = ...``)."""
     for c in property_node.children:
         if c.type == "pattern":
-            for sc in c.children:
+            stack = list(c.children)
+            while stack:
+                sc = stack.pop(0)
                 if sc.type == "simple_identifier":
                     return _read_text(sc, source)
+                stack[0:0] = list(sc.children)
         if c.type == "simple_identifier":
             return _read_text(c, source)
     return None
@@ -851,6 +908,223 @@ def _swift_receiver_name(recv_node, source: bytes) -> str | None:
                         if sc.type == "simple_identifier":
                             return _read_text(sc, source)
     return None
+
+
+_SWIFT_FUNCTION_DECLARATIONS = frozenset({
+    "function_declaration", "protocol_function_declaration",
+    "init_declaration", "deinit_declaration", "subscript_declaration",
+})
+
+
+def _swift_parameter_type_node(parameter_node):
+    """Return a Swift parameter's type node across grammar field-name quirks."""
+    colon_seen = False
+    for child in parameter_node.children:
+        if not child.is_named and child.type == ":":
+            colon_seen = True
+            continue
+        if colon_seen and child.is_named:
+            return child
+    return None
+
+
+def _swift_function_facts(node, source: bytes, func_name: str) -> dict:
+    """Stable signature facts used for overload identity and call matching."""
+    labels: list[str] = []
+    local_names: list[str] = []
+    parameter_types: list[str] = []
+    for parameter in node.children:
+        if parameter.type != "parameter":
+            continue
+        simple_ids = [c for c in parameter.children if c.type == "simple_identifier"]
+        external = parameter.child_by_field_name("external_name")
+        local = parameter.child_by_field_name("name")
+        if local is not None and local.type != "simple_identifier":
+            local = None
+        if external is not None:
+            label = _read_text(external, source)
+        elif simple_ids:
+            label = _read_text(simple_ids[0], source)
+        else:
+            label = "_"
+        if local is not None:
+            local_name = _read_text(local, source)
+        elif len(simple_ids) >= 2:
+            local_name = _read_text(simple_ids[1], source)
+        elif simple_ids:
+            local_name = _read_text(simple_ids[0], source)
+        else:
+            local_name = ""
+        type_node = _swift_parameter_type_node(parameter)
+        labels.append(label or "_")
+        local_names.append(local_name)
+        parameter_types.append(_read_text(type_node, source).strip() if type_node else "")
+
+    return_type = ""
+    arrow_seen = False
+    for child in node.children:
+        if not child.is_named and child.type == "->":
+            arrow_seen = True
+            continue
+        if arrow_seen and child.is_named:
+            return_type = _read_text(child, source).strip()
+            break
+    is_static = _swift_declaration_is_static(node, source)
+    is_async = any(c.type == "async" for c in node.children)
+    is_throwing = any(c.type in ("throws", "rethrows") for c in node.children)
+    signature = f"{func_name}({','.join(f'{label}:{ptype}' for label, ptype in zip(labels, parameter_types))})"
+    body = next(
+        (
+            child
+            for child in node.children
+            if child.type in ("function_body", "computed_property")
+        ),
+        None,
+    )
+    header_end = body.start_byte if body is not None else node.end_byte
+    declaration_signature = re.sub(
+        r"\s+",
+        " ",
+        source[node.start_byte:header_end].decode("utf-8", errors="replace").strip(),
+    )
+    declaration_digest = hashlib.sha1(
+        declaration_signature.encode("utf-8")
+    ).hexdigest()[:12]
+    return {
+        "signature": signature,
+        "identity_signature": f"{signature}#{declaration_digest}",
+        "declaration_signature": declaration_signature,
+        "parameter_labels": labels,
+        "parameter_names": local_names,
+        "parameter_types": parameter_types,
+        "arity": len(labels),
+        "return_type": return_type,
+        "is_static": is_static,
+        "is_async": is_async,
+        "is_throwing": is_throwing,
+        "is_protocol_requirement": (
+            node.type == "protocol_function_declaration"
+            or getattr(node, "parent", None) is not None
+            and node.parent.type == "protocol_body"
+        ),
+    }
+
+
+def _swift_is_overloaded(node, source: bytes, func_name: str) -> bool:
+    parent = getattr(node, "parent", None)
+    if parent is None:
+        return False
+    count = 0
+    for sibling in parent.children:
+        if sibling.type not in _SWIFT_FUNCTION_DECLARATIONS:
+            continue
+        if sibling.type == "init_declaration":
+            sibling_name = "init"
+        elif sibling.type == "deinit_declaration":
+            sibling_name = "deinit"
+        elif sibling.type == "subscript_declaration":
+            sibling_name = "subscript"
+        else:
+            name_node = sibling.child_by_field_name("name")
+            sibling_name = _read_text(name_node, source) if name_node is not None else ""
+        if sibling_name == func_name:
+            count += 1
+    return count > 1
+
+
+def _swift_call_facts(
+    call_node,
+    source: bytes,
+    identifier_types: dict[str, str] | None = None,
+) -> dict:
+    labels: list[str] = []
+    argument_types: list[str] = []
+    value_args = None
+    stack = list(call_node.children)
+    while stack:
+        current = stack.pop(0)
+        if current.type == "value_arguments":
+            value_args = current
+            break
+        stack[0:0] = list(current.children)
+    if value_args is not None:
+        for argument in value_args.children:
+            if argument.type != "value_argument":
+                continue
+            label_node = argument.child_by_field_name("name")
+            labels.append(
+                _read_text(label_node, source) if label_node is not None else "_"
+            )
+            value = argument.child_by_field_name("value")
+            inferred = ""
+            if value is not None:
+                if value.type == "line_string_literal":
+                    inferred = "String"
+                elif value.type == "integer_literal":
+                    inferred = "Int"
+                elif value.type in ("real_literal", "float_literal"):
+                    inferred = "Double"
+                elif value.type == "boolean_literal":
+                    inferred = "Bool"
+                elif value.type == "call_expression":
+                    inferred = _swift_constructor_type(value, source) or ""
+                elif value.type == "simple_identifier" and identifier_types:
+                    inferred = identifier_types.get(_read_text(value, source), "")
+            argument_types.append(inferred)
+
+    # Swift's trailing-closure syntax stores the closure directly under the
+    # call_suffix, outside value_arguments. Count it as the final unlabeled
+    # argument so `perform {}` cannot bind to a zero-arity overload.
+    suffix = next((c for c in call_node.children if c.type == "call_suffix"), None)
+    if suffix is not None:
+        trailing_closures = [
+            child for child in suffix.children if child.type == "lambda_literal"
+        ]
+        for _closure in trailing_closures:
+            labels.append("_")
+            argument_types.append("")
+    return {
+        "argument_labels": labels,
+        "argument_types": argument_types,
+        "argument_count": len(labels),
+    }
+
+
+def _swift_navigation_segments(node, source: bytes) -> list[str]:
+    """Flatten ``self.container.service`` into lexical receiver segments."""
+    if node is None:
+        return []
+    if node.type in ("simple_identifier", "self_expression"):
+        return [_read_text(node, source)]
+    if node.type != "navigation_expression":
+        return []
+    target = node.child_by_field_name("target") or (node.children[0] if node.children else None)
+    out = _swift_navigation_segments(target, source)
+    suffix = node.child_by_field_name("suffix")
+    if suffix is None:
+        suffix = next((c for c in node.children if c.type == "navigation_suffix"), None)
+    if suffix is not None:
+        ident = next((c for c in suffix.children if c.type == "simple_identifier"), None)
+        if ident is not None:
+            out.append(_read_text(ident, source))
+    return out
+
+
+def _swift_overload_match(node: dict, call_facts: dict) -> bool:
+    metadata = node.get("metadata") or {}
+    if metadata.get("arity") != call_facts.get("argument_count"):
+        return False
+    declared_labels = list(metadata.get("parameter_labels") or [])
+    if declared_labels != list(call_facts.get("argument_labels") or []):
+        return False
+    declared_types = list(metadata.get("parameter_types") or [])
+    argument_types = list(call_facts.get("argument_types") or [])
+    for declared, actual in zip(declared_types, argument_types):
+        declared_base = re.sub(r"\s+", "", str(declared)).split("<", 1)[0].rstrip("?")
+        actual_base = re.sub(r"\s+", "", str(actual)).split("<", 1)[0].rstrip("?")
+        if actual_base and declared_base and declared_base != actual_base:
+            return False
+    return True
 
 _C_PRIMITIVE_TYPE_NODES = frozenset({
     "primitive_type", "sized_type_specifier", "auto", "placeholder_type_specifier",
@@ -2158,6 +2432,10 @@ def _extract_generic(
     namespace_stack: list[str] = []
     scope_stack: list[str] = []
     function_bodies: list[tuple[str, object]] = []
+    function_owner_by_nid: dict[str, str] = {}
+    swift_callable_name_counts: dict[tuple[str, str], int] = {}
+    swift_property_types_by_owner: dict[str, dict[str, str]] = {}
+    swift_receiver_types_by_caller: dict[str, dict[str, str]] = {}
     # nids of function / method / class definitions in this file. The indirect-
     # dispatch guard (Python) resolves a call-argument identifier to an edge only
     # when it names one of these callable defs — never an arbitrary same-named
@@ -2322,9 +2600,23 @@ def _extract_generic(
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
             line = node.start_point[0] + 1
             metadata = None
+            class_node_type = None
             if config.ts_module == "tree_sitter_c_sharp" and parent_class_nid:
                 metadata = {"is_nested_type": True}
-            add_node(class_nid, class_name, line, metadata=metadata)
+            if config.ts_module == "tree_sitter_swift":
+                swift_decl_kind = (
+                    "protocol" if t == "protocol_declaration"
+                    else (_swift_declaration_keyword(node) or "class")
+                )
+                class_node_type = swift_decl_kind
+                metadata = dict(metadata or {}, swift_kind=swift_decl_kind)
+            add_node(
+                class_nid,
+                class_name,
+                line,
+                node_type=class_node_type,
+                metadata=metadata,
+            )
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
             add_edge(file_nid, class_nid, "contains", line)
 
@@ -2974,10 +3266,99 @@ def _extract_generic(
             return
 
         if (config.ts_module == "tree_sitter_swift"
+                and t in ("typealias_declaration", "associatedtype_declaration")):
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                name_node = next(
+                    (c for c in node.children if c.type == "type_identifier"),
+                    None,
+                )
+            if name_node is None:
+                return
+            name = _read_text(name_node, source)
+            line = node.start_point[0] + 1
+            owner = parent_class_nid or file_nid
+            kind = "associatedtype" if t == "associatedtype_declaration" else "typealias"
+            nid = _make_id(owner, kind, name)
+            refs: list[tuple[str, str]] = []
+            _swift_collect_type_refs(node, source, False, refs)
+            declared_types = [ref for ref, role in refs if role == "type" and ref != name]
+            alias_type = _swift_typealias_declared_type(node, source)
+            add_node(
+                nid,
+                name,
+                line,
+                node_type=(
+                    "associated_type" if t == "associatedtype_declaration" else "type_alias"
+                ),
+                metadata=(
+                    {"declared_type": alias_type or declared_types[0]}
+                    if t == "typealias_declaration" and (alias_type or declared_types)
+                    else None
+                ),
+            )
+            add_edge(owner, nid, "defines" if parent_class_nid else "contains", line)
+            seen_refs: set[str] = set()
+            for ref_name, role in refs:
+                if ref_name == name or ref_name in seen_refs:
+                    continue
+                seen_refs.add(ref_name)
+                target = ensure_named_node(ref_name, line)
+                add_edge(
+                    nid,
+                    target,
+                    "references",
+                    line,
+                    context="generic_arg" if role == "generic_arg" else "type",
+                )
+            return
+
+        if (config.ts_module == "tree_sitter_swift"
+                and t == "protocol_property_declaration"
+                and parent_class_nid):
+            name = _swift_property_name(node, source)
+            if not name:
+                return
+            line = node.start_point[0] + 1
+            nid = _make_id(parent_class_nid, "property_requirement", name)
+            refs: list[tuple[str, str]] = []
+            _swift_collect_type_refs(node, source, False, refs)
+            declared_types = [ref for ref, _ in refs if ref != name]
+            declared_type = _swift_property_declared_type(node, source)
+            add_node(
+                nid,
+                name,
+                line,
+                node_type="protocol_property_requirement",
+                metadata={
+                    "declared_type": declared_type or (declared_types[0] if declared_types else ""),
+                    "is_settable": _swift_property_is_settable(node),
+                    "is_static": _swift_declaration_is_static(node, source),
+                },
+            )
+            add_edge(
+                parent_class_nid,
+                nid,
+                "defines",
+                line,
+                context="property_requirement",
+            )
+            for ref_name in dict.fromkeys(declared_types):
+                add_edge(
+                    nid,
+                    ensure_named_node(ref_name, line),
+                    "references",
+                    line,
+                    context="field",
+                )
+            return
+
+        if (config.ts_module == "tree_sitter_swift"
                 and t == "property_declaration"
                 and parent_class_nid):
             line = node.start_point[0] + 1
             prop_type: str | None = None
+            declared_type = _swift_property_declared_type(node, source)
             type_anno = _swift_property_type_node(node)
             if type_anno is not None:
                 refs: list[tuple[str, str]] = []
@@ -3015,6 +3396,23 @@ def _extract_generic(
             prop_name = _swift_property_name(node, source)
             if prop_name and prop_type:
                 type_table[prop_name] = prop_type
+                swift_property_types_by_owner.setdefault(parent_class_nid, {})[
+                    prop_name
+                ] = prop_type
+            if prop_name:
+                prop_nid = _make_id(parent_class_nid, "property", prop_name)
+                add_node(
+                    prop_nid,
+                    prop_name,
+                    line,
+                    node_type="property",
+                    metadata={
+                        "declared_type": declared_type or prop_type or "",
+                        "is_settable": _swift_property_is_settable(node),
+                        "is_static": _swift_declaration_is_static(node, source),
+                    },
+                )
+                add_edge(parent_class_nid, prop_nid, "defines", line, context="property")
             return
 
         if (config.ts_module == "tree_sitter_scala"
@@ -3074,7 +3472,9 @@ def _extract_generic(
         # Function types
         if t in config.function_types:
             # Swift deinit/subscript have no name field — resolve before generic fallback
-            if t == "deinit_declaration":
+            if t == "init_declaration":
+                func_name: str | None = "init"
+            elif t == "deinit_declaration":
                 func_name: str | None = "deinit"
             elif t == "subscript_declaration":
                 func_name = "subscript"
@@ -3097,13 +3497,36 @@ def _extract_generic(
                 return
 
             line = node.start_point[0] + 1
+            swift_facts: dict = {}
+            identity_name = func_name
+            if config.ts_module == "tree_sitter_swift":
+                swift_facts = _swift_function_facts(node, source, func_name)
+                # Preserve legacy ids for non-overloaded declarations. Overloads
+                # include their signature so sibling definitions remain distinct.
+                owner = parent_class_nid or file_nid
+                owner_name = (owner, func_name)
+                seen_count = swift_callable_name_counts.get(owner_name, 0)
+                swift_callable_name_counts[owner_name] = seen_count + 1
+                if _swift_is_overloaded(node, source, func_name) or seen_count:
+                    identity_name = str(swift_facts["identity_signature"])
             if parent_class_nid:
-                func_nid = _make_id(parent_class_nid, func_name)
-                add_node(func_nid, f".{func_name}()", line)
+                func_nid = _make_id(parent_class_nid, identity_name)
+                add_node(
+                    func_nid,
+                    f".{func_name}()",
+                    line,
+                    node_type=(
+                        "protocol_requirement"
+                        if swift_facts.get("is_protocol_requirement")
+                        else None
+                    ),
+                    metadata=swift_facts or None,
+                )
                 add_edge(parent_class_nid, func_nid, "method", line)
+                function_owner_by_nid[func_nid] = parent_class_nid
             else:
-                func_nid = _make_id(stem, func_name)
-                add_node(func_nid, f"{func_name}()", line)
+                func_nid = _make_id(stem, identity_name)
+                add_node(func_nid, f"{func_name}()", line, metadata=swift_facts or None)
                 add_edge(file_nid, func_nid, "contains", line)
             callable_def_nids.add(func_nid)  # function / method def is callable
             if config.ts_module == "tree_sitter_python":
@@ -3293,7 +3716,7 @@ def _extract_generic(
                 for p in node.children:
                     if p.type != "parameter":
                         continue
-                    type_node = p.child_by_field_name("type")
+                    type_node = _swift_parameter_type_node(p)
                     refs: list[tuple[str, str]] = []
                     _swift_collect_type_refs(type_node, source, False, refs)
                     param_type: str | None = None
@@ -3308,11 +3731,28 @@ def _extract_generic(
                     # table; later params with the same name win, which is fine
                     # for the depth-1 member-call resolution we do).
                     if param_type:
+                        simple_ids = [
+                            c for c in p.children if c.type == "simple_identifier"
+                        ]
                         name_node = p.child_by_field_name("name")
+                        if name_node is not None and name_node.type != "simple_identifier":
+                            name_node = None
+                        if name_node is None and simple_ids:
+                            name_node = simple_ids[-1]
                         pname = _read_text(name_node, source) if name_node else None
                         if pname:
-                            type_table[pname] = param_type
-                return_node = node.child_by_field_name("return_type")
+                            swift_receiver_types_by_caller.setdefault(func_nid, {})[
+                                pname
+                            ] = param_type
+                return_node = None
+                arrow_seen = False
+                for child in node.children:
+                    if not child.is_named and child.type == "->":
+                        arrow_seen = True
+                        continue
+                    if arrow_seen and child.is_named:
+                        return_node = child
+                        break
                 if return_node is not None:
                     refs = []
                     _swift_collect_type_refs(return_node, source, False, refs)
@@ -3538,6 +3978,14 @@ def _extract_generic(
         normalised = raw.strip("()").lstrip(".")
         label_to_nid[normalised] = n["id"]
         label_to_nid_ci[normalised.lower()] = n["id"]
+    swift_callable_candidates: dict[str, list[dict]] = {}
+    if config.ts_module == "tree_sitter_swift":
+        for candidate in nodes:
+            if candidate.get("id") not in callable_def_nids:
+                continue
+            normalised = str(candidate.get("label", "")).strip("()").lstrip(".")
+            if normalised:
+                swift_callable_candidates.setdefault(normalised, []).append(candidate)
 
     seen_call_pairs: set[tuple[str, str]] = set()
     seen_indirect_pairs: set[tuple[str, str]] = set()  # Python indirect_call dedup
@@ -3734,10 +4182,15 @@ def _extract_generic(
             is_member_call: bool = False
             is_this_field_call: bool = False
             swift_receiver: str | None = None
+            swift_receiver_path: list[str] = []
+            swift_receiver_call: dict | None = None
+            swift_call_facts: dict = {}
             member_receiver: str | None = None
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
+                swift_types = swift_receiver_types_by_caller.get(caller_nid, {})
+                swift_call_facts = _swift_call_facts(node, source, swift_types)
                 # Swift: first child may be simple_identifier or navigation_expression
                 first = node.children[0] if node.children else None
                 if first:
@@ -3745,15 +4198,44 @@ def _extract_generic(
                         callee_name = _read_text(first, source)
                     elif first.type == "navigation_expression":
                         is_member_call = True
-                        for child in first.children:
-                            if child.type == "navigation_suffix":
-                                for sc in child.children:
-                                    if sc.type == "simple_identifier":
-                                        callee_name = _read_text(sc, source)
+                        segments = _swift_navigation_segments(first, source)
+                        if segments:
+                            callee_name = segments[-1]
+                            swift_receiver_path = segments[:-1]
                         # #1356: capture the receiver so the cross-file pass can
                         # resolve it through the file's type table.
                         recv_node = first.children[0] if first.children else None
                         swift_receiver = _swift_receiver_name(recv_node, source)
+                        if swift_receiver_path:
+                            non_self = [s for s in swift_receiver_path if s != "self"]
+                            swift_receiver = non_self[0] if non_self else "self"
+                        if recv_node is not None and recv_node.type == "call_expression":
+                            inner_first = recv_node.children[0] if recv_node.children else None
+                            inner_segments = _swift_navigation_segments(inner_first, source)
+                            inner_callee = ""
+                            inner_receiver_path: list[str] = []
+                            if (
+                                inner_first is not None
+                                and inner_first.type == "simple_identifier"
+                            ):
+                                inner_callee = _read_text(inner_first, source)
+                            elif inner_segments:
+                                inner_callee = inner_segments[-1]
+                                inner_receiver_path = inner_segments[:-1]
+                            if inner_callee:
+                                swift_receiver_call = {
+                                    "callee": inner_callee,
+                                    "receiver_path": inner_receiver_path,
+                                    **_swift_call_facts(recv_node, source, swift_types),
+                                }
+                                if inner_receiver_path:
+                                    inner_receiver_type = swift_types.get(
+                                        inner_receiver_path[0]
+                                    )
+                                    if inner_receiver_type:
+                                        swift_receiver_call[
+                                            "receiver_type"
+                                        ] = inner_receiver_type
             elif config.ts_module == "tree_sitter_kotlin":
                 # Kotlin: first child may be simple_identifier/identifier or
                 # navigation_expression. PyPI's `tree_sitter_kotlin` produces
@@ -3972,7 +4454,10 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
-                if _java_defer or (
+                _swift_defer = (
+                    config.ts_module == "tree_sitter_swift" and is_member_call
+                )
+                if _swift_defer or _java_defer or (
                     is_member_call
                     and member_receiver
                     and (
@@ -3982,6 +4467,32 @@ def _extract_generic(
                     )
                 ):
                     tgt_nid = None
+                elif config.ts_module == "tree_sitter_swift":
+                    swift_candidates = list(
+                        swift_callable_candidates.get(callee_name, [])
+                    )
+                    caller_owner = function_owner_by_nid.get(caller_nid)
+                    if caller_owner:
+                        owned = [
+                            candidate
+                            for candidate in swift_candidates
+                            if function_owner_by_nid.get(str(candidate.get("id")))
+                            == caller_owner
+                        ]
+                        if owned:
+                            swift_candidates = owned
+                    swift_matches = (
+                        swift_candidates
+                        if len(swift_candidates) == 1
+                        else [
+                            candidate
+                            for candidate in swift_candidates
+                            if _swift_overload_match(candidate, swift_call_facts)
+                        ]
+                    )
+                    tgt_nid = (
+                        swift_matches[0]["id"] if len(swift_matches) == 1 else None
+                    )
                 else:
                     tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
@@ -4009,6 +4520,18 @@ def _extract_generic(
                         "source_location": f"L{node.start_point[0] + 1}",
                         "receiver": swift_receiver or member_receiver,
                     }
+                    if config.ts_module == "tree_sitter_swift":
+                        rc_entry.update(swift_call_facts)
+                        rc_entry["receiver_path"] = swift_receiver_path
+                        if swift_receiver:
+                            receiver_type = swift_receiver_types_by_caller.get(
+                                caller_nid, {}
+                            ).get(swift_receiver)
+                            if receiver_type:
+                                rc_entry["receiver_type"] = receiver_type
+                        if swift_receiver_call:
+                            rc_entry["receiver_call"] = swift_receiver_call
+                        rc_entry["lang"] = "swift"
                     # Ruby: attach the receiver's inferred type from the method's
                     # local `var = Const.new` bindings, when unambiguously known.
                     if member_receiver and config.ts_module == "tree_sitter_ruby":
@@ -4255,8 +4778,17 @@ def _extract_generic(
     # method bodies so `x.method()` on a later line resolves — class-level
     # properties are typed in the walk, but method-body locals were not (#1604).
     if config.ts_module == "tree_sitter_swift":
-        for _caller_nid, body_node in function_bodies:
-            _swift_local_var_types(body_node, source, type_table)
+        for caller_nid, body_node in function_bodies:
+            scoped_types = dict(
+                swift_property_types_by_owner.get(
+                    function_owner_by_nid.get(caller_nid, ""),
+                    {},
+                )
+            )
+            scoped_types.update(swift_receiver_types_by_caller.get(caller_nid, {}))
+            _swift_local_var_types(body_node, source, scoped_types)
+            if scoped_types:
+                swift_receiver_types_by_caller[caller_nid] = scoped_types
 
     # JS/TS: bodies already walked with their own caller_nid (const-assigned
     # arrows, methods). An INLINE/returned arrow or function-expression that is
