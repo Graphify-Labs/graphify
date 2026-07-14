@@ -2369,10 +2369,9 @@ def dispatch_command(cmd: str) -> None:
             return res
 
         default_io_workers = min(32, (os.cpu_count() or 1) + 4)
-        worker_count = cli_max_workers or os.environ.get("GRAPHIFY_MAX_WORKERS")
-        if worker_count:
-            worker_count = int(worker_count)
-        else:
+        try:
+            worker_count = int(cli_max_workers or os.environ.get("GRAPHIFY_MAX_WORKERS") or default_io_workers)
+        except ValueError:
             worker_count = default_io_workers
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
