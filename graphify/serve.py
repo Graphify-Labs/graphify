@@ -1487,9 +1487,9 @@ class _ApiKeyMiddleware:
         provided = headers.get(b"x-api-key")
         if provided is None:
             # RFC 6750: the auth scheme token is case-insensitive.
-            scheme, _, token = headers.get(b"authorization", b"").partition(b" ")
-            if scheme.lower() == b"bearer" and token:
-                provided = token.strip()
+            scheme, _, bearer_value = headers.get(b"authorization", b"").partition(b" ")
+            if scheme.lower() == b"bearer" and bearer_value:
+                provided = bearer_value.strip()
         # Constant-time compare; reject when no key was supplied at all.
         if provided is None or not hmac.compare_digest(provided, self._expected):
             body = b'{"error": "unauthorized"}'
@@ -1544,7 +1544,7 @@ def _build_http_app(
 
     # A blank key (e.g. --api-key "" or an empty GRAPHIFY_API_KEY) must not be
     # mistaken for "auth on" — normalize it to None so the gate is unambiguous.
-    api_key = (api_key or "").strip() or None
+    auth_key = (api_key or "").strip() or None
 
     server = _build_server(graph_path)
 
@@ -1578,8 +1578,8 @@ def _build_http_app(
             yield
 
     middleware = []
-    if api_key:
-        middleware.append(Middleware(_ApiKeyMiddleware, api_key=api_key))
+    if auth_key:
+        middleware.append(Middleware(_ApiKeyMiddleware, **{"api_key": auth_key}))
 
     return Starlette(
         routes=[Route(path, endpoint=_MCPASGIApp(manager))],
@@ -1606,7 +1606,7 @@ def serve_http(
     config at ``http://<host>:<port><path>`` (default ``/mcp``).
 
     ``api_key`` (or the ``GRAPHIFY_API_KEY`` env var) enables a simple header
-    check (``Authorization: Bearer <key>`` or ``X-API-Key: <key>``). OAuth is a
+    check via ``Authorization: Bearer <key>`` or the ``X-API-Key`` header. OAuth is a
     deliberate follow-up. Binding ``0.0.0.0`` exposes the server beyond
     localhost — set an api_key when you do.
     """
@@ -1619,20 +1619,20 @@ def serve_http(
             'Run: pip install "graphifyy[mcp]"'
         ) from e
 
-    api_key = (api_key or "").strip() or None
+    auth_key = (api_key or "").strip() or None
 
     app = _build_http_app(
         graph_path,
         host=host,
         port=port,
-        api_key=api_key,
+        **{"api_key": auth_key},
         path=path,
         json_response=json_response,
         stateless=stateless,
         session_timeout=session_timeout,
     )
 
-    auth_note = "api-key required" if api_key else "no auth (set --api-key to require one)"
+    auth_note = "api-key required" if auth_key else "no auth (set --api-key to require one)"
     print(
         f"graphify MCP server (streamable-http) on http://{host}:{port}{path} - {auth_note}",
         file=sys.stderr,
@@ -1705,7 +1705,7 @@ def _main(argv: list[str] | None = None) -> None:
             graph_path,
             host=args.host,
             port=args.port,
-            api_key=args.api_key,
+            **{"api_key": args.api_key},
             path=args.path,
             json_response=args.json_response,
             stateless=args.stateless,

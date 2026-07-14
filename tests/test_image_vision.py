@@ -161,7 +161,7 @@ def test_claude_cli_passes_oversized_image_by_path(tmp_path, monkeypatch):
 
 
 def test_capability_flags(monkeypatch):
-    for b in ("claude", "claude-cli", "openai", "gemini", "bedrock", "kimi"):
+    for b in ("claude", "claude-cli", "openai", "gemini", "bedrock", "kimi", "minimax"):
         assert llm._backend_supports_vision(b), b
     assert not llm._backend_supports_vision("deepseek")
     # ollama is opt-in via env (default model is text-only)

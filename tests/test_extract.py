@@ -1131,6 +1131,22 @@ def test_extract_falls_back_to_sequential_when_parallel_returns_false(tmp_path, 
     assert result["nodes"], "extract should still produce nodes after fallback"
 
 
+def test_default_ast_workers_are_bounded_for_background_use(monkeypatch):
+    from graphify import extract as extract_mod
+
+    monkeypatch.delenv("GRAPHIFY_MAX_WORKERS", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    assert extract_mod._resolve_max_workers(None, 10_000) == 8
+
+
+def test_graphify_max_workers_env_overrides_background_default(monkeypatch):
+    from graphify import extract as extract_mod
+
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "3")
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    assert extract_mod._resolve_max_workers(None, 10_000) == 3
+
+
 def test_extract_parallel_returns_false_on_broken_pool(tmp_path, monkeypatch, capsys):
     """_extract_parallel must catch BrokenProcessPool internally and return False."""
     from concurrent.futures.process import BrokenProcessPool

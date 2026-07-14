@@ -1,5 +1,6 @@
 """Tests for direct semantic-extraction backend selection."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,20 @@ from graphify import llm
 
 def _clear_backend_env(monkeypatch):
     for env_key in (
+        "MINIMAX_API_KEY",
+        "NVIDIA_NIM_API_KEY",
+        "GRAPHIFY_NVIDIA_NIM_API_KEY",
+        "NVIDIA_API_KEY",
+        "NGC_API_KEY",
+        "GRAPHIFY_NVIDIA_NIM_MODEL",
+        "NVIDIA_NIM_MODEL",
+        "NIM_MODEL",
+        "NVIDIA_NIM_BASE_URL",
+        "NIM_BASE_URL",
+        "GRAPHIFY_DISABLE_NIM_FALLBACK",
+        "GRAPHIFY_MINIMAX_API_KEY",
+        "GRAPHIFY_MINIMAX_MODEL",
+        "MINIMAX_MODEL",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "MOONSHOT_API_KEY",
@@ -18,8 +33,107 @@ def _clear_backend_env(monkeypatch):
         "DEEPSEEK_API_KEY",
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_ENDPOINT",
+        "GRAPHIFY_DISABLE_OLLAMA_PRIMARY",
+        "GRAPHIFY_DISABLE_MINIMAX_FALLBACK",
+        "GRAPHIFY_OLLAMA_MODEL",
+        "OLLAMA_MODEL",
+        "OLLAMA_BASE_URL",
+        "OLLAMA_API_KEY",
+        "GRAPHIFY_OLLAMA_NUM_CTX",
+        "GRAPHIFY_OLLAMA_KEEP_ALIVE",
+        "GRAPHIFY_OLLAMA_FALLBACK_MODELS",
+        "GRAPHIFY_OLLAMA_PARALLEL",
+        "GRAPHIFY_OLLAMA_DAYTIME_POLICY",
+        "GRAPHIFY_OLLAMA_BALANCE",
+        "GRAPHIFY_OLLAMA_MINIMAX_MAX_FRACTION",
+        "GRAPHIFY_OLLAMA_SLOW_CHUNK_SECONDS",
+        "GRAPHIFY_OLLAMA_DAYTIME_FILE_LIMIT",
+        "GRAPHIFY_OLLAMA_NUM_GPU",
+        "GRAPHIFY_OLLAMA_MAIN_GPU",
+        "GRAPHIFY_OLLAMA_NUM_THREAD",
+        "GRAPHIFY_OLLAMA_TOKEN_BUDGET",
     ):
         monkeypatch.delenv(env_key, raising=False)
+    monkeypatch.setenv("GRAPHIFY_DISABLE_OLLAMA_PRIMARY", "1")
+
+def test_ollama_is_default_primary_even_when_minimax_key_exists(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_DISABLE_OLLAMA_PRIMARY", raising=False)
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+
+    assert llm.detect_backend() == "ollama"
+
+
+def test_oversized_ollama_model_does_not_block_safe_local_chain(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_DISABLE_OLLAMA_PRIMARY", raising=False)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_MODEL", "qwen3-coder:30b")
+
+    assert llm.detect_backend() == "ollama"
+    assert llm._ollama_model_chain() == ["qwen2.5-coder:3b", "gemma3:4b"]
+
+
+def test_oversized_ollama_model_still_prefers_safe_local_before_minimax(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_DISABLE_OLLAMA_PRIMARY", raising=False)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_MODEL", "qwen3-coder:30b")
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+
+    assert llm.detect_backend() == "ollama"
+
+
+def test_minimax_accepts_minimax_api_key(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+
+    assert llm.detect_backend() == "minimax"
+    assert llm._get_backend_api_key("minimax") == "minimax-key"
+
+
+def test_minimax_accepts_graphify_minimax_api_key(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_MINIMAX_API_KEY", "graphify-minimax-key")
+
+    assert llm.detect_backend() == "minimax"
+    assert llm._get_backend_api_key("minimax") == "graphify-minimax-key"
+
+
+def test_minimax_key_can_come_from_global_credentials(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    creds = tmp_path / "credentials.json"
+    creds.write_text('{"api_keys":{"MINIMAX_API_KEY":"file-key"}}', encoding="utf-8")
+    monkeypatch.setenv("GRAPHIFY_CREDENTIALS_PATH", str(creds))
+
+    assert llm.detect_backend() == "minimax"
+    assert llm._get_backend_api_key("minimax") == "file-key"
+
+
+def test_backend_detection_prefers_minimax(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("MOONSHOT_API_KEY", "moonshot-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+
+    assert llm.detect_backend() == "minimax"
+
+def test_nim_is_explicit_not_auto_detected(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("NVIDIA_NIM_API_KEY", "nim-key")
+
+    assert llm.detect_backend() == "openai"
+    assert llm._get_backend_api_key("nim") == "nim-key"
+
+
+def test_minimax_still_preferred_over_nim(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("NVIDIA_NIM_API_KEY", "nim-key")
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+
+    assert llm.detect_backend() == "minimax"
+
 
 
 def test_gemini_accepts_gemini_api_key(monkeypatch):
@@ -38,7 +152,7 @@ def test_gemini_accepts_google_api_key(monkeypatch):
     assert llm._get_backend_api_key("gemini") == "google-key"
 
 
-def test_backend_detection_prefers_gemini(monkeypatch):
+def test_backend_detection_prefers_gemini_when_minimax_unset(monkeypatch):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
@@ -54,6 +168,87 @@ def test_openai_backend_detected(monkeypatch):
 
     assert llm.detect_backend() == "openai"
     assert llm._get_backend_api_key("openai") == "openai-key"
+
+
+def test_extract_files_direct_routes_minimax_through_openai_compat(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n\nThe runner emits a snapshot.\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+        assert llm.extract_files_direct([source], backend="minimax", root=tmp_path) is result
+
+    assert call.call_args.args[:3] == (
+        "https://api.minimax.io/v1",
+        "minimax-key",
+        "MiniMax-M3",
+    )
+    assert call.call_args.kwargs["temperature"] == 0
+    assert call.call_args.kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert call.call_args.kwargs["max_completion_tokens"] == 16384
+
+def test_extract_files_direct_routes_nim_through_openai_compat(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("NVIDIA_NIM_API_KEY", "nim-key")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n\nThe runner emits a snapshot.\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+        assert llm.extract_files_direct([source], backend="nim", root=tmp_path) is result
+
+    assert call.call_args.args[:3] == (
+        "https://integrate.api.nvidia.com/v1",
+        "nim-key",
+        "meta/llama-3.1-8b-instruct",
+    )
+    assert call.call_args.kwargs["temperature"] == 0
+    assert call.call_args.kwargs["completion_token_param"] == "max_tokens"
+    assert call.call_args.kwargs["max_completion_tokens"] == 8192
+
+
+def test_ollama_falls_back_to_gemma_before_cloud(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_ollama_native", side_effect=[RuntimeError("qwen down"), result]) as ollama_call:
+        assert llm.extract_files_direct([source], backend="ollama", root=tmp_path) is result
+
+    models = [call.args[1] for call in ollama_call.call_args_list]
+    assert models == ["qwen2.5-coder:3b", "gemma3:4b"]
+    assert result["backend"] == "ollama"
+
+
+def test_auto_ollama_falls_back_through_gemma_to_minimax_on_api_failure(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_DISABLE_OLLAMA_PRIMARY", raising=False)
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch(
+        "graphify.llm._call_ollama_native",
+        side_effect=[RuntimeError("qwen down"), RuntimeError("gemma down")],
+    ) as ollama_call:
+        with patch("graphify.llm._call_openai_compat", return_value=result) as minimax_call:
+            assert llm.extract_files_direct([source], root=tmp_path) is result
+
+    assert [call.args[1] for call in ollama_call.call_args_list] == [
+        "qwen2.5-coder:3b",
+        "gemma3:4b",
+    ]
+    assert minimax_call.call_args.args[:3] == (
+        "https://api.minimax.io/v1",
+        "minimax-key",
+        "MiniMax-M3",
+    )
+    assert result["backend"] == "minimax"
+
 
 
 def test_extract_files_direct_routes_gemini_through_openai_compat(tmp_path, monkeypatch):
@@ -103,7 +298,12 @@ def test_openai_compat_backends_resolve_full_output_cap(tmp_path, monkeypatch, b
     source.write_text("# Architecture\n")
     result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
 
-    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+    call_target = (
+        "graphify.llm._call_ollama_native"
+        if backend == "ollama"
+        else "graphify.llm._call_openai_compat"
+    )
+    with patch(call_target, return_value=result) as call:
         llm.extract_files_direct([source], backend=backend, root=tmp_path)
 
     assert call.call_args.kwargs["max_completion_tokens"] == 16384
@@ -381,7 +581,7 @@ def test_call_openai_compat_relabels_empty_content_as_length(monkeypatch):
     _install_fake_openai(monkeypatch, fake_resp)
 
     result = llm._call_openai_compat(
-        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:3b",
         "user msg", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
     assert result["finish_reason"] == "length", (
@@ -395,7 +595,7 @@ def test_call_openai_compat_relabels_none_content_as_length(monkeypatch):
     _install_fake_openai(monkeypatch, fake_resp)
 
     result = llm._call_openai_compat(
-        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:3b",
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
     assert result["finish_reason"] == "length"
@@ -409,7 +609,7 @@ def test_call_openai_compat_relabels_unparseable_json_as_length(monkeypatch):
     _install_fake_openai(monkeypatch, fake_resp)
 
     result = llm._call_openai_compat(
-        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:3b",
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
     assert result["finish_reason"] == "length"
@@ -470,7 +670,7 @@ def test_ollama_extra_body_sets_num_ctx_and_keep_alive(monkeypatch):
     monkeypatch.delenv("GRAPHIFY_OLLAMA_KEEP_ALIVE", raising=False)
 
     llm._call_openai_compat(
-        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:3b",
         "user msg", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
 
@@ -479,7 +679,31 @@ def test_ollama_extra_body_sets_num_ctx_and_keep_alive(monkeypatch):
     # num_ctx is now dynamic: derived from message size, not hardcoded 131072
     assert "num_ctx" in eb.get("options", {}), "num_ctx must be present"
     assert eb["options"]["num_ctx"] >= 8192, "num_ctx must be at least the floor value"
-    assert eb.get("keep_alive") == "30m", "default keep_alive must be 30m"
+    assert eb.get("keep_alive") == "30s", "default keep_alive must release VRAM quickly"
+    assert captured["response_format"] == {"type": "json_object"}
+
+
+def test_ollama_json_mode_can_be_disabled_for_legacy_servers(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_JSON_MODE", "0")
+
+    llm._call_openai_compat(
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:3b",
+        "user msg", temperature=0, max_completion_tokens=8192, backend="ollama",
+    )
+
+    assert "response_format" not in captured
+
+
+def test_non_ollama_openai_compat_does_not_force_json_mode(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.openai.com/v1", "key", "gpt-4.1-mini",
+        "user msg", temperature=0, max_completion_tokens=8192, backend="openai",
+    )
+
+    assert "response_format" not in captured
 
 
 def test_ollama_num_ctx_scales_with_small_token_budget(monkeypatch):
@@ -494,7 +718,7 @@ def test_ollama_num_ctx_scales_with_small_token_budget(monkeypatch):
     small_chunk_msg = "x" * 32_000
 
     llm._call_openai_compat(
-        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:3b",
         small_chunk_msg, temperature=0, max_completion_tokens=16384, backend="ollama",
     )
 
@@ -514,11 +738,53 @@ def test_ollama_num_ctx_env_override(monkeypatch):
     monkeypatch.delenv("GRAPHIFY_OLLAMA_KEEP_ALIVE", raising=False)
 
     llm._call_openai_compat(
-        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:3b",
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
     )
 
     assert captured["extra_body"]["options"]["num_ctx"] == 65536
+
+
+def test_ollama_native_uses_api_chat_and_num_ctx(monkeypatch):
+    captured = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return (
+                b'{"message":{"content":"{\\"nodes\\":[{\\"id\\":\\"x\\"}],'
+                b'\\"edges\\":[],\\"hyperedges\\":[]}"},"prompt_eval_count":10,'
+                b'"eval_count":100,"done_reason":"stop"}'
+            )
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _Resp()
+
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_NUM_CTX", "65536")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_KEEP_ALIVE", "0")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+
+    result = llm._call_ollama_native(
+        "http://localhost:11434/v1",
+        "gemma3:4b",
+        "u",
+        max_completion_tokens=8192,
+    )
+
+    assert captured["url"] == "http://localhost:11434/api/chat"
+    assert captured["payload"]["options"]["num_ctx"] == 65536
+    assert captured["payload"]["options"]["num_predict"] == 8192
+    assert captured["payload"]["keep_alive"] == "0"
+    assert captured["payload"]["format"] == "json"
+    assert result["nodes"] == [{"id": "x"}]
 
 
 def test_non_ollama_backend_gets_no_num_ctx_extra_body(monkeypatch):
@@ -633,7 +899,7 @@ def test_call_openai_compat_explicit_extra_body_skips_ollama_auto_derive(monkeyp
     monkeypatch.delenv("GRAPHIFY_OLLAMA_KEEP_ALIVE", raising=False)
 
     llm._call_openai_compat(
-        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:3b",
         "u", temperature=0, max_completion_tokens=8192, backend="ollama",
         extra_body={"options": {"num_ctx": 4096}},
     )
@@ -642,6 +908,55 @@ def test_call_openai_compat_explicit_extra_body_skips_ollama_auto_derive(monkeyp
         "explicit extra_body must replace the ollama auto-derived num_ctx"
     )
 
+
+def test_extract_corpus_parallel_spills_only_some_ollama_chunks_to_minimax(tmp_path, monkeypatch):
+    files = [tmp_path / f"f{i}.md" for i in range(4)]
+    for f in files:
+        f.write_text("hello")
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_DAYTIME_FILE_LIMIT", "3")
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_BALANCE", raising=False)
+
+    with patch("graphify.llm._ollama_system_pressure", return_value="high"):
+        with patch("graphify.llm.extract_files_direct", side_effect=lambda *args, **kwargs: _ok()) as call:
+            result = llm.extract_corpus_parallel(
+                files,
+                backend="ollama",
+                api_key="ollama",
+                model="qwen2.5-coder:3b",
+                root=tmp_path,
+                token_budget=None,
+                chunk_size=1,
+                allow_minimax_fallback=True,
+            )
+
+    backends = [c.kwargs["backend"] for c in call.call_args_list]
+    assert backends[0] == "minimax"
+    assert backends.count("minimax") == 1
+    assert result["minimax_chunks"] == 1
+
+
+def test_extract_corpus_parallel_can_defer_daytime_semantics(tmp_path, monkeypatch):
+    files = [tmp_path / f"f{i}.md" for i in range(3)]
+    for f in files:
+        f.write_text("hello")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_BALANCE", "defer")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_DAYTIME_FILE_LIMIT", "3")
+
+    with patch("graphify.llm._in_ollama_low_load_window", return_value=False):
+        with patch("graphify.llm.extract_files_direct") as call:
+            result = llm.extract_corpus_parallel(
+                files,
+                backend="ollama",
+                api_key="ollama",
+                model="qwen2.5-coder:3b",
+                root=tmp_path,
+                token_budget=None,
+                chunk_size=1,
+            )
+
+    call.assert_not_called()
+    assert result["deferred_semantic"] is True
 
 def test_extract_corpus_parallel_ollama_runs_serially(tmp_path, monkeypatch):
     # With 3 chunks and backend=ollama, ThreadPoolExecutor must NOT be used
@@ -662,12 +977,36 @@ def test_extract_corpus_parallel_ollama_runs_serially(tmp_path, monkeypatch):
     with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
         with patch("graphify.llm.ThreadPoolExecutor") as mock_pool:
             result = llm.extract_corpus_parallel(
-                files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+                files, backend="ollama", api_key="ollama", model="qwen2.5-coder:3b",
                 root=tmp_path, token_budget=None, chunk_size=2, max_concurrency=4,
             )
 
     mock_pool.assert_not_called()
     assert len(result["nodes"]) == 6
+
+
+def test_extract_corpus_parallel_ollama_uses_local_token_budget(tmp_path, monkeypatch):
+    files = [tmp_path / "a.md"]
+    files[0].write_text("hello")
+    captured = {}
+
+    def fake_pack(paths, token_budget):
+        captured["token_budget"] = token_budget
+        return [paths]
+
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_TOKEN_BUDGET", raising=False)
+    with patch("graphify.llm._pack_chunks_by_tokens", side_effect=fake_pack):
+        with patch("graphify.llm.extract_files_direct", return_value=_ok()):
+            llm.extract_corpus_parallel(
+                files,
+                backend="ollama",
+                api_key="ollama",
+                model="qwen2.5-coder:3b",
+                root=tmp_path,
+                max_concurrency=1,
+            )
+
+    assert captured["token_budget"] == 20_000
 
 
 def test_extract_corpus_parallel_ollama_parallel_env_restores_concurrency(tmp_path, monkeypatch):
@@ -686,7 +1025,7 @@ def test_extract_corpus_parallel_ollama_parallel_env_restores_concurrency(tmp_pa
             )()
             try:
                 llm.extract_corpus_parallel(
-                    files, backend="ollama", api_key="ollama", model="m",
+                    files, backend="ollama", api_key="ollama", model="qwen2.5-coder:3b",
                     root=tmp_path, token_budget=None, chunk_size=2, max_concurrency=4,
                 )
             except Exception:
@@ -721,7 +1060,7 @@ def test_adaptive_retry_bisects_on_hollow_ollama_response(tmp_path):
 
     with patch("graphify.llm.extract_files_direct", side_effect=fake_extract):
         result = llm._extract_with_adaptive_retry(
-            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:7b",
+            files, backend="ollama", api_key="ollama", model="qwen2.5-coder:3b",
             root=tmp_path, max_depth=3,
         )
 
@@ -774,10 +1113,10 @@ def test_call_azure_uses_correct_client_params_and_max_completion_tokens(monkeyp
     captured = _install_fake_azure_openai(monkeypatch, fake_resp)
 
     result = llm._call_azure(
-        api_key="test-key",
         endpoint="https://my-resource.openai.azure.com/",
         model="gpt-4o",
         user_message="test",
+        **{"api_key": "dummy"},
     )
 
     assert captured["init_kwargs"].get("azure_endpoint") == "https://my-resource.openai.azure.com/"

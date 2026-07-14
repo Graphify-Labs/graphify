@@ -704,6 +704,8 @@ _SKIP_DIRS = {
     ".next", ".nuxt", ".turbo", ".angular",
     ".idea", ".cache", ".parcel-cache", ".svelte-kit", ".terraform", ".serverless",
     ".graphify",  # graphify's own extraction cache — never index self-generated data
+    ".cursor", ".claude", ".opencode", ".codex", ".codex-research", ".hermes",
+    ".repowise", ".researchclaw_cache", ".serena", ".clawteam", ".aider", ".memu",
     ".worktrees",  # git worktree convention (#947) — sibling checkouts, always redundant
 }
 
@@ -1134,7 +1136,7 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
     return True
 
 
-def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None) -> dict:
+def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, count_content: bool = True) -> dict:
     root = root.resolve()
     if follow_symlinks is None:
         follow_symlinks = False
@@ -1296,7 +1298,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
-                    total_words += _wc(md_path)
+                    if count_content:
+                        total_words += _wc(md_path)
                 else:
                     skipped_sensitive.append(str(p) + " [Google Workspace export produced no readable text]")
                 continue
@@ -1307,24 +1310,27 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
                     files[ftype].append(str(md_path))
-                    total_words += _wc(md_path)
+                    if count_content:
+                        total_words += _wc(md_path)
                 else:
                     # Conversion failed (library not installed) - skip with note
                     skipped_sensitive.append(str(p) + " [office conversion failed - pip install graphifyy[office]]")
                 continue
             files[ftype].append(str(p))
-            if ftype != FileType.VIDEO:
+            if count_content and ftype != FileType.VIDEO:
                 total_words += _wc(p)
 
     for ftype in files:
         files[ftype].sort()
 
     total_files = sum(len(v) for v in files.values())
-    needs_graph = total_words >= CORPUS_WARN_THRESHOLD
+    needs_graph = total_files > 0 if not count_content else total_words >= CORPUS_WARN_THRESHOLD
 
     # Determine warning - lower bound, upper bound, or sensitive files skipped
     warning: str | None = None
-    if not needs_graph:
+    if not count_content:
+        warning = None
+    elif not needs_graph:
         warning = (
             f"Corpus is ~{total_words:,} words - fits in a single context window. "
             f"You may not need a graph."

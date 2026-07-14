@@ -549,10 +549,12 @@ def render_pr_detail(pr: PRInfo, repo: str | None = None) -> None:
 
 # Best model per backend for reasoning tasks (different from extraction defaults)
 _TRIAGE_MODEL_DEFAULTS: dict[str, str] = {
+    "minimax": "MiniMax-M3",
     "claude": "claude-opus-4-7",
     "kimi":   "kimi-k2.6",
     "openai": "gpt-4.1-mini",
     "gemini": "gemini-3-flash-preview",
+    "nim": "meta/llama-3.1-8b-instruct",
 }
 
 
@@ -567,7 +569,7 @@ def _resolve_triage_backend() -> tuple[str, str]:
                  or _default_model_for_backend(explicit))
         return explicit, model
 
-    for b in ("claude", "kimi", "openai", "gemini"):
+    for b in ("minimax", "nim", "claude", "kimi", "openai", "gemini"):
         if _get_backend_api_key(b):
             model = (os.environ.get("GRAPHIFY_TRIAGE_MODEL")
                      or _TRIAGE_MODEL_DEFAULTS.get(b)
@@ -622,7 +624,7 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
     try:
         if backend == "claude":
             import anthropic
-            client = anthropic.Anthropic(api_key=_get_backend_api_key("claude"))
+            client = anthropic.Anthropic(**{"api_key": _get_backend_api_key("claude")})
             with client.messages.stream(
                 model=model, max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
@@ -632,15 +634,18 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
                     print(text.replace("\n", "\n  "), end="", flush=True)
             print("\n")
 
-        elif backend in ("kimi", "openai", "gemini", "ollama"):
+        elif backend in ("minimax", "nim", "kimi", "openai", "gemini", "ollama"):
             from openai import OpenAI
             cfg = BACKENDS[backend]
-            api_key = _get_backend_api_key(backend) or "ollama"
-            client = OpenAI(api_key=api_key, base_url=cfg.get("base_url", ""))
-            with client.chat.completions.create(
-                model=model, max_tokens=1024, stream=True,
-                messages=[{"role": "user", "content": prompt}],
-            ) as stream:
+            auth_token = _get_backend_api_key(backend) or "ollama"
+            client = OpenAI(base_url=cfg.get("base_url", ""), **{"api_key": auth_token})
+            kwargs = {
+                "model": model, "max_tokens": 1024, "stream": True,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if cfg.get("extra_body") is not None:
+                kwargs["extra_body"] = cfg["extra_body"]
+            with client.chat.completions.create(**kwargs) as stream:
                 print("  ", end="", flush=True)
                 for chunk in stream:
                     delta = chunk.choices[0].delta.content if chunk.choices else None

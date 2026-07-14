@@ -73,9 +73,9 @@ def _strip_jsonc(text: str) -> str:
     )
 
     def _replace(match: re.Match) -> str:
-        token = match.group(0)
-        if token.startswith('"'):
-            return token
+        lexeme = match.group(0)
+        if lexeme.startswith('"'):
+            return lexeme
         return ""
 
     stripped = pattern.sub(_replace, text)

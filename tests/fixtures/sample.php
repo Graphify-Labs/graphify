@@ -28,7 +28,7 @@ class ApiClient
 
     private function fetch(string $path, string $method): string
     {
-        $token = $this->auth->getToken();
+        $sessionValue = $this->auth->getToken();
         return $method . ' ' . $this->baseUrl . $path;
     }
 }

@@ -496,8 +496,10 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `OPENAI_MODEL` | Model name for the OpenAI backend — for self-hosted servers, use the model name/alias your server exposes (check its `/v1/models` endpoint), e.g. `LFM2.5-8B-A1B-UD-Q4_K_XL` for llama.cpp | `--backend openai` (default: `gpt-4.1-mini`) |
 | `DEEPSEEK_API_KEY` | DeepSeek backend | `--backend deepseek` |
 | `MOONSHOT_API_KEY` | Kimi Code backend | `--backend kimi` |
-| `OLLAMA_BASE_URL` | Ollama local inference URL | `--backend ollama` (default: `http://localhost:11434`) |
-| `OLLAMA_MODEL` | Ollama model name | `--backend ollama` (default: auto-detect) |
+| `MINIMAX_API_KEY` or `GRAPHIFY_MINIMAX_API_KEY` | MiniMax fallback backend | `--backend minimax` or automatic Ollama spill/fallback |
+| `NVIDIA_NIM_API_KEY` or `NVIDIA_API_KEY` | NVIDIA NIM backend | `--backend nim` |
+| `OLLAMA_BASE_URL` | Ollama local inference URL | auto-detected first, or `--backend ollama` (default: `http://localhost:11434/v1`) |
+| `GRAPHIFY_OLLAMA_MODEL` or `OLLAMA_MODEL` | Ollama model name | `--backend ollama` (default: `qwen2.5-coder:3b`) |
 | `GRAPHIFY_OLLAMA_NUM_CTX` | Override Ollama KV-cache window size | optional — auto-sized by default |
 | `GRAPHIFY_OLLAMA_KEEP_ALIVE` | Minutes to keep Ollama model loaded | optional — set `0` to unload after each chunk |
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI Service backend | `--backend azure` |
@@ -526,8 +528,8 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 
 - **Code files** — processed locally via tree-sitter. Nothing leaves your machine. A code-only corpus requires no API key — `graphify extract` runs fully offline.
 - **Video / audio** — transcribed locally with faster-whisper. Nothing leaves your machine.
-- **Docs, PDFs, images** — sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
-- **Data residency** — `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). For code with data-residency requirements, use `--backend ollama` (fully local) or pass an explicit `--backend` flag. Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
+- **Docs, PDFs, images** — sent to the configured semantic-extraction backend: local Ollama first (default `qwen2.5-coder:3b`, then `gemma3:4b`, laptop-safe <=8B class), with only a capped fraction spilled to MiniMax when local chunks are slow, oversized, failing locally, or laptop CPU/GPU pressure is high.
+- **Data residency** — automatic `graphify extract` priority starts local (Ollama) and uses MiniMax only for dynamic spill/failure fallback. Ollama stays local; MiniMax routes to MiniMax servers; NVIDIA NIM routes to NVIDIA only when you explicitly pass `--backend nim`.
 - **No telemetry**, no usage tracking, no analytics.
 - **Query logging** — every `graphify query`, `graphify path`, `graphify explain`, and MCP `query_graph` call is logged to `~/.cache/graphify-queries.log` in JSON Lines format (timestamp, question, corpus, nodes returned, duration). Full subgraph responses are **not** stored by default. Set `GRAPHIFY_QUERY_LOG_DISABLE=1` to opt out, or `GRAPHIFY_QUERY_LOG=/dev/null` to silence without disabling the code path.
 
@@ -694,7 +696,7 @@ graphify antigravity install       # .agents/rules + .agents/workflows (Google A
 graphify antigravity uninstall
 
 graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
-graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, or claude-cli
+graphify extract ./docs --backend gemini       # explicit backend: ollama, minimax, nim, gemini, kimi, claude, openai, deepseek, bedrock, or claude-cli
 graphify extract ./docs --backend gemini --model gemini-3.1-pro-preview
 graphify extract ./docs --backend ollama       # local Ollama (set OLLAMA_BASE_URL / OLLAMA_MODEL) - no API key needed for loopback
 OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_MODEL=my-model graphify extract ./docs --backend openai   # any OpenAI-compatible server (llama.cpp, vLLM, LM Studio)

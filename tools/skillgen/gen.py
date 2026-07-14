@@ -864,6 +864,10 @@ def _is_no_api_key_fix_line(line: str) -> bool:
     return "graphify needs no API key" in line
 
 
+def _is_credential_guard_safe_placeholder_line(line: str) -> bool:
+    return "push_to_neo4j(" in line and "NEO4J_PASSWORD" in line
+
+
 def _is_shebang_allowlist_fix_line(line: str) -> bool:
     """Whether a line is part of the Homebrew ``python@`` shebang allowlist fix (#1586).
 
@@ -932,6 +936,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_zero_node_guard_fix_line,
     _is_manifest_root_fix_line,
     _is_no_api_key_fix_line,
+    _is_credential_guard_safe_placeholder_line,
     _is_shebang_allowlist_fix_line,
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,

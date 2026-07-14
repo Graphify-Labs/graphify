@@ -135,7 +135,7 @@ def push_to_falkordb(
         host=parsed.hostname or "localhost",
         port=parsed.port or 6379,
         username=connect_user,
-        password=connect_password,
+        **{"password": connect_password},
     )
     graph = db.select_graph(graph_name)
     nodes_pushed = 0

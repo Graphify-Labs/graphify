@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 import pytest
 
-from graphify.watch import _notify_only, _WATCHED_EXTENSIONS, _rebuild_lock, _check_shrink
+from graphify.watch import _notify_only, _WATCHED_EXTENSIONS, _rebuild_lock, _check_shrink, _record_daily_update_hint
 
 
 # --- _notify_only ---
@@ -84,6 +84,31 @@ def test_check_update_does_not_clear_flag(tmp_path):
     flag.write_text("1")
     check_update(tmp_path)
     assert flag.exists()
+
+
+def test_daily_update_hint_for_active_github_repo(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_DAILY_UPDATE_ROOT", str(tmp_path))
+    monkeypatch.setenv("GRAPHIFY_DAILY_UPDATE_CHANGE_THRESHOLD", "2")
+    repo = tmp_path / "repo"
+    out = repo / "graphify-out"
+    repo.mkdir()
+
+    _record_daily_update_hint(out, repo, [repo / "a.py", repo / "b.py"])
+
+    hint = json.loads((out / "nightly-update-hint.json").read_text(encoding="utf-8"))
+    assert hint["changed_files"] == 2
+    assert hint["recommended_after"] == "20:00"
+    assert hint["safe_window"] == "03:00-06:00"
+
+
+def test_check_update_prints_nightly_hint(tmp_path, capsys):
+    from graphify.watch import check_update
+    hint = tmp_path / "graphify-out" / "nightly-update-hint.json"
+    hint.parent.mkdir(parents=True, exist_ok=True)
+    hint.write_text("{}", encoding="utf-8")
+
+    assert check_update(tmp_path) is True
+    assert "Night-window update recommended" in capsys.readouterr().out
 
 
 def test_watch_raises_without_watchdog(tmp_path, monkeypatch):
@@ -545,6 +570,11 @@ def test_rebuild_code_evicts_removed_symbol_from_surviving_file(tmp_path):
         "file_type": "concept",
         "source_file": "a.py",
     })
+    data["nodes"].append({
+        "id": "sourceless_semantic",
+        "label": "SourcelessSemantic",
+        "file_type": "concept",
+    })
     graph_path.write_text(json.dumps(data), encoding="utf-8")
 
     # Remove foo() from a.py (keep bar); leave b.py untouched.
@@ -565,6 +595,7 @@ def test_rebuild_code_evicts_removed_symbol_from_surviving_file(tmp_path):
     assert "bar()" in after, "surviving symbol in the same file must be kept"
     assert "caller()" in after, "unchanged file's nodes must be kept"
     assert "AuthConcept" in after, "semantic node on a surviving file must not be evicted"
+    assert "SourcelessSemantic" not in after, "sourceless semantic noise must be evicted on full rebuild"
 
 
 def test_rebuild_code_preupgrade_marker_less_node_one_cycle_lag(tmp_path):

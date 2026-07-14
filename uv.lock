@@ -1090,7 +1090,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.6"
+version = "0.9.15"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1185,8 +1185,16 @@ mcp = [
     { name = "mcp" },
     { name = "starlette" },
 ]
+minimax = [
+    { name = "openai" },
+    { name = "tiktoken" },
+]
 neo4j = [
     { name = "neo4j" },
+]
+nim = [
+    { name = "openai" },
+    { name = "tiktoken" },
 ]
 office = [
     { name = "openpyxl" },
@@ -1275,6 +1283,8 @@ requires-dist = [
     { name = "openai", marker = "extra == 'all'" },
     { name = "openai", marker = "extra == 'gemini'" },
     { name = "openai", marker = "extra == 'kimi'" },
+    { name = "openai", marker = "extra == 'minimax'" },
+    { name = "openai", marker = "extra == 'nim'" },
     { name = "openai", marker = "extra == 'ollama'" },
     { name = "openai", marker = "extra == 'openai'" },
     { name = "openpyxl", marker = "extra == 'all'" },
@@ -1291,6 +1301,8 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'all'" },
     { name = "tiktoken", marker = "extra == 'gemini'" },
     { name = "tiktoken", marker = "extra == 'kimi'" },
+    { name = "tiktoken", marker = "extra == 'minimax'" },
+    { name = "tiktoken", marker = "extra == 'nim'" },
     { name = "tiktoken", marker = "extra == 'openai'" },
     { name = "tree-sitter", specifier = ">=0.23.0,<0.26" },
     { name = "tree-sitter-bash", specifier = ">=0.23,<0.27" },
@@ -1331,7 +1343,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.6.9" },
     { name = "yt-dlp", marker = "extra == 'video'", specifier = ">=2026.6.9" },
 ]
-provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "all"]
+provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "minimax", "nim", "openai", "chinese", "sql", "pascal", "dm", "terraform", "all"]
 
 [package.metadata.requires-dev]
 dev = [

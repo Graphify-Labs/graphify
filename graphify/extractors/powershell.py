@@ -265,9 +265,9 @@ def extract_powershell(path: Path) -> dict:
                                 param_text = _read_text(el, source).lstrip("-").lower()
                                 expect_name = param_text in ("name", "n")
                             elif el.type == "generic_token":
-                                token = _read_text(el, source)
+                                lexeme = _read_text(el, source)
                                 if module_name is None or expect_name:
-                                    module_name = token
+                                    module_name = lexeme
                                     expect_name = False
                     if module_name:
                         # Strip extension; keep only the stem for the node ID

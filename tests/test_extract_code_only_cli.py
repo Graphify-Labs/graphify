@@ -12,8 +12,28 @@ import sys
 from pathlib import Path
 
 PYTHON = sys.executable
-_KEY_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
-             "ANTHROPIC_API_KEY", "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY")
+_KEY_VARS = (
+    "ANTHROPIC_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_PROFILE",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "DEEPSEEK_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GRAPHIFY_MINIMAX_API_KEY",
+    "GRAPHIFY_NVIDIA_NIM_API_KEY",
+    "MINIMAX_API_KEY",
+    "MOONSHOT_API_KEY",
+    "NGC_API_KEY",
+    "NVIDIA_API_KEY",
+    "NVIDIA_NIM_API_KEY",
+    "OLLAMA_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+)
 
 
 def _mixed_repo(tmp_path: Path) -> Path:
@@ -27,6 +47,8 @@ def _mixed_repo(tmp_path: Path) -> Path:
 
 def _run(repo: Path, *extra: str):
     env = {k: v for k, v in os.environ.items() if k not in _KEY_VARS}
+    env["GRAPHIFY_DISABLE_CREDENTIALS"] = "1"
+    env["GRAPHIFY_DISABLE_OLLAMA_PRIMARY"] = "1"
     env["GRAPHIFY_OUT"] = str(repo / "graphify-out")
     return subprocess.run(
         [PYTHON, "-m", "graphify", "extract", ".", *extra],

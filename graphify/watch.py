@@ -13,6 +13,40 @@ from pathlib import Path
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
+_DAILY_UPDATE_HINT = "nightly-update-hint.json"
+_DAILY_UPDATE_THRESHOLD = 20
+_DAILY_UPDATE_ROOT = "/media/naray/backup_np_2/github"
+
+
+def _under_daily_update_root(path: Path) -> bool:
+    root = Path(os.environ.get("GRAPHIFY_DAILY_UPDATE_ROOT", _DAILY_UPDATE_ROOT)).resolve()
+    try:
+        path.resolve().relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _record_daily_update_hint(out_dir: Path, watch_path: Path, changed_paths: list[Path] | None) -> None:
+    if not changed_paths or not _under_daily_update_root(watch_path):
+        return
+    try:
+        threshold = int(os.environ.get("GRAPHIFY_DAILY_UPDATE_CHANGE_THRESHOLD", str(_DAILY_UPDATE_THRESHOLD)))
+    except ValueError:
+        threshold = _DAILY_UPDATE_THRESHOLD
+    if len(changed_paths) < threshold:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "repo": str(watch_path.resolve()),
+        "changed_files": len(changed_paths),
+        "recommended_after": "20:00",
+        "safe_window": "03:00-06:00",
+        "command": f"graphify update {watch_path.resolve()}",
+        "note": "AST is already updated; reserve full semantic refresh for the night window.",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    (out_dir / _DAILY_UPDATE_HINT).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _queue_pending(out_dir: Path, changed_paths: list[Path]) -> None:
@@ -464,10 +498,25 @@ def _reconcile_existing_graph(
         # A full re-extraction owns every AST node under watch_root. Incremental
         # extraction owns only nodes from rebuilt or deleted sources. Semantic
         # nodes lack the AST origin marker and remain preserved.
+        referenced_existing_node_ids: set[object] = set()
+        for edge in existing.get("links", existing.get("edges", [])):
+            referenced_existing_node_ids.update(
+                ref for ref in (edge.get("source"), edge.get("target")) if ref is not None
+            )
+        for edge in existing.get("hyperedges", []):
+            members = edge.get("nodes", edge.get("members", edge.get("node_ids", [])))
+            if isinstance(members, list):
+                referenced_existing_node_ids.update(members)
+
         preserved_nodes = [
             node
             for node in existing.get("nodes", [])
             if node["id"] not in new_ast_ids
+            and not (
+                full_rebuild
+                and not node.get("source_file")
+                and node.get("id") not in referenced_existing_node_ids
+            )
             and not (
                 node.get("_origin") == "ast"
                 and (
@@ -819,7 +868,7 @@ def _rebuild_code(
         from graphify.export import to_json, to_html
         from graphify.security import check_graph_file_size_cap
 
-        detected = detect(watch_path, follow_symlinks=follow_symlinks)
+        detected = detect(watch_path, follow_symlinks=follow_symlinks, count_content=False)
         code_files = [Path(f) for f in detected['files']['code']]
 
         # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
@@ -971,6 +1020,8 @@ def _rebuild_code(
                 save_manifest(detected["files"], kind="ast", root=project_root)
             except Exception:
                 pass
+            with contextlib.suppress(Exception):
+                _record_daily_update_hint(out, watch_root, changed_paths)
 
             # clear stale needs_update flag if present
             flag = out / "needs_update"
@@ -1088,6 +1139,8 @@ def _rebuild_code(
             save_manifest(detected["files"], kind="ast", root=project_root)
         except Exception:
             pass
+        with contextlib.suppress(Exception):
+            _record_daily_update_hint(out, watch_root, changed_paths)
 
         # to_html raises ValueError for graphs > MAX_NODES_FOR_VIZ (5000).
         # Wrap so core outputs (graph.json + GRAPH_REPORT.md) always land.
@@ -1146,10 +1199,15 @@ def check_update(watch_path: Path) -> bool:
     re-extraction via `/graphify --update` — this function only signals
     that the update is needed.
     """
-    flag = Path(watch_path) / _GRAPHIFY_OUT / "needs_update"
+    out = Path(watch_path) / _GRAPHIFY_OUT
+    flag = out / "needs_update"
     if flag.exists():
         print(f"[graphify check-update] Pending non-code changes in {watch_path}.")
         print("[graphify check-update] Run `/graphify --update` to apply semantic re-extraction.")
+    hint = out / _DAILY_UPDATE_HINT
+    if hint.exists():
+        print(f"[graphify check-update] Night-window update recommended for {watch_path}.")
+        print(f"[graphify check-update] See {hint} and prefer 20:00-06:00 (safest 03:00-06:00).")
     return True
 
 

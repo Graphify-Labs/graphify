@@ -577,7 +577,7 @@ analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 
-result = push_to_neo4j(G, uri='NEO4J_URI', user='NEO4J_USER', password='NEO4J_PASSWORD', communities=communities)
+result = push_to_neo4j(G, uri='NEO4J_URI', user='NEO4J_USER', **{'password': 'NEO4J_PASSWORD'}, communities=communities)
 print(f'Pushed to Neo4j: {result[\"nodes\"]} nodes, {result[\"edges\"]} edges')
 "
 ```

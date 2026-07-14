@@ -59,17 +59,27 @@ def test_detect_warns_small_corpus():
     assert result["warning"] is not None
 
 def test_detect_skips_noise_dot_dirs():
-    """Noise dot dirs (.next, .nuxt, .graphify cache, …) are skipped (#873).
-    Non-noise dot dirs (.github, .claude, …) are now allowed through."""
+    """Noise dot dirs (.next, .nuxt, .graphify, agent caches, …) are skipped."""
     result = detect(FIXTURES)
     for files in result["files"].values():
         for f in files:
-            # graphify's own cache is always skipped
-            assert "/.graphify/" not in f
-            # well-known framework caches are always skipped
-            for noise in ("/.next/", "/.nuxt/", "/.turbo/", "/.angular/"):
+            for noise in (
+                "/.graphify/", "/.next/", "/.nuxt/", "/.turbo/", "/.angular/",
+                "/.cursor/", "/.claude/", "/.opencode/", "/.repowise/",
+            ):
                 assert noise not in f
 
+
+def test_detect_count_content_false_skips_file_reads(tmp_path, monkeypatch):
+    (tmp_path / "main.py").write_text("x = 1")
+    (tmp_path / "notes.md").write_text("many words here")
+    monkeypatch.setattr("graphify.detect.count_words", lambda _p: (_ for _ in ()).throw(AssertionError("read")))
+
+    result = detect(tmp_path, count_content=False)
+
+    assert result["total_words"] == 0
+    assert result["warning"] is None
+    assert any("main.py" in f for f in result["files"]["code"])
 
 def test_classify_md_paper_by_signals(tmp_path):
     """A .md file with enough paper signals should classify as PAPER."""
@@ -112,6 +122,25 @@ def test_graphifyignore_excludes_file(tmp_path):
     assert not any("vendor" in f for f in file_list)
     assert not any("generated" in f for f in file_list)
     assert result["graphifyignore_patterns"] == 2
+
+
+def test_gitignore_and_graphifyignore_are_combined(tmp_path):
+    (tmp_path / ".gitignore").write_text("datasets/\n*.tmp.py\n")
+    (tmp_path / ".graphifyignore").write_text("vendor/\n")
+    (tmp_path / "datasets").mkdir()
+    (tmp_path / "datasets" / "data.py").write_text("x = 1")
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "vendor" / "lib.py").write_text("x = 1")
+    (tmp_path / "scratch.tmp.py").write_text("x = 1")
+    (tmp_path / "main.py").write_text("x = 1")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["code"]
+
+    assert any("main.py" in f for f in file_list)
+    assert not any("datasets" in f for f in file_list)
+    assert not any("vendor" in f for f in file_list)
+    assert not any("scratch.tmp.py" in f for f in file_list)
 
 
 def test_graphifyignore_missing_is_fine(tmp_path):

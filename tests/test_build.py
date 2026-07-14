@@ -207,6 +207,27 @@ def test_file_type_synonym_mapping():
     assert G.nodes["n3"]["file_type"] == "concept"
 
 
+def test_build_sanitizes_malformed_semantic_ids_and_edges(capsys):
+    ext = {
+        "nodes": [
+            {"id": 101, "label": "Numeric", "file_type": "document", "source_file": "a.md"},
+            {"id": "n2", "label": "Target", "file_type": "document", "source_file": "a.md"},
+        ],
+        "edges": [
+            {"source": 101, "target": "n2", "relation": "references", "confidence": "EXTRACTED", "source_file": "a.md"},
+            {"source": 101, "target": "n2", "confidence": "EXTRACTED", "source_file": "a.md"},
+        ],
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+    G = build_from_json(ext)
+    err = capsys.readouterr().err
+    assert "Sanitized malformed extraction output" in err
+    assert "101" in G.nodes
+    assert G.has_edge("101", "n2")
+    assert G.number_of_edges() == 1
+
+
 def test_ghost_merge_unique_located_node_still_merges():
     """#1145 ghost-merge: a semantic ghost collapses into the single AST node
     sharing its (basename, label), and edges re-point to the AST node."""

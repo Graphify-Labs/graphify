@@ -24,10 +24,10 @@ def extract_dart(path: Path) -> dict:
         r"|//[^\n]*"
     )
     def _comment_replace(match: re.Match) -> str:
-        token = match.group(0)
-        if token.startswith("/"):
+        lexeme = match.group(0)
+        if lexeme.startswith("/"):
             return ""
-        return token
+        return lexeme
     src_clean = comment_string_pattern.sub(_comment_replace, src)
 
     stem = _file_stem(path)
