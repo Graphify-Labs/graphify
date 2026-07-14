@@ -9,7 +9,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from .cache import load_cached, save_cached
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
@@ -132,12 +132,14 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
 )
 
 from graphify.extractors.engine import REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_member_type_table, _csharp_namespace_id, _csharp_namespace_name, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
+from graphify.extractors.engine import _swift_overload_match  # noqa: E402,F401
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
 
 from graphify.extractors.objc import _objc_local_var_types, extract_objc  # noqa: E402,F401
 
 from graphify.extractors.julia import extract_julia  # noqa: E402,F401
+from graphify.extractors.swiftpm import extract_swift_package_manifest, link_swift_package_sources  # noqa: E402,F401
 
 _RECURSION_LIMIT = 10_000
 
@@ -886,7 +888,10 @@ def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, st
 _SWIFT_CONFIG = LanguageConfig(
     ts_module="tree_sitter_swift",
     class_types=frozenset({"class_declaration", "protocol_declaration"}),
-    function_types=frozenset({"function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
+    function_types=frozenset({
+        "function_declaration", "protocol_function_declaration",
+        "init_declaration", "deinit_declaration", "subscript_declaration",
+    }),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),
     call_function_field="",
@@ -894,7 +899,10 @@ _SWIFT_CONFIG = LanguageConfig(
     call_accessor_field="",
     name_fallback_child_types=("simple_identifier", "type_identifier", "user_type"),
     body_fallback_child_types=("class_body", "protocol_body", "function_body", "enum_class_body"),
-    function_boundary_types=frozenset({"function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
+    function_boundary_types=frozenset({
+        "function_declaration", "protocol_function_declaration",
+        "init_declaration", "deinit_declaration", "subscript_declaration",
+    }),
     import_handler=_import_swift,
 )
 
@@ -1663,7 +1671,17 @@ def extract_lua(path: Path) -> dict:
 
 def extract_swift(path: Path) -> dict:
     """Extract classes, structs, protocols, functions, imports, and calls from a .swift file."""
-    return _extract_generic(path, _SWIFT_CONFIG)
+    result = _extract_generic(path, _SWIFT_CONFIG)
+    result["language"] = "swift"
+    result["language_family"] = "native"
+    for item in (
+        result.get("nodes", [])
+        + result.get("edges", [])
+        + result.get("raw_calls", [])
+    ):
+        item.setdefault("language", "swift")
+        item.setdefault("language_family", "native")
+    return result
 
 
 # ── Julia extractor (custom walk) ────────────────────────────────────────────
@@ -1968,12 +1986,26 @@ def _merge_swift_extensions(
     if not extension_nids:
         return
 
+    contained = {
+        edge.get("target")
+        for edge in all_edges
+        if edge.get("relation") == "contains"
+    }
     label_to_canonical: dict[str, list[str]] = {}
     for n in all_nodes:
         if n.get("id") in extension_nids:
             continue
         label = n.get("label")
-        if not label:
+        if (
+            not label
+            or not n.get("source_file")
+            or n.get("id") not in contained
+            or not _is_type_like_definition(n)
+            or n.get("type") in {
+                "file", "module", "package", "product", "property",
+                "associated_type", "type_alias",
+            }
+        ):
             continue
         label_to_canonical.setdefault(label, []).append(n["id"])
 
@@ -2038,8 +2070,6 @@ def _resolve_swift_member_calls(
         tt = result.get("swift_type_table")
         if tt and tt.get("path"):
             type_table_by_file[tt["path"]] = tt.get("table", {})
-    if not type_table_by_file:
-        return
 
     def _key(label: str) -> str:
         return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
@@ -2056,50 +2086,245 @@ def _resolve_swift_member_calls(
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (
+            n.get("source_file")
+            and n.get("id") in contained
+            and _is_type_like_definition(n)
+            and n.get("type") not in {
+                "file", "module", "package", "product", "property",
+                "protocol_requirement", "protocol_property_requirement",
+                "associated_type", "type_alias",
+            }
+        ):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
-    # (type_node_id, method_key) -> method_node_id, from `method` edges.
-    method_index: dict[tuple[str, str], str] = {}
+    # (type_node_id, method_key) -> method node ids. Multiple entries are valid
+    # for overloads and are selected from recorded call/signature facts below.
+    method_index: dict[tuple[str, str], list[str]] = {}
     for e in all_edges:
         if e.get("relation") != "method":
             continue
-        src, tgt = e.get("source"), e.get("target")
+        src, tgt = str(e.get("source", "")), str(e.get("target", ""))
+        if not src or not tgt:
+            continue
         tnode = node_by_id.get(tgt)
         if tnode is not None:
-            method_index[(src, _key(tnode.get("label", "")))] = tgt
+            method_index.setdefault((src, _key(tnode.get("label", ""))), []).append(tgt)
+
+    top_level_functions: dict[str, list[str]] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "contains":
+            continue
+        target_id = str(edge.get("target", ""))
+        target = node_by_id.get(target_id)
+        label = str(target.get("label", "")) if target else ""
+        if (
+            target
+            and target.get("language") == "swift"
+            and label.endswith("()")
+            and not label.startswith(".")
+        ):
+            top_level_functions.setdefault(_key(label), []).append(target_id)
+
+    # Walk deep property chains such as self.root.container.service.fetch().
+    property_types: dict[tuple[str, str], str] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "defines":
+            continue
+        prop = node_by_id.get(edge.get("target"))
+        metadata = prop.get("metadata", {}) if prop else {}
+        declared = metadata.get("declared_type") if isinstance(metadata, dict) else None
+        if prop and prop.get("type") == "property" and declared:
+            property_types[(str(edge.get("source")), str(prop.get("label")))] = str(
+                declared
+            )
+
+    owner_by_method = {
+        str(edge.get("target")): str(edge.get("source"))
+        for edge in all_edges
+        if edge.get("relation") == "method"
+    }
 
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+
+    def _select_candidates(
+        candidates: list[str],
+        facts: dict,
+        static_dispatch: bool | None = None,
+    ) -> str | None:
+        if static_dispatch is not None:
+            candidates = [
+                nid
+                for nid in candidates
+                if bool(
+                    (node_by_id.get(nid, {}).get("metadata") or {}).get("is_static")
+                )
+                == static_dispatch
+            ]
+        if len(candidates) == 1:
+            return candidates[0]
+        matches = [
+            nid
+            for nid in candidates
+            if (node := node_by_id.get(nid)) is not None
+            and _swift_overload_match(node, facts)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _select_method(
+        type_nid: str,
+        callee_key: str,
+        facts: dict,
+        static_dispatch: bool | None = None,
+    ) -> str | None:
+        return _select_candidates(
+            method_index.get((type_nid, callee_key), []),
+            facts,
+            static_dispatch,
+        )
+
+    def _select_top_level(callee_key: str, facts: dict) -> str | None:
+        return _select_candidates(top_level_functions.get(callee_key, []), facts)
+
+    def _type_nid(type_name: str | None) -> str | None:
+        if not type_name:
+            return None
+        head = str(type_name).rstrip("?").split("<", 1)[0].split(".")[-1]
+        definitions = type_def_nids.get(_key(head), [])
+        return definitions[0] if len(definitions) == 1 else None
+
+    def _walk_receiver_type(
+        rc: dict,
+        caller: str,
+    ) -> tuple[str | None, bool, bool]:
+        path = list(rc.get("receiver_path") or [])
+        type_qualified = False
+        current: str | None = None
+        if path:
+            head = path.pop(0)
+            if head == "self":
+                current = owner_by_method.get(caller)
+            elif head[:1].isupper():
+                current = _type_nid(head)
+                type_qualified = True
+            else:
+                current = _type_nid(
+                    rc.get("receiver_type")
+                    or type_table_by_file.get(rc.get("source_file", ""), {}).get(head)
+                )
+            traversed_property = bool(path)
+            for segment in path:
+                if current is None:
+                    break
+                current = _type_nid(property_types.get((current, segment)))
+            if current is not None:
+                return current, type_qualified, type_qualified and not traversed_property
+
+        # Resolve one factory call and use its declared return type for the outer
+        # member call: Factory.make().fetch().
+        inner = rc.get("receiver_call") or {}
+        if inner:
+            inner_path = list(inner.get("receiver_path") or [])
+            inner_type: str | None = None
+            if inner_path and inner_path[0][:1].isupper():
+                inner_type = _type_nid(inner_path[0])
+                type_qualified = True
+            elif inner_path:
+                inner_type = _type_nid(
+                    inner.get("receiver_type")
+                    or type_table_by_file.get(rc.get("source_file", ""), {}).get(inner_path[0])
+                )
+            if inner_type:
+                inner_method = _select_method(
+                    inner_type,
+                    _key(inner.get("callee", "")),
+                    inner,
+                    static_dispatch=type_qualified,
+                )
+                if inner_method:
+                    metadata = node_by_id.get(inner_method, {}).get("metadata", {})
+                    returned = (
+                        metadata.get("return_type")
+                        if isinstance(metadata, dict)
+                        else None
+                    )
+                    resolved = _type_nid(returned)
+                    if resolved:
+                        return resolved, type_qualified, False
+            elif not inner_path:
+                inner_function = _select_top_level(
+                    _key(inner.get("callee", "")),
+                    inner,
+                )
+                if inner_function:
+                    metadata = node_by_id.get(inner_function, {}).get("metadata", {})
+                    returned = (
+                        metadata.get("return_type")
+                        if isinstance(metadata, dict)
+                        else None
+                    )
+                    resolved = _type_nid(returned)
+                    if resolved:
+                        return resolved, False, False
+
+        receiver = rc.get("receiver")
+        if receiver:
+            if str(receiver)[:1].isupper():
+                return _type_nid(str(receiver)), True, True
+            return _type_nid(
+                rc.get("receiver_type")
+                or type_table_by_file.get(rc.get("source_file", ""), {}).get(str(receiver))
+            ), False, False
+        return None, False, False
+
     for rc in all_raw_calls:
+        if rc.get("lang") == "swift" and not rc.get("is_member_call"):
+            callee = rc.get("callee")
+            caller = rc.get("caller_nid")
+            target = _select_top_level(_key(callee or ""), rc)
+            if not caller or not target or caller == target:
+                continue
+            if (caller, target) in existing_pairs:
+                continue
+            existing_pairs.add((caller, target))
+            all_edges.append({
+                "source": caller,
+                "target": target,
+                "relation": "calls",
+                "context": "call",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": rc.get("source_file", ""),
+                "source_location": rc.get("source_location"),
+                "weight": 1.0,
+                "language": "swift",
+                "language_family": "native",
+            })
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
         callee = rc.get("callee")
-        if not receiver or not callee:
+        if not callee or not (
+            receiver or rc.get("receiver_path") or rc.get("receiver_call")
+        ):
             continue
-        # Determine the receiver's type. An upper-cased receiver is itself a type
-        # (Type.staticMethod(), Singleton.shared.x()); otherwise look it up in the
-        # declaring file's local type table.
-        if receiver[:1].isupper():
-            type_name = receiver
-            type_qualified = True
-        else:
-            type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
-            type_qualified = False
-        if not type_name:
-            continue
-        type_defs = type_def_nids.get(_key(type_name), [])
-        if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
-            continue
-        type_nid = type_defs[0]
         caller = rc.get("caller_nid")
         if not caller:
             continue
-        method_nid = method_index.get((type_nid, _key(callee)))
+        type_nid, type_qualified, static_dispatch = _walk_receiver_type(rc, caller)
+        if not type_nid:
+            continue
+        method_nid = _select_method(
+            type_nid,
+            _key(callee),
+            rc,
+            static_dispatch=static_dispatch,
+        )
         target = method_nid or type_nid
         relation = "calls" if method_nid else "references"
         if target == caller or (caller, target) in existing_pairs:
@@ -2120,6 +2345,217 @@ def _resolve_swift_member_calls(
             "source_location": rc.get("source_location"),
             "weight": 1.0,
         })
+
+
+def _resolve_swift_protocol_requirements(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Link concrete Swift members to the protocol requirements they satisfy."""
+    del per_file
+    node_by_id = {str(n.get("id")): n for n in all_nodes if n.get("id")}
+
+    # File-local parsing cannot know that the first unknown base of a class is a
+    # protocol declared elsewhere. Once stubs have been rewired to final nodes,
+    # correct that relationship before discovering conformances.
+    for edge in all_edges:
+        if edge.get("relation") != "inherits":
+            continue
+        source = node_by_id.get(str(edge.get("source", "")), {})
+        target = node_by_id.get(str(edge.get("target", "")), {})
+        if (
+            source.get("language") == "swift"
+            and source.get("type") != "protocol"
+            and target.get("type") == "protocol"
+        ):
+            edge["relation"] = "implements"
+
+    members_by_owner: dict[str, list[str]] = {}
+    properties_by_owner: dict[str, list[str]] = {}
+    aliases_by_owner: dict[str, dict[str, str]] = {}
+    for edge in all_edges:
+        src, tgt = str(edge.get("source", "")), str(edge.get("target", ""))
+        target = node_by_id.get(tgt)
+        if not target:
+            continue
+        if edge.get("relation") == "method":
+            members_by_owner.setdefault(src, []).append(tgt)
+        elif edge.get("relation") == "defines" and target.get("type") in (
+            "property",
+            "protocol_property_requirement",
+        ):
+            properties_by_owner.setdefault(src, []).append(tgt)
+        elif edge.get("relation") == "defines" and target.get("type") == "type_alias":
+            metadata = target.get("metadata") or {}
+            declared = metadata.get("declared_type") if isinstance(metadata, dict) else None
+            if declared:
+                aliases_by_owner.setdefault(src, {})[str(target.get("label", ""))] = str(
+                    declared
+                )
+
+    def _substitute_type(type_name: object, aliases: dict[str, str]) -> str:
+        value = str(type_name or "")
+        for alias, concrete in aliases.items():
+            value = re.sub(rf"\b{re.escape(alias)}\b", concrete, value)
+        return re.sub(r"\s+", "", value).rstrip("?")
+
+    conformances = [
+        (str(edge.get("source")), str(edge.get("target")), edge)
+        for edge in all_edges
+        if edge.get("relation") == "implements"
+        and node_by_id.get(str(edge.get("target")), {}).get("type") == "protocol"
+    ]
+    protocol_bases: dict[str, list[str]] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "inherits":
+            continue
+        source = str(edge.get("source", ""))
+        target = str(edge.get("target", ""))
+        if (
+            node_by_id.get(source, {}).get("type") == "protocol"
+            and node_by_id.get(target, {}).get("type") == "protocol"
+        ):
+            protocol_bases.setdefault(source, []).append(target)
+
+    def _protocol_lineage(protocol: str) -> list[str]:
+        seen: set[str] = set()
+        pending = [protocol]
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            pending.extend(protocol_bases.get(current, []))
+        return sorted(seen)
+
+    existing = {
+        (edge.get("source"), edge.get("target"), edge.get("relation"))
+        for edge in all_edges
+    }
+
+    for concrete_type, protocol, conformance in conformances:
+        aliases = aliases_by_owner.get(concrete_type, {})
+        concrete_methods = members_by_owner.get(concrete_type, [])
+        protocol_ids = _protocol_lineage(protocol)
+        requirement_ids = [
+            requirement_id
+            for protocol_id in protocol_ids
+            for requirement_id in members_by_owner.get(protocol_id, [])
+        ]
+        for requirement_id in requirement_ids:
+            requirement = node_by_id.get(requirement_id, {})
+            if requirement.get("type") != "protocol_requirement":
+                continue
+            req_metadata = requirement.get("metadata", {})
+            facts = {
+                "argument_count": req_metadata.get("arity"),
+                "argument_labels": req_metadata.get("parameter_labels", []),
+                "argument_types": [
+                    _substitute_type(type_name, aliases)
+                    for type_name in req_metadata.get("parameter_types", [])
+                ],
+            }
+            candidates = [
+                method_id
+                for method_id in concrete_methods
+                if node_by_id.get(method_id, {}).get("label")
+                == requirement.get("label")
+                and _swift_overload_match(node_by_id[method_id], facts)
+            ]
+            candidates = [
+                method_id
+                for method_id in candidates
+                if (
+                    (candidate_meta := node_by_id[method_id].get("metadata") or {})
+                    and bool(candidate_meta.get("is_static"))
+                    == bool(req_metadata.get("is_static"))
+                    and (
+                        bool(req_metadata.get("is_async"))
+                        or not bool(candidate_meta.get("is_async"))
+                    )
+                    and (
+                        bool(req_metadata.get("is_throwing"))
+                        or not bool(candidate_meta.get("is_throwing"))
+                    )
+                    and _substitute_type(
+                        candidate_meta.get("return_type"),
+                        {},
+                    )
+                    == _substitute_type(req_metadata.get("return_type"), aliases)
+                )
+            ]
+            if len(candidates) != 1:
+                continue
+            edge_key = (candidates[0], requirement_id, "implements")
+            if edge_key in existing:
+                continue
+            existing.add(edge_key)
+            all_edges.append({
+                "source": candidates[0],
+                "target": requirement_id,
+                "relation": "implements",
+                "context": "protocol_requirement",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": conformance.get("source_file", ""),
+                "source_location": conformance.get("source_location"),
+                "weight": 1.0,
+                "language": "swift",
+                "language_family": "native",
+            })
+
+        concrete_properties = properties_by_owner.get(concrete_type, [])
+        property_requirement_ids = [
+            requirement_id
+            for protocol_id in protocol_ids
+            for requirement_id in properties_by_owner.get(protocol_id, [])
+        ]
+        for requirement_id in property_requirement_ids:
+            requirement = node_by_id.get(requirement_id, {})
+            if requirement.get("type") != "protocol_property_requirement":
+                continue
+            matches = [
+                property_id
+                for property_id in concrete_properties
+                if node_by_id.get(property_id, {}).get("label")
+                == requirement.get("label")
+            ]
+            req_metadata = requirement.get("metadata") or {}
+            matches = [
+                property_id
+                for property_id in matches
+                if (
+                    (property_meta := node_by_id[property_id].get("metadata") or {})
+                    and _substitute_type(property_meta.get("declared_type"), {})
+                    == _substitute_type(req_metadata.get("declared_type"), aliases)
+                    and bool(property_meta.get("is_static"))
+                    == bool(req_metadata.get("is_static"))
+                    and (
+                        not bool(req_metadata.get("is_settable"))
+                        or bool(property_meta.get("is_settable"))
+                    )
+                )
+            ]
+            if len(matches) != 1:
+                continue
+            edge_key = (matches[0], requirement_id, "implements")
+            if edge_key in existing:
+                continue
+            existing.add(edge_key)
+            all_edges.append({
+                "source": matches[0],
+                "target": requirement_id,
+                "relation": "implements",
+                "context": "protocol_property_requirement",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": conformance.get("source_file", ""),
+                "source_location": conformance.get("source_location"),
+                "weight": 1.0,
+                "language": "swift",
+                "language_family": "native",
+            })
 
 
 def _resolve_python_member_calls(
@@ -2750,6 +3186,13 @@ def _resolve_objc_member_calls(
 # preserved from the prior inlined wiring: Swift (#1356) before Python (#1446).
 register_language_resolver(
     LanguageResolver("swift_member_calls", frozenset({".swift"}), _resolve_swift_member_calls)
+)
+register_language_resolver(
+    LanguageResolver(
+        "swift_protocol_requirements",
+        frozenset({".swift"}),
+        _resolve_swift_protocol_requirements,
+    )
 )
 register_language_resolver(
     LanguageResolver("python_member_calls", frozenset({".py"}), _resolve_python_member_calls)
@@ -3999,6 +4442,8 @@ def _is_cpp_header(path: Path) -> bool:
 
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
+    if path.name == "Package.swift":
+        return extract_swift_package_manifest
     if path.name.lower().endswith(".blade.php"):
         return extract_blade
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
@@ -4335,6 +4780,8 @@ def extract(
         if per_file[i] is None:
             per_file[i] = {"nodes": [], "edges": []}
 
+    link_swift_package_sources(cast(list[dict], per_file), paths)
+
     # #1666: surface any source file an extractor accepted but that produced zero
     # nodes (not even a file node). Such a file is silently absent from the graph,
     # so affected/explain are blind to and through it with no other signal.
@@ -4488,6 +4935,10 @@ def extract(
                 e["source"] = id_remap[e["source"]]
             if e.get("target") in id_remap:
                 e["target"] = id_remap[e["target"]]
+        for result in per_file:
+            for extension in result.get("swift_extensions", []) or []:
+                if extension.get("nid") in id_remap:
+                    extension["nid"] = id_remap[extension["nid"]]
     if prefix_remap:
         sym_remap: dict[str, str] = {}
         for n in all_nodes:
@@ -4532,6 +4983,10 @@ def extract(
                 cn = rc.get("caller_nid")
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
+            for result in per_file:
+                for extension in result.get("swift_extensions", []) or []:
+                    if extension.get("nid") in sym_remap:
+                        extension["nid"] = sym_remap[extension["nid"]]
 
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)

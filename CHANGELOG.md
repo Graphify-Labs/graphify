@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: Swift extraction now preserves overload identity and resolves literal calls by signature; models protocol method/property requirements, associated types, type aliases, and concrete requirement implementations; follows typed property and factory-return call chains; and extracts Swift Package Manager manifests into package, product, target, dependency, and source-membership structure. Existing non-overloaded symbol IDs remain stable, ambiguous receivers still fail closed, and all extraction remains local/offline.
+
 ## 0.9.15 (2026-07-13)
 
 - Fix: detection now honors nested `.gitignore`/`.graphifyignore` files below the scan root, not just those at the scan root and above (#1847, thanks @Mohak-Agrawal). git applies a `.gitignore` to everything under its own directory, but graphify only loaded ignore files from the VCS-root-down-to-scan-root chain — so a `vendor/sub/.gitignore` deeper in the tree was never read and its exclusions leaked into the graph. Each directory's own ignore files are now read during the walk and anchored to that directory, preserving last-match-wins precedence (nearer files win, including over `.git/info/exclude`) and the parent-exclusion rule.
