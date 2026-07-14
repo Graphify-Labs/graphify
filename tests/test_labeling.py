@@ -271,7 +271,9 @@ def test_label_communities_batches_when_over_batch_size(monkeypatch):
         return "{" + ", ".join(f'"{c}": "Cluster {c}"' for c in cids) + "}"
 
     monkeypatch.setattr("graphify.llm._call_llm", fake_call)
-    labels = label_communities(G, communities, backend="gemini", batch_size=100)
+    labels = label_communities(
+        G, communities, backend="gemini", batch_size=100, max_concurrency=1
+    )
 
     # 250 communities / 100 per batch -> 3 batches (100, 100, 50)
     assert calls == [100, 100, 50]
