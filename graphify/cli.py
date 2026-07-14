@@ -12,6 +12,7 @@ import sys
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path
 import concurrent.futures
+import os
 
 _SEARCH_NUDGE = json.dumps({
     "hookSpecificOutput": {
@@ -2367,7 +2368,14 @@ def dispatch_command(cmd: str) -> None:
                 print(f"[graphify extract] Cargo: {len(res['nodes'])} nodes, {len(res['edges'])} edges")
             return res
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        default_io_workers = min(32, (os.cpu_count() or 1) + 4)
+        worker_count = cli_max_workers or os.environ.get("GRAPHIFY_MAX_WORKERS")
+        if worker_count:
+            worker_count = int(worker_count)
+        else:
+            worker_count = default_io_workers
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
             fut_ast = executor.submit(run_ast)
             fut_sem = executor.submit(run_semantic)
             fut_pg = executor.submit(run_pg)
