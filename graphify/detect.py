@@ -955,25 +955,18 @@ def _is_ignored(
             if not p:
                 continue
 
+            # gitignore semantics: patterns from A/.gitignore apply ONLY to paths
+            # under A. Matching non-anchored patterns against root-relative paths
+            # let e.g. .hypothesis/.gitignore's bare "*" ignore the ENTIRE repo
+            # (detect() returned 0 files). The anchor dir itself is exempt — an
+            # ignore file governs its directory's contents, not the directory.
             matched = False
-            if anchored:
-                try:
-                    rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
-                    matched = _matches(rel_anchor, p, anchored=True)
-                except ValueError:
-                    pass
-            else:
-                try:
-                    rel = str(target.relative_to(root)).replace(os.sep, "/")
-                    matched = _matches(rel, p, anchored=False)
-                except ValueError:
-                    pass
-                if not matched and anchor != root:
-                    try:
-                        rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
-                        matched = _matches(rel_anchor, p, anchored=False)
-                    except ValueError:
-                        pass
+            try:
+                rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
+            except ValueError:
+                continue  # target outside this pattern's anchor: cannot match
+            if rel_anchor != ".":
+                matched = _matches(rel_anchor, p, anchored=anchored)
 
             if matched:
                 result = not negated  # last match wins; ! flips to un-ignore

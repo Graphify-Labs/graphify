@@ -1754,3 +1754,35 @@ def test_detect_surfaces_unreadable_dir_instead_of_silent_skip(tmp_path, capsys)
     assert any(f.endswith("a.py") for f in code)  # rest of tree still enumerated
     assert len(res["walk_errors"]) >= 1
     assert "could not scan" in capsys.readouterr().err
+
+
+def test_nested_gitignore_star_does_not_ignore_outside_its_dir(tmp_path):
+    """A nested .gitignore containing a bare `*` (auto-written by e.g. the
+    hypothesis library into .hypothesis/) must ignore ONLY that directory's
+    contents — matching it against root-relative paths ignored the entire
+    corpus (detect() returned 0 files on a real repo). Regression for #1873."""
+    (tmp_path / "README.md").write_text("# hello")
+    (tmp_path / "main.py").write_text("x = 1")
+    hyp = tmp_path / ".hypothesis"
+    hyp.mkdir()
+    (hyp / ".gitignore").write_text("*\n")
+    (hyp / "cached.py").write_text("y = 2")
+
+    result = detect(tmp_path)
+
+    assert result["total_files"] == 2  # README.md + main.py survive; .hypothesis/* ignored
+
+
+def test_nested_gitignore_patterns_still_apply_inside_their_dir(tmp_path):
+    """Counterpart guard: the anchor-scoped fix must not stop nested ignore
+    files from working WITHIN their own subtree."""
+    (tmp_path / "main.py").write_text("x = 1")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / ".gitignore").write_text("*.log\n")
+    (sub / "keep.py").write_text("y = 2")
+    (sub / "noise.log").write_text("z")
+
+    result = detect(tmp_path)
+
+    assert result["total_files"] == 2  # main.py + sub/keep.py; sub/noise.log ignored
