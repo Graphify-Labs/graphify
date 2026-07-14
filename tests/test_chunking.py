@@ -203,6 +203,43 @@ def test_corpus_parallel_sequential_when_max_concurrency_is_one(tmp_path):
     assert call_order == [("f0.py",), ("f1.py",), ("f2.py",)]
 
 
+# ---- Incremental cache checkpoint --------------------------------------------
+
+def test_checkpoint_allowlist_unwraps_file_slices(tmp_path, monkeypatch):
+    """#1870: a chunk containing FileSlice units must checkpoint with the
+    slice's parent path in allowed_source_files — leaking the FileSlice
+    object itself made save_semantic_cache raise, silently skipping the
+    checkpoint for every chunk with a sliced document."""
+    from graphify import llm
+    from graphify.llm import extract_corpus_parallel
+
+    big = tmp_path / "big.md"
+    big.write_text("# heading\n" + "paragraph line\n" * 40)
+
+    captured = {}
+
+    def _capture_cache(*args, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("graphify.cache.save_semantic_cache", _capture_cache)
+    monkeypatch.delenv("GRAPHIFY_NO_INCREMENTAL_CACHE", raising=False)
+
+    with patch.object(llm, "_FILE_CHAR_CAP", 100), \
+         patch("graphify.llm.extract_files_direct",
+               side_effect=lambda chunk, **kw: _stub_chunk_result(len(chunk), 0)):
+        extract_corpus_parallel(
+            [big], backend="kimi", token_budget=None, chunk_size=16, max_concurrency=1
+        )
+
+    allowed = captured.get("allowed_source_files")
+    assert allowed, "checkpoint should have written the chunk to the cache"
+    assert all(isinstance(p, Path) for p in allowed), (
+        f"allowed_source_files must hold real paths, got: {allowed!r}"
+    )
+    assert set(map(str, allowed)) == {str(big)}
+
+
 def test_corpus_parallel_merge_order_is_submission_order_not_completion(tmp_path):
     """#1632: merged node/edge order must be deterministic (submission order),
     not the order chunks' network calls happen to finish. We skew latencies so
