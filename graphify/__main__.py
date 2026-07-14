@@ -174,7 +174,7 @@ def _check_skill_version(skill_dst: Path) -> None:
     except OSError:
         return
     if not skill_exists:
-        print("  warning: skill dir exists but SKILL.md is missing. Run 'graphify install' to repair.")
+        print("  warning: skill dir exists but SKILL.md is missing. Run 'graphify install' to repair.", file=sys.stderr)
         return
     # A progressive SKILL.md links to its references/ sidecar. If the body points
     # at references/ but the dir is gone (manual delete, partial upgrade), the
