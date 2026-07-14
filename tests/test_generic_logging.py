@@ -111,14 +111,23 @@ void doCpp() {
 }
 """)
 
-    # We need to re-instantiate GenericLogExtractor inside extract.py to read the new config in tmp_path
-    # Since log_extractor is a module-level variable, we can reload it or re-instantiate it
+    # First run without any flag/env-var. It should be disabled by default.
     from graphify.generic_logger import GenericLogExtractor
     monkeypatch.setattr(ex, "log_extractor", GenericLogExtractor("logging_config.yaml"))
-
-    # Run extraction (non-parallel to avoid pickle/subprocess cwd mismatch issues in tests)
+    
     files = [java_file, kotlin_file, c_file, cpp_file]
-    result = ex.extract(files, cache_root=tmp_path / "cache", parallel=False)
+    result_disabled = ex.extract(files, cache_root=tmp_path / "cache_disabled", parallel=False)
+    
+    edges_disabled = result_disabled.get("edges", [])
+    prints_log_edges_disabled = [e for e in edges_disabled if e.get("relation") == "PRINTS_LOG"]
+    assert len(prints_log_edges_disabled) == 0, "Logging extraction should be disabled by default"
+    
+    # Now enable it via environment variable
+    monkeypatch.setenv("GRAPHIFY_EXTRACT_LOGS", "1")
+    # Reset internal loaded state to simulate fresh run
+    ex.log_extractor._loaded = False
+    
+    result = ex.extract(files, cache_root=tmp_path / "cache_enabled", parallel=False)
     
     edges = result.get("edges", [])
     nodes = result.get("nodes", [])

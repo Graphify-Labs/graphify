@@ -3,14 +3,12 @@ import yaml
 from tree_sitter import Parser, Query, QueryCursor
 
 class GenericLogExtractor:
-    def __init__(self, config_path="logging_config.yaml"):
-        self.enabled = os.path.exists(config_path)
-        if not self.enabled:
-            return
-            
-        with open(config_path, "r") as f:
-            self.config = yaml.safe_load(f).get("logging_rules", {})
-            
+    def __init__(self, config_path=None):
+        self._config_path = config_path
+        self.enabled = False
+        self._loaded = False
+        self.config = {}
+        
         self.ext_map = {
             ".java": "java",
             ".kt": "kotlin",
@@ -20,8 +18,39 @@ class GenericLogExtractor:
             ".hpp": "cpp",
             ".h": "c"
         }
+
+    def _ensure_loaded(self):
+        if self._loaded:
+            return
+            
+        cpath = self._config_path
+        if cpath is None:
+            cpath = os.environ.get("GRAPHIFY_LOGGING_CONFIG", "logging_config.yaml")
+            
+        is_enabled = os.environ.get("GRAPHIFY_EXTRACT_LOGS") == "1"
+        self.enabled = is_enabled
+        
+        if not self.enabled:
+            self._loaded = True
+            return
+            
+        if not os.path.exists(cpath):
+            print(f"[LogExtractor Warning] Configuration file {cpath} not found. Logging extraction disabled.", flush=True)
+            self.enabled = False
+            self._loaded = True
+            return
+            
+        try:
+            with open(cpath, "r") as f:
+                self.config = yaml.safe_load(f).get("logging_rules", {})
+        except Exception as e:
+            print(f"[LogExtractor Warning] Failed to load configuration from {cpath}: {e}", flush=True)
+            self.enabled = False
+            
+        self._loaded = True
         
     def inject_logs_to_graph(self, file_path, file_content, graph_builder):
+        self._ensure_loaded()
         if not self.enabled:
             return
             
