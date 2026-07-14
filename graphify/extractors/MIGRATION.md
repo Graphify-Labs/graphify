@@ -17,6 +17,7 @@ written so an AI agent can execute it in a single session.
 | go | yes |
 | powershell (ps1 + psd1 manifest) | yes |
 | fortran | yes |
+| matlab | yes (dedicated extractor; `.m` content-sniffed against Objective-C) |
 | sql | yes |
 | dm (dm/dmm/dmi/dmf) | yes |
 | bash | yes |

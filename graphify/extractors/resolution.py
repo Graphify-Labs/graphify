@@ -1949,6 +1949,15 @@ def _merge_decl_def_classes(
     for nid, group in by_id.items():
         if len(group) < 2:
             continue
+        # MATLAB and Objective-C share `.m`, and same-stem sibling files can
+        # therefore collide with a native header despite being unrelated. Only
+        # native declaration/definition pairs participate in this merge.
+        if any(
+            node.get("language") == "matlab"
+            or node.get("language_family") == "matlab"
+            for node in group
+        ):
+            continue
         # The distinct source files of this collision must form a clean sibling
         # header/impl set with exactly one header. Each file must parse as a
         # header/impl file (others -> bail), share one directory + base stem.

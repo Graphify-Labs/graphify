@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from graphify.callflow_html import derive_sections_from_communities, write_callflow_html
+from graphify.callflow_html import derive_sections_from_communities, node_kind, write_callflow_html
 
 
 def _make_graphify_out(tmp_path: Path) -> Path:
@@ -47,6 +47,10 @@ def _make_graphify_out(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return out
+
+
+def test_uppercase_matlab_filename_is_a_module_not_a_class():
+    assert node_kind({"label": "Model.m", "source_file": "Model.m"}) == "module"
 
 
 def test_write_callflow_html_creates_file_and_uses_report(tmp_path):
