@@ -580,7 +580,7 @@ def _run_cli() -> None:
         print("    --labels PATH           .graphify_labels.json (optional, auto-detected next to --graph)")
         print("    --half-life-days N      signal weight halves every N days (default 30)")
         print("    --min-corroboration N   distinct useful results to prefer a node (default 2)")
-        print("  check-update <path>     check needs_update flag and notify if semantic re-extraction is pending (cron-safe)")
+        print("  check-update <path>     report manifest drift and pending semantic updates (cron-safe)")
         print("  tree                    emit a D3 v7 collapsible-tree HTML for graph.json")
         print("    --graph PATH            path to graph.json (default graphify-out/graph.json)")
         print("    --output HTML           output path (default graphify-out/GRAPH_TREE.html)")

@@ -58,10 +58,11 @@ def test_watched_extensions_excludes_noise():
 
 # --- watch() import error without watchdog ---
 
-def test_check_update_no_flag_returns_true(tmp_path):
-    """check_update returns True and is silent when needs_update flag is absent."""
+def test_check_update_no_flag_returns_true(tmp_path, capsys):
+    """check_update returns True and reports a verified clean corpus."""
     from graphify.watch import check_update
     assert check_update(tmp_path) is True
+    assert "Up to date" in capsys.readouterr().out
 
 
 def test_check_update_with_flag_returns_true_and_prints(tmp_path, capsys):
@@ -84,6 +85,121 @@ def test_check_update_does_not_clear_flag(tmp_path):
     flag.write_text("1")
     check_update(tmp_path)
     assert flag.exists()
+
+
+def test_check_update_reports_files_added_after_manifest(tmp_path, capsys):
+    """#1765: files created after extraction must make the graph stale."""
+    from graphify.detect import save_manifest
+    from graphify.watch import check_update
+
+    original = tmp_path / "original.py"
+    original.write_text("value = 1\n")
+    manifest = tmp_path / "graphify-out" / "manifest.json"
+    save_manifest(
+        {"code": [str(original)]},
+        str(manifest),
+        kind="both",
+        root=tmp_path,
+    )
+    (tmp_path / "added.py").write_text("value = 2\n")
+
+    assert check_update(tmp_path) is True
+    out = capsys.readouterr().out
+    assert "1 added, 0 changed, 0 removed" in out
+    assert "/graphify --update" in out
+
+
+def test_check_update_reports_changed_and_removed_files(tmp_path, capsys):
+    from graphify.detect import save_manifest
+    from graphify.watch import check_update
+
+    changed = tmp_path / "changed.py"
+    changed.write_text("value = 1\n")
+    removed = tmp_path / "removed.py"
+    removed.write_text("value = 2\n")
+    manifest = tmp_path / "graphify-out" / "manifest.json"
+    save_manifest(
+        {"code": [str(changed), str(removed)]},
+        str(manifest),
+        kind="both",
+        root=tmp_path,
+    )
+
+    prior_mtime = changed.stat().st_mtime
+    changed.write_text("value = 3\n")
+    os.utime(changed, (prior_mtime + 2, prior_mtime + 2))
+    removed.unlink()
+
+    check_update(tmp_path)
+    out = capsys.readouterr().out
+    assert "0 added, 1 changed, 1 removed" in out
+
+
+def test_check_update_honors_ignore_rules_for_new_files(tmp_path, capsys):
+    from graphify.detect import save_manifest
+    from graphify.watch import check_update
+
+    (tmp_path / ".gitignore").write_text("ignored.py\n")
+    original = tmp_path / "original.py"
+    original.write_text("value = 1\n")
+    manifest = tmp_path / "graphify-out" / "manifest.json"
+    save_manifest(
+        {"code": [str(original)]},
+        str(manifest),
+        kind="both",
+        root=tmp_path,
+    )
+    (tmp_path / "ignored.py").write_text("secret = 1\n")
+
+    check_update(tmp_path)
+    out = capsys.readouterr().out
+    assert "Up to date" in out
+    assert "Corpus drift" not in out
+
+
+def test_check_update_uses_ast_hash_for_code_only_manifest(tmp_path, capsys):
+    """An AST-only code update is current even without a semantic hash."""
+    from graphify.detect import save_manifest
+    from graphify.watch import check_update
+
+    source = tmp_path / "main.py"
+    source.write_text("value = 1\n")
+    manifest = tmp_path / "graphify-out" / "manifest.json"
+    save_manifest(
+        {"code": [str(source)]},
+        str(manifest),
+        kind="ast",
+        root=tmp_path,
+    )
+
+    check_update(tmp_path)
+    assert "Up to date" in capsys.readouterr().out
+
+
+def test_check_update_uses_semantic_hash_for_content(tmp_path, capsys):
+    """An AST-only manifest write must not mark changed content as current."""
+    from graphify.detect import save_manifest
+    from graphify.watch import check_update
+
+    doc = tmp_path / "notes.md"
+    doc.write_text("# Original\n")
+    manifest = tmp_path / "graphify-out" / "manifest.json"
+    save_manifest(
+        {"document": [str(doc)]},
+        str(manifest),
+        kind="both",
+        root=tmp_path,
+    )
+    doc.write_text("# Changed\n")
+    save_manifest(
+        {"document": [str(doc)]},
+        str(manifest),
+        kind="ast",
+        root=tmp_path,
+    )
+
+    check_update(tmp_path)
+    assert "0 added, 1 changed, 0 removed" in capsys.readouterr().out
 
 
 def test_watch_raises_without_watchdog(tmp_path, monkeypatch):
