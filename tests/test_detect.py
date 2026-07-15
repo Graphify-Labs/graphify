@@ -1150,6 +1150,75 @@ def test_save_manifest_without_filter_unchanged_for_code(tmp_path):
     manifest = json.loads(Path(manifest_path).read_text())
     assert str(py) in manifest
     assert manifest[str(py)]["ast_hash"] != ""
+
+
+# Regression tests for #1908 - save_manifest(prune_to_scan=True) drops entries
+# absent from a full scan, even when the file still exists on disk.
+
+def test_save_manifest_prune_to_scan_drops_scan_excluded_file(tmp_path):
+    """A file still on disk but no longer in the scan is pruned when
+    prune_to_scan=True, so detect_incremental() stops reporting it as deleted."""
+    import json
+
+    kept = tmp_path / "kept.py"
+    excluded = tmp_path / "excluded.py"
+    kept.write_text("x = 1")
+    excluded.write_text("x = 2")
+
+    manifest_path = str(tmp_path / "manifest.json")
+    save_manifest({"code": [str(kept), str(excluded)]}, manifest_path)
+    assert str(excluded) in json.loads(Path(manifest_path).read_text())
+
+    # excluded.py still exists on disk but the next scan no longer returns it
+    save_manifest({"code": [str(kept)]}, manifest_path, prune_to_scan=True)
+
+    manifest = json.loads(Path(manifest_path).read_text())
+    assert str(kept) in manifest
+    assert str(excluded) not in manifest
+
+
+def test_save_manifest_prune_to_scan_drops_missing_file(tmp_path):
+    """A physically deleted file is pruned under prune_to_scan=True too."""
+    import json
+
+    kept = tmp_path / "kept.py"
+    gone = tmp_path / "gone.py"
+    kept.write_text("x = 1")
+    gone.write_text("x = 2")
+
+    manifest_path = str(tmp_path / "manifest.json")
+    save_manifest({"code": [str(kept), str(gone)]}, manifest_path)
+
+    gone.unlink()
+    save_manifest({"code": [str(kept)]}, manifest_path, prune_to_scan=True)
+
+    manifest = json.loads(Path(manifest_path).read_text())
+    assert str(kept) in manifest
+    assert str(gone) not in manifest
+
+
+def test_save_manifest_subset_save_still_preserves_untouched_entries(tmp_path):
+    """Default prune_to_scan=False keeps subset-preserving behavior (#917):
+    a partial save (e.g. only changed files) must not erase untouched entries
+    for files that still exist on disk."""
+    import json
+
+    touched = tmp_path / "touched.py"
+    untouched = tmp_path / "untouched.py"
+    touched.write_text("x = 1")
+    untouched.write_text("x = 2")
+
+    manifest_path = str(tmp_path / "manifest.json")
+    save_manifest({"code": [str(touched), str(untouched)]}, manifest_path)
+
+    # Incremental caller passes only the changed file, prune_to_scan left at default
+    save_manifest({"code": [str(touched)]}, manifest_path)
+
+    manifest = json.loads(Path(manifest_path).read_text())
+    assert str(touched) in manifest
+    assert str(untouched) in manifest, "untouched entry must survive a subset save"
+
+
 # Regression tests for #945 - .gitignore fallback when no .graphifyignore exists
 
 def test_gitignore_fallback_when_no_graphifyignore(tmp_path):

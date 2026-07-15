@@ -1466,6 +1466,7 @@ def save_manifest(
     *,
     kind: str = "both",
     root: Path | None = None,
+    prune_to_scan: bool = False,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1481,6 +1482,16 @@ def save_manifest(
     machines and checkout locations (#777). Out-of-root entries are written
     as absolute so they continue to round-trip on the saving machine.
     When ``root`` is None the legacy absolute-keyed format is preserved.
+
+    ``prune_to_scan`` controls retention of manifest entries not present in
+    ``files``. Default False (subset-preserving): an entry survives as long
+    as its file still exists on disk, so incremental callers passing only
+    changed files don't erase untouched entries (#917). True (full-scan
+    pruning): an entry only survives if it's also in ``files``, so a file
+    that's still on disk but now excluded from the scan (ignore rules,
+    generated-file handling, etc.) doesn't linger as a stale manifest row
+    and get reported as a false deletion (#1908). Callers with the complete
+    result of a full detect() should pass True.
     """
     existing = load_manifest(manifest_path, root=root)
 
@@ -1493,22 +1504,27 @@ def save_manifest(
             return entry
         return None
 
+    all_files = [f for file_list in files.values() for f in file_list]
+    scanned = set(all_files)
+
     # Seed from the existing manifest so incremental callers passing a subset
     # of files don't silently erase entries for untouched files (#917).
     # Prune entries whose file no longer exists on disk — those are genuine
-    # deletions that detect_incremental() should treat as gone.
+    # deletions that detect_incremental() should treat as gone. With
+    # prune_to_scan=True, also drop entries absent from the current full
+    # scan even if the file still exists (#1908).
     manifest: dict[str, dict] = {}
     for f, entry in existing.items():
         normalised = _normalise_entry(entry)
         if normalised is None:
+            continue
+        if prune_to_scan and f not in scanned:
             continue
         try:
             if Path(f).exists():
                 manifest[f] = normalised
         except OSError:
             continue
-
-    all_files = [f for file_list in files.values() for f in file_list]
     with ThreadPoolExecutor() as pool:
         raw = pool.map(_stat_and_hash, all_files)
     hashed: dict[str, tuple[float, str]] = {
