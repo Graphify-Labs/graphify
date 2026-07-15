@@ -424,3 +424,57 @@ def close_db(db: object, conn: object) -> None:
     """Close the NeuG connection and database."""
     conn.close()
     db.close()
+
+
+def export_to_json(conn: object, *, hyperedges: list | None = None) -> dict:
+    """Export the NeuG graph to a NetworkX ``node_link_data``-compatible dict.
+
+    This avoids any dependency on NetworkX — the dict is assembled directly
+    from Cypher query results and can be consumed by ``json_graph.node_link_graph``.
+    """
+    from graphify.export import _strip_diacritics, _git_head
+
+    nodes: list[dict] = []
+    for row in conn.execute(
+        "MATCH (n:node) RETURN n.id, n.label, n.file_type, "
+        "n.source_file, n.source_location, n.community, n.community_name"
+    ):
+        nodes.append({
+            "id": row[0],
+            "label": row[1] or "",
+            "file_type": row[2] or "concept",
+            "source_file": row[3] or "",
+            "source_location": row[4] or "",
+            "community": row[5] if row[5] is not None else 0,
+            "community_name": row[6] or "",
+            "norm_label": _strip_diacritics(row[1] or "").lower(),
+        })
+
+    links: list[dict] = []
+    for row in conn.execute(
+        "MATCH (a:node)-[e:edge]->(b:node) "
+        "RETURN a.id, b.id, e.relation, e.confidence, "
+        "e.confidence_score, e.source_file, e.weight"
+    ):
+        links.append({
+            "source": row[0],
+            "target": row[1],
+            "relation": row[2] or "",
+            "confidence": row[3] or "EXTRACTED",
+            "confidence_score": float(row[4]) if row[4] is not None else 1.0,
+            "source_file": row[5] or "",
+            "weight": float(row[6]) if row[6] is not None else 1.0,
+        })
+
+    commit = _git_head()
+    data: dict = {
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
+        "nodes": nodes,
+        "links": links,
+        "hyperedges": hyperedges or [],
+    }
+    if commit:
+        data["built_at_commit"] = commit
+    return data

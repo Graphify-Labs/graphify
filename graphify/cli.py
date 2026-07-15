@@ -2512,81 +2512,110 @@ def dispatch_command(cmd: str) -> None:
         # absolute file lists.
         _manifest_files = _stamped_manifest_files(files_by_type, sem_result, target)
 
-        if no_cluster:
-            # --no-cluster: dump the raw merged extraction as graph.json.
-            # No NetworkX, no community detection, no analysis sidecar.
-            # Dedupe nodes (by id) and parallel edges so the raw output matches the
-            # clustered path (whose DiGraph collapses both) and stays deterministic
-            # across modes (#1317; node dedup also collapses shared Swift module
-            # anchors emitted per importing file, #1327).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
-            from graphify.export import backup_if_protected as _backup
-            if (
-                incremental_mode
-                and not code_files
-                and not semantic_files
-                and not deleted_files
-                and not pg_result.get("nodes")
-                and not pg_result.get("edges")
-                and not cargo_result.get("nodes")
-                and not cargo_result.get("edges")
-            ):
-                print(
-                    "[graphify extract] no incremental changes detected "
-                    "(--no-cluster); outputs left untouched."
-                )
-                try:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
-                except Exception as exc:
-                    print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
-                stages.total()
-                sys.exit(0)
+        # --- neug / NetworkX path separation ---
+        # If neug is available, build graph.db from merged once (before the
+        # --no-cluster / clustered branch).  Both branches then only need to
+        # open the existing connection; graph.json is exported from graph.db.
+        try:
+            import neug as _neug_mod  # noqa: F401
+            _use_neug = True
+        except ImportError:
+            _use_neug = False
 
-            merged["nodes"] = _dedupe_nodes(merged["nodes"])
-            merged["edges"] = _dedupe_edges(merged["edges"])
-            # Backfill source_file from endpoint nodes — this raw path bypasses
-            # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
-            _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}
-            for _e in merged["edges"]:
-                if not _e.get("source_file"):
-                    _e["source_file"] = (
-                        _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
-                    )
-            _backup(graphify_out)
-            graph_json_path.write_text(
-                json.dumps(merged, indent=2), encoding="utf-8"
-            )
+        # Early-exit for --no-cluster incremental no-op (before building anything).
+        if no_cluster and incremental_mode and not code_files \
+                and not semantic_files and not deleted_files \
+                and not pg_result.get("nodes") and not pg_result.get("edges") \
+                and not cargo_result.get("nodes") and not cargo_result.get("edges"):
+            print("[graphify extract] no incremental changes detected "
+                  "(--no-cluster); outputs left untouched.")
             try:
-                from graphify.storage import init_db as _init_db, ensure_schema as _ensure_schema, ingest_extraction as _ingest, close_db as _close_db
-                _db_path = str(graphify_out / "graph.db")
-                _is_inc = Path(_db_path).exists()
-                _db, _conn = _init_db(_db_path)
-                _known = _ensure_schema(_conn, create_tables=not _is_inc)
-                _ingest(_conn, merged, incremental=_is_inc,
-                        prune_sources=deleted_files or None, root=target,
-                        known_tables=_known)
-                _close_db(_db, _conn)
-                print("[graphify extract] graph.db written (powered by NeuG)")
-            except ImportError:
-                pass
-            except Exception as _exc:
-                print(f"[graphify extract] warning: NeuG write failed: {_exc}", file=sys.stderr)
-            stages.mark("write")
-            cost = _estimate_cost(
-                backend, merged["input_tokens"], merged["output_tokens"]
+                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
+            except Exception as exc:
+                print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+            stages.total()
+            sys.exit(0)
+
+        _neug_conn = None
+        _neug_db = None
+        if _use_neug:
+            from graphify.storage import (
+                init_db as _init_db, ensure_schema as _ensure_schema,
+                ingest_extraction as _ingest, close_db as _close_db,
+                export_to_json as _export_to_json,
             )
-            print(
-                f"[graphify extract] wrote {graph_json_path} — "
-                f"{len(merged['nodes'])} nodes, {len(merged['edges'])} edges "
-                f"(no clustering)"
-            )
-            if merged["input_tokens"] or merged["output_tokens"]:
-                print(
-                    f"[graphify extract] tokens: "
-                    f"{merged['input_tokens']:,} in / "
-                    f"{merged['output_tokens']:,} out, "
-                    f"est. cost: ${cost:.4f}"
+            from graphify.export import backup_if_protected as _backup
+            _db_path = str(graphify_out / "graph.db")
+            _is_inc = Path(_db_path).exists()
+            _backup(graphify_out)
+            _neug_db, _neug_conn = _init_db(_db_path)
+            _known = _ensure_schema(_neug_conn, create_tables=not _is_inc)
+            _ingest(_neug_conn, merged, incremental=_is_inc,
+                    prune_sources=deleted_files or None, root=target,
+                    known_tables=_known)
+            print("[graphify extract] graph.db written (powered by NeuG)")
+
+        if no_cluster:
+            # --no-cluster: no NetworkX, no community detection, no analysis sidecar.
+            if _use_neug:
+                # neug path: graph.db already built; export graph.json from it.
+                _data = _export_to_json(_neug_conn, hyperedges=merged.get("hyperedges", []))
+                _close_db(_neug_db, _neug_conn)
+                graph_json_path.write_text(json.dumps(_data, indent=2), encoding="utf-8")
+                stages.mark("write")
+                cost = _estimate_cost(
+                    backend, merged["input_tokens"], merged["output_tokens"]
                 )
+                print(
+                    f"[graphify extract] wrote {graph_json_path} — "
+                    f"{len(_data['nodes'])} nodes, {len(_data['links'])} edges "
+                    f"(no clustering)"
+                )
+                if merged["input_tokens"] or merged["output_tokens"]:
+                    print(
+                        f"[graphify extract] tokens: "
+                        f"{merged['input_tokens']:,} in / "
+                        f"{merged['output_tokens']:,} out, "
+                        f"est. cost: ${cost:.4f}"
+                    )
+            else:
+                # NetworkX path: dump the raw merged extraction as graph.json.
+                # Dedupe nodes (by id) and parallel edges so the raw output matches the
+                # clustered path (whose DiGraph collapses both) and stays deterministic
+                # across modes (#1317; node dedup also collapses shared Swift module
+                # anchors emitted per importing file, #1327).
+                from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+                from graphify.export import backup_if_protected as _backup
+                merged["nodes"] = _dedupe_nodes(merged["nodes"])
+                merged["edges"] = _dedupe_edges(merged["edges"])
+                # Backfill source_file from endpoint nodes — this raw path bypasses
+                # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
+                _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}
+                for _e in merged["edges"]:
+                    if not _e.get("source_file"):
+                        _e["source_file"] = (
+                            _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
+                        )
+                _backup(graphify_out)
+                graph_json_path.write_text(
+                    json.dumps(merged, indent=2), encoding="utf-8"
+                )
+                stages.mark("write")
+                cost = _estimate_cost(
+                    backend, merged["input_tokens"], merged["output_tokens"]
+                )
+                print(
+                    f"[graphify extract] wrote {graph_json_path} — "
+                    f"{len(merged['nodes'])} nodes, {len(merged['edges'])} edges "
+                    f"(no clustering)"
+                )
+                if merged["input_tokens"] or merged["output_tokens"]:
+                    print(
+                        f"[graphify extract] tokens: "
+                        f"{merged['input_tokens']:,} in / "
+                        f"{merged['output_tokens']:,} out, "
+                        f"est. cost: ${cost:.4f}"
+                    )
             try:
                 _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
             except Exception as exc:
@@ -2607,117 +2636,187 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
 
         # Build graph + cluster + score + write.
-        from graphify.build import (
-            build as _build,
-            build_from_json as _build_from_json,
-            build_merge as _build_merge,
-        )
-        from graphify.cluster import cluster as _cluster, score_all as _score_all
-        from graphify.export import to_json as _to_json
-        from graphify.analyze import god_nodes as _god_nodes, surprising_connections as _surprising
-        dedup_backend = backend if dedup_llm else None
-        if incremental_mode:
-            G = _build_merge(
-                [merged],
-                graph_path=existing_graph_path,
-                prune_sources=deleted_files or None,
-                dedup=True,
-                dedup_llm_backend=dedup_backend,
-                root=target,
-            )
-        else:
-            G = _build([merged], dedup=True, dedup_llm_backend=dedup_backend, root=target)
-        stages.mark("build")
-        if G.number_of_nodes() == 0:
-            print(
-                "[graphify extract] graph is empty — extraction produced no nodes. "
-                "Possible causes: all files skipped, binary-only corpus, or LLM "
-                "returned no edges.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs)
-        stages.mark("cluster")
-        cohesion = _score_all(G, communities)
-        try:
-            gods = _god_nodes(G)
-        except Exception:
-            gods = []
-        try:
-            surprises = _surprising(G, communities)
-        except Exception:
-            surprises = []
-        stages.mark("analyze")
-
-        from graphify.export import backup_if_protected as _backup
-        _backup(graphify_out)
-        _to_json(G, communities, str(graph_json_path), force=True)
-        stages.mark("export")
-        if merged.get("output_tokens", 0) > 0:
-            (graphify_out / ".graphify_semantic_marker").write_text(
-                json.dumps({"output_tokens": merged["output_tokens"]}), encoding="utf-8"
-            )
-        if global_merge:
-            from graphify.global_graph import global_add as _global_add
-            _tag = global_repo_tag or target.name
+        if _use_neug:
+            # --- neug clustered path (TODO: community detection via neug GDS Leiden) ---
+            print("[graphify extract] neug clustered path: community detection TODO (neug GDS Leiden pending)")
+            # TODO: 通过 neug GDS 运行 Leiden 社区检测
+            # TODO: ingest_communities 写回 community 到 graph.db
+            # TODO: 跑 gods/surprises analysis (cohesion/gods/surprises)
+            # TODO: export_to_json → graph.json（含 community 信息）
+            # 暂时先导出不带 community 的 graph.json
+            _data = _export_to_json(_neug_conn, hyperedges=merged.get("hyperedges", []))
+            graph_json_path.write_text(json.dumps(_data, indent=2), encoding="utf-8")
+            stages.mark("export")
+            # 写 .graphify_analysis.json（格式与 NetworkX 路径一致）
+            analysis = {
+                "communities": {},   # TODO
+                "cohesion": {},      # TODO
+                "gods": [],          # TODO
+                "surprises": [],     # TODO
+                "tokens": {
+                    "input": merged["input_tokens"],
+                    "output": merged["output_tokens"],
+                },
+            }
+            analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
+            _close_db(_neug_db, _neug_conn)
+            if merged.get("output_tokens", 0) > 0:
+                (graphify_out / ".graphify_semantic_marker").write_text(
+                    json.dumps({"output_tokens": merged["output_tokens"]}), encoding="utf-8"
+                )
+            if global_merge:
+                from graphify.global_graph import global_add as _global_add
+                _tag = global_repo_tag or target.name
+                try:
+                    result = _global_add(graphify_out / "graph.json", _tag)
+                    if result["skipped"]:
+                        print(f"[graphify global] '{_tag}' unchanged since last add - skipped.")
+                    else:
+                        print(f"[graphify global] '{_tag}' merged into global graph "
+                              f"(+{result['nodes_added']} nodes, -{result['nodes_removed']} pruned).")
+                except Exception as exc:
+                    print(f"[graphify global] warning: failed to merge into global graph: {exc}", file=sys.stderr)
             try:
-                result = _global_add(graphify_out / "graph.json", _tag)
-                if result["skipped"]:
-                    print(f"[graphify global] '{_tag}' unchanged since last add - skipped.")
-                else:
-                    print(f"[graphify global] '{_tag}' merged into global graph "
-                          f"(+{result['nodes_added']} nodes, -{result['nodes_removed']} pruned).")
+                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
             except Exception as exc:
-                print(f"[graphify global] warning: failed to merge into global graph: {exc}", file=sys.stderr)
-        analysis = {
-            "communities": {str(k): v for k, v in communities.items()},
-            "cohesion": {str(k): v for k, v in cohesion.items()},
-            "gods": gods,
-            "surprises": surprises,
-            "tokens": {
-                "input": merged["input_tokens"],
-                "output": merged["output_tokens"],
-            },
-        }
-        analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
-        try:
-            _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
-        except Exception as exc:
-            print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+                print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+            cost = _estimate_cost(backend, merged["input_tokens"], merged["output_tokens"])
+            print(
+                f"[graphify extract] wrote {graph_json_path}: "
+                f"{len(_data['nodes'])} nodes, {len(_data['links'])} edges"
+            )
+            print(f"[graphify extract] wrote {analysis_path}")
+            if incremental_mode:
+                print(
+                    f"[graphify extract] incremental summary: "
+                    f"{sem_cache_hits + unchanged_total} files cached/unchanged, "
+                    f"{len(code_files) + sem_cache_misses} re-extracted, "
+                    f"{len(deleted_files)} deleted"
+                )
+            elif sem_cache_hits:
+                print(f"[graphify extract] semantic cache: {sem_cache_hits} cached, {sem_cache_misses} re-extracted")
+            if merged["input_tokens"] or merged["output_tokens"]:
+                print(
+                    f"[graphify extract] tokens: "
+                    f"{merged['input_tokens']:,} in / "
+                    f"{merged['output_tokens']:,} out, "
+                    f"est. cost (~{backend}): ${cost:.4f}"
+                )
+            stages.total()
 
-        cost = _estimate_cost(backend, merged["input_tokens"], merged["output_tokens"])
-        print(
-            f"[graphify extract] wrote {graph_json_path}: "
-            f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges, "
-            f"{len(communities)} communities"
-        )
-        print(f"[graphify extract] wrote {analysis_path}")
-        if incremental_mode:
-            print(
-                f"[graphify extract] incremental summary: "
-                f"{sem_cache_hits + unchanged_total} files cached/unchanged, "
-                f"{len(code_files) + sem_cache_misses} re-extracted, "
-                f"{len(deleted_files)} deleted"
+        else:
+            # --- NetworkX clustered path (original logic) ---
+            from graphify.build import (
+                build as _build,
+                build_from_json as _build_from_json,
+                build_merge as _build_merge,
             )
-        elif sem_cache_hits:
-            print(f"[graphify extract] semantic cache: {sem_cache_hits} cached, {sem_cache_misses} re-extracted")
-        if merged["input_tokens"] or merged["output_tokens"]:
+            from graphify.cluster import cluster as _cluster, score_all as _score_all
+            from graphify.export import to_json as _to_json
+            from graphify.analyze import god_nodes as _god_nodes, surprising_connections as _surprising
+            dedup_backend = backend if dedup_llm else None
+            if incremental_mode:
+                G = _build_merge(
+                    [merged],
+                    graph_path=existing_graph_path,
+                    prune_sources=deleted_files or None,
+                    dedup=True,
+                    dedup_llm_backend=dedup_backend,
+                    root=target,
+                )
+            else:
+                G = _build([merged], dedup=True, dedup_llm_backend=dedup_backend, root=target)
+            stages.mark("build")
+            if G.number_of_nodes() == 0:
+                print(
+                    "[graphify extract] graph is empty — extraction produced no nodes. "
+                    "Possible causes: all files skipped, binary-only corpus, or LLM "
+                    "returned no edges.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs)
+            stages.mark("cluster")
+            cohesion = _score_all(G, communities)
+            try:
+                gods = _god_nodes(G)
+            except Exception:
+                gods = []
+            try:
+                surprises = _surprising(G, communities)
+            except Exception:
+                surprises = []
+            stages.mark("analyze")
+
+            from graphify.export import backup_if_protected as _backup
+            _backup(graphify_out)
+            _to_json(G, communities, str(graph_json_path), force=True)
+            stages.mark("export")
+            if merged.get("output_tokens", 0) > 0:
+                (graphify_out / ".graphify_semantic_marker").write_text(
+                    json.dumps({"output_tokens": merged["output_tokens"]}), encoding="utf-8"
+                )
+            if global_merge:
+                from graphify.global_graph import global_add as _global_add
+                _tag = global_repo_tag or target.name
+                try:
+                    result = _global_add(graphify_out / "graph.json", _tag)
+                    if result["skipped"]:
+                        print(f"[graphify global] '{_tag}' unchanged since last add - skipped.")
+                    else:
+                        print(f"[graphify global] '{_tag}' merged into global graph "
+                              f"(+{result['nodes_added']} nodes, -{result['nodes_removed']} pruned).")
+                except Exception as exc:
+                    print(f"[graphify global] warning: failed to merge into global graph: {exc}", file=sys.stderr)
+            analysis = {
+                "communities": {str(k): v for k, v in communities.items()},
+                "cohesion": {str(k): v for k, v in cohesion.items()},
+                "gods": gods,
+                "surprises": surprises,
+                "tokens": {
+                    "input": merged["input_tokens"],
+                    "output": merged["output_tokens"],
+                },
+            }
+            analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
+            try:
+                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
+            except Exception as exc:
+                print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+
+            cost = _estimate_cost(backend, merged["input_tokens"], merged["output_tokens"])
             print(
-                f"[graphify extract] tokens: "
-                f"{merged['input_tokens']:,} in / "
-                f"{merged['output_tokens']:,} out, "
-                f"est. cost (~{backend}): ${cost:.4f}"
+                f"[graphify extract] wrote {graph_json_path}: "
+                f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges, "
+                f"{len(communities)} communities"
             )
-        # extract intentionally stops at graph.json + analysis; the report and
-        # community labels are produced by `cluster-only` (or an agent's Step 5).
-        # Point standalone users at it so communities get named (#1097).
-        print(
-            "[graphify extract] next: run "
-            f"`graphify cluster-only {graphify_out.parent}` "
-            "to generate GRAPH_REPORT.md and name communities"
-        )
-        stages.total()
+            print(f"[graphify extract] wrote {analysis_path}")
+            if incremental_mode:
+                print(
+                    f"[graphify extract] incremental summary: "
+                    f"{sem_cache_hits + unchanged_total} files cached/unchanged, "
+                    f"{len(code_files) + sem_cache_misses} re-extracted, "
+                    f"{len(deleted_files)} deleted"
+                )
+            elif sem_cache_hits:
+                print(f"[graphify extract] semantic cache: {sem_cache_hits} cached, {sem_cache_misses} re-extracted")
+            if merged["input_tokens"] or merged["output_tokens"]:
+                print(
+                    f"[graphify extract] tokens: "
+                    f"{merged['input_tokens']:,} in / "
+                    f"{merged['output_tokens']:,} out, "
+                    f"est. cost (~{backend}): ${cost:.4f}"
+                )
+            # extract intentionally stops at graph.json + analysis; the report and
+            # community labels are produced by `cluster-only` (or an agent's Step 5).
+            # Point standalone users at it so communities get named (#1097).
+            print(
+                "[graphify extract] next: run "
+                f"`graphify cluster-only {graphify_out.parent}` "
+                "to generate GRAPH_REPORT.md and name communities"
+            )
+            stages.total()
 
     elif cmd == "cache-check":
         # graphify cache-check <files_from> [--root <dir>]
