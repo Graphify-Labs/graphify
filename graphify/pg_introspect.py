@@ -113,6 +113,22 @@ def introspect_postgres(dsn: str | None = None) -> dict:
         else:
             ddl.append(f"CREATE VIEW {_quote_ident(schema)}.{_quote_ident(name)} AS SELECT 1;")
 
+    # FK edges — one ALTER TABLE per constraint (handles composite FKs correctly).
+    # Emitted BEFORE the function DDL: routine bodies the grammar can't parse
+    # (notably C-language extension functions, whose "body" is just the C symbol
+    # name) put tree-sitter into error recovery that consumes the statements
+    # after them — with FKs last, every 'references' edge is silently lost on
+    # any DB with a common extension installed (#1854). FK statements only
+    # reference tables, which are emitted first, so this order is always safe.
+    for constraint_name, t_schema, t_name, cols, r_schema, r_name, r_cols in fks:
+        col_list = ", ".join(_quote_ident(c) for c in cols)
+        ref_col_list = ", ".join(_quote_ident(c) for c in r_cols)
+        ddl.append(
+            f"ALTER TABLE {_quote_ident(t_schema)}.{_quote_ident(t_name)} "
+            f"ADD CONSTRAINT {_quote_ident(constraint_name)} "
+            f"FOREIGN KEY ({col_list}) REFERENCES {_quote_ident(r_schema)}.{_quote_ident(r_name)}({ref_col_list});"
+        )
+
     # Functions & Procedures — real body if available, stub if NULL
     # Use $gfx$ as the dollar-quote tag to avoid collision with $$ inside bodies.
     # Use external_language from the catalog; fall back to plpgsql if NULL/blank.
@@ -127,16 +143,6 @@ def introspect_postgres(dsn: str | None = None) -> dict:
                 f"CREATE FUNCTION {fn_sig} RETURNS void"
                 f" AS $gfx$ {actual_body} $gfx$ LANGUAGE {lang};"
             )
-
-    # FK edges — one ALTER TABLE per constraint (handles composite FKs correctly)
-    for constraint_name, t_schema, t_name, cols, r_schema, r_name, r_cols in fks:
-        col_list = ", ".join(_quote_ident(c) for c in cols)
-        ref_col_list = ", ".join(_quote_ident(c) for c in r_cols)
-        ddl.append(
-            f"ALTER TABLE {_quote_ident(t_schema)}.{_quote_ident(t_name)} "
-            f"ADD CONSTRAINT {_quote_ident(constraint_name)} "
-            f"FOREIGN KEY ({col_list}) REFERENCES {_quote_ident(r_schema)}.{_quote_ident(r_name)}({ref_col_list});"
-        )
 
     ddl_string = "\n".join(ddl)
 
