@@ -2556,6 +2556,21 @@ def dispatch_command(cmd: str) -> None:
             graph_json_path.write_text(
                 json.dumps(merged, indent=2), encoding="utf-8"
             )
+            try:
+                from graphify.storage import init_db as _init_db, ensure_schema as _ensure_schema, ingest_extraction as _ingest, close_db as _close_db
+                _db_path = str(graphify_out / "graph.db")
+                _is_inc = Path(_db_path).exists()
+                _db, _conn = _init_db(_db_path)
+                _known = _ensure_schema(_conn, create_tables=not _is_inc)
+                _ingest(_conn, merged, incremental=_is_inc,
+                        prune_sources=deleted_files or None, root=target,
+                        known_tables=_known)
+                _close_db(_db, _conn)
+                print("[graphify extract] graph.db written (powered by NeuG)")
+            except ImportError:
+                pass
+            except Exception as _exc:
+                print(f"[graphify extract] warning: NeuG write failed: {_exc}", file=sys.stderr)
             stages.mark("write")
             cost = _estimate_cost(
                 backend, merged["input_tokens"], merged["output_tokens"]
