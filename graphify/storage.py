@@ -381,14 +381,18 @@ def ingest_communities(
 ) -> None:
     """Write community assignments into NeuG node properties.
 
-    Uses a single ``CASE WHEN`` batch statement for all nodes (verified
-    working in neug).  NeuG does not support ``UNWIND $param`` or
-    ``SET n.prop = $param``, so community IDs and names are inlined.
+    Uses per-community ``SET`` with ``IN`` clauses instead of a single giant
+    ``CASE WHEN`` (which is O(N) parse time for large graphs).
+    NeuG does not support ``UNWIND $param`` or ``SET n.prop = $param``, so
+    community IDs and names are inlined.
 
     If community_labels is provided, community_name is also written in a
     separate per-community pass (inline values, not parameters).
     """
-    # Build comm_map: node_id -> community_id (int)
+    # Bulk writeback via parameterized per-node SET.
+    # Uses neug's primary-key index on n.id for O(log N) lookup per node.
+    # CASE WHEN is O(N*M) — too slow for large graphs (28K nodes = 63s).
+    # Parameterized SET with index lookup: ~27K queries × O(log N) ≈ 2-3s.
     comm_map: dict[str, int] = {}
     for cid, node_ids in communities.items():
         cid_int = int(cid)
@@ -397,14 +401,10 @@ def ingest_communities(
             if nid_norm:
                 comm_map[nid_norm] = cid_int
 
-    # Batch writeback community IDs via CASE WHEN (neug pattern)
-    when_clauses = " ".join(
-        f"WHEN n.id = '{nid}' THEN {cid}" for nid, cid in comm_map.items()
-    )
-    conn.execute(
-        f"MATCH (n:node) "
-        f"SET n.community = CASE {when_clauses} ELSE n.community END;"
-    )
+    for nid, cid in comm_map.items():
+        conn.execute(
+            f"MATCH (n:node {{id: '{nid}'}}) SET n.community = {cid}"
+        )
 
     # Write community_name per-community (inline values, not $param)
     if community_labels:
@@ -973,19 +973,49 @@ def run_leiden_freeze_assign(
     except RuntimeError:
         pass  # Column already exists
 
-    # Reset all to -1
-    conn.execute("MATCH (n:node) SET n.delta_comm = -1")
+    # Optimisation: most nodes already have the correct community in the DB's
+    # ``community`` column (written by the full extract).  Instead of a giant
+    # CASE WHEN with N clauses (O(N) parse time), we:
+    #   1. Copy ``community`` → ``delta_comm`` for ALL nodes (one fast query)
+    #   2. Set ``delta_comm = -1`` for new nodes only (small IN clause)
+    #   3. Fix re-extracted nodes whose DB community is 0 but old_communities
+    #      says different (per-community SET, usually a handful of queries)
+    conn.execute("MATCH (n:node) SET n.delta_comm = n.community")
 
-    # Write old communities via CASE WHEN (neug doesn't support UNWIND $param)
-    if old_communities:
-        when_clauses = " ".join(
-            f"WHEN n.id = '{nid}' THEN {cid}"
-            for nid, cid in old_communities.items()
-        )
-        conn.execute(
-            f"MATCH (n:node) "
-            f"SET n.delta_comm = CASE {when_clauses} ELSE -1 END;"
-        )
+    # Identify new nodes: in DB but not in old_communities
+    db_node_ids = {row[0] for row in conn.execute("MATCH (n:node) RETURN n.id")}
+    new_node_ids = db_node_ids - set(old_communities.keys())
+    if new_node_ids:
+        # Batch in chunks of 500 to avoid query-length limits
+        new_list = sorted(new_node_ids)
+        for i in range(0, len(new_list), 500):
+            chunk = new_list[i:i + 500]
+            id_list = ", ".join(f"'{nid}'" for nid in chunk)
+            conn.execute(
+                f"MATCH (n:node) WHERE n.id IN [{id_list}] "
+                f"SET n.delta_comm = -1"
+            )
+
+    # Fix re-extracted nodes: in old_communities but DB community doesn't match
+    # These are nodes whose file was re-extracted (deleted + re-created with community=0)
+    re_extracted: dict[int, list[str]] = {}  # {old_cid: [node_ids]}
+    for row in conn.execute(
+        "MATCH (n:node) WHERE n.community = 0 RETURN n.id"
+    ):
+        nid = row[0]
+        if nid in old_communities and old_communities[nid] != 0:
+            old_cid = old_communities[nid]
+            re_extracted.setdefault(old_cid, []).append(nid)
+
+    for old_cid, node_ids in re_extracted.items():
+        # Batch in chunks of 500
+        for i in range(0, len(node_ids), 500):
+            chunk = node_ids[i:i + 500]
+            id_list = ", ".join(f"'{nid}'" for nid in chunk)
+            conn.execute(
+                f"MATCH (n:node) WHERE n.id IN [{id_list}] "
+                f"SET n.delta_comm = {old_cid}"
+            )
 
     # Load GDS extension
     try:
