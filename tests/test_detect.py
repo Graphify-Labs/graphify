@@ -1591,6 +1591,71 @@ def test_save_manifest_without_root_keeps_absolute_keys(tmp_path):
     )
 
 
+def test_save_manifest_prune_to_scan_drops_scan_excluded_existing_file(tmp_path):
+    """A file that is physically present but no longer part of the current
+    full-root scan (e.g. now ignored, or generated) must be pruned from the
+    manifest when ``prune_to_scan=True`` — otherwise detect_incremental()
+    reports it as a permanent false-positive deletion (#1908)."""
+    from graphify.detect import save_manifest, load_manifest
+
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("pass\n")
+    excluded = tmp_path / "excluded.py"
+    excluded.write_text("pass\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+
+    # First save sees both files.
+    save_manifest({"code": [str(tracked), str(excluded)]}, manifest_path, root=tmp_path)
+    assert set(load_manifest(manifest_path, root=tmp_path)) == {
+        str(tracked.resolve()), str(excluded.resolve()),
+    }
+
+    # Second save is a full-corpus rebuild where `excluded` is no longer
+    # returned by detect() but still exists on disk.
+    save_manifest({"code": [str(tracked)]}, manifest_path, root=tmp_path, prune_to_scan=True)
+    assert set(load_manifest(manifest_path, root=tmp_path)) == {str(tracked.resolve())}
+
+
+def test_save_manifest_prune_to_scan_still_drops_missing_files(tmp_path):
+    """``prune_to_scan=True`` must not regress the existing
+    physically-missing-file pruning behavior."""
+    from graphify.detect import save_manifest, load_manifest
+
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("pass\n")
+    deleted = tmp_path / "deleted.py"
+    deleted.write_text("pass\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+
+    save_manifest({"code": [str(tracked), str(deleted)]}, manifest_path, root=tmp_path)
+    deleted.unlink()
+
+    save_manifest({"code": [str(tracked)]}, manifest_path, root=tmp_path, prune_to_scan=True)
+    assert set(load_manifest(manifest_path, root=tmp_path)) == {str(tracked.resolve())}
+
+
+def test_save_manifest_without_prune_to_scan_preserves_subset_entries(tmp_path):
+    """Default (``prune_to_scan=False``) behavior is unchanged: a partial
+    save (e.g. an incremental caller passing only changed files) must not
+    erase manifest rows for untouched-but-still-existing files (#917)."""
+    from graphify.detect import save_manifest, load_manifest
+
+    changed = tmp_path / "changed.py"
+    changed.write_text("pass\n")
+    untouched = tmp_path / "untouched.py"
+    untouched.write_text("pass\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+
+    save_manifest({"code": [str(changed), str(untouched)]}, manifest_path, root=tmp_path)
+
+    # Subsequent partial save only re-stamps `changed`; `untouched` is not
+    # part of the current `files` corpus but must survive.
+    save_manifest({"code": [str(changed)]}, manifest_path, root=tmp_path)
+    assert set(load_manifest(manifest_path, root=tmp_path)) == {
+        str(changed.resolve()), str(untouched.resolve()),
+    }
+
+
 def test_load_manifest_absolutizes_relative_keys(tmp_path):
     """``load_manifest(root=...)`` re-anchors stored relative keys so the
     in-memory shape matches what :func:`detect` returns."""

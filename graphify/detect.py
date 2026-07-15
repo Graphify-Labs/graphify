@@ -1466,6 +1466,7 @@ def save_manifest(
     *,
     kind: str = "both",
     root: Path | None = None,
+    prune_to_scan: bool = False,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1481,6 +1482,13 @@ def save_manifest(
     machines and checkout locations (#777). Out-of-root entries are written
     as absolute so they continue to round-trip on the saving machine.
     When ``root`` is None the legacy absolute-keyed format is preserved.
+
+    ``prune_to_scan`` (default False) — when True, ``files`` is treated as the
+    complete corpus of a full-root scan: existing manifest entries absent
+    from it are pruned even if the underlying file still exists on disk (a
+    physically-present-but-scan-excluded file, e.g. now ignored or
+    generated). Leave this False for callers passing only a changed subset,
+    so unrelated manifest rows are preserved (#917).
     """
     existing = load_manifest(manifest_path, root=root)
 
@@ -1493,14 +1501,21 @@ def save_manifest(
             return entry
         return None
 
+    all_files = [f for file_list in files.values() for f in file_list]
+    scanned = set(all_files) if prune_to_scan else None
+
     # Seed from the existing manifest so incremental callers passing a subset
     # of files don't silently erase entries for untouched files (#917).
     # Prune entries whose file no longer exists on disk — those are genuine
-    # deletions that detect_incremental() should treat as gone.
+    # deletions that detect_incremental() should treat as gone. When
+    # ``prune_to_scan`` is set, also prune entries absent from the current
+    # full scan even if the file still physically exists.
     manifest: dict[str, dict] = {}
     for f, entry in existing.items():
         normalised = _normalise_entry(entry)
         if normalised is None:
+            continue
+        if scanned is not None and f not in scanned:
             continue
         try:
             if Path(f).exists():
@@ -1508,7 +1523,6 @@ def save_manifest(
         except OSError:
             continue
 
-    all_files = [f for file_list in files.values() for f in file_list]
     with ThreadPoolExecutor() as pool:
         raw = pool.map(_stat_and_hash, all_files)
     hashed: dict[str, tuple[float, str]] = {
