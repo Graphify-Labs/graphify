@@ -381,35 +381,40 @@ def ingest_communities(
 ) -> None:
     """Write community assignments into NeuG node properties.
 
-    Single-table schema: all nodes are in the ``node`` table, so a single
-    MATCH per node suffices regardless of file_type.
+    Uses a single ``CASE WHEN`` batch statement for all nodes (verified
+    working in neug).  NeuG does not support ``UNWIND $param`` or
+    ``SET n.prop = $param``, so community IDs and names are inlined.
 
-    If community_labels is provided, community_name is also written.
-
-    Note: NeuG does not support parameterised SET for non-string values,
-    so community ID is interpolated as an integer literal.  The id value
-    uses a parameterised query.
+    If community_labels is provided, community_name is also written in a
+    separate per-community pass (inline values, not parameters).
     """
-    _labels = community_labels or {}
+    # Build comm_map: node_id -> community_id (int)
+    comm_map: dict[str, int] = {}
     for cid, node_ids in communities.items():
         cid_int = int(cid)
-        cname = _labels.get(cid_int, _labels.get(cid, ""))
         for nid in node_ids:
             nid_norm = _normalize_id(nid)
-            if not nid_norm:
-                continue
-            if cname:
-                conn.execute(
-                    f"MATCH (n:node) WHERE n.id = $nid "
-                    f"SET n.community = {cid_int}, n.community_name = $cname",
-                    parameters={"nid": nid_norm, "cname": cname},
-                )
-            else:
-                conn.execute(
-                    f"MATCH (n:node) WHERE n.id = $nid "
-                    f"SET n.community = {cid_int}",
-                    parameters={"nid": nid_norm},
-                )
+            if nid_norm:
+                comm_map[nid_norm] = cid_int
+
+    # Batch writeback community IDs via CASE WHEN (neug pattern)
+    when_clauses = " ".join(
+        f"WHEN n.id = '{nid}' THEN {cid}" for nid, cid in comm_map.items()
+    )
+    conn.execute(
+        f"MATCH (n:node) "
+        f"SET n.community = CASE {when_clauses} ELSE n.community END;"
+    )
+
+    # Write community_name per-community (inline values, not $param)
+    if community_labels:
+        for cid, name in community_labels.items():
+            cid_int = int(cid)
+            safe_name = (name or "").replace("'", "\\'")
+            conn.execute(
+                f"MATCH (n:node) WHERE n.community = {cid_int} "
+                f"SET n.community_name = '{safe_name}'"
+            )
 
 
 def execute_cypher(conn: object, query: str) -> list[list]:
@@ -477,4 +482,469 @@ def export_to_json(conn: object, *, hyperedges: list | None = None) -> dict:
     }
     if commit:
         data["built_at_commit"] = commit
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Shared row-based filter functions (mirror of analyze.py NetworkX filters)
+# ---------------------------------------------------------------------------
+# Used by find_god_nodes and find_surprising_connections to filter Cypher
+# query results without depending on NetworkX graph objects.
+
+from graphify.analyze import _BUILTIN_NOISE_LABELS, _JSON_NOISE_LABELS
+
+
+def _is_file_node_row(label: str, source_file: str, degree: int) -> bool:
+    """File hub / method stub — row-based mirror of analyze._is_file_node."""
+    if not label:
+        return False
+    # File-level hub: label matches source filename
+    if source_file and label == Path(source_file).name:
+        return True
+    # Method stub: .method_name() — ALWAYS exclude regardless of degree (analyze.py:74)
+    if label.startswith(".") and label.endswith("()"):
+        return True
+    # Function stub: func() with degree <= 1 (analyze.py:78)
+    if label.endswith("()") and degree <= 1:
+        return True
+    return False
+
+
+def _is_concept_node_row(source_file: str) -> bool:
+    """Concept node — row-based mirror of analyze._is_concept_node."""
+    if not source_file:
+        return True
+    if "." not in source_file.split("/")[-1]:
+        return True
+    return False
+
+
+def _is_json_key_node_row(label: str, source_file: str) -> bool:
+    """JSON key noise — row-based mirror of analyze._is_json_key_node."""
+    src = (source_file or "").lower()
+    if not src.endswith(".json"):
+        return False
+    return (label or "").strip().lower() in _JSON_NOISE_LABELS
+
+
+# ---------------------------------------------------------------------------
+# Community detection via neug GDS Leiden
+# ---------------------------------------------------------------------------
+
+
+def run_leiden(conn: object) -> dict[int, list[str]]:
+    """Run neug GDS Leiden community detection.
+
+    Returns ``{community_id: [node_ids]}``.
+    neug leiden guarantees stable community IDs — no re-indexing needed.
+    """
+    # Check for empty graph
+    node_rows = list(conn.execute("MATCH (n:node) RETURN n.id"))
+    if not node_rows:
+        return {}
+
+    edge_rows = list(conn.execute("MATCH ()-[e:edge]->() RETURN count(*)"))
+    if edge_rows and edge_rows[0][0] == 0:
+        # No edges: each node is its own community
+        return {i: [row[0]] for i, row in enumerate(node_rows)}
+
+    # Load GDS extension first (needed for project_graph and leiden)
+    try:
+        conn.execute("LOAD gds;")
+    except RuntimeError:
+        conn.execute("INSTALL gds;")
+        conn.execute("LOAD gds;")
+
+    # Project graph for GDS algorithms
+    conn.execute("CALL project_graph('g', ['node'], {'[node, edge, node]': ''})")
+
+    # Run Leiden
+    results = list(conn.execute(
+        "CALL leiden('g', {concurrency: 1}) "
+        "YIELD node, community "
+        "RETURN node.id, community"
+    ))
+
+    # Clean up projected graph
+    try:
+        conn.execute("CALL drop_projected_graph('g')")
+    except RuntimeError:
+        pass
+
+    communities: dict[int, list[str]] = {}
+    for nid, cid in results:
+        communities.setdefault(int(cid), []).append(nid)
+
+    return communities
+
+
+# ---------------------------------------------------------------------------
+# Cohesion + community labeling
+# ---------------------------------------------------------------------------
+
+
+def compute_cohesion(
+    conn: object, communities: dict[int, list[str]]
+) -> dict[int, float]:
+    """Per-community cohesion: undirected internal edges / max possible.
+
+    Uses a single edge scan with ``frozenset`` deduplication to convert
+    directed edges to undirected, aligning with NetworkX's ``Graph`` semantics.
+    """
+    node_comm = {n: cid for cid, nodes in communities.items() for n in nodes}
+    intra: dict[int, set] = {cid: set() for cid in communities}
+
+    for row in conn.execute("MATCH (a:node)-[:edge]->(b:node) RETURN a.id, b.id"):
+        a, b = row[0], row[1]
+        if a == b:  # skip self-loops
+            continue
+        ca = node_comm.get(a)
+        if ca is not None and ca == node_comm.get(b):
+            intra[ca].add(frozenset((a, b)))  # deduplicate directed edges
+
+    result: dict[int, float] = {}
+    for cid, nodes in communities.items():
+        n = len(nodes)
+        if n <= 1:
+            result[cid] = 1.0
+            continue
+        possible = n * (n - 1) / 2
+        result[cid] = len(intra[cid]) / possible if possible > 0 else 1.0
+
+    return result
+
+
+def label_communities_by_hub(
+    conn: object, communities: dict[int, list[str]]
+) -> dict[int, str]:
+    """Name each community after its highest-degree member.
+
+    Requires community IDs to be written to the db beforehand.
+    """
+    try:
+        rows = list(conn.execute(
+            "MATCH (n:node) "
+            "WHERE n.community IS NOT NULL "
+            "OPTIONAL MATCH (n)-[e:edge]-() "
+            "WITH n, n.community AS cid, count(e) AS degree "
+            "ORDER BY cid, degree DESC, n.id ASC "
+            "WITH cid, collect(n)[0] AS hub "
+            "RETURN cid, hub.label, hub.id"
+        ))
+        labels: dict[int, str] = {}
+        for cid, label, nid in rows:
+            name = (label or nid or "").strip()
+            if name and name.endswith("()"):
+                name = name[:-2]
+            labels[int(cid)] = name or f"Community {cid}"
+    except RuntimeError:
+        # Fallback: two-step approach
+        deg_rows = list(conn.execute(
+            "MATCH (n:node)-[e:edge]-() "
+            "WITH n, count(e) AS degree "
+            "RETURN n.id, n.community, n.label, degree "
+            "ORDER BY n.community, degree DESC, n.id"
+        ))
+        labels = {}
+        seen: set[int] = set()
+        for nid, cid, label, degree in deg_rows:
+            if cid is not None and int(cid) not in seen:
+                seen.add(int(cid))
+                name = (label or nid or "").strip()
+                if name and name.endswith("()"):
+                    name = name[:-2]
+                labels[int(cid)] = name or f"Community {cid}"
+
+    # Communities with no nodes in the query result
+    for cid in communities:
+        if int(cid) not in labels:
+            labels[int(cid)] = f"Community {cid}"
+
+    return labels
+
+
+# ---------------------------------------------------------------------------
+# God nodes
+# ---------------------------------------------------------------------------
+
+
+def find_god_nodes(conn: object, top_n: int = 10) -> list[dict]:
+    """Top-N most-connected real entities.
+
+    Cypher pre-filters noise labels; Python applies complex filters
+    (file hub, concept node, JSON key, method stub) via shared row-based functions.
+    """
+    # Build inline noise list (neug doesn't support IN $param)
+    noise_list = "[" + ", ".join(f"'{l}'" for l in _BUILTIN_NOISE_LABELS) + "]"
+
+    rows = list(conn.execute(
+        f"MATCH (n:node)-[e:edge]-() "
+        f"WITH n, count(e) AS degree "
+        f"WHERE degree > 0 "
+        f"  AND NOT (n.label IN {noise_list}) "
+        f"RETURN n.id, n.label, n.file_type, n.source_file, degree "
+        f"ORDER BY degree DESC, n.id ASC "
+        f"LIMIT {top_n * 5}"
+    ))
+
+    gods: list[dict] = []
+    for nid, label, ft, source_file, degree in rows:
+        label = label or ""
+        source_file = source_file or ""
+        if not label:
+            continue
+        if _is_file_node_row(label, source_file, degree):
+            continue
+        if _is_concept_node_row(source_file):
+            continue
+        if _is_json_key_node_row(label, source_file):
+            continue
+        if label in _BUILTIN_NOISE_LABELS:  # Cypher already filtered, this is a safety net
+            continue
+        gods.append({"id": nid, "label": label, "degree": degree})
+        if len(gods) >= top_n:
+            break
+
+    return gods
+
+
+# ---------------------------------------------------------------------------
+# Surprising connections
+# ---------------------------------------------------------------------------
+
+
+def _surprise_score_row(
+    relation: str,
+    conf: str,
+    u_source: str,
+    v_source: str,
+    cid_u: int | None,
+    cid_v: int | None,
+    deg_u: int,
+    deg_v: int,
+) -> tuple[int, list[str]]:
+    """Score how surprising a cross-file edge is (row-based mirror of analyze._surprise_score)."""
+    from graphify.analyze import _file_category, _top_level_dir, _cross_language
+
+    score = 0
+    reasons: list[str] = []
+
+    # 1. Confidence weight
+    conf_bonus = {"AMBIGUOUS": 3, "INFERRED": 2, "EXTRACTED": 1}.get(conf, 1)
+
+    cat_u = _file_category(u_source)
+    cat_v = _file_category(v_source)
+
+    # 2. Suppress structural bonuses for INFERRED calls/uses that cross language
+    #    boundaries or connect code to doc (resolver pollution)
+    _suppress_structural = (
+        conf == "INFERRED"
+        and relation in ("calls", "uses")
+        and (_cross_language(u_source, v_source) or {cat_u, cat_v} == {"code", "doc"})
+    )
+    if _suppress_structural:
+        conf_bonus = 0
+
+    score += conf_bonus
+    if conf in ("AMBIGUOUS", "INFERRED"):
+        reasons.append(f"{conf.lower()} connection - not explicitly stated in source")
+
+    # 3. Cross file-type bonus
+    if cat_u != cat_v and not _suppress_structural:
+        score += 2
+        reasons.append(f"crosses file types ({cat_u} ↔ {cat_v})")
+
+    # 4. Cross-repo bonus
+    if _top_level_dir(u_source) != _top_level_dir(v_source) and not _suppress_structural:
+        score += 2
+        reasons.append("connects across different repos/directories")
+
+    # 5. Cross-community bonus
+    if (cid_u is not None and cid_v is not None and cid_u != cid_v
+            and not _suppress_structural):
+        score += 1
+        reasons.append("bridges separate communities")
+
+    # 6. Semantic similarity bonus
+    if relation == "semantically_similar_to":
+        score = int(score * 1.5)
+        reasons.append("semantically similar concepts with no structural link")
+
+    # 7. Peripheral → hub
+    if min(deg_u, deg_v) <= 2 and max(deg_u, deg_v) >= 5:
+        score += 1
+        reasons.append("peripheral node unexpectedly reaches hub")
+
+    return score, reasons
+
+
+def find_surprising_connections(
+    conn: object,
+    communities: dict[int, list[str]],
+    top_n: int = 5,
+) -> list[dict]:
+    """Cross-file or cross-community edges ranked by composite surprise score."""
+    # 1. Determine multi-source vs single-source
+    source_count = list(conn.execute(
+        "MATCH (n:node) WHERE n.source_file <> '' "
+        "RETURN count(DISTINCT n.source_file) AS cnt"
+    ))
+    is_multi_source = source_count[0][0] > 1 if source_count else False
+
+    # 2. Pre-compute degrees
+    deg_rows = list(conn.execute(
+        "MATCH (n:node)-[e:edge]-() "
+        "WITH n, count(e) AS degree "
+        "RETURN n.id, degree"
+    ))
+    degrees = {r[0]: r[1] for r in deg_rows}
+
+    # 3. Get candidate edges
+    structural_list = "['imports', 'imports_from', 'contains', 'method']"
+
+    if is_multi_source:
+        rows = list(conn.execute(
+            f"MATCH (a:node)-[e:edge]->(b:node) "
+            f"WHERE a.source_file <> '' AND b.source_file <> '' "
+            f"  AND a.source_file <> b.source_file "
+            f"  AND NOT (e.relation IN {structural_list}) "
+            f"RETURN a.id, a.label, a.source_file, a.community, "
+            f"       b.id, b.label, b.source_file, b.community, "
+            f"       e.relation, e.confidence"
+        ))
+    else:
+        rows = list(conn.execute(
+            f"MATCH (a:node)-[e:edge]->(b:node) "
+            f"WHERE a.community IS NOT NULL AND b.community IS NOT NULL "
+            f"  AND a.community <> b.community "
+            f"  AND NOT (e.relation IN {structural_list}) "
+            f"RETURN a.id, a.label, a.source_file, a.community, "
+            f"       b.id, b.label, b.source_file, b.community, "
+            f"       e.relation, e.confidence"
+        ))
+
+    # 4. Python filtering + scoring
+    node_comm = {n: cid for cid, nodes in communities.items() for n in nodes}
+    candidates: list[dict] = []
+
+    for (a_id, a_label, a_src, a_comm, b_id, b_label, b_src, b_comm,
+         relation, conf) in rows:
+        a_label = a_label or ""
+        a_src = a_src or ""
+        b_label = b_label or ""
+        b_src = b_src or ""
+        relation = relation or ""
+        conf = conf or "EXTRACTED"
+
+        deg_a = degrees.get(a_id, 0)
+        deg_b = degrees.get(b_id, 0)
+
+        # Filter concept/file-hub nodes
+        if _is_concept_node_row(a_src) or _is_concept_node_row(b_src):
+            continue
+        if _is_file_node_row(a_label, a_src, deg_a) or _is_file_node_row(b_label, b_src, deg_b):
+            continue
+
+        cid_u = a_comm if a_comm is not None else node_comm.get(a_id)
+        cid_v = b_comm if b_comm is not None else node_comm.get(b_id)
+
+        score, reasons = _surprise_score_row(
+            relation, conf, a_src, b_src, cid_u, cid_v, deg_a, deg_b
+        )
+
+        candidates.append({
+            "_score": score,
+            "source": a_label,
+            "target": b_label,
+            "source_files": [a_src, b_src],
+            "confidence": conf,
+            "relation": relation,
+            "why": "; ".join(reasons) if reasons else "cross-file semantic connection",
+            "_pair": tuple(sorted([cid_u or 0, cid_v or 0])) if not is_multi_source else None,
+        })
+
+    # Sort by score descending
+    candidates.sort(key=lambda x: x["_score"], reverse=True)
+
+    # Single-source: deduplicate by community pair
+    if not is_multi_source:
+        seen_pairs: set[tuple] = set()
+        deduped: list[dict] = []
+        for c in candidates:
+            pair = c.pop("_pair", None)
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
+                deduped.append(c)
+        candidates = deduped
+    else:
+        for c in candidates:
+            c.pop("_pair", None)
+
+    # Strip _score from output
+    for c in candidates:
+        c.pop("_score", None)
+
+    return candidates[:top_n]
+
+
+# ---------------------------------------------------------------------------
+# Orchestration: neug clustered path
+# ---------------------------------------------------------------------------
+
+
+def cluster_by_neug(
+    conn: object,
+    *,
+    merged: dict,
+    graph_json_path: object,
+    analysis_path: object,
+    stages: object,
+    export_fn: object,
+    hyperedges: list | None = None,
+) -> None:
+    """Orchestrate the neug clustered path.
+
+    Steps: leiden → writeback → label → analysis → export.
+    cli.py should call this directly instead of inlining the workflow.
+    Returns the exported graph data dict (for summary printing).
+    """
+    import json
+
+    # 1. Leiden community detection
+    communities = run_leiden(conn)
+    stages.mark("cluster")
+
+    # 2. Batch writeback community IDs (CASE WHEN)
+    ingest_communities(conn, communities)
+
+    # 3. Label communities by hub
+    labels = label_communities_by_hub(conn, communities)
+
+    # 4. Write community_name (inline values via ingest_communities)
+    ingest_communities(conn, communities, community_labels=labels)
+
+    # 5. Analysis
+    cohesion = compute_cohesion(conn, communities)
+    gods = find_god_nodes(conn)
+    surprises = find_surprising_connections(conn, communities)
+    stages.mark("analyze")
+
+    # 6. Export graph.json (with community + community_name)
+    data = export_fn(conn, hyperedges=hyperedges or [])
+    graph_json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    stages.mark("export")
+
+    # 7. Write .graphify_analysis.json
+    analysis = {
+        "communities": {str(k): v for k, v in communities.items()},
+        "cohesion": {str(k): v for k, v in cohesion.items()},
+        "gods": gods,
+        "surprises": surprises,
+        "tokens": {
+            "input": merged["input_tokens"],
+            "output": merged["output_tokens"],
+        },
+    }
+    analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
+
     return data

@@ -2637,28 +2637,17 @@ def dispatch_command(cmd: str) -> None:
 
         # Build graph + cluster + score + write.
         if _use_neug:
-            # --- neug clustered path (TODO: community detection via neug GDS Leiden) ---
-            print("[graphify extract] neug clustered path: community detection TODO (neug GDS Leiden pending)")
-            # TODO: 通过 neug GDS 运行 Leiden 社区检测
-            # TODO: ingest_communities 写回 community 到 graph.db
-            # TODO: 跑 gods/surprises analysis (cohesion/gods/surprises)
-            # TODO: export_to_json → graph.json（含 community 信息）
-            # 暂时先导出不带 community 的 graph.json
-            _data = _export_to_json(_neug_conn, hyperedges=merged.get("hyperedges", []))
-            graph_json_path.write_text(json.dumps(_data, indent=2), encoding="utf-8")
-            stages.mark("export")
-            # 写 .graphify_analysis.json（格式与 NetworkX 路径一致）
-            analysis = {
-                "communities": {},   # TODO
-                "cohesion": {},      # TODO
-                "gods": [],          # TODO
-                "surprises": [],     # TODO
-                "tokens": {
-                    "input": merged["input_tokens"],
-                    "output": merged["output_tokens"],
-                },
-            }
-            analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
+            # --- neug clustered path ---
+            from graphify.storage import cluster_by_neug as _cluster_by_neug
+            _data = _cluster_by_neug(
+                _neug_conn,
+                merged=merged,
+                graph_json_path=graph_json_path,
+                analysis_path=analysis_path,
+                stages=stages,
+                export_fn=_export_to_json,
+                hyperedges=merged.get("hyperedges", []),
+            )
             _close_db(_neug_db, _neug_conn)
             if merged.get("output_tokens", 0) > 0:
                 (graphify_out / ".graphify_semantic_marker").write_text(
@@ -2681,9 +2670,11 @@ def dispatch_command(cmd: str) -> None:
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             cost = _estimate_cost(backend, merged["input_tokens"], merged["output_tokens"])
+            _comm_count = len({n.get("community") for n in _data["nodes"] if n.get("community") is not None})
             print(
                 f"[graphify extract] wrote {graph_json_path}: "
-                f"{len(_data['nodes'])} nodes, {len(_data['links'])} edges"
+                f"{len(_data['nodes'])} nodes, {len(_data['links'])} edges, "
+                f"{_comm_count} communities"
             )
             print(f"[graphify extract] wrote {analysis_path}")
             if incremental_mode:
