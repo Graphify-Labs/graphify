@@ -1589,9 +1589,26 @@ def detect_incremental(
     new_files: dict[str, list[str]] = {k: [] for k in full["files"]}
     unchanged_files: dict[str, list[str]] = {k: [] for k in full["files"]}
 
+    # Robust path matching: resolve symlinks / mount aliases / redundant
+    # segments so a file stored in the manifest under one path form (e.g. the
+    # scan-root symlink) still matches the form detect() produces this run.
+    # Without this, every file looks "changed" after a root path-form change,
+    # forcing a full, expensive re-extract.
+    def _rp(path_str: str) -> str:
+        try:
+            return os.path.realpath(path_str)
+        except Exception:
+            return path_str
+
+    manifest_by_real: dict[str, object] = {}
+    for _k, _v in manifest.items():
+        manifest_by_real.setdefault(_rp(_k), _v)
+
     for ftype, file_list in full["files"].items():
         for f in file_list:
             stored = manifest.get(f)
+            if stored is None:
+                stored = manifest_by_real.get(_rp(f))
             try:
                 current_mtime = os.stat(_os_path(Path(f))).st_mtime
             except Exception:
@@ -1636,9 +1653,38 @@ def detect_incremental(
             else:
                 unchanged_files[ftype].append(f)
 
-    # Files in manifest that no longer exist - their cached nodes are now ghost nodes
+    # Files in manifest that no longer exist - their cached nodes are now ghost
+    # nodes. CRITICAL SCOPE GUARD: only a manifest file that (a) lives inside the
+    # current scan root's subtree AND (b) is genuinely absent from disk counts as
+    # deleted. A manifest file *outside* `root` is simply out of scope for this
+    # incremental run — NOT deleted. Reporting it as deleted makes the --update
+    # caller pass it to build_merge(prune_sources=...), which silently removes
+    # those nodes. That is how running `--update <subfolder>` on a corpus rooted
+    # higher up wipes the rest of the graph. A file still present on disk but
+    # absent from detect() (skipped as sensitive/unsupported/excluded) is also
+    # NOT a deletion — never prune beyond the scanned scope.
     current_files = {f for flist in full["files"].values() for f in flist}
-    deleted_files = [f for f in manifest if f not in current_files]
+    current_real = {_rp(f) for f in current_files}
+
+    root_real = _rp(str(root))
+    root_prefix = root_real.rstrip(os.sep) + os.sep
+
+    def _within_scan_root(path_str: str) -> bool:
+        rp = _rp(path_str)
+        return rp == root_real or rp.startswith(root_prefix)
+
+    deleted_files = []
+    for f in manifest:
+        if f in current_files or _rp(f) in current_real:
+            continue  # still found by this scan
+        if not _within_scan_root(f):
+            continue  # out of scope for this run — leave its nodes alone
+        try:
+            if Path(f).exists():
+                continue  # on disk but skipped (sensitive/unsupported) — not deleted
+        except OSError:
+            continue  # can't stat it — don't risk pruning
+        deleted_files.append(f)
 
     new_total = sum(len(v) for v in new_files.values())
     full["incremental"] = True
