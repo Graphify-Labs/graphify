@@ -1,6 +1,5 @@
 # git hook integration - install/uninstall graphify post-commit and post-checkout hooks
 from __future__ import annotations
-import configparser
 import os
 import re
 import sys
@@ -398,38 +397,17 @@ def _reject_windows_path(value: str, source: str) -> None:
 
 
 def _hooks_dir(root: Path) -> Path:
-    """Return the git hooks directory, respecting core.hooksPath if set (e.g. Husky)."""
-    try:
-        cfg = configparser.RawConfigParser()
-        cfg.read(root / ".git" / "config", encoding="utf-8")
-        # configparser lowercases option names; git's hooksPath becomes hookspath
-        custom = cfg.get("core", "hookspath", fallback="").strip()
-        if custom:
-            _reject_windows_path(custom, "core.hooksPath")
-            p = Path(custom).expanduser()
-            if not p.is_absolute():
-                p = root / p
-            # Validate the resolved path stays within the repository root
-            # to prevent supply-chain attacks via malicious core.hooksPath values
-            try:
-                p.resolve().relative_to(root.resolve())
-            except ValueError:
-                pass  # Path escapes repo root; fall through to default .git/hooks
-            else:
-                p.mkdir(parents=True, exist_ok=True)
-                return p
-    except (configparser.Error, OSError) as exc:
-        # Narrow the exception (PR747-NEW-2): a bare `except Exception: pass`
-        # was hiding tampering signals (corrupt .git/config, permission flips
-        # by another tool). Surface them on stderr instead of silently
-        # falling through to the default hooks directory.
-        print(
-            f"[graphify hooks] could not read core.hooksPath from "
-            f"{root / '.git' / 'config'}: {exc}",
-            file=sys.stderr,
-        )
-    # In a linked worktree .git is a file not a directory, so constructing
-    # root/.git/hooks directly fails. Ask git for the real hooks path instead.
+    """Return the git hooks directory, respecting core.hooksPath if set (e.g. Husky).
+
+    Asks git itself via ``rev-parse --git-path hooks`` rather than parsing
+    ``.git/config`` with configparser: git legally allows duplicate keys and
+    sections (VS Code writes such configs), which a strict configparser rejects
+    with DuplicateOptionError/DuplicateSectionError, so every hook command
+    printed a spurious "could not read core.hooksPath" warning (#1907). git
+    resolves core.hooksPath, includeIf, and linked worktrees (where .git is a
+    file, not a directory) correctly in one place. Genuinely corrupt configs
+    are still surfaced: git itself fails on them, and its stderr is printed.
+    """
     # NOTE: do NOT pass --path-format=absolute — added in git 2.31; older git
     # echoes it back as a literal argument, contaminating stdout and causing a
     # phantom directory to be created (#907). git -C <root> already returns an
@@ -441,14 +419,25 @@ def _hooks_dir(root: Path) -> Path:
             ["git", "-C", str(root), "rev-parse", "--git-path", "hooks"],
             capture_output=True, text=True,
         )
-        raw = res.stdout.strip()
-        # A valid hooks path can never contain newlines or NUL. Their presence
-        # means git echoed an unrecognised flag back (old git behaviour).
-        if res.returncode == 0 and raw and not any(c in raw for c in ("\n", "\r", "\x00")):
-            _reject_windows_path(raw, "git rev-parse --git-path hooks")
-            d = (root / raw).resolve()
-            d.mkdir(parents=True, exist_ok=True)
-            return d
+        if res.returncode != 0:
+            # git failing here is a real signal (corrupt .git/config, tampering,
+            # permission flips by another tool). Surface git's own stderr rather
+            # than silently falling through to the default hooks directory.
+            err = (res.stderr or "").strip()
+            print(
+                f"[graphify hooks] git could not resolve the hooks path for "
+                f"{root}: {err or f'git exited with code {res.returncode}'}",
+                file=sys.stderr,
+            )
+        else:
+            raw = res.stdout.strip()
+            # A valid hooks path can never contain newlines or NUL. Their presence
+            # means git echoed an unrecognised flag back (old git behaviour).
+            if raw and not any(c in raw for c in ("\n", "\r", "\x00")):
+                _reject_windows_path(raw, "git rev-parse --git-path hooks")
+                d = (root / raw).resolve()
+                d.mkdir(parents=True, exist_ok=True)
+                return d
     except (OSError, FileNotFoundError):
         pass
     d = root / ".git" / "hooks"
@@ -491,6 +480,143 @@ def _uninstall_hook(hooks_dir: Path, name: str, marker: str, marker_end: str) ->
     return f"graphify removed from {name} at {hook_path} (other hook content preserved)"
 
 
+def _pinned_python() -> str:
+    """Return sys.executable if its path is shell-safe, else an empty string.
+
+    Applies the same allowlist used in _PYTHON_DETECT: rejects any character
+    that is not a valid plain filesystem path character, preventing $(...),
+    backtick, double-quote, semicolon, etc. from being injected into generated
+    shell scripts or the merge-driver command line. The allowlist includes ':'
+    and '\\' so Windows paths (C:\\...) are accepted. An empty return means
+    callers must fall back to the `graphify` launcher on PATH — safe degradation.
+    """
+    if re.search(r"[^a-zA-Z0-9/_.@:\\-]", sys.executable):
+        return ""
+    return sys.executable
+
+
+def _merge_attr_line() -> str:
+    """The .gitattributes line assigning the graphify merge driver to graph.json.
+
+    The graph lives under the configured output directory (graphify.paths,
+    GRAPHIFY_OUT env override). gitattributes patterns are repo-relative, so an
+    absolute output-dir override cannot be expressed there — fall back to the
+    default name in that case.
+    """
+    from graphify.paths import GRAPHIFY_OUT
+    out = GRAPHIFY_OUT
+    if not out or Path(out).is_absolute() or "\\" in out:
+        out = "graphify-out"
+    return f"{out.rstrip('/')}/graph.json merge=graphify"
+
+
+def _has_merge_attr(content: str) -> bool:
+    """True if a (non-comment) `<...>graph.json ... merge=graphify` line exists."""
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if fields and fields[0].endswith("graph.json") and "merge=graphify" in fields[1:]:
+            return True
+    return False
+
+
+def _register_merge_driver(root: Path) -> str:
+    """Register the graph.json union merge driver in git config + .gitattributes (#1902).
+
+    README and CHANGELOG 0.7.0 document `graphify merge-driver` as being set up
+    by `hook install`, but install never actually registered it. Writes go
+    through `git config` (never hand-edit .git/config — in a linked worktree the
+    effective config is not at root/.git/config). The interpreter is pinned the
+    same way the hook scripts pin it, so the driver works even when the graphify
+    launcher is not on PATH at merge time.
+    """
+    import subprocess as _sp
+    pinned = _pinned_python()
+    if pinned:
+        driver = f"{pinned} -m graphify merge-driver %O %A %B"
+    else:
+        driver = "graphify merge-driver %O %A %B"
+    try:
+        for key, value in (
+            ("merge.graphify.name", "graphify graph.json union merge"),
+            ("merge.graphify.driver", driver),
+        ):
+            _sp.run(
+                ["git", "-C", str(root), "config", key, value],
+                check=True, capture_output=True, text=True,
+            )
+    except (OSError, _sp.CalledProcessError) as exc:
+        return f"not registered (git config failed: {exc})"
+
+    line = _merge_attr_line()
+    attrs = root / ".gitattributes"
+    if attrs.exists():
+        content = attrs.read_text(encoding="utf-8")
+        if _has_merge_attr(content):
+            return f"already registered ({line})"
+        # Never clobber other entries; preserve a trailing newline.
+        if content and not content.endswith("\n"):
+            content += "\n"
+        attrs.write_text(content + line + "\n", encoding="utf-8", newline="\n")
+    else:
+        attrs.write_text(line + "\n", encoding="utf-8", newline="\n")
+    return f"registered ({line})"
+
+
+def _unregister_merge_driver(root: Path) -> str:
+    """Remove the merge-driver git config keys and the .gitattributes line."""
+    import subprocess as _sp
+    for key in ("merge.graphify.name", "merge.graphify.driver"):
+        try:
+            # --unset exits nonzero if the key is absent; that is fine.
+            _sp.run(
+                ["git", "-C", str(root), "config", "--unset", key],
+                capture_output=True, text=True,
+            )
+        except OSError:
+            pass
+    attrs = root / ".gitattributes"
+    if not attrs.exists():
+        return "not registered - nothing to remove."
+    content = attrs.read_text(encoding="utf-8")
+    kept = [
+        raw for raw in content.splitlines()
+        if not _has_merge_attr(raw)
+    ]
+    if kept == content.splitlines():
+        return "gitattributes entry not found - nothing to remove."
+    if kept:
+        # Other entries survive; the file stays.
+        attrs.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
+        return "removed from .gitattributes (other entries preserved)"
+    attrs.unlink()
+    return "removed (.gitattributes deleted - no other entries)"
+
+
+def _merge_driver_status(root: Path) -> str:
+    """Report whether the merge driver is registered (config + gitattributes)."""
+    import subprocess as _sp
+    try:
+        res = _sp.run(
+            ["git", "-C", str(root), "config", "--get", "merge.graphify.driver"],
+            capture_output=True, text=True,
+        )
+        cfg_ok = res.returncode == 0 and bool(res.stdout.strip())
+    except OSError:
+        cfg_ok = False
+    attrs = root / ".gitattributes"
+    attr_ok = attrs.exists() and _has_merge_attr(attrs.read_text(encoding="utf-8"))
+    if cfg_ok and attr_ok:
+        return "registered"
+    if cfg_ok:
+        return "partially registered (git config set, .gitattributes line missing)"
+    if attr_ok:
+        return "partially registered (.gitattributes line set, git config missing)"
+    return "not registered"
+
+
 def _user_hooks_dir(hooks_dir: Path) -> Path:
     """Return the user-editable hooks directory.
 
@@ -516,29 +642,19 @@ def install(path: Path = Path(".")) -> str:
     # launcher is not on PATH at git-trigger time (uv tool / pipx isolation).
     # sys.executable is the Python running this very install command, so it is
     # always the correct isolated-venv interpreter.  The placeholder is replaced
-    # in both scripts before writing; the allowlist in _PYTHON_DETECT strips any
-    # characters unsafe in a shell path, and import-verification catches a stale
-    # pinned path so it safely falls through to the dynamic detection.
-    # Apply the same allowlist used in _PYTHON_DETECT for all other probes.
-    # This rejects any character that is not a valid plain filesystem path
-    # character, preventing $(...), backtick, double-quote, semicolon, etc.
-    # from being injected into the generated shell scripts.  The allowlist
-    # includes ':' and '\' so Windows paths (C:\...) are accepted.
-    import re as _re
-    _safe = sys.executable
-    if _re.search(r"[^a-zA-Z0-9/_.@:\\-]", _safe):
-        # Path contains characters outside the allowlist (spaces, quotes, etc.).
-        # Embed an empty string so the pinned probe is skipped and the hook
-        # falls through to the dynamic detection — safe degradation.
-        _safe = ""
-    pinned = _safe
+    # in both scripts before writing; the allowlist in _pinned_python() strips
+    # any characters unsafe in a shell path (empty result -> the pinned probe is
+    # skipped), and import-verification catches a stale pinned path so it safely
+    # falls through to the dynamic detection.
+    pinned = _pinned_python()
     hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned)
     checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned)
 
     commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER)
     checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER)
+    merge_msg = _register_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}"
+    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
 
 
 def uninstall(path: Path = Path(".")) -> str:
@@ -550,8 +666,9 @@ def uninstall(path: Path = Path(".")) -> str:
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
     commit_msg = _uninstall_hook(hooks_dir, "post-commit", _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _uninstall_hook(hooks_dir, "post-checkout", _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
+    merge_msg = _unregister_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}"
+    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
 
 
 def status(path: Path = Path(".")) -> str:
@@ -569,4 +686,5 @@ def status(path: Path = Path(".")) -> str:
 
     commit = _check("post-commit", _HOOK_MARKER)
     checkout = _check("post-checkout", _CHECKOUT_MARKER)
-    return f"post-commit: {commit}\npost-checkout: {checkout}"
+    merge = _merge_driver_status(root)
+    return f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"

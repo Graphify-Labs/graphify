@@ -690,6 +690,28 @@ def to_obsidian(
     }
     _owned_write(".obsidian/graph.json", json.dumps(graph_config, indent=2))
 
+    # #1896: prune notes for nodes that dropped out of the graph. Only files the
+    # manifest says graphify owns are candidates, and anything written or skipped
+    # this run is excluded — so a user's own note is never touched (foreign files
+    # land in _skipped, never _owned). Guard each path to stay inside the vault in
+    # case a corrupt/hostile manifest contains `../` entries.
+    stale = _owned - set(_written) - set(_skipped)
+    pruned = 0
+    for rel_name in sorted(stale):
+        target = (out / rel_name).resolve()
+        if out.resolve() not in target.parents:
+            continue
+        try:
+            target.unlink(missing_ok=True)
+            pruned += 1
+        except OSError:
+            pass
+    if pruned:
+        print(
+            f"[graphify] pruned {pruned} note(s) for nodes no longer in the graph",
+            file=sys.stderr,
+        )
+
     # Persist the manifest of files graphify owns, so a re-run can safely update its
     # own notes while still refusing to touch the user's. Warn (once, aggregated)
     # about anything skipped to avoid clobbering a pre-existing file.

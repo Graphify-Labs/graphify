@@ -27,8 +27,8 @@ class FileType(str, Enum):
 
 _MANIFEST_PATH = str(out_path("manifest.json"))
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
-DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.txt', '.rst', '.html', '.yaml', '.yml'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
+DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
 OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
@@ -955,25 +955,18 @@ def _is_ignored(
             if not p:
                 continue
 
+            # gitignore semantics: patterns from A/.gitignore apply ONLY to paths
+            # under A. Matching non-anchored patterns against root-relative paths
+            # let e.g. .hypothesis/.gitignore's bare "*" ignore the ENTIRE repo
+            # (detect() returned 0 files). The anchor dir itself is exempt — an
+            # ignore file governs its directory's contents, not the directory.
             matched = False
-            if anchored:
-                try:
-                    rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
-                    matched = _matches(rel_anchor, p, anchored=True)
-                except ValueError:
-                    pass
-            else:
-                try:
-                    rel = str(target.relative_to(root)).replace(os.sep, "/")
-                    matched = _matches(rel, p, anchored=False)
-                except ValueError:
-                    pass
-                if not matched and anchor != root:
-                    try:
-                        rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
-                        matched = _matches(rel_anchor, p, anchored=False)
-                    except ValueError:
-                        pass
+            try:
+                rel_anchor = str(target.relative_to(anchor)).replace(os.sep, "/")
+            except ValueError:
+                continue  # target outside this pattern's anchor: cannot match
+            if rel_anchor != ".":
+                matched = _matches(rel_anchor, p, anchored=anchored)
 
             if matched:
                 result = not negated  # last match wins; ! flips to un-ignore
@@ -1473,6 +1466,7 @@ def save_manifest(
     *,
     kind: str = "both",
     root: Path | None = None,
+    scan_corpus: set[str] | list[str] | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1488,8 +1482,50 @@ def save_manifest(
     machines and checkout locations (#777). Out-of-root entries are written
     as absolute so they continue to round-trip on the saving machine.
     When ``root`` is None the legacy absolute-keyed format is preserved.
+
+    ``scan_corpus`` (#1908): full-scan callers pass the COMPLETE detect
+    corpus (absolute paths) so seeded rows for in-root files that are still
+    alive on disk but no longer part of the scan (newly excluded via
+    .graphifyignore/.gitignore/--exclude) are dropped instead of surviving
+    forever and masquerading as deletions in detect_incremental. It must be
+    the RAW detect output, not a stamp-filtered subset — pruning to a
+    filtered set would erase rows the filter merely omitted (failed chunks,
+    --code-only doc rows). Out-of-root entries are never pruned. Callers
+    saving a SUBSET of files (changed_paths hooks, skill runbooks, #917)
+    must leave this None so their untouched rows are preserved.
     """
     existing = load_manifest(manifest_path, root=root)
+
+    scan_set: set[str] | None = set(scan_corpus) if scan_corpus is not None else None
+    try:
+        root_res: Path | None = Path(root).resolve() if root is not None else None
+    except (OSError, RuntimeError):
+        root_res = Path(root) if root is not None else None
+
+    def _in_scan(path_str: str) -> bool:
+        if path_str in scan_set:
+            return True
+        try:
+            return str(Path(path_str).resolve()) in scan_set
+        except (OSError, RuntimeError):
+            return False
+
+    def _in_root(path_str: str) -> bool:
+        # Without a root we cannot tell in-root from out-of-root; fail open
+        # (keep the row) so out-of-root corpora are never pruned by accident.
+        if root_res is None:
+            return False
+        p = Path(path_str)
+        try:
+            p.relative_to(root_res)
+            return True
+        except ValueError:
+            pass
+        try:
+            p.resolve().relative_to(root_res)
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return False
 
     def _normalise_entry(entry):
         if isinstance(entry, (int, float)):
@@ -1503,17 +1539,23 @@ def save_manifest(
     # Seed from the existing manifest so incremental callers passing a subset
     # of files don't silently erase entries for untouched files (#917).
     # Prune entries whose file no longer exists on disk — those are genuine
-    # deletions that detect_incremental() should treat as gone.
+    # deletions that detect_incremental() should treat as gone. When the
+    # caller supplied the full scan corpus, additionally prune in-root rows
+    # the scan no longer covers: those files were excluded, not deleted, and
+    # keeping the row makes them look deleted on every future run (#1908).
     manifest: dict[str, dict] = {}
     for f, entry in existing.items():
         normalised = _normalise_entry(entry)
         if normalised is None:
             continue
         try:
-            if Path(f).exists():
-                manifest[f] = normalised
+            if not Path(f).exists():
+                continue
         except OSError:
             continue
+        if scan_set is not None and not _in_scan(f) and _in_root(f):
+            continue  # excluded-but-alive: drop the stale row (#1908)
+        manifest[f] = normalised
 
     all_files = [f for file_list in files.values() for f in file_list]
     with ThreadPoolExecutor() as pool:
@@ -1591,6 +1633,8 @@ def detect_incremental(
         full["new_files"] = full["files"]
         full["unchanged_files"] = {k: [] for k in full["files"]}
         full["new_total"] = full["total_files"]
+        full["deleted_files"] = []
+        full["excluded_files"] = []
         return full
 
     new_files: dict[str, list[str]] = {k: [] for k in full["files"]}
@@ -1604,9 +1648,15 @@ def detect_incremental(
             except Exception:
                 current_mtime = 0
 
-            # Legacy manifest: plain float value — treat as ast_hash only
+            # Legacy manifest: plain float value stores only mtime.
+            # Compare with `!=` so backwards mtime motion (git checkout of an
+            # older commit, tarball restore, rsync --times) still triggers a
+            # re-extract; the previous `>` silently kept the stale cache and
+            # the graph drifted from disk (#1859). No stored hash means we
+            # cannot verify content — any mtime delta forces a re-extract,
+            # and the next save promotes the entry into the dict schema.
             if isinstance(stored, (int, float)):
-                changed = stored is None or current_mtime > stored
+                changed = current_mtime != stored
             elif isinstance(stored, dict):
                 # Normalise legacy {mtime, hash} to new schema
                 if "hash" in stored and "ast_hash" not in stored:
@@ -1637,9 +1687,23 @@ def detect_incremental(
             else:
                 unchanged_files[ftype].append(f)
 
-    # Files in manifest that no longer exist - their cached nodes are now ghost nodes
+    # Manifest rows that left the corpus, split by disk existence (#1908):
+    # a row whose file is gone from DISK is a genuine deletion (its cached
+    # nodes are ghosts); a row whose file still exists but is out of the
+    # current scan was EXCLUDED (ignore rules / --exclude changed) and must
+    # not be reported as deleted. Mirrors the watch-side excluded-vs-deleted
+    # distinction (#1795).
     current_files = {f for flist in full["files"].values() for f in flist}
-    deleted_files = [f for f in manifest if f not in current_files]
+    deleted_files: list[str] = []
+    excluded_files: list[str] = []
+    for f in manifest:
+        if f in current_files:
+            continue
+        try:
+            alive = Path(f).exists()
+        except OSError:
+            alive = False
+        (excluded_files if alive else deleted_files).append(f)
 
     new_total = sum(len(v) for v in new_files.values())
     full["incremental"] = True
@@ -1647,4 +1711,5 @@ def detect_incremental(
     full["unchanged_files"] = unchanged_files
     full["new_total"] = new_total
     full["deleted_files"] = deleted_files
+    full["excluded_files"] = excluded_files
     return full

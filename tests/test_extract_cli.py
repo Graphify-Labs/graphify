@@ -135,6 +135,251 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     } == {str(corpus / "README.md")}
 
 
+def test_manifest_stamps_freshly_extracted_semantic_docs(monkeypatch, tmp_path):
+    """#1897: fresh extraction returns nodes with ROOT-RELATIVE source_file,
+    while the #933 manifest filter compared them against detect()'s ABSOLUTE
+    paths — so `f in _sem_extracted` was always False and every freshly
+    extracted doc was dropped from the manifest (only code/zero-node files
+    survived). Both sides must be resolved against the scan root; a genuinely
+    omitted doc (zero nodes) must still stay unstamped (#933 is intentional)."""
+    import json
+
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    (corpus / "OMITTED.md").write_text("# never extracted\n")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    def _fresh_relative(paths, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+        # Root-relative source_file, exactly what a fresh extraction produces.
+        # OMITTED.md gets no nodes/edges — the model skipped it.
+        return {
+            "nodes": [{"id": "readme", "source_file": "README.md",
+                       "file_type": "document"}],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _fresh_relative)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude",
+         "--no-cluster", "--out", str(out_dir)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text())
+
+    assert "README.md" in manifest, (
+        f"freshly-extracted doc missing from manifest (#1897): {sorted(manifest)}"
+    )
+    assert manifest["README.md"].get("semantic_hash"), (
+        "freshly-extracted doc must carry a non-empty semantic_hash"
+    )
+    # Code files are always stamped.
+    assert manifest.get("main.go", {}).get("semantic_hash")
+    # The zero-node doc stays unstamped so detect_incremental re-queues it (#933).
+    assert "OMITTED.md" not in manifest, (
+        "zero-node doc must not be stamped in the manifest"
+    )
+
+
+def test_stamped_manifest_files_normalizes_both_sides(tmp_path):
+    """Unit test for the #1897 helper: relative (fresh) and absolute (cache-hit)
+    source_file values must both match detect()'s absolute file lists; docs with
+    no output are filtered; code files pass through untouched."""
+    from graphify.cli import _stamped_manifest_files
+
+    fresh_doc = tmp_path / "fresh.md"; fresh_doc.write_text("# fresh")
+    cached_doc = tmp_path / "cached.md"; cached_doc.write_text("# cached")
+    omitted_doc = tmp_path / "omitted.md"; omitted_doc.write_text("# omitted")
+    code = tmp_path / "app.py"; code.write_text("x = 1")
+
+    files_by_type = {
+        "code": [str(code)],
+        "document": [str(fresh_doc), str(cached_doc), str(omitted_doc)],
+    }
+    sem_result = {
+        # fresh extraction: root-relative source_file
+        "nodes": [{"id": "n1", "source_file": "fresh.md"}],
+        # cache replay: absolute source_file (edge-only coverage counts too)
+        "edges": [{"source": "a", "target": "b", "source_file": str(cached_doc)}],
+    }
+
+    out = _stamped_manifest_files(files_by_type, sem_result, tmp_path)
+    assert out["code"] == [str(code)]
+    assert out["document"] == [str(fresh_doc), str(cached_doc)]
+
+
+# --- #1894: --force and deep-mode dispatch over a warm cache -----------------
+
+def _recording_extractor(calls):
+    """extract_corpus_parallel stand-in that records each dispatch."""
+    def _extract(paths, **kwargs):
+        calls.append({"paths": [str(p) for p in paths], "kwargs": kwargs})
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+        return {
+            "nodes": [{"id": "readme", "source_file": "README.md",
+                       "file_type": "document"}],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+    return _extract
+
+
+def _run_extract(monkeypatch, argv):
+    monkeypatch.setattr(mainmod.sys, "argv", argv)
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+
+def test_extract_mode_deep_dispatches_over_warm_cache(monkeypatch, tmp_path):
+    """#1894 repro: over a warm manifest + warm standard semantic cache,
+    `extract --mode deep` was a silent no-op — the incremental gate dispatched
+    zero files before the cache was ever consulted, and the cache key ignored
+    mode anyway. Deep must re-dispatch on the first deep run (deep namespace
+    cold) and be served from cache/semantic-deep/ on the second."""
+    corpus = _make_corpus(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    monkeypatch.delenv("GRAPHIFY_FORCE", raising=False)
+    calls: list[dict] = []
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel",
+                        _recording_extractor(calls))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    # No --out: the default layout (graphify-out/ beside the sources) keeps the
+    # CLI-level cache write's root anchored at the corpus, so the stub's
+    # root-relative source_file resolves (real runs also checkpoint per chunk
+    # inside llm.extract_corpus_parallel, which this stub replaces).
+    base = ["graphify", "extract", str(corpus), "--backend", "claude",
+            "--no-cluster"]
+
+    # Run 1: cold standard extraction — warms manifest + plain semantic cache.
+    _run_extract(monkeypatch, base)
+    assert len(calls) == 1
+
+    # Sanity: a warm standard re-run dispatches nothing (expected behavior).
+    _run_extract(monkeypatch, base)
+    assert len(calls) == 1
+
+    # The repro: warm tree + --mode deep MUST dispatch.
+    _run_extract(monkeypatch, base + ["--mode", "deep"])
+    assert len(calls) == 2, (
+        "--mode deep over a warm cache must re-dispatch (#1894)"
+    )
+    assert calls[1]["paths"] == [str(corpus / "README.md")]
+    assert calls[1]["kwargs"].get("deep_mode") is True
+
+    # Second deep run: served from the (now warm) deep namespace, no dispatch.
+    _run_extract(monkeypatch, base + ["--mode", "deep"])
+    assert len(calls) == 2, (
+        "second deep run must be served from cache/semantic-deep/"
+    )
+    # The deep entry landed in its own namespace, not cache/semantic/.
+    assert any((corpus / "graphify-out" / "cache" / "semantic-deep").glob("*.json"))
+
+
+def test_extract_force_flag_redispatches_and_stamps_manifest(monkeypatch, tmp_path):
+    """extract accepts --force: a warm tree re-dispatches every semantic file
+    (cache read skipped, incremental gate off) and the manifest is still
+    stamped afterward (#1897-compatible full coverage)."""
+    import json
+
+    corpus = _make_corpus(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    monkeypatch.delenv("GRAPHIFY_FORCE", raising=False)
+    calls: list[dict] = []
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel",
+                        _recording_extractor(calls))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    base = ["graphify", "extract", str(corpus), "--backend", "claude",
+            "--no-cluster"]
+
+    _run_extract(monkeypatch, base)
+    assert len(calls) == 1
+    _run_extract(monkeypatch, base)  # warm: no dispatch
+    assert len(calls) == 1
+
+    _run_extract(monkeypatch, base + ["--force"])
+    assert len(calls) == 2, (
+        "--force over a warm tree must re-dispatch every semantic file"
+    )
+    assert calls[1]["paths"] == [str(corpus / "README.md")]
+
+    # The forced run still wrote the semantic cache and stamped the manifest.
+    assert any((corpus / "graphify-out" / "cache" / "semantic").glob("*.json"))
+    manifest = json.loads(
+        (corpus / "graphify-out" / "manifest.json").read_text()
+    )
+    assert manifest.get("README.md", {}).get("semantic_hash"), (
+        "forced re-dispatch must still stamp the manifest"
+    )
+    assert manifest.get("main.go", {}).get("semantic_hash")
+
+
+def test_extract_graphify_force_env_redispatches(monkeypatch, tmp_path):
+    """GRAPHIFY_FORCE=1 behaves like --force (env parity with `update`)."""
+    corpus = _make_corpus(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    monkeypatch.delenv("GRAPHIFY_FORCE", raising=False)
+    calls: list[dict] = []
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel",
+                        _recording_extractor(calls))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    base = ["graphify", "extract", str(corpus), "--backend", "claude",
+            "--no-cluster"]
+
+    _run_extract(monkeypatch, base)
+    assert len(calls) == 1
+    _run_extract(monkeypatch, base)  # warm: no dispatch
+    assert len(calls) == 1
+
+    monkeypatch.setenv("GRAPHIFY_FORCE", "1")
+    _run_extract(monkeypatch, base)
+    assert len(calls) == 2, "GRAPHIFY_FORCE=1 must force a re-dispatch"
+
+
+def test_cache_check_mode_deep_reads_deep_namespace(monkeypatch, tmp_path, capsys):
+    """cache-check --mode deep consults cache/semantic-deep/; without the flag
+    it keeps reading cache/semantic/ (deep entries are invisible to it)."""
+    from graphify.cache import save_semantic_cache
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    save_semantic_cache([{"id": "d", "source_file": "doc.md"}], [],
+                        root=tmp_path, mode="deep")
+    files_from = tmp_path / "files.txt"
+    files_from.write_text(str(doc) + "\n")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    _run_extract(monkeypatch, ["graphify", "cache-check", str(files_from),
+                               "--root", str(tmp_path)])
+    assert "Cache: 0 hit, 1 miss" in capsys.readouterr().out
+
+    _run_extract(monkeypatch, ["graphify", "cache-check", str(files_from),
+                               "--root", str(tmp_path), "--mode", "deep"])
+    assert "Cache: 1 hit, 0 miss" in capsys.readouterr().out
+
+
 def _code_only_corpus(tmp_path):
     """A corpus with only code — no docs/papers/images."""
     (tmp_path / "auth.py").write_text(
@@ -277,3 +522,170 @@ def test_extract_timing_flag_emits_stage_timings(monkeypatch, tmp_path, capsys):
         mainmod.main()
     assert exc2.value.code == 0
     assert "graphify timing" not in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# #1909: a newly-excluded file's nodes must be pruned from graph.json on the
+# next incremental extract even when the manifest never listed the file (the
+# pre-#1897 state every 0.9.16 graph is in), so the manifest-diff prune set
+# (`manifest - corpus`) can never see it.
+# ---------------------------------------------------------------------------
+
+def _two_file_corpus(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "x.py").write_text(
+        "def secret_helper():\n    return 42\n\n"
+        "def secret_caller():\n    return secret_helper()\n"
+    )
+    (project / "keep.py").write_text(
+        "def kept():\n    return still_here()\n\n"
+        "def still_here():\n    return 1\n"
+    )
+    return project
+
+
+def _node_sources(graph_path):
+    import json
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    return {n.get("source_file", "") for n in data.get("nodes", [])}
+
+
+def _run_extract(monkeypatch, argv):
+    monkeypatch.setattr(mainmod.sys, "argv", argv)
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+
+def test_incremental_extract_prunes_newly_excluded_file_not_in_manifest(
+    monkeypatch, tmp_path
+):
+    """Seed a graph with nodes for x.py, drop x.py from the manifest (pre-#1897
+    manifests never listed excluded/omitted files), exclude x.py via
+    .graphifyignore, re-run extract: x.py's nodes must be gone even though it
+    was never on the deleted list."""
+    import json
+    project = _two_file_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    _run_extract(
+        monkeypatch,
+        ["graphify", "extract", str(project), "--out", str(out_dir)],
+    )
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    assert any("x.py" in s for s in _node_sources(graph_path)), (
+        "seed extract must produce nodes for x.py"
+    )
+
+    # Simulate the pre-#1897 manifest state: x.py was never manifest-listed,
+    # so `manifest - corpus` can never flag it.
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = {k: v for k, v in manifest.items() if "x.py" not in k}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    (project / ".graphifyignore").write_text("x.py\n")
+    _run_extract(
+        monkeypatch,
+        ["graphify", "extract", str(project), "--out", str(out_dir)],
+    )
+
+    sources = _node_sources(graph_path)
+    assert not any("x.py" in s for s in sources), (
+        f"newly-excluded x.py must be pruned from graph.json, still see {sources}"
+    )
+    assert any("keep.py" in s for s in sources), (
+        "unchanged keep.py nodes must survive the incremental merge"
+    )
+    # x.py exists on disk, is excluded, and must not creep into the manifest.
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert not any("x.py" in k for k in manifest), (
+        f"excluded x.py must not be (re)listed in the manifest: {set(manifest)}"
+    )
+
+
+def test_incremental_extract_prunes_excluded_file_listed_in_manifest(
+    monkeypatch, tmp_path
+):
+    """Post-#1897 state: the excluded file IS manifest-listed. It must be
+    pruned from graph.json AND dropped from the manifest (#1908), and stay
+    settled on a further run."""
+    import json
+    project = _two_file_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    _run_extract(
+        monkeypatch,
+        ["graphify", "extract", str(project), "--out", str(out_dir)],
+    )
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    assert any("x.py" in k for k in json.loads(manifest_path.read_text()))
+
+    (project / ".graphifyignore").write_text("x.py\n")
+    _run_extract(
+        monkeypatch,
+        ["graphify", "extract", str(project), "--out", str(out_dir)],
+    )
+
+    sources = _node_sources(graph_path)
+    assert not any("x.py" in s for s in sources)
+    assert any("keep.py" in s for s in sources)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert not any("x.py" in k for k in manifest), (
+        "excluded-but-alive manifest row must be pruned (#1908)"
+    )
+
+    # Steady state: a third run neither resurrects x.py nor loses keep.py.
+    _run_extract(
+        monkeypatch,
+        ["graphify", "extract", str(project), "--out", str(out_dir)],
+    )
+    sources = _node_sources(graph_path)
+    assert not any("x.py" in s for s in sources)
+    assert any("keep.py" in s for s in sources)
+
+
+def test_no_cluster_incremental_prunes_newly_excluded_file(
+    monkeypatch, tmp_path, capsys
+):
+    """--no-cluster's exclusion-only early exit must still scrub the excluded
+    file's nodes from the raw graph.json (that path never runs build_merge),
+    and must not report the alive file as deleted."""
+    import json
+    project = _two_file_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(project), "--no-cluster", "--out", str(out_dir)],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code == 0
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    assert any("x.py" in s for s in _node_sources(graph_path))
+    capsys.readouterr()
+
+    (project / ".graphifyignore").write_text("x.py\n")
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code == 0
+    out_text = capsys.readouterr().out
+    assert "1 deleted" not in out_text, (
+        "excluded-but-alive file must not be reported as deleted"
+    )
+
+    sources = _node_sources(graph_path)
+    assert not any("x.py" in s for s in sources), (
+        f"--no-cluster early exit must prune excluded sources, still see {sources}"
+    )
+    assert any("keep.py" in s for s in sources)

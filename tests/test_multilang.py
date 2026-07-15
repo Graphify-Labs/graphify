@@ -513,3 +513,32 @@ def test_sql_schema_qualified_alter_fk():
     for e in fk_edges:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
         assert e["target"] in node_ids, f"dangling target: {e['target']}"
+
+def test_sql_plpgsql_functions_survive_parse_errors():
+    """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
+    must still be extracted (#1910), without cascading into later statements."""
+    r = _extract_sql_or_skip("sample_plpgsql.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    # Both PL/pgSQL functions extracted, schema-qualified name kept whole
+    assert "exposed.important_function()" in labels
+    assert "tagged_quote_fn()" in labels
+    # Tables before and after the broken functions still extract
+    assert any("accounts" in l for l in labels)
+    assert any("audit_log" in l for l in labels)
+    # No spurious or empty nodes from the error recovery
+    for l in labels:
+        assert l, "empty node label"
+        assert l != "ERROR"
+    # Every function got a contains edge from the file node
+    contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
+    fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
+    assert fn_ids <= contains_targets
+
+def test_sql_plpgsql_clean_function_not_double_emitted():
+    """A cleanly-parsed LANGUAGE sql function in the same file is emitted once."""
+    r = _extract_sql_or_skip("sample_plpgsql.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    assert labels.count("plain_sql_fn()") == 1
+    # And nothing else is duplicated either
+    ids = [n["id"] for n in r["nodes"]]
+    assert len(ids) == len(set(ids))

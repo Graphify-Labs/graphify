@@ -970,3 +970,27 @@ def test_doc_twin_merge_does_not_touch_code_symbols():
     }
     G = build_from_json(ext, directed=False)
     assert {"m_foo", "m_foo_doc"} <= set(G.nodes())
+
+
+def test_build_from_json_prunes_dangling_hyperedge_members(capsys):
+    """#1916: build_from_json used to copy hyperedges into G.graph["hyperedges"]
+    verbatim without validating members, so a dangling member reached graph.json
+    even from a live (non-cache) extraction. Members absent from the built node
+    set are pruned — matching how dangling pairwise edges are skipped — and a
+    hyperedge with no surviving member is dropped whole."""
+    ext = {
+        "nodes": [
+            {"id": "alpha", "label": "alpha", "file_type": "code", "source_file": "a.py"},
+            {"id": "beta", "label": "beta", "file_type": "code", "source_file": "a.py"},
+        ],
+        "edges": [],
+        "hyperedges": [
+            {"id": "he_partial", "nodes": ["alpha", "beta", "ghost_member"], "source_file": "a.py"},
+            {"id": "he_all_ghost", "nodes": ["ghost1", "ghost2"], "source_file": "a.py"},
+        ],
+    }
+    G = build_from_json(ext)
+    hes = {h["id"]: h for h in G.graph.get("hyperedges", [])}
+    assert set(hes) == {"he_partial"}, "an all-dangling hyperedge must be dropped"
+    assert hes["he_partial"]["nodes"] == ["alpha", "beta"]
+    assert "he_all_ghost" in capsys.readouterr().err

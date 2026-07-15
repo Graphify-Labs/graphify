@@ -488,3 +488,104 @@ def test_worktree_guard_runs_on_primary_skips_linked(tmp_path):
                               capture_output=True, text=True)
     assert "RAN" in r_primary.stdout, "guard wrongly skipped the primary checkout"
     assert "RAN" not in r_linked.stdout, "guard failed to skip the linked worktree"
+
+
+# ── #1907: duplicate keys in .git/config must not trigger spurious warnings ──
+
+def _append_duplicate_config_entries(repo: Path) -> None:
+    """Append git-legal duplicate keys/sections (as VS Code writes them)."""
+    cfg = repo / ".git" / "config"
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8")
+        + '[remote "origin"]\n'
+        + "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+        + "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+        + "[core]\n"
+        + "\tignorecase = true\n",
+        encoding="utf-8",
+    )
+
+
+def test_hooks_dir_no_warning_on_duplicate_config_keys(tmp_path, capsys):
+    """git legally allows duplicate keys and repeated sections in .git/config;
+    a strict configparser raised DuplicateOptionError/DuplicateSectionError and
+    printed a spurious 'could not read core.hooksPath' warning on every hook
+    command (#1907). _hooks_dir must resolve cleanly with no stderr noise."""
+    repo = _make_git_repo(tmp_path)
+    _append_duplicate_config_entries(repo)
+    d = _hooks_dir(repo)
+    err = capsys.readouterr().err
+    assert "could not read core.hooksPath" not in err
+    assert d == (repo / ".git" / "hooks").resolve()
+
+
+def test_hooks_dir_duplicate_config_keys_honor_custom_hookspath(tmp_path, capsys):
+    """With duplicate keys present, a custom core.hooksPath must still be
+    honored (no fall-through to .git/hooks) and no warning printed (#1907)."""
+    repo = _make_git_repo(tmp_path)
+    _set_hookspath(repo, ".husky")
+    _append_duplicate_config_entries(repo)
+    d = _hooks_dir(repo)
+    err = capsys.readouterr().err
+    assert "could not read core.hooksPath" not in err
+    assert d == (repo / ".husky").resolve()
+
+
+# ── #1902: hook install must register the graph.json union merge driver ─────
+
+def test_install_registers_merge_driver(tmp_path):
+    """install() must set merge.graphify.* via git config and add the
+    .gitattributes line that README/CHANGELOG 0.7.0 document (#1902)."""
+    repo = _make_git_repo(tmp_path)
+    result = install(repo)
+    res = subprocess.run(
+        ["git", "-C", str(repo), "config", "--get", "merge.graphify.driver"],
+        capture_output=True, text=True,
+    )
+    assert res.returncode == 0
+    driver = res.stdout.strip()
+    assert driver
+    assert "merge-driver %O %A %B" in driver
+    attrs = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert any(
+        "graph.json" in line and "merge=graphify" in line
+        for line in attrs.splitlines()
+    )
+    assert "merge driver" in result
+
+
+def test_install_merge_driver_idempotent(tmp_path):
+    """Running install twice must not duplicate the .gitattributes line."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    install(repo)
+    lines = (repo / ".gitattributes").read_text(encoding="utf-8").splitlines()
+    matches = [l for l in lines if "merge=graphify" in l]
+    assert len(matches) == 1
+
+
+def test_install_preserves_existing_gitattributes(tmp_path):
+    """A pre-existing .gitattributes entry must survive install (no clobber)."""
+    repo = _make_git_repo(tmp_path)
+    (repo / ".gitattributes").write_text("*.png binary\n", encoding="utf-8")
+    install(repo)
+    content = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.png binary" in content
+    assert "merge=graphify" in content
+
+
+def test_uninstall_removes_merge_driver_keeps_other_attrs(tmp_path):
+    """uninstall() must unset merge.graphify.* and remove only the graphify
+    .gitattributes line, keeping the file when other entries exist."""
+    repo = _make_git_repo(tmp_path)
+    (repo / ".gitattributes").write_text("*.png binary\n", encoding="utf-8")
+    install(repo)
+    uninstall(repo)
+    res = subprocess.run(
+        ["git", "-C", str(repo), "config", "--get", "merge.graphify.driver"],
+        capture_output=True, text=True,
+    )
+    assert res.returncode != 0
+    content = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.png binary" in content
+    assert "merge=graphify" not in content

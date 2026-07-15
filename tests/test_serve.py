@@ -7,6 +7,7 @@ from networkx.readwrite import json_graph
 from graphify.serve import (
     _communities_from_graph,
     _score_nodes,
+    _score_query,
     _compute_idf,
     _EXACT_MATCH_BONUS,
     _SOURCE_MATCH_BONUS,
@@ -26,6 +27,7 @@ from graphify.serve import (
     _subgraph_to_text,
     _load_graph,
     _community_header,
+    _search_tokens,
 )
 
 
@@ -362,6 +364,43 @@ def test_query_terms_drops_question_stopwords():
 def test_query_terms_all_stopwords_falls_back_to_unfiltered():
     # An all-stopword query keeps its terms rather than seeding on nothing.
     assert _query_terms("how does it work") == ["how", "does", "work"]
+
+
+def test_query_terms_drops_german_question_stopwords():
+    # #1900: German full-sentence queries must reduce to the content noun.
+    # In a mostly-English corpus "wie"/"funktioniert" are rare, get high IDF
+    # weight, and out-seed the actual keyword unless dropped here.
+    assert _query_terms("Wie funktioniert die Authentifizierung?") == ["authentifizierung"]
+
+
+def test_query_terms_all_german_stopwords_falls_back_to_unfiltered():
+    # Existing all-stopword fallback applies to German fillers too: the query
+    # keeps its terms rather than seeding on nothing.
+    terms = _query_terms("wie funktioniert das")
+    assert terms == ["wie", "funktioniert", "das"]
+
+
+def test_pick_seeds_german_query_seeds_content_node_not_heading_noise():
+    """End-to-end for #1900: a German question over a graph with German
+    heading-noise nodes must seed on the content noun, not on nodes that
+    happen to contain 'die'/'wie'/'wird'."""
+    G = nx.DiGraph()
+    G.add_node("cfg", label="Die Konfiguration", source_file="docs/konfiguration.md")
+    G.add_node("sec", label="Wie wird gesichert", source_file="docs/sicherheit.md")
+    G.add_node("auth", label="Authentifizierung", source_file="src/auth.py")
+    G.add_node("helper", label="login_helper", source_file="src/auth.py")
+    G.add_edge("helper", "auth")
+
+    q = "Wie funktioniert die Authentifizierung?"
+    terms = _query_terms(q)
+    # #1918: _score_query does combined scoring + per-term singleton winners in
+    # one traversal; _pick_seeds consumes best_seed_by_term for the per-term
+    # guarantee (replaces the old terms= per-term rescoring).
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    assert "auth" in seeds
+    assert "cfg" not in seeds
+    assert "sec" not in seeds
 
 
 def test_query_terms_filters_only_short_english_terms(monkeypatch):
@@ -734,8 +773,8 @@ def test_pick_seeds_respects_max_k():
 
 
 def test_pick_seeds_without_diversity_args_is_unchanged():
-    """G/terms are optional and default to None: existing callers see identical
-    behavior to before this change."""
+    """G/best_seed_by_term are optional and default to None: existing callers
+    see identical behavior to before this change."""
     scored = [(1000.0, "fbs"), (1.0, "err1"), (0.9, "err2")]
     assert _pick_seeds(scored) == ["fbs"]
 
@@ -744,9 +783,9 @@ def test_pick_seeds_diversity_recovers_starved_term(monkeypatch):
     """Reproduces #1445: a vague natural-language query where one term's
     incidental EXACT match on an unrelated node (e.g. a common word also used
     as an unrelated field/identifier) outscores every SUBSTRING match on the
-    query's other, actually-relevant terms by ~1000x. Without G/terms, the
-    20%-gap cutoff discards the relevant candidate entirely; with them, it is
-    recovered as a guaranteed per-term seed.
+    query's other, actually-relevant terms by ~1000x. Without
+    G/best_seed_by_term, the 20%-gap cutoff discards the relevant candidate
+    entirely; with them, it is recovered as a guaranteed per-term seed.
     """
     G = nx.DiGraph()
     # "unrelated" is an exact label match for the query term "unrelated" and
@@ -758,13 +797,17 @@ def test_pick_seeds_diversity_recovers_starved_term(monkeypatch):
     G.add_edge("other", "target")
 
     terms = ["unrelated", "widget"]
-    scored = _score_nodes(G, terms)
+    # `_score_query` does the combined scoring and the per-term singleton
+    # winner tracking in one traversal; `_pick_seeds` consumes its
+    # `best_seed_by_term` to satisfy the per-term guarantee without rescoring.
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    scored = qs.ranked
 
     # Sanity check the premise: without diversity, only the exact match survives.
     seeds_before = _pick_seeds(scored)
     assert seeds_before == ["noise"]
 
-    seeds_after = _pick_seeds(scored, G=G, terms=terms)
+    seeds_after = _pick_seeds(scored, G=G, best_seed_by_term=qs.best_seed_by_term)
     assert "noise" in seeds_after
     assert "target" in seeds_after
 
@@ -807,8 +850,9 @@ def test_pick_seeds_per_term_guarantee_does_not_reintroduce_generic_dupe(monkeyp
         G.add_node(f"get{i}", label="GET", source_file=f"r{i}.py")
     G.add_node("um", label="users_model", source_file="users.py")
     G.add_edge("um", "get0")
-    scored = _score_nodes(G, ["get", "users"])
-    seeds = _pick_seeds(scored, G=G, terms=["get", "users"])
+    terms = ["get", "users"]
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
     get_seeds = [s for s in seeds if s.startswith("get")]
     assert len(get_seeds) == 1, f"per-term guarantee reintroduced a GET dupe: {seeds}"
 
@@ -974,3 +1018,229 @@ def test_community_header_sanitizes_name():
     out = _community_header(3, "Pay\x00ments\x1b[31m")
     assert out.startswith("Community 3 — ")
     assert "\x00" not in out and "\x1b" not in out
+
+
+# --- single-pass scoring refactor: reference-impl equality + one-traversal ---
+
+
+def _reference_best_seed_by_term(G: nx.Graph, terms: list[str]) -> dict[str, str]:
+    """Test-only oracle for the legacy per-term `_pick_seeds(terms=...)` loop.
+
+    Re-creates what `_pick_seeds` did before the single-pass refactor: rescore
+    the whole graph per token via `_score_nodes(G, [token])`, take the top-
+    scoring ties, and break them by `max(tied, key=degree)` (which, over a
+    list sorted by `(-score, label_len, nid)`, returns the highest-degree node
+    with ties broken toward the shortest label then the smallest node id).
+    This is the semantics `_score_query(..., collect_per_term_seeds=True)` now
+    produces inline during its single traversal.
+    """
+    norm_terms = sorted({tok for t in terms for tok in _search_tokens(t)})
+    best: dict[str, str] = {}
+    for term in norm_terms:
+        term_scored = _score_nodes(G, [term])
+        if not term_scored:
+            continue
+        best_score = term_scored[0][0]
+        tied = [nid for s, nid in term_scored if s == best_score]
+        best_nid = max(tied, key=lambda n: G.degree(n)) if len(tied) > 1 else term_scored[0][1]
+        best[term] = best_nid
+    return best
+
+
+def _make_random_scoring_graph(n: int, *, seed: int) -> nx.DiGraph:
+    """Reproducible broad-match DiGraph: short constructed labels + edge noise.
+
+    Labels draw from a small syllable pool so tokens collide across nodes,
+    forcing the trigram prefilter to be selective and exercising score ties
+    on common tokens. Edge noise provides degree variance so the legacy
+    tie-break (`max(tied, key=degree)`) is exercised against the new
+    `(-singleton, -degree, label_len, nid)` key tuple.
+    """
+    import random
+
+    rng = random.Random(seed)
+    syllables = [
+        "foo", "bar", "baz", "get", "set", "run", "user", "name", "path",
+        "build", "report", "extract", "router", "config", "service",
+        "handler", "token", "auth", "rate", "limit", "widget", "model",
+    ]
+    G: nx.DiGraph = nx.DiGraph()
+    for i in range(n):
+        label = "_".join(rng.sample(syllables, rng.randint(1, 3)))
+        G.add_node(f"n{i}", label=label, source_file=f"src/{label[:8]}.py")
+    for _ in range(n * 2):
+        a, b = rng.randrange(n), rng.randrange(n)
+        if a != b:
+            G.add_edge(f"n{a}", f"n{b}", relation="calls", confidence="EXTRACTED")
+    return G
+
+
+SYLLABLE_QUERIES = [
+    ["get"],                                      # single token, exact-match
+    ["get", "user"],                              # two distinct tokens
+    ["router", "service", "handler"],             # multi-token identifier
+    ["extract", "build", "report", "path"],       # broad term
+    ["nonexistent"],                              # no matches
+    ["nonexistent", "get"],                       # one missing term + match
+    ["bar", "bar"],                               # repeated token (must dedupe)
+    ["baz", "run", "set", "auth", "rate", "limit"], # many tokens
+]
+
+
+@pytest.mark.parametrize("terms", SYLLABLE_QUERIES)
+def test_score_query_ranked_matches_score_nodes_byte_identical(terms):
+    """`_score_query(..., collect_per_term_seeds=False).ranked` is the byte-for-
+    byte match of `_score_nodes(G, terms)` — guaranteeing path/explain/tests see
+    no behavior change from the refactor."""
+    G = _make_random_scoring_graph(80, seed=7)
+    assert _score_query(G, terms, collect_per_term_seeds=False).ranked == _score_nodes(G, terms)
+
+
+@pytest.mark.parametrize("terms", SYLLABLE_QUERIES)
+def test_score_query_best_seed_by_term_matches_legacy_singleton_scoring(terms):
+    """Per-token winner the single-pass scorer records matches the legacy
+    `_score_nodes([token])` + `max(tied, key=degree)` oracle exactly."""
+    G = _make_random_scoring_graph(80, seed=7)
+    ref = _reference_best_seed_by_term(G, terms)
+    opt = _score_query(G, terms, collect_per_term_seeds=True).best_seed_by_term
+    assert ref == opt, f"terms={terms}: legacy={ref} optimized={opt}"
+
+
+@pytest.mark.parametrize("terms", SYLLABLE_QUERIES)
+def test_pick_seeds_with_optimized_best_seed_matches_legacy_semantics(terms):
+    """The seeds produced by `_pick_seeds(qs.ranked, G=G, best_seed_by_term=
+    qs.best_seed_by_term)` exactly match what the legacy `_pick_seeds(terms=...)`
+    loop would have produced (recreated via the reference oracle)."""
+    G = _make_random_scoring_graph(80, seed=7)
+    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    ref_best = _reference_best_seed_by_term(G, terms)
+    # Legacy `_pick_seeds(terms=...)` ran `_score_nodes(G, [term])` per token
+    # to build ref_best, then deduped by label key. The new `_pick_seeds(
+    # best_seed_by_term=...)` only swaps the source of the per-token winners,
+    # so it must produce the same seeds given equivalent inputs.
+    opt_seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    ref_seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=ref_best)
+    assert opt_seeds == ref_seeds, f"terms={terms}: ref={ref_seeds} opt={opt_seeds}"
+    # Per-term guarantee: every legacy winner with a non-empty seed slot is
+    # accounted for — either it appears in the seed list or another node with
+    # the same normalized label already claimed the slot (#1766 label dedup).
+    ref_seed_set = set(ref_seeds)
+    for term, nid in ref_best.items():
+        if nid in ref_seed_set:
+            continue
+        nid_label = (G.nodes[nid].get("norm_label")
+                     or G.nodes[nid].get("label")
+                     or nid)
+        seeded_with_same_label = any(
+            (G.nodes[s].get("norm_label") or G.nodes[s].get("label") or s) == nid_label
+            for s in ref_seeds
+        )
+        assert seeded_with_same_label, (
+            f"term {term!r} winner {nid!r} dropped without label-dedup reason"
+        )
+
+
+def test_score_query_matches_legacy_across_random_deterministic_graphs():
+    """Across many deterministic random graphs and many random multi-term
+    queries, the single-pass scorer's combined ranking, per-token winners,
+    and resulting seed list all match the legacy semantics. Exercises label
+    collisions, ties, broad terms, missing terms, and graph size variance."""
+    import random
+
+    rng = random.Random(42)
+    syllables = [
+        "foo", "bar", "baz", "get", "set", "run", "user", "name", "path",
+        "build", "report", "extract", "router", "config", "service",
+        "handler", "token", "auth", "rate", "limit", "widget", "model",
+    ]
+    for trial in range(30):
+        n = rng.randint(20, 200)
+        G = _make_random_scoring_graph(n, seed=rng.randint(0, 10**9))
+        nq = rng.randint(1, 5)
+        terms = [rng.choice(syllables) for _ in range(nq)]
+        ref_best = _reference_best_seed_by_term(G, terms)
+        opt = _score_query(G, terms, collect_per_term_seeds=True)
+        # (a) Combined ranking unchanged.
+        assert opt.ranked == _score_nodes(G, terms), (
+            f"trial {trial}: combined ranking diverged for terms={terms}"
+        )
+        # (b) Per-token winners match the legacy per-term rescoring loop.
+        assert opt.best_seed_by_term == ref_best, (
+            f"trial {trial}: best_seed_by_term diverged; ref={ref_best} opt={opt.best_seed_by_term}"
+        )
+        # (c) Final seed list is identical under the legacy semantics.
+        ref_seeds = _pick_seeds(opt.ranked, G=G, best_seed_by_term=ref_best)
+        opt_seeds = _pick_seeds(opt.ranked, G=G, best_seed_by_term=opt.best_seed_by_term)
+        assert opt_seeds == ref_seeds, (
+            f"trial {trial}: seeds diverged; ref={ref_seeds} opt={opt_seeds}"
+        )
+
+
+def test_score_query_matches_legacy_under_full_scan_fallback(monkeypatch):
+    """When the trigram prefilter falls back to a full-graph scan, the
+    single-pass path still produces identical rankings and per-term winners.
+
+    Forces `_trigram_candidates` to return None so the combined iterates the
+    whole graph — mirroring per-token `_score_nodes([token])` which would also
+    full-scan when its own trigram search isn't selective."""
+    monkeypatch.setattr(
+        "graphify.serve._trigram_candidates", lambda G, needles: None
+    )
+    terms = ["router", "service", "handler"]
+    G = _make_random_scoring_graph(80, seed=19)
+    ref_best = _reference_best_seed_by_term(G, terms)
+    opt = _score_query(G, terms, collect_per_term_seeds=True)
+    assert opt.ranked == _score_nodes(G, terms)
+    assert opt.best_seed_by_term == ref_best
+
+
+def test_query_graph_text_makes_exactly_one_score_query_call(monkeypatch):
+    """`_query_graph_text` must invoke `_score_query` exactly once per query,
+    regardless of how many tokens the query has — eliminating the legacy
+    T+1-pass rescoring. `_score_nodes` must NOT be called from the query path
+    (only path/explain still call it)."""
+    G = _make_random_scoring_graph(60, seed=23)
+    original_sq = _score_query
+    original_sn = _score_nodes
+
+    state = {"sq": 0, "sn": 0}
+
+    def counting_sq(*a, **k):
+        state["sq"] += 1
+        return original_sq(*a, **k)
+
+    def counting_sn(*a, **k):
+        state["sn"] += 1
+        return original_sn(*a, **k)
+
+    monkeypatch.setattr("graphify.serve._score_query", counting_sq)
+    monkeypatch.setattr("graphify.serve._score_nodes", counting_sn)
+
+    queries = [
+        "foo",                                              # one term
+        "foo bar",                                          # two
+        "router service handler",                          # three (the scenario the RFC targets)
+        "get user run name path",                          # five
+        "extract build report router config service token rate limit widget",  # ten
+    ]
+    for q in queries:
+        state["sq"] = 0
+        state["sn"] = 0
+        _query_graph_text(G, q, mode="bfs", depth=1)
+        assert state["sq"] == 1, (
+            f"expected exactly one _score_query call for {q!r}, got {state['sq']}"
+        )
+        assert state["sn"] == 0, (
+            f"query path must not call _score_nodes; got {state['sn']} call(s) for {q!r}"
+        )
+
+
+def test_score_query_collect_per_term_seeds_false_omits_tracking(monkeypatch):
+    """`collect_per_term_seeds=False` returns empty `best_seed_by_term` and
+    does not pay for per-token best tracking — preserving the cost contract
+    for path/explain/tests callers that only want the combined ranking."""
+    G = _make_random_scoring_graph(50, seed=29)
+    qs = _score_query(G, ["foo", "bar", "baz"], collect_per_term_seeds=False)
+    assert qs.best_seed_by_term == {}
+    # And the combined output is still byte-identical to _score_nodes.
+    assert qs.ranked == _score_nodes(G, ["foo", "bar", "baz"])

@@ -90,7 +90,8 @@ def _body_content(content: bytes) -> bytes:
 # size+mtime_ns are unchanged — same trade-off as make(1).
 # Correctness risks: `touch` causes a harmless extra re-hash; same-size edits
 # within NFS second-resolution mtime have a 1-second window (same as make).
-# Use `graphify extract --force` to bypass when needed.
+# `graphify extract --force` / `graphify update --force` (or GRAPHIFY_FORCE=1)
+# skip the cache reads and re-dispatch everything when needed (#1894).
 _stat_index: dict[str, dict] = {}
 _stat_index_root: Path | None = None
 _stat_index_dirty: bool = False
@@ -340,13 +341,15 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
 def cache_dir(root: Path = Path("."), kind: str = "ast") -> Path:
     """Returns the cache directory for ``kind`` - creates it if needed.
 
-    kind is "ast" or "semantic". Separate subdirectories prevent semantic cache
+    kind is "ast", "semantic", or a mode-namespaced semantic kind such as
+    "semantic-deep" (#1894). Separate subdirectories prevent semantic cache
     entries from overwriting AST cache entries for the same source_file (#582).
 
     AST entries live in graphify-out/cache/ast/v{version}/ — namespaced by
     graphify version because they depend on extractor code, not just file
     contents. Semantic entries live unversioned in graphify-out/cache/semantic/
-    (re-extraction costs LLM calls).
+    (re-extraction costs LLM calls); deep-mode entries live beside them in
+    graphify-out/cache/semantic-deep/.
     """
     _out = Path(_GRAPHIFY_OUT)
     base = _out if _out.is_absolute() else Path(root).resolve() / _out
@@ -467,8 +470,10 @@ def cached_files(root: Path = Path(".")) -> set[str]:
     # Legacy flat entries
     if base.is_dir():
         hashes.update(p.stem for p in base.glob("*.json"))
-    # Namespaced entries (ast/ recursively, covering per-version subdirs)
-    for kind, pattern in (("ast", "**/*.json"), ("semantic", "*.json")):
+    # Namespaced entries (ast/ recursively, covering per-version subdirs;
+    # semantic-deep/ holds --mode deep entries, #1894)
+    for kind, pattern in (("ast", "**/*.json"), ("semantic", "*.json"),
+                          ("semantic-deep", "*.json")):
         d = base / kind
         if d.is_dir():
             hashes.update(p.stem for p in d.glob(pattern))
@@ -476,14 +481,17 @@ def cached_files(root: Path = Path(".")) -> set[str]:
 
 
 def clear_cache(root: Path = Path(".")) -> None:
-    """Delete all cache entries (ast/, semantic/, and legacy flat entries)."""
+    """Delete all cache entries (ast/, semantic/, semantic-deep/, and legacy
+    flat entries)."""
     base = Path(root).resolve() / _GRAPHIFY_OUT / "cache"
     # Legacy flat entries
     if base.is_dir():
         for f in base.glob("*.json"):
             f.unlink()
-    # Namespaced entries (ast/ recursively, covering per-version subdirs)
-    for kind, pattern in (("ast", "**/*.json"), ("semantic", "*.json")):
+    # Namespaced entries (ast/ recursively, covering per-version subdirs;
+    # semantic-deep/ holds --mode deep entries, #1894)
+    for kind, pattern in (("ast", "**/*.json"), ("semantic", "*.json"),
+                          ("semantic-deep", "*.json")):
         d = base / kind
         if d.is_dir():
             for f in d.glob(pattern):
@@ -500,11 +508,16 @@ def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
     AST version-cleanup, so every content change or file deletion leaves a
     permanent orphan entry that accumulates unbounded.
 
-    This sweeps ``cache/semantic/*.json`` and deletes any entry whose stem (the
-    content hash) is not in ``live_hashes`` — the hashes of the current live
-    document set. ``*.tmp`` atomic-write temporaries are skipped, and only this
-    directory is touched (never ``cache/ast/**`` or anything else). The
-    unversioned design is preserved: we prune by liveness, not by version.
+    This sweeps ``cache/semantic/*.json`` AND ``cache/semantic-deep/*.json``
+    (the ``--mode deep`` namespace, #1894) and deletes any entry whose stem
+    (the content hash) is not in ``live_hashes`` — the hashes of the current
+    live document set. Both namespaces are pruned against the SAME live set:
+    liveness is content-based and mode-independent, so a hash that is live for
+    one namespace is live for both. Skipping the deep namespace would re-grow
+    the unbounded-orphan problem this function fixed (#1527). ``*.tmp``
+    atomic-write temporaries are skipped, and only these directories are
+    touched (never ``cache/ast/**`` or anything else). The unversioned design
+    is preserved: we prune by liveness, not by version.
 
     Best-effort, mirroring :func:`_cleanup_stale_ast_entries`: each unlink is
     wrapped in ``try/except OSError`` and a failure is ignored. The worst-case
@@ -513,30 +526,40 @@ def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
     """
     _out = Path(_GRAPHIFY_OUT)
     base = _out if _out.is_absolute() else Path(root).resolve() / _out
-    semantic_dir = base / "cache" / "semantic"
-    if not semantic_dir.is_dir():
-        return 0
     pruned = 0
-    for entry in semantic_dir.glob("*.json"):
-        if entry.stem in live_hashes:
+    for kind in ("semantic", "semantic-deep"):
+        semantic_dir = base / "cache" / kind
+        if not semantic_dir.is_dir():
             continue
-        try:
-            entry.unlink()
-            pruned += 1
-        except OSError:
-            pass
+        for entry in semantic_dir.glob("*.json"):
+            if entry.stem in live_hashes:
+                continue
+            try:
+                entry.unlink()
+                pruned += 1
+            except OSError:
+                pass
     return pruned
 
 
 def check_semantic_cache(
     files: list[str],
     root: Path = Path("."),
+    mode: str | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[str]]:
     """Check semantic extraction cache for a list of absolute file paths.
 
     Returns (cached_nodes, cached_edges, cached_hyperedges, uncached_files).
     Uncached files need Claude extraction; cached files are merged directly.
+
+    ``mode`` selects the cache namespace: ``None`` (the default) reads
+    ``cache/semantic/`` — byte-identical to the historical behavior, so
+    existing callers that omit it (including older installed skill flows)
+    are unaffected. A non-None mode (e.g. ``"deep"``) reads
+    ``cache/semantic-{mode}/`` instead, so deep-mode results never shadow
+    (or get shadowed by) standard-mode entries for the same content (#1894).
     """
+    kind = "semantic" if mode is None else f"semantic-{mode}"
     cached_nodes: list[dict] = []
     cached_edges: list[dict] = []
     cached_hyperedges: list[dict] = []
@@ -546,7 +569,7 @@ def check_semantic_cache(
         p = Path(fpath)
         if not p.is_absolute():
             p = Path(root) / p
-        result = load_cached(p, root, kind="semantic")
+        result = load_cached(p, root, kind=kind)
         if result is not None:
             cached_nodes.extend(result.get("nodes", []))
             cached_edges.extend(result.get("edges", []))
@@ -564,12 +587,20 @@ def save_semantic_cache(
     root: Path = Path("."),
     merge_existing: bool = False,
     allowed_source_files: Iterable[str | Path] | None = None,
+    mode: str | None = None,
 ) -> int:
     """Save semantic extraction results to cache, keyed by source_file.
 
     Groups nodes and edges by source_file, then saves one cache entry per file
     under cache/semantic/ (separate from AST entries in cache/ast/) to prevent
     hash-key collisions (#582).
+
+    ``mode`` selects the cache namespace, mirroring
+    :func:`check_semantic_cache`: ``None`` (the default) writes
+    ``cache/semantic/`` — byte-identical to the historical behavior for
+    existing callers that omit it — while a non-None mode (e.g. ``"deep"``)
+    writes ``cache/semantic-{mode}/`` so richer deep-mode results never
+    overwrite standard-mode entries and vice versa (#1894).
 
     When ``merge_existing`` is True, any already-cached entry for a file is
     unioned with the new results before saving instead of being overwritten.
@@ -584,6 +615,7 @@ def save_semantic_cache(
     """
     from collections import defaultdict
 
+    kind = "semantic" if mode is None else f"semantic-{mode}"
     by_file: dict[str, dict] = defaultdict(lambda: {"nodes": [], "edges": [], "hyperedges": []})
     for n in nodes:
         src = n.get("source_file", "")
@@ -615,6 +647,62 @@ def save_semantic_cache(
     if allowed_source_files is not None:
         allowed_paths = {resolved_source_path(path) for path in allowed_source_files}
 
+    def group_skipped(fpath: str) -> bool:
+        """Mirror the write-loop skip condition for one source_file group."""
+        p = resolved_source_path(fpath)
+        return not p.is_file() or (allowed_paths is not None and p not in allowed_paths)
+
+    # Dangling-reference pruning (#1916). A node group is skipped by the write
+    # loop below when its source_file is not a real file (ghost path) or is
+    # out-of-scope per the #1757 guard — but an edge/hyperedge in an ALLOWED
+    # group that references a node id from a skipped group used to be written
+    # verbatim, so on replay (check_semantic_cache) it dangled forever (the
+    # #1895 merged-result filter runs AFTER this checkpoint write and is
+    # bypassed entirely on replay). Compute the node ids that will be skipped
+    # and drop any to-be-written edge whose endpoint — or hyperedge whose
+    # member (whole-hyperedge drop, mirroring #1895) — references one. Gated
+    # on allowed_source_files so unscoped callers stay byte-identical.
+    if allowed_paths is not None:
+        skipped_ids: set = set()
+        written_ids: set = set()
+        for fpath, result in by_file.items():
+            target = skipped_ids if group_skipped(fpath) else written_ids
+            for n in result["nodes"]:
+                nid = n.get("id")
+                if nid is None:
+                    continue
+                try:
+                    hash(nid)
+                except TypeError:
+                    continue
+                target.add(nid)
+        # A duplicate-attribution node (defined in a skipped AND a written
+        # group) still reaches the cache — don't over-prune references to it.
+        skipped_ids -= written_ids
+        if skipped_ids:
+
+            def edge_dangles(e: dict) -> bool:
+                try:
+                    return e.get("source") in skipped_ids or e.get("target") in skipped_ids
+                except TypeError:
+                    # Non-hashable endpoint from an untrusted result; leave it
+                    # to build-time validation rather than fail the save.
+                    return False
+
+            def hyperedge_dangles(h: dict) -> bool:
+                try:
+                    return bool(skipped_ids & set(h.get("nodes") or []))
+                except TypeError:
+                    return False
+
+            for fpath, result in by_file.items():
+                if group_skipped(fpath):
+                    continue
+                result["edges"] = [e for e in result["edges"] if not edge_dangles(e)]
+                result["hyperedges"] = [
+                    h for h in result["hyperedges"] if not hyperedge_dangles(h)
+                ]
+
     saved = 0
     for fpath, result in by_file.items():
         p = resolved_source_path(fpath)
@@ -628,13 +716,13 @@ def save_semantic_cache(
                 )
                 continue
             if merge_existing:
-                prev = load_cached(p, root, kind="semantic")
+                prev = load_cached(p, root, kind=kind)
                 if prev:
                     result = {
                         "nodes": (prev.get("nodes", []) or []) + result["nodes"],
                         "edges": (prev.get("edges", []) or []) + result["edges"],
                         "hyperedges": (prev.get("hyperedges", []) or []) + result["hyperedges"],
                     }
-            save_cached(p, result, root, kind="semantic")
+            save_cached(p, result, root, kind=kind)
             saved += 1
     return saved

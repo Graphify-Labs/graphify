@@ -295,7 +295,8 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
         # _old_file_stems loop below matches the "claude" prefix on an
         # already-canonical id, strips one segment, and re-prepends the full
         # new_stem, inflating the id by one "claude_" on every incremental
-        # rebuild so graph.json never converges.
+        # rebuild so graph.json never converges. Mirrors the canonical check in
+        # graph_has_legacy_ids().
         if norm_nid == new_stem or norm_nid.startswith(new_stem + "_"):
             continue
         new_id: str | None = None
@@ -766,10 +767,43 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # Relativize hyperedge source_file the same way nodes and edges are
         # (above), so to_json — which has no root and writes G.graph["hyperedges"]
         # verbatim — never leaks an absolute path from a semantic subagent (#1418).
+        kept_hyperedges = []
         for he in hyperedges:
             if isinstance(he, dict) and he.get("source_file"):
                 he["source_file"] = _norm_source_file(he["source_file"], _root)
-        G.graph["hyperedges"] = hyperedges
+            # Validate members against the built node set (#1916): a hyperedge
+            # member absent from the graph used to be copied into
+            # G.graph["hyperedges"] verbatim and reach graph.json dangling,
+            # even from a live (non-cache) extraction. Mirror the pairwise-edge
+            # handling above: remap mismatched ids via normalization first,
+            # then drop members that still don't resolve; drop the hyperedge
+            # itself when no valid member remains (single-member hyperedges
+            # are legal in this codebase, e.g. a per-file flow, so we prune
+            # rather than require two survivors).
+            if isinstance(he, dict) and isinstance(he.get("nodes"), list):
+                valid_members = []
+                for m in he["nodes"]:
+                    try:
+                        hash(m)
+                    except TypeError:
+                        continue
+                    if m not in node_set and isinstance(m, str):
+                        m = norm_to_id.get(_normalize_id(m), m)
+                    if m in node_set:
+                        valid_members.append(m)
+                if not valid_members:
+                    print(
+                        f"[graphify] WARNING: dropping hyperedge "
+                        f"{he.get('id', '?')!r} — none of its members "
+                        f"{he.get('nodes')!r} match built nodes.",
+                        file=sys.stderr,
+                    )
+                    continue
+                if valid_members != he["nodes"]:
+                    he["nodes"] = valid_members
+            kept_hyperedges.append(he)
+        if kept_hyperedges:
+            G.graph["hyperedges"] = kept_hyperedges
     return G
 
 

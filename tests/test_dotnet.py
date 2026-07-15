@@ -126,6 +126,35 @@ def test_csproj_project_references():
     assert len(imports) == 6  # 4 packages + 2 project refs
 
 
+def test_csproj_out_of_root_reference_id_is_portable(tmp_path):
+    """#1899: a ProjectReference to a project OUTSIDE the scan root must not leak
+    the absolute scan path (including the OS username) into the node id or
+    source_file. The out-of-root target gets a portable, `ext_`-namespaced id and
+    a walk-up relative source_file rather than the absolute-derived form."""
+    web = tmp_path / "WebApi"; web.mkdir()
+    core = tmp_path / "Core"; core.mkdir()
+    (core / "Core.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        '<TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>'
+    )
+    (web / "WebApi.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>'
+        '<ProjectReference Include="..\\Core\\Core.csproj" /></ItemGroup></Project>'
+    )
+    result = extract([web / "WebApi.csproj"], cache_root=web)
+    marker = str(tmp_path)
+    for n in result["nodes"]:
+        assert marker not in n["id"], f"absolute path leaked into id: {n}"
+        assert marker not in (n.get("source_file") or ""), f"leaked into source_file: {n}"
+    for e in result["edges"]:
+        for f in ("source", "target", "source_file"):
+            assert marker not in str(e.get(f, "")), f"leaked into edge {f}: {e}"
+    core_ref = [n for n in result["nodes"] if "core" in n["id"].lower()]
+    assert core_ref, "out-of-root Core reference node missing"
+    assert core_ref[0]["id"].startswith("ext_")
+    assert core_ref[0]["source_file"] == "../Core/Core.csproj"
+
+
 def test_csproj_target_framework():
     r = extract_csproj(FIXTURES / "sample.csproj")
     assert "net8.0" in _labels(r)

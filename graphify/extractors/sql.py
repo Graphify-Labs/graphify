@@ -191,6 +191,25 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     tbl_nid = table_nids.get(tbl_name.lower()) or _make_id(stem, tbl_name)
                     _add_edge(trig_nid, tbl_nid, "triggers", line)
 
+        elif t == "ERROR":
+            # tree-sitter-sql cannot parse PL/pgSQL CREATE FUNCTION/PROCEDURE
+            # bodies (OUT/INOUT params, tagged dollar quotes, PERFORM, :=) and
+            # emits an ERROR node instead, silently dropping the object.
+            # Regex-scan the raw text as fallback, mirroring the
+            # fb_proc_or_trigger recovery below. One ERROR blob can swallow
+            # several statements, so scan for every CREATE in it. We deliberately
+            # do not scan the body for FROM/JOIN references: PL/pgSQL loop
+            # variables and locals would produce junk reads_from targets.
+            text = _read(node)
+            for m in re.finditer(
+                r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+([\w$.]+)",
+                text, re.IGNORECASE,
+            ):
+                name = m.group(1)
+                m_line = line + text[: m.start()].count("\n")
+                nid = _make_id(stem, name)
+                _add_node(nid, f"{name}()", m_line)
+
         elif t == "fb_proc_or_trigger":
             text = _read(node)
             m = re.match(
@@ -249,7 +268,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         if stmt.type == "statement":
             for child in stmt.children:
                 walk(child)
-        elif stmt.type in ("fb_proc_or_trigger", "set_term", "declare_external_function"):
+        elif stmt.type in ("fb_proc_or_trigger", "set_term", "declare_external_function", "ERROR"):
             walk(stmt)
 
     # Global regex fallback: catch any REFERENCES missed due to ERROR nodes in the parse tree

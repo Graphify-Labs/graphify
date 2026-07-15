@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+from graphify.ids import normalize_id
 from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
 from graphify.security import sanitize_metadata
@@ -607,6 +608,35 @@ def _php_method_return_type_node(method_node):
                 return c
     return None
 
+# Kotlin stdlib scalar/collection/core types that appear constantly as type
+# annotations but carry no useful semantic meaning as graph nodes (mirrors
+# _JAVA_BUILTIN_TYPES / _PYTHON_ANNOTATION_NOISE / _GO_PREDECLARED_TYPES).
+# Kotlin compiles to the JVM and freely references java.* types too, so this
+# is combined with _JAVA_BUILTIN_TYPES at the call site rather than duplicated.
+_KOTLIN_BUILTIN_TYPES = frozenset({
+    # kotlin — scalars & core
+    "Any", "Unit", "Nothing", "Boolean", "Byte", "Short", "Int", "Long",
+    "Float", "Double", "Char", "String", "CharSequence", "Number",
+    "Comparable", "Enum", "Annotation", "Pair", "Triple", "Lazy",
+    "Function",
+    # kotlin — throwables
+    "Throwable", "Exception", "RuntimeException", "Error",
+    "IllegalArgumentException", "IllegalStateException", "NullPointerException",
+    "IndexOutOfBoundsException", "ClassCastException", "NumberFormatException",
+    "ArithmeticException", "UnsupportedOperationException",
+    "NoSuchElementException", "ConcurrentModificationException",
+    "StackOverflowError", "OutOfMemoryError", "AssertionError",
+    "InterruptedException",
+    # kotlin.collections
+    "Array", "List", "MutableList", "ArrayList", "Set", "MutableSet",
+    "HashSet", "LinkedHashSet", "Map", "MutableMap", "HashMap",
+    "LinkedHashMap", "Collection", "MutableCollection", "Iterable",
+    "MutableIterable", "Iterator", "MutableIterator", "ListIterator",
+    "MutableListIterator", "Sequence", "Comparator",
+    # kotlin.text
+    "Regex", "MatchResult", "StringBuilder",
+})
+
 def _kotlin_user_type_name(user_type_node, source: bytes) -> str | None:
     """Return the head identifier text from a Kotlin user_type node (without generics)."""
     if user_type_node is None:
@@ -636,14 +666,14 @@ def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
         for c in node.children:
             if c.type in ("identifier", "type_identifier"):
                 text = _read_text(c, source)
-                if text:
+                if text and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES:
                     out.append((text, "generic_arg" if generic else "type"))
                 break
             if c.type == "simple_user_type":
                 for sub in c.children:
                     if sub.type in ("identifier", "type_identifier"):
                         text = _read_text(sub, source)
-                        if text:
+                        if text and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES:
                             out.append((text, "generic_arg" if generic else "type"))
                         break
                 break
@@ -659,7 +689,7 @@ def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
         return
     if t in ("identifier", "type_identifier"):
         text = _read_text(node, source)
-        if text:
+        if text and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES:
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t in ("nullable_type", "parenthesized_type", "type_reference"):
@@ -1731,6 +1761,11 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                         if name_node:
                             func_name = _read_text(name_node, source)
                             line = child.start_point[0] + 1
+                            # A name that normalizes to nothing (e.g. minified `$`)
+                            # would collapse the id to the absolute file-stem and
+                            # leak the scan path (#1899); skip it (no graph signal).
+                            if not normalize_id(func_name):
+                                continue
                             func_nid = _make_id(stem, func_name)
                             add_node_fn(func_nid, f"{func_name}()", line)
                             add_edge_fn(file_nid, func_nid, "contains", line)
@@ -3094,6 +3129,11 @@ def _extract_generic(
                 func_name = _read_text(name_node, source) if name_node else None
 
             if not func_name:
+                return
+            # A name that normalizes to nothing collapses `_make_id(prefix, name)`
+            # onto the (absolute-path-derived) prefix, leaking the scan path and
+            # colliding with the file/class node (#1899). No graph signal; skip.
+            if not normalize_id(func_name):
                 return
 
             line = node.start_point[0] + 1

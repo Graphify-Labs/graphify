@@ -15,7 +15,7 @@ def introspect_postgres(dsn: str | None = None) -> dict:
     except ModuleNotFoundError:
         raise ImportError(
             "psycopg is required for --postgres. "
-            "Install with: pip install 'graphify[postgres]'"
+            "Install with: pip install 'graphifyy[postgres]'"
         )
 
     try:

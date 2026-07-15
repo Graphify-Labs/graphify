@@ -174,7 +174,7 @@ def _check_skill_version(skill_dst: Path) -> None:
     except OSError:
         return
     if not skill_exists:
-        print("  warning: skill dir exists but SKILL.md is missing. Run 'graphify install' to repair.")
+        print("  warning: skill dir exists but SKILL.md is missing. Run 'graphify install' to repair.", file=sys.stderr)
         return
     # A progressive SKILL.md links to its references/ sidecar. If the body points
     # at references/ but the dir is gone (manual delete, partial upgrade), the
@@ -597,6 +597,8 @@ def _run_cli() -> None:
         print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
+        print("    --force                 full re-scan and re-dispatch: skip the incremental")
+        print("                            manifest gate and semantic cache reads (env: GRAPHIFY_FORCE=1)")
         print("    --max-workers N         AST extraction subprocess count (default: cpu_count)")
         print("    --token-budget N        per-chunk token cap for semantic extraction (default: 60000)")
         print("    --max-concurrency N     parallel semantic chunks in flight (default: 4; set 1 for local LLMs)")

@@ -69,6 +69,44 @@ def _drain_pending(out_dir: Path) -> list[Path]:
     return out
 
 
+# Build options that must survive into later rebuilds. The initial `extract`
+# scan honours `--exclude`, but `update`/`watch`/hook rebuilds re-run detect()
+# and would silently re-include excluded paths unless the patterns are persisted
+# (#1886). We store them beside the graph so any rebuild driver can re-apply them.
+_BUILD_CONFIG_FILENAME = ".graphify_build.json"
+
+
+def _write_build_config(out_dir: Path, *, excludes: "list[str] | None") -> None:
+    """Persist build options (currently ``--exclude`` patterns) under ``out_dir``.
+
+    Best-effort and non-clobbering: with no excludes it leaves any existing file
+    untouched, so a plain rebuild never erases patterns a prior extract recorded.
+    """
+    if not excludes:
+        return
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / _BUILD_CONFIG_FILENAME).write_text(
+            json.dumps({"excludes": list(excludes)}), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _read_build_excludes(out_dir: Path) -> list[str]:
+    """Return the persisted ``--exclude`` patterns for this graph, or []."""
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            ex = cfg.get("excludes") if isinstance(cfg, dict) else None
+            if isinstance(ex, list):
+                return [str(x) for x in ex if isinstance(x, str) and x]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return []
+
+
 def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
     """Concatenate path lists, preserving order and dropping duplicates.
 
@@ -408,11 +446,11 @@ def _reconcile_existing_graph(
         }
         node_evicted_source_identities = set(deleted_source_identities)
         hyperedge_evicted_source_identities = set(deleted_source_identities)
+        # Deletion evicts edges regardless of tier; re-extraction only owns a
+        # source's AST-tier edges (checked per-edge below, #1865).
+        edge_evicted_source_identities = set(deleted_source_identities)
         if not full_rebuild:
             node_evicted_source_identities.update(rebuilt_source_identities)
-        edge_evicted_source_identities = (
-            node_evicted_source_identities | rebuilt_source_identities
-        )
 
         # Reconcile every rebuild against the current watched corpus. Hook change
         # lists can contain only a rename destination, so explicit paths alone
@@ -485,14 +523,22 @@ def _reconcile_existing_graph(
         ]
         all_ids = new_ast_ids | {node["id"] for node in preserved_nodes}
 
-        # Edges are owned by source_file. Re-extraction must replace an owner's
-        # previous edges, while edges from unchanged or semantic sources survive.
+        # Edges are owned by source_file, but ownership is tier-scoped: the AST
+        # pass replaces a re-extracted source's AST edges, while that source's
+        # semantic/LLM edges — which the AST pass cannot regenerate — survive
+        # until a semantic re-extraction supersedes them. Same provenance rule
+        # the node reconciliation above applies via _origin (#1865). Deletion
+        # eviction stays provenance-blind.
         preserved_edges = [
             edge
             for edge in existing.get("links", existing.get("edges", []))
             if edge.get("source") in all_ids
             and edge.get("target") in all_ids
             and not source_paths.is_evicted(edge, edge_evicted_source_identities)
+            and not (
+                edge.get("_origin") == "ast"
+                and source_paths.is_evicted(edge, rebuilt_source_identities)
+            )
         ]
 
         new_hyperedge_ids = {
@@ -819,19 +865,74 @@ def _rebuild_code(
         from graphify.export import to_json, to_html
         from graphify.security import check_graph_file_size_cap
 
-        detected = detect(watch_path, follow_symlinks=follow_symlinks)
+        # Re-apply the excludes the initial extract recorded, so an update/watch/
+        # hook rebuild does not silently re-include deliberately excluded paths
+        # (#1886).
+        _persisted_excludes = _read_build_excludes(out)
+        detected = detect(
+            watch_path, follow_symlinks=follow_symlinks,
+            extra_excludes=_persisted_excludes or None,
+        )
         code_files = [Path(f) for f in detected['files']['code']]
 
         # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
+        ast_doc_files: list[Path] = []
         for doc_file in detected['files'].get('document', []):
             p = Path(doc_file)
             if _get_extractor(p) is not None:
                 code_files.append(p)
+                ast_doc_files.append(p)
 
         existing_graph = out / "graph.json"
         if not code_files and not existing_graph.exists():
             print("[graphify watch] No code files found - nothing to rebuild.")
             return False
+
+        # #1915: a document that already carries SEMANTIC (LLM) nodes in the
+        # existing graph must not ALSO be AST-quick-scanned — otherwise every
+        # rebuild mints heading nodes on top of the preserved semantic nodes
+        # and the doc is represented twice (~4x graph bloat vs the CLI update
+        # path, which AST-extracts only code). Semantic supersedes AST per doc
+        # source: the quick-scan stays as a fallback for docs with no semantic
+        # layer (the no-LLM doc-structure feature, #09b33b7) and for brand-new
+        # docs the graph has never seen. These docs stay in ``code_files`` so
+        # corpus membership (#1795 fail-closed deletion evidence) and the
+        # shrink accounting below still cover them — a previously-bloated
+        # graph must be allowed to self-heal on a full rebuild without the
+        # shrink-guard refusing the smaller write.
+        semantic_doc_files: set[Path] = set()
+        if ast_doc_files and existing_graph.exists():
+            try:
+                check_graph_file_size_cap(existing_graph)
+                prior = json.loads(existing_graph.read_text(encoding="utf-8"))
+                prior_paths = _StoredSourcePaths(
+                    prior,
+                    out=out,
+                    project_root=project_root,
+                    watch_root=watch_root,
+                    normalize_source=_nsf,
+                )
+                # Semantic doc nodes lack the AST origin marker. Gate on
+                # file_type=="document" as well so a pre-#1865 graph whose
+                # AST nodes lack the ``_origin`` marker isn't misread as
+                # semantic-backed via some other marker-less node kind.
+                semantic_doc_identities: set[str] = set()
+                for node in prior.get("nodes", []):
+                    if node.get("_origin") == "ast":
+                        continue
+                    if node.get("file_type") != "document":
+                        continue
+                    identity = prior_paths.identity(node.get("source_file"))
+                    if identity:
+                        semantic_doc_identities.add(identity)
+                if semantic_doc_identities:
+                    semantic_doc_files = {
+                        p for p in ast_doc_files
+                        if prior_paths.absolute_identity(str(p), project_root)
+                        in semantic_doc_identities
+                    }
+            except Exception:
+                semantic_doc_files = set()
 
         # Incremental path: when the caller passed an explicit change list,
         # extract only changed-and-still-existing files. Deleted paths are
@@ -845,6 +946,12 @@ def _rebuild_code(
 
         if changed_paths is not None:
             code_set = {Path(os.path.abspath(p)) for p in code_files}
+            # #1915: semantic-backed docs are never AST-quick-scanned; their
+            # semantic nodes are the sole representation. Mirroring #1865's
+            # tier-scoped edge rule at the node level, they also must NOT
+            # enter extract_targets (hence rebuilt/node-evicted identities) on
+            # an incremental rebuild, or their semantic nodes would be wiped.
+            semantic_doc_set = {Path(os.path.abspath(p)) for p in semantic_doc_files}
             wanted: list[Path] = []
             change_root = Path.cwd().resolve()
             for raw in changed_paths:
@@ -855,7 +962,7 @@ def _rebuild_code(
                 )
                 tracked = next((cand for cand in candidates if cand.exists() and cand in code_set), None)
                 if tracked is not None:
-                    if tracked not in wanted:
+                    if tracked not in wanted and tracked not in semantic_doc_set:
                         wanted.append(tracked)
                     continue
 
@@ -885,7 +992,12 @@ def _rebuild_code(
                 return True
             extract_targets = wanted
         else:
-            extract_targets = code_files
+            # Full rebuild: skip the AST quick-scan for semantic-backed docs
+            # (#1915). They remain in code_files, so stale _origin=="ast"
+            # heading nodes from a previously-bloated graph are dropped by the
+            # full-rebuild AST ownership rule while the shrink accounting
+            # below still counts the doc as a rebuilt source.
+            extract_targets = [p for p in code_files if p not in semantic_doc_files]
 
         commit = _git_head()
         result = extract(extract_targets, cache_root=watch_root) if extract_targets else {
@@ -968,7 +1080,14 @@ def _rebuild_code(
 
             try:
                 from graphify.detect import save_manifest
-                save_manifest(detected["files"], kind="ast", root=project_root)
+                # detected["files"] is a FULL detect of the watched root, so
+                # pass it as the scan corpus too: rows for files that left the
+                # scan but still exist on disk (newly excluded) are pruned
+                # instead of surviving as phantom "deleted" entries (#1908).
+                save_manifest(
+                    detected["files"], kind="ast", root=project_root,
+                    scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+                )
             except Exception:
                 pass
 
@@ -1007,7 +1126,11 @@ def _rebuild_code(
             if same_topology:
                 try:
                     from graphify.detect import save_manifest
-                    save_manifest(detected["files"], kind="ast", root=project_root)
+                    # Full-scan save: prune excluded-but-alive rows (#1908).
+                    save_manifest(
+                        detected["files"], kind="ast", root=project_root,
+                        scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+                    )
                 except Exception:
                     pass
                 flag = out / "needs_update"
@@ -1085,7 +1208,11 @@ def _rebuild_code(
 
         try:
             from graphify.detect import save_manifest
-            save_manifest(detected["files"], kind="ast", root=project_root)
+            # Full-scan save: prune excluded-but-alive rows (#1908).
+            save_manifest(
+                detected["files"], kind="ast", root=project_root,
+                scan_corpus={f for _fl in detected["files"].values() for f in _fl},
+            )
         except Exception:
             pass
 

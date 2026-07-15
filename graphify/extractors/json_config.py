@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.ids import normalize_id
 
 
 _CONFIG_JSON_NAMES = frozenset({
@@ -139,6 +140,12 @@ def extract_json(path: Path) -> dict:
             pair_count[0] += 1
             key = _key_text(child)
             if not key:
+                continue
+            # A key that normalizes to nothing (a JSONC `"//"` comment key, say)
+            # would collapse `_make_id(stem, key)` down to the bare file-stem id,
+            # which is absolute-path-derived and leaks the scan path (#1899). Such
+            # keys carry no graph signal, so drop them.
+            if not normalize_id(key):
                 continue
             key_nid = _make_id(stem, *(([parent_key] if parent_key else []) + [key]))
             if not key_nid:
