@@ -304,4 +304,198 @@ def test_ingest_communities_batch_writeback(tmp_db):
     for cid, name, cnt in rows:
         assert name, f"Community {cid} has empty name"
     _close(db, conn)
+
+
+# --- incremental delta analysis (freeze-assign leiden) ---
+
+
+def test_run_leiden_freeze_assign(tmp_db):
+    """Freeze-assign: old nodes frozen, new nodes get previous_community=None."""
+    from graphify.storage import run_leiden, ingest_communities, run_leiden_freeze_assign
+    db, conn = _init(tmp_db)
+    _populate_test_graph(conn)
+
+    # Phase 1: full leiden
+    communities = run_leiden(conn)
+    ingest_communities(conn, communities)
+
+    # Build old_communities {node_id: cid}
+    old_communities = {}
+    for cid, node_ids in communities.items():
+        for nid in node_ids:
+            old_communities[nid] = cid
+
+    # Phase 2: add a new node + edge (simulating incremental extract)
+    conn.execute(
+        "CREATE (n:node {id: 'n14', label: 'NewFunc', file_type: 'code', "
+        "source_file: 'src/new.py', source_location: '', community: 0, community_name: ''})"
+    )
+    conn.execute(
+        "MATCH (a:node {id: 'n14'}), (b:node {id: 'n1'}) "
+        "CREATE (a)-[:edge {relation: 'calls', confidence: 'EXTRACTED', "
+        "confidence_score: 1.0, source_file: 'src/new.py', weight: 1.0}]->(b)"
+    )
+
+    # Run freeze-assign leiden
+    results = run_leiden_freeze_assign(conn, old_communities)
+
+    # All old nodes should have previous_community == their old community
+    results_map = {nid: (new_cid, prev_cid) for nid, new_cid, prev_cid in results}
+    for nid, old_cid in old_communities.items():
+        assert nid in results_map, f"Old node {nid} missing from results"
+        new_cid, prev_cid = results_map[nid]
+        assert prev_cid == old_cid, (
+            f"Node {nid}: prev_cid={prev_cid} should equal old_cid={old_cid}"
+        )
+        # In freeze-assign mode, old nodes keep their community
+        assert new_cid == old_cid, (
+            f"Node {nid}: new_cid={new_cid} should equal old_cid={old_cid} (frozen)"
+        )
+
+    # New node n14 should have previous_community = None
+    assert "n14" in results_map, "New node n14 missing from results"
+    new_cid, prev_cid = results_map["n14"]
+    assert prev_cid is None, (
+        f"New node n14 should have prev=None, got {prev_cid}"
+    )
+    _close(db, conn)
+
+
+def test_analyze_community_changes():
+    """Classify communities into 4 types: stable, changed, new, dissolved."""
+    from graphify.storage import analyze_community_changes
+
+    # old_communities: {node_id: community_id}
+    old_communities = {
+        # Community 0: nodes A, B, C
+        "A": 0, "B": 0, "C": 0,
+        # Community 1: nodes D, E
+        "D": 1, "E": 1,
+        # Community 2: nodes F, G, H (will be dissolved — all deleted)
+        "F": 2, "G": 2, "H": 2,
+    }
+
+    # leiden_results: [(node_id, new_community, previous_community), ...]
+    # Community 0: stable (A, B, C still there, no new members)
+    # Community 1: changed (D, E still there + new node Z joined)
+    # Community 2: dissolved (F, G, H all deleted, not in results)
+    # Community 3: new (new nodes X, Y form a new community)
+    leiden_results = [
+        ("A", 0, 0),  # old, same community
+        ("B", 0, 0),
+        ("C", 0, 0),
+        ("D", 1, 1),  # old, same community
+        ("E", 1, 1),
+        ("Z", 1, None),  # new node joined community 1
+        ("X", 3, None),  # new community
+        ("Y", 3, None),
+    ]
+
+    changes = analyze_community_changes(leiden_results, old_communities)
+
+    # Summary
+    s = changes["summary"]
+    assert s["total_before"] == 3, f"Expected 3 before, got {s['total_before']}"
+    assert s["total_after"] == 3, f"Expected 3 after, got {s['total_after']}"
+    assert s["stable"] == 1, f"Expected 1 stable, got {s['stable']}"
+    assert s["changed"] == 1, f"Expected 1 changed, got {s['changed']}"
+    assert s["new"] == 1, f"Expected 1 new, got {s['new']}"
+    assert s["dissolved"] == 1, f"Expected 1 dissolved, got {s['dissolved']}"
+
+    # Stable: community 0
+    assert "0" in changes["stable_communities"]
+
+    # Changed: community 1 (grow_members=[Z], shrink_members=[])
+    assert "1" in changes["changed_communities"]
+    ch1 = changes["changed_communities"]["1"]
+    assert ch1["grow_members"] == ["Z"], f"Expected grow=['Z'], got {ch1['grow_members']}"
+    assert ch1["shrink_members"] == [], f"Expected shrink=[], got {ch1['shrink_members']}"
+
+    # New: community 3 (members=[X, Y])
+    assert "3" in changes["new_communities"]
+    assert sorted(changes["new_communities"]["3"]["members"]) == ["X", "Y"]
+
+    # Dissolved: community 2
+    assert len(changes["dissolved_communities"]) == 1
+    assert changes["dissolved_communities"][0]["cid"] == 2
+    assert changes["dissolved_communities"][0]["old_size"] == 3
+
+
+def test_delta_analyze(tmp_db):
+    """End-to-end: full leiden → incremental update → delta_analyze."""
+    from graphify.storage import (
+        run_leiden, ingest_communities, delta_analyze,
+    )
+    db, conn = _init(tmp_db)
+    _populate_test_graph(conn)
+
+    # Phase 1: full leiden
+    communities = run_leiden(conn)
+    ingest_communities(conn, communities)
+
+    # Build prev_analysis dict (simulates .graphify_analysis.json)
+    prev_analysis = {
+        "communities": {str(k): v for k, v in communities.items()},
+        "cohesion": {},
+        "gods": [],
+        "surprises": [],
+        "tokens": {"input": 0, "output": 0},
+    }
+
+    # Phase 2: add new node + edge
+    conn.execute(
+        "CREATE (n:node {id: 'n14', label: 'NewFunc', file_type: 'code', "
+        "source_file: 'src/new.py', source_location: '', community: 0, community_name: ''})"
+    )
+    conn.execute(
+        "MATCH (a:node {id: 'n14'}), (b:node {id: 'n1'}) "
+        "CREATE (a)-[:edge {relation: 'calls', confidence: 'EXTRACTED', "
+        "confidence_score: 1.0, source_file: 'src/new.py', weight: 1.0}]->(b)"
+    )
+
+    # Run delta_analyze
+    delta_path = Path(tmp_db).parent / "delta_analysis.json"
+
+    class FakeStages:
+        def mark(self, stage):
+            pass
+
+    delta = delta_analyze(
+        conn,
+        prev_analysis=prev_analysis,
+        delta_analysis_path=delta_path,
+        stages=FakeStages(),
+        merged={"input_tokens": 0, "output_tokens": 0},
+    )
+
+    # Verify output structure
+    assert "changed_communities" in delta
+    assert "new_communities" in delta
+    assert "stable_communities" in delta
+    assert "dissolved_communities" in delta
+    assert "summary" in delta
+    assert "gods" in delta
+    assert "surprises" in delta
+    assert "tokens" in delta
+
+    # Summary should be consistent
+    s = delta["summary"]
+    assert s["total_before"] == len(communities), (
+        f"total_before={s['total_before']} should equal {len(communities)}"
+    )
+    # total_after = stable + changed + new
+    assert s["total_after"] == s["stable"] + s["changed"] + s["new"], (
+        f"total_after={s['total_after']} != stable+changed+new={s['stable']+s['changed']+s['new']}"
+    )
+
+    # Verify file was written
+    assert delta_path.exists(), f"Delta file not written at {delta_path}"
+    written = json.loads(delta_path.read_text())
+    assert written["summary"] == delta["summary"]
+
+    # Verify DB community property NOT modified (preview mode)
+    # n14 should still have community=0 (the default from creation)
+    rows = list(conn.execute("MATCH (n:node {id: 'n14'}) RETURN n.community"))
+    assert rows[0][0] == 0, f"n14 community should be 0 (preview), got {rows[0][0]}"
+
     _close(db, conn)

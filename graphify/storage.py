@@ -948,3 +948,276 @@ def cluster_by_neug(
     analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
 
     return data
+
+
+# ---------------------------------------------------------------------------
+# Incremental delta analysis (freeze-assign leiden)
+# ---------------------------------------------------------------------------
+
+
+def run_leiden_freeze_assign(
+    conn: object,
+    old_communities: dict[str, int],
+) -> list[tuple[str, int, int | None]]:
+    """Run freeze-assign leiden. Old nodes frozen, new nodes assigned.
+
+    Args:
+        old_communities: {node_id: old_community_id} from .graphify_analysis.json.
+
+    Returns [(node_id, new_community, previous_community), ...].
+    previous_community is None for new nodes (delta_comm was -1).
+    """
+    # Add delta_comm property if not exists
+    try:
+        conn.execute("ALTER TABLE node ADD delta_comm INT64 DEFAULT -1")
+    except RuntimeError:
+        pass  # Column already exists
+
+    # Reset all to -1
+    conn.execute("MATCH (n:node) SET n.delta_comm = -1")
+
+    # Write old communities via CASE WHEN (neug doesn't support UNWIND $param)
+    if old_communities:
+        when_clauses = " ".join(
+            f"WHEN n.id = '{nid}' THEN {cid}"
+            for nid, cid in old_communities.items()
+        )
+        conn.execute(
+            f"MATCH (n:node) "
+            f"SET n.delta_comm = CASE {when_clauses} ELSE -1 END;"
+        )
+
+    # Load GDS extension
+    try:
+        conn.execute("LOAD gds;")
+    except RuntimeError:
+        conn.execute("INSTALL gds;")
+        conn.execute("LOAD gds;")
+
+    # Project graph (picks up delta_comm property)
+    conn.execute("CALL project_graph('g', ['node'], {'[node, edge, node]': ''})")
+
+    # Run freeze-assign leiden (allow_relocation defaults to false = frozen)
+    results = list(conn.execute(
+        "CALL leiden('g', {concurrency: 1, initial_community_property: 'delta_comm'}) "
+        "YIELD node, community, previous_community "
+        "RETURN node.id, community, previous_community"
+    ))
+
+    # Clean up projected graph
+    try:
+        conn.execute("CALL drop_projected_graph('g')")
+    except RuntimeError:
+        pass
+
+    # Drop delta_comm column to avoid schema mismatch on subsequent extract
+    try:
+        conn.execute("ALTER TABLE node DROP delta_comm")
+    except RuntimeError:
+        pass
+
+    return [(nid, int(cid), prev) for nid, cid, prev in results]
+
+
+def analyze_community_changes(
+    leiden_results: list[tuple[str, int, int | None]],
+    old_communities: dict[str, int],
+) -> dict:
+    """Classify communities into 4 orthogonal change types.
+
+    Classification matrix:
+      Existed before? | Still exists? | Classification
+      Yes             | Yes, no change | stable
+      Yes             | Yes, changed   | changed
+      Yes             | No             | dissolved
+      No              | Yes            | new
+    """
+    # Build new_communities from leiden results
+    new_communities: dict[int, list[str]] = {}
+    prev_map: dict[str, int | None] = {}
+    for nid, new_cid, prev_cid in leiden_results:
+        new_communities.setdefault(new_cid, []).append(nid)
+        prev_map[nid] = prev_cid
+
+    # Build old_comm_to_nodes from old_communities
+    old_comm_to_nodes: dict[int, list[str]] = {}
+    for nid, cid in old_communities.items():
+        old_comm_to_nodes.setdefault(cid, []).append(nid)
+
+    changed_communities: dict[str, dict] = {}
+    new_communities_out: dict[str, dict] = {}
+    stable_communities: list[str] = []
+    dissolved_communities: list[dict] = []
+
+    # Classify communities in leiden results
+    for cid, current_members in new_communities.items():
+        if cid not in old_comm_to_nodes:
+            # New community
+            new_communities_out[str(cid)] = {
+                "members": sorted(current_members),
+            }
+            continue
+
+        # Existing community — compute grow/shrink
+        old_members_set = set(old_comm_to_nodes[cid])
+        current_set = set(current_members)
+
+        grow_members = sorted(current_set - old_members_set)
+        shrink_members = sorted(old_members_set - current_set)
+
+        if not grow_members and not shrink_members:
+            stable_communities.append(str(cid))
+        else:
+            changed_communities[str(cid)] = {
+                "grow_members": grow_members,
+                "shrink_members": shrink_members,
+            }
+
+    # Find dissolved communities (old but not in new results)
+    for old_cid, old_members in old_comm_to_nodes.items():
+        if old_cid not in new_communities:
+            dissolved_communities.append({
+                "cid": old_cid,
+                "old_size": len(old_members),
+            })
+
+    # Build summary
+    summary = {
+        "total_before": len(old_comm_to_nodes),
+        "total_after": len(new_communities),
+        "stable": len(stable_communities),
+        "changed": len(changed_communities),
+        "new": len(new_communities_out),
+        "dissolved": len(dissolved_communities),
+    }
+
+    return {
+        "changed_communities": changed_communities,
+        "new_communities": new_communities_out,
+        "stable_communities": stable_communities,
+        "dissolved_communities": dissolved_communities,
+        "summary": summary,
+    }
+
+
+def delta_analyze(
+    conn: object,
+    *,
+    prev_analysis: dict,
+    delta_analysis_path: object,
+    stages: object,
+    merged: dict,
+) -> dict:
+    """Orchestrate incremental delta analysis (preview mode).
+
+    Steps: freeze-assign leiden → community change analysis →
+    partial cohesion → full gods/surprises → write delta.
+    Does NOT writeback to DB's community property (preview only).
+    """
+    import json
+
+    # 1. Build old_communities from prev_analysis
+    old_communities: dict[str, int] = {}
+    for cid_str, node_ids in prev_analysis.get("communities", {}).items():
+        cid = int(cid_str)
+        for nid in node_ids:
+            old_communities[nid] = cid
+
+    # 2. Run freeze-assign leiden
+    leiden_results = run_leiden_freeze_assign(conn, old_communities)
+    stages.mark("freeze-assign")
+
+    # 3. Analyze community changes
+    changes = analyze_community_changes(leiden_results, old_communities)
+    stages.mark("analyze-changes")
+
+    # 4. Build new_communities dict for cohesion + surprising_connections
+    new_communities: dict[int, list[str]] = {}
+    for nid, new_cid, _ in leiden_results:
+        new_communities.setdefault(new_cid, []).append(nid)
+
+    # 5. Compute cohesion only for changed + new communities
+    changed_cids = set()
+    for cid_str in changes["changed_communities"]:
+        changed_cids.add(int(cid_str))
+    for cid_str in changes["new_communities"]:
+        changed_cids.add(int(cid_str))
+
+    # Compute cohesion for all communities, then filter
+    all_cohesion = compute_cohesion(conn, new_communities)
+    delta_cohesion = {cid: score for cid, score in all_cohesion.items() if cid in changed_cids}
+
+    # 6. Label communities (reuse label_communities_by_hub)
+    # Temporarily write community to DB for label_communities_by_hub
+    # (which reads n.community). Use delta_comm values.
+    # Actually, label_communities_by_hub reads n.community, not n.delta_comm.
+    # We need a different approach: use the leiden results directly.
+    labels: dict[int, str] = {}
+    try:
+        # Get degree per node for hub detection
+        node_degree: dict[str, int] = {}
+        for row in conn.execute(
+            "MATCH (n:node)-[e:edge]-() "
+            "WITH n, count(e) AS degree "
+            "RETURN n.id, degree"
+        ):
+            node_degree[row[0]] = row[1]
+    except RuntimeError:
+        node_degree = {}
+
+    node_label: dict[str, str] = {}
+    try:
+        for row in conn.execute("MATCH (n:node) RETURN n.id, n.label"):
+            node_label[row[0]] = row[1] or row[0]
+    except RuntimeError:
+        pass
+
+    for cid, members in new_communities.items():
+        if cid not in changed_cids:
+            continue
+        # Find highest-degree member
+        best_nid = members[0]
+        best_deg = -1
+        for nid in members:
+            deg = node_degree.get(nid, 0)
+            if deg > best_deg:
+                best_deg = deg
+                best_nid = nid
+        name = (node_label.get(best_nid, best_nid) or best_nid).strip()
+        if name.endswith("()"):
+            name = name[:-2]
+        labels[cid] = name or f"Community {cid}"
+
+    # 7. Full gods + surprising connections
+    gods = find_god_nodes(conn)
+    surprises = find_surprising_connections(conn, new_communities)
+    stages.mark("analyze-full")
+
+    # 8. Build delta JSON
+    # Add cohesion + community_name to changed/new communities
+    for cid_str, info in changes["changed_communities"].items():
+        cid = int(cid_str)
+        info["cohesion"] = delta_cohesion.get(cid, 0.0)
+        info["community_name"] = labels.get(cid, f"Community {cid}")
+    for cid_str, info in changes["new_communities"].items():
+        cid = int(cid_str)
+        info["cohesion"] = delta_cohesion.get(cid, 0.0)
+        info["community_name"] = labels.get(cid, f"Community {cid}")
+
+    delta = {
+        "changed_communities": changes["changed_communities"],
+        "new_communities": changes["new_communities"],
+        "stable_communities": changes["stable_communities"],
+        "dissolved_communities": changes["dissolved_communities"],
+        "summary": changes["summary"],
+        "gods": gods,
+        "surprises": surprises,
+        "tokens": {
+            "input": merged.get("input_tokens", 0),
+            "output": merged.get("output_tokens", 0),
+        },
+    }
+
+    delta_analysis_path.write_text(json.dumps(delta, indent=2), encoding="utf-8")
+
+    return delta

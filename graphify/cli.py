@@ -1378,6 +1378,61 @@ def dispatch_command(cmd: str) -> None:
 
         check_update(Path(sys.argv[2]).resolve())
         sys.exit(0)
+    elif cmd == "delta-cluster":
+        # Incremental community delta analysis (freeze-assign leiden).
+        # Requires: graphify extract (full) + graphify extract --no-cluster (DB updated).
+        # Outputs: .graphify_delta_analysis.json (does NOT modify DB or .graphify_analysis.json).
+        import json as _json
+        from graphify.storage import init_db as _init_db, close_db as _close_db, delta_analyze as _delta_analyze
+
+        if len(sys.argv) < 3:
+            print("Usage: graphify delta-cluster <path>", file=sys.stderr)
+            sys.exit(1)
+        _target = Path(sys.argv[2]).resolve()
+        _graphify_out = _target / _GRAPHIFY_OUT
+        _analysis_path = _graphify_out / ".graphify_analysis.json"
+        _delta_path = _graphify_out / ".graphify_delta_analysis.json"
+        _db_path = str(_graphify_out / "graph.db")
+
+        if not _analysis_path.exists():
+            print(
+                f"[graphify delta-cluster] no baseline found at {_analysis_path}.\n"
+                f"Run 'graphify extract {_target}' first.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not Path(_db_path).exists():
+            print(
+                f"[graphify delta-cluster] no graph.db found at {_db_path}.\n"
+                f"Run 'graphify extract --no-cluster {_target}' to update the DB.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        print(f"[graphify delta-cluster] analyzing {_target}")
+        _prev_analysis = _json.loads(_analysis_path.read_text(encoding="utf-8"))
+        _stages = _StageTimer(False)
+        _neug_db, _neug_conn = _init_db(_db_path)
+        try:
+            _delta = _delta_analyze(
+                _neug_conn,
+                prev_analysis=_prev_analysis,
+                delta_analysis_path=_delta_path,
+                stages=_stages,
+                merged={"input_tokens": 0, "output_tokens": 0},
+            )
+        finally:
+            _close_db(_neug_db, _neug_conn)
+
+        _s = _delta["summary"]
+        print(f"[graphify delta-cluster] wrote {_delta_path}")
+        print(
+            f"[graphify delta-cluster] communities: "
+            f"{_s['total_before']} before → {_s['total_after']} after "
+            f"({_s['stable']} stable, {_s['changed']} changed, "
+            f"{_s['new']} new, {_s['dissolved']} dissolved)"
+        )
+        sys.exit(0)
     elif cmd == "tree":
         # Emit a D3 v7 collapsible-tree HTML view of graph.json:
         # expand-all / collapse-all / reset-view buttons, multi-line
