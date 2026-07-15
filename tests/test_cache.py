@@ -618,6 +618,50 @@ def test_save_semantic_cache_prunes_edges_to_out_of_scope_nodes(tmp_path):
     )
 
 
+def test_save_semantic_cache_prunes_edges_to_ghost_path_nodes(tmp_path):
+    """A node group whose source_file does not resolve to any real file (a
+    hallucinated path) is silently never written by the main loop's
+    ``if p.is_file()`` — no warning, no cache entry. An edge attributed to an
+    ALLOWED file that references such a ghost node id must be pruned too,
+    exactly like the out-of-scope case: the endpoint is unreachable anywhere
+    in the cache either way."""
+    from graphify.cache import save_semantic_cache
+
+    intended = tmp_path / "intended.md"
+    intended.write_text("# Intended\n")
+
+    nodes = [
+        {"id": "a_ok", "source_file": "intended.md"},
+        # ghost: source_file resolves to a path that does not exist on disk,
+        # so this group is silently dropped by the main write loop.
+        {"id": "c_ghost", "source_file": "nonexistent_file_xyz.md"},
+    ]
+    edges = [
+        {"source": "a_ok", "target": "c_ghost", "source_file": "intended.md"},
+    ]
+    hyperedges = [
+        {"id": "h_ghost", "nodes": ["a_ok", "c_ghost"], "source_file": "intended.md"},
+    ]
+
+    saved = save_semantic_cache(
+        nodes,
+        edges,
+        hyperedges,
+        root=tmp_path,
+        allowed_source_files=["intended.md"],
+    )
+
+    assert saved == 1
+    intended_cache = load_cached(intended, root=tmp_path, kind="semantic")
+    assert {node["id"] for node in intended_cache["nodes"]} == {"a_ok"}
+    assert intended_cache["edges"] == [], (
+        "edge referencing a ghost-path node must not survive"
+    )
+    assert intended_cache["hyperedges"] == [], (
+        "hyperedge referencing a ghost-path node must not survive"
+    )
+
+
 def test_save_semantic_cache_merge_existing_unions(tmp_path):
     """#1715: merge_existing=True unions with the prior entry so a file split
     across chunks (checkpointed per chunk) keeps every slice."""
