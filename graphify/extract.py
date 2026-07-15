@@ -36,7 +36,6 @@ from graphify.extractors.csharp import (
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
 )
-from graphify.extractors.csharp_extract import _CSHARP_CONFIG as _SPLIT_CSHARP_CONFIG  # noqa: F401
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
@@ -132,12 +131,23 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _workspace_globs,
 )
 
-from graphify.extractors.engine import REFERENCE_CONTEXTS, _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _csharp_attribute_names, _csharp_classify_base, _csharp_collect_type_refs, _csharp_extra_walk, _csharp_member_type_table, _csharp_namespace_id, _csharp_namespace_name, _csharp_pre_scan_interfaces, _csharp_type_parameters_in_scope, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _read_csharp_type_name, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
+from graphify.extractors.engine import REFERENCE_CONTEXTS, _C_PRIMITIVE_TYPE_NODES, _JAVA_BUILTIN_TYPES, _JAVA_TYPE_PARAMETER_SCOPE_DECLARATIONS, _JS_FUNCTION_VALUE_TYPES, _JS_SCOPE_BOUNDARY, _PYTHON_ANNOTATION_NOISE, _PYTHON_TYPE_CONTAINERS, _RUBY_CLASS_FACTORIES, _c_collect_type_refs, _cpp_collect_type_refs, _cpp_declarator_name, _cpp_local_var_types, _dynamic_import_js, _extract_generic, _find_body, _find_require_call, _get_cpp_func_name, _java_annotation_names, _java_collect_type_refs, _java_extra_walk, _java_type_parameters_in_scope, _js_collect_pattern_idents, _js_dispatch_value_idents, _js_extra_walk, _js_local_bound_names, _js_member_assignment_target, _js_module_bound_names, _kotlin_collect_type_refs, _kotlin_function_return_type_node, _kotlin_property_type_node, _kotlin_user_type_name, _php_collect_type_refs, _php_method_return_type_node, _php_name_text, _python_collect_assignment_targets, _python_collect_param_refs, _python_collect_type_refs, _python_local_bound_names, _python_module_bound_names, _python_param_names, _require_imports_js, _ruby_const_last_name, _ruby_extra_walk, _ruby_local_class_bindings, _ruby_new_class_name, _scala_collect_type_refs, _semantic_reference_edge, _source_location, _swift_classify_base, _swift_collect_type_refs, _swift_constructor_type, _swift_declaration_keyword, _swift_extra_walk, _swift_local_var_types, _swift_pre_scan, _swift_property_name, _swift_property_type_node, _swift_receiver_name, _swift_user_type_name, _ts_decorator_name, _ts_descendant_decorators, _ts_emit_decorator_edges, _ts_extra_walk, _ts_method_name, _ts_receiver_type_table  # noqa: E402,F401
 from graphify.extractors.csharp_extract import (  # noqa: E402,F401
+    _CSHARP_CONFIG,
+    _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS,
     _build_csharp_shadow_names,
     _build_csharp_type_table,
+    _csharp_attribute_names,
+    _csharp_classify_base,
+    _csharp_collect_type_refs,
     _csharp_designator_names,
+    _csharp_extra_walk,
+    _csharp_namespace_id,
+    _csharp_namespace_name,
     _csharp_names_from_variable_declaration,
+    _csharp_pre_scan_interfaces,
+    _csharp_type_parameters_in_scope,
+    _read_csharp_type_name,
 )
 
 from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _PAS_END_SEMI_RE, _PAS_IMPL_HEADER_RE, _PAS_KEYWORDS, _PAS_METHOD_DECL_RE, _PAS_MODULE_RE, _PAS_TOKEN_RE, _PAS_TYPE_HEADER_RE, _PAS_USES_RE, _extract_pascal_regex, _pascal_find_body, _pascal_split_bases, _pascal_split_sections, _pascal_split_uses, _pascal_strip_comments, extract_pascal  # noqa: E402,F401
@@ -745,27 +755,6 @@ _RUBY_CONFIG = LanguageConfig(
     body_fallback_child_types=("body_statement",),
     function_boundary_types=frozenset({"method", "singleton_method"}),
 )
-
-_CSHARP_CONFIG = LanguageConfig(
-    ts_module="tree_sitter_c_sharp",
-    class_types=frozenset({
-        "class_declaration",
-        "interface_declaration",
-        "enum_declaration",
-        "struct_declaration",
-        "record_declaration",
-    }),
-    function_types=frozenset({"method_declaration"}),
-    import_types=frozenset({"using_directive"}),
-    call_types=frozenset({"invocation_expression"}),
-    call_function_field="function",
-    call_accessor_node_types=frozenset({"member_access_expression"}),
-    call_accessor_field="name",
-    body_fallback_child_types=("declaration_list",),
-    function_boundary_types=frozenset({"method_declaration"}),
-    import_handler=_import_csharp,
-)
-_CSHARP_CONFIG = _SPLIT_CSHARP_CONFIG
 
 _KOTLIN_CONFIG = LanguageConfig(
     ts_module="tree_sitter_kotlin",
@@ -2486,120 +2475,6 @@ def _resolve_cpp_member_calls(
             "source": caller,
             "target": target,
             "relation": relation,
-            "context": "call",
-            "confidence": "EXTRACTED" if type_qualified else "INFERRED",
-            "confidence_score": 1.0 if type_qualified else 0.8,
-            "source_file": src_file,
-            "source_location": rc.get("source_location"),
-            "weight": 1.0,
-        })
-
-
-def _resolve_csharp_member_calls(
-    per_file: list[dict],
-    all_nodes: list[dict],
-    all_edges: list[dict],
-) -> None:
-    """Resolve C# member calls (``recv.Method()``) to the receiver's declared type
-    (#1609).
-
-    The shared cross-file pass drops every ``is_member_call`` because a bare method
-    name collides across the corpus — and for C# an in-file bare match silently
-    mis-bound ``_server.Save()`` to an unrelated ``Cache.Save()``. The C# extractor
-    now records each member call's receiver plus a per-file ``name -> Type`` table
-    (``csharp_type_table``) of fields/properties/params/locals. This pass types the
-    receiver, then emits an edge ONLY when that type resolves to exactly ONE
-    definition (the god-node guard); an untypable receiver is skipped (no guess).
-
-    Receiver typing, by precision tier:
-      * ``this.M()`` — receiver is the caller's own enclosing class -> EXTRACTED.
-      * ``Type.M()`` (capitalized) — the type is named explicitly in source -> EXTRACTED.
-      * ``recv.M()`` — ``recv`` typed via the file's field/param/local table -> INFERRED.
-
-    Must run after id-disambiguation so node ids and caller_nids are final.
-    """
-    type_table_by_file: dict[str, dict[str, str]] = {}
-    for result in per_file:
-        tt = result.get("csharp_type_table")
-        if tt and tt.get("path"):
-            type_table_by_file[tt["path"]] = tt.get("table", {})
-
-    def _key(label: str) -> str:
-        return re.sub(r"[^a-zA-Z0-9]+", "", str(label)).lower()
-
-    contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
-
-    type_def_nids: dict[str, list[str]] = {}
-    node_by_id: dict[str, dict] = {}
-    for n in all_nodes:
-        node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
-            type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
-
-    # (type_node_id, method_key) -> method_node_id, and caller -> enclosing type.
-    # C# owns its methods via `method` edges.
-    method_index: dict[tuple[str, str], str] = {}
-    enclosing_type: dict[str, str] = {}
-    for e in all_edges:
-        if e.get("relation") != "method":
-            continue
-        src, tgt = e.get("source"), e.get("target")
-        tnode = node_by_id.get(tgt)
-        if tnode is None:
-            continue
-        enclosing_type.setdefault(tgt, src)
-        method_index[(src, _key(tnode.get("label", "")))] = tgt
-
-    all_raw_calls: list[dict] = []
-    for result in per_file:
-        all_raw_calls.extend(result.get("raw_calls", []))
-
-    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
-    for rc in all_raw_calls:
-        if rc.get("lang") != "csharp" or not rc.get("is_member_call"):
-            continue
-        receiver = rc.get("receiver")
-        callee = rc.get("callee")
-        caller = rc.get("caller_nid")
-        if not receiver or not callee or not caller:
-            continue
-        src_file = rc.get("source_file", "")
-        if receiver == "this":
-            type_nid = enclosing_type.get(caller)
-            if not type_nid:
-                continue
-            type_qualified = True
-        elif receiver[:1].isupper():
-            # Type.M() — the type is named explicitly (also covers a Pascal-cased
-            # local whose name equals its type, resolved via the table below if the
-            # explicit-type lookup misses).
-            type_defs = type_def_nids.get(_key(receiver), [])
-            if len(type_defs) != 1:
-                type_name = type_table_by_file.get(src_file, {}).get(receiver)
-                type_defs = type_def_nids.get(_key(type_name), []) if type_name else []
-                if len(type_defs) != 1:
-                    continue
-            type_nid = type_defs[0]
-            type_qualified = True
-        else:
-            type_name = type_table_by_file.get(src_file, {}).get(receiver)
-            if not type_name:
-                continue
-            type_defs = type_def_nids.get(_key(type_name), [])
-            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
-            type_qualified = False
-        method_nid = method_index.get((type_nid, _key(callee)))
-        if not method_nid:
-            continue  # receiver typed, but the type has no such method — skip
-        if method_nid == caller or (caller, method_nid) in existing_pairs:
-            continue
-        existing_pairs.add((caller, method_nid))
-        all_edges.append({
-            "source": caller,
-            "target": method_nid,
-            "relation": "calls",
             "context": "call",
             "confidence": "EXTRACTED" if type_qualified else "INFERRED",
             "confidence_score": 1.0 if type_qualified else 0.8,
