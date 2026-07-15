@@ -3838,6 +3838,7 @@ _DISPATCH: dict[str, Any] = {
     ".js": extract_js,
     ".jsx": extract_js,
     ".mjs": extract_js,
+    ".cjs": extract_js,
     ".ts": extract_js,
     ".tsx": extract_js,
     ".mts": extract_js,
