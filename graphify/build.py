@@ -287,6 +287,17 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
         if not new_stem:
             continue
         norm_nid = _normalize_id(nid)
+        # Idempotency guard (#1924): an id that already carries the canonical
+        # full-path stem needs no migration. Skipping it here is essential when a
+        # shorter legacy stem happens to be a *prefix* of new_stem — e.g.
+        # ".claude/CLAUDE.md" has full-path stem "claude_claude" while its
+        # zero-parent form is the bare "claude". Without this guard the greedy
+        # _old_file_stems loop below matches the "claude" prefix on an
+        # already-canonical id, strips one segment, and re-prepends the full
+        # new_stem, inflating the id by one "claude_" on every incremental
+        # rebuild so graph.json never converges.
+        if norm_nid == new_stem or norm_nid.startswith(new_stem + "_"):
+            continue
         new_id: str | None = None
         for old_stem in _old_file_stems(rel):
             if old_stem == new_stem:
