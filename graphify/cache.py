@@ -580,6 +580,15 @@ def save_semantic_cache(
     cache-write keys. Semantic nodes can legitimately mention another corpus
     file, but a model must not be able to replace that file's complete cache
     entry unless the file was part of the current extraction batch (#1757).
+
+    An out-of-scope file's own node group is skipped entirely, but an edge or
+    hyperedge attributed to a *different*, allowed file can still reference
+    one of those dropped node ids — that reference would otherwise survive
+    into the allowed file's cache entry with no reachable endpoint anywhere
+    in the cache. Such edges/hyperedges are pruned too, mirroring the
+    merged-graph out-of-scope filter in ``llm.py`` (#1895), which covers
+    graph.json but not this cache-level write path.
+
     Returns the number of files cached.
     """
     from collections import defaultdict
@@ -615,6 +624,16 @@ def save_semantic_cache(
     if allowed_source_files is not None:
         allowed_paths = {resolved_source_path(path) for path in allowed_source_files}
 
+    # Pre-scan: collect the node ids of every group that will be skipped as
+    # out-of-scope, so edges/hyperedges attributed to an *allowed* file that
+    # still reference one of those ids can be pruned before they're written.
+    dropped_ids: set = set()
+    if allowed_paths is not None:
+        for fpath, result in by_file.items():
+            p = resolved_source_path(fpath)
+            if p.is_file() and p not in allowed_paths:
+                dropped_ids.update(n.get("id") for n in result["nodes"] if n.get("id") is not None)
+
     saved = 0
     for fpath, result in by_file.items():
         p = resolved_source_path(fpath)
@@ -627,6 +646,19 @@ def save_semantic_cache(
                     stacklevel=2,
                 )
                 continue
+            if dropped_ids:
+                result = {
+                    "nodes": result["nodes"],
+                    "edges": [
+                        e for e in result["edges"]
+                        if e.get("source") not in dropped_ids
+                        and e.get("target") not in dropped_ids
+                    ],
+                    "hyperedges": [
+                        h for h in result["hyperedges"]
+                        if not (dropped_ids & set(h.get("nodes", []) or []))
+                    ],
+                }
             if merge_existing:
                 prev = load_cached(p, root, kind="semantic")
                 if prev:

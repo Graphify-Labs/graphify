@@ -570,6 +570,54 @@ def test_save_semantic_cache_rejects_out_of_scope_source_file(tmp_path):
     assert protected_cache["hyperedges"] == []
 
 
+def test_save_semantic_cache_prunes_edges_to_out_of_scope_nodes(tmp_path):
+    """The #1757 out-of-scope guard skips the cache WRITE for a node whose
+    source_file was not dispatched, but an edge attributed to a *different*,
+    allowed file that references the dropped node's id was still written —
+    leaving a dangling edge with no reachable endpoint anywhere in the cache
+    (mirrors the #1895 merged-graph fix in llm.py, which this cache-level
+    guard predates and did not cover)."""
+    from graphify.cache import save_semantic_cache
+
+    intended = tmp_path / "intended.md"
+    intended.write_text("# Intended\n")
+    out_of_scope = tmp_path / "out_of_scope.md"
+    out_of_scope.write_text("# Out of scope\n")
+
+    nodes = [
+        {"id": "a_ok", "source_file": "intended.md"},
+        # out-of-scope: real file on disk, never dispatched -> its whole
+        # group is skipped, so this node never lands in any cache entry.
+        {"id": "b_stray", "source_file": "out_of_scope.md"},
+    ]
+    edges = [
+        # attributed to the ALLOWED file, but its target is the dropped node.
+        {"source": "a_ok", "target": "b_stray", "source_file": "intended.md"},
+    ]
+    hyperedges = [
+        {"id": "h_bad", "nodes": ["a_ok", "b_stray"], "source_file": "intended.md"},
+    ]
+
+    with pytest.warns(RuntimeWarning, match="out-of-scope source_file 'out_of_scope.md'"):
+        saved = save_semantic_cache(
+            nodes,
+            edges,
+            hyperedges,
+            root=tmp_path,
+            allowed_source_files=["intended.md"],
+        )
+
+    assert saved == 1
+    intended_cache = load_cached(intended, root=tmp_path, kind="semantic")
+    assert {node["id"] for node in intended_cache["nodes"]} == {"a_ok"}
+    assert intended_cache["edges"] == [], (
+        "edge referencing a dropped out-of-scope node must not survive"
+    )
+    assert intended_cache["hyperedges"] == [], (
+        "hyperedge referencing a dropped out-of-scope node must not survive"
+    )
+
+
 def test_save_semantic_cache_merge_existing_unions(tmp_path):
     """#1715: merge_existing=True unions with the prior entry so a file split
     across chunks (checkpointed per chunk) keeps every slice."""
