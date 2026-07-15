@@ -9,7 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_verilog,
-    extract_powershell_manifest,
+    extract_powershell_manifest, extract_r,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -21,6 +21,10 @@ import importlib.util as _ilu
 _needs_dm = pytest.mark.skipif(
     _ilu.find_spec("tree_sitter_dm") is None,
     reason="tree-sitter-dm not installed (optional [dm] extra)",
+)
+_needs_r = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_language_pack") is None,
+    reason="tree-sitter-language-pack not installed (optional [r] extra)",
 )
 
 
@@ -2945,3 +2949,229 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
     r = _corpus("cpp_samedir/Alpha.h", "cpp_samedir/Beta.h")
     dups = _nodes_with_label(r, "Dup")
     assert len(dups) == 2, f"same-dir distinct Dups must stay distinct, got {[n['id'] for n in dups]}"
+
+
+# --- R ---------------------------------------------------------------
+
+def _r_assert_no_dangling(r):
+    """R-aware variant of _assert_no_dangling: `imports` targets may be
+    external package ids (e.g. dplyr) with no matching node, so they're
+    allowed to dangle like other languages' external imports."""
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in ids, f"dangling source: {e}"
+        if e["relation"] not in ("imports", "imports_from"):
+            assert e["target"] in ids, f"dangling target: {e}"
+
+
+def test_r_dispatch_lower():
+    from graphify.extract import _get_extractor
+    assert _get_extractor(Path("foo.r")) is extract_r
+
+
+def test_r_dispatch_upper_uses_case_insensitive_fallback():
+    # .R is not in _DISPATCH directly; _get_extractor lowercases the suffix
+    # via the existing fallback (extract.py ~4019-4020).
+    from graphify.extract import _get_extractor
+    assert _get_extractor(Path("FOO.R")) is extract_r
+
+
+def test_r_script_shebang_dispatch(tmp_path):
+    from graphify.extract import _get_extractor
+    p = tmp_path / "rscript_no_ext"
+    p.write_text("#!/usr/bin/env Rscript\nx <- 1\n")
+    assert _get_extractor(p) is extract_r
+
+
+def test_r_missing_dependency_returns_error(tmp_path, monkeypatch):
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "tree_sitter_language_pack", None)
+    p = tmp_path / "x.r"; p.write_text("f <- function() 1\n")
+    r = extract_r(p)
+    assert "error" in r and "not installed" in r["error"]
+
+
+@_needs_r
+def test_r_no_error():
+    r = extract_r(FIXTURES / "sample.r")
+    assert "error" not in r
+
+
+@_needs_r
+def test_r_left_assignment_forms_create_functions():
+    r = extract_r(FIXTURES / "sample.r")
+    labels = _labels(r)
+    assert "foo()" in labels          # <-
+    assert "bar()" in labels          # <<-
+    assert "baz()" in labels          # =
+
+
+@_needs_r
+def test_r_right_assignment_forms_create_functions():
+    r = extract_r(FIXTURES / "sample.r")
+    labels = _labels(r)
+    assert "qux()" in labels         # ->
+    assert "quux()" in labels         # ->>
+
+
+@_needs_r
+def test_r_named_call_argument_with_equals_not_a_function():
+    # options(config = function() 42) — the `=` is a named call arg, not an
+    # assignment binding a function to a name; must NOT produce a `config()` node.
+    r = extract_r(FIXTURES / "sample.r")
+    labels = _labels(r)
+    assert "config()" not in labels
+
+
+@_needs_r
+def test_r_nested_functions_get_scoped_ids_and_contains():
+    r = extract_r(FIXTURES / "sample.r")
+    baz = _node_by_label(r, "baz")
+    inner_nodes = _nodes_with_label(r, "inner()")
+    assert len(inner_nodes) == 1
+    inner = inner_nodes[0]
+    assert baz["id"] != inner["id"]
+    contains = _edge_labels(r, "contains")
+    assert (baz["id"], inner["id"]) in contains or \
+           (_normalize_symbol_label("baz()"), _normalize_symbol_label("inner()")) in \
+           {(_normalize_symbol_label(a), _normalize_symbol_label(b)) for a, b in contains}
+
+
+@_needs_r
+def test_r_nested_call_not_attributed_to_outer_function():
+    # inner()'s body calls helper(); this call must attribute to `inner`, not `baz`
+    r = extract_r(FIXTURES / "sample.r")
+    baz_id = _node_by_label(r, "baz")["id"]
+    inner_id = _node_by_label(r, "inner")["id"]
+    # find a raw_call to helper whose caller is inner (not baz)
+    helper_rcs = [rc for rc in r["raw_calls"] if rc["callee"] == "helper"]
+    assert any(rc["caller_nid"] == inner_id for rc in helper_rcs), \
+        "inner()'s call to helper must appear in raw_calls from inner, not baz"
+    assert not any(rc["caller_nid"] == baz_id for rc in helper_rcs), \
+        "helper() call must not be attributed to the enclosing baz()"
+
+
+@_needs_r
+def test_r_same_file_calls_extracted():
+    r = extract_r(FIXTURES / "sample.r")
+    calls = _calls(r)  # set of (raw_src_label, raw_tgt_label) pairs
+    file_label = "sample.r"
+    # top-level call to foo() attributed to the file node
+    assert (file_label, "foo()") in calls
+    # baz() contains inner(); nested call to inner() attributed to baz
+    assert ("baz()", "inner()") in calls
+    # pipe chain captures qux() call at top level
+    assert (file_label, "qux()") in calls
+
+
+@_needs_r
+def test_r_member_calls_recorded_as_member_raw_calls():
+    r = extract_r(FIXTURES / "sample.r")
+    member_callees = {rc["callee"] for rc in r["raw_calls"] if rc.get("is_member_call")}
+    # $ and @ receivers are member calls
+    assert "method" in member_callees      # obj$method()
+    assert "field" in member_callees       # obj@field
+    # pkg::fn / pkg:::fn are qualified-member (is_member_call=True) so the
+    # shared resolver doesn't bind them to a same-named def
+    assert "summary" in member_callees     # pkg::summary
+    assert "deep_fn" in member_callees     # base:::deep_fn
+    # NOTE: `dplyr::filter` — filter is a Python builtin, filtered from raw_calls
+    # by _LANGUAGE_BUILTIN_GLOBALS, so it does NOT appear here.
+
+
+@_needs_r
+def test_r_member_calls_never_bind_to_same_named_def():
+    r = extract_r(FIXTURES / "sample.r")
+    calls = _calls(r)
+    # No calls edges to method/field/summary/deep_fn — they're member raw_calls
+    for callee in ("method", "field", "summary", "deep_fn"):
+        assert not any(tgt == f"{callee}()" for _, tgt in calls), \
+            f"member call {callee}() must not bind to a same-named def"
+
+
+@_needs_r
+def test_r_imports_from_static_loaders():
+    r = extract_r(FIXTURES / "sample.r")
+    imports_targets = {e["target"] for e in r["edges"] if e["relation"] == "imports"}
+    assert "dplyr" in imports_targets        # library(dplyr)
+    assert "utils" in imports_targets        # requireNamespace("utils")
+    assert "base" in imports_targets         # pkg::fn emits pkg import evidence
+
+
+@_needs_r
+def test_r_imports_skipped_for_dynamic_loader_arg():
+    # library(installed.packages()) — the arg is a call expression, not a
+    # literal identifier/string; must NOT produce an imports edge.
+    r = extract_r(FIXTURES / "sample.r")
+    imports_targets = {e["target"] for e in r["edges"] if e["relation"] == "imports"}
+    assert "installed.packages" not in imports_targets
+    assert "installed" not in imports_targets
+
+
+@_needs_r
+def test_r_static_source_emits_imports_from_to_existing_target():
+    r = extract_r(FIXTURES / "sample.r")
+    ifs = [e for e in r["edges"] if e["relation"] == "imports_from"]
+    assert len(ifs) == 1
+    assert "r_other" in ifs[0]["target"]    # sibling r_other.r exists on disk
+
+
+@_needs_r
+def test_r_source_ignores_url_missing_and_non_r_targets(tmp_path):
+    src = tmp_path / "src.r"
+    src.write_text(
+        'source("https://example.com/remote.R")\n'    # URL — skip
+        'source("missing.r")\n'                       # missing — skip
+        'source("helper.py")\n'                       # not .r — skip
+    )
+    r = extract_r(src)
+    assert not [e for e in r["edges"] if e["relation"] == "imports_from"]
+
+
+@_needs_r
+def test_r_no_dangling_edges():
+    r = extract_r(FIXTURES / "sample.r")
+    _r_assert_no_dangling(r)
+
+
+@_needs_r
+def test_r_pipes_capture_contained_calls():
+    r = extract_r(FIXTURES / "sample.r")
+    callees = {rc["callee"] for rc in r["raw_calls"]}
+    # pipe chain `1 |> process() |> save()` captures process & save
+    assert "process" in callees
+    assert "save" in callees
+
+
+@_needs_r
+def test_r_cross_file_call_resolves_with_source_link_extracted():
+    # sample.r sources r_other.r, creating imports_from evidence; the cross-file
+    # helper() call resolves EXTRACTED (single candidate + import evidence).
+    r = _corpus("sample.r", "r_other.r")
+    calls = _calls(r)
+    assert ("foo()", "helper()") in calls or ("inner()", "helper()") in calls, \
+        "cross-file helper() must resolve via source() import evidence"
+
+
+@_needs_r
+def test_r_cross_file_call_resolves_inferred_without_source():
+    # r_caller.r has no source() linkage; helper() in r_other.r has a single
+    # cross-file candidate → INFERRED (confidence 0.8).
+    r = _corpus("r_caller.r", "r_other.r")
+    # Find any calls edge whose normalised target label is "helper"
+    helper_calls = [e for e in r["edges"] if e["relation"] == "calls"
+                    and "helper" in _normalize_symbol_label(e.get("target", ""))]
+    assert helper_calls, "unique cross-file bare call must resolve as INFERRED"
+    # Verify the resolved target is in r_other.r
+    r_other_helper = [n for n in r["nodes"] if n.get("label") == "helper()"][0]
+    assert Path(r_other_helper["source_file"]).name == "r_other.r"
+
+
+@_needs_r
+def test_r_cross_file_ambiguous_call_remains_unresolved():
+    # r_caller.r calls dup(); r_other.r AND r_extra.r both define dup().
+    # Ambiguity guard must keep this unresolved (no calls edge to dup()).
+    r = _corpus("r_caller.r", "r_other.r", "r_extra.r")
+    dup_calls = [e for e in r["edges"] if e["relation"] == "calls"
+                 and "dup" in _normalize_symbol_label(e.get("target", ""))]
+    assert len(dup_calls) == 0, f"ambiguous dup() must not resolve, got {dup_calls}"

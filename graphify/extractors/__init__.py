@@ -23,6 +23,7 @@ from graphify.extractors.julia import extract_julia
 from graphify.extractors.markdown import extract_markdown
 from graphify.extractors.objc import extract_objc
 from graphify.extractors.pascal import extract_pascal
+from graphify.extractors.r import extract_r
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest
 from graphify.extractors.razor import extract_razor
@@ -52,6 +53,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "markdown": extract_markdown,
     "objc": extract_objc,
     "pascal": extract_pascal,
+    "r": extract_r,
     "powershell": extract_powershell,
     "powershell_manifest": extract_powershell_manifest,
     "razor": extract_razor,
