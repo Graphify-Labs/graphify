@@ -139,6 +139,7 @@ from graphify.extractors.pascal import _PAS_BEGIN_END_TOKEN_RE, _PAS_CALL_RE, _P
 from graphify.extractors.objc import _objc_local_var_types, extract_objc  # noqa: E402,F401
 
 from graphify.extractors.julia import extract_julia  # noqa: E402,F401
+from graphify.extractors.r import extract_r  # noqa: E402,F401
 
 _RECURSION_LIMIT = 10_000
 
@@ -1788,6 +1789,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".zig": "zig",
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
+    ".r": "r",
     ".dart": "dart",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
@@ -3877,6 +3879,7 @@ _DISPATCH: dict[str, Any] = {
     ".m": extract_objc,
     ".mm": extract_objc,
     ".jl": extract_julia,
+    ".r": extract_r,
     ".f": extract_fortran,
     ".F": extract_fortran,
     ".f90": extract_fortran,
@@ -3943,6 +3946,7 @@ _EXTRA_FOR_EXTENSION = {
     ".hcl": "terraform",
     ".dm": "dm",
     ".dme": "dm",
+    ".r": "r",
 }
 
 
@@ -3951,7 +3955,7 @@ _EXTRA_FOR_EXTENSION = {
 # routes them to the CODE path via _shebang_interpreter; _get_extractor must
 # honor the same signal or these files are classified as code and then silently
 # dropped by extraction. Only interpreters with a real extractor are mapped —
-# detect's wider set (perl, fish, tcsh, Rscript) stays unmapped and skipped.
+# detect's wider set (perl, fish, tcsh) stays unmapped and skipped.
 _SHEBANG_DISPATCH: dict[str, Any] = {
     "python": extract_python,
     "python2": extract_python,
@@ -3967,6 +3971,7 @@ _SHEBANG_DISPATCH: dict[str, Any] = {
     "lua": extract_lua,
     "php": extract_php,
     "julia": extract_julia,
+    "Rscript": extract_r,
 }
 
 
@@ -4403,7 +4408,7 @@ def extract(
         )
 
     # #1689: a file counted as code (extension in CODE_EXTENSIONS) but with no AST
-    # extractor wired up (e.g. .r/.R — there is no tree-sitter-r dispatch) silently
+    # extractor wired up (e.g. .ejs) silently
     # contributes zero nodes. The #1666 warning above deliberately skips these (it
     # only fires when an extractor exists), so surface them explicitly, grouped by
     # extension, rather than reporting success as if the language were mapped.
