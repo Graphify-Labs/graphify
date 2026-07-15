@@ -233,6 +233,7 @@ from graphify.detect import (
     IMAGE_EXTENSIONS,
     _load_graphifyignore,
     _is_ignored,
+    detect_incremental,
 )
 
 _WATCHED_EXTENSIONS = CODE_EXTENSIONS | DOC_EXTENSIONS | PAPER_EXTENSIONS | IMAGE_EXTENSIONS
@@ -1266,17 +1267,51 @@ def _rebuild_code(
 
 
 def check_update(watch_path: Path) -> bool:
-    """Check for pending semantic update flag and notify the user if set.
+    """Check for pending semantic update flag and corpus drift, notify if either is set.
 
     Cron-safe: always returns True so cron jobs do not alarm.
     Non-code file changes (docs, papers, images) require LLM-backed
-    re-extraction via `/graphify --update` — this function only signals
-    that the update is needed.
+    re-extraction via `/graphify --update` — the pending-flag check only
+    signals that the update is needed.
+
+    Also walks the corpus with the same include/exclude rules as extract and
+    diffs it against the manifest, so files created (not just modified) since
+    the last extract are caught too — the flag alone only covers changes seen
+    by a running `graphify watch` daemon, and stayed silent for anyone who
+    doesn't run one (#1765).
     """
-    flag = Path(watch_path) / _GRAPHIFY_OUT / "needs_update"
-    if flag.exists():
+    watch_path = Path(watch_path)
+    out = watch_path / _GRAPHIFY_OUT
+    flag_pending = (out / "needs_update").exists()
+    if flag_pending:
         print(f"[graphify check-update] Pending non-code changes in {watch_path}.")
+
+    drift_reported = False
+    if (out / "manifest.json").exists():
+        try:
+            result = detect_incremental(
+                watch_path,
+                str(out / "manifest.json"),
+                kind="ast",
+                extra_excludes=_read_build_excludes(out) or None,
+            )
+            new_total = result.get("new_total", 0)
+            deleted_total = len(result.get("deleted_files", []))
+            if new_total or deleted_total:
+                drift_reported = True
+                parts = []
+                if new_total:
+                    parts.append(f"{new_total} new/changed")
+                if deleted_total:
+                    parts.append(f"{deleted_total} deleted")
+                print(f"[graphify check-update] {', '.join(parts)} file(s) since the last extract in {watch_path}.")
+        except Exception as exc:
+            print(f"[graphify check-update] warning: could not check corpus drift: {exc}", file=sys.stderr)
+
+    if flag_pending or drift_reported:
         print("[graphify check-update] Run `/graphify --update` to apply semantic re-extraction.")
+    else:
+        print(f"[graphify check-update] Up to date — no changes detected in {watch_path}.")
     return True
 
 
