@@ -425,7 +425,7 @@ def _resolve_csharp_member_calls(
             return True
         names_by_kind, unknown = _member_names_by_kind_for_group(enclosing_group)
         if unknown:
-            return True
+            return name not in direct.get("methods", set())
         inherited_values = set(names_by_kind.get("values", set())) - set(direct.get("values", set()))
         inherited_nested_types = set(names_by_kind.get("nested_types", set())) - set(direct.get("nested_types", set()))
         return name in inherited_values or name in inherited_nested_types
@@ -438,10 +438,9 @@ def _resolve_csharp_member_calls(
             return None, None
         if _implicit_shadow(callee_key, rc, source_node, src_file, enclosing_group):
             return None, None
-        method_ids, unknown = _method_ids_for_group(enclosing_group, callee_key)
-        if unknown or len(method_ids) != 1:
+        method_nid = _instance_method_id_for_group(enclosing_group, callee_key)
+        if method_nid is None:
             return None, None
-        method_nid = next(iter(method_ids))
         owner = enclosing_type.get(method_nid)
         return member_key_by_nid.get(owner) if owner else enclosing_group, method_nid
 

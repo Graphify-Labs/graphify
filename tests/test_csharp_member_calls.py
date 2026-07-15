@@ -523,6 +523,14 @@ def test_implicit_enclosing_and_base_methods_resolve(tmp_path: Path):
     _edge_from_to_owner(result, "C", ".M()", "Base", ".BaseRun()")
 
 
+def test_implicit_private_enclosing_method_resolves(tmp_path: Path):
+    src = _write(tmp_path / "s.cs",
+                 "namespace N { class C : ExternalBase { void M(){ Helper(); } private void Helper(){} } }\n")
+    result = extract([src], cache_root=tmp_path)
+    edge = _edge_from_to_owner(result, "C", ".M()", "C", ".Helper()")
+    assert edge.get("confidence") == "EXTRACTED"
+
+
 def test_implicit_shadows_skip_delegate_param_local_static_local_using_static_and_field_event(tmp_path: Path):
     src = _write(tmp_path / "s.cs",
                  "namespace N { class Tools { public static void FromStatic(){} }\n"
