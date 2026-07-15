@@ -1903,7 +1903,7 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
-    def _checkpoint_chunk(result: dict) -> None:
+    def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
         # Persist each chunk's semantic results to the cache as soon as it
         # completes. Without this, the semantic cache is only written once, at
         # the very end of the run (in __main__), so a run interrupted partway
@@ -1914,12 +1914,23 @@ def extract_corpus_parallel(
             return
         try:
             from .cache import save_semantic_cache as _scs
+            # Scope the write to the files actually dispatched in this chunk
+            # (#1757). The model can attribute a node's source_file to another
+            # corpus file; without this bound, that stray node would clobber the
+            # other file's complete cache entry (or, with merge_existing, pollute
+            # it). Use unit_path so a FileSlice (one slice of an oversized doc)
+            # resolves to its parent file; a bare Path passes through. (#1870: the
+            # old `.rel` attribute does not exist on FileSlice, so every sliced
+            # chunk leaked the FileSlice object into the allowlist and the write
+            # raised TypeError, silently defeating the checkpoint.)
+            allowed = [unit_path(item) for item in chunk]
             _scs(
                 result.get("nodes", []),
                 result.get("edges", []),
                 result.get("hyperedges", []),
                 root=root,
                 merge_existing=True,
+                allowed_source_files=allowed,
             )
         except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
             print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)
@@ -1936,7 +1947,7 @@ def extract_corpus_parallel(
                 continue
             assert result is not None
             _merge_into(merged, result)
-            _checkpoint_chunk(result)
+            _checkpoint_chunk(result, chunk)
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
     else:
@@ -1961,7 +1972,7 @@ def extract_corpus_parallel(
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
-                _checkpoint_chunk(result)
+                _checkpoint_chunk(result, chunks[idx])
                 if callable(on_chunk_done):
                     on_chunk_done(idx, total, result)
         for idx in sorted(results_by_idx):
@@ -1974,6 +1985,99 @@ def extract_corpus_parallel(
         print(
             f"[graphify] WARNING: {merged['failed_chunks']}/{total} semantic chunk(s) failed"
             " — see errors above. Partial results returned.",
+            file=sys.stderr,
+        )
+
+    # Dispatch/return reconciliation (#1890). A chunk can return a clean, non-empty
+    # response that simply omits some of the documents it was given; those docs then
+    # vanish from the graph with no node, no warning, and no cache/manifest stamp, so
+    # they are silently re-dispatched (and re-omitted) forever. Diff the files we
+    # dispatched against the source_files that actually came back and surface the gap.
+    dispatched = {unit_path(f) for chunk in chunks for f in chunk}
+
+    # Out-of-scope node filter (#1895). The #1757 cache guard already refuses
+    # to WRITE a cache entry for a node whose source_file is a real file that
+    # was not dispatched, but the node itself still flowed into the merged
+    # result and landed in graph.json. Mirror the #1757 condition here: resolve
+    # each source_file against root and drop the node only when it resolves to
+    # an existing file (.is_file()) outside the dispatched set — non-file
+    # source_files (concepts, model-invented anchors) pass through untouched.
+    # Runs BEFORE the #1890 covered/uncovered reconciliation so that diff
+    # reflects the post-filter graph.
+    def _resolve_against_root(value: "str | Path") -> Path:
+        p = Path(value)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            return p.resolve()
+        except (OSError, RuntimeError):
+            return p
+
+    _dispatched_resolved = {_resolve_against_root(p) for p in dispatched}
+
+    def _out_of_scope(item: dict) -> bool:
+        sf = item.get("source_file")
+        if not sf:
+            return False
+        p = _resolve_against_root(sf)
+        return p.is_file() and p not in _dispatched_resolved
+
+    dropped_ids: set = set()
+    dropped_files: set[str] = set()
+    kept_nodes: list[dict] = []
+    for n in merged.get("nodes", []):
+        if _out_of_scope(n):
+            if n.get("id") is not None:
+                dropped_ids.add(n.get("id"))
+            dropped_files.add(str(n.get("source_file")))
+            continue
+        kept_nodes.append(n)
+    dropped_node_count = len(merged.get("nodes", [])) - len(kept_nodes)
+    merged["out_of_scope_dropped"] = dropped_node_count
+    if dropped_node_count:
+        merged["nodes"] = kept_nodes
+        # Keep the graph consistent: an edge or hyperedge referencing a
+        # dropped node's id (or itself attributed to an undispatched real
+        # file) must not survive its endpoint.
+        merged["edges"] = [
+            e for e in merged.get("edges", [])
+            if not _out_of_scope(e)
+            and e.get("source") not in dropped_ids
+            and e.get("target") not in dropped_ids
+        ]
+        merged["hyperedges"] = [
+            h for h in merged.get("hyperedges", [])
+            if not _out_of_scope(h)
+            and not (dropped_ids & set(h.get("nodes", []) or []))
+        ]
+        shown = ", ".join(sorted(Path(f).name for f in dropped_files)[:5])
+        more = f" (+{len(dropped_files) - 5} more)" if len(dropped_files) > 5 else ""
+        print(
+            f"[graphify] WARNING: dropped {dropped_node_count} out-of-scope node(s) "
+            f"attributed to file(s) not dispatched for extraction: {shown}{more}. "
+            "The model mis-attributed them to another corpus file; they were "
+            "excluded from the graph (#1895).",
+            file=sys.stderr,
+        )
+
+    covered: set[Path] = set()
+    for n in merged.get("nodes", []):
+        sf = n.get("source_file")
+        if sf:
+            p = Path(sf)
+            covered.add(p if p.is_absolute() else (root / p))
+    uncovered = sorted(
+        p for p in dispatched
+        if p.resolve() not in {c.resolve() for c in covered}
+    )
+    merged["uncovered_files"] = [str(p) for p in uncovered]
+    if uncovered:
+        shown = ", ".join(p.name for p in uncovered[:5])
+        more = f" (+{len(uncovered) - 5} more)" if len(uncovered) > 5 else ""
+        print(
+            f"[graphify] WARNING: {len(uncovered)}/{len(dispatched)} dispatched file(s) "
+            f"produced no nodes and are absent from the graph: {shown}{more}. The model "
+            "returned a response but omitted them; a re-run will retry them.",
             file=sys.stderr,
         )
     return merged

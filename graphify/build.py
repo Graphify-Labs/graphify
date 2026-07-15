@@ -348,6 +348,38 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
     return False
 
 
+def _doc_twin_remap(nodes: list) -> dict[str, str]:
+    """Map a markdown quick-scan's bare doc node ``<slug>`` to the semantic
+    ``<slug>_doc`` node for the SAME file (#1799).
+
+    The markdown quick-scan (``extract_markdown``) mints a file node with the
+    bare id ``_make_id(path)`` while the semantic pass mints ``<slug>_doc`` for
+    the same document. A ``graphify update`` after a semantic build leaves both,
+    splitting the file's edges across two disconnected nodes. Canonicalize to the
+    semantic ``_doc`` node (it carries the richer references/hyperedges). Gated to
+    ``file_type == "document"`` on BOTH twins with an identical ``source_file``,
+    so an unrelated code symbol ``foo`` and ``foo_doc`` never merge.
+    """
+    by_id: dict[str, dict] = {}
+    for n in nodes:
+        if isinstance(n, dict) and n.get("id"):
+            by_id[str(n["id"])] = n
+    remap: dict[str, str] = {}
+    for nid, node in by_id.items():
+        if not nid.endswith("_doc"):
+            continue
+        bare = by_id.get(nid[:-4])
+        if bare is None:
+            continue
+        sf = node.get("source_file")
+        if not sf or bare.get("source_file") != sf:
+            continue
+        if node.get("file_type") != "document" or bare.get("file_type") != "document":
+            continue
+        remap[nid[:-4]] = nid
+    return remap
+
+
 def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
     """Build a NetworkX graph from an extraction dict.
 
@@ -427,6 +459,33 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         for he in extraction.get("hyperedges", []) or []:
             if isinstance(he, dict) and isinstance(he.get("nodes"), list):
                 he["nodes"] = [_rekey.get(n, n) for n in he["nodes"]]
+
+    # Merge markdown quick-scan bare doc nodes into their semantic `_doc` twin
+    # for the same file, so a document is one node regardless of which pipeline
+    # touched it last (#1799).
+    _doc_remap = _doc_twin_remap(extraction.get("nodes", []))
+    if _doc_remap:
+        extraction["nodes"] = [
+            n for n in extraction.get("nodes", [])
+            if not (isinstance(n, dict) and n.get("id") in _doc_remap)
+        ]
+        _new_edges = []
+        for edge in extraction.get("edges", []):
+            if isinstance(edge, dict):
+                s0, t0 = edge.get("source"), edge.get("target")
+                if s0 in _doc_remap:
+                    edge["source"] = _doc_remap[s0]
+                if t0 in _doc_remap:
+                    edge["target"] = _doc_remap[t0]
+                # Drop only self-loops the remap itself collapsed (a bare->_doc
+                # link becoming doc->doc); leave any pre-existing self-loop alone.
+                if edge.get("source") == edge.get("target") and (s0 in _doc_remap or t0 in _doc_remap):
+                    continue
+            _new_edges.append(edge)
+        extraction["edges"] = _new_edges
+        for he in extraction.get("hyperedges", []) or []:
+            if isinstance(he, dict) and isinstance(he.get("nodes"), list):
+                he["nodes"] = [_doc_remap.get(n, n) for n in he["nodes"]]
 
     G: nx.Graph = nx.DiGraph() if directed else nx.Graph()
     for node in extraction.get("nodes", []):

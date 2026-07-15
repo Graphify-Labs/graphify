@@ -23,6 +23,10 @@ def test_classify_powershell_manifest():
 def test_classify_markdown():
     assert classify_file(Path("README.md")) == FileType.DOCUMENT
 
+def test_classify_skill():
+    # #1901: .skill agent files (Markdown with YAML frontmatter) were dropped as unclassified.
+    assert classify_file(Path("10_Orchestrator.skill")) == FileType.DOCUMENT
+
 def test_classify_pdf():
     assert classify_file(Path("paper.pdf")) == FileType.PAPER
 
@@ -227,6 +231,86 @@ def test_graphifyignore_at_git_root_is_included(tmp_path):
     assert result["graphifyignore_patterns"] == 1
 
 
+def test_gitignore_nested_below_root_excludes_file(tmp_path):
+    """A .gitignore in a subdirectory below the scan root is honored too (#1206).
+
+    Previously only the scan root and its ancestors were read, so a
+    .gitignore sitting inside e.g. vendor/sub/ was silently skipped.
+    """
+    (tmp_path / ".gitignore").write_text("*.log\n")
+    sub = tmp_path / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("secret.txt\n")
+    (tmp_path / "root.py").write_text("x = 1")
+    (tmp_path / "root.log").write_text("noise")
+    (sub / "keep.py").write_text("y = 2")
+    (sub / "secret.txt").write_text("shh")
+
+    result = detect(tmp_path)
+    code_files = result["files"]["code"]
+    assert any("root.py" in f for f in code_files)
+    assert any("keep.py" in f for f in code_files)
+    assert not any("root.log" in f for f in code_files)
+    assert not any("secret.txt" in f for f in code_files)
+    assert result["graphifyignore_patterns"] == 2
+
+
+def test_gitignore_nested_below_root_prunes_whole_directory(tmp_path):
+    """A nested .gitignore excluding a directory prevents descending into it."""
+    sub = tmp_path / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("build/\n")
+    build = sub / "build"
+    build.mkdir()
+    (build / "generated.py").write_text("x = 1")
+    (sub / "keep.py").write_text("y = 2")
+
+    result = detect(tmp_path)
+    code_files = result["files"]["code"]
+    assert any("keep.py" in f for f in code_files)
+    assert not any("generated.py" in f for f in code_files)
+
+
+def test_gitignore_nested_negation_overrides_broader_root_rule(tmp_path):
+    """A closer (nested) .gitignore's `!` re-include wins over a root exclude,
+    matching git's closer-file-wins precedence. Uses .py so classification lands
+    in the deterministic `code` bucket."""
+    (tmp_path / ".gitignore").write_text("*.py\n")
+    sub = tmp_path / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("!important.py\n")
+    (tmp_path / "root.py").write_text("a = 1")
+    (sub / "important.py").write_text("b = 1")
+    (sub / "other.py").write_text("c = 1")
+
+    result = detect(tmp_path)
+    code = result["files"]["code"]
+    # nested `!important.py` re-includes it despite the root `*.py` exclude...
+    assert any("vendor/sub/important.py" in f for f in code)
+    # ...while the root-excluded and non-re-included files stay out
+    assert not any(f.endswith("root.py") for f in code)
+    assert not any(f.endswith("other.py") for f in code)
+
+
+def test_nested_ignore_overrides_git_info_exclude_and_root(tmp_path):
+    """Precedence across all three sources: a nested `.gitignore` `!` re-include
+    outranks both a root `.gitignore` and `.git/info/exclude` (lowest, from
+    #1810), while an info/exclude-only file with no re-include stays out."""
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("*.py\n")
+    (tmp_path / ".gitignore").write_text("keep.py\n")           # root also excludes it
+    sub = tmp_path / "a" / "b"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("!keep.py\n")               # nearest wins -> re-included
+    (sub / "keep.py").write_text("x = 1")
+    (tmp_path / "drop.py").write_text("y = 1")                  # only info/exclude -> excluded
+
+    result = detect(tmp_path)
+    code = result["files"]["code"]
+    assert any("a/b/keep.py" in f for f in code), "nested ! must beat root + info/exclude"
+    assert not any(f.endswith("drop.py") for f in code)
+
+
 def test_detect_handles_circular_symlinks(tmp_path):
     sub = tmp_path / "a"
     sub.mkdir()
@@ -367,6 +451,67 @@ def test_detect_incremental_survives_dict_valued_mtime(tmp_path, monkeypatch):
     # The drifted file is re-classified as new rather than silently skipped.
     assert any("mod.py" in f for f in result["new_files"]["code"])
     assert not any("mod.py" in f for f in result["unchanged_files"]["code"])
+
+
+def test_detect_incremental_legacy_float_reextracts_on_backwards_mtime(tmp_path, monkeypatch):
+    """Legacy float manifests must re-extract when mtime moves BACKWARDS (#1859).
+
+    Pre-fix the legacy branch used `current_mtime > stored`, which silently kept
+    the cached entry after operations that restore older mtimes: `git checkout`
+    of an older commit, `tar -xf` restore, or `rsync --times`. The graph then
+    reflected the newer content while disk held the older content. The dict
+    branch has always used `!=`; this test pins the legacy branch to the same
+    contract.
+    """
+    import json
+
+    monkeypatch.chdir(tmp_path)
+
+    src = tmp_path / "mod.py"
+    src.write_text("def old_content():\n    return 1\n", encoding="utf-8")
+    current_mtime = os.stat(src).st_mtime
+
+    manifest_dir = tmp_path / "graphify-out"
+    manifest_dir.mkdir()
+    manifest_path = str(manifest_dir / "manifest.json")
+
+    # Legacy schema (pre-dict-migration): the value is a bare float mtime.
+    # Store a mtime FROM THE FUTURE, simulating a checkout of an older
+    # revision that restored the file to an earlier timestamp.
+    future_mtime = current_mtime + 3600
+    legacy = {str(src.resolve()): future_mtime}
+    Path(manifest_path).write_text(json.dumps(legacy), encoding="utf-8")
+
+    result = detect_incremental(tmp_path, manifest_path)
+
+    assert any("mod.py" in f for f in result["new_files"]["code"]), (
+        "backwards-moving mtime on a legacy manifest entry must trigger re-extract"
+    )
+    assert not any("mod.py" in f for f in result["unchanged_files"]["code"])
+
+
+def test_detect_incremental_legacy_float_skips_when_mtime_matches(tmp_path, monkeypatch):
+    """Non-regression for the fix above: legacy float branch still skips when
+    the stored mtime equals the current mtime."""
+    import json
+
+    monkeypatch.chdir(tmp_path)
+
+    src = tmp_path / "mod.py"
+    src.write_text("def stable():\n    return 1\n", encoding="utf-8")
+
+    manifest_dir = tmp_path / "graphify-out"
+    manifest_dir.mkdir()
+    manifest_path = str(manifest_dir / "manifest.json")
+
+    # Legacy schema with the exact current mtime → no change → skip.
+    legacy = {str(src.resolve()): os.stat(src).st_mtime}
+    Path(manifest_path).write_text(json.dumps(legacy), encoding="utf-8")
+
+    result = detect_incremental(tmp_path, manifest_path)
+
+    assert not any("mod.py" in f for f in result["new_files"]["code"])
+    assert any("mod.py" in f for f in result["unchanged_files"]["code"])
 
 
 def test_classify_video_extensions():
@@ -535,6 +680,48 @@ def test_detect_skips_next_cache(tmp_path):
     all_files = [f for files in result["files"].values() for f in files]
     assert not any(".next" in f for f in all_files)
     assert any("index.tsx" in f for f in all_files)
+
+
+def test_detect_skips_nox_virtualenv(tmp_path):
+    """.nox/ (nox virtualenvs, tox's successor) must be excluded like .tox (#1804)."""
+    nox = tmp_path / ".nox" / "tests" / "lib" / "site-packages" / "pydeck"
+    nox.mkdir(parents=True)
+    (nox / "widget.py").write_text("class Deck: pass")
+    (tmp_path / "app.py").write_text("def go(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any(".nox" in f for f in all_files)
+    assert any("app.py" in f for f in all_files)
+
+
+def test_detect_honors_git_info_exclude(tmp_path):
+    """.git/info/exclude (where `git worktree add` records nested worktree paths,
+    and where local-only excludes live) must be honored, not just .gitignore /
+    .graphifyignore — otherwise nested worktree copies get fully indexed (#1810)."""
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("worktrees/\n")
+    wt = tmp_path / "worktrees" / "foo"
+    wt.mkdir(parents=True)
+    (wt / "dupe.py").write_text("def dupe(): pass")
+    (tmp_path / "real.py").write_text("def real(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("dupe.py" in f for f in all_files), "worktree dir was not excluded"
+    assert any("real.py" in f for f in all_files), "real source was dropped"
+
+
+def test_git_info_exclude_ranks_below_gitignore_negation(tmp_path):
+    """info/exclude is loaded at lowest priority, so a later .gitignore `!` negation
+    of the same (non-directory) pattern still wins under last-match-wins (#1810)."""
+    from graphify.detect import _load_graphifyignore, _is_ignored
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("secret*.txt\n")
+    (tmp_path / ".gitignore").write_text("!secret-ok.txt\n")
+    (tmp_path / "secret-bad.txt").write_text("x")
+    (tmp_path / "secret-ok.txt").write_text("x")
+    patterns = _load_graphifyignore(tmp_path)
+    assert _is_ignored(tmp_path / "secret-bad.txt", tmp_path, patterns)
+    assert not _is_ignored(tmp_path / "secret-ok.txt", tmp_path, patterns)
 
 
 def test_detect_skips_graphify_own_cache(tmp_path):
@@ -1632,3 +1819,35 @@ def test_detect_surfaces_unreadable_dir_instead_of_silent_skip(tmp_path, capsys)
     assert any(f.endswith("a.py") for f in code)  # rest of tree still enumerated
     assert len(res["walk_errors"]) >= 1
     assert "could not scan" in capsys.readouterr().err
+
+
+def test_nested_gitignore_star_does_not_ignore_outside_its_dir(tmp_path):
+    """A nested .gitignore containing a bare `*` (auto-written by e.g. the
+    hypothesis library into .hypothesis/) must ignore ONLY that directory's
+    contents — matching it against root-relative paths ignored the entire
+    corpus (detect() returned 0 files on a real repo). Regression for #1873."""
+    (tmp_path / "README.md").write_text("# hello")
+    (tmp_path / "main.py").write_text("x = 1")
+    hyp = tmp_path / ".hypothesis"
+    hyp.mkdir()
+    (hyp / ".gitignore").write_text("*\n")
+    (hyp / "cached.py").write_text("y = 2")
+
+    result = detect(tmp_path)
+
+    assert result["total_files"] == 2  # README.md + main.py survive; .hypothesis/* ignored
+
+
+def test_nested_gitignore_patterns_still_apply_inside_their_dir(tmp_path):
+    """Counterpart guard: the anchor-scoped fix must not stop nested ignore
+    files from working WITHIN their own subtree."""
+    (tmp_path / "main.py").write_text("x = 1")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / ".gitignore").write_text("*.log\n")
+    (sub / "keep.py").write_text("y = 2")
+    (sub / "noise.log").write_text("z")
+
+    result = detect(tmp_path)
+
+    assert result["total_files"] == 2  # main.py + sub/keep.py; sub/noise.log ignored

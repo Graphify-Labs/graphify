@@ -69,6 +69,44 @@ def _drain_pending(out_dir: Path) -> list[Path]:
     return out
 
 
+# Build options that must survive into later rebuilds. The initial `extract`
+# scan honours `--exclude`, but `update`/`watch`/hook rebuilds re-run detect()
+# and would silently re-include excluded paths unless the patterns are persisted
+# (#1886). We store them beside the graph so any rebuild driver can re-apply them.
+_BUILD_CONFIG_FILENAME = ".graphify_build.json"
+
+
+def _write_build_config(out_dir: Path, *, excludes: "list[str] | None") -> None:
+    """Persist build options (currently ``--exclude`` patterns) under ``out_dir``.
+
+    Best-effort and non-clobbering: with no excludes it leaves any existing file
+    untouched, so a plain rebuild never erases patterns a prior extract recorded.
+    """
+    if not excludes:
+        return
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / _BUILD_CONFIG_FILENAME).write_text(
+            json.dumps({"excludes": list(excludes)}), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _read_build_excludes(out_dir: Path) -> list[str]:
+    """Return the persisted ``--exclude`` patterns for this graph, or []."""
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            ex = cfg.get("excludes") if isinstance(cfg, dict) else None
+            if isinstance(ex, list):
+                return [str(x) for x in ex if isinstance(x, str) and x]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return []
+
+
 def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
     """Concatenate path lists, preserving order and dropping duplicates.
 
@@ -408,16 +446,27 @@ def _reconcile_existing_graph(
         }
         node_evicted_source_identities = set(deleted_source_identities)
         hyperedge_evicted_source_identities = set(deleted_source_identities)
+        # Deletion evicts edges regardless of tier; re-extraction only owns a
+        # source's AST-tier edges (checked per-edge below, #1865).
+        edge_evicted_source_identities = set(deleted_source_identities)
         if not full_rebuild:
             node_evicted_source_identities.update(rebuilt_source_identities)
-        edge_evicted_source_identities = (
-            node_evicted_source_identities | rebuilt_source_identities
-        )
 
         # Reconcile every rebuild against the current watched corpus. Hook change
         # lists can contain only a rename destination, so explicit paths alone
         # cannot identify the stale source. Keep the comparison scoped to the
         # watched root so subfolder updates preserve records outside that subtree.
+        #
+        # Fail-closed eviction: a source identity missing from the corpus is only
+        # DELETION evidence when the file is actually gone from disk. A file that
+        # still exists but stopped being collected was *excluded* (ignore rules or
+        # filters changed — e.g. a .gitignore the scanner newly honors), and
+        # treating that as deletion silently mass-evicts good nodes. Preserve
+        # instead and say so; a full re-extraction still purges deliberately
+        # excluded sources via the AST ownership rule below.
+        excluded_alive_files: set[str] = set()
+        excluded_alive_nodes = 0
+        _alive_cache: dict[str, bool] = {}
         for node in existing.get("nodes", []):
             source_file = node.get("source_file")
             if not source_file or _get_extractor(Path(source_file)) is None:
@@ -426,6 +475,15 @@ def _reconcile_existing_graph(
             if not source_paths.in_watch_root(source_file):
                 continue
             if identity not in current_sources:
+                if identity:
+                    alive = _alive_cache.get(identity)
+                    if alive is None:
+                        alive = Path(identity).exists()
+                        _alive_cache[identity] = alive
+                    if alive:
+                        excluded_alive_files.add(identity)
+                        excluded_alive_nodes += 1
+                        continue
                 normalized = source_paths.normalize(source_file)
                 if normalized:
                     deleted_paths.add(normalized)
@@ -433,6 +491,13 @@ def _reconcile_existing_graph(
                     node_evicted_source_identities.add(identity)
                     edge_evicted_source_identities.add(identity)
                     hyperedge_evicted_source_identities.add(identity)
+        if excluded_alive_files:
+            print(
+                f"[graphify watch] fail-closed: kept {excluded_alive_nodes} node(s) "
+                f"from {len(excluded_alive_files)} file(s) that left the scan corpus "
+                "but still exist on disk (ignore rules or filters changed?). "
+                "Run a full re-extraction to purge them if the exclusion is intentional."
+            )
 
         # A full re-extraction owns every AST node under watch_root. Incremental
         # extraction owns only nodes from rebuilt or deleted sources. Semantic
@@ -458,14 +523,22 @@ def _reconcile_existing_graph(
         ]
         all_ids = new_ast_ids | {node["id"] for node in preserved_nodes}
 
-        # Edges are owned by source_file. Re-extraction must replace an owner's
-        # previous edges, while edges from unchanged or semantic sources survive.
+        # Edges are owned by source_file, but ownership is tier-scoped: the AST
+        # pass replaces a re-extracted source's AST edges, while that source's
+        # semantic/LLM edges — which the AST pass cannot regenerate — survive
+        # until a semantic re-extraction supersedes them. Same provenance rule
+        # the node reconciliation above applies via _origin (#1865). Deletion
+        # eviction stays provenance-blind.
         preserved_edges = [
             edge
             for edge in existing.get("links", existing.get("edges", []))
             if edge.get("source") in all_ids
             and edge.get("target") in all_ids
             and not source_paths.is_evicted(edge, edge_evicted_source_identities)
+            and not (
+                edge.get("_origin") == "ast"
+                and source_paths.is_evicted(edge, rebuilt_source_identities)
+            )
         ]
 
         new_hyperedge_ids = {
@@ -539,6 +612,7 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
                 continue
             n = dict(node)
             n.pop("community", None)
+            n.pop("community_name", None)
             n.pop("norm_label", None)
             norm_nodes.append(n)
         canonical["nodes"] = sorted(
@@ -791,7 +865,14 @@ def _rebuild_code(
         from graphify.export import to_json, to_html
         from graphify.security import check_graph_file_size_cap
 
-        detected = detect(watch_path, follow_symlinks=follow_symlinks)
+        # Re-apply the excludes the initial extract recorded, so an update/watch/
+        # hook rebuild does not silently re-include deliberately excluded paths
+        # (#1886).
+        _persisted_excludes = _read_build_excludes(out)
+        detected = detect(
+            watch_path, follow_symlinks=follow_symlinks,
+            extra_excludes=_persisted_excludes or None,
+        )
         code_files = [Path(f) for f in detected['files']['code']]
 
         # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
@@ -1016,7 +1097,7 @@ def _rebuild_code(
         report_path = out / "GRAPH_REPORT.md"
         labels_json = json.dumps({str(k): v for k, v in sorted(labels.items())}, ensure_ascii=False, indent=2) + "\n"
         graph_tmp = out / ".graph.tmp.json"
-        json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit)
+        json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit, community_labels=labels)
         if not json_written:
             return False
         candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))

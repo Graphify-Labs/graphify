@@ -313,8 +313,10 @@ def test_pg_introspect_connection_error():
 def test_pg_introspect_import_error():
     """If psycopg is missing, introspect_postgres raises ImportError."""
     with patch.dict("sys.modules", {"psycopg": None}):
-        with pytest.raises(ImportError, match="psycopg is required"):
+        with pytest.raises(ImportError, match="psycopg is required") as exc_info:
             introspect_postgres("postgresql://localhost/db")
+    # #1906: the PyPI package is graphifyy (double-y), so the install hint must match
+    assert "graphifyy[postgres]" in str(exc_info.value)
 
 
 def test_pg_introspect_uri_forward_slashes():

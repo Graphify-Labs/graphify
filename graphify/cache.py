@@ -7,6 +7,8 @@ import json
 import os
 import re
 import tempfile
+import warnings
+from collections.abc import Iterable
 from pathlib import Path
 
 # Output directory name — override with GRAPHIFY_OUT env var for worktrees or
@@ -157,7 +159,7 @@ def _normalize_path(path: Path) -> Path:
     return Path(os.path.normcase(s))
 
 
-def file_hash(path: Path, root: Path = Path(".")) -> str:
+def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = None) -> str:
     """SHA256 of file contents + path relative to root.
 
     Uses a stat-based fastpath (size + mtime_ns) to skip full reads when the
@@ -177,7 +179,11 @@ def file_hash(path: Path, root: Path = Path(".")) -> str:
     if not p.is_file():
         raise IsADirectoryError(f"file_hash requires a file, got: {p}")
 
-    _ensure_stat_index(root)
+    # The stat index is a cache artifact, so it must follow the cache location
+    # (cache_root), not the key-anchor root — otherwise it leaves a stray
+    # graphify-out/cache/stat-index.json inside the analyzed source tree even when
+    # the AST cache itself is redirected to CWD (#1774 completion).
+    _ensure_stat_index(root, cache_root=cache_root)
     abs_key = str(p.resolve())
     st: "os.stat_result | None" = None
     try:
@@ -352,12 +358,20 @@ def cache_dir(root: Path = Path("."), kind: str = "ast") -> Path:
     return d
 
 
-def load_cached(path: Path, root: Path = Path("."), kind: str = "ast") -> dict | None:
+def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
+                cache_root: Path | None = None) -> dict | None:
     """Return cached extraction for this file if hash matches, else None.
 
     Cache key: SHA256 of file contents.
     Cache value: stored as graphify-out/cache/{kind}/{hash}.json (AST entries
     under the per-version subdirectory, see :func:`cache_dir`).
+
+    ``root`` anchors the content-hash key and source_file relativization (it
+    must stay the inferred common parent so keys remain portable). ``cache_root``
+    decouples *where* the cache directory lives from that anchor — the cache is
+    an output and must not land inside a read-only/analyzed source tree (#1774).
+    When ``cache_root`` is None the location falls back to ``root`` (unchanged
+    behavior for existing callers).
 
     AST entries written by other graphify versions — including the legacy
     flat cache/ layout (pre-0.5.3) and the unversioned cache/ast/ layout —
@@ -365,11 +379,12 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast") -> dict |
     extractor and may be stale.
     Returns None if no cache entry or file has changed.
     """
+    location = cache_root if cache_root is not None else root
     try:
-        h = file_hash(path, root)
+        h = file_hash(path, root, cache_root=cache_root)
     except OSError:
         return None
-    entry = cache_dir(root, kind) / f"{h}.json"
+    entry = cache_dir(location, kind) / f"{h}.json"
     if entry.exists():
         try:
             result = json.loads(entry.read_text(encoding="utf-8"))
@@ -384,11 +399,16 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast") -> dict |
     return None
 
 
-def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast") -> None:
+def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast",
+                cache_root: Path | None = None) -> None:
     """Save extraction result for this file.
 
     Stores as graphify-out/cache/{kind}/{hash}.json where hash = SHA256 of current file contents.
     result should be a dict with 'nodes' and 'edges' lists.
+
+    ``root`` anchors the content-hash key and source_file relativization;
+    ``cache_root`` (when given) is where the cache directory is written, decoupled
+    from ``root`` so the cache never lands inside the analyzed source tree (#1774).
 
     No-ops if `path` is not a regular file. Subagent-produced semantic fragments
     occasionally carry a directory path in `source_file`; skipping them prevents
@@ -412,8 +432,9 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
         import copy as _copy
         on_disk = _copy.deepcopy(result)
         _relativize_source_files_in(on_disk, root)
-    h = file_hash(p, root)
-    target_dir = cache_dir(root, kind)
+    h = file_hash(p, root, cache_root=cache_root)
+    location = cache_root if cache_root is not None else root
+    target_dir = cache_dir(location, kind)
     entry = target_dir / f"{h}.json"
     fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
     try:
@@ -542,6 +563,7 @@ def save_semantic_cache(
     hyperedges: list[dict] | None = None,
     root: Path = Path("."),
     merge_existing: bool = False,
+    allowed_source_files: Iterable[str | Path] | None = None,
 ) -> int:
     """Save semantic extraction results to cache, keyed by source_file.
 
@@ -553,6 +575,11 @@ def save_semantic_cache(
     unioned with the new results before saving instead of being overwritten.
     This lets callers checkpoint incrementally (e.g. once per chunk) without
     dropping a prior slice of a large file that was split across chunks.
+
+    When ``allowed_source_files`` is provided, only those files may be used as
+    cache-write keys. Semantic nodes can legitimately mention another corpus
+    file, but a model must not be able to replace that file's complete cache
+    entry unless the file was part of the current extraction batch (#1757).
     Returns the number of files cached.
     """
     from collections import defaultdict
@@ -571,12 +598,35 @@ def save_semantic_cache(
         if src:
             by_file[src]["hyperedges"].append(h)
 
+    root_path = Path(root).resolve()
+
+    def resolved_source_path(value: str | Path) -> Path:
+        path = Path(value)
+        if not path.is_absolute():
+            path = root_path / path
+        try:
+            return path.resolve()
+        except (OSError, RuntimeError):
+            # Keep the cache write best-effort for inaccessible paths or a
+            # symlink loop emitted by an untrusted semantic result.
+            return Path(os.path.abspath(path))
+
+    allowed_paths = None
+    if allowed_source_files is not None:
+        allowed_paths = {resolved_source_path(path) for path in allowed_source_files}
+
     saved = 0
     for fpath, result in by_file.items():
-        p = Path(fpath)
-        if not p.is_absolute():
-            p = Path(root) / p
+        p = resolved_source_path(fpath)
         if p.is_file():
+            if allowed_paths is not None and p not in allowed_paths:
+                warnings.warn(
+                    "semantic cache skipped out-of-scope source_file "
+                    f"{fpath!r}; the file was not dispatched for extraction",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
             if merge_existing:
                 prev = load_cached(p, root, kind="semantic")
                 if prev:

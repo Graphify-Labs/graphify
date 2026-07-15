@@ -487,7 +487,8 @@ def test_monoliths_change_only_sanctioned_lines():
     The round-trip (multiset diff vs the pinned v8 blob) must come back clean:
     each added/removed line matches one of the documented sanctioned predicates
     in gen — the enum unification, the unified description, the chunk-cleanup
-    rewrite (#1172), and the four #1392 runbook fixes. Anything else is drift.
+    rewrite (#1172), the four #1392 runbook fixes, and semantic-cache source
+    scoping (#1757). Anything else is drift.
     """
     platforms = gen.load_platforms()
     for key in ("aider", "devin"):
@@ -532,6 +533,16 @@ def test_monoliths_carry_the_1392_runbook_fixes():
         # guard fires right after the build, before the graph/report are written.
         assert build_i < guard_i < wrote_i < report_i, f"[{key}] Step 4 ordering not fixed"
         assert "if not wrote:" in body
+
+
+def test_monoliths_scope_semantic_cache_writes_to_uncached_files():
+    """#1757: generated monoliths pass the dispatched-file allowlist when
+    replacing semantic cache entries."""
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        body = gen.render(platforms[key])[0].content
+        assert ".graphify_uncached.txt').read_text(" in body
+        assert "allowed_source_files=uncached" in body
 
 
 def test_generated_runbooks_pass_root_to_save_manifest():

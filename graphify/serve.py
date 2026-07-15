@@ -107,14 +107,30 @@ def _is_searchable(term: str) -> bool:
     return True
 
 
-# English question/filler words dropped from query terms so content words drive
-# BFS seeding. Without this, "how does the frontier cache work" seeds on "how"/
+# Question/filler words dropped from query terms so content words drive BFS
+# seeding. Without this, "how does the frontier cache work" seeds on "how"/
 # "the"/"work" (which prefix-match prose labels like "Working Principles" at 100x)
 # instead of "frontier"/"cache", and lands in the wrong part of the graph. Applied
 # to query terms only — node text is never filtered, so a symbol literally named
 # `work` stays findable via explain/path. `work`/`works`/`working` are included
 # because "how does X work" / "how X works" is the most common question phrasing.
+#
+# Non-English question words are just as damaging (#1900): in a mostly-English
+# code corpus, German "wie"/"funktioniert" are rare, so they get HIGH IDF weight
+# and out-seed the actual content noun by orders of magnitude. So this also
+# carries a curated German set plus a trimmed French/Spanish/Portuguese/Italian
+# set of question/filler words. Diacritics are kept intact (the query tokenizer
+# does not NFKD-strip).
+#
+# Collision tradeoff: a few foreign stopwords are also English content words.
+# We include high-German-value ones like "die"/"hat" (the all-stopword fallback
+# in _query_terms and the unfiltered find_node path keep an English "die"/"hat"
+# query workable), but deliberately OMIT "war"/"bald" (German was/soon) so
+# English queries about "war" or "bald" are not clobbered. On the Romance side
+# we likewise omit "comment" (FR how), "come" (IT how), "son"/"sin"/"con" (ES),
+# and "pour"/"des" (FR) — all too common as English/code terms.
 _QUERY_STOPWORDS = frozenset({
+    # English
     "how", "what", "why", "when", "where", "which", "who", "whom", "whose",
     "does", "did", "is", "are", "was", "were", "be", "been", "being",
     "can", "could", "should", "would", "will", "shall", "may", "might", "must",
@@ -122,14 +138,35 @@ _QUERY_STOPWORDS = frozenset({
     "without", "into", "onto", "off", "that", "this", "these", "those", "there",
     "here", "its", "their", "them", "they", "about", "any", "all", "some",
     "work", "works", "working",
+    # German (articles/conjunctions/question words/auxiliaries/prepositions)
+    "der", "die", "das", "den", "dem", "ein", "eine", "und", "oder", "nicht",
+    "wie", "wer", "wann", "wo", "warum", "wieso",
+    "welche", "welcher", "welches",
+    "ist", "sind", "wird", "wurde", "hat", "haben",
+    "kann", "koennen", "können", "soll", "muss", "sich",
+    "bei", "mit", "von", "fuer", "für", "ueber", "über", "nach", "aus",
+    "gibt", "es",
+    "funktioniert", "geaendert", "geändert", "aendert", "ändert",
+    # French
+    "pourquoi", "quand", "quel", "quelle", "quels", "quelles", "quoi",
+    "qui", "que", "est", "sont", "fonctionne", "cette", "dans", "avec", "où",
+    # Spanish
+    "cómo", "como", "qué", "cuál", "cuáles", "cuándo", "dónde", "donde",
+    "porque", "por", "para", "funciona", "está", "están", "hay",
+    # Portuguese
+    "qual", "quais", "quando", "onde", "são", "estão", "tem", "uma", "não",
+    # Italian
+    "perché", "cosa", "quale", "quali", "dove", "funziona", "sono", "che",
+    "della",
 })
 
 
 def _query_terms(question: str) -> list[str]:
     """Split a query into searchable terms, segmenting Chinese text, then drop
-    English question/filler words (`_QUERY_STOPWORDS`) so content words drive
-    seeding. Falls back to the unfiltered terms if the query is all stopwords, so
-    a question like "how does it work" still seeds on something."""
+    question/filler words (`_QUERY_STOPWORDS`, English plus common German/
+    Romance-language fillers) so content words drive seeding. Falls back to the
+    unfiltered terms if the query is all stopwords, so a question like "how does
+    it work" or "wie funktioniert das" still seeds on something."""
     terms: list[str] = []
     for raw in question.split():
         if _has_chinese(raw):
@@ -435,11 +472,33 @@ def _pick_seeds(
     """
     if not scored:
         return []
+
+    # Deduplicate seeds by (normalized) label so a generic, homonymous symbol —
+    # e.g. dozens of route handlers all labelled `GET`/`POST`, or a `handler`
+    # repeated across a framework — contributes at most one seed instead of
+    # consuming every slot and flooding the BFS with near-identical neighborhoods
+    # (#1766). The key mirrors _score_nodes' normalization so `GET`/`Get`/`get`
+    # collapse together. When G is absent we can't read labels, so fall back to
+    # the (unique) node id, which is a no-op — preserving the old behavior.
+    def _seed_label_key(nid: str) -> str:
+        if G is None:
+            return nid
+        data = G.nodes[nid]
+        return (data.get("norm_label")
+                or _strip_diacritics(data.get("label") or "").lower()) or nid
+
     top_score = scored[0][0]
-    seeds = []
-    for score, nid in scored[:max_k]:
+    seeds: list[str] = []
+    seen_labels: set[str] = set()
+    for score, nid in scored:
+        if len(seeds) >= max_k:
+            break
         if seeds and score < top_score * gap_ratio:
             break
+        key = _seed_label_key(nid)
+        if key in seen_labels:
+            continue
+        seen_labels.add(key)
         seeds.append(nid)
 
     if G is not None and terms:
@@ -451,7 +510,11 @@ def _pick_seeds(
             best_score = term_scored[0][0]
             tied = [nid for s, nid in term_scored if s == best_score]
             best_nid = max(tied, key=lambda n: G.degree(n)) if len(tied) > 1 else term_scored[0][1]
-            if best_nid not in seeds:
+            # Honor the same per-label cap so the per-term guarantee can't
+            # reintroduce a second copy of an already-seeded generic label.
+            key = _seed_label_key(best_nid)
+            if best_nid not in seeds and key not in seen_labels:
+                seen_labels.add(key)
                 seeds.append(best_nid)
     return seeds
 

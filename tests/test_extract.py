@@ -970,6 +970,68 @@ def test_python_qualified_class_method_call_resolves_extracted(tmp_path):
     assert call_edges[0]["confidence"] == "EXTRACTED"
 
 
+def test_degenerate_symbol_name_does_not_leak_absolute_id(tmp_path):
+    """#1899 variant B: a symbol whose name normalizes to nothing (a minified `$`
+    function, a JSONC `"//"` key) must not be minted — `_make_id(stem, "")`
+    collapses to the bare, absolute-path-derived file stem, leaking the scan path
+    and colliding with the file node. Such nodes carry no graph signal."""
+    (tmp_path / "vendor.js").write_text(
+        "function $(){return 1}\nfunction real(){return 2}\n", encoding="utf-8"
+    )
+    result = extract([tmp_path / "vendor.js"], cache_root=tmp_path)
+    marker = str(tmp_path)
+    for n in result["nodes"]:
+        assert marker not in n["id"], f"absolute path leaked into id: {n}"
+    labels = {n.get("label") for n in result["nodes"]}
+    assert "real()" in labels, "the real function must still be extracted"
+    assert "$()" not in labels, "the degenerate `$` symbol must be dropped (#1899)"
+
+
+def test_python_module_qualified_call_resolves_extracted(tmp_path):
+    """`module.func()` where `module` is imported resolves to the callable that
+    module contains, with an EXTRACTED `calls` edge (#1883). A lowercase module
+    receiver was previously dropped alongside instance calls."""
+    mathlib = tmp_path / "mathlib.py"
+    caller = tmp_path / "caller.py"
+    mathlib.write_text("def compute(x):\n    return x * 2\n")
+    caller.write_text(
+        "import mathlib\n\n"
+        "def use_qualified(n):\n"
+        "    return mathlib.compute(n)\n"
+    )
+    result = extract([caller, mathlib], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "use_qualified" in nodes[e["source"]]["label"]
+        and "compute" in nodes[e["target"]]["label"]
+        and "mathlib.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(edges) == 1, f"expected one use_qualified->compute edge, got {edges}"
+    assert edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_python_module_qualified_call_requires_the_import(tmp_path):
+    """A `module.func()` call must resolve only against a module the caller's own
+    file imports — a local instance `o.compute()` (o is a parameter) must NOT be
+    linked to a same-named function in some other module (#1883 false-edge guard)."""
+    mathlib = tmp_path / "mathlib.py"
+    caller = tmp_path / "caller.py"
+    mathlib.write_text("def compute(x):\n    return x * 2\n")
+    # no `import mathlib`; `o` is just a parameter that happens to expose compute()
+    caller.write_text("def via_obj(o):\n    return o.compute(3)\n")
+    result = extract([caller, mathlib], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    bad = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "via_obj" in nodes[e["source"]]["label"]
+        and "compute" in nodes[e["target"]]["label"]
+    ]
+    assert bad == [], f"non-imported receiver must not link cross-file: {bad}"
+
+
 def test_python_qualified_call_resolves_when_method_name_collides_with_caller(tmp_path):
     """The real #1446 shape: a viewset action `approve()` delegates to a SERVICE
     action of the SAME name via `Service.approve()`. The bare-name in-file lookup
@@ -1114,7 +1176,7 @@ def test_extract_falls_back_to_sequential_when_parallel_returns_false(tmp_path, 
     calls = {"parallel": 0, "sequential": 0}
     real_sequential = extract_mod._extract_sequential
 
-    def fake_parallel(uncached_work, per_file, effective_root, max_workers, total_files):
+    def fake_parallel(uncached_work, per_file, root, max_workers, total_files, cache_location=None):
         calls["parallel"] += 1
         return False  # simulate the post-fix BrokenProcessPool branch
 

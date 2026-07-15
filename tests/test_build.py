@@ -924,3 +924,49 @@ def test_cross_family_reference_to_unknown_ext_is_kept():
     }
     G = build_from_json(ext, directed=False)
     assert G.has_edge("pkg_json", "src_app_ts"), "config->code reference (unknown ext) must be kept"
+
+
+def test_markdown_doc_twin_merges_into_semantic_doc_node():
+    """#1799: the markdown quick-scan's bare `<slug>` doc node and the semantic
+    `<slug>_doc` node for the same file must collapse to one node, with edges
+    consolidated — otherwise a document is two disconnected halves and traversals
+    dead-end on the wrong twin."""
+    ext = {
+        "nodes": [
+            {"id": "docs_readme_doc", "label": "README", "file_type": "document",
+             "source_file": "docs/readme.md", "source_location": "L1"},
+            {"id": "docs_readme", "label": "readme.md", "file_type": "document",
+             "source_file": "docs/readme.md", "source_location": "L1"},
+            {"id": "code_auth", "label": "auth", "file_type": "code",
+             "source_file": "auth.py", "source_location": "L1"},
+            {"id": "docs_guide", "label": "guide.md", "file_type": "document",
+             "source_file": "docs/guide.md", "source_location": "L1"},
+        ],
+        "edges": [
+            {"source": "docs_readme_doc", "target": "code_auth", "relation": "references",
+             "source_file": "docs/readme.md", "confidence": "INFERRED", "weight": 1.0},
+            {"source": "docs_guide", "target": "docs_readme", "relation": "references",
+             "source_file": "docs/guide.md", "confidence": "EXTRACTED", "weight": 1.0},
+        ],
+    }
+    G = build_from_json(ext, directed=False)
+    assert "docs_readme" not in G.nodes()          # bare twin merged away
+    assert "docs_readme_doc" in G.nodes()           # semantic node is canonical
+    assert G.has_edge("docs_guide", "docs_readme_doc")   # quick-scan edge repointed
+    assert G.has_edge("docs_readme_doc", "code_auth")    # semantic edge kept
+
+
+def test_doc_twin_merge_does_not_touch_code_symbols():
+    """#1799 guard: a code symbol `foo` and an unrelated `foo_doc` (not
+    file_type=document) must NOT merge, even sharing a source_file."""
+    ext = {
+        "nodes": [
+            {"id": "m_foo", "label": "foo", "file_type": "code",
+             "source_file": "m.py", "source_location": "L1"},
+            {"id": "m_foo_doc", "label": "foo rationale", "file_type": "rationale",
+             "source_file": "m.py", "source_location": "L2"},
+        ],
+        "edges": [],
+    }
+    G = build_from_json(ext, directed=False)
+    assert {"m_foo", "m_foo_doc"} <= set(G.nodes())
