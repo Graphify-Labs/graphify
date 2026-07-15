@@ -154,3 +154,23 @@ def test_report_hubs_use_wikilinks_when_obsidian():
     labels = {cid: f"Widget {cid}" for cid in communities}
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
     assert "[[_COMMUNITY_" in report
+
+
+def test_report_lists_skipped_sensitive_files():
+    # #1225: skipped files must be listed by name, not reduced to a count, so a
+    # silently dropped file is findable by grepping the report.
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    detection["skipped_sensitive"] = [
+        "/proj/references/prompts/derive-locked-tokens.md [name matches a secrets keyword]",
+        "/proj/.ssh/id_rsa",
+    ]
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Skipped Files" in report
+    assert "derive-locked-tokens.md" in report
+    assert "id_rsa" in report
+
+
+def test_report_omits_skipped_section_when_nothing_skipped():
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Skipped Files" not in report

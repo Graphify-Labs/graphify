@@ -113,6 +113,17 @@ def generate(
             "- Verdict: corpus is large enough that graph structure adds value.",
         ]
 
+    # Every skipped file by name, not a bare count: one benign doc swallowed by
+    # the secrets heuristic must stay findable by grepping the report (#1225).
+    skipped = detection_result.get("skipped_sensitive") or []
+    if skipped:
+        lines += [
+            "",
+            "## Skipped Files",
+            f"{len(skipped)} file(s) were skipped during the scan and are absent from the graph:",
+        ]
+        lines += [f"- `{entry}`" for entry in skipped]
+
     from .analyze import _is_file_node as _ifn
     non_empty = {cid: nodes for cid, nodes in communities.items()
                  if any(not _ifn(G, n) for n in nodes)}

@@ -1099,6 +1099,66 @@ def test_sensitive_flags_plural_tokens_txt():
     assert _is_sensitive(Path("tokens.txt"))
 
 
+# ── Issue #1225: .graphifyinclude rescues generic keyword skips ───────────────
+# The keyword stage is the only heuristic guess; an exact .graphifyinclude entry
+# states user intent and overrides it. The specific credential patterns and
+# secrets dirs are never overridden, and glob entries don't count as explicit.
+
+def test_include_rescues_keyword_skipped_doc(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    doc = docs / "derive-locked-tokens.md"
+    doc.write_text("A prompt template about locking proper-noun tokens.\n" * 20)
+    (tmp_path / ".graphifyinclude").write_text("docs/derive-locked-tokens.md\n")
+
+    result = detect(tmp_path)
+
+    assert any("derive-locked-tokens.md" in f for f in result["files"]["document"])
+    assert not any("derive-locked-tokens" in item for item in result["skipped_sensitive"])
+
+
+def test_keyword_skip_is_annotated_and_names_escape_hatch(tmp_path, capsys):
+    doc = tmp_path / "deploy-tokens.md"
+    doc.write_text("Runbook for the deploy token rotation schedule.\n" * 20)
+
+    result = detect(tmp_path)
+
+    assert not any("deploy-tokens.md" in f for f in result["files"]["document"])
+    assert any(
+        "deploy-tokens.md" in item and ".graphifyinclude" in item
+        for item in result["skipped_sensitive"]
+    )
+    err = capsys.readouterr().err
+    assert "deploy-tokens.md" in err
+    assert ".graphifyinclude" in err
+
+
+def test_include_rescue_requires_exact_path_not_glob(tmp_path):
+    doc = tmp_path / "deploy-tokens.md"
+    doc.write_text("Runbook for the deploy token rotation schedule.\n" * 20)
+    (tmp_path / ".graphifyinclude").write_text("*\n")
+
+    result = detect(tmp_path)
+
+    assert not any("deploy-tokens.md" in f for f in result["files"]["document"])
+    assert any("deploy-tokens.md" in item for item in result["skipped_sensitive"])
+
+
+def test_include_cannot_rescue_credential_stores(tmp_path):
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "db.json").write_text('{"password": "hunter2"}')
+    (tmp_path / "server.pem").write_text("-----BEGIN PRIVATE KEY-----\n")
+    (tmp_path / ".graphifyinclude").write_text("secrets/db.json\nserver.pem\n")
+
+    result = detect(tmp_path)
+
+    assert any("db.json" in item for item in result["skipped_sensitive"])
+    assert any("server.pem" in item for item in result["skipped_sensitive"])
+    for flist in result["files"].values():
+        assert not any("db.json" in f or "server.pem" in f for f in flist)
+
+
 # ── Issue #933: failed-chunk files must not be frozen in manifest ─────────────
 
 def test_save_manifest_skips_semantic_hash_for_files_without_cache(tmp_path):

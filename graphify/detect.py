@@ -182,17 +182,25 @@ _PAPER_SIGNALS = [
 _PAPER_SIGNAL_THRESHOLD = 3  # need at least this many signals to call it a paper
 
 
-def _is_sensitive(path: Path) -> bool:
-    """Return True if this file likely contains secrets and should be skipped."""
+# Reasons returned by _sensitive_reason. Stages 1-2 match specific, near-certain
+# secret locations; Stage 3 is a heuristic guess on the name, so it is the only
+# stage an explicit .graphifyinclude entry may override (#1225).
+_SENSITIVE_DIR = "dir"
+_SENSITIVE_PATTERN = "pattern"
+_SENSITIVE_KEYWORD = "keyword"
+
+
+def _sensitive_reason(path: Path) -> str | None:
+    """Return which stage flags this file as likely containing secrets, or None."""
     # Stage 1: any PARENT directory is a known secrets dir (parts[:-1] excludes
     # the filename itself so a root-level file named "credentials" is not falsely
     # skipped — the name patterns in Stage 2 handle the filename).
     if any(part in _SENSITIVE_DIRS for part in path.parts[:-1]):
-        return True
+        return _SENSITIVE_DIR
     # Stage 2: filename pattern match
     name = path.name
     if any(p.search(name) for p in _SENSITIVE_PATTERNS):
-        return True
+        return _SENSITIVE_PATTERN
     # Stage 3: generic keywords, only when load-bearing in the name. Do NOT let a
     # bare name keyword silently drop a genuine programming-language source file:
     # a .rb/.py named device_token or passwords_controller is a module, not a secret
@@ -204,8 +212,13 @@ def _is_sensitive(path: Path) -> bool:
     if _generic_keyword_hit(name):
         ext = path.suffix.lower()
         is_source_code = classify_file(path) == FileType.CODE and ext not in _SECRET_PRONE_DATA_EXTS
-        return not is_source_code
-    return False
+        return None if is_source_code else _SENSITIVE_KEYWORD
+    return None
+
+
+def _is_sensitive(path: Path) -> bool:
+    """Return True if this file likely contains secrets and should be skipped."""
+    return _sensitive_reason(path) is not None
 
 
 def _looks_like_paper(path: Path) -> bool:
@@ -994,8 +1007,10 @@ def _is_ignored(
 def _load_graphifyinclude(root: Path) -> list[tuple[Path, str]]:
     """Read .graphifyinclude allowlist patterns from root and ancestors.
 
-    Include patterns opt matching hidden files/dirs into traversal. Sensitive
-    files and hard-skipped noise directories are still excluded later.
+    An include entry states explicit user intent to graph a file: wildcard-free
+    entries rescue files from the generic secrets keyword heuristic (#1225).
+    The specific sensitive patterns (secrets dirs, .env, key files) and
+    hard-skipped noise directories are still always excluded.
     Uses the same VCS-root ceiling logic as _load_graphifyignore.
     """
     root = root.resolve()
@@ -1150,6 +1165,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         return _cache.cached_word_count(path, root, count_words, cache_root=cache_root)
 
     skipped_sensitive: list[str] = []
+    keyword_skipped: list[str] = []
     unclassified: list[str] = []
     ignore_patterns = _load_graphifyignore(root)
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
@@ -1160,7 +1176,15 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             line = _parse_gitignore_line(pat)
             if line:
                 ignore_patterns.append((root, line))
-    include_patterns = _load_graphifyinclude(root)
+    # Only wildcard-free .graphifyinclude entries may rescue a file from the
+    # secrets keyword heuristic: a broad glob written to opt hidden files into
+    # traversal must not silently start ingesting keyword-named credential
+    # stores like api_token.txt (#1225).
+    explicit_includes = [
+        (anchor, pat)
+        for anchor, pat in _load_graphifyinclude(root)
+        if not any(ch in pat for ch in "*?[")
+    ]
 
     # Always include graphify-out/memory/ - query results filed back into the graph
     memory_dir = root / GRAPHIFY_OUT / "memory"
@@ -1260,8 +1284,18 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         if not _resolves_under_root(p, root):
             skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
             continue
-        if _is_sensitive(p):
-            skipped_sensitive.append(str(p))
+        sensitive = _sensitive_reason(p)
+        if sensitive == _SENSITIVE_KEYWORD and _is_included(p, root, explicit_includes):
+            sensitive = None  # explicit allowlist entry beats the name heuristic (#1225)
+        if sensitive is not None:
+            if sensitive == _SENSITIVE_KEYWORD:
+                keyword_skipped.append(str(p))
+                skipped_sensitive.append(
+                    str(p) + " [name matches a secrets keyword - add the exact "
+                    "path to .graphifyinclude to include it]"
+                )
+            else:
+                skipped_sensitive.append(str(p))
             continue
         ftype = classify_file(p)
         if not ftype:
@@ -1308,6 +1342,17 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             files[ftype].append(str(p))
             if ftype != FileType.VIDEO:
                 total_words += _wc(p)
+
+    if keyword_skipped:
+        import sys as _sys
+        _names = ", ".join(Path(f).name for f in keyword_skipped[:6])
+        _more = f" (+{len(keyword_skipped) - 6} more)" if len(keyword_skipped) > 6 else ""
+        print(
+            f"[graphify] {len(keyword_skipped)} file(s) skipped because their "
+            f"names match secrets keywords: {_names}{_more}. False positive? "
+            f"Add the exact path to .graphifyinclude to include it.",
+            file=_sys.stderr,
+        )
 
     for ftype in files:
         files[ftype].sort()
