@@ -359,6 +359,41 @@ def test_codebuddy_install_writes_hook(tmp_path):
     assert any("graphify" in str(h) for h in hooks)
 
 
+def test_claude_hook_is_shell_agnostic(tmp_path):
+    # #522: the installed PreToolUse hooks must be plain exe invocations, not
+    # POSIX bash (which fails on Windows cmd.exe/PowerShell).
+    import json as _json
+    from graphify.__main__ import _install_claude_hook
+    _install_claude_hook(tmp_path)
+    hooks = _json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]["PreToolUse"]
+    matchers = {h["matcher"] for h in hooks}
+    assert {"Bash", "Read|Glob"} <= matchers
+    for h in hooks:
+        cmd = h["hooks"][0]["command"]
+        for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):
+            assert token not in cmd, f"shell syntax {token!r} in {cmd!r}"
+        assert "graphify" in cmd and "hook-guard" in cmd
+
+
+def test_claude_hook_install_idempotent_and_replaces_old_bash_hook(tmp_path):
+    import json as _json
+    from graphify.__main__ import _install_claude_hook
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    # Pre-seed a legacy bash-style graphify hook (the thing #522 shipped before).
+    settings_path.write_text(_json.dumps({"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command",
+         "command": "[ -f graphify-out/graph.json ] && echo '{...}' || true"}]},
+    ]}}), encoding="utf-8")
+    _install_claude_hook(tmp_path)
+    _install_claude_hook(tmp_path)  # second install must not duplicate
+    hooks = _json.loads(settings_path.read_text())["hooks"]["PreToolUse"]
+    graphify_hooks = [h for h in hooks if "graphify" in str(h)]
+    assert len(graphify_hooks) == 2, "exactly the Bash + Read|Glob guards, no dupes"
+    # the legacy bash payload must be gone
+    assert not any("[ -f graphify-out" in h["hooks"][0]["command"] for h in graphify_hooks)
+
+
 def test_codebuddy_install_idempotent(tmp_path):
     from graphify.__main__ import codebuddy_install
     codebuddy_install(tmp_path)
@@ -597,6 +632,40 @@ def test_opencode_agents_install_writes_plugin(tmp_path):
     plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
     assert plugin.exists()
     assert "tool.execute.before" in plugin.read_text()
+
+
+def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
+    """The bash reminder string must not contain backticks or $(...) (regression test for #1413).
+
+    The plugin prepends `echo "<reminder>" && <cmd>` to the user's bash command.
+    Backticks or $() inside the reminder trigger bash command substitution
+    when the echo runs, which both corrupts tool output and silently executes
+    the very graphify command we are only suggesting.
+    """
+    _agents_install(tmp_path, "opencode")
+    plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
+    body = plugin.read_text()
+    # Extract the echoed reminder string literal between the double-quotes
+    # of the `output.args.command = 'echo "..." && ' +` line.
+    import re
+
+    m = re.search(r'echo "([^"]*)"', body)
+    assert m, "echo reminder not found in plugin body"
+    reminder = m.group(1)
+    assert "`" not in reminder, f"backtick in reminder would trigger command substitution: {reminder!r}"
+    assert "$(" not in reminder, f"$() in reminder would trigger command substitution: {reminder!r}"
+
+
+def test_opencode_plugin_uses_semicolon_not_ampersand(tmp_path):
+    """The reminder must be joined to the user's command with ';', not '&&'
+    (#1646). Windows PowerShell 5.1 rejects '&&' as a statement separator, which
+    broke the first bash command of every OpenCode session on Windows. ';' works
+    in PowerShell 5.1, Bash, and POSIX shells."""
+    _agents_install(tmp_path, "opencode")
+    body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
+    # The prepend line ends with the separator before `' +`.
+    assert '" ; \' +' in body or '." ; \' +' in body, "reminder should join with ';'"
+    assert '" && \' +' not in body, "'&&' breaks PowerShell 5.1 (#1646)"
 
 
 def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
@@ -970,3 +1039,21 @@ def test_uninstall_all_removes_amp_user_skill(tmp_path, monkeypatch):
         main()
 
     assert not skill.exists()
+
+
+def test_hermes_skill_destination_windows_uses_localappdata():
+    """#1403: on Windows, Hermes scans %LOCALAPPDATA%\\hermes\\skills, so the global
+    skill must land there — not ~/.hermes/skills (the POSIX path)."""
+    from graphify.__main__ import _platform_skill_destination
+    with patch("graphify.__main__.platform.system", return_value="Windows"), \
+         patch.dict(os.environ, {"LOCALAPPDATA": str(Path("/tmp/AppDataLocal"))}):
+        dst = _platform_skill_destination("hermes", project=False)
+    assert dst == Path("/tmp/AppDataLocal") / "hermes" / "skills" / "graphify" / "SKILL.md", dst
+
+
+def test_hermes_skill_destination_posix_uses_home():
+    """Non-Windows hermes destination is unchanged (~/.hermes/skills)."""
+    from graphify.__main__ import _platform_skill_destination
+    with patch("graphify.__main__.platform.system", return_value="Linux"):
+        dst = _platform_skill_destination("hermes", project=False)
+    assert str(dst).endswith(".hermes/skills/graphify/SKILL.md"), dst

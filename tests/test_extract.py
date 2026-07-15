@@ -1,4 +1,12 @@
+import json
+import os
+import sys
+from collections import Counter
 from pathlib import Path
+
+import pytest
+
+from graphify.build import build_from_json
 from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -95,6 +103,160 @@ def test_extract_disambiguates_duplicate_symbol_ids_by_source_path(tmp_path):
         if edge["relation"] in {"contains", "method"}:
             assert edge["source"] in node_ids, f"Dangling structural source: {edge}"
             assert edge["target"] in node_ids, f"Dangling structural target: {edge}"
+
+
+def test_cpp_unresolved_base_class_stubs_stay_disambiguated_by_file(tmp_path):
+    """Two different files' same-named, otherwise-undefined base class must not
+    collapse onto one shared stub node.
+
+    The C++ base_class_clause handler used to build its stub inline instead of
+    calling ensure_named_node(), so it never tagged the stub with origin_file.
+    Without that tag, _disambiguate_colliding_node_ids couldn't tell file A's
+    reference to unresolved `Base` apart from file B's, and every file's
+    unresolved base class merged onto one bare id -- which could then collide
+    with an unrelated same-named real definition anywhere else in the corpus.
+    """
+    first = tmp_path / "a" / "Foo.cpp"
+    second = tmp_path / "b" / "Bar.cpp"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text("class Foo : public Base {};\n", encoding="utf-8")
+    second.write_text("class Bar : public Base {};\n", encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+    base_stubs = [
+        node for node in result["nodes"]
+        if node["label"] == "Base" and not node.get("source_file")
+    ]
+    assert len(base_stubs) == 2
+    assert len({node["id"] for node in base_stubs}) == 2
+
+    inherits_edges = [e for e in result["edges"] if e["relation"] == "inherits"]
+    assert len(inherits_edges) == 2
+    assert len({e["target"] for e in inherits_edges}) == 2
+
+
+def test_cross_file_type_annotation_refs_resolve_to_single_node(tmp_path):
+    """#1402: a class defined once but referenced via type annotations in N other
+    files must NOT create 1+N phantom duplicate nodes (with the referencing file's
+    path — extension and all — baked into the id, e.g. ``pkg_a_py_thing``). The
+    annotation references resolve to the single canonical definition.
+
+    Contrast with test_extract_disambiguates_...: genuinely *defined* duplicates
+    stay separate; only cross-file *references* collapse onto the real node."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "thing.py").write_text("class Thing:\n    def run(self):\n        return 1\n", encoding="utf-8")
+    (pkg / "a.py").write_text("from pkg.thing import Thing\ndef use_a(obj: Thing) -> Thing:\n    return obj\n", encoding="utf-8")
+    (pkg / "b.py").write_text("from pkg.thing import Thing\ndef use_b(obj: Thing) -> Thing:\n    return obj\n", encoding="utf-8")
+
+    result = extract([pkg / "thing.py", pkg / "a.py", pkg / "b.py"], cache_root=tmp_path)
+
+    thing_nodes = [n for n in result["nodes"] if n["label"] == "Thing"]
+    assert len(thing_nodes) == 1, [n["id"] for n in thing_nodes]
+    # The tell-tale phantom signature is the referencing file's path (with .py
+    # extension) baked into the id — must not appear.
+    assert "_py" not in thing_nodes[0]["id"], thing_nodes[0]["id"]
+
+
+def test_go_cross_file_type_refs_resolve_to_single_node(tmp_path):
+    """#1402 (Go): the sourceless-stub fix landed in six extractors but the Go copy
+    of ``ensure_named_node`` was missed, so a Go type defined once but referenced via
+    parameter/return types in N sibling files produced 1+N phantom duplicate nodes
+    with the referencing file's path (extension and all) baked into the id
+    (e.g. ``pkg_a_go_thing``). Same-package references must resolve to the single
+    canonical type node instead."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "thing.go").write_text(
+        "package pkg\n\ntype Thing struct{}\n\nfunc (t Thing) Run() int { return 1 }\n",
+        encoding="utf-8",
+    )
+    (pkg / "a.go").write_text(
+        "package pkg\n\nfunc UseA(obj Thing) Thing { return obj }\n", encoding="utf-8"
+    )
+    (pkg / "b.go").write_text(
+        "package pkg\n\nfunc UseB(obj Thing) Thing { return obj }\n", encoding="utf-8"
+    )
+
+    result = extract([pkg / "thing.go", pkg / "a.go", pkg / "b.go"], cache_root=tmp_path)
+
+    thing_nodes = [n for n in result["nodes"] if n["label"] == "Thing"]
+    assert len(thing_nodes) == 1, [n["id"] for n in thing_nodes]
+    # The phantom signature is the referencing file's path (with .go extension)
+    # baked into the id — must not appear.
+    assert "_go" not in thing_nodes[0]["id"], thing_nodes[0]["id"]
+
+
+def test_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
+    """#1462: imported stdlib/type stubs with the same label are distinct uses
+    when there is no single project definition to rewire onto. They need the
+    referencing file as a disambiguator while still keeping ``source_file`` empty
+    so real project definitions can be rewired by #1402."""
+    first = tmp_path / "pkg/a.py"
+    second = tmp_path / "pkg/b.py"
+    first.parent.mkdir(parents=True)
+    first.write_text("from pathlib import Path\ndef use_a(p: Path):\n    return p\n", encoding="utf-8")
+    second.write_text("from pathlib import Path\ndef use_b(p: Path):\n    return p\n", encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+    path_nodes = [node for node in result["nodes"] if node["label"] == "Path"]
+
+    assert len(path_nodes) == 2
+    assert len({node["id"] for node in path_nodes}) == 2
+    assert all(not node.get("source_file") for node in path_nodes)
+
+
+def test_origin_file_is_not_serialized_into_extract_output(tmp_path):
+    """origin_file is an internal disambiguation hint (#1462) consumed only by the
+    colliding-id pass during extraction. It must not survive into the returned nodes
+    (and thus graph.json), where it would ship as an absolute, machine-specific path —
+    the "no absolute paths in output" contract (#555, #932). Disambiguation still keys
+    on it first, so the two same-label cross-file stubs stay distinct."""
+    first = tmp_path / "pkg/a.py"
+    second = tmp_path / "pkg/b.py"
+    first.parent.mkdir(parents=True)
+    first.write_text("from pathlib import Path\ndef use_a(p: Path):\n    return p\n", encoding="utf-8")
+    second.write_text("from pathlib import Path\ndef use_b(p: Path):\n    return p\n", encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+
+    # The internal field is gone from every node...
+    assert all("origin_file" not in node for node in result["nodes"])
+    # ...so no node leaks the absolute sandbox path that origin_file used to carry.
+    leaked = [
+        (node.get("id"), key, value)
+        for node in result["nodes"]
+        for key, value in node.items()
+        if isinstance(value, str) and str(tmp_path) in value
+    ]
+    assert not leaked, f"absolute paths leaked into nodes: {leaked}"
+    # ...yet the colliding-id pass still kept the two cross-file stubs distinct.
+    path_nodes = [node for node in result["nodes"] if node["label"] == "Path"]
+    assert len(path_nodes) == 2
+    assert len({node["id"] for node in path_nodes}) == 2
+
+
+def test_go_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
+    """#1462 (dedicated extractors): the imported-type-stub disambiguation (the
+    ``origin_file`` key) landed only in the generic extractor, so the six dedicated
+    extractors (Go, Rust, Julia, Fortran, PowerShell, ObjC) still collapsed same-label
+    cross-file stubs into one conflated bare-id node — a false cross-package link.
+    They must stay distinct per file while keeping ``source_file`` empty so the #1402
+    rewire still collapses them onto a real definition when one exists."""
+    first = tmp_path / "a/use_a.go"
+    second = tmp_path / "b/use_b.go"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text('package a\n\nimport "ext"\n\nfunc UseA(w ext.Widget) {}\n', encoding="utf-8")
+    second.write_text('package b\n\nimport "ext"\n\nfunc UseB(w ext.Widget) {}\n', encoding="utf-8")
+
+    result = extract([first, second], cache_root=tmp_path)
+    widget_nodes = [node for node in result["nodes"] if node["label"] == "Widget"]
+
+    assert len(widget_nodes) == 2
+    assert len({node["id"] for node in widget_nodes}) == 2
+    assert all(not node.get("source_file") for node in widget_nodes)
 
 
 def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_path):
@@ -236,6 +398,32 @@ def test_collect_files_follows_symlinked_directory(tmp_path):
     assert [f.name for f in files_yes].count("lib.py") == 2
 
 
+def test_collect_files_skips_out_of_root_symlinked_directory(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("token = 'outside'")
+    (root / "linked_secret").symlink_to(outside)
+
+    files = collect_files(root, follow_symlinks=True)
+
+    assert not any("linked_secret" in str(f) for f in files)
+
+
+def test_collect_files_skips_out_of_root_symlinked_file_by_default(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("token = 'outside'")
+    (root / "secret_link.py").symlink_to(outside / "secret.py")
+
+    files = collect_files(root)
+
+    assert not any(f.name == "secret_link.py" for f in files)
+
+
 def test_collect_files_handles_circular_symlinks(tmp_path):
     sub = tmp_path / "pkg"
     sub.mkdir()
@@ -244,6 +432,90 @@ def test_collect_files_handles_circular_symlinks(tmp_path):
 
     files = collect_files(tmp_path, follow_symlinks=True)
     assert any(f.name == "mod.py" for f in files)
+
+
+def _legacy_collect_files(target, *, root=None):
+    """The pre-#1261 rglob-per-extension implementation, kept as a parity oracle."""
+    from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
+    extensions = set(_DISPATCH.keys())
+    ignore_root = root if root is not None else target
+    patterns = _load_graphifyignore(ignore_root)
+    results = []
+    for ext in sorted(extensions):
+        results.extend(
+            p for p in target.rglob(f"*{ext}")
+            if p.suffix == ext
+            and not any(_is_noise_dir(part) for part in p.parts)
+            and not (patterns and _is_ignored(p, ignore_root, patterns))
+        )
+    return sorted(results)
+
+
+def test_collect_files_parity_with_legacy_on_fixtures():
+    assert collect_files(FIXTURES) == _legacy_collect_files(FIXTURES)
+
+
+def test_collect_files_parity_with_legacy_synthetic(tmp_path):
+    (tmp_path / "src" / "deep").mkdir(parents=True)
+    (tmp_path / "src" / "app.py").write_text("x = 1")
+    (tmp_path / "src" / "deep" / "lib.ts").write_text("export const x = 1")
+    (tmp_path / "src" / "deep" / "notes.txt").write_text("not code")
+    # Fortran case distinction: .f and .F are distinct dispatch entries
+    (tmp_path / "src" / "legacy.f").write_text("      END")
+    (tmp_path / "src" / "modern.F").write_text("      END")
+    # Hidden dirs are traversed (only noise dirs are skipped)
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "ci.sh").write_text("echo hi")
+    # Noise dirs must be excluded entirely
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("x")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "app.py").write_text("x")
+    # Ignore rules incl. a negation, so directory-level pruning must not
+    # swallow re-included files
+    (tmp_path / "gen").mkdir()
+    (tmp_path / "gen" / "skip.py").write_text("x")
+    (tmp_path / "vendored").mkdir()
+    (tmp_path / "vendored" / "drop.py").write_text("x")
+    (tmp_path / "vendored" / "keep.py").write_text("x")
+    (tmp_path / ".gitignore").write_text("gen/\nvendored/*.py\n!vendored/keep.py\n")
+
+    result = collect_files(tmp_path)
+    assert result == _legacy_collect_files(tmp_path)
+    names = {f.name for f in result}
+    assert names == {"app.py", "lib.ts", "legacy.f", "modern.F", "ci.sh", "keep.py"}
+
+
+def test_collect_files_walks_each_directory_once(tmp_path, monkeypatch):
+    """collect_files must scan every directory at most once and never descend
+    into noise dirs (#1261). The old implementation ran one rglob pass per
+    supported extension (~85 walks) and filtered node_modules/.git paths only
+    after descending into them.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x = 1")
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("x")
+
+    scanned: list[str] = []
+    real_scandir = os.scandir
+
+    def counting_scandir(path=".", *args, **kwargs):
+        scanned.append(os.fspath(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+    files = collect_files(tmp_path)
+    monkeypatch.undo()
+
+    assert files == [tmp_path / "src" / "a.py"]
+    # The traversal must be visible as plain os.scandir calls (single os.walk)
+    assert any(s.endswith("src") for s in scanned)
+    # Noise dirs are pruned before descending, not filtered afterwards
+    assert not any("node_modules" in s for s in scanned)
+    # No directory is read more than once
+    counts = Counter(scanned)
+    assert max(counts.values()) == 1
 
 
 def test_no_dangling_edges_on_extract():
@@ -349,6 +621,91 @@ def test_cross_file_calls_skip_ambiguous_duplicate_labels(tmp_path):
     )
 
 
+def test_cross_file_call_survives_same_named_test_mock(tmp_path):
+    """A real cross-file call must NOT be erased by a same-named test mock.
+
+    src/caller.py calls save(); src/service.py defines the real save(); a test
+    mock save() lives in tests/test_service.py. Before #1553 the ambiguous-name
+    god-node guard dropped the edge entirely. Now the non-test tie-breaker keeps
+    exactly one caller->save edge pointing at the SRC definition.
+    """
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+    (src / "service.py").write_text("def save():\n    return 'real'\n")
+    (src / "caller.py").write_text("def run():\n    save()\n")
+    (tests / "test_service.py").write_text("def save():\n    return 'mock'\n")
+
+    result = extract(
+        [src / "caller.py", src / "service.py", tests / "test_service.py"],
+        cache_root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    save_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "save()"
+    ]
+    assert len(save_calls) == 1, f"expected exactly one run->save edge, got {save_calls}"
+    target_sf = (nodes[save_calls[0]["target"]].get("source_file") or "")
+    assert "service.py" in target_sf and "test_service.py" not in target_sf, target_sf
+
+
+def test_cross_file_call_god_node_guard_two_real_defs(tmp_path):
+    """Two genuine NON-test defs of the same name + one caller => ZERO edges.
+
+    Proves #543/#1219 is not reopened by the #1553 tie-breakers: with no test
+    candidate to drop and no proximity winner, the guard still bails.
+    """
+    pkg_a = tmp_path / "a"
+    pkg_b = tmp_path / "b"
+    pkg_c = tmp_path / "c"
+    for d in (pkg_a, pkg_b, pkg_c):
+        d.mkdir()
+    (pkg_a / "svc.py").write_text("def save():\n    return 'a'\n")
+    (pkg_b / "svc.py").write_text("def save():\n    return 'b'\n")
+    (pkg_c / "caller.py").write_text("def run():\n    save()\n")
+
+    result = extract(
+        [pkg_c / "caller.py", pkg_a / "svc.py", pkg_b / "svc.py"],
+        cache_root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    save_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "save()"
+    ]
+    assert save_calls == [], f"god-node guard must bail, got {save_calls}"
+
+
+def test_cross_file_call_survives_many_test_mocks(tmp_path):
+    """One src def + many same-named test stubs + caller => exactly one src edge."""
+    src = tmp_path / "src"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tests.mkdir()
+    (src / "service.py").write_text("def save():\n    return 'real'\n")
+    (src / "caller.py").write_text("def run():\n    save()\n")
+    for i in range(5):
+        (tests / f"thing{i}_test.py").write_text("def save():\n    return 'mock'\n")
+
+    paths = [src / "caller.py", src / "service.py"] + sorted(tests.glob("*_test.py"))
+    result = extract(paths, cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    save_calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes[e["source"]]["label"] == "run()"
+        and nodes[e["target"]]["label"] == "save()"
+    ]
+    assert len(save_calls) == 1, f"expected one run->save edge, got {save_calls}"
+    assert "service.py" in (nodes[save_calls[0]["target"]].get("source_file") or "")
+
+
 def test_extract_generic_surfaces_tree_sitter_version_mismatch_hint(monkeypatch):
     """When Language() raises TypeError (e.g. old tree-sitter binding meets a
     new tree-sitter API), the error message should point users at the upgrade
@@ -427,6 +784,112 @@ def test_extract_js_arrow_function_still_extracted():
         arrow_fixture.unlink()
 
 
+def test_extract_js_this_assigned_methods(tmp_path):
+    """`this.X = () => {}` / `this.X = function(){}` in a constructor-style
+    function body must be captured as methods owned by that function.
+
+    This is the dominant pattern in pre-class JS (DAOs, route handlers): the
+    methods live in the function body, which is otherwise only walked for
+    calls, so before this they were entirely invisible as symbols.
+    """
+    from graphify.extract import extract_js
+    f = tmp_path / "dao.js"
+    f.write_text(
+        "function UserDAO(db) {\n"
+        "  this.addUser = (name) => { return name; };\n"
+        "  this.getUser = function(id) { return id; };\n"
+        "}\n"
+    )
+    result = extract_js(f)
+    by_label = {n["label"]: n for n in result["nodes"]}
+    assert "UserDAO()" in by_label
+    assert ".addUser()" in by_label
+    assert ".getUser()" in by_label
+    # The methods are owned by UserDAO via a `method` edge.
+    owner = by_label["UserDAO()"]["id"]
+    method_edges = {
+        (e["source"], by_label_by_id(result, e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "method"
+    }
+    assert (owner, ".addUser()") in method_edges
+    assert (owner, ".getUser()") in method_edges
+
+
+def test_extract_js_commonjs_exports_assignment(tmp_path):
+    """`exports.X = fn` and `module.exports.X = fn` must produce function nodes."""
+    from graphify.extract import extract_js
+    f = tmp_path / "mod.js"
+    f.write_text(
+        "exports.alpha = (x) => x;\n"
+        "module.exports.beta = function(y) { return y; };\n"
+    )
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "alpha()" in labels
+    assert "beta()" in labels
+
+
+def test_extract_js_prototype_method_assignment(tmp_path):
+    """`Foo.prototype.bar = fn` must be captured as a method owned by Foo."""
+    from graphify.extract import extract_js
+    f = tmp_path / "proto.js"
+    f.write_text(
+        "function Foo() {}\n"
+        "Foo.prototype.bar = function() { return 1; };\n"
+    )
+    by_label = {n["label"]: n for n in extract_js(f)["nodes"]}
+    assert "Foo()" in by_label
+    assert ".bar()" in by_label
+
+
+def test_extract_js_const_function_expression(tmp_path):
+    """`const f = function(){}` (function expression, not arrow) must be captured."""
+    from graphify.extract import extract_js
+    f = tmp_path / "fnexpr.js"
+    f.write_text("const handler = function(req, res) { return res; };\n")
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "handler()" in labels
+
+
+def test_extract_ts_class_arrow_field(tmp_path):
+    """A class field initialised with an arrow function (`x = () => {}`) must be
+    captured as a method of the class — common in React/TS component classes."""
+    from graphify.extract import extract_js
+    f = tmp_path / "comp.ts"
+    f.write_text(
+        "class Widget {\n"
+        "  onClick = (e) => { return e; };\n"
+        "  render() { return null; }\n"
+        "}\n"
+    )
+    by_label = {n["label"]: n for n in extract_js(f)["nodes"]}
+    assert "Widget" in by_label
+    assert ".onClick()" in by_label   # arrow field
+    assert ".render()" in by_label    # plain method (regression guard)
+
+
+def test_extract_js_arbitrary_member_assignment_not_captured(tmp_path):
+    """Guard against the phantom-god-node class (#1077): an arbitrary
+    `obj.x = fn` (obj is neither this/exports/module.exports/<X>.prototype)
+    must NOT produce a node."""
+    from graphify.extract import extract_js
+    f = tmp_path / "noise.js"
+    f.write_text(
+        "const obj = {};\n"
+        "obj.whatever = () => 1;\n"
+    )
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "whatever()" not in labels
+    assert ".whatever()" not in labels
+
+
+def by_label_by_id(result, node_id):
+    for n in result["nodes"]:
+        if n["id"] == node_id:
+            return n["label"]
+    return None
+
+
 def test_cross_file_call_promoted_to_extracted_with_import_evidence(tmp_path):
     """A cross-file `calls` edge must be EXTRACTED when the caller's file has
     an `imports` or `imports_from` edge linking it to the callee."""
@@ -453,9 +916,11 @@ def test_cross_file_call_promoted_to_extracted_with_import_evidence(tmp_path):
     assert call_edges[0]["confidence_score"] == 1.0
 
 
-def test_cross_file_call_remains_inferred_without_import_evidence(tmp_path):
-    """A cross-file `calls` edge must stay INFERRED when there is no import
-    edge — name collision alone is insufficient evidence."""
+def test_js_cross_file_call_without_import_emits_no_edge(tmp_path):
+    """A JS/TS call with no local definition and no import must NOT bind to a
+    same-named export in another file (#1659). JS/TS modules have no implicit
+    cross-module scope, so name collision alone is not a real call — it used to
+    produce a phantom INFERRED edge that fabricated cross-package dependencies."""
     caller = tmp_path / "caller.js"
     callee = tmp_path / "lib.js"
     # Caller does NOT require lib — same-name function happens to exist elsewhere
@@ -472,8 +937,182 @@ def test_cross_file_call_remains_inferred_without_import_evidence(tmp_path):
         and nodes[e["source"]]["label"] == "run()"
         and nodes[e["target"]]["label"] == "doUnique()"
     ]
-    assert len(call_edges) == 1
-    assert call_edges[0]["confidence"] == "INFERRED"
+    assert call_edges == [], f"unimported cross-file JS call should not resolve: {call_edges}"
+
+
+def test_python_qualified_class_method_call_resolves_extracted(tmp_path):
+    """`ClassName.method()` across files resolves to the class-qualified method
+    node with an EXTRACTED `calls` edge (#1446)."""
+    actions = tmp_path / "actions.py"
+    viewset = tmp_path / "viewset.py"
+    actions.write_text(
+        "class TaskActions:\n"
+        "    @staticmethod\n"
+        "    def approve(pk):\n"
+        "        return pk\n"
+    )
+    viewset.write_text(
+        "from actions import TaskActions\n\n"
+        "class TaskViewSet:\n"
+        "    def handle(self, request):\n"
+        "        return TaskActions.approve(request)\n"
+    )
+    result = extract([viewset, actions], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    call_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "handle" in nodes[e["source"]]["label"]
+        and "approve" in nodes[e["target"]]["label"]
+        and "actions.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(call_edges) == 1, f"expected one handle->approve edge, got {call_edges}"
+    assert call_edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_degenerate_symbol_name_does_not_leak_absolute_id(tmp_path):
+    """#1899 variant B: a symbol whose name normalizes to nothing (a minified `$`
+    function, a JSONC `"//"` key) must not be minted — `_make_id(stem, "")`
+    collapses to the bare, absolute-path-derived file stem, leaking the scan path
+    and colliding with the file node. Such nodes carry no graph signal."""
+    (tmp_path / "vendor.js").write_text(
+        "function $(){return 1}\nfunction real(){return 2}\n", encoding="utf-8"
+    )
+    result = extract([tmp_path / "vendor.js"], cache_root=tmp_path)
+    marker = str(tmp_path)
+    for n in result["nodes"]:
+        assert marker not in n["id"], f"absolute path leaked into id: {n}"
+    labels = {n.get("label") for n in result["nodes"]}
+    assert "real()" in labels, "the real function must still be extracted"
+    assert "$()" not in labels, "the degenerate `$` symbol must be dropped (#1899)"
+
+
+def test_python_module_qualified_call_resolves_extracted(tmp_path):
+    """`module.func()` where `module` is imported resolves to the callable that
+    module contains, with an EXTRACTED `calls` edge (#1883). A lowercase module
+    receiver was previously dropped alongside instance calls."""
+    mathlib = tmp_path / "mathlib.py"
+    caller = tmp_path / "caller.py"
+    mathlib.write_text("def compute(x):\n    return x * 2\n")
+    caller.write_text(
+        "import mathlib\n\n"
+        "def use_qualified(n):\n"
+        "    return mathlib.compute(n)\n"
+    )
+    result = extract([caller, mathlib], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "use_qualified" in nodes[e["source"]]["label"]
+        and "compute" in nodes[e["target"]]["label"]
+        and "mathlib.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(edges) == 1, f"expected one use_qualified->compute edge, got {edges}"
+    assert edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_python_module_qualified_call_requires_the_import(tmp_path):
+    """A `module.func()` call must resolve only against a module the caller's own
+    file imports — a local instance `o.compute()` (o is a parameter) must NOT be
+    linked to a same-named function in some other module (#1883 false-edge guard)."""
+    mathlib = tmp_path / "mathlib.py"
+    caller = tmp_path / "caller.py"
+    mathlib.write_text("def compute(x):\n    return x * 2\n")
+    # no `import mathlib`; `o` is just a parameter that happens to expose compute()
+    caller.write_text("def via_obj(o):\n    return o.compute(3)\n")
+    result = extract([caller, mathlib], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    bad = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "via_obj" in nodes[e["source"]]["label"]
+        and "compute" in nodes[e["target"]]["label"]
+    ]
+    assert bad == [], f"non-imported receiver must not link cross-file: {bad}"
+
+
+def test_python_qualified_call_resolves_when_method_name_collides_with_caller(tmp_path):
+    """The real #1446 shape: a viewset action `approve()` delegates to a SERVICE
+    action of the SAME name via `Service.approve()`. The bare-name in-file lookup
+    would match the caller's own node (tgt == caller) and silently drop the call;
+    the qualified receiver must still resolve it cross-file to the service method."""
+    actions = tmp_path / "actions.py"
+    viewset = tmp_path / "viewset.py"
+    actions.write_text(
+        "class TaskActions:\n"
+        "    @staticmethod\n"
+        "    def approve(pk):\n"
+        "        return pk\n"
+    )
+    viewset.write_text(
+        "from actions import TaskActions\n\n"
+        "class TaskViewSet:\n"
+        "    def approve(self, request):\n"          # same name as the callee
+        "        return TaskActions.approve(request)\n"
+    )
+    result = extract([viewset, actions], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    cross = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "viewset.py" in (nodes[e["source"]].get("source_file") or "")
+        and "actions.py" in (nodes[e["target"]].get("source_file") or "")
+        and "approve" in nodes[e["target"]]["label"]
+    ]
+    assert len(cross) == 1, f"expected viewset->service approve edge, got {cross}"
+    assert cross[0]["confidence"] == "EXTRACTED"
+
+
+def test_python_instance_member_call_not_overconnected(tmp_path):
+    """A lowercase-receiver member call (`obj.run()`, `self.run()`) must NOT be
+    resolved cross-file — the #543/#1219 god-node guard stays intact (#1446)."""
+    svc = tmp_path / "svc.py"
+    worker = tmp_path / "worker.py"
+    svc.write_text(
+        "class Service:\n"
+        "    def run(self):\n"
+        "        return 1\n"
+    )
+    worker.write_text(
+        "class Worker:\n"
+        "    def go(self, obj):\n"
+        "        return obj.run()\n"
+    )
+    result = extract([worker, svc], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    bad = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "go" in nodes[e["source"]]["label"]
+        and "run" in nodes[e["target"]]["label"]
+    ]
+    assert bad == [], f"instance member call must not connect cross-file: {bad}"
+
+
+def test_python_qualified_call_ambiguous_class_bails(tmp_path):
+    """When the class name is defined in 2+ files, the qualified call must not
+    resolve — single-definition god-node guard (#1446)."""
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    caller = tmp_path / "caller.py"
+    a.write_text("class Helper:\n    def do(self):\n        return 1\n")
+    b.write_text("class Helper:\n    def do(self):\n        return 2\n")
+    caller.write_text(
+        "from a import Helper\n\n"
+        "class C:\n"
+        "    def f(self):\n"
+        "        return Helper.do(self)\n"
+    )
+    result = extract([caller, a, b], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    resolved = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "f" == nodes[e["source"]]["label"].strip("().")
+        and "do" in nodes[e["target"]]["label"]
+    ]
+    assert resolved == [], f"ambiguous class name must not resolve: {resolved}"
 
 
 # ── TSX (JSX-aware) parsing ──────────────────────────────────────────────────
@@ -537,7 +1176,7 @@ def test_extract_falls_back_to_sequential_when_parallel_returns_false(tmp_path, 
     calls = {"parallel": 0, "sequential": 0}
     real_sequential = extract_mod._extract_sequential
 
-    def fake_parallel(uncached_work, per_file, effective_root, max_workers, total_files):
+    def fake_parallel(uncached_work, per_file, root, max_workers, total_files, cache_location=None):
         calls["parallel"] += 1
         return False  # simulate the post-fix BrokenProcessPool branch
 
@@ -633,6 +1272,86 @@ def test_extract_bash_emits_source_imports_from(tmp_path):
     assert import_edges[0].get("context") == "import"
 
 
+@pytest.mark.parametrize("command", ["./helpers.sh", "bash ./helpers.sh"])
+def test_extract_bash_emits_script_invocation_calls(tmp_path, command):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(f"#!/bin/bash\n{command}\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    invocation = [
+        edge for edge in result["edges"]
+        if edge.get("relation") == "calls" and edge.get("context") == "script_invocation"
+    ]
+
+    assert invocation == [{
+        "source": _make_id(str(script)) + "__entry",
+        "target": _make_id(str(helpers.resolve())) + "__entry",
+        "relation": "calls",
+        "confidence": "EXTRACTED",
+        "source_file": str(script),
+        "source_location": "L2",
+        "weight": 1.0,
+        "context": "script_invocation",
+    }]
+
+
+def test_extract_bash_skips_missing_and_shadowed_script_invocations(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        "bash() { echo custom; }\n"
+        "bash ./helpers.sh\n"
+        "./missing.sh\n",
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
+def test_extract_bash_skips_dynamic_script_invocation(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text('#!/bin/bash\nbash "./$SCRIPT.sh"\n', encoding="utf-8")
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
+def test_extract_bash_relative_script_invocation_targets_existing_entrypoint(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    helpers = Path("helpers.sh")
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = Path("deploy.sh")
+    script.write_text("#!/bin/bash\n./helpers.sh\n", encoding="utf-8")
+
+    result = extract([script, helpers], cache_root=tmp_path, parallel=False)
+    node_ids = {node["id"] for node in result["nodes"]}
+    invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
+
+    assert invocation["target"] in node_ids
+
+
+def test_extract_bash_attributes_script_invocation_to_function(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text("#!/bin/bash\ndeploy() { bash ./helpers.sh; }\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    deploy = next(node for node in result["nodes"] if node["label"] == "deploy()")
+    invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
+
+    assert invocation["source"] == deploy["id"]
+
+
 def test_extract_bash_no_self_loops():
     result = extract_bash(FIXTURES / "sample.sh")
     for e in result["edges"]:
@@ -650,11 +1369,22 @@ def test_extract_bash_no_dangling_edges():
 
 
 def test_extract_bash_skip_builtins_in_calls():
+    from graphify.extract import _file_stem, _make_id
+
     result = extract_bash(FIXTURES / "sample.sh")
     builtins = {"echo", "cd", "set", "export", "local", "mkdir", "if", "then"}
-    call_targets = {e["target"] for e in result["edges"] if e["relation"] == "calls"}
+    # The file-stem prefix is now the full repo-relative path, which can embed a
+    # builtin as a substring (e.g. "graphify" contains "if"). Compare against the
+    # call's SYMBOL NAME — the id with its file-stem prefix stripped — so the
+    # check tests the actual callee, not the path it lives in.
+    prefix = _make_id(_file_stem(FIXTURES / "sample.sh")) + "_"
+    call_names = {
+        t[len(prefix):] if t.startswith(prefix) else t
+        for e in result["edges"] if e["relation"] == "calls"
+        for t in [e["target"]]
+    }
     for b in builtins:
-        assert not any(b in t for t in call_targets), f"Builtin '{b}' appeared as calls target"
+        assert b not in call_names, f"Builtin '{b}' appeared as calls target"
 
 
 def test_extract_bash_missing_grammar_returns_error():
@@ -881,6 +1611,55 @@ def test_extract_json_extends_resolved():
     assert extends_edges[0].get("context") == "import"
 
 
+def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
+    package_json = tmp_path / "package.json"
+    package_json.write_text(json.dumps({
+        "name": "demo",
+        "dependencies": {"left-pad": "^1.3.0"},
+        "devDependencies": {"bats": "^1.11.0"},
+    }))
+    tsconfig = tmp_path / "tsconfig.json"
+    tsconfig.write_text(json.dumps({
+        "extends": "./tsconfig.base.json",
+        "compilerOptions": {"strict": True},
+    }))
+
+    results = [extract_json(package_json), extract_json(tsconfig)]
+    combined = {
+        "nodes": [node for result in results for node in result["nodes"]],
+        "edges": [edge for result in results for edge in result["edges"]],
+    }
+    node_ids = {node["id"] for node in combined["nodes"]}
+    dangling = [
+        edge for edge in combined["edges"]
+        if edge["source"] not in node_ids or edge["target"] not in node_ids
+    ]
+    assert dangling == []
+    assert {"left-pad", "bats", "./tsconfig.base.json"} <= {
+        node["label"] for node in combined["nodes"] if node["file_type"] == "concept"
+    }
+
+    extracted = extract([package_json, tsconfig], cache_root=tmp_path, parallel=False)
+    graph = build_from_json(extracted, directed=True)
+    import_targets = {
+        graph.nodes[data["_tgt"]]["label"]
+        for _, _, data in graph.edges(data=True)
+        if data.get("relation") == "imports"
+    }
+    extends_targets = {
+        graph.nodes[data["_tgt"]]["label"]
+        for _, _, data in graph.edges(data=True)
+        if data.get("relation") == "extends"
+    }
+    self_loops = [
+        data for _, _, data in graph.edges(data=True)
+        if data.get("relation") in {"imports", "extends"} and data["_src"] == data["_tgt"]
+    ]
+    assert self_loops == []
+    assert {"left-pad", "bats"} <= import_targets
+    assert extends_targets == {"./tsconfig.base.json"}
+
+
 def test_extract_json_large_file_skipped(tmp_path):
     big = tmp_path / "big.json"
     # Write a JSON file just over 1 MiB
@@ -905,6 +1684,52 @@ def test_extract_json_no_self_loops():
         assert e["source"] != e["target"], f"Self-loop: {e}"
 
 
+# ---------------------------------------------------------------------------
+# Data JSON must not explode into orphan key-nodes (#1224)
+# ---------------------------------------------------------------------------
+
+def test_extract_json_data_file_skipped(tmp_path):
+    """A data-shaped .json (eval fixture / dataset) must NOT emit per-key nodes."""
+    data = tmp_path / "cases.json"
+    data.write_text(json.dumps({
+        "generation": {"target": "gpt-4", "cases_file": "c.json", "num_cases": 12},
+        "prompt_inputs_spec": {"a": 1, "b": 2},
+        "suite": [{"name": "x"}, {"name": "y"}],
+    }))
+    result = extract_json(data)
+    assert result["nodes"] == []
+    assert result["edges"] == []
+    assert "skipped" in result
+
+
+def test_extract_json_top_level_array_skipped(tmp_path):
+    """A JSON file whose root is an array is data, never a config/manifest."""
+    data = tmp_path / "records.json"
+    data.write_text(json.dumps([{"id": 1}, {"id": 2}]))
+    result = extract_json(data)
+    assert result["nodes"] == []
+    assert result["edges"] == []
+
+
+def test_extract_json_config_by_filename_still_extracted(tmp_path):
+    """tsconfig.json must still be AST-extracted even without telltale keys."""
+    cfg = tmp_path / "tsconfig.json"
+    cfg.write_text(json.dumps({"compilerOptions": {"strict": True}}))
+    result = extract_json(cfg)
+    assert len(result["nodes"]) > 0
+    assert "skipped" not in result
+
+
+def test_extract_json_config_by_key_probe(tmp_path):
+    """An arbitrarily-named JSON with config keys (dependencies) is still extracted."""
+    cfg = tmp_path / "weird-name.json"
+    cfg.write_text(json.dumps({"dependencies": {"lodash": "^4"}}))
+    result = extract_json(cfg)
+    import_edges = [e for e in result["edges"] if e["relation"] == "imports"]
+    assert any("lodash" in e["target"] for e in import_edges)
+    assert "skipped" not in result
+
+
 def test_extract_bash_via_dispatch():
     from graphify.extract import _get_extractor
     assert _get_extractor(Path("foo.sh")) is extract_bash
@@ -914,6 +1739,56 @@ def test_extract_bash_via_dispatch():
 def test_extract_json_via_dispatch():
     from graphify.extract import _get_extractor
     assert _get_extractor(Path("foo.json")) is extract_json
+
+
+def test_extensionless_shebang_via_dispatch(tmp_path):
+    """Extensionless CLIs resolve their extractor from the shebang, mirroring
+    detect.classify_file — otherwise detect labels them code and extraction
+    silently drops them."""
+    from graphify.extract import _get_extractor
+
+    cli = tmp_path / "devctl"
+    cli.write_text("#!/usr/bin/env bash\necho hi\n")
+    assert _get_extractor(cli) is extract_bash
+
+    pytool = tmp_path / "manage"
+    pytool.write_text("#!/usr/bin/env python3\nprint('hi')\n")
+    assert _get_extractor(pytool) is extract_python
+
+    # env -S split-args form is handled by the shared shebang parser
+    split = tmp_path / "runner"
+    split.write_text("#!/usr/bin/env -S bash -eu\necho hi\n")
+    assert _get_extractor(split) is extract_bash
+
+
+def test_extensionless_without_usable_shebang_stays_unsupported(tmp_path):
+    from graphify.extract import _get_extractor
+
+    plain = tmp_path / "LICENSE-COPY"
+    plain.write_text("plain text, no shebang\n")
+    assert _get_extractor(plain) is None
+
+    # Interpreter known to detect but with no AST extractor: stays skipped
+    # rather than being mis-parsed by a wrong grammar.
+    perl = tmp_path / "legacy"
+    perl.write_text("#!/usr/bin/env perl\nprint 1;\n")
+    assert _get_extractor(perl) is None
+
+
+def test_extract_extensionless_bash_cli_end_to_end(tmp_path):
+    """A shebang-only bash CLI must contribute nodes with the same ID scheme
+    as a .sh file (path stem + entity), so doc-created stub IDs merge."""
+    cli = tmp_path / "devctl"
+    cli.write_text(
+        "#!/usr/bin/env bash\n"
+        "helper() { echo hi; }\n"
+        "main() { helper; }\n"
+        'main "$@"\n'
+    )
+    result = extract([cli], cache_root=tmp_path)
+    ids = {n["id"] for n in result["nodes"]}
+    assert "devctl_helper" in ids
+    assert "devctl_main" in ids
 
 
 def test_extract_bash_node_metadata_is_sanitized():
@@ -1034,9 +1909,9 @@ def test_dart_child_node_ids_are_stem_based(tmp_path):
 
     result = extract_dart(src_file)
 
-    stem = _file_stem(src_file)  # -> "mydir.sample"
-    expected_class_nid = _make_id(stem, "MyClass")   # -> "mydir_sample_myclass"
-    expected_func_nid  = _make_id(stem, "myFunc")    # -> "mydir_sample_myfunc"
+    stem = _file_stem(src_file)  # -> full-path form, e.g. ".../mydir/sample"
+    expected_class_nid = _make_id(stem, "MyClass")   # -> ..._mydir_sample_myclass
+    expected_func_nid  = _make_id(stem, "myFunc")    # -> ..._mydir_sample_myfunc
 
     node_ids = {n["id"] for n in result["nodes"]}
 
@@ -1049,14 +1924,241 @@ def test_dart_child_node_ids_are_stem_based(tmp_path):
         "extract_dart may still be using str(path) instead of _file_stem(path)."
     )
 
-    # Sanity-check: no child node ID should contain any path separator fragment.
+    # Sanity-check: no child node ID should contain a raw path separator; every
+    # child must share the normalized file-stem prefix (slashes collapsed to _).
     file_nid = next(n["id"] for n in result["nodes"] if n.get("label") == src_file.name)
+    norm_stem = _make_id(stem)
     for node in result["nodes"]:
         if node["id"] == file_nid:
             continue
-        assert "_" + stem.replace(".", "_") in node["id"] or node["id"].startswith(stem.replace(".", "_")), (
-            f"Child node ID '{node['id']}' does not start with the expected stem prefix '{stem}'. "
+        assert "/" not in node["id"]
+        assert node["id"].startswith(norm_stem), (
+            f"Child node ID '{node['id']}' does not start with the expected stem prefix '{norm_stem}'. "
             "This suggests an absolute path is still leaking into the ID."
         )
 
 
+
+
+def test_separator_collision_paths_get_distinct_ids(tmp_path):
+    """#1522: two distinct paths whose only difference is a separator-vs-punctuation
+    swap (foo/bar_baz.py vs foo_bar/baz.py) normalize to the same stem; the
+    disambiguation pass now salts the colliders with a stable path hash so they
+    stay distinct instead of silently merging."""
+    a = tmp_path / "foo/bar_baz.py"
+    b = tmp_path / "foo_bar/baz.py"
+    a.parent.mkdir(parents=True)
+    b.parent.mkdir(parents=True)
+    a.write_text("class Widget:\n    pass\n")
+    b.write_text("class Gadget:\n    pass\n")
+
+    result = extract([a, b], cache_root=tmp_path)
+    # file-level nodes are labeled with the filename; both files must survive as
+    # distinct nodes (no silent separator-collision merge)
+    file_nodes = [n for n in result["nodes"] if str(n.get("label", "")).endswith(".py")]
+    assert len(file_nodes) == 2
+    assert len({n["id"] for n in file_nodes}) == 2, [n["id"] for n in file_nodes]
+
+
+def test_non_colliding_path_id_is_not_salted(tmp_path):
+    """The collision hash must touch only actual colliders — a path with no collision
+    keeps its plain full-path stem id (no hash suffix)."""
+    from graphify.extractors.base import _file_stem
+    from graphify.ids import make_id
+    p = tmp_path / "src/auth/session.py"
+    p.parent.mkdir(parents=True)
+    p.write_text("class Session:\n    pass\n")
+    result = extract([p], cache_root=tmp_path)
+    file_id = next(n["id"] for n in result["nodes"] if n.get("source_location") == "L1")
+    assert file_id == make_id(_file_stem(Path("src/auth/session.py"))) == "src_auth_session"
+
+
+def test_case_insensitive_suffix_filtering(tmp_path):
+    py_file = tmp_path / "app.PY"
+    js_file = tmp_path / "script.JS"
+    ts_file = tmp_path / "lib.Ts"
+    
+    py_file.write_text("class MyPythonClass:\n    pass\n")
+    js_file.write_text("function myJSFunction() {}\n")
+    ts_file.write_text("export class MyTSClass {}\n")
+    
+    collected = collect_files(tmp_path)
+    collected_names = {f.name for f in collected}
+    assert "app.PY" in collected_names
+    assert "script.JS" in collected_names
+    assert "lib.Ts" in collected_names
+
+    result = extract(collected, cache_root=tmp_path)
+    nodes = result["nodes"]
+    labels = {n.get("label") for n in nodes if "label" in n}
+    
+    assert "MyPythonClass" in labels
+    assert "myJSFunction()" in labels
+    assert "MyTSClass" in labels
+
+
+
+def test_extract_warns_on_code_files_with_no_ast_extractor(tmp_path, capsys):
+    # #1689: .r/.R is in CODE_EXTENSIONS (counted as code) but has no AST extractor,
+    # so R files silently contribute nothing. extract() must surface that instead of
+    # reporting success as if the language were mapped.
+    r1 = tmp_path / "analysis.R"; r1.write_text("f <- function(x) x + 1\n")
+    r2 = tmp_path / "helper.r"; r2.write_text("g <- function(y) y * 2\n")
+    py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
+
+    result = extract([r1, r2, py], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "no AST extractor" in err
+    assert ".r (2)" in err            # both R files grouped under the lowercased ext
+    assert "#1689" in err
+    # the Python file still extracts normally
+    labels = [n.get("label") for n in result["nodes"]]
+    assert any(str(l).startswith("main") for l in labels)
+
+
+def test_extract_no_warning_when_all_code_has_extractors(tmp_path, capsys):
+    py = tmp_path / "a.py"; py.write_text("def a():\n    return 1\n")
+    extract([py], cache_root=tmp_path)
+    err = capsys.readouterr().err
+    assert "no AST extractor" not in err
+
+
+def test_extract_warns_when_sql_extra_missing(tmp_path, capsys, monkeypatch):
+    # #1745: .sql HAS a dispatch entry, so the #1689 warning can't fire, and
+    # extract_sql returns an "error" result when tree-sitter-sql is absent, so
+    # the #1666 warning skips it too. The files must not vanish silently:
+    # extract() surfaces them with the [sql] extra named.
+    monkeypatch.setitem(sys.modules, "tree_sitter_sql", None)  # import -> ImportError
+    s1 = tmp_path / "schema.sql"; s1.write_text("CREATE TABLE users (id INT);\n")
+    s2 = tmp_path / "views.sql"; s2.write_text("CREATE VIEW v AS SELECT * FROM users;\n")
+    py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
+
+    result = extract([s1, s2, py], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "2 .sql file(s)" in err
+    assert "tree_sitter_sql not installed" in err
+    assert 'graphifyy[sql]' in err
+    assert "#1745" in err
+    # the Python file still extracts normally
+    labels = [n.get("label") for n in result["nodes"]]
+    assert any(str(l).startswith("main") for l in labels)
+
+
+def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
+    pytest.importorskip("tree_sitter_sql")
+    s = tmp_path / "schema.sql"; s.write_text("CREATE TABLE users (id INT);\n")
+    extract([s], cache_root=tmp_path)
+    err = capsys.readouterr().err
+    assert "#1745" not in err
+
+
+def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsys):
+    # #1693: intermediate progress lines count against uncached_work; the final
+    # "100%" line must NOT switch to total_files (which includes cached hits and
+    # files with no extractor), or the count appears to jump upward at the end.
+    for i in range(100):
+        (tmp_path / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n")
+    for i in range(5):
+        (tmp_path / f"s{i}.r").write_text(f"g{i} <- function(x) x\n")  # no extractor
+    paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.r"))  # total 105
+
+    extract(paths, cache_root=tmp_path, parallel=False)
+    out = capsys.readouterr().out
+
+    # final progress line reports the uncached count (100), not the total (105)
+    assert "100/100 uncached files (100%)" in out
+    assert "105/105 files" not in out, "final line must not switch to total_files (#1693)"
+
+
+def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
+    # #1702: .m is shared by Objective-C and MATLAB. A real ObjC .m still routes to
+    # extract_objc, but a MATLAB .m must NOT be force-parsed by the ObjC grammar
+    # (which produces garbage) — it gets no extractor instead.
+    from graphify.extract import _get_extractor, extract_objc
+
+    objc = tmp_path / "Foo.m"
+    objc.write_text('#import "Foo.h"\n@implementation Foo\n- (void)bar {}\n@end\n')
+    matlab_fn = tmp_path / "solver.m"
+    matlab_fn.write_text("function y = solver(x)\n  y = x + 1;\nend\n")
+    matlab_cls = tmp_path / "Model.m"
+    matlab_cls.write_text("classdef Model\n  methods\n    function run(obj); end\n  end\nend\n")
+    mm = tmp_path / "x.mm"
+    mm.write_text("#import <F/F.h>\n@implementation X\n@end\n")
+
+    assert _get_extractor(objc) is extract_objc            # real ObjC .m -> objc
+    assert _get_extractor(matlab_fn) is None               # MATLAB function -> no garbage
+    assert _get_extractor(matlab_cls) is None              # MATLAB classdef -> no garbage
+    assert _get_extractor(mm) is extract_objc              # .mm is unambiguously ObjC++
+
+
+def test_matlab_m_not_extracted_as_garbage(tmp_path, capsys):
+    # End to end: a MATLAB .m produces no (garbage) nodes and is surfaced by the
+    # no-AST-extractor warning (#1702 + #1689), rather than mis-parsed as ObjC.
+    m = tmp_path / "controller.m"
+    m.write_text("function u = controller(x)\n  u = -x;\nend\n")
+    result = extract([m], cache_root=tmp_path)
+    assert result["nodes"] == []                           # no garbage ObjC nodes
+    assert "no AST extractor" in capsys.readouterr().err    # surfaced, not silent
+
+
+def test_rewire_binds_cross_module_function_reference_to_definition():
+    """#1781: a cross-module reference to a function must land on the real
+    definition, not a sourceless name-only stub (functions were excluded as
+    rewire targets)."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "pkg_dep_get_db", "label": "get_db()", "file_type": "code",
+         "source_file": "pkg/dep.py", "source_location": "L1"},
+        {"id": "get_db", "label": "get_db()", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_ep_route", "target": "get_db", "relation": "references",
+              "source_file": "pkg/ep.py", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "pkg_dep_get_db"
+    assert "get_db" not in {n["id"] for n in nodes}  # stub dropped
+
+
+def test_rewire_does_not_bind_function_reference_across_language():
+    """#1781 safety: a Python reference stub must not bind to a unique Go
+    function of the same name (mirrors the #1749 interop guard)."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "svc_get_db", "label": "get_db()", "file_type": "code",
+         "source_file": "svc/main.go", "source_location": "L1"},
+        {"id": "get_db", "label": "get_db()", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "app_route", "target": "get_db", "relation": "references",
+              "source_file": "app/route.py", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "get_db"  # unchanged — cross-language blocked
+
+
+def test_rewire_does_not_bind_ambiguous_function_reference():
+    """#1781 safety: two same-named functions leave the reference on the stub."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "a_get_db", "label": "get_db()", "file_type": "code", "source_file": "a.py", "source_location": "L1"},
+        {"id": "b_get_db", "label": "get_db()", "file_type": "code", "source_file": "b.py", "source_location": "L1"},
+        {"id": "get_db", "label": "get_db()", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "c_route", "target": "get_db", "relation": "references",
+              "source_file": "c.py", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "get_db"  # ambiguous — not merged
+
+
+def test_rewire_does_not_bind_supertype_stub_to_function():
+    """#1781 safety: a stub used as a base type must never resolve to a
+    same-named, same-language function."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "factory_BookStore", "label": "BookStore()", "file_type": "code",
+         "source_file": "factory.py", "source_location": "L1"},
+        {"id": "BookStore", "label": "BookStore", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "store_Sqlite", "target": "BookStore", "relation": "inherits",
+              "source_file": "store.py", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function

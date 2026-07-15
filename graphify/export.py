@@ -7,6 +7,7 @@ import math
 import os
 import re
 import shutil
+import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -15,6 +16,8 @@ from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
+
+from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
 
 # Artifacts worth preserving across rebuilds (non-regenerable without LLM or curation).
@@ -148,313 +151,9 @@ def _yaml_str(s: str) -> str:
     return "".join(out)
 
 
-COMMUNITY_COLORS = [
-    "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
-    "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC",
-]
+from graphify.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
 
-MAX_NODES_FOR_VIZ = 5_000
-
-
-def _viz_node_limit() -> int:
-    """Return the effective viz node limit, honoring GRAPHIFY_VIZ_NODE_LIMIT env var.
-
-    Falls back to MAX_NODES_FOR_VIZ when the env var is unset, empty, or non-integer.
-    Set to 0 to disable HTML viz unconditionally (useful for CI runners).
-    """
-    import os
-    raw = os.environ.get("GRAPHIFY_VIZ_NODE_LIMIT")
-    if raw is None or not raw.strip():
-        return MAX_NODES_FOR_VIZ
-    try:
-        return int(raw)
-    except ValueError:
-        return MAX_NODES_FOR_VIZ
-
-
-def _html_styles() -> str:
-    return """<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
-  #graph { flex: 1; }
-  #sidebar { width: 280px; background: #1a1a2e; border-left: 1px solid #2a2a4e; display: flex; flex-direction: column; overflow: hidden; }
-  #search-wrap { padding: 12px; border-bottom: 1px solid #2a2a4e; }
-  #search { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
-  #search:focus { border-color: #4E79A7; }
-  #search-results { max-height: 140px; overflow-y: auto; padding: 4px 12px; border-bottom: 1px solid #2a2a4e; display: none; }
-  .search-item { padding: 4px 6px; cursor: pointer; border-radius: 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .search-item:hover { background: #2a2a4e; }
-  #info-panel { padding: 14px; border-bottom: 1px solid #2a2a4e; min-height: 140px; }
-  #info-panel h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
-  #info-content { font-size: 13px; color: #ccc; line-height: 1.6; }
-  #info-content .field { margin-bottom: 5px; }
-  #info-content .field b { color: #e0e0e0; }
-  #info-content .empty { color: #555; font-style: italic; }
-  .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #333; }
-  .neighbor-link:hover { background: #2a2a4e; }
-  #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
-  #legend-wrap { flex: 1; overflow-y: auto; padding: 12px; }
-  #legend-wrap h3 { font-size: 13px; color: #aaa; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
-  .legend-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; border-radius: 4px; font-size: 12px; }
-  .legend-item:hover { background: #2a2a4e; padding-left: 4px; }
-  .legend-item.dimmed { opacity: 0.35; }
-  .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
-  .legend-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .legend-count { color: #666; font-size: 11px; }
-  #stats { padding: 10px 14px; border-top: 1px solid #2a2a4e; font-size: 11px; color: #555; }
-  #legend-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 4px 0; }
-  #legend-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #aaa; user-select: none; }
-  #legend-controls label:hover { color: #e0e0e0; }
-  .legend-cb, #select-all-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid #3a3a5e; border-radius: 3px; background: #0f0f1a; cursor: pointer; position: relative; flex-shrink: 0; }
-  .legend-cb:checked, #select-all-cb:checked { background: #4E79A7; border-color: #4E79A7; }
-  .legend-cb:checked::after, #select-all-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
-  #select-all-cb:indeterminate { background: #4E79A7; border-color: #4E79A7; }
-  #select-all-cb:indeterminate::after { content: ''; position: absolute; left: 2px; top: 5px; width: 8px; height: 2px; background: #fff; border: none; transform: none; }
-</style>"""
-
-
-def _hyperedge_script(hyperedges_json: str) -> str:
-    return f"""<script>
-// Render hyperedges as shaded regions
-const hyperedges = {hyperedges_json};
-// afterDrawing passes ctx already transformed to network coordinate space.
-// Draw node positions raw — no manual pan/zoom/DPR math needed.
-network.on('afterDrawing', function(ctx) {{
-    hyperedges.forEach(h => {{
-        const positions = h.nodes
-            .map(nid => network.getPositions([nid])[nid])
-            .filter(p => p !== undefined);
-        if (positions.length < 2) return;
-        ctx.save();
-        ctx.globalAlpha = 0.12;
-        ctx.fillStyle = '#6366f1';
-        ctx.strokeStyle = '#6366f1';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        // Centroid and expanded hull in network coordinates
-        const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
-        const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
-        const expanded = positions.map(p => ({{
-            x: cx + (p.x - cx) * 1.15,
-            y: cy + (p.y - cy) * 1.15
-        }}));
-        ctx.moveTo(expanded[0].x, expanded[0].y);
-        expanded.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
-        ctx.closePath();
-        ctx.fill();
-        ctx.globalAlpha = 0.4;
-        ctx.stroke();
-        // Label
-        ctx.globalAlpha = 0.8;
-        ctx.fillStyle = '#4f46e5';
-        ctx.font = 'bold 11px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(h.label, cx, cy - 5);
-        ctx.restore();
-    }});
-}});
-</script>"""
-
-
-def _html_script(nodes_json: str, edges_json: str, legend_json: str) -> str:
-    return f"""<script>
-const RAW_NODES = {nodes_json};
-const RAW_EDGES = {edges_json};
-const LEGEND = {legend_json};
-
-// HTML-escape helper — prevents XSS when injecting graph data into innerHTML
-function esc(s) {{
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}}
-
-// Build vis datasets
-const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
-  id: n.id, label: n.label, color: n.color, size: n.size,
-  font: n.font, title: n.title,
-  _community: n.community, _community_name: n.community_name,
-  _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
-}})));
-
-const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
-  id: i, from: e.from, to: e.to,
-  label: '',
-  title: e.title,
-  dashes: e.dashes,
-  width: e.width,
-  color: e.color,
-  arrows: {{ to: {{ enabled: true, scaleFactor: 0.5 }} }},
-}})));
-
-const container = document.getElementById('graph');
-const network = new vis.Network(container, {{ nodes: nodesDS, edges: edgesDS }}, {{
-  physics: {{
-    enabled: true,
-    solver: 'forceAtlas2Based',
-    forceAtlas2Based: {{
-      gravitationalConstant: -60,
-      centralGravity: 0.005,
-      springLength: 120,
-      springConstant: 0.08,
-      damping: 0.4,
-      avoidOverlap: 0.8,
-    }},
-    stabilization: {{ iterations: 200, fit: true }},
-  }},
-  interaction: {{
-    hover: true,
-    tooltipDelay: 100,
-    hideEdgesOnDrag: true,
-    navigationButtons: false,
-    keyboard: false,
-  }},
-  nodes: {{ shape: 'dot', borderWidth: 1.5 }},
-  edges: {{ smooth: {{ type: 'continuous', roundness: 0.2 }}, selectionWidth: 3 }},
-}});
-
-network.once('stabilizationIterationsDone', () => {{
-  network.setOptions({{ physics: {{ enabled: false }} }});
-}});
-
-function showInfo(nodeId) {{
-  const n = nodesDS.get(nodeId);
-  if (!n) return;
-  const neighborIds = network.getConnectedNodes(nodeId);
-  const neighborItems = neighborIds.map(nid => {{
-    const nb = nodesDS.get(nid);
-    const color = nb ? nb.color.background : '#555';
-    return `<span class="neighbor-link" style="border-left-color:${{esc(color)}}" onclick="focusNode(${{JSON.stringify(nid)}})">${{esc(nb ? nb.label : nid)}}</span>`;
-  }}).join('');
-  document.getElementById('info-content').innerHTML = `
-    <div class="field"><b>${{esc(n.label)}}</b></div>
-    <div class="field">Type: ${{esc(n._file_type || 'unknown')}}</div>
-    <div class="field">Community: ${{esc(n._community_name)}}</div>
-    <div class="field">Source: ${{esc(n._source_file || '-')}}</div>
-    <div class="field">Degree: ${{n._degree}}</div>
-    ${{neighborIds.length ? `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${{neighborIds.length}})</div><div id="neighbors-list">${{neighborItems}}</div>` : ''}}
-  `;
-}}
-
-function focusNode(nodeId) {{
-  network.focus(nodeId, {{ scale: 1.4, animation: true }});
-  network.selectNodes([nodeId]);
-  showInfo(nodeId);
-}}
-
-// Track hovered node — hover detection is more reliable than click params
-let hoveredNodeId = null;
-network.on('hoverNode', params => {{
-  hoveredNodeId = params.node;
-  container.style.cursor = 'pointer';
-}});
-network.on('blurNode', () => {{
-  hoveredNodeId = null;
-  container.style.cursor = 'default';
-}});
-container.addEventListener('click', () => {{
-  if (hoveredNodeId !== null) {{
-    showInfo(hoveredNodeId);
-    network.selectNodes([hoveredNodeId]);
-  }}
-}});
-network.on('click', params => {{
-  if (params.nodes.length > 0) {{
-    showInfo(params.nodes[0]);
-  }} else if (hoveredNodeId === null) {{
-    document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
-  }}
-}});
-
-const searchInput = document.getElementById('search');
-const searchResults = document.getElementById('search-results');
-searchInput.addEventListener('input', () => {{
-  const q = searchInput.value.toLowerCase().trim();
-  searchResults.innerHTML = '';
-  if (!q) {{ searchResults.style.display = 'none'; return; }}
-  const matches = RAW_NODES.filter(n => n.label.toLowerCase().includes(q)).slice(0, 20);
-  if (!matches.length) {{ searchResults.style.display = 'none'; return; }}
-  searchResults.style.display = 'block';
-  matches.forEach(n => {{
-    const el = document.createElement('div');
-    el.className = 'search-item';
-    el.textContent = n.label;
-    el.style.borderLeft = `3px solid ${{n.color.background}}`;
-    el.style.paddingLeft = '8px';
-    el.onclick = () => {{
-      network.focus(n.id, {{ scale: 1.5, animation: true }});
-      network.selectNodes([n.id]);
-      showInfo(n.id);
-      searchResults.style.display = 'none';
-      searchInput.value = '';
-    }};
-    searchResults.appendChild(el);
-  }});
-}});
-document.addEventListener('click', e => {{
-  if (!searchResults.contains(e.target) && e.target !== searchInput)
-    searchResults.style.display = 'none';
-}});
-
-const hiddenCommunities = new Set();
-
-const selectAllCb = document.getElementById('select-all-cb');
-
-function updateSelectAllState() {{
-  const total = LEGEND.length;
-  const hidden = hiddenCommunities.size;
-  selectAllCb.checked = hidden === 0;
-  selectAllCb.indeterminate = hidden > 0 && hidden < total;
-}}
-
-function toggleAllCommunities(hide) {{
-  document.querySelectorAll('.legend-item').forEach(item => {{
-    hide ? item.classList.add('dimmed') : item.classList.remove('dimmed');
-  }});
-  document.querySelectorAll('.legend-cb').forEach(cb => {{
-    cb.checked = !hide;
-  }});
-  LEGEND.forEach(c => {{
-    if (hide) hiddenCommunities.add(c.cid); else hiddenCommunities.delete(c.cid);
-  }});
-  const updates = RAW_NODES.map(n => ({{ id: n.id, hidden: hide }}));
-  nodesDS.update(updates);
-  updateSelectAllState();
-}}
-
-const legendEl = document.getElementById('legend');
-LEGEND.forEach(c => {{
-  const item = document.createElement('div');
-  item.className = 'legend-item';
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.className = 'legend-cb';
-  cb.checked = true;
-  cb.addEventListener('change', (e) => {{
-    e.stopPropagation();
-    if (cb.checked) {{
-      hiddenCommunities.delete(c.cid);
-      item.classList.remove('dimmed');
-    }} else {{
-      hiddenCommunities.add(c.cid);
-      item.classList.add('dimmed');
-    }}
-    const updates = RAW_NODES
-      .filter(n => n.community === c.cid)
-      .map(n => ({{ id: n.id, hidden: !cb.checked }}));
-    nodesDS.update(updates);
-    updateSelectAllState();
-  }});
-  item.innerHTML = `<div class="legend-dot" style="background:${{c.color}}"></div>
-    <span class="legend-label">${{c.label}}</span>
-    <span class="legend-count">${{c.count}}</span>`;
-  item.prepend(cb);
-  item.onclick = (e) => {{
-    if (e.target === cb) return;
-    cb.checked = !cb.checked;
-    cb.dispatchEvent(new Event('change'));
-  }};
-  legendEl.appendChild(item);
-}});
-</script>"""
+from graphify.exporters.html import to_html  # noqa: E402,F401
 
 
 _CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.5, "AMBIGUOUS": 0.2}
@@ -481,15 +180,48 @@ def _git_head() -> str | None:
         return None
 
 
-def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None) -> bool:
+def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
+        from graphify.security import check_graph_file_size_cap
         try:
-            from graphify.security import check_graph_file_size_cap
             check_graph_file_size_cap(existing_path)
-            existing_data = json.loads(existing_path.read_text(encoding="utf-8"))
-            existing_n = len(existing_data.get("nodes", []))
+        except Exception:
+            # Existing graph.json trips the size cap; reading it to compare would
+            # be the very DoS the cap guards against. Can't verify — let the new
+            # graph replace the oversized file.
+            oversized = True
+        else:
+            oversized = False
+        if not oversized:
+            try:
+                raw = existing_path.read_text(encoding="utf-8")
+            except Exception:
+                raw = ""
+            if not raw.strip():
+                # Empty/whitespace existing file (e.g. a freshly touched path):
+                # no nodes to lose, so any new graph is a growth — proceed.
+                existing_n = 0
+            else:
+                try:
+                    existing_data = json.loads(raw)
+                    existing_n = len(existing_data.get("nodes", []))
+                except Exception as exc:
+                    # Non-empty but unparseable existing graph (corrupt or a
+                    # mid-write): we cannot verify the new graph is not a silent
+                    # shrink. Fail SAFE — refuse rather than overwrite. A
+                    # fail-OPEN here (the prior behavior) is the silent data-loss
+                    # path #479 exists to prevent: a transiently unreadable
+                    # graph.json would let a partial rebuild clobber a good one.
+                    import sys as _sys
+                    print(
+                        f"[graphify] WARNING: existing {existing_path} could not be "
+                        f"read to verify the new graph is not smaller ({exc}). "
+                        f"Refusing to overwrite; pass force=True to override.",
+                        file=_sys.stderr,
+                    )
+                    return False
             new_n = G.number_of_nodes()
             if new_n < existing_n:
                 import sys as _sys
@@ -504,16 +236,18 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     file=_sys.stderr,
                 )
                 return False
-        except Exception:
-            pass  # unreadable existing file — proceed with write
 
     node_community = _node_community_map(communities)
+    _labels: dict[int, str] = {int(k): v for k, v in (community_labels or {}).items()}
     try:
         data = json_graph.node_link_data(G, edges="links")
     except TypeError:
         data = json_graph.node_link_data(G)
     for node in data["nodes"]:
-        node["community"] = node_community.get(node["id"])
+        cid = node_community.get(node["id"])
+        node["community"] = cid
+        if cid is not None and _labels:
+            node["community_name"] = _labels.get(cid, f"Community {cid}")
         node["norm_label"] = _strip_diacritics(node.get("label", "")).lower()
     for link in data["links"]:
         if "confidence_score" not in link:
@@ -624,197 +358,6 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
         f.write("\n".join(lines))
 
 
-def to_html(
-    G: nx.Graph,
-    communities: dict[int, list[str]],
-    output_path: str,
-    community_labels: dict[int, str] | None = None,
-    member_counts: dict[int, int] | None = None,
-    node_limit: int | None = None,
-) -> None:
-    """Generate an interactive vis.js HTML visualization of the graph.
-
-    Features: node size by degree, click-to-inspect panel, search box,
-    community filter, physics clustering by community, confidence-styled edges.
-    Raises ValueError if graph exceeds MAX_NODES_FOR_VIZ.
-
-    If member_counts is provided (aggregated community view), node sizes are
-    based on community member counts rather than graph degree.
-
-    If node_limit is set and the graph exceeds it, automatically builds an
-    aggregated community-level meta-graph instead of raising ValueError.
-    """
-    limit = node_limit if node_limit is not None else _viz_node_limit()
-    if G.number_of_nodes() > limit:
-        if node_limit is not None:
-            # Build aggregated community meta-graph
-            from collections import Counter as _Counter
-            import networkx as _nx
-            print(f"Graph has {G.number_of_nodes()} nodes (above {limit} limit). Building aggregated community view...")
-            node_to_community = {nid: cid for cid, members in communities.items() for nid in members}
-            meta = _nx.Graph()
-            for cid, members in communities.items():
-                meta.add_node(str(cid), label=(community_labels or {}).get(cid, f"Community {cid}"))
-            edge_counts = _Counter()
-            for u, v in G.edges():
-                cu, cv = node_to_community.get(u), node_to_community.get(v)
-                if cu is not None and cv is not None and cu != cv:
-                    edge_counts[(min(cu, cv), max(cu, cv))] += 1
-            for (cu, cv), w in edge_counts.items():
-                meta.add_edge(str(cu), str(cv), weight=w,
-                              relation=f"{w} cross-community edges", confidence="AGGREGATED")
-            if meta.number_of_nodes() <= 1:
-                print("Single community - aggregated view not useful. Skipping graph.html.")
-                return
-            meta_communities = {cid: [str(cid)] for cid in communities}
-            mc = {cid: len(members) for cid, members in communities.items()}
-            # Remap hyperedges from semantic node IDs to community IDs
-            raw_hyperedges = G.graph.get("hyperedges", [])
-            if raw_hyperedges:
-                remapped = []
-                for he in raw_hyperedges:
-                    he_members = he.get("nodes") or he.get("members") or []
-                    comm_ids, seen = [], set()
-                    for nid in he_members:
-                        c = node_to_community.get(nid)
-                        if c is None:
-                            continue
-                        s = str(c)
-                        if s in seen:
-                            continue
-                        seen.add(s)
-                        comm_ids.append(s)
-                    if len(comm_ids) < 2:
-                        continue
-                    remapped.append({
-                        "id": he.get("id", ""),
-                        "label": he.get("label") or he.get("relation", "").replace("_", " "),
-                        "nodes": comm_ids,
-                    })
-                meta.graph["hyperedges"] = remapped
-            to_html(meta, meta_communities, output_path,
-                    community_labels=community_labels, member_counts=mc)
-            print(f"graph.html written (aggregated: {meta.number_of_nodes()} community nodes, {meta.number_of_edges()} cross-community edges)")
-            print("Tip: run with --obsidian for full node-level detail.")
-            return
-        raise ValueError(
-            f"Graph has {G.number_of_nodes()} nodes - too large for HTML viz "
-            f"(limit: {limit}). Use --no-viz, raise GRAPHIFY_VIZ_NODE_LIMIT, "
-            f"or reduce input size."
-        )
-
-    node_community = _node_community_map(communities)
-    degree = dict(G.degree())
-    max_deg = max(degree.values(), default=1) or 1
-    max_mc = (max(member_counts.values(), default=1) or 1) if member_counts else 1
-
-    # Build nodes list for vis.js
-    vis_nodes = []
-    for node_id, data in G.nodes(data=True):
-        cid = node_community.get(node_id, 0)
-        color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
-        label = sanitize_label(data.get("label", node_id))
-        deg = degree.get(node_id, 1)
-        if member_counts:
-            mc = member_counts.get(cid, 1)
-            size = 10 + 30 * (mc / max_mc)
-            font_size = 12
-        else:
-            size = 10 + 30 * (deg / max_deg)
-            # Only show label for high-degree nodes by default; others show on hover
-            font_size = 12 if deg >= max_deg * 0.15 else 0
-        vis_nodes.append({
-            "id": node_id,
-            "label": label,
-            "color": {"background": color, "border": color, "highlight": {"background": "#ffffff", "border": color}},
-            "size": round(size, 1),
-            "font": {"size": font_size, "color": "#ffffff"},
-            "title": _html.escape(label),
-            "community": cid,
-            "community_name": sanitize_label((community_labels or {}).get(cid, f"Community {cid}")),
-            "source_file": sanitize_label(str(data.get("source_file") or "")),
-            "file_type": data.get("file_type", ""),
-            "degree": deg,
-        })
-
-    # Build edges list. Restore original edge direction from _src/_tgt
-    # (stashed by build.py for exactly this reason): undirected NetworkX
-    # canonicalizes endpoint order, which would otherwise flip the arrow
-    # for `calls` and `rationale_for` in the rendered graph (#563).
-    vis_edges = []
-    for u, v, data in G.edges(data=True):
-        confidence = data.get("confidence", "EXTRACTED")
-        relation = data.get("relation", "")
-        true_src = data.get("_src", u)
-        true_tgt = data.get("_tgt", v)
-        vis_edges.append({
-            "from": true_src,
-            "to": true_tgt,
-            "label": relation,
-            "title": _html.escape(f"{relation} [{confidence}]"),
-            "dashes": confidence != "EXTRACTED",
-            "width": 2 if confidence == "EXTRACTED" else 1,
-            "color": {"opacity": 0.7 if confidence == "EXTRACTED" else 0.35},
-            "confidence": confidence,
-        })
-
-    # Build community legend data
-    legend_data = []
-    for cid in sorted((community_labels or {}).keys()):
-        color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
-        lbl = _html.escape(sanitize_label((community_labels or {}).get(cid, f"Community {cid}")))
-        n = member_counts.get(cid, len(communities.get(cid, []))) if member_counts else len(communities.get(cid, []))
-        legend_data.append({"cid": cid, "color": color, "label": lbl, "count": n})
-
-    # Escape </script> sequences so embedded JSON cannot break out of the script tag
-    def _js_safe(obj) -> str:
-        return json.dumps(obj).replace("</", "<\\/")
-
-    nodes_json = _js_safe(vis_nodes)
-    edges_json = _js_safe(vis_edges)
-    legend_json = _js_safe(legend_data)
-    hyperedges_json = _js_safe(getattr(G, "graph", {}).get("hyperedges", []))
-    title = _html.escape(sanitize_label(str(output_path)))
-    stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>graphify - {title}</title>
-<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"
-        integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"
-        crossorigin="anonymous"></script>
-{_html_styles()}
-</head>
-<body>
-<div id="graph"></div>
-<div id="sidebar">
-  <div id="search-wrap">
-    <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
-    <div id="search-results"></div>
-  </div>
-  <div id="info-panel">
-    <h3>Node Info</h3>
-    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
-  </div>
-  <div id="legend-wrap">
-    <h3>Communities</h3>
-    <div id="legend-controls">
-      <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
-    </div>
-    <div id="legend"></div>
-  </div>
-  <div id="stats">{stats}</div>
-</div>
-{_html_script(nodes_json, edges_json, legend_json)}
-{_hyperedge_script(hyperedges_json)}
-</body>
-</html>"""
-
-    Path(output_path).write_text(html, encoding="utf-8")  # nosec
-
-
 # Keep backward-compatible alias - skill.md calls generate_html
 generate_html = to_html
 
@@ -836,6 +379,28 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     return f"{truncated}_{digest}"
 
 
+def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
+    """Map each node_id to a unique note filename, appending a numeric suffix on
+    collision. The collision set is keyed on the lowercased name so two labels
+    differing only by case (e.g. "References" vs "references") still get distinct
+    filenames - on case-insensitive filesystems (macOS/APFS, Windows/NTFS) they
+    would otherwise resolve to one path and silently overwrite each other on disk.
+    The suffixed candidate is itself re-checked, so a generated "base_1" never
+    silently overwrites a node whose literal label is already "base_1"."""
+    node_filenames: dict[str, str] = {}
+    used: set[str] = set()
+    for node_id, data in G.nodes(data=True):
+        base = safe_name(data.get("label", node_id))
+        candidate = base
+        n = 1
+        while candidate.lower() in used:
+            candidate = f"{base}_{n}"
+            n += 1
+        used.add(candidate.lower())
+        node_filenames[node_id] = candidate
+    return node_filenames
+
+
 def to_obsidian(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -854,6 +419,30 @@ def to_obsidian(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
+    # #1506: when the export target is an existing Obsidian vault (a user pointed
+    # --obsidian-dir at one), we must not clobber the user's own notes or their
+    # .obsidian/ config. Track the files graphify owns in a manifest; a pre-existing
+    # file NOT in the manifest is the user's and is never overwritten.
+    _manifest_path = out / ".graphify_obsidian_manifest.json"
+    try:
+        _owned: set[str] = set(json.loads(_manifest_path.read_text(encoding="utf-8")).get("files", []))
+    except (OSError, ValueError):
+        _owned = set()
+    _written: list[str] = []
+    _skipped: list[str] = []
+
+    def _owned_write(rel_name: str, content: str) -> bool:
+        """Write a graphify-owned file, refusing to overwrite a pre-existing file
+        graphify didn't create. Returns True if written."""
+        target = out / rel_name
+        if target.exists() and rel_name not in _owned:
+            _skipped.append(rel_name)
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")  # nosec
+        _written.append(rel_name)
+        return True
+
     node_community = _node_community_map(communities)
 
     # Map node_id → safe filename so wikilinks stay consistent.
@@ -862,18 +451,16 @@ def to_obsidian(
         cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
         # Strip trailing .md/.mdx/.markdown so "CLAUDE.md" doesn't become "CLAUDE.md.md"
         cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        return _cap_filename(cleaned) if cleaned else "unnamed"
+        # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
+        # strip above but is empty once a downstream tool re-slugs on word chars
+        # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
+        # `qmd update`). Require at least one word char; else fall back so we never
+        # emit a "@.md"-style filename. (#1409)
+        if not re.search(r"\w", cleaned, flags=re.UNICODE):
+            return "unnamed"
+        return _cap_filename(cleaned)
 
-    node_filename: dict[str, str] = {}
-    seen_names: dict[str, int] = {}
-    for node_id, data in G.nodes(data=True):
-        base = safe_name(data.get("label", node_id))
-        if base in seen_names:
-            seen_names[base] += 1
-            node_filename[node_id] = f"{base}_{seen_names[base]}"
-        else:
-            seen_names[base] = 0
-            node_filename[node_id] = base
+    node_filename = _dedup_node_filenames(G, safe_name)
 
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
@@ -893,6 +480,7 @@ def to_obsidian(
     }
 
     # Write one .md file per node
+    node_notes_written = 0
     for node_id, data in G.nodes(data=True):
         label = data.get("label", node_id)
         cid = node_community.get(node_id)
@@ -946,7 +534,8 @@ def to_obsidian(
         lines.append(inline_tags)
 
         fname = node_filename[node_id] + ".md"
-        (out / fname).write_text("\n".join(lines), encoding="utf-8")  # nosec
+        if _owned_write(fname, "\n".join(lines)):
+            node_notes_written += 1
 
     # Write one _COMMUNITY_name.md overview note per community
     # Build inter-community edge counts for "Connections to other communities"
@@ -971,13 +560,39 @@ def to_obsidian(
         }
         return len(neighbor_cids)
 
-    community_notes_written = 0
-    for cid, members in communities.items():
-        community_name = (
+    def _community_name(cid) -> str:
+        return (
             community_labels.get(cid, f"Community {cid}")
             if community_labels and cid is not None
             else f"Community {cid}"
         )
+
+    # One case-folded-deduped filename per community, computed once so the note we
+    # write and every [[_COMMUNITY_...]] cross-reference resolve to the same file.
+    # Two community labels differing only by case (e.g. LLM labels "API" vs "Api")
+    # would otherwise overwrite each other on case-insensitive filesystems - and
+    # this path had no dedup at all, so even same-case duplicate labels collided.
+    community_filename: dict = {}
+    used_community: set[str] = set()
+    for cid in communities:
+        base = f"_COMMUNITY_{safe_name(_community_name(cid))}"
+        candidate = base
+        n = 1
+        while candidate.lower() in used_community:
+            candidate = f"{base}_{n}"
+            n += 1
+        used_community.add(candidate.lower())
+        community_filename[cid] = candidate
+
+    community_notes_written = 0
+    for cid, all_members in communities.items():
+        community_name = _community_name(cid)
+        # A community's member list can contain ids with no backing node in G
+        # (e.g. pruned nodes, stale community assignments from a prior run, or
+        # synthesized/merge-artifact ids). Dereferencing those via G.nodes[n] or
+        # node_filename[n] raises KeyError and aborts the whole vault export, so
+        # skip dangling members rather than crashing (issue #1236).
+        members = [m for m in all_members if m in G and m in node_filename]
         n_members = len(members)
         coh_value = cohesion.get(cid) if cohesion else None
 
@@ -1035,13 +650,8 @@ def to_obsidian(
         if cross:
             lines.append("## Connections to other communities")
             for other_cid, edge_count in sorted(cross.items(), key=lambda x: -x[1]):
-                other_name = (
-                    community_labels.get(other_cid, f"Community {other_cid}")
-                    if community_labels and other_cid is not None
-                    else f"Community {other_cid}"
-                )
-                other_safe = safe_name(other_name)
-                lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[_COMMUNITY_{other_safe}]]")
+                other_fname = community_filename.get(other_cid) or f"_COMMUNITY_{safe_name(_community_name(other_cid))}"
+                lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[{other_fname}]]")
             lines.append("")
 
         # Top bridge nodes - highest degree nodes that connect to other communities
@@ -1061,14 +671,14 @@ def to_obsidian(
                     f"{'community' if reach == 1 else 'communities'}"
                 )
 
-        community_safe = safe_name(community_name)
-        fname = f"_COMMUNITY_{community_safe}.md"
-        (out / fname).write_text("\n".join(lines), encoding="utf-8")  # nosec
-        community_notes_written += 1
+        fname = community_filename[cid] + ".md"
+        if _owned_write(fname, "\n".join(lines)):
+            community_notes_written += 1
 
-    # Improvement 4: write .obsidian/graph.json to color nodes by community in graph view
-    obsidian_dir = out / ".obsidian"
-    obsidian_dir.mkdir(exist_ok=True)
+    # Improvement 4: write .obsidian/graph.json to color nodes by community in graph
+    # view — but never clobber an existing .obsidian/graph.json graphify doesn't own
+    # (the user's graph-view settings live there). _owned_write handles that and
+    # creates the .obsidian/ dir only when it actually writes.
     graph_config = {
         "colorGroups": [
             {
@@ -1078,9 +688,48 @@ def to_obsidian(
             for cid, label in sorted((community_labels or {}).items())
         ]
     }
-    (obsidian_dir / "graph.json").write_text(json.dumps(graph_config, indent=2), encoding="utf-8")  # nosec
+    _owned_write(".obsidian/graph.json", json.dumps(graph_config, indent=2))
 
-    return G.number_of_nodes() + community_notes_written
+    # #1896: prune notes for nodes that dropped out of the graph. Only files the
+    # manifest says graphify owns are candidates, and anything written or skipped
+    # this run is excluded — so a user's own note is never touched (foreign files
+    # land in _skipped, never _owned). Guard each path to stay inside the vault in
+    # case a corrupt/hostile manifest contains `../` entries.
+    stale = _owned - set(_written) - set(_skipped)
+    pruned = 0
+    for rel_name in sorted(stale):
+        target = (out / rel_name).resolve()
+        if out.resolve() not in target.parents:
+            continue
+        try:
+            target.unlink(missing_ok=True)
+            pruned += 1
+        except OSError:
+            pass
+    if pruned:
+        print(
+            f"[graphify] pruned {pruned} note(s) for nodes no longer in the graph",
+            file=sys.stderr,
+        )
+
+    # Persist the manifest of files graphify owns, so a re-run can safely update its
+    # own notes while still refusing to touch the user's. Warn (once, aggregated)
+    # about anything skipped to avoid clobbering a pre-existing file.
+    try:
+        _manifest_path.write_text(json.dumps({"files": sorted(set(_written))}, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    if _skipped:
+        shown = ", ".join(_skipped[:5]) + (f" (+{len(_skipped) - 5} more)" if len(_skipped) > 5 else "")
+        print(
+            f"[graphify] WARNING: skipped {len(_skipped)} pre-existing file(s) graphify "
+            f"did not create, to avoid overwriting your notes: {shown}. "
+            f"Export into an empty directory (or the default graphify-out/obsidian) "
+            f"to get the full vault.",
+            file=sys.stderr,
+        )
+
+    return node_notes_written + community_notes_written
 
 
 def to_canvas(
@@ -1102,20 +751,25 @@ def to_canvas(
     def safe_name(label: str) -> str:
         cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
         cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-        return _cap_filename(cleaned) if cleaned else "unnamed"
+        # A stem of only punctuation (e.g. "@", "*", "#") survives the unsafe-char
+        # strip above but is empty once a downstream tool re-slugs on word chars
+        # (e.g. qmd's handelize() reduces "@" -> "" and raises, aborting the whole
+        # `qmd update`). Require at least one word char; else fall back so we never
+        # emit a "@.md"-style filename. (#1409)
+        if not re.search(r"\w", cleaned, flags=re.UNICODE):
+            return "unnamed"
+        return _cap_filename(cleaned)
 
     # Build node_filenames if not provided (same dedup logic as to_obsidian)
     if node_filenames is None:
-        node_filenames = {}
-        seen_names: dict[str, int] = {}
-        for node_id, data in G.nodes(data=True):
-            base = safe_name(data.get("label", node_id))
-            if base in seen_names:
-                seen_names[base] += 1
-                node_filenames[node_id] = f"{base}_{seen_names[base]}"
-            else:
-                seen_names[base] = 0
-                node_filenames[node_id] = base
+        node_filenames = _dedup_node_filenames(G, safe_name)
+
+    # Fallback: with no community data (e.g. --no-cluster builds or a missing
+    # analysis sidecar) the grid below produces nothing and the canvas is written
+    # as an empty 32-byte shell on an otherwise populated graph. Emit every node
+    # into one synthetic community so the canvas always reflects the graph (#1324).
+    if not communities and G.number_of_nodes() > 0:
+        communities = {0: [str(n) for n in G.nodes()]}
 
     num_communities = len(communities)
     cols = math.ceil(math.sqrt(num_communities)) if num_communities > 0 else 1
@@ -1129,15 +783,24 @@ def to_canvas(
     group_x_offsets: list[int] = []
     group_y_offsets: list[int] = []
 
-    # Precompute group sizes so we can calculate offsets
+    # Precompute group sizes so we can calculate offsets.
+    # inner_cols is the per-community grid width; the box dimensions AND the node
+    # placement loop below both derive from it, so the cards always fill the box
+    # instead of wrapping into a narrow strip inside an oversized box.
     sorted_cids = sorted(communities.keys())
     group_sizes: dict[int, tuple[int, int]] = {}
+    group_cols: dict[int, int] = {}
     for cid in sorted_cids:
-        members = communities[cid]
+        # Skip dangling community members with no backing node / filename, so box
+        # sizing matches the cards actually laid out and `G.nodes[m]` never
+        # KeyErrors below — mirrors the to_obsidian guard (#1236).
+        members = [m for m in communities[cid] if m in G and m in node_filenames]
         n = len(members)
-        w = max(600, 220 * math.ceil(math.sqrt(n)) if n > 0 else 600)
-        h = max(400, 100 * math.ceil(n / 3) + 120 if n > 0 else 400)
+        inner_cols = max(1, math.ceil(math.sqrt(n)))
+        w = max(600, 220 * inner_cols)
+        h = max(400, 100 * math.ceil(n / inner_cols) + 120)
         group_sizes[cid] = (w, h)
+        group_cols[cid] = inner_cols
 
     # Compute cumulative row heights and col widths for grid placement
     # Each grid cell uses the max width/height in its col/row
@@ -1201,11 +864,16 @@ def to_canvas(
             "color": canvas_color,
         })
 
-        # Node cards inside the group - rows of 3
+        # Node cards inside the group - laid out in the same ceil(sqrt(n))-column
+        # grid the box was sized for (group_cols[cid]), so cards fill the box.
+        inner_cols = group_cols[cid]
+        # Same dangling-member guard as the sizing loop and to_obsidian (#1236):
+        # a community id absent from G / node_filenames would KeyError the sort.
+        members = [m for m in members if m in G and m in node_filenames]
         sorted_members = sorted(members, key=lambda n: G.nodes[n].get("label", n))
         for m_idx, node_id in enumerate(sorted_members):
-            col = m_idx % 3
-            row = m_idx // 3
+            col = m_idx % inner_cols
+            row = m_idx // inner_cols
             nx_x = gx + 20 + col * (180 + 20)
             nx_y = gy + 80 + row * (60 + 20)
             fname = node_filenames.get(node_id, safe_name(G.nodes[node_id].get("label", node_id)))
@@ -1242,78 +910,6 @@ def to_canvas(
     Path(output_path).write_text(json.dumps(canvas_data, indent=2), encoding="utf-8")  # nosec
 
 
-def push_to_neo4j(
-    G: nx.Graph,
-    uri: str,
-    user: str,
-    password: str,
-    communities: dict[int, list[str]] | None = None,
-) -> dict[str, int]:
-    """Push graph directly to a running Neo4j instance via the Python driver.
-
-    Requires: pip install neo4j
-
-    Uses MERGE so re-running is safe - nodes and edges are upserted, not duplicated.
-    Returns a dict with counts of nodes and edges pushed.
-    """
-    try:
-        from neo4j import GraphDatabase
-    except ImportError as e:
-        raise ImportError(
-            "neo4j driver not installed. Run: pip install neo4j"
-        ) from e
-
-    node_community = _node_community_map(communities) if communities else {}
-
-    def _safe_rel(relation: str) -> str:
-        return re.sub(r"[^A-Z0-9_]", "_", relation.upper().replace(" ", "_").replace("-", "_")) or "RELATED_TO"
-
-    def _safe_label(label: str) -> str:
-        """Sanitize a Neo4j node label to prevent Cypher injection."""
-        sanitized = re.sub(r"[^A-Za-z0-9_]", "", label)
-        return sanitized if sanitized else "Entity"
-
-    driver = GraphDatabase.driver(uri, auth=(user, password))
-    nodes_pushed = 0
-    edges_pushed = 0
-
-    with driver.session() as session:
-        for node_id, data in G.nodes(data=True):
-            props = {
-                k: v for k, v in data.items()
-                if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
-            }
-            props["id"] = node_id
-            cid = node_community.get(node_id)
-            if cid is not None:
-                props["community"] = cid
-            ftype = _safe_label(data.get("file_type", "Entity").capitalize())
-            session.run(
-                f"MERGE (n:{ftype} {{id: $id}}) SET n += $props",
-                id=node_id,
-                props=props,
-            )
-            nodes_pushed += 1
-
-        for u, v, data in G.edges(data=True):
-            rel = _safe_rel(data.get("relation", "RELATED_TO"))
-            props = {
-                k: v for k, v in data.items()
-                if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
-            }
-            session.run(
-                f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
-                f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-                src=u,
-                tgt=v,
-                props=props,
-            )
-            edges_pushed += 1
-
-    driver.close()
-    return {"nodes": nodes_pushed, "edges": edges_pushed}
-
-
 def to_graphml(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -1337,7 +933,44 @@ def to_graphml(
     for _, _, attrs in H.edges(data=True):
         for k in [k for k in attrs if k.startswith("_")]:
             del attrs[k]
-    nx.write_graphml(H, output_path)
+    # nx.write_graphml only accepts scalar attribute values: None raises, and a
+    # dict/list value (e.g. a per-node `metadata` dict, or the graph-level
+    # `hyperedges` list set by attach_hyperedges()) raises
+    # "GraphML does not support type <class 'dict'/'list'> as data values" (#1831).
+    # Coerce None -> "" and non-scalars -> a JSON string, across all three scopes.
+    def _graphml_safe(val):
+        if val is None:
+            return ""
+        if isinstance(val, bool) or isinstance(val, (int, float, str)):
+            return val  # GraphML-native scalars pass through unchanged
+        try:
+            return json.dumps(val, default=str, sort_keys=True)
+        except (TypeError, ValueError):
+            return str(val)
+
+    for key, val in list(H.graph.items()):
+        H.graph[key] = _graphml_safe(val)
+    for node_id in H.nodes():
+        for key, val in list(H.nodes[node_id].items()):
+            H.nodes[node_id][key] = _graphml_safe(val)
+    for u, v in H.edges():
+        for key, val in list(H.edges[u, v].items()):
+            H.edges[u, v][key] = _graphml_safe(val)
+
+    # Write atomically: a mid-serialization error otherwise leaves a 0-byte
+    # .graphml on disk that downstream tooling mistakes for a completed export
+    # (#1831). Write to a sibling temp file, then replace on success.
+    out = Path(output_path)
+    tmp = out.with_name(out.name + ".tmp")
+    try:
+        nx.write_graphml(H, str(tmp))
+        os.replace(str(tmp), str(out))
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def to_svg(

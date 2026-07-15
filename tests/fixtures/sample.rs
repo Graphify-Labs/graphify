@@ -51,3 +51,10 @@ impl DataProcessor {
         Result { value: input }
     }
 }
+
+enum GraphEvent {
+    NodeAdded(Graph),
+    Processed { proc: DataProcessor },
+}
+
+struct GraphPair(Graph, Result<DataProcessor>);

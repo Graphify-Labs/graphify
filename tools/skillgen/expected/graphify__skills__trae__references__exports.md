@@ -1,6 +1,6 @@
 # graphify reference: extra exports and benchmark
 
-Load this when the user passed one of the export flags (`--wiki`, `--neo4j`, `--neo4j-push`, `--svg`, `--graphml`, `--mcp`), or when the corpus is large enough for the token-reduction benchmark. Each step runs only for its own flag.
+Load this when the user passed one of the export flags (`--wiki`, `--neo4j`, `--neo4j-push`, `--falkordb`, `--falkordb-push`, `--svg`, `--graphml`, `--mcp`), or when the corpus is large enough for the token-reduction benchmark. Each step runs only for its own flag.
 
 ### Step 6b - Wiki (only if --wiki flag)
 
@@ -28,6 +28,22 @@ graphify export neo4j --push bolt://localhost:7687 --user neo4j --password PASSW
 
 Default URI is `bolt://localhost:7687`, default user is `neo4j`. Uses MERGE - safe to re-run without creating duplicates.
 
+### Step 7a - FalkorDB export (only if --falkordb or --falkordb-push flag)
+
+**If `--falkordb`** - generate a Cypher file. The statements are OpenCypher, but FalkorDB's `GRAPH.QUERY` runs one statement at a time (no bulk script import like Neo4j's `cypher-shell`), so prefer `--falkordb-push` to load a graph. Use this only when you want the portable `cypher.txt` artifact:
+
+```bash
+graphify export falkordb
+```
+
+**If `--falkordb-push <uri>`** - push directly to a running FalkorDB instance. Credentials are optional; ask the user only if the instance requires auth:
+
+```bash
+graphify export falkordb --push falkordb://localhost:6379
+```
+
+Default URI is `falkordb://localhost:6379` (the scheme is informational - `redis://` or a bare `host:port` work too), auth is optional, and the target graph defaults to `graphify`. Uses MERGE - safe to re-run without creating duplicates.
+
 ### Step 7b - SVG export (only if --svg flag)
 
 ```bash
@@ -43,17 +59,17 @@ graphify export graphml
 ### Step 7d - MCP server (only if --mcp flag)
 
 ```bash
-python3 -m graphify.serve graphify-out/graph.json
+$(cat graphify-out/.graphify_python) -m graphify.serve graphify-out/graph.json
 ```
 
 This starts a stdio MCP server that exposes tools: `query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`. Add to Claude Desktop or any MCP-compatible agent orchestrator so other agents can query the graph live.
 
-To configure in Claude Desktop, add to `claude_desktop_config.json`:
+To configure in Claude Desktop, add to `claude_desktop_config.json`. Claude Desktop can't run `$(...)`, and under `uv tool install` the system `python3` can't import graphify — so set `command` to the **absolute interpreter path** printed by `cat graphify-out/.graphify_python`:
 ```json
 {
   "mcpServers": {
     "graphify": {
-      "command": "python3",
+      "command": "<absolute path from: cat graphify-out/.graphify_python>",
       "args": ["-m", "graphify.serve", "/absolute/path/to/graphify-out/graph.json"]
     }
   }

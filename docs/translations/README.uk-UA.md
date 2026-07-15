@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://graphifylabs.ai"><img src="https://raw.githubusercontent.com/safishamsi/graphify/v4/docs/logo-text.svg" width="260" height="64" alt="Graphify"/></a>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/safishamsi/graphify/v4/docs/logo-text.svg" width="260" height="64" alt="Graphify"/></a>
 </p>
 
 <p align="center">
@@ -13,7 +13,7 @@
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
   <a href="https://clickpy.clickhouse.com/dashboard/graphifyy"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fsql-clickhouse.clickhouse.com%2F%3Fquery%3DSELECT%2520concat%2528toString%2528round%2528sum%2528count%2529%2F1000%2529%2529%2C%2520%2527k%2527%2529%2520AS%2520c%2520FROM%2520pypi.pypi_downloads%2520WHERE%2520project%253D%2527graphifyy%2527%2520FORMAT%2520JSON%26user%3Ddemo&query=%24.data%5B0%5D.c&label=downloads&color=blue" alt="Downloads"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
-  <a href="https://www.linkedin.com/in/safi-shamsi"><img src="https://img.shields.io/badge/LinkedIn-Safi%20Shamsi-0077B5?logo=linkedin" alt="LinkedIn"/></a>
+  <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://x.com/graphifyy"><img src="https://img.shields.io/badge/X-graphifyy-000000?logo=x&logoColor=white" alt="X"/></a>
 </p>
 
@@ -326,8 +326,12 @@ MCP-сервер надає асистенту структурований до
 | Змінна | Використання | Коли потрібна |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Backend Claude (Anthropic) | `--backend claude` |
+| `ANTHROPIC_BASE_URL` | URL Anthropic-сумісного endpoint (LiteLLM proxy, шлюзи, ...) | `--backend claude` (типово: `https://api.anthropic.com`) |
+| `ANTHROPIC_MODEL` | Назва моделі для backend Claude — для власних endpoint використовуйте назву/псевдонім моделі вашого сервера | `--backend claude` (типово: `claude-sonnet-4-6`) |
 | `GEMINI_API_KEY` або `GOOGLE_API_KEY` | Backend Google Gemini | `--backend gemini` |
-| `OPENAI_API_KEY` | OpenAI або OpenAI-сумісні API | `--backend openai` |
+| `OPENAI_API_KEY` | OpenAI або OpenAI-сумісні API | `--backend openai` (локальні сервери приймають будь-яке непорожнє значення) |
+| `OPENAI_BASE_URL` | URL OpenAI-сумісного сервера (llama.cpp, vLLM, LM Studio, ...) | `--backend openai` (типово: `https://api.openai.com/v1`) |
+| `OPENAI_MODEL` | Назва моделі для backend OpenAI — для self-hosted серверів використовуйте назву/псевдонім моделі, яку надає ваш сервер (див. його endpoint `/v1/models`), напр. `LFM2.5-8B-A1B-UD-Q4_K_XL` для llama.cpp | `--backend openai` (типово: `gpt-4.1-mini`) |
 | `DEEPSEEK_API_KEY` | Backend DeepSeek | `--backend deepseek` |
 | `MOONSHOT_API_KEY` | Backend Kimi Code | `--backend kimi` |
 | `OLLAMA_BASE_URL` | URL локального виводу Ollama | `--backend ollama` (типово: `http://localhost:11434`) |
@@ -463,6 +467,8 @@ graphify extract ./docs                        # headless LLM-витягуван
 graphify extract ./docs --backend gemini       # явний backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock або claude-cli
 graphify extract ./docs --backend gemini --model gemini-3.1-pro-preview
 graphify extract ./docs --backend ollama       # локальний Ollama (встановіть OLLAMA_BASE_URL / OLLAMA_MODEL) — без API-ключа для loopback
+OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_MODEL=my-model graphify extract ./docs --backend openai   # будь-який OpenAI-сумісний сервер (llama.cpp, vLLM, LM Studio)
+ANTHROPIC_BASE_URL=http://localhost:4000 ANTHROPIC_MODEL=my-model graphify extract ./docs --backend claude   # будь-який Anthropic-сумісний endpoint (LiteLLM proxy, шлюзи)
 GRAPHIFY_OLLAMA_NUM_CTX=32768 graphify extract ./docs --backend ollama   # перевизначити KV-кеш вікно (автоматично за замовчуванням)
 GRAPHIFY_OLLAMA_KEEP_ALIVE=0 graphify extract ./docs --backend ollama    # вивантажити модель після кожного шматка (економить VRAM на малих GPU)
 graphify extract ./docs --backend bedrock      # AWS Bedrock через IAM — без API-ключа, використовує ланцюг облікових даних AWS
@@ -523,11 +529,11 @@ graphify cluster-only ./my-project --exclude-hubs 99           # виключи�
 
 ## Побудовано на graphify — Penpax
 
-[**Penpax**](https://graphifylabs.ai) — це завжди активний шар поверх graphify, він застосовує той самий графовий підхід до всього робочого життя: зустрічей, історії браузера, email-ів, файлів і коду, постійно оновлюючись у фоновому режимі.
+[**Penpax**](https://graphify.com) — це завжди активний шар поверх graphify, він застосовує той самий графовий підхід до всього робочого життя: зустрічей, історії браузера, email-ів, файлів і коду, постійно оновлюючись у фоновому режимі.
 
 Створений для людей, чия робота розкидана по сотнях розмов і документів, які неможливо повністю відтворити. Без хмари, повністю на пристрої.
 
-**Безкоштовна пробна версія незабаром.** [Приєднайтесь до списку очікування →](https://graphifylabs.ai)
+**Безкоштовна пробна версія незабаром.** [Приєднайтесь до списку очікування →](https://graphify.com)
 
 ---
 

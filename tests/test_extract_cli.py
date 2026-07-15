@@ -102,6 +102,15 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     monkeypatch.setattr(
         "graphify.llm.extract_corpus_parallel", _one_chunk_succeeded
     )
+    cache_call = {}
+
+    def _capture_semantic_cache(*args, **kwargs):
+        cache_call.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(
+        "graphify.cache.save_semantic_cache", _capture_semantic_cache
+    )
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -121,6 +130,96 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     assert (out_dir / "graphify-out" / "graph.json").exists(), (
         "graph.json must be written on the happy path"
     )
+    assert {
+        str(path) for path in cache_call["allowed_source_files"]
+    } == {str(corpus / "README.md")}
+
+
+def test_manifest_stamps_freshly_extracted_semantic_docs(monkeypatch, tmp_path):
+    """#1897: fresh extraction returns nodes with ROOT-RELATIVE source_file,
+    while the #933 manifest filter compared them against detect()'s ABSOLUTE
+    paths — so `f in _sem_extracted` was always False and every freshly
+    extracted doc was dropped from the manifest (only code/zero-node files
+    survived). Both sides must be resolved against the scan root; a genuinely
+    omitted doc (zero nodes) must still stay unstamped (#933 is intentional)."""
+    import json
+
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    (corpus / "OMITTED.md").write_text("# never extracted\n")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    def _fresh_relative(paths, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+        # Root-relative source_file, exactly what a fresh extraction produces.
+        # OMITTED.md gets no nodes/edges — the model skipped it.
+        return {
+            "nodes": [{"id": "readme", "source_file": "README.md",
+                       "file_type": "document"}],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _fresh_relative)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude",
+         "--no-cluster", "--out", str(out_dir)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text())
+
+    assert "README.md" in manifest, (
+        f"freshly-extracted doc missing from manifest (#1897): {sorted(manifest)}"
+    )
+    assert manifest["README.md"].get("semantic_hash"), (
+        "freshly-extracted doc must carry a non-empty semantic_hash"
+    )
+    # Code files are always stamped.
+    assert manifest.get("main.go", {}).get("semantic_hash")
+    # The zero-node doc stays unstamped so detect_incremental re-queues it (#933).
+    assert "OMITTED.md" not in manifest, (
+        "zero-node doc must not be stamped in the manifest"
+    )
+
+
+def test_stamped_manifest_files_normalizes_both_sides(tmp_path):
+    """Unit test for the #1897 helper: relative (fresh) and absolute (cache-hit)
+    source_file values must both match detect()'s absolute file lists; docs with
+    no output are filtered; code files pass through untouched."""
+    from graphify.cli import _stamped_manifest_files
+
+    fresh_doc = tmp_path / "fresh.md"; fresh_doc.write_text("# fresh")
+    cached_doc = tmp_path / "cached.md"; cached_doc.write_text("# cached")
+    omitted_doc = tmp_path / "omitted.md"; omitted_doc.write_text("# omitted")
+    code = tmp_path / "app.py"; code.write_text("x = 1")
+
+    files_by_type = {
+        "code": [str(code)],
+        "document": [str(fresh_doc), str(cached_doc), str(omitted_doc)],
+    }
+    sem_result = {
+        # fresh extraction: root-relative source_file
+        "nodes": [{"id": "n1", "source_file": "fresh.md"}],
+        # cache replay: absolute source_file (edge-only coverage counts too)
+        "edges": [{"source": "a", "target": "b", "source_file": str(cached_doc)}],
+    }
+
+    out = _stamped_manifest_files(files_by_type, sem_result, tmp_path)
+    assert out["code"] == [str(code)]
+    assert out["document"] == [str(fresh_doc), str(cached_doc)]
 
 
 def _code_only_corpus(tmp_path):
@@ -172,6 +271,43 @@ def test_extract_codeonly_succeeds_without_api_key(monkeypatch, tmp_path):
     assert len(json.loads(graph.read_text()).get("nodes", [])) > 0
 
 
+def test_extract_out_keeps_project_root_clean(monkeypatch, tmp_path):
+    """`extract --out DIR` routes every artifact to DIR/graphify-out/ and the
+    scanned project must not grow a graphify-out/ (or anything else) beside
+    its sources.
+
+    Guards the centralized-output workflow: run from the project root with
+    --out pointing outside the repo, and the repo stays byte-identical.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    corpus = _code_only_corpus(project)
+    external = tmp_path / "external-graphs"
+
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.chdir(corpus)  # run from the project root, like a real user
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", ".", "--out", str(external)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    out = external / "graphify-out"
+    assert (out / "graph.json").exists(), "graph.json must land under --out"
+    assert (out / "manifest.json").exists(), "manifest.json must land under --out"
+    assert not (corpus / "graphify-out").exists(), (
+        "scanned project must not grow a graphify-out/ when --out is set"
+    )
+    assert sorted(p.name for p in corpus.iterdir()) == ["auth.py"], (
+        "no stray files may appear in the project root"
+    )
+
+
 def test_extract_without_key_still_errors_when_docs_present(
     monkeypatch, tmp_path, capsys
 ):
@@ -198,3 +334,33 @@ def test_extract_without_key_still_errors_when_docs_present(
     assert "no LLM API key found" in err
     assert "code-only corpus needs no key" in err
     assert not (out_dir / "graphify-out" / "graph.json").exists()
+
+
+def test_extract_timing_flag_emits_stage_timings(monkeypatch, tmp_path, capsys):
+    """--timing prints per-stage `[graphify timing]` lines to stderr (#1490); omitting
+    it prints none, so default output is unchanged. Code-only corpus => no API key."""
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "a.py").write_text("def a():\n    return b()\ndef b():\n    return 1\n")
+
+    # with --timing
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(code), "--no-cluster", "--out", str(tmp_path / "o1"), "--timing"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code == 0
+    err = capsys.readouterr().err
+    assert "[graphify timing] detect:" in err
+    assert "[graphify timing] total:" in err
+
+    # without --timing => no timing lines
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(code), "--no-cluster", "--out", str(tmp_path / "o2")],
+    )
+    with pytest.raises(SystemExit) as exc2:
+        mainmod.main()
+    assert exc2.value.code == 0
+    assert "graphify timing" not in capsys.readouterr().err

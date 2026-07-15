@@ -170,6 +170,75 @@ def test_tools_list_over_http(tmp_path):
         assert {"query_graph", "get_node", "graph_stats"} <= names
 
 
+def _project_with_graph(tmp_path, node_count: int) -> str:
+    """Create ``<proj>/graphify-out/graph.json`` and return the project dir."""
+    proj = tmp_path / "proj"
+    (proj / "graphify-out").mkdir(parents=True)
+    graph = {
+        "directed": True,
+        "nodes": [{"id": f"n{i}", "label": f"N{i}", "community": 0} for i in range(node_count)],
+        "edges": [],
+    }
+    (proj / "graphify-out" / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+    return str(proj)
+
+
+def _init_session(client) -> dict:
+    init = client.post("/mcp", headers=_MCP_HEADERS, json=_INIT_BODY)
+    assert init.status_code == 200
+    headers = {**_MCP_HEADERS, "mcp-session-id": init.headers.get("mcp-session-id")}
+    client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+    return headers
+
+
+def _call_tool(client, headers, name, arguments, rid) -> str:
+    resp = client.post("/mcp", headers=headers, json={
+        "jsonrpc": "2.0", "id": rid, "method": "tools/call",
+        "params": {"name": name, "arguments": arguments},
+    })
+    assert resp.status_code == 200
+    return resp.json()["result"]["content"][0]["text"]
+
+
+def test_project_path_is_optional_on_every_tool(tmp_path):
+    """Multi-project support is additive: every tool gains an optional
+    project_path, and none of them makes it required."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        resp = client.post("/mcp", headers=headers,
+                            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        for tool in resp.json()["result"]["tools"]:
+            props = tool["inputSchema"].get("properties", {})
+            assert "project_path" in props, f"{tool['name']} missing project_path"
+            assert "project_path" not in tool["inputSchema"].get("required", [])
+
+
+def test_project_path_routes_to_that_projects_graph(tmp_path):
+    """One running server answers against the default graph when project_path is
+    omitted, and against a project's own graph when it is supplied."""
+    proj = _project_with_graph(tmp_path, node_count=3)  # default graph has 2 nodes
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=2)
+        assert "Nodes: 3" in _call_tool(client, headers, "graph_stats", {"project_path": proj}, rid=3)
+        # Falling back to the default afterwards still works (no state leak).
+        assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=4)
+
+
+def test_bad_project_path_errors_without_killing_server(tmp_path):
+    """A missing project graph is a tool error, not a process exit — the server
+    keeps serving the default graph."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        bad = _call_tool(client, headers, "graph_stats",
+                         {"project_path": str(tmp_path / "does-not-exist")}, rid=2)
+        assert "not found" in bad.lower()
+        assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=3)
+
+
 def test_stateless_mode_initialize(tmp_path):
     app = serve_mod._build_http_app(_graph_file(tmp_path), stateless=True, json_response=True)
     with _client(app) as client:

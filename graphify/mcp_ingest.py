@@ -63,6 +63,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from graphify.ids import make_id as _shared_make_id
 from graphify.security import sanitize_label
 
 
@@ -376,17 +377,10 @@ def _add_edge(
 
 
 def _make_id(*parts: str) -> str:
-    """Build a stable node ID. Must match extract._make_id's normalisation rules."""
-    combined = "_".join(p.strip("_.") for p in parts if p)
-    combined = unicodedata.normalize("NFKC", combined)
-    cleaned = re.sub(r"[^\w]+", "_", combined, flags=re.UNICODE)
-    cleaned = re.sub(r"_+", "_", cleaned)
-    return cleaned.strip("_").casefold()
+    """Build a stable node ID via the single shared recipe (#1378)."""
+    return _shared_make_id(*parts)
 
 
-def _file_stem(path: Path) -> str:
-    """Mirror extract._file_stem: include parent dir name to disambiguate."""
-    parent = path.parent.name
-    if parent and parent not in (".", ""):
-        return f"{parent}.{path.stem}"
-    return path.stem
+# Canonical recipe imported directly (no import cycle: extractors.base imports
+# only graphify.ids), so this can no longer drift from extract._file_stem.
+from graphify.extractors.base import _file_stem  # noqa: E402

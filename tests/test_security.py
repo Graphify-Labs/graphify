@@ -20,6 +20,7 @@ from graphify.security import (
     _MAX_FETCH_BYTES,
     _MAX_GRAPH_FILE_BYTES,
     _MAX_TEXT_BYTES,
+    _max_graph_file_bytes,
     _METADATA_MAX_LIST_ITEMS,
     _METADATA_MAX_VALUE_LEN,
     _sanitize_metadata_string,
@@ -171,6 +172,28 @@ def test_validate_graph_path_raises_if_file_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         validate_graph_path(str(base / "missing.json"), base=base)
 
+def test_validate_graph_path_default_base_discovers_output_dir(tmp_path):
+    """With base omitted, the output dir is discovered by walking the path's
+    parents for the configured output-dir name (default 'graphify-out')."""
+    base = tmp_path / "graphify-out"
+    base.mkdir()
+    graph = base / "graph.json"
+    graph.write_text("{}")
+    assert validate_graph_path(str(graph)) == graph.resolve()
+
+def test_validate_graph_path_default_base_honours_graphify_out_override(tmp_path, monkeypatch):
+    """The base=None discovery must honour GRAPHIFY_OUT, not the hardcoded
+    'graphify-out' literal — otherwise a renamed output dir validates against the
+    wrong base or raises spuriously (#1423)."""
+    monkeypatch.setattr("graphify.security.GRAPHIFY_OUT_NAME", "custom-out")
+    monkeypatch.setattr("graphify.security.GRAPHIFY_OUT", "custom-out")
+    out = tmp_path / "custom-out"
+    out.mkdir()
+    graph = out / "graph.json"
+    graph.write_text("{}")
+    # No base passed → must discover custom-out by name rather than graphify-out.
+    assert validate_graph_path(str(graph)) == graph.resolve()
+
 
 # ---------------------------------------------------------------------------
 # sanitize_label
@@ -196,6 +219,12 @@ def test_sanitize_label_safe_passthrough():
     assert sanitize_label("MyClass") == "MyClass"
     assert sanitize_label("extract_python") == "extract_python"
 
+def test_sanitize_label_none_returns_empty():
+    # #1775: a node with source_file=None / label=None (synthetic/aggregate
+    # nodes, or JSON `null`) must not raise — .get() returns None, not the
+    # default, when the key is present-but-null.
+    assert sanitize_label(None) == ""
+
 
 # ---------------------------------------------------------------------------
 # check_graph_file_size_cap (#F4 — graph-load memory bomb protection)
@@ -203,6 +232,57 @@ def test_sanitize_label_safe_passthrough():
 
 def test_graph_size_cap_default_is_512_mib():
     assert _MAX_GRAPH_FILE_BYTES == 512 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# _max_graph_file_bytes — GRAPHIFY_MAX_GRAPH_BYTES env-var parsing
+# ---------------------------------------------------------------------------
+
+def test_max_graph_bytes_default_when_unset(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_MAX_GRAPH_BYTES", raising=False)
+    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
+
+
+def test_max_graph_bytes_default_when_blank(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "   ")
+    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
+
+
+def test_max_graph_bytes_plain_integer(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "671088640")
+    assert _max_graph_file_bytes() == 671088640
+
+
+def test_max_graph_bytes_mb_suffix_is_binary(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "640MB")
+    assert _max_graph_file_bytes() == 640 * 1024 * 1024
+
+
+def test_max_graph_bytes_gb_suffix_is_binary(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "2GB")
+    assert _max_graph_file_bytes() == 2 * 1024 * 1024 * 1024
+
+
+def test_max_graph_bytes_suffix_is_case_insensitive(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "3gb")
+    assert _max_graph_file_bytes() == 3 * 1024 * 1024 * 1024
+
+
+def test_max_graph_bytes_tolerates_space_before_suffix(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "5 GB")
+    assert _max_graph_file_bytes() == 5 * 1024 * 1024 * 1024
+
+
+@pytest.mark.parametrize("bad", ["not-a-number", "1.5GB", "0x10", "640KB"])
+def test_max_graph_bytes_unparseable_falls_back(monkeypatch, bad):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", bad)
+    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
+
+
+@pytest.mark.parametrize("nonpositive", ["0", "-1", "-4GB"])
+def test_max_graph_bytes_nonpositive_falls_back(monkeypatch, nonpositive):
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", nonpositive)
+    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
 
 
 def test_graph_size_cap_under_limit_returns_none(tmp_path):

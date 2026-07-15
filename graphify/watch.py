@@ -3,12 +3,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import posixpath
 import re
 import sys
 import time
 from pathlib import Path
 
-_GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+# Single source of truth in graphify.paths (#1423); re-exported as _GRAPHIFY_OUT.
+from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
 
@@ -65,6 +67,44 @@ def _drain_pending(out_dir: Path) -> list[Path]:
         seen.add(s)
         out.append(Path(s))
     return out
+
+
+# Build options that must survive into later rebuilds. The initial `extract`
+# scan honours `--exclude`, but `update`/`watch`/hook rebuilds re-run detect()
+# and would silently re-include excluded paths unless the patterns are persisted
+# (#1886). We store them beside the graph so any rebuild driver can re-apply them.
+_BUILD_CONFIG_FILENAME = ".graphify_build.json"
+
+
+def _write_build_config(out_dir: Path, *, excludes: "list[str] | None") -> None:
+    """Persist build options (currently ``--exclude`` patterns) under ``out_dir``.
+
+    Best-effort and non-clobbering: with no excludes it leaves any existing file
+    untouched, so a plain rebuild never erases patterns a prior extract recorded.
+    """
+    if not excludes:
+        return
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / _BUILD_CONFIG_FILENAME).write_text(
+            json.dumps({"excludes": list(excludes)}), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _read_build_excludes(out_dir: Path) -> list[str]:
+    """Return the persisted ``--exclude`` patterns for this graph, or []."""
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            ex = cfg.get("excludes") if isinstance(cfg, dict) else None
+            if isinstance(ex, list):
+                return [str(x) for x in ex if isinstance(x, str) and x]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return []
 
 
 def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
@@ -205,7 +245,40 @@ def _report_root_label(watch_path: Path) -> str:
     return Path.cwd().name if watch_path == Path(".") else str(watch_path)
 
 
-def _relativize_source_files(payload: dict, root: Path) -> None:
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _changed_path_candidates(raw: Path, *, change_root: Path, watch_root: Path) -> list[Path]:
+    """Return plausible absolute locations for a hook-provided changed path.
+
+    Git hooks pass paths relative to the repository root. Watch callers may
+    also pass paths relative to the watched root. Keep both interpretations so
+    a graph rooted at ``src`` accepts ``src/app.py`` and ``app.py``.
+    """
+    if raw.is_absolute():
+        lexical = Path(os.path.abspath(raw))
+        resolved = raw.resolve()
+        return [lexical] if lexical == resolved else [lexical, resolved]
+
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for base in (change_root, watch_root):
+        lexical = Path(os.path.abspath(base / raw))
+        for cand in (lexical, lexical.resolve()):
+            key = os.fspath(cand)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(cand)
+    return candidates
+
+
+def _relativize_source_files(payload: dict, root: Path, *, scope: Path | None = None) -> None:
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
             source = item.get("source_file")
@@ -215,9 +288,285 @@ def _relativize_source_files(payload: dict, root: Path) -> None:
             if not source_path.is_absolute():
                 continue
             try:
-                item["source_file"] = source_path.resolve().relative_to(root).as_posix()
+                resolved = source_path.resolve()
+                if scope is not None and not _is_relative_to(resolved, scope):
+                    continue
+                item["source_file"] = resolved.relative_to(root).as_posix()
             except ValueError:
                 continue
+
+
+def _rebase_relative_source_files(payload: dict, source_root: Path, target_root: Path) -> None:
+    """Rebase cache-root-relative source paths onto the project root."""
+    if source_root == target_root:
+        return
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in payload.get(bucket, []):
+            source = item.get("source_file")
+            if not source or Path(source).is_absolute():
+                continue
+            try:
+                item["source_file"] = (source_root / source).relative_to(target_root).as_posix()
+            except ValueError:
+                continue
+
+
+class _StoredSourcePaths:
+    """Resolve source_file values across current and legacy graph roots."""
+
+    def __init__(
+        self,
+        existing: dict,
+        *,
+        out: Path,
+        project_root: Path,
+        watch_root: Path,
+        normalize_source,
+    ) -> None:
+        self.project_root = project_root
+        self.watch_root = watch_root
+        self._normalize_source = normalize_source
+        self.existing_source_root = project_root
+        relative_marker_prefix: str | None = None
+
+        root_marker = out / ".graphify_root"
+        if root_marker.exists():
+            try:
+                saved_root = Path(root_marker.read_text(encoding="utf-8").strip())
+                if saved_root.is_absolute():
+                    self.existing_source_root = saved_root.resolve()
+                else:
+                    invocation_root = Path.cwd().resolve()
+                    if (invocation_root / saved_root).resolve() == watch_root:
+                        self.existing_source_root = invocation_root
+                        relative_marker_prefix = posixpath.normpath(saved_root.as_posix())
+            except (OSError, ValueError):
+                pass
+
+        self.legacy_watch_relative = False
+        if relative_marker_prefix not in (None, "."):
+            has_project_relative_source = False
+            for bucket in ("nodes", "links", "edges", "hyperedges"):
+                for item in existing.get(bucket, []):
+                    stored = normalize_source(item.get("source_file"))
+                    if not stored or Path(stored).is_absolute():
+                        continue
+                    normalized = posixpath.normpath(stored)
+                    if (
+                        normalized == relative_marker_prefix
+                        or normalized.startswith(relative_marker_prefix + "/")
+                    ):
+                        has_project_relative_source = True
+                        break
+                if has_project_relative_source:
+                    break
+            self.legacy_watch_relative = not has_project_relative_source
+
+    def normalize(self, source_file: str | None) -> str | None:
+        normalized = self._normalize_source(source_file, str(self.project_root))
+        return posixpath.normpath(normalized) if normalized else normalized
+
+    def absolute_identity(self, source_file: str | None, root: Path) -> str | None:
+        normalized = self._normalize_source(source_file)
+        if not normalized:
+            return normalized
+        source_path = Path(posixpath.normpath(normalized))
+        if not source_path.is_absolute():
+            source_path = root / source_path
+        return Path(os.path.abspath(source_path)).as_posix()
+
+    def identity(self, source_file: str | None) -> str | None:
+        normalized = self._normalize_source(source_file)
+        if normalized and not Path(normalized).is_absolute() and self.legacy_watch_relative:
+            return self.absolute_identity(normalized, self.watch_root)
+        return self.absolute_identity(normalized, self.existing_source_root)
+
+    def in_watch_root(self, source_file: str | None) -> bool:
+        identity = self.identity(source_file)
+        return bool(identity) and _is_relative_to(Path(identity), self.watch_root)
+
+    def is_evicted(self, item: dict, identities: set[str]) -> bool:
+        return self.identity(item.get("source_file")) in identities
+
+    def rebase_preserved(self, item: dict) -> None:
+        identity = self.identity(item.get("source_file"))
+        if not identity:
+            return
+        identity_path = Path(identity)
+        if not _is_relative_to(identity_path, self.watch_root):
+            normalized = self.normalize(item.get("source_file"))
+            if normalized:
+                item["source_file"] = normalized
+            return
+        try:
+            item["source_file"] = identity_path.relative_to(self.project_root).as_posix()
+        except ValueError:
+            item["source_file"] = identity
+
+
+def _reconcile_existing_graph(
+    existing_graph: Path,
+    result: dict,
+    *,
+    out: Path,
+    project_root: Path,
+    watch_root: Path,
+    code_files: list[Path],
+    extract_targets: list[Path],
+    full_rebuild: bool,
+    deleted_paths: set[str],
+    deleted_source_identities: set[str],
+) -> tuple[dict, dict]:
+    """Merge fresh extraction with preserved graph entries and evict stale sources."""
+    existing_graph_data: dict = {}
+    if not existing_graph.exists():
+        return result, existing_graph_data
+
+    try:
+        from graphify.build import _norm_source_file as _nsf
+        from graphify.extract import _get_extractor
+        from graphify.security import check_graph_file_size_cap
+
+        check_graph_file_size_cap(existing_graph)
+        existing = json.loads(existing_graph.read_text(encoding="utf-8"))
+        existing_graph_data = existing
+        source_paths = _StoredSourcePaths(
+            existing,
+            out=out,
+            project_root=project_root,
+            watch_root=watch_root,
+            normalize_source=_nsf,
+        )
+        new_ast_ids = {n["id"] for n in result["nodes"]}
+        current_sources = {
+            source_paths.absolute_identity(str(path), project_root) for path in code_files
+        }
+        rebuilt_source_identities = {
+            source_paths.absolute_identity(str(path), project_root) for path in extract_targets
+        }
+        node_evicted_source_identities = set(deleted_source_identities)
+        hyperedge_evicted_source_identities = set(deleted_source_identities)
+        # Deletion evicts edges regardless of tier; re-extraction only owns a
+        # source's AST-tier edges (checked per-edge below, #1865).
+        edge_evicted_source_identities = set(deleted_source_identities)
+        if not full_rebuild:
+            node_evicted_source_identities.update(rebuilt_source_identities)
+
+        # Reconcile every rebuild against the current watched corpus. Hook change
+        # lists can contain only a rename destination, so explicit paths alone
+        # cannot identify the stale source. Keep the comparison scoped to the
+        # watched root so subfolder updates preserve records outside that subtree.
+        #
+        # Fail-closed eviction: a source identity missing from the corpus is only
+        # DELETION evidence when the file is actually gone from disk. A file that
+        # still exists but stopped being collected was *excluded* (ignore rules or
+        # filters changed — e.g. a .gitignore the scanner newly honors), and
+        # treating that as deletion silently mass-evicts good nodes. Preserve
+        # instead and say so; a full re-extraction still purges deliberately
+        # excluded sources via the AST ownership rule below.
+        excluded_alive_files: set[str] = set()
+        excluded_alive_nodes = 0
+        _alive_cache: dict[str, bool] = {}
+        for node in existing.get("nodes", []):
+            source_file = node.get("source_file")
+            if not source_file or _get_extractor(Path(source_file)) is None:
+                continue
+            identity = source_paths.identity(source_file)
+            if not source_paths.in_watch_root(source_file):
+                continue
+            if identity not in current_sources:
+                if identity:
+                    alive = _alive_cache.get(identity)
+                    if alive is None:
+                        alive = Path(identity).exists()
+                        _alive_cache[identity] = alive
+                    if alive:
+                        excluded_alive_files.add(identity)
+                        excluded_alive_nodes += 1
+                        continue
+                normalized = source_paths.normalize(source_file)
+                if normalized:
+                    deleted_paths.add(normalized)
+                if identity:
+                    node_evicted_source_identities.add(identity)
+                    edge_evicted_source_identities.add(identity)
+                    hyperedge_evicted_source_identities.add(identity)
+        if excluded_alive_files:
+            print(
+                f"[graphify watch] fail-closed: kept {excluded_alive_nodes} node(s) "
+                f"from {len(excluded_alive_files)} file(s) that left the scan corpus "
+                "but still exist on disk (ignore rules or filters changed?). "
+                "Run a full re-extraction to purge them if the exclusion is intentional."
+            )
+
+        # A full re-extraction owns every AST node under watch_root. Incremental
+        # extraction owns only nodes from rebuilt or deleted sources. Semantic
+        # nodes lack the AST origin marker and remain preserved.
+        preserved_nodes = [
+            node
+            for node in existing.get("nodes", [])
+            if node["id"] not in new_ast_ids
+            and not (
+                node.get("_origin") == "ast"
+                and (
+                    (
+                        not node.get("source_file")
+                        and (full_rebuild or not code_files)
+                    )
+                    or (
+                        full_rebuild
+                        and source_paths.in_watch_root(node.get("source_file"))
+                    )
+                )
+            )
+            and not source_paths.is_evicted(node, node_evicted_source_identities)
+        ]
+        all_ids = new_ast_ids | {node["id"] for node in preserved_nodes}
+
+        # Edges are owned by source_file, but ownership is tier-scoped: the AST
+        # pass replaces a re-extracted source's AST edges, while that source's
+        # semantic/LLM edges — which the AST pass cannot regenerate — survive
+        # until a semantic re-extraction supersedes them. Same provenance rule
+        # the node reconciliation above applies via _origin (#1865). Deletion
+        # eviction stays provenance-blind.
+        preserved_edges = [
+            edge
+            for edge in existing.get("links", existing.get("edges", []))
+            if edge.get("source") in all_ids
+            and edge.get("target") in all_ids
+            and not source_paths.is_evicted(edge, edge_evicted_source_identities)
+            and not (
+                edge.get("_origin") == "ast"
+                and source_paths.is_evicted(edge, rebuilt_source_identities)
+            )
+        ]
+
+        new_hyperedge_ids = {
+            edge.get("id") for edge in result.get("hyperedges", []) if edge.get("id")
+        }
+        preserved_hyperedges = []
+        for edge in existing.get("hyperedges", []):
+            members = edge.get("nodes", edge.get("members", edge.get("node_ids", [])))
+            if edge.get("id") in new_hyperedge_ids or source_paths.is_evicted(
+                edge, hyperedge_evicted_source_identities
+            ):
+                continue
+            if isinstance(members, list) and any(member not in all_ids for member in members):
+                continue
+            preserved_hyperedges.append(edge)
+
+        for item in preserved_nodes + preserved_edges + preserved_hyperedges:
+            source_paths.rebase_preserved(item)
+
+        return {
+            "nodes": result["nodes"] + preserved_nodes,
+            "edges": result["edges"] + preserved_edges,
+            "hyperedges": result.get("hyperedges", []) + preserved_hyperedges,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }, existing_graph_data
+    except Exception:
+        return result, existing_graph_data
 
 
 def _node_community_map(graph_data: dict) -> dict[str, int]:
@@ -263,6 +612,7 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
                 continue
             n = dict(node)
             n.pop("community", None)
+            n.pop("community_name", None)
             n.pop("norm_label", None)
             norm_nodes.append(n)
         canonical["nodes"] = sorted(
@@ -324,6 +674,7 @@ def _check_shrink(
     tmp: "Path | None" = None,
     *,
     had_explicit_deletions: bool = False,
+    rebuilt_sources: "set[str] | None" = None,
 ) -> bool:
     """Return True (ok to proceed) or False (shrink refused).
 
@@ -335,23 +686,43 @@ def _check_shrink(
     has declared which files were removed (e.g. the post-commit hook saw
     a ``D`` in ``git diff --name-only``) and a smaller graph is the expected
     outcome — skip the guard so legitimate refactors don't require ``--force``.
+
+    ``rebuilt_sources`` (when given) is the set of source files re-extracted this
+    run. A net shrink is legitimate — not a failed chunk — when every *lost* node
+    belonged to one of those files (a symbol removed from a re-extracted file) or
+    carries no source_file. Only an unexplained loss (a node from a file we did
+    NOT touch — e.g. a dropped semantic/doc node) refuses the write. This lets a
+    plain ``graphify update`` after deleting a function refresh the graph without
+    ``--force`` (#1116 left stale nodes write-blocked even though build dropped them).
     """
     if force or not existing_data or had_explicit_deletions:
         return True
-    existing_n = len(existing_data.get("nodes", []))
-    new_n = len(new_data.get("nodes", []))
-    if new_n < existing_n:
-        if tmp is not None:
-            tmp.unlink(missing_ok=True)
-        print(
-            f"[graphify] WARNING: new graph has {new_n} nodes but existing "
-            f"graph.json has {existing_n}. Refusing to overwrite — you may be "
-            f"missing chunk files from a previous session. "
-            f"Pass --force to override.",
-            file=sys.stderr,
-        )
-        return False
-    return True
+    existing_nodes = existing_data.get("nodes", [])
+    new_nodes = new_data.get("nodes", [])
+    if len(new_nodes) >= len(existing_nodes):
+        return True
+    if rebuilt_sources is not None:
+        from graphify.build import _norm_source_file
+        new_ids = {n.get("id") for n in new_nodes}
+        lost = [n for n in existing_nodes if n.get("id") not in new_ids]
+
+        def _accounted(n: dict) -> bool:
+            sf = n.get("source_file")
+            return (not sf
+                    or sf in rebuilt_sources
+                    or _norm_source_file(sf) in rebuilt_sources)
+        if all(_accounted(n) for n in lost):
+            return True
+    if tmp is not None:
+        tmp.unlink(missing_ok=True)
+    print(
+        f"[graphify] WARNING: new graph has {len(new_nodes)} nodes but existing "
+        f"graph.json has {len(existing_nodes)}. Refusing to overwrite — you may be "
+        f"missing chunk files from a previous session. "
+        f"Pass --force to override.",
+        file=sys.stderr,
+    )
+    return False
 
 
 def _report_for_compare(report_text: str) -> str:
@@ -360,6 +731,37 @@ def _report_for_compare(report_text: str) -> str:
 
 def _json_text(data: dict) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
+    """Ensure relative rebuild paths have a usable CWD before queue/lock setup.
+
+    Detached git hooks can inherit a transient working directory that is deleted
+    before the background rebuild starts. In that state Path.cwd(),
+    Path('.').resolve(), and relative graphify-out mkdirs raise FileNotFoundError
+    before the normal rebuild error handling can run. Hooks that know the repo
+    root export GRAPHIFY_REPO_ROOT so the rebuild can recover by chdir'ing there.
+    """
+    if watch_path.is_absolute():
+        return True
+
+    repo_root = os.environ.get("GRAPHIFY_REPO_ROOT", "").strip()
+    if repo_root and Path(repo_root).is_dir():
+        try:
+            os.chdir(repo_root)
+            return True
+        except OSError:
+            pass
+
+    try:
+        Path.cwd()
+        return True
+    except FileNotFoundError:
+        print(
+            "[graphify watch] Rebuild failed: current working directory "
+            "no longer exists and GRAPHIFY_REPO_ROOT is not set."
+        )
+        return False
 
 
 def _rebuild_code(
@@ -395,6 +797,9 @@ def _rebuild_code(
 
     Returns True on success, False on error or skipped-due-to-lock.
     """
+    if not _stabilize_rebuild_cwd(watch_path):
+        return False
+
     out = watch_path / _GRAPHIFY_OUT
     if acquire_lock:
         # #1059: incremental (changed_paths is not None) hooks must not drop
@@ -460,7 +865,14 @@ def _rebuild_code(
         from graphify.export import to_json, to_html
         from graphify.security import check_graph_file_size_cap
 
-        detected = detect(watch_path, follow_symlinks=follow_symlinks)
+        # Re-apply the excludes the initial extract recorded, so an update/watch/
+        # hook rebuild does not silently re-include deliberately excluded paths
+        # (#1886).
+        _persisted_excludes = _read_build_excludes(out)
+        detected = detect(
+            watch_path, follow_symlinks=follow_symlinks,
+            extra_excludes=_persisted_excludes or None,
+        )
         code_files = [Path(f) for f in detected['files']['code']]
 
         # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
@@ -469,7 +881,8 @@ def _rebuild_code(
             if _get_extractor(p) is not None:
                 code_files.append(p)
 
-        if not code_files:
+        existing_graph = out / "graph.json"
+        if not code_files and not existing_graph.exists():
             print("[graphify watch] No code files found - nothing to rebuild.")
             return False
 
@@ -477,18 +890,49 @@ def _rebuild_code(
         # extract only changed-and-still-existing files. Deleted paths are
         # tracked separately so their stale nodes can be evicted below.
         deleted_paths: set[str] = set()
+        deleted_source_identities: set[str] = set()
+        def _add_deleted_source(path: Path) -> None:
+            deleted_source_identities.add(Path(os.path.abspath(path)).as_posix())
+            for root in (project_root, watch_root):
+                deleted_paths.add(_nsf(str(path), str(root)) or str(path))
+
         if changed_paths is not None:
-            code_set = {p.resolve() for p in code_files}
+            code_set = {Path(os.path.abspath(p)) for p in code_files}
             wanted: list[Path] = []
+            change_root = Path.cwd().resolve()
             for raw in changed_paths:
-                cand = (watch_root / raw).resolve() if not raw.is_absolute() else raw.resolve()
-                if cand.exists() and cand in code_set:
-                    wanted.append(cand)
-                else:
-                    # File was deleted, renamed away, or filtered out by detect
-                    # (e.g. .gitignore, vendored). Either way, evict any
-                    # preserved nodes that still claim this source path.
-                    deleted_paths.add(_nsf(str(cand), str(project_root)) or str(cand))
+                candidates = _changed_path_candidates(
+                    raw,
+                    change_root=change_root,
+                    watch_root=watch_root,
+                )
+                tracked = next((cand for cand in candidates if cand.exists() and cand in code_set), None)
+                if tracked is not None:
+                    if tracked not in wanted:
+                        wanted.append(tracked)
+                    continue
+
+                existing_in_root = next(
+                    (
+                        cand for cand in candidates
+                        if cand.exists() and _is_relative_to(cand, watch_root)
+                    ),
+                    None,
+                )
+                if existing_in_root is not None:
+                    # The path exists under the watched root but detect filtered
+                    # it out. Evict any stale nodes that still claim it.
+                    _add_deleted_source(existing_in_root)
+                    continue
+
+                deleted_in_root = next(
+                    (cand for cand in candidates if _is_relative_to(cand, watch_root)),
+                    None,
+                )
+                if deleted_in_root is not None:
+                    # File was deleted or renamed away inside the watched root.
+                    # Evict preserved nodes that still claim this source path.
+                    _add_deleted_source(deleted_in_root)
             if not wanted and not deleted_paths:
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
@@ -501,6 +945,7 @@ def _rebuild_code(
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
         }
+        _rebase_relative_source_files(result, watch_root, project_root)
 
         # Preserve semantic nodes/edges from a previous full run.
         # AST-only rebuild replaces nodes for changed files; everything else is kept.
@@ -510,83 +955,44 @@ def _rebuild_code(
         # When the caller supplied changed_paths, also evict preserved nodes whose
         # source_file matches a path that was changed (re-extracted) or deleted —
         # otherwise the old nodes for those files would survive forever.
-        existing_graph = out / "graph.json"
-        existing_graph_data: dict = {}
-        if existing_graph.exists():
-            try:
-                check_graph_file_size_cap(existing_graph)
-                existing = json.loads(existing_graph.read_text(encoding="utf-8"))
-                existing_graph_data = existing
-                new_ast_ids = {n["id"] for n in result["nodes"]}
-                _relativize_source_files(existing, project_root)
-                evict_sources: set[str] = set(deleted_paths)
-                if changed_paths is not None:
-                    for p in extract_targets:
-                        evict_sources.add(_nsf(str(p), str(project_root)) or str(p))
-                else:
-                    # Full re-extraction: reconcile against current code files to
-                    # evict nodes from files deleted since the last run (#1007).
-                    _root_str = str(project_root)
-                    current_sources = {
-                        _nsf(str(p.relative_to(project_root)), _root_str)
-                        for p in code_files
-                        if p.is_relative_to(project_root)
-                    }
-                    for n in existing.get("nodes", []):
-                        sf = n.get("source_file")
-                        if not sf:
-                            continue
-                        if Path(sf).suffix.lower() not in _CODE_EXTENSIONS:
-                            continue
-                        norm = _nsf(sf, _root_str)
-                        if norm not in current_sources:
-                            evict_sources.add(sf)
-                            evict_sources.add(norm)
-                            deleted_paths.add(norm)
-                # On a full re-extraction every code file is re-extracted, so
-                # new_ast_ids is the complete current AST set. Any AST-marked node
-                # missing from it is stale and must be dropped even if its source
-                # file still exists (a symbol removed from a surviving file, #1116).
-                # Gate on full_rebuild: in incremental mode an AST node from an
-                # unchanged file is legitimately absent from new_ast_ids. Semantic
-                # nodes lack the "_origin" marker, so they are never dropped here —
-                # only by the deleted-file eviction in evict_sources above.
-                full_rebuild = changed_paths is None
-                preserved_nodes = [
-                    n for n in existing.get("nodes", [])
-                    if n["id"] not in new_ast_ids
-                    and not (full_rebuild and n.get("_origin") == "ast")
-                    and (not evict_sources or n.get("source_file") not in evict_sources)
-                ]
-                all_ids = new_ast_ids | {n["id"] for n in preserved_nodes}
-                preserved_edges = [
-                    e for e in existing.get("links", existing.get("edges", []))
-                    if e.get("source") in all_ids and e.get("target") in all_ids
-                ]
-                result = {
-                    "nodes": result["nodes"] + preserved_nodes,
-                    "edges": result["edges"] + preserved_edges,
-                    "hyperedges": existing.get("hyperedges", []),
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                }
-            except Exception:
-                pass  # corrupt graph.json - proceed with AST-only
+        result, existing_graph_data = _reconcile_existing_graph(
+            existing_graph,
+            result,
+            out=out,
+            project_root=project_root,
+            watch_root=watch_root,
+            code_files=code_files,
+            extract_targets=extract_targets,
+            full_rebuild=changed_paths is None,
+            deleted_paths=deleted_paths,
+            deleted_source_identities=deleted_source_identities,
+        )
 
-        _relativize_source_files(result, project_root)
+        _relativize_source_files(result, project_root, scope=watch_root)
+        # Source files re-extracted this run — their symbol sets may legitimately
+        # shrink (a removed function), so the shrink-guard should not block the
+        # write when every lost node belongs to one of them (or a deleted file).
+        _rebuilt_root = str(project_root)
+        if changed_paths is None:
+            rebuilt_sources = {
+                _nsf(str(p.relative_to(project_root)), _rebuilt_root)
+                for p in code_files if p.is_relative_to(project_root)
+            }
+        else:
+            rebuilt_sources = {(_nsf(str(p), _rebuilt_root) or str(p)) for p in extract_targets}
+        rebuilt_sources |= set(deleted_paths)
         out.mkdir(exist_ok=True)
-        # Write the user-supplied path rather than the resolved absolute form
-        # so a committed ``graphify-out/.graphify_root`` is portable across
-        # clones and CI runners (#777). When ``watch_path`` is ``.`` (the
-        # common case for ``graphify update``), this writes ``.`` and the
-        # subsequent re-run resolves it against the caller's CWD.
-        (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
 
         if no_cluster:
             # Normalise to "links" key so schema is consistent with the full clustered path.
+            # Dedupe parallel edges (the clustered path's DiGraph collapses them implicitly);
+            # without it, --no-cluster + repeated `update` accumulate duplicates and edge
+            # counts diverge across build modes (#1317).
+            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
             candidate_graph_data = {
-                **{k: v for k, v in result.items() if k != "edges"},
-                "links": result.get("edges", []),
+                **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
+                "nodes": _dedupe_nodes(result.get("nodes", [])),
+                "links": _dedupe_edges(result.get("edges", [])),
             }
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
@@ -604,9 +1010,14 @@ def _rebuild_code(
                 if not _check_shrink(
                     force, existing_graph_data, candidate_graph_data,
                     had_explicit_deletions=bool(deleted_paths),
+                    rebuilt_sources=rebuilt_sources,
                 ):
                     return False
                 existing_graph.write_text(candidate_graph_text, encoding="utf-8")
+
+            # Write the user-supplied path only after the candidate graph is
+            # accepted, so a refused shrink cannot mismatch graph and marker.
+            (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
 
             try:
                 from graphify.detect import save_manifest
@@ -624,7 +1035,8 @@ def _rebuild_code(
             else:
                 print(
                     "[graphify watch] Rebuilt (no clustering): "
-                    f"{len(result.get('nodes', []))} nodes, {len(result.get('edges', []))} edges"
+                    f"{len(candidate_graph_data.get('nodes', []))} nodes, "
+                    f"{len(candidate_graph_data.get('links', []))} edges"
                 )
                 print(f"[graphify watch] graph.json updated in {out}")
             return True
@@ -671,17 +1083,21 @@ def _rebuild_code(
         except Exception:
             raw = {}
             labels = {}
-        for cid in communities:
-            if cid not in labels:
-                labels[cid] = "Community " + str(cid)
+        missing = {cid: members for cid, members in communities.items() if cid not in labels}
+        if missing:
+            # Deterministic hub name (highest-degree member) beats a bare "Community N"
+            # placeholder for any community without a saved label.
+            from graphify.cluster import label_communities_by_hub
+            labels.update(label_communities_by_hub(G, missing))
         questions = suggest_questions(G, communities, labels)
+        from graphify.report import load_learning_for_report as _llfr
         report = generate(G, communities, cohesion, labels, gods, surprises, detection,
                           {"input": 0, "output": 0}, report_root, suggested_questions=questions,
-                          built_at_commit=commit)
+                          built_at_commit=commit, learning=_llfr(out / "graph.json"))
         report_path = out / "GRAPH_REPORT.md"
         labels_json = json.dumps({str(k): v for k, v in sorted(labels.items())}, ensure_ascii=False, indent=2) + "\n"
         graph_tmp = out / ".graph.tmp.json"
-        json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit)
+        json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit, community_labels=labels)
         if not json_written:
             return False
         candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))
@@ -709,6 +1125,7 @@ def _rebuild_code(
                 force, existing_graph_data, candidate_graph_data,
                 tmp=graph_tmp,
                 had_explicit_deletions=bool(deleted_paths),
+                rebuilt_sources=rebuilt_sources,
             ):
                 return False
             from graphify.export import backup_if_protected as _backup
@@ -716,6 +1133,8 @@ def _rebuild_code(
             graph_tmp.replace(existing_graph)
             report_path.write_text(report, encoding="utf-8")
             labels_file.write_text(labels_json, encoding="utf-8")
+
+        (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
 
         try:
             from graphify.detect import save_manifest
@@ -838,7 +1257,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             nonlocal last_trigger, pending
             if event.is_directory:
                 return
-            path = Path(event.src_path)
+            path = Path(os.fsdecode(event.src_path))
             # Check .graphifyignore BEFORE the extension/dotfile/out filters so
             # the cheapest short-circuit for users with broad ignore patterns
             # (node_modules/, .venv/, build/, …) fires first. _is_ignored
@@ -848,9 +1267,13 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             if path.suffix.lower() not in _WATCHED_EXTENSIONS:
                 return
-            if any(part.startswith(".") for part in path.parts):
+            try:
+                filter_parts = path.relative_to(watch_root_for_ignore).parts
+            except ValueError:
+                filter_parts = path.parts
+            if any(part.startswith(".") for part in filter_parts):
                 return
-            if _GRAPHIFY_OUT in path.parts:
+            if _GRAPHIFY_OUT in filter_parts:
                 return
             last_trigger = time.monotonic()
             pending = True

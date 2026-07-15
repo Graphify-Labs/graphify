@@ -1,6 +1,6 @@
 # git hook integration - install/uninstall graphify post-commit and post-checkout hooks
 from __future__ import annotations
-import configparser
+import os
 import re
 import sys
 from pathlib import Path
@@ -20,9 +20,18 @@ _PYTHON_DETECT = """\
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs).
 # _PINNED was recorded at hook-install time; tried first so the hook works even
 # when the graphify launcher is not on PATH (common in GUI clients and CI).
+#
+# Probes check availability with importlib.util.find_spec instead of importing
+# the package: a probe that imports graphify wholesale executes the full package
+# import (10s+ cold on machines with AV-scanned or large site-packages) and used
+# to run up to FOUR times synchronously, stalling every commit before the
+# detached launch even started. find_spec locates the package without executing
+# it, so each probe costs interpreter startup only. The detached rebuild still
+# fails loudly in the log if the package is broken under that interpreter.
+_GFY_PROBE="import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('graphify') else 1)"
 GRAPHIFY_PYTHON=""
 _PINNED='__PINNED_PYTHON__'
-if [ -n "$_PINNED" ] && [ -x "$_PINNED" ] && "$_PINNED" -c "import graphify" 2>/dev/null; then
+if [ -n "$_PINNED" ] && [ -x "$_PINNED" ] && "$_PINNED" -c "$_GFY_PROBE" 2>/dev/null; then
     GRAPHIFY_PYTHON="$_PINNED"
 fi
 # Second probe: read graphify-out/.graphify_python (written by the skill and
@@ -34,18 +43,34 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         case "$_FROM_FILE" in
             *[!a-zA-Z0-9/_.@:\\-]*) _FROM_FILE="" ;;  # allowlist (covers Windows paths)
         esac
-        if [ -n "$_FROM_FILE" ] && [ -x "$_FROM_FILE" ] && "$_FROM_FILE" -c "import graphify" 2>/dev/null; then
+        if [ -n "$_FROM_FILE" ] && [ -x "$_FROM_FILE" ] && "$_FROM_FILE" -c "$_GFY_PROBE" 2>/dev/null; then
             GRAPHIFY_PYTHON="$_FROM_FILE"
         fi
     fi
 fi
-# Third probe: resolve via the graphify launcher on PATH (shebang probe).
+# Third probe: resolve via the graphify launcher on PATH.
 if [ -z "$GRAPHIFY_PYTHON" ]; then
     GRAPHIFY_BIN=$(command -v graphify 2>/dev/null)
     if [ -n "$GRAPHIFY_BIN" ]; then
+        # Windows pip layout: Scripts/graphify(.exe) sits beside ..\\python.exe
+        # (or .\\python.exe inside a venv's Scripts dir). NOTE: command -v may
+        # return the launcher path WITHOUT the .exe suffix, so this cannot key
+        # on the extension.
+        _GFY_BINDIR=$(dirname "$GRAPHIFY_BIN")
+        if [ -x "$_GFY_BINDIR/../python.exe" ] && "$_GFY_BINDIR/../python.exe" -c "$_GFY_PROBE" 2>/dev/null; then
+            GRAPHIFY_PYTHON="$_GFY_BINDIR/../python.exe"
+        elif [ -x "$_GFY_BINDIR/python.exe" ] && "$_GFY_BINDIR/python.exe" -c "$_GFY_PROBE" 2>/dev/null; then
+            GRAPHIFY_PYTHON="$_GFY_BINDIR/python.exe"
+        fi
+    fi
+    if [ -z "$GRAPHIFY_PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
+        # POSIX launcher: parse the shebang. head -c + tr strip NUL bytes first —
+        # when the launcher is a Windows binary reached without its .exe suffix,
+        # a raw `head -1` reads binary into the command substitution and the
+        # shell warns about ignored null bytes on every commit.
         case "$GRAPHIFY_BIN" in
             *.exe) _SHEBANG="" ;;
-            *)     _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | sed 's/^#![[:space:]]*//') ;;
+            *)     _SHEBANG=$(head -c 256 "$GRAPHIFY_BIN" 2>/dev/null | tr -d '\\000' | head -n 1 | sed 's/^#![[:space:]]*//') ;;
         esac
         case "$_SHEBANG" in
             */env\\ *) GRAPHIFY_PYTHON="${_SHEBANG#*/env }" ;;
@@ -56,16 +81,16 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         case "$GRAPHIFY_PYTHON" in
             *[!a-zA-Z0-9/_.@-]*) GRAPHIFY_PYTHON="" ;;
         esac
-        if [ -n "$GRAPHIFY_PYTHON" ] && ! "$GRAPHIFY_PYTHON" -c "import graphify" 2>/dev/null; then
+        if [ -n "$GRAPHIFY_PYTHON" ] && ! "$GRAPHIFY_PYTHON" -c "$_GFY_PROBE" 2>/dev/null; then
             GRAPHIFY_PYTHON=""
         fi
     fi
 fi
 # Last resort: try python3 / python (works for system/venv installs on PATH).
 if [ -z "$GRAPHIFY_PYTHON" ]; then
-    if command -v python3 >/dev/null 2>&1 && python3 -c "import graphify" 2>/dev/null; then
+    if command -v python3 >/dev/null 2>&1 && python3 -c "$_GFY_PROBE" 2>/dev/null; then
         GRAPHIFY_PYTHON="python3"
-    elif command -v python >/dev/null 2>&1 && python -c "import graphify" 2>/dev/null; then
+    elif command -v python >/dev/null 2>&1 && python -c "$_GFY_PROBE" 2>/dev/null; then
         GRAPHIFY_PYTHON="python"
     else
         echo "[graphify hook] could not locate a Python with graphify installed. Add the graphify bin dir to PATH or re-run 'graphify hook install' from the env where graphify lives." >&2
@@ -99,12 +124,24 @@ try:
         signal.alarm(_timeout)
     _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
     _root = Path('.')
-    _saved = Path('graphify-out/.graphify_root')
+    _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
+    _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8').strip()
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, changed_paths=changed, force=_force)
+    # Refresh the work-memory lessons doc when saved Q&A outcomes exist
+    # (best-effort; never fails the hook).
+    try:
+        _md = (_root / _out) / 'memory'
+        if _md.is_dir() and any(_md.glob('*.md')):
+            from graphify.reflect import reflect as _reflect
+            _gj = (_root / _out) / 'graph.json'
+            _reflect(memory_dir=_md, out_path=(_root / _out) / 'reflections' / 'LESSONS.md',
+                     graph_path=_gj if _gj.exists() else None)
+    except Exception:
+        pass
 except TimeoutError as exc:
     print(f'[graphify hook] {exc}')
     sys.exit(1)
@@ -128,12 +165,24 @@ try:
     # (no changed_paths) is correct here. The flock inside _rebuild_code still
     # prevents pile-ups when commit + checkout fire back-to-back.
     _root = Path('.')
-    _saved = Path('graphify-out/.graphify_root')
+    _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
+    _saved = Path(_out) / '.graphify_root'
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8').strip()
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, force=_force)
+    # Refresh the work-memory lessons doc when saved Q&A outcomes exist
+    # (best-effort; never fails the hook).
+    try:
+        _md = (_root / _out) / 'memory'
+        if _md.is_dir() and any(_md.glob('*.md')):
+            from graphify.reflect import reflect as _reflect
+            _gj = (_root / _out) / 'graph.json'
+            _reflect(memory_dir=_md, out_path=(_root / _out) / 'reflections' / 'LESSONS.md',
+                     graph_path=_gj if _gj.exists() else None)
+    except Exception:
+        pass
 except TimeoutError as exc:
     print(f'[graphify] {exc}')
     sys.exit(1)
@@ -190,6 +239,25 @@ def _detached_launch(rebuild_body: str) -> str:
     return '"$GRAPHIFY_PYTHON" -c "' + launcher + '"\n'
 
 
+# Skip the rebuild inside a linked worktree (git worktree add), shared by both
+# hooks. With core.hooksPath shared across worktrees a commit in any worktree
+# fires these hooks; the canonical graphify-out/ belongs to the primary checkout,
+# so rebuilding from a worktree is wasteful, writes a rogue delta-only graph the
+# user never asked for, and races deploy/CI `git clean` against the detached
+# rebuild ("failed to remove graphify-out/: Directory not empty") (#1809, #1806).
+# A linked worktree has git-dir != git-common-dir. Both are resolved to absolute
+# via `cd ... && pwd` before comparing: git's exported GIT_DIR / --git-dir can be
+# absolute while --git-common-dir is the relative ".git", and a raw compare would
+# false-positive on the PRIMARY checkout and wrongly skip it.
+_WORKTREE_GUARD = """\
+_GFY_GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
+_GFY_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
+if [ -n "$_GFY_COMMONDIR" ] && [ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]; then
+    exit 0
+fi
+"""
+
+
 _HOOK_SCRIPT = """\
 # graphify-hook-start
 # Auto-rebuilds the knowledge graph after each commit (code files only, no LLM needed).
@@ -200,8 +268,17 @@ _HOOK_SCRIPT = """\
 # churn run-to-run. Pinning it makes graphify-out reproducible.
 export PYTHONHASHSEED=0
 
+# Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
+# and agent shells. Keep hook-triggered rebuilds sequential by default there;
+# explicit GRAPHIFY_MAX_WORKERS still wins for users who want parallelism.
+if [ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]; then
+    export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"
+fi
+
 # Skip during rebase/merge/cherry-pick to avoid blocking --continue with unstaged changes
-GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
+# git exports GIT_DIR to hooks; the rev-parse fallback only runs when invoked by
+# hand (each git exec costs 1s+ on AV-scanned Windows machines).
+GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ -d "$GIT_DIR/rebase-merge" ] && exit 0
 [ -d "$GIT_DIR/rebase-apply" ] && exit 0
 [ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
@@ -209,6 +286,7 @@ GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
 
 [ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
 
+""" + _WORKTREE_GUARD + """
 CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD 2>/dev/null)
 if [ -z "$CHANGED" ]; then
     exit 0
@@ -245,6 +323,13 @@ _CHECKOUT_SCRIPT = """\
 # churn run-to-run. Pinning it makes graphify-out reproducible.
 export PYTHONHASHSEED=0
 
+# Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
+# and agent shells. Keep hook-triggered rebuilds sequential by default there;
+# explicit GRAPHIFY_MAX_WORKERS still wins for users who want parallelism.
+if [ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]; then
+    export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"
+fi
+
 PREV_HEAD=$1
 NEW_HEAD=$2
 BRANCH_SWITCH=$3
@@ -260,13 +345,19 @@ if [ ! -d "graphify-out" ]; then
 fi
 
 # Skip during rebase/merge/cherry-pick
-GIT_DIR=$(git rev-parse --git-dir 2>/dev/null)
+# git exports GIT_DIR to hooks; the rev-parse fallback only runs when invoked by
+# hand (each git exec costs 1s+ on AV-scanned Windows machines).
+GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
 [ -d "$GIT_DIR/rebase-merge" ] && exit 0
 [ -d "$GIT_DIR/rebase-apply" ] && exit 0
 [ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
 [ -f "$GIT_DIR/CHERRY_PICK_HEAD" ] && exit 0
 
-""" + _PYTHON_DETECT + """
+# Honor the same opt-out as post-commit: without this, GRAPHIFY_SKIP_HOOK=1
+# suppressed commit-triggered rebuilds but not branch-switch ones (#1809).
+[ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
+
+""" + _WORKTREE_GUARD + _PYTHON_DETECT + """
 _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
@@ -284,38 +375,39 @@ def _git_root(path: Path) -> Path | None:
     return None
 
 
-def _hooks_dir(root: Path) -> Path:
-    """Return the git hooks directory, respecting core.hooksPath if set (e.g. Husky)."""
-    try:
-        cfg = configparser.RawConfigParser()
-        cfg.read(root / ".git" / "config", encoding="utf-8")
-        # configparser lowercases option names; git's hooksPath becomes hookspath
-        custom = cfg.get("core", "hookspath", fallback="").strip()
-        if custom:
-            p = Path(custom).expanduser()
-            if not p.is_absolute():
-                p = root / p
-            # Validate the resolved path stays within the repository root
-            # to prevent supply-chain attacks via malicious core.hooksPath values
-            try:
-                p.resolve().relative_to(root.resolve())
-            except ValueError:
-                pass  # Path escapes repo root; fall through to default .git/hooks
-            else:
-                p.mkdir(parents=True, exist_ok=True)
-                return p
-    except (configparser.Error, OSError) as exc:
-        # Narrow the exception (PR747-NEW-2): a bare `except Exception: pass`
-        # was hiding tampering signals (corrupt .git/config, permission flips
-        # by another tool). Surface them on stderr instead of silently
-        # falling through to the default hooks directory.
-        print(
-            f"[graphify hooks] could not read core.hooksPath from "
-            f"{root / '.git' / 'config'}: {exc}",
-            file=sys.stderr,
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _reject_windows_path(value: str, source: str) -> None:
+    """Raise if a hooks path looks like a Windows absolute path (#1385).
+
+    On POSIX/WSL ``Path("C:\\Users\\...").is_absolute()`` is False, so an absolute
+    Windows hooks path gets joined under the repo root and mkdir'd as a literal
+    junk directory (backslashes and all), while install reports success and the
+    real ``.git/hooks`` gets nothing. Fail loudly instead so the user can fix it.
+    """
+    if os.name == "nt":
+        return
+    if _WINDOWS_DRIVE_RE.match(value) or "\\" in value:
+        raise RuntimeError(
+            f"git hooks path from {source} looks like a Windows path: {value!r}. "
+            f"On WSL/POSIX this can't resolve to a real directory. Unset it with "
+            f"`git config --local --unset core.hooksPath`, or set a POSIX path."
         )
-    # In a linked worktree .git is a file not a directory, so constructing
-    # root/.git/hooks directly fails. Ask git for the real hooks path instead.
+
+
+def _hooks_dir(root: Path) -> Path:
+    """Return the git hooks directory, respecting core.hooksPath if set (e.g. Husky).
+
+    Asks git itself via ``rev-parse --git-path hooks`` rather than parsing
+    ``.git/config`` with configparser: git legally allows duplicate keys and
+    sections (VS Code writes such configs), which a strict configparser rejects
+    with DuplicateOptionError/DuplicateSectionError, so every hook command
+    printed a spurious "could not read core.hooksPath" warning (#1907). git
+    resolves core.hooksPath, includeIf, and linked worktrees (where .git is a
+    file, not a directory) correctly in one place. Genuinely corrupt configs
+    are still surfaced: git itself fails on them, and its stderr is printed.
+    """
     # NOTE: do NOT pass --path-format=absolute — added in git 2.31; older git
     # echoes it back as a literal argument, contaminating stdout and causing a
     # phantom directory to be created (#907). git -C <root> already returns an
@@ -327,13 +419,25 @@ def _hooks_dir(root: Path) -> Path:
             ["git", "-C", str(root), "rev-parse", "--git-path", "hooks"],
             capture_output=True, text=True,
         )
-        raw = res.stdout.strip()
-        # A valid hooks path can never contain newlines or NUL. Their presence
-        # means git echoed an unrecognised flag back (old git behaviour).
-        if res.returncode == 0 and raw and not any(c in raw for c in ("\n", "\r", "\x00")):
-            d = (root / raw).resolve()
-            d.mkdir(parents=True, exist_ok=True)
-            return d
+        if res.returncode != 0:
+            # git failing here is a real signal (corrupt .git/config, tampering,
+            # permission flips by another tool). Surface git's own stderr rather
+            # than silently falling through to the default hooks directory.
+            err = (res.stderr or "").strip()
+            print(
+                f"[graphify hooks] git could not resolve the hooks path for "
+                f"{root}: {err or f'git exited with code {res.returncode}'}",
+                file=sys.stderr,
+            )
+        else:
+            raw = res.stdout.strip()
+            # A valid hooks path can never contain newlines or NUL. Their presence
+            # means git echoed an unrecognised flag back (old git behaviour).
+            if raw and not any(c in raw for c in ("\n", "\r", "\x00")):
+                _reject_windows_path(raw, "git rev-parse --git-path hooks")
+                d = (root / raw).resolve()
+                d.mkdir(parents=True, exist_ok=True)
+                return d
     except (OSError, FileNotFoundError):
         pass
     d = root / ".git" / "hooks"
@@ -376,6 +480,143 @@ def _uninstall_hook(hooks_dir: Path, name: str, marker: str, marker_end: str) ->
     return f"graphify removed from {name} at {hook_path} (other hook content preserved)"
 
 
+def _pinned_python() -> str:
+    """Return sys.executable if its path is shell-safe, else an empty string.
+
+    Applies the same allowlist used in _PYTHON_DETECT: rejects any character
+    that is not a valid plain filesystem path character, preventing $(...),
+    backtick, double-quote, semicolon, etc. from being injected into generated
+    shell scripts or the merge-driver command line. The allowlist includes ':'
+    and '\\' so Windows paths (C:\\...) are accepted. An empty return means
+    callers must fall back to the `graphify` launcher on PATH — safe degradation.
+    """
+    if re.search(r"[^a-zA-Z0-9/_.@:\\-]", sys.executable):
+        return ""
+    return sys.executable
+
+
+def _merge_attr_line() -> str:
+    """The .gitattributes line assigning the graphify merge driver to graph.json.
+
+    The graph lives under the configured output directory (graphify.paths,
+    GRAPHIFY_OUT env override). gitattributes patterns are repo-relative, so an
+    absolute output-dir override cannot be expressed there — fall back to the
+    default name in that case.
+    """
+    from graphify.paths import GRAPHIFY_OUT
+    out = GRAPHIFY_OUT
+    if not out or Path(out).is_absolute() or "\\" in out:
+        out = "graphify-out"
+    return f"{out.rstrip('/')}/graph.json merge=graphify"
+
+
+def _has_merge_attr(content: str) -> bool:
+    """True if a (non-comment) `<...>graph.json ... merge=graphify` line exists."""
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        if fields and fields[0].endswith("graph.json") and "merge=graphify" in fields[1:]:
+            return True
+    return False
+
+
+def _register_merge_driver(root: Path) -> str:
+    """Register the graph.json union merge driver in git config + .gitattributes (#1902).
+
+    README and CHANGELOG 0.7.0 document `graphify merge-driver` as being set up
+    by `hook install`, but install never actually registered it. Writes go
+    through `git config` (never hand-edit .git/config — in a linked worktree the
+    effective config is not at root/.git/config). The interpreter is pinned the
+    same way the hook scripts pin it, so the driver works even when the graphify
+    launcher is not on PATH at merge time.
+    """
+    import subprocess as _sp
+    pinned = _pinned_python()
+    if pinned:
+        driver = f"{pinned} -m graphify merge-driver %O %A %B"
+    else:
+        driver = "graphify merge-driver %O %A %B"
+    try:
+        for key, value in (
+            ("merge.graphify.name", "graphify graph.json union merge"),
+            ("merge.graphify.driver", driver),
+        ):
+            _sp.run(
+                ["git", "-C", str(root), "config", key, value],
+                check=True, capture_output=True, text=True,
+            )
+    except (OSError, _sp.CalledProcessError) as exc:
+        return f"not registered (git config failed: {exc})"
+
+    line = _merge_attr_line()
+    attrs = root / ".gitattributes"
+    if attrs.exists():
+        content = attrs.read_text(encoding="utf-8")
+        if _has_merge_attr(content):
+            return f"already registered ({line})"
+        # Never clobber other entries; preserve a trailing newline.
+        if content and not content.endswith("\n"):
+            content += "\n"
+        attrs.write_text(content + line + "\n", encoding="utf-8", newline="\n")
+    else:
+        attrs.write_text(line + "\n", encoding="utf-8", newline="\n")
+    return f"registered ({line})"
+
+
+def _unregister_merge_driver(root: Path) -> str:
+    """Remove the merge-driver git config keys and the .gitattributes line."""
+    import subprocess as _sp
+    for key in ("merge.graphify.name", "merge.graphify.driver"):
+        try:
+            # --unset exits nonzero if the key is absent; that is fine.
+            _sp.run(
+                ["git", "-C", str(root), "config", "--unset", key],
+                capture_output=True, text=True,
+            )
+        except OSError:
+            pass
+    attrs = root / ".gitattributes"
+    if not attrs.exists():
+        return "not registered - nothing to remove."
+    content = attrs.read_text(encoding="utf-8")
+    kept = [
+        raw for raw in content.splitlines()
+        if not _has_merge_attr(raw)
+    ]
+    if kept == content.splitlines():
+        return "gitattributes entry not found - nothing to remove."
+    if kept:
+        # Other entries survive; the file stays.
+        attrs.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
+        return "removed from .gitattributes (other entries preserved)"
+    attrs.unlink()
+    return "removed (.gitattributes deleted - no other entries)"
+
+
+def _merge_driver_status(root: Path) -> str:
+    """Report whether the merge driver is registered (config + gitattributes)."""
+    import subprocess as _sp
+    try:
+        res = _sp.run(
+            ["git", "-C", str(root), "config", "--get", "merge.graphify.driver"],
+            capture_output=True, text=True,
+        )
+        cfg_ok = res.returncode == 0 and bool(res.stdout.strip())
+    except OSError:
+        cfg_ok = False
+    attrs = root / ".gitattributes"
+    attr_ok = attrs.exists() and _has_merge_attr(attrs.read_text(encoding="utf-8"))
+    if cfg_ok and attr_ok:
+        return "registered"
+    if cfg_ok:
+        return "partially registered (git config set, .gitattributes line missing)"
+    if attr_ok:
+        return "partially registered (.gitattributes line set, git config missing)"
+    return "not registered"
+
+
 def _user_hooks_dir(hooks_dir: Path) -> Path:
     """Return the user-editable hooks directory.
 
@@ -401,29 +642,19 @@ def install(path: Path = Path(".")) -> str:
     # launcher is not on PATH at git-trigger time (uv tool / pipx isolation).
     # sys.executable is the Python running this very install command, so it is
     # always the correct isolated-venv interpreter.  The placeholder is replaced
-    # in both scripts before writing; the allowlist in _PYTHON_DETECT strips any
-    # characters unsafe in a shell path, and import-verification catches a stale
-    # pinned path so it safely falls through to the dynamic detection.
-    # Apply the same allowlist used in _PYTHON_DETECT for all other probes.
-    # This rejects any character that is not a valid plain filesystem path
-    # character, preventing $(...), backtick, double-quote, semicolon, etc.
-    # from being injected into the generated shell scripts.  The allowlist
-    # includes ':' and '\' so Windows paths (C:\...) are accepted.
-    import re as _re
-    _safe = sys.executable
-    if _re.search(r"[^a-zA-Z0-9/_.@:\\-]", _safe):
-        # Path contains characters outside the allowlist (spaces, quotes, etc.).
-        # Embed an empty string so the pinned probe is skipped and the hook
-        # falls through to the dynamic detection — safe degradation.
-        _safe = ""
-    pinned = _safe
+    # in both scripts before writing; the allowlist in _pinned_python() strips
+    # any characters unsafe in a shell path (empty result -> the pinned probe is
+    # skipped), and import-verification catches a stale pinned path so it safely
+    # falls through to the dynamic detection.
+    pinned = _pinned_python()
     hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned)
     checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned)
 
     commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER)
     checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER)
+    merge_msg = _register_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}"
+    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
 
 
 def uninstall(path: Path = Path(".")) -> str:
@@ -435,8 +666,9 @@ def uninstall(path: Path = Path(".")) -> str:
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
     commit_msg = _uninstall_hook(hooks_dir, "post-commit", _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _uninstall_hook(hooks_dir, "post-checkout", _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
+    merge_msg = _unregister_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}"
+    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
 
 
 def status(path: Path = Path(".")) -> str:
@@ -454,4 +686,5 @@ def status(path: Path = Path(".")) -> str:
 
     commit = _check("post-commit", _HOOK_MARKER)
     checkout = _check("post-checkout", _CHECKOUT_MARKER)
-    return f"post-commit: {commit}\npost-checkout: {checkout}"
+    merge = _merge_driver_status(root)
+    return f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"

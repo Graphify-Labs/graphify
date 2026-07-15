@@ -146,18 +146,56 @@ class TestDart(unittest.TestCase):
         )
         self.assertIsNotNone(configures_injectable)
 
-        # Mixin check (Should have global ID "mymixin" and implements edge)
+        # Mixin check: `with MyMixin` → mixes_in (not implements)
         ref_mixin = next(
             (
                 e
                 for e in edges
                 if e["source"] == user_bloc_node["id"]
-                and e["target"] == "mymixin"
-                and e["relation"] == "implements"
+                and e["target"] == _make_id("MyMixin")
+                and e["relation"] == "mixes_in"
             ),
             None,
         )
         self.assertIsNotNone(ref_mixin)
+
+        # Interface check: `implements Disposable` → implements (not mixes_in)
+        ref_disposable = next(
+            (
+                e
+                for e in edges
+                if e["source"] == user_bloc_node["id"]
+                and e["relation"] == "implements"
+                and e["target"] == _make_id("Disposable")
+            ),
+            None,
+        )
+        self.assertIsNotNone(ref_disposable)
+
+        # Confirm no implements edge targets MyMixin, no mixes_in edge targets Disposable
+        bad_mixin_implements = next(
+            (
+                e
+                for e in edges
+                if e["source"] == user_bloc_node["id"]
+                and e["target"] == _make_id("MyMixin")
+                and e["relation"] == "implements"
+            ),
+            None,
+        )
+        self.assertIsNone(bad_mixin_implements)
+
+        bad_disposable_mixes_in = next(
+            (
+                e
+                for e in edges
+                if e["source"] == user_bloc_node["id"]
+                and e["target"] == _make_id("Disposable")
+                and e["relation"] == "mixes_in"
+            ),
+            None,
+        )
+        self.assertIsNone(bad_disposable_mixes_in)
 
         # E. Extensions (target class string should be global without stem, source_file is None)
         ext_node = next((n for n in nodes if n["label"] == "StringExtensions"), None)

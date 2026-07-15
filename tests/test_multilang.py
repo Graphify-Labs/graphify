@@ -346,10 +346,36 @@ def test_rust_supertrait_emits_inherits():
     assert ("Logger", "Processor") in _edge_labels(r, "inherits")
 
 
+def test_rust_enum_variant_references():
+    """Enum variant payload types must emit `references` edges.
+
+    Tuple variants (`Click(T)`) and struct variants (`Resize { x: T }`) nest
+    their field types under enum_variant_list -> enum_variant; that path was
+    never traversed, so every enum-variant type reference was dropped.
+    """
+    r = extract_rust(FIXTURES / "sample.rs")
+    refs = _edge_labels(r, "references")
+    assert ("GraphEvent", "Graph") in refs, "tuple-variant reference missing"
+    assert ("GraphEvent", "DataProcessor") in refs, "struct-variant reference missing"
+
+
 def test_rust_struct_field_emits_field_context():
     r = extract_rust(FIXTURES / "sample.rs")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
     assert ("DataProcessor", "DataProcessor") not in _edge_labels(r, "references", "field")
+
+
+def test_rust_tuple_struct_field_references():
+    """Tuple struct fields (`struct Wrapper(A, B);`) nest their positional types
+    under ordered_field_declaration_list with no field_declaration wrapper -- the
+    same shape as tuple enum variants. That path was not traversed for structs, so
+    tuple-struct field type references were silently dropped.
+    """
+    r = extract_rust(FIXTURES / "sample.rs")
+    field_refs = _edge_labels(r, "references", "field")
+    assert ("GraphPair", "Graph") in field_refs, "tuple-struct field reference missing"
+    assert ("GraphPair", "Result") in field_refs, "tuple-struct generic field reference missing"
+    assert ("GraphPair", "DataProcessor") in _edge_labels(r, "references", "generic_arg")
 
 
 def test_rust_method_parameter_return_and_generic_contexts():
