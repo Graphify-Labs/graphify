@@ -1135,6 +1135,42 @@ def test_save_manifest_skips_semantic_hash_for_files_without_cache(tmp_path):
     assert str(doc2) not in manifest, "failed-chunk file must be absent from manifest"
 
 
+def test_save_manifest_clear_semantic_erases_stale_hash_for_omitted_file(tmp_path):
+    """#1948: a file stamped in an earlier run, then omitted from ``files`` on
+    a later run (LLM dropped its chunk / #1890 retry), must not keep surviving
+    with its stale semantic_hash from the prior run — the seed loop copies
+    the on-disk row verbatim otherwise, and detect_incremental(kind='semantic')
+    reports it unchanged, silently defeating the #1890 retry promise."""
+    import json
+
+    doc = tmp_path / "docs" / "doc.md"
+    doc.parent.mkdir()
+    doc.write_text("# Doc\n\ncontent")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+
+    # Run 1: doc.md is dispatched and stamped.
+    corpus = {str(doc)}
+    save_manifest({"document": [str(doc)]}, manifest_path, root=tmp_path, scan_corpus=corpus)
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["docs/doc.md"]["semantic_hash"] != ""
+
+    # Run 2 (--force re-run): the model omits doc.md this time, so cli.py's
+    # _stamped_manifest_files() drops it from the files dict passed here —
+    # but it was still dispatched, so the caller passes it via clear_semantic.
+    save_manifest(
+        {"document": []}, manifest_path, root=tmp_path,
+        scan_corpus=corpus, clear_semantic={str(doc)},
+    )
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["docs/doc.md"]["semantic_hash"] == "", (
+        "omitted file must have its stale semantic_hash cleared, not inherited"
+    )
+
+    inc = detect_incremental(tmp_path, manifest_path, kind="semantic")
+    assert [Path(f).name for f in inc["new_files"]["document"]] == ["doc.md"], (
+        "cleared file must be re-queued for semantic extraction"
+    )
+
 
 def test_save_manifest_without_filter_unchanged_for_code(tmp_path):
     """Code files must be stamped in the manifest regardless of semantic cache."""

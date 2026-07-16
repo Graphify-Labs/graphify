@@ -137,6 +137,81 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     } == {str(corpus / "README.md")}
 
 
+def test_incremental_partial_run_preserves_untouched_semantic_hash(
+    monkeypatch, tmp_path
+):
+    """#1948 caller-side guard: an incremental run that only re-dispatches the
+    CHANGED subset must not blank semantic_hash for live-but-untouched files.
+
+    clear_semantic must be derived from what was actually SENT to the backend
+    this run (semantic_files), not from the full live corpus (files_by_type):
+    with the latter, every unchanged doc lands in the clear set on every
+    incremental run, so the very next run re-extracts the whole corpus,
+    forever."""
+    import json
+
+    corpus = _make_corpus(tmp_path)  # main.go + README.md
+    (corpus / "OTHER.md").write_text("# Other\nAn independent second doc.\n")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    dispatched: list[list[str]] = []
+
+    def _stamp_everything_sent(paths, **kwargs):
+        sent = sorted(os.path.relpath(str(p), str(corpus)) for p in paths)
+        dispatched.append(sent)
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+        return {
+            "nodes": [{"id": f"n-{rel}", "source_file": rel,
+                       "file_type": "document"} for rel in sent],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+
+    monkeypatch.setattr(
+        "graphify.llm.extract_corpus_parallel", _stamp_everything_sent
+    )
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    def _run_extract():
+        monkeypatch.setattr(
+            mainmod.sys, "argv",
+            ["graphify", "extract", str(corpus), "--backend", "claude",
+             "--no-cluster", "--out", str(out_dir)],
+        )
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    # Run 1: full scan — both docs dispatched and stamped.
+    _run_extract()
+    manifest_path = out_dir / "graphify-out" / "manifest.json"
+    m1 = json.loads(manifest_path.read_text())
+    assert m1["README.md"].get("semantic_hash")
+    assert m1["OTHER.md"].get("semantic_hash")
+
+    # Run 2: only README.md changes → the incremental gate dispatches it alone.
+    (corpus / "README.md").write_text("# Notes\nChanged content, new hash.\n")
+    _run_extract()
+    assert dispatched[-1] == ["README.md"], (
+        f"run 2 should dispatch only the changed doc, got {dispatched[-1]}"
+    )
+    m2 = json.loads(manifest_path.read_text())
+    assert m2["README.md"].get("semantic_hash")
+    # The heart of the guard: an untouched, never-dispatched live doc keeps
+    # its stamp across a partial incremental run.
+    assert m2["OTHER.md"].get("semantic_hash"), (
+        "untouched doc's semantic_hash was blanked by a partial incremental "
+        "run — clear_semantic was derived from the full live corpus instead "
+        "of the dispatched subset (#1948)"
+    )
+
+
 def test_manifest_stamps_freshly_extracted_semantic_docs(monkeypatch, tmp_path):
     """#1897: fresh extraction returns nodes with ROOT-RELATIVE source_file,
     while the #933 manifest filter compared them against detect()'s ABSOLUTE

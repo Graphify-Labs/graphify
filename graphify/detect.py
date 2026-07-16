@@ -1478,6 +1478,7 @@ def save_manifest(
     kind: str = "both",
     root: Path | None = None,
     scan_corpus: set[str] | list[str] | None = None,
+    clear_semantic: set[str] | list[str] | None = None,
 ) -> None:
     """Save current file mtimes + content hashes for change detection.
 
@@ -1504,10 +1505,19 @@ def save_manifest(
     --code-only doc rows). Out-of-root entries are never pruned. Callers
     saving a SUBSET of files (changed_paths hooks, skill runbooks, #917)
     must leave this None so their untouched rows are preserved.
+
+    ``clear_semantic`` (#1948): files that were dispatched this run but
+    produced no stamped output (e.g. the LLM omitted their chunk on a
+    --force re-run) are absent from ``files``, so the seed loop below would
+    otherwise copy their prior semantic_hash verbatim — masking the omission
+    and making detect_incremental(kind="semantic") report them unchanged.
+    Pass the set of such files (any path form ``scan_corpus`` accepts) to
+    force their seeded semantic_hash to "" instead of inheriting it.
     """
     existing = load_manifest(manifest_path, root=root)
 
     scan_set: set[str] | None = set(scan_corpus) if scan_corpus is not None else None
+    clear_set: set[str] | None = set(clear_semantic) if clear_semantic is not None else None
     try:
         root_res: Path | None = Path(root).resolve() if root is not None else None
     except (OSError, RuntimeError):
@@ -1518,6 +1528,14 @@ def save_manifest(
             return True
         try:
             return str(Path(path_str).resolve()) in scan_set
+        except (OSError, RuntimeError):
+            return False
+
+    def _in_clear(path_str: str) -> bool:
+        if path_str in clear_set:
+            return True
+        try:
+            return str(Path(path_str).resolve()) in clear_set
         except (OSError, RuntimeError):
             return False
 
@@ -1566,6 +1584,10 @@ def save_manifest(
             continue
         if scan_set is not None and not _in_scan(f) and _in_root(f):
             continue  # excluded-but-alive: drop the stale row (#1908)
+        if clear_set is not None and _in_clear(f):
+            # Dispatched-but-omitted this run: don't inherit the stale
+            # semantic_hash, or detect_incremental would call it unchanged (#1948).
+            normalised = {**normalised, "semantic_hash": ""}
         manifest[f] = normalised
 
     all_files = [f for file_list in files.values() for f in file_list]

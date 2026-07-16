@@ -2728,6 +2728,22 @@ def dispatch_command(cmd: str) -> None:
         # absolute file lists.
         _manifest_files = _stamped_manifest_files(files_by_type, sem_result, target)
 
+        # Files dispatched this run but dropped by _stamped_manifest_files
+        # above (failed chunk, LLM omission, or any future exclusion) still
+        # carry a stale semantic_hash from a prior successful run in the
+        # on-disk manifest; save_manifest's seed loop would otherwise copy it
+        # verbatim and mask the omission (#1948). Derived from semantic_files
+        # — what was actually SENT to the backend this run (narrowed by the
+        # incremental gate and --code-only, widened by deep mode) — NOT from
+        # files_by_type: the full live corpus includes untouched files that
+        # were never dispatched, and clearing those would blank the whole
+        # manifest on every partial incremental run, forcing a full-corpus
+        # re-extraction on the next one.
+        _stamped_semantic = {
+            f for _flist in _manifest_files.values() for f in _flist
+        }
+        _cleared_semantic = {str(p) for p in semantic_files} - _stamped_semantic
+
         # Full-scan manifest saves prune rows for in-root files that left the
         # scan corpus but still exist on disk (#1908). The corpus must be the
         # RAW detect output (files_by_type), NOT the #933-stamp-filtered
@@ -2776,7 +2792,7 @@ def dispatch_command(cmd: str) -> None:
                     "(--no-cluster); outputs left untouched."
                 )
                 try:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus)
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
                 stages.total()
@@ -2813,7 +2829,7 @@ def dispatch_command(cmd: str) -> None:
                     f"est. cost: ${cost:.4f}"
                 )
             try:
-                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus)
+                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -2915,7 +2931,7 @@ def dispatch_command(cmd: str) -> None:
         }
         analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
         try:
-            _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus)
+            _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 
