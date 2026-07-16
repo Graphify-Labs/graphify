@@ -704,6 +704,18 @@ def run_leiden_subgraph(
         return {nid: int(cid) for nid, cid in results}
 
 
+def _maybe_dump_temp_csvs(edge_csv: Path, node_csv: Path, tag: str) -> None:
+    """If GRAPHIFY_KEEP_TEMP is set, copy temp CSVs to that directory."""
+    import os, shutil
+    dest = os.environ.get("GRAPHIFY_KEEP_TEMP")
+    if not dest:
+        return
+    dest_dir = Path(dest)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(edge_csv, dest_dir / f"{tag}_edges.csv")
+    shutil.copy2(node_csv, dest_dir / f"{tag}_nodes.csv")
+
+
 def cluster_on_files(
     conn: object, *, resolution: float = 1.0
 ) -> dict[int, list[str]]:
@@ -730,6 +742,9 @@ def cluster_on_files(
             writer.writerow(["id", "label"])
             for sf in sorted(all_files):
                 writer.writerow([sf, Path(sf).name])
+
+        # Keep temp CSVs for debugging if GRAPHIFY_KEEP_TEMP is set
+        _maybe_dump_temp_csvs(edge_csv, node_csv, "file_cluster")
 
         # 3. COPY TEMP to create temp tables (independent step)
         conn.execute(
@@ -1387,6 +1402,9 @@ def _delta_analyze_file_level(
             for sf in sorted(all_files):
                 old_cid = old_file_communities.get(sf, -1)
                 writer.writerow([sf, Path(sf).name, old_cid])
+
+        # Keep temp CSVs for debugging if GRAPHIFY_KEEP_TEMP is set
+        _maybe_dump_temp_csvs(edge_csv, node_csv, "file_delta")
 
         # 4. COPY TEMP
         conn.execute(
