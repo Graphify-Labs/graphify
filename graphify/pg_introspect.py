@@ -8,6 +8,34 @@ def _quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _schema_ddl_to_graph(ddl: str, *, host: str = "localhost", dbname: str = "db") -> dict:
+    """Turn a schema DDL string into a graph via ``extract_sql``.
+
+    Shared by :func:`introspect_postgres` (live connection) and
+    :func:`introspect_postgres_ddl` (pre-generated DDL). The ``postgresql://``
+    virtual path is what frames the resulting nodes as a DB schema rather than a
+    local file; it never carries credentials.
+    """
+    virtual_path = PurePosixPath(f"postgresql://{host}/{dbname}")
+    return extract_sql(virtual_path, content=ddl)
+
+
+def introspect_postgres_ddl(ddl: str, *, dbname: str = "schema") -> dict:
+    """Build the schema graph from a pre-generated DDL string — no live connection.
+
+    Use this when a live DSN isn't available: DB access mediated by a tool/MCP
+    server that runs SQL but never exposes a ``postgresql://`` string, a
+    ``pg_dump --schema-only`` artifact, or an air-gapped build. ``ddl`` is any
+    sequence of ``CREATE TABLE`` / ``CREATE VIEW`` / ``CREATE FUNCTION`` and
+    ``ALTER TABLE … ADD FOREIGN KEY`` statements — the same shape
+    :func:`introspect_postgres` synthesizes from the live catalog. Reuses the
+    identical downstream framing, so the nodes are indistinguishable from a live
+    ``--postgres`` run. Requires only tree-sitter-sql (``graphifyy[sql]``), not
+    psycopg.
+    """
+    return _schema_ddl_to_graph(ddl, dbname=dbname)
+
+
 def introspect_postgres(dsn: str | None = None) -> dict:
     """Connect to PostgreSQL, reconstruct DDL, and extract via extract_sql()."""
     try:
@@ -144,8 +172,6 @@ def introspect_postgres(dsn: str | None = None) -> dict:
     info = psycopg.conninfo.conninfo_to_dict(dsn or "")
     host = info.get("host", "localhost")
     dbname = info.get("dbname", "db")
-    virtual_path = PurePosixPath(f"postgresql://{host}/{dbname}")
 
-    # Pass virtual path and in-memory DDL content to extract_sql
-    result = extract_sql(virtual_path, content=ddl_string)
-    return result
+    # Same DDL → graph step as the DDL-file path (introspect_postgres_ddl).
+    return _schema_ddl_to_graph(ddl_string, host=host, dbname=dbname)

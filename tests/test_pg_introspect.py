@@ -5,7 +5,7 @@ from pathlib import Path
 
 pytest.importorskip("tree_sitter_sql", reason="tree-sitter-sql not installed; skip pg_introspect tests")
 
-from graphify.pg_introspect import introspect_postgres
+from graphify.pg_introspect import introspect_postgres, introspect_postgres_ddl
 from graphify.validate import validate_extraction
 
 
@@ -324,10 +324,92 @@ def test_pg_introspect_uri_forward_slashes():
     mock_psycopg = _make_mock_psycopg([], [], [], [], host="some-host", dbname="some-db")
     with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
         res = introspect_postgres("postgresql://some-host/some-db")
-    
+
     # We should have at least the file node
     assert len(res["nodes"]) > 0
     for node in res["nodes"]:
         assert "\\" not in node["source_file"]
         assert "postgresql:/some-host/some-db" in node["source_file"]
+
+
+# ---------------------------------------------------------------------------
+# introspect_postgres_ddl — build the schema graph from pre-generated DDL,
+# with no live connection (MCP-only access, pg_dump artifact, air-gapped).
+# ---------------------------------------------------------------------------
+
+# The same shape introspect_postgres synthesizes from the live catalog:
+# quoted identifiers, stub function bodies, one ALTER TABLE per FK.
+_SAMPLE_DDL = (
+    'CREATE TABLE "public"."users" (id INT);\n'
+    'CREATE TABLE "public"."orders" (id INT);\n'
+    'CREATE VIEW "public"."active_users" AS SELECT 1;\n'
+    'CREATE FUNCTION "public"."calc_total"() RETURNS void'
+    ' AS $gfx$ BEGIN SELECT 1; END; $gfx$ LANGUAGE plpgsql;\n'
+    'ALTER TABLE "public"."orders" ADD CONSTRAINT fk_orders_user'
+    ' FOREIGN KEY (user_id) REFERENCES "public"."users"(id);\n'
+)
+
+
+def test_introspect_postgres_ddl_from_string():
+    """A DDL string produces the same graph shape as a live introspection:
+    table/view/function nodes, an FK references edge, and the sanitized
+    postgresql:// virtual source path — no psycopg, no connection."""
+    res = introspect_postgres_ddl(_SAMPLE_DDL, dbname="mydb")
+
+    errors = validate_extraction(res)
+    assert errors == [], f"Validation errors: {errors}"
+
+    # Same virtual-path framing as --postgres (host defaults to localhost).
+    for node in res["nodes"]:
+        assert node["source_file"] == "postgresql:/localhost/mydb"
+    for edge in res["edges"]:
+        assert edge["source_file"] == "postgresql:/localhost/mydb"
+
+    node_labels = {n["label"] for n in res["nodes"]}
+    assert _q("public", "users") in node_labels, f"users missing; got {node_labels}"
+    assert _q("public", "orders") in node_labels, f"orders missing; got {node_labels}"
+    assert _q("public", "active_users") in node_labels, f"view missing; got {node_labels}"
+    assert f'{_q("public", "calc_total")}()' in node_labels, f"function missing; got {node_labels}"
+
+    # File node carries the dbname label.
+    file_nodes = [n for n in res["nodes"] if n["file_type"] == "code" and n["label"] == "mydb"]
+    assert len(file_nodes) == 1
+
+    # FK -> a single references edge, orders -> users.
+    users_nid = next(n["id"] for n in res["nodes"] if n["label"] == _q("public", "users"))
+    orders_nid = next(n["id"] for n in res["nodes"] if n["label"] == _q("public", "orders"))
+    ref_edges = [
+        e for e in res["edges"]
+        if e["source"] == orders_nid and e["target"] == users_nid and e["relation"] == "references"
+    ]
+    assert len(ref_edges) == 1, f"Expected exactly 1 references edge, got {len(ref_edges)}"
+
+
+def test_introspect_postgres_ddl_needs_no_psycopg():
+    """The DDL path must not require psycopg — that's the whole point. Even with
+    psycopg unimportable, the graph still builds."""
+    with patch.dict("sys.modules", {"psycopg": None}):
+        res = introspect_postgres_ddl('CREATE TABLE "public"."t" (id INT);', dbname="db")
+    assert any(n["label"] == _q("public", "t") for n in res["nodes"])
+
+
+def test_introspect_postgres_ddl_matches_live_shape():
+    """introspect_postgres_ddl and introspect_postgres yield identical nodes/edges
+    for the same schema — the DDL path is just the live path without the connection."""
+    mock_tables = [("public", "users", "BASE TABLE"), ("public", "orders", "BASE TABLE")]
+    mock_views = [("public", "active_users", "SELECT 1")]
+    mock_routines = [("public", "calc_total", "FUNCTION", "SELECT 1;", "PLPGSQL")]
+    mock_fks = [("fk_orders_user", "public", "orders", ["user_id"], "public", "users", ["id"])]
+    mock_psycopg = _make_mock_psycopg(mock_tables, mock_views, mock_routines, mock_fks,
+                                      host="localhost", dbname="mydb")
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        live = introspect_postgres("postgresql://u:p@localhost/mydb")
+
+    ddl = introspect_postgres_ddl(_SAMPLE_DDL, dbname="mydb")
+
+    assert {n["label"] for n in ddl["nodes"]} == {n["label"] for n in live["nodes"]}
+    assert (
+        sorted((e["relation"] for e in ddl["edges"]))
+        == sorted((e["relation"] for e in live["edges"]))
+    )
 

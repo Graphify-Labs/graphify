@@ -2108,7 +2108,7 @@ def dispatch_command(cmd: str) -> None:
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
-                "[--api-timeout S] [--postgres DSN] [--cargo] [--timing]",
+                "[--api-timeout S] [--postgres DSN] [--postgres-ddl FILE] [--cargo] [--timing]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -2128,6 +2128,7 @@ def dispatch_command(cmd: str) -> None:
         extract_mode: str | None = None
         out_dir: Path | None = None
         cli_postgres_dsn: str | None = None
+        cli_postgres_ddl: str | None = None
         cli_cargo: bool = False
         no_cluster = False
         dedup_llm = False
@@ -2231,6 +2232,10 @@ def dispatch_command(cmd: str) -> None:
                 cli_excludes.append(args[i + 1]); i += 2
             elif a.startswith("--exclude="):
                 cli_excludes.append(a.split("=", 1)[1]); i += 1
+            elif a == "--postgres-ddl" and i + 1 < len(args):
+                cli_postgres_ddl = args[i + 1]; i += 2
+            elif a.startswith("--postgres-ddl="):
+                cli_postgres_ddl = a.split("=", 1)[1]; i += 1
             elif a == "--postgres" and i + 1 < len(args):
                 cli_postgres_dsn = args[i + 1]; i += 2
             elif a.startswith("--postgres="):
@@ -2245,8 +2250,12 @@ def dispatch_command(cmd: str) -> None:
             else:
                 i += 1
 
-        if not has_path and cli_postgres_dsn is None:
-            print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)
+        if cli_postgres_dsn is not None and cli_postgres_ddl is not None:
+            print("error: pass either --postgres or --postgres-ddl, not both", file=sys.stderr)
+            sys.exit(1)
+
+        if not has_path and cli_postgres_dsn is None and cli_postgres_ddl is None:
+            print("error: must specify a path to scan, a --postgres DSN, or --postgres-ddl <file>", file=sys.stderr)
             sys.exit(1)
 
         _VALID_MODES = {"deep"}
@@ -2682,6 +2691,19 @@ def dispatch_command(cmd: str) -> None:
                 print(f"error: {exc}", file=sys.stderr)
                 sys.exit(1)
             print(f"[graphify extract] PostgreSQL: {len(pg_result['nodes'])} nodes, "
+                  f"{len(pg_result['edges'])} edges")
+        elif cli_postgres_ddl is not None:
+            from graphify.pg_introspect import introspect_postgres_ddl
+            print("[graphify extract] building PostgreSQL schema graph from DDL file...")
+            try:
+                ddl_text = (sys.stdin.read() if cli_postgres_ddl == "-"
+                            else Path(cli_postgres_ddl).read_text(encoding="utf-8"))
+            except OSError as exc:
+                print(f"error: could not read --postgres-ddl file: {exc}", file=sys.stderr)
+                sys.exit(1)
+            dbname = "schema" if cli_postgres_ddl == "-" else Path(cli_postgres_ddl).stem
+            pg_result = introspect_postgres_ddl(ddl_text, dbname=dbname)
+            print(f"[graphify extract] PostgreSQL DDL: {len(pg_result['nodes'])} nodes, "
                   f"{len(pg_result['edges'])} edges")
 
         cargo_result: dict = {"nodes": [], "edges": []}
