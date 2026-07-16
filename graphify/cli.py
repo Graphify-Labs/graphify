@@ -2108,7 +2108,7 @@ def dispatch_command(cmd: str) -> None:
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
-                "[--api-timeout S] [--postgres DSN] [--cargo] [--timing]",
+                "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -2129,6 +2129,7 @@ def dispatch_command(cmd: str) -> None:
         out_dir: Path | None = None
         cli_postgres_dsn: str | None = None
         cli_cargo: bool = False
+        cli_allow_partial: bool = False
         no_cluster = False
         dedup_llm = False
         google_workspace = False
@@ -2240,6 +2241,8 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             elif a == "--force":
                 force = True; i += 1
+            elif a == "--allow-partial":
+                cli_allow_partial = True; i += 1
             elif a == "--timing":
                 cli_timing = True; i += 1
             else:
@@ -2519,6 +2522,12 @@ def dispatch_command(cmd: str) -> None:
                     )
                     sys.exit(1)
 
+        # Track whether this run's extraction was incomplete (a whole extractor
+        # pass crashed, or some semantic chunks failed). A partial result must not
+        # be force-written over a good complete graph — the final write falls back
+        # to the #479 shrink guard unless --allow-partial is set.
+        _extraction_incomplete = False
+
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
@@ -2536,6 +2545,7 @@ def dispatch_command(cmd: str) -> None:
             except Exception as exc:
                 print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
+                _extraction_incomplete = True  # the whole AST pass was lost
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
@@ -2622,6 +2632,7 @@ def dispatch_command(cmd: str) -> None:
                         file=sys.stderr,
                     )
                     fresh = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+                    _extraction_incomplete = True  # the semantic pass crashed
 
                 # on_chunk_done only fires after a chunk succeeds. If fresh
                 # semantic extraction was requested and no chunks completed,
@@ -2635,6 +2646,11 @@ def dispatch_command(cmd: str) -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
+                # Some (but not all) chunks failed — the graph is missing nodes
+                # from the failed chunks, so it must not clobber a larger complete
+                # graph without an explicit --allow-partial override.
+                if _chunk_stats["total"] and _chunk_stats["succeeded"] < _chunk_stats["total"]:
+                    _extraction_incomplete = True
                 try:
                     _save_semantic_cache(
                         fresh.get("nodes", []),
@@ -2885,7 +2901,42 @@ def dispatch_command(cmd: str) -> None:
 
         from graphify.export import backup_if_protected as _backup
         _backup(graphify_out)
-        _to_json(G, communities, str(graph_json_path), force=True)
+        # force=True bypasses the #479 shrink guard entirely. A full build
+        # legitimately shrinks (fuzzy dedup collapse, deleted code) so it keeps
+        # force=True — EXCEPT when this run's extraction was incomplete (an
+        # extractor pass crashed or some semantic chunks failed). Then a partial
+        # graph could silently overwrite a good complete one, so fall back to the
+        # shrink guard (force=False) unless the user opts in with --allow-partial.
+        #
+        # Scope: this guards the clustered write path only. The `--no-cluster`
+        # raw-dump path (above) writes graph.json directly and has never had a
+        # shrink guard, so an incomplete --no-cluster run can still overwrite a
+        # complete graph — a pre-existing gap this change does not close.
+        #
+        # Trade-off: this reuses to_json's coarse node-count guard, not the
+        # source-aware _check_shrink that watch/update use. On an incremental run
+        # a legitimate deletion that coincides with an unrelated transient chunk
+        # failure can therefore be refused here — recoverable by re-running or
+        # passing --allow-partial (the good graph is preserved and the manifest
+        # is not stamped, so the retry re-extracts).
+        _force_write = cli_allow_partial or not _extraction_incomplete
+        _wrote = _to_json(G, communities, str(graph_json_path), force=_force_write)
+        if not _wrote:
+            # The shrink guard refused: this partial build is smaller than the
+            # existing graph. Exit before writing the manifest/marker below, which
+            # would otherwise stamp these files as done and make the next
+            # incremental run skip re-extracting them (poisoning the manifest
+            # against the graph we declined to write). Exit non-zero so a retry
+            # re-attempts.
+            print(
+                "[graphify extract] error: extraction was incomplete (an AST/semantic "
+                f"pass failed) and the resulting graph is smaller than the existing "
+                f"{graph_json_path}. Refusing to overwrite a complete graph with a "
+                "partial one. Re-run after fixing the failures, or pass --allow-partial "
+                "to overwrite anyway.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         stages.mark("export")
         if merged.get("output_tokens", 0) > 0:
             (graphify_out / ".graphify_semantic_marker").write_text(
