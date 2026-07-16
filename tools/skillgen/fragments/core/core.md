@@ -586,15 +586,53 @@ Before running any subcommand below (`--update`, `--cluster-only`, `query`, `pat
 
 ```bash
 if [ ! -f graphify-out/.graphify_python ]; then
-    GRAPHIFY_BIN=$(which graphify 2>/dev/null)
-    if [ -n "$GRAPHIFY_BIN" ]; then
-        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
-    else
-        PYTHON="python3"
-    fi
+    find_graphify_python() {
+        if command -v uv >/dev/null 2>&1; then
+            _TOOL_DIR=$(uv tool dir 2>/dev/null | tr -d '\r' | tr '\\' '/')
+            for _PY in "$_TOOL_DIR/graphifyy/Scripts/python.exe" "$_TOOL_DIR/graphifyy/bin/python"; do
+                if [ -x "$_PY" ] && "$_PY" -c "import graphify" 2>/dev/null; then
+                    printf '%s\n' "$_PY"
+                    return 0
+                fi
+            done
+        fi
+        if command -v pipx >/dev/null 2>&1; then
+            _VENV_DIR=$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null | tr -d '\r' | tr '\\' '/')
+            for _PY in "$_VENV_DIR/graphifyy/Scripts/python.exe" "$_VENV_DIR/graphifyy/bin/python"; do
+                if [ -x "$_PY" ] && "$_PY" -c "import graphify" 2>/dev/null; then
+                    printf '%s\n' "$_PY"
+                    return 0
+                fi
+            done
+        fi
+        _GRAPHIFY_BIN=$(command -v graphify 2>/dev/null)
+        if [ -f "$_GRAPHIFY_BIN" ] && IFS= read -r _SHEBANG < "$_GRAPHIFY_BIN"; then
+            case "$_SHEBANG" in
+                '#!'*)
+                    _PY=${_SHEBANG#\#!}
+                    case "$_PY" in
+                        *[!a-zA-Z0-9/_.@-]*) ;;
+                        *)
+                            if [ -x "$_PY" ] && "$_PY" -c "import graphify" 2>/dev/null; then
+                                printf '%s\n' "$_PY"
+                                return 0
+                            fi
+                            ;;
+                    esac
+                    ;;
+            esac
+        fi
+        for _PY in python3 python; do
+            if command -v "$_PY" >/dev/null 2>&1 && "$_PY" -c "import graphify" 2>/dev/null; then
+                "$_PY" -c "import sys; print(sys.executable.replace(chr(92), '/'))" | tr -d '\r'
+                return 0
+            fi
+        done
+        return 1
+    }
+    PYTHON=$(find_graphify_python) || exit 1
     mkdir -p graphify-out
-    "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
+    printf '%s' "$PYTHON" > graphify-out/.graphify_python
 fi
 ```
 

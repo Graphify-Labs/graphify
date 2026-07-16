@@ -8,6 +8,9 @@ lives only in the references, and no reference duplicates core content.
 """
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -298,6 +301,88 @@ def test_windows_frontmatter_name_and_shell_and_extra():
     # The troubleshooting section sits before Honesty Rules, single separator.
     assert "\n4. **Skip graspologic**" in core
     assert core.index("## Troubleshooting") < core.index("## Honesty Rules")
+
+
+def test_windows_interpreter_guard_recovers_uv_tool_python(tmp_path):
+    """#1619 A1: recovery must probe uv's Python, not parse graphify.exe."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required to exercise the generated recovery guard")
+
+    core, _ = _platform_artifacts("windows")
+    section = core[core.index("## Interpreter guard for subcommands"):]
+    fence_start = section.index("```bash\n") + len("```bash\n")
+    guard = section[fence_start:section.index("\n```", fence_start)]
+
+    assert 'head -1 "$GRAPHIFY_BIN"' not in guard
+    for command in ("uv tool dir", "pipx environment --value PIPX_LOCAL_VENVS"):
+        assert command in guard
+    for suffix in ("graphifyy/Scripts/python.exe", "graphifyy/bin/python"):
+        assert suffix in guard
+    assert '"$_PY" -c "import graphify"' in guard
+
+    tool_dir = tmp_path / "uv-tools"
+    python_exe = tool_dir / "graphifyy" / "Scripts" / "python.exe"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text(
+        "#!/bin/sh\n"
+        "[ \"$1\" = -c ] && [ \"$2\" = \"import graphify\" ]\n",
+        encoding="utf-8",
+    )
+    python_exe.chmod(0o755)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    uv = fake_bin / "uv"
+    uv.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' '{tool_dir}'\n",
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    graphify_exe = fake_bin / "graphify"
+    graphify_exe.write_bytes(b"MZ\x90\x00not-a-script")
+    graphify_exe.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join((str(fake_bin), env.get("PATH", "")))
+    subprocess.run([bash, "-c", guard], cwd=tmp_path, env=env, check=True)
+
+    saved = (tmp_path / "graphify-out" / ".graphify_python").read_text(encoding="utf-8")
+    assert saved == str(python_exe)
+
+
+def test_posix_interpreter_guard_preserves_shebang_install(tmp_path):
+    """The shared #1619 guard must retain ordinary POSIX venv recovery."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required to exercise the generated recovery guard")
+
+    core, _ = _platform_artifacts("claude")
+    section = core[core.index("## Interpreter guard for subcommands"):]
+    fence_start = section.index("```bash\n") + len("```bash\n")
+    guard = section[fence_start:section.index("\n```", fence_start)]
+
+    python_exe = tmp_path / "venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text(
+        "#!/bin/sh\n"
+        "[ \"$1\" = -c ] && [ \"$2\" = \"import graphify\" ]\n",
+        encoding="utf-8",
+    )
+    python_exe.chmod(0o755)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    graphify = fake_bin / "graphify"
+    graphify.write_text(f"#!{python_exe}\n", encoding="utf-8")
+    graphify.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join((str(fake_bin), "/usr/bin", "/bin"))
+    subprocess.run([bash, "-c", guard], cwd=tmp_path, env=env, check=True)
+
+    saved = (tmp_path / "graphify-out" / ".graphify_python").read_text(encoding="utf-8")
+    assert saved == str(python_exe)
 
 
 def test_codex_dispatch_is_agenttask_and_collects_in_memory():
