@@ -555,6 +555,112 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
     return "\n\n".join(parts)
 
 
+# ── Semantic evidence-binding ─────────────────────────────────────────────────
+# The semantic (LLM) extraction runs on documents/papers/images — code files are
+# handled by the deterministic AST engine and never reach the model. So a
+# ``file_type == "code"`` node here is a symbol the model surfaced from WITHIN a
+# document (a name in a fenced code block, an API referenced in a paper). Verify
+# that such a symbol actually occurs in the source bytes the model was shown; a
+# node the model asserts with no evidence in its source is a likely fabrication.
+# `_out_of_scope` (#1895) only rejects a node attributed to a real file that was
+# NOT dispatched; a fabricated symbol attributed to a file that WAS dispatched
+# slips through it. This closes that intra-file gap with a lenient substring
+# check and DOWNGRADES (never drops) an unverifiable node's confidence to
+# UNVERIFIED, surfaced by the caller (stderr) and left on the node in graph.json.
+# Short tokens (len < 3) are ignored: they match too readily to be evidence and
+# their absence is not a reliable fabrication signal, so skipping them avoids
+# false positives.
+_LABEL_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_UNVERIFIED_CONFIDENCE = "UNVERIFIED"
+
+
+def _label_identifiers(label: str) -> list[str]:
+    """Identifier tokens from a node label, stripped of a trailing call/args
+    parenthesis (``foo()`` -> ``foo``, ``Cls.method(x)`` -> ``Cls``/``method``)."""
+    if not label:
+        return []
+    base = label.split("(", 1)[0]
+    return [t for t in _LABEL_IDENT_RE.findall(base) if len(t) >= 3]
+
+
+def _dispatched_source_text(units: "list[Path | FileSlice]", root: Path) -> dict[Path, str]:
+    """Map each dispatched text unit's resolved path to the (lower-cased, capped)
+    source bytes the model actually saw via :func:`_read_files`.
+
+    Slices of one file share a key, matching how ``_read_files`` reports a slice's
+    parent path as ``source_file`` — so a node attributed to that file is checked
+    against the union of the ranges dispatched in this call.
+    """
+    by_path: dict[Path, str] = {}
+    for u in units:
+        p = unit_path(u)
+        safe = _resolve_under_root(p, root)
+        if safe is None:
+            continue
+        try:
+            content = read_slice_text(u) if isinstance(u, FileSlice) else _file_to_text(safe)
+        except Exception:  # noqa: BLE001 — one unreadable file (e.g. a malformed PDF) must not disable binding for the whole chunk
+            continue
+        by_path[safe] = by_path.get(safe, "") + content[:_FILE_CHAR_CAP].lower()
+    return by_path
+
+
+def _bind_node_evidence(result: dict, text_units: "list[Path | FileSlice]", root: Path) -> int:
+    """Downgrade code-typed nodes whose symbol name has no evidence in the source
+    the model read, returning the number downgraded.
+
+    For every ``file_type == "code"`` node whose ``source_file`` resolves to one
+    of the (document/paper/image) files sent in THIS call, verify that at least
+    one identifier from its label occurs in that file's source bytes. If none
+    does, mark the node ``confidence = "UNVERIFIED"`` rather than dropping it.
+
+    Precision-first, to avoid false-positives on legitimately-derived names:
+      - Only ``code`` nodes are checked — code labels are verbatim symbol names,
+        whereas document/paper/concept labels are prose and would false-positive.
+      - Nodes without a ``source_file``, and nodes attributed to a file not
+        dispatched in this call (left to #1895), are never touched.
+      - Verification is lenient: any label identifier occurring as a substring
+        (case-insensitive) passes; a node is flagged only when NONE occur.
+      - A label with no checkable identifier (all short / non-ASCII) is left as-is.
+      - The action is a reversible confidence downgrade, never a drop. A code
+        symbol a document only describes in prose (no verbatim occurrence) is
+        legitimately UNVERIFIED — the model inferred it rather than read it.
+    """
+    nodes = result.get("nodes")
+    if not nodes:
+        return 0
+    source_by_path = _dispatched_source_text(text_units, root)
+    if not source_by_path:
+        return 0
+    downgraded = 0
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("file_type") != "code":
+            continue
+        sf = n.get("source_file")
+        if not sf:
+            continue
+        p = Path(sf)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            key = p.resolve()
+        except (OSError, RuntimeError):
+            continue
+        src = source_by_path.get(key)
+        if src is None:
+            continue  # not dispatched in this call — #1895's out-of-scope domain
+        idents = _label_identifiers(str(n.get("label", "")))
+        if not idents:
+            continue  # nothing checkable — do not flag
+        if any(ident.lower() in src for ident in idents):
+            continue  # symbol name is present in the source — verified
+        # No evidence: downgrade unless the model already flagged it lower.
+        if n.get("confidence") in (None, "", "EXTRACTED"):
+            n["confidence"] = _UNVERIFIED_CONFIDENCE
+            downgraded += 1
+    return downgraded
+
+
 # ── Image (vision) handling ───────────────────────────────────────────────────
 # Raster image types a vision model can actually look at. `.svg` is intentionally
 # excluded: it is XML markup, so `_read_files` reads it as text (the model parses
@@ -1480,19 +1586,19 @@ def extract_files_direct(
     max_out = _resolve_max_tokens(cfg.get("max_tokens", 8192))
 
     if backend == "claude":
-        return _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "claude-cli":
-        return _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "bedrock":
-        return _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "azure":
+        result = _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "claude-cli":
+        result = _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "bedrock":
+        result = _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
         if not endpoint:
             raise ValueError(
                 "Azure OpenAI backend requires AZURE_OPENAI_ENDPOINT to be set "
                 "(e.g. https://my-resource.openai.azure.com/)."
             )
-        return _call_azure(
+        result = _call_azure(
             key,
             endpoint,
             mdl,
@@ -1501,25 +1607,43 @@ def extract_files_direct(
             max_tokens=max_out,
             deep_mode=deep_mode,
         )
-    return _call_openai_compat(
-        cfg["base_url"],
-        key,
-        mdl,
-        user_msg,
-        temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
-        reasoning_effort=cfg.get("reasoning_effort"),
-        # Honour max_completion_tokens (gemini) or the older max_tokens key
-        # (ollama/deepseek/kimi/openai) -- most openai-compat configs define the
-        # latter, so reading only max_completion_tokens silently capped their
-        # output at the 8192 fallback and truncated deep-mode JSON (#1365).
-        max_completion_tokens=_resolve_max_tokens(
-            cfg.get("max_completion_tokens") or cfg.get("max_tokens", 8192)
-        ),
-        backend=backend,
-        deep_mode=deep_mode,
-        images=image_refs,
-        extra_body=cfg.get("extra_body"),
-    )
+    else:
+        result = _call_openai_compat(
+            cfg["base_url"],
+            key,
+            mdl,
+            user_msg,
+            temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
+            reasoning_effort=cfg.get("reasoning_effort"),
+            # Honour max_completion_tokens (gemini) or the older max_tokens key
+            # (ollama/deepseek/kimi/openai) -- most openai-compat configs define the
+            # latter, so reading only max_completion_tokens silently capped their
+            # output at the 8192 fallback and truncated deep-mode JSON (#1365).
+            max_completion_tokens=_resolve_max_tokens(
+                cfg.get("max_completion_tokens") or cfg.get("max_tokens", 8192)
+            ),
+            backend=backend,
+            deep_mode=deep_mode,
+            images=image_refs,
+            extra_body=cfg.get("extra_body"),
+        )
+
+    # Verify code-typed nodes against the source the model read and downgrade the
+    # confidence of any whose symbol name has no evidence there. Runs on the bytes
+    # the model actually saw (text_files, same cap as _read_files); images are
+    # excluded (binary, unverifiable). Best-effort — never abort extraction.
+    if isinstance(result, dict):
+        try:
+            _n_unverified = _bind_node_evidence(result, text_files, root)
+            if _n_unverified:
+                print(
+                    f"[graphify] {_n_unverified} semantic node(s) had no evidence in "
+                    "the source and were marked confidence=UNVERIFIED",
+                    file=sys.stderr,
+                )
+        except Exception as _exc:  # noqa: BLE001 — evidence-binding is advisory
+            print(f"[graphify] evidence-binding skipped: {_exc}", file=sys.stderr)
+    return result
 
 
 def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
