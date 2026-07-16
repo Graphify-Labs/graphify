@@ -597,9 +597,9 @@ def test_aggregate_file_edges(tmp_db):
 
     # Cross-file edges: n3(auth)→n6(client), n3(auth)→n4(models)
     # Intra-file and concept edges should be excluded
-    edge_pairs = {(r["from_file"], r["to_file"], int(r["weight"])) for r in rows}
-    assert ("src/auth.py", "src/client.py", 1) in edge_pairs
-    assert ("src/auth.py", "src/models.py", 1) in edge_pairs
+    edge_pairs = {(r["from_file"], r["to_file"], float(r["weight"])) for r in rows}
+    assert ("src/auth.py", "src/client.py", 1.0) in edge_pairs
+    assert ("src/auth.py", "src/models.py", 1.0) in edge_pairs
 
     # No intra-file edges
     for r in rows:

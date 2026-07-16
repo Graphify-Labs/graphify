@@ -636,7 +636,7 @@ def _aggregate_file_edges(conn: object, csv_path: Path) -> set[str]:
         writer = csv.writer(f)
         writer.writerow(["from_file", "to_file", "weight"])
         for from_file, to_file, weight in results:
-            writer.writerow([from_file, to_file, int(weight)])
+            writer.writerow([from_file, to_file, float(weight)])
             all_files.add(from_file)
             all_files.add(to_file)
 
