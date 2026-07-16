@@ -2553,6 +2553,12 @@ def dispatch_command(cmd: str) -> None:
         # Deep mode uses its own namespace (cache/semantic-deep/) so deep and
         # standard results for the same content never shadow each other (#1894).
         sem_cache_mode = "deep" if deep_mode else None
+        # Entries are attributed to the extraction prompt that produced them, so
+        # a release that changes the prompt re-extracts rather than replaying the
+        # older vintage alongside the new one (#1939). Read and write must pass
+        # the same prompt, or the write lands where the next read won't look.
+        from graphify.llm import _extraction_system as _sem_prompt_for
+        sem_prompt = _sem_prompt_for(deep=deep_mode)
         if semantic_files:
             sem_paths_str = [str(p) for p in semantic_files]
             if force:
@@ -2563,7 +2569,8 @@ def dispatch_command(cmd: str) -> None:
                 uncached_paths = list(sem_paths_str)
             else:
                 cached_nodes, cached_edges, cached_hyperedges, uncached_paths = (
-                    _check_semantic_cache(sem_paths_str, root=out_root, mode=sem_cache_mode)
+                    _check_semantic_cache(sem_paths_str, root=out_root, mode=sem_cache_mode,
+                                          prompt=sem_prompt)
                 )
             sem_cache_hits = len(semantic_files) - len(uncached_paths)
             sem_cache_misses = len(uncached_paths)
@@ -2636,6 +2643,7 @@ def dispatch_command(cmd: str) -> None:
                         root=out_root,
                         allowed_source_files=uncached_paths,
                         mode=sem_cache_mode,
+                        prompt=sem_prompt,
                     )
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write semantic cache: {exc}", file=sys.stderr)
@@ -2947,20 +2955,27 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "cache-check":
         # graphify cache-check <files_from> [--root <dir>] [--mode <m> | --deep]
+        #                       [--prompt-file <path>]
         # Reads file paths (one per line) from <files_from>, checks semantic cache.
         # --mode deep (or --deep) checks the cache/semantic-deep/ namespace
         # written by `extract --mode deep` instead of cache/semantic/ (#1894).
+        # --prompt-file names the extraction prompt the caller will use (an agent's
+        # references/extraction-spec.md), restricting hits to entries produced by
+        # that same prompt (#1939). Omitting it reads the unattributed layout, which
+        # cannot see entries a fingerprinted run wrote.
         # Writes:
         #   graphify-out/.graphify_cached.json   — already-cached nodes/edges/hyperedges
         #   graphify-out/.graphify_uncached.txt  — paths that need extraction
         # Stdout: "Cache: N hit, M miss"
         from graphify.cache import check_semantic_cache
         if len(sys.argv) < 3:
-            print("Usage: graphify cache-check <files_from> [--root <dir>] [--mode <m> | --deep]", file=sys.stderr)
+            print("Usage: graphify cache-check <files_from> [--root <dir>] "
+                  "[--mode <m> | --deep] [--prompt-file <path>]", file=sys.stderr)
             sys.exit(1)
         files_from = Path(sys.argv[2])
         root = Path(".")
         cache_mode: str | None = None
+        prompt_file: str | None = None
         i = 3
         while i < len(sys.argv):
             if sys.argv[i] == "--root" and i + 1 < len(sys.argv):
@@ -2975,11 +2990,17 @@ def dispatch_command(cmd: str) -> None:
             elif sys.argv[i] == "--deep":
                 cache_mode = "deep"
                 i += 1
+            elif sys.argv[i] == "--prompt-file" and i + 1 < len(sys.argv):
+                prompt_file = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i].startswith("--prompt-file="):
+                prompt_file = sys.argv[i].split("=", 1)[1]
+                i += 1
             else:
                 i += 1
         files = [f for f in files_from.read_text(encoding="utf-8").splitlines() if f.strip()]
         cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(
-            files, root, mode=cache_mode
+            files, root, mode=cache_mode, prompt_file=prompt_file
         )
         out = root / _GRAPHIFY_OUT
         out.mkdir(parents=True, exist_ok=True)

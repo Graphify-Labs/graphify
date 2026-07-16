@@ -63,6 +63,99 @@ def _cleanup_stale_ast_entries(ast_base: Path, current_dir: Path) -> None:
             pass
 
 
+# Semantic cache entries are LLM output, so they depend on the extraction prompt
+# that produced them, not just on file contents. Keying purely on content means a
+# release that changes the prompt keeps replaying entries from the older prompt on
+# every unchanged file, silently mixing extraction vintages in one graph (#1939).
+# Versioning them by package version (as the AST cache does) would re-bill LLM
+# extraction on every patch release — the reason #1252 deliberately left them
+# unversioned. Fingerprinting the prompt itself keeps both properties: entries
+# survive releases that don't touch the prompt, and invalidate only when it
+# actually changed. Entries live under cache/semantic/p{fingerprint}/ when the
+# caller supplies its prompt; callers that don't keep the historical flat layout.
+_PROMPT_FP_LEN = 12
+
+# Count of pre-fingerprint (flat-layout) entries served this process, so
+# check_semantic_cache can report N to the user (#1939).
+_legacy_semantic_hits = 0
+
+# Prompt-file fingerprints already computed, keyed by (path, size, mtime_ns) —
+# the same stat signature the hash index uses. check_semantic_cache resolves the
+# prompt once per FILE in the corpus, so without this a 500-doc run re-reads and
+# re-hashes the same spec 500 times (and warns 500 times when it is unreadable).
+_prompt_fp_cache: dict[tuple, str] = {}
+
+
+def prompt_fingerprint(prompt: "str | Path") -> str:
+    """Return a short stable fingerprint of an extraction prompt.
+
+    ``prompt`` is either the prompt text itself (the Python extraction path owns
+    its system prompt, :func:`graphify.llm._extraction_system`) or a Path to the
+    prompt file an agent loaded (the skill path's
+    ``references/extraction-spec.md``).
+
+    Line endings and trailing whitespace are normalized before hashing: the same
+    spec file checked out with CRLF on Windows must not fingerprint differently
+    from the LF checkout that wrote the cache, or every Windows run would look
+    like a prompt change and re-bill extraction.
+    """
+    if isinstance(prompt, Path):
+        text = prompt.read_text(encoding="utf-8", errors="replace")
+    else:
+        text = prompt
+    normalized = "\n".join(
+        line.rstrip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ).strip()
+    return hashlib.sha256(normalized.encode()).hexdigest()[:_PROMPT_FP_LEN]
+
+
+def _resolve_prompt_fp(prompt: "str | Path | None" = None,
+                       prompt_file: "str | Path | None" = None) -> str | None:
+    """Fingerprint the caller's extraction prompt, or None when it supplied none.
+
+    ``prompt`` is prompt TEXT; ``prompt_file`` is a path to a file CONTAINING the
+    prompt. They are separate parameters rather than one overloaded argument
+    because the skill-driven callers are markdown snippets an agent copies with a
+    path substituted in — passing that path as ``prompt`` would hash the path
+    string itself, yielding a fingerprint that is stable, plausible, and tracks
+    nothing about the prompt. A silent wrong fingerprint is the exact failure
+    class #1939 is about, so the two are not inferred from each other.
+
+    Best-effort: an unreadable ``prompt_file`` falls back to the flat, unattributed
+    layout rather than failing the run — a cache is never worth aborting an
+    extraction over. It warns rather than falling back quietly, because that
+    fallback silently restores the very behavior this fixes, and the skill-side
+    caller substitutes this path by hand.
+    """
+    memo_key = None
+    if prompt_file is not None:
+        prompt = Path(prompt_file)
+        try:
+            st = prompt.stat()
+            memo_key = (str(prompt), st.st_size, st.st_mtime_ns)
+            if memo_key in _prompt_fp_cache:
+                return _prompt_fp_cache[memo_key]
+        except OSError:
+            pass  # unreadable — fall through to the warning below
+    if prompt is None:
+        return None
+    try:
+        fp = prompt_fingerprint(prompt)
+        if memo_key is not None:
+            _prompt_fp_cache[memo_key] = fp
+        return fp
+    except (OSError, UnicodeError) as exc:
+        warnings.warn(
+            f"could not read extraction prompt {str(prompt)!r} ({exc}); semantic cache "
+            "entries cannot be attributed to a prompt version and fall back to the "
+            "unversioned layout, so this run may replay entries from an older "
+            "extraction prompt (#1939).",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return None
+
+
 # A frontmatter delimiter is a whole line of exactly three dashes (optional
 # trailing whitespace). Substring checks like startswith("---") /
 # find("\n---") also match `----` thematic breaks and `--- text` prose,
@@ -338,7 +431,8 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
                 continue
 
 
-def cache_dir(root: Path = Path("."), kind: str = "ast") -> Path:
+def cache_dir(root: Path = Path("."), kind: str = "ast",
+              prompt_fp: str | None = None) -> Path:
     """Returns the cache directory for ``kind`` - creates it if needed.
 
     kind is "ast", "semantic", or a mode-namespaced semantic kind such as
@@ -347,9 +441,14 @@ def cache_dir(root: Path = Path("."), kind: str = "ast") -> Path:
 
     AST entries live in graphify-out/cache/ast/v{version}/ — namespaced by
     graphify version because they depend on extractor code, not just file
-    contents. Semantic entries live unversioned in graphify-out/cache/semantic/
-    (re-extraction costs LLM calls); deep-mode entries live beside them in
-    graphify-out/cache/semantic-deep/.
+    contents. Semantic entries are still NOT version-namespaced (re-extraction
+    costs LLM calls, #1252): they live in graphify-out/cache/semantic/, with
+    deep-mode entries beside them in graphify-out/cache/semantic-deep/.
+
+    ``prompt_fp`` (semantic kinds only) adds a p{fingerprint}/ subdirectory so
+    entries are attributed to the extraction prompt that produced them (#1939).
+    Omitting it yields the historical flat layout, where entries of unknown
+    vintage live.
     """
     _out = Path(_GRAPHIFY_OUT)
     base = _out if _out.is_absolute() else Path(root).resolve() / _out
@@ -357,12 +456,16 @@ def cache_dir(root: Path = Path("."), kind: str = "ast") -> Path:
     if kind == "ast":
         d = d / f"v{_EXTRACTOR_VERSION}"
         _cleanup_stale_ast_entries(d.parent, d)
+    elif prompt_fp:
+        d = d / f"p{prompt_fp}"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
-                cache_root: Path | None = None) -> dict | None:
+                cache_root: Path | None = None, prompt: "str | Path | None" = None,
+                prompt_file: "str | Path | None" = None,
+                allow_legacy: bool = True) -> dict | None:
     """Return cached extraction for this file if hash matches, else None.
 
     Cache key: SHA256 of file contents.
@@ -380,19 +483,39 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     flat cache/ layout (pre-0.5.3) and the unversioned cache/ast/ layout —
     are deliberately not consulted: they were produced by a different
     extractor and may be stale.
+
+    ``prompt`` (semantic kinds) is the extraction prompt — text, or a Path to
+    the prompt file — that the caller is about to extract with. It selects the
+    p{fingerprint}/ namespace, so an entry produced by a different prompt is a
+    miss rather than a silent stale hit (#1939). When it is given and the
+    fingerprinted namespace misses, ``allow_legacy`` (default True) falls back
+    to a flat-layout entry: those predate fingerprinting, so their vintage is
+    unknowable — they are served rather than re-billed, and the hit is counted
+    so :func:`check_semantic_cache` can report N to the user. Callers that must
+    not mix vintages within one entry (see :func:`save_semantic_cache`'s
+    ``merge_existing``) pass allow_legacy=False.
     Returns None if no cache entry or file has changed.
     """
+    global _legacy_semantic_hits
     location = cache_root if cache_root is not None else root
     try:
         h = file_hash(path, root, cache_root=cache_root)
     except OSError:
         return None
-    entry = cache_dir(location, kind) / f"{h}.json"
+    prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
+    entry = cache_dir(location, kind, prompt_fp) / f"{h}.json"
+    legacy_hit = False
+    if prompt_fp and not entry.exists() and allow_legacy:
+        legacy = cache_dir(location, kind) / f"{h}.json"
+        if legacy.exists():
+            entry, legacy_hit = legacy, True
     if entry.exists():
         try:
             result = json.loads(entry.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
+        if legacy_hit:
+            _legacy_semantic_hits += 1
         # Re-anchor relative source_file fields so callers see the same
         # absolute-path shape that a fresh in-process extraction produces
         # (#777). Legacy entries with absolute source_file pass through.
@@ -403,7 +526,8 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
 
 
 def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast",
-                cache_root: Path | None = None) -> None:
+                cache_root: Path | None = None, prompt: "str | Path | None" = None,
+                prompt_file: "str | Path | None" = None) -> None:
     """Save extraction result for this file.
 
     Stores as graphify-out/cache/{kind}/{hash}.json where hash = SHA256 of current file contents.
@@ -412,6 +536,13 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     ``root`` anchors the content-hash key and source_file relativization;
     ``cache_root`` (when given) is where the cache directory is written, decoupled
     from ``root`` so the cache never lands inside the analyzed source tree (#1774).
+
+    ``prompt`` (semantic kinds) is the extraction prompt that produced ``result``
+    — text, or a Path to the prompt file. It stamps the entry into the
+    p{fingerprint}/ namespace so a later run under a different prompt does not
+    replay it (#1939). Writes always land in the fingerprinted namespace when a
+    prompt is given: an entry of known vintage is never written back into the
+    flat unknown-vintage layout.
 
     No-ops if `path` is not a regular file. Subagent-produced semantic fragments
     occasionally carry a directory path in `source_file`; skipping them prevents
@@ -437,7 +568,7 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
         _relativize_source_files_in(on_disk, root)
     h = file_hash(p, root, cache_root=cache_root)
     location = cache_root if cache_root is not None else root
-    target_dir = cache_dir(location, kind)
+    target_dir = cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file))
     entry = target_dir / f"{h}.json"
     fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
     try:
@@ -470,13 +601,14 @@ def cached_files(root: Path = Path(".")) -> set[str]:
     # Legacy flat entries
     if base.is_dir():
         hashes.update(p.stem for p in base.glob("*.json"))
-    # Namespaced entries (ast/ recursively, covering per-version subdirs;
-    # semantic-deep/ holds --mode deep entries, #1894)
-    for kind, pattern in (("ast", "**/*.json"), ("semantic", "*.json"),
-                          ("semantic-deep", "*.json")):
+    # Namespaced entries, all globbed recursively: ast/ has per-version subdirs,
+    # semantic-deep/ holds --mode deep entries (#1894), and both semantic kinds
+    # have per-prompt-fingerprint subdirs alongside pre-fingerprint flat entries
+    # (#1939).
+    for kind in ("ast", "semantic", "semantic-deep"):
         d = base / kind
         if d.is_dir():
-            hashes.update(p.stem for p in d.glob(pattern))
+            hashes.update(p.stem for p in d.glob("**/*.json"))
     return hashes
 
 
@@ -488,13 +620,13 @@ def clear_cache(root: Path = Path(".")) -> None:
     if base.is_dir():
         for f in base.glob("*.json"):
             f.unlink()
-    # Namespaced entries (ast/ recursively, covering per-version subdirs;
-    # semantic-deep/ holds --mode deep entries, #1894)
-    for kind, pattern in (("ast", "**/*.json"), ("semantic", "*.json"),
-                          ("semantic-deep", "*.json")):
+    # Namespaced entries, all globbed recursively: ast/ has per-version subdirs,
+    # semantic-deep/ holds --mode deep entries (#1894), and both semantic kinds
+    # have per-prompt-fingerprint subdirs (#1939).
+    for kind in ("ast", "semantic", "semantic-deep"):
         d = base / kind
         if d.is_dir():
-            for f in d.glob(pattern):
+            for f in d.glob("**/*.json"):
                 f.unlink()
 
 
@@ -519,6 +651,16 @@ def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
     touched (never ``cache/ast/**`` or anything else). The unversioned design
     is preserved: we prune by liveness, not by version.
 
+    The sweep recurses into the per-prompt-fingerprint subdirs (#1939) for the
+    same reason it covers the deep namespace: a glob that stopped at the top
+    level would leave every fingerprinted entry permanently unprunable. Entries
+    under a fingerprint other than the current one are pruned by liveness only,
+    never swept wholesale the way :func:`_cleanup_stale_ast_entries` sweeps old
+    AST versions — two hosts with different prompts (verbose vs compact
+    extraction-spec) can share one graphify-out/, and a wholesale sweep would
+    have each run delete the other's entries and re-bill extraction on every
+    alternation. Liveness keeps the total bounded by live docs × prompts seen.
+
     Best-effort, mirroring :func:`_cleanup_stale_ast_entries`: each unlink is
     wrapped in ``try/except OSError`` and a failure is ignored. The worst-case
     failure mode is benign — a surviving orphan costs only one re-extraction of
@@ -531,7 +673,7 @@ def prune_semantic_cache(root: Path, live_hashes: set[str]) -> int:
         semantic_dir = base / "cache" / kind
         if not semantic_dir.is_dir():
             continue
-        for entry in semantic_dir.glob("*.json"):
+        for entry in semantic_dir.glob("**/*.json"):
             if entry.stem in live_hashes:
                 continue
             try:
@@ -546,6 +688,8 @@ def check_semantic_cache(
     files: list[str],
     root: Path = Path("."),
     mode: str | None = None,
+    prompt: "str | Path | None" = None,
+    prompt_file: "str | Path | None" = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[str]]:
     """Check semantic extraction cache for a list of absolute file paths.
 
@@ -558,24 +702,48 @@ def check_semantic_cache(
     are unaffected. A non-None mode (e.g. ``"deep"``) reads
     ``cache/semantic-{mode}/`` instead, so deep-mode results never shadow
     (or get shadowed by) standard-mode entries for the same content (#1894).
+
+    ``prompt`` is the extraction prompt this run will use for the uncached
+    files — the prompt text (Python path) or a Path to the prompt file the
+    agent loaded (skill path, ``references/extraction-spec.md``). Supplying it
+    restricts hits to entries produced by that same prompt, so an upgrade that
+    changed the prompt re-extracts instead of replaying the older vintage
+    (#1939). Entries written before fingerprinting existed still hit — their
+    vintage is unknowable and dropping them would re-bill a whole corpus — but
+    a warning reports how many were served. Omitting ``prompt`` keeps the
+    historical behavior for existing callers.
     """
+    global _legacy_semantic_hits
     kind = "semantic" if mode is None else f"semantic-{mode}"
     cached_nodes: list[dict] = []
     cached_edges: list[dict] = []
     cached_hyperedges: list[dict] = []
     uncached: list[str] = []
+    legacy_before = _legacy_semantic_hits
 
     for fpath in files:
         p = Path(fpath)
         if not p.is_absolute():
             p = Path(root) / p
-        result = load_cached(p, root, kind=kind)
+        result = load_cached(p, root, kind=kind, prompt=prompt, prompt_file=prompt_file)
         if result is not None:
             cached_nodes.extend(result.get("nodes", []))
             cached_edges.extend(result.get("edges", []))
             cached_hyperedges.extend(result.get("hyperedges", []))
         else:
             uncached.append(fpath)
+
+    legacy = _legacy_semantic_hits - legacy_before
+    if legacy:
+        warnings.warn(
+            f"{legacy} semantic cache entr{'y' if legacy == 1 else 'ies'} predate "
+            "extraction-prompt fingerprinting and were written by an unknown prompt "
+            "version; they were replayed as-is, so this graph may mix extraction "
+            "vintages. Re-run with --force (or GRAPHIFY_FORCE=1) to re-extract them "
+            "with the current prompt (#1939).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     return cached_nodes, cached_edges, cached_hyperedges, uncached
 
@@ -588,6 +756,8 @@ def save_semantic_cache(
     merge_existing: bool = False,
     allowed_source_files: Iterable[str | Path] | None = None,
     mode: str | None = None,
+    prompt: "str | Path | None" = None,
+    prompt_file: "str | Path | None" = None,
 ) -> int:
     """Save semantic extraction results to cache, keyed by source_file.
 
@@ -611,6 +781,13 @@ def save_semantic_cache(
     cache-write keys. Semantic nodes can legitimately mention another corpus
     file, but a model must not be able to replace that file's complete cache
     entry unless the file was part of the current extraction batch (#1757).
+
+    ``prompt`` is the extraction prompt that produced these results — text, or
+    a Path to the prompt file. It stamps entries into the p{fingerprint}/
+    namespace so a later run under a different prompt re-extracts rather than
+    replaying them (#1939). Pass the same prompt here as to
+    :func:`check_semantic_cache`, or the write lands in a namespace the next
+    read won't consult.
     Returns the number of files cached.
     """
     from collections import defaultdict
@@ -716,13 +893,19 @@ def save_semantic_cache(
                 )
                 continue
             if merge_existing:
-                prev = load_cached(p, root, kind=kind)
+                # allow_legacy=False: merging a pre-fingerprint entry into this
+                # write would fuse two prompt vintages inside a single entry and
+                # then stamp the result as current-vintage — the exact mixing
+                # #1939 is about, made unfixable because the entry now claims a
+                # prompt that only produced half of it.
+                prev = load_cached(p, root, kind=kind, prompt=prompt,
+                                   prompt_file=prompt_file, allow_legacy=False)
                 if prev:
                     result = {
                         "nodes": (prev.get("nodes", []) or []) + result["nodes"],
                         "edges": (prev.get("edges", []) or []) + result["edges"],
                         "hyperedges": (prev.get("hyperedges", []) or []) + result["hyperedges"],
                     }
-            save_cached(p, result, root, kind=kind)
+            save_cached(p, result, root, kind=kind, prompt=prompt, prompt_file=prompt_file)
             saved += 1
     return saved

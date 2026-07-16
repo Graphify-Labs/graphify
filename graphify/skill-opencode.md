@@ -214,6 +214,8 @@ Before dispatching subagents, print a timing estimate:
 
 Before dispatching any subagents, check which files already have cached extraction results:
 
+SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and hands to every subagent. It is the extraction prompt, so cache entries are attributed to it: when a graphify upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939). Substitute the real path in both Step B0 and Step B3 — pass the same one to each, and do not drop the argument.
+
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json
@@ -226,7 +228,7 @@ detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encodin
 # every source file (#1392). Video is transcribed to a document in Step 2.5 first.
 all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
 
-cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH')
+cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, root='INPUT_PATH', prompt_file='SPEC_PATH')
 
 # Always (re)write the cache file: write hits, else DELETE any leftover from a prior
 # run so Part C never merges a stale .graphify_cached.json (#1392).
@@ -297,7 +299,7 @@ print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens'
 "
 ```
 
-Save new results to cache:
+Save new results to cache. Pass the same SPEC_PATH as Step B0 — it stamps each entry with the prompt that produced it, and a write under a different prompt than the read lands where the next run won't look (#1939):
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json
@@ -306,7 +308,7 @@ from pathlib import Path
 
 new = json.loads(Path('graphify-out/.graphify_semantic_new.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
 uncached = [line for line in Path('graphify-out/.graphify_uncached.txt').read_text(encoding=\"utf-8\").splitlines() if line]
-saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root='INPUT_PATH', allowed_source_files=uncached)
+saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root='INPUT_PATH', allowed_source_files=uncached, prompt_file='SPEC_PATH')
 print(f'Cached {saved} files')
 "
 ```

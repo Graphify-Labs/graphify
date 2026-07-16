@@ -1935,6 +1935,10 @@ def extract_corpus_parallel(
                 merge_existing=True,
                 allowed_source_files=allowed,
                 mode="deep" if deep_mode else None,
+                # Stamp the entry with the prompt that produced it, so a release
+                # that changes _EXTRACTION_SYSTEM re-extracts instead of replaying
+                # this vintage forever (#1939).
+                prompt=_extraction_system(deep=deep_mode),
             )
         except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
             print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)

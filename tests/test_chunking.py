@@ -321,8 +321,11 @@ def test_checkpoint_scopes_cache_writes_to_chunk_files(tmp_path):
     assert [n["id"] for n in after["nodes"]] == ["b_real"], (
         f"B.py cache was clobbered by an out-of-chunk node: {after}"
     )
-    # A.py (the actual chunk file) was legitimately cached.
-    a_cache = load_cached(a, tmp_path, kind="semantic")
+    # A.py (the actual chunk file) was legitimately cached. The checkpoint stamps
+    # entries with the prompt that produced them (#1939), so read that namespace.
+    from graphify.llm import _extraction_system
+
+    a_cache = load_cached(a, tmp_path, kind="semantic", prompt=_extraction_system())
     assert a_cache and any(n["id"] == "a_ok" for n in a_cache["nodes"])
 
 
@@ -330,7 +333,7 @@ def test_checkpoint_writes_deep_namespace_in_deep_mode(tmp_path):
     """#1894: the per-chunk checkpoint must follow the run's mode — a
     deep_mode=True run checkpoints into cache/semantic-deep/, leaving the
     standard cache/semantic/ namespace untouched (and vice versa)."""
-    from graphify.llm import extract_corpus_parallel
+    from graphify.llm import extract_corpus_parallel, _extraction_system
     from graphify.cache import load_cached
 
     doc = tmp_path / "doc.md"
@@ -349,11 +352,15 @@ def test_checkpoint_writes_deep_namespace_in_deep_mode(tmp_path):
             deep_mode=True,
         )
 
-    deep = load_cached(doc, tmp_path, kind="semantic-deep")
+    # The checkpoint also stamps entries with the prompt that produced them
+    # (#1939) — a deep run's prompt carries the deep suffix.
+    deep = load_cached(doc, tmp_path, kind="semantic-deep",
+                       prompt=_extraction_system(deep=True))
     assert deep and [n["id"] for n in deep["nodes"]] == ["d1"], (
         "deep-mode checkpoint must land in cache/semantic-deep/"
     )
-    assert load_cached(doc, tmp_path, kind="semantic") is None, (
+    assert load_cached(doc, tmp_path, kind="semantic",
+                       prompt=_extraction_system(deep=False)) is None, (
         "deep-mode checkpoint must not write the standard semantic namespace"
     )
 
@@ -484,7 +491,9 @@ def test_checkpoint_caches_sliced_document_chunks(tmp_path, capsys):
     split into FileSlice units; before the fix each sliced chunk leaked the
     FileSlice object into the allowlist, so save_semantic_cache raised TypeError,
     the best-effort except swallowed it, and the slice was never checkpointed."""
-    from graphify.llm import extract_corpus_parallel, expand_oversized_files, _FILE_CHAR_CAP
+    from graphify.llm import (
+        extract_corpus_parallel, expand_oversized_files, _FILE_CHAR_CAP, _extraction_system,
+    )
     from graphify.file_slice import FileSlice
     from graphify.cache import load_cached
 
@@ -510,7 +519,8 @@ def test_checkpoint_caches_sliced_document_chunks(tmp_path, capsys):
     assert "incremental cache checkpoint failed" not in capsys.readouterr().err, (
         "checkpoint raised on a FileSlice chunk (#1870)"
     )
-    cached = load_cached(doc, tmp_path, kind="semantic")
+    # The checkpoint stamps entries with the prompt that produced them (#1939).
+    cached = load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system())
     assert cached and any(n["id"] == "big_title" for n in cached["nodes"]), (
         "sliced document was never checkpointed (#1870)"
     )
