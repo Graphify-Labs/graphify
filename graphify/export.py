@@ -180,6 +180,38 @@ def _git_head() -> str | None:
         return None
 
 
+def existing_graph_node_count(path: "str | Path") -> int | None:
+    """Node count of an existing graph.json, or None when it can't be compared
+    (absent, empty, unreadable, malformed, or over the size cap).
+
+    The raw ``--no-cluster`` write path uses this to apply the same #479 shrink
+    guard that :func:`to_json` applies inline for the clustered path. None means
+    "can't verify — let the write proceed", matching how ``to_json`` treats an
+    empty/oversized/unreadable existing file.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    from graphify.security import check_graph_file_size_cap
+    try:
+        check_graph_file_size_cap(p)
+    except Exception:
+        # Oversized: reading it to compare would be the DoS the cap guards against.
+        return None
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    if not raw.strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    nodes = data.get("nodes") if isinstance(data, dict) else None
+    return len(nodes) if isinstance(nodes, list) else None
+
+
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)

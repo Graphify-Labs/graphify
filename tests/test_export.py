@@ -775,3 +775,15 @@ def test_to_html_handles_null_source_file_and_label(tmp_path):
     out = tmp_path / "graph.html"
     to_html(G, {0: ["n1", "n2", "n3"]}, str(out))
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_existing_graph_node_count(tmp_path):
+    from graphify.export import existing_graph_node_count
+    p = tmp_path / "graph.json"
+    assert existing_graph_node_count(p) is None            # absent
+    p.write_text("", encoding="utf-8")
+    assert existing_graph_node_count(p) is None            # empty
+    p.write_text("{not json", encoding="utf-8")
+    assert existing_graph_node_count(p) is None            # malformed
+    p.write_text('{"nodes": [{"id": "a"}, {"id": "b"}], "links": []}', encoding="utf-8")
+    assert existing_graph_node_count(p) == 2               # valid

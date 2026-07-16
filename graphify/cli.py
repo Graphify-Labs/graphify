@@ -2762,7 +2762,10 @@ def dispatch_command(cmd: str) -> None:
             # across modes (#1317; node dedup also collapses shared Swift module
             # anchors emitted per importing file, #1327).
             from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
-            from graphify.export import backup_if_protected as _backup
+            from graphify.export import (
+                backup_if_protected as _backup,
+                existing_graph_node_count as _existing_graph_node_count,
+            )
             if (
                 incremental_mode
                 and not code_files
@@ -2808,6 +2811,24 @@ def dispatch_command(cmd: str) -> None:
                     _e["source_file"] = (
                         _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
                     )
+            # RT-parity for the raw path: an incomplete build must not force a
+            # partial graph over a larger complete one here either. The clustered
+            # path gets this from to_json's #479 guard; this path never calls
+            # to_json, so replicate the shrink check against the existing file and
+            # exit before the write/manifest unless --allow-partial is set.
+            if _extraction_incomplete and not cli_allow_partial:
+                _existing_n = _existing_graph_node_count(graph_json_path)
+                if _existing_n is not None and len(merged["nodes"]) < _existing_n:
+                    print(
+                        "[graphify extract] error: extraction was incomplete (an AST/"
+                        "semantic pass failed) and the resulting --no-cluster graph is "
+                        f"smaller than the existing {graph_json_path} "
+                        f"({len(merged['nodes'])} < {_existing_n} nodes). Refusing to "
+                        "overwrite a complete graph with a partial one. Re-run after "
+                        "fixing the failures, or pass --allow-partial to overwrite anyway.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             _backup(graphify_out)
             graph_json_path.write_text(
                 json.dumps(merged, indent=2), encoding="utf-8"
@@ -2908,10 +2929,9 @@ def dispatch_command(cmd: str) -> None:
         # graph could silently overwrite a good complete one, so fall back to the
         # shrink guard (force=False) unless the user opts in with --allow-partial.
         #
-        # Scope: this guards the clustered write path only. The `--no-cluster`
-        # raw-dump path (above) writes graph.json directly and has never had a
-        # shrink guard, so an incomplete --no-cluster run can still overwrite a
-        # complete graph — a pre-existing gap this change does not close.
+        # Both write paths are guarded: the clustered path here via to_json's
+        # #479 check, and the `--no-cluster` raw-dump path above via the same
+        # shrink check against the existing file (existing_graph_node_count).
         #
         # Trade-off: this reuses to_json's coarse node-count guard, not the
         # source-aware _check_shrink that watch/update use. On an incremental run

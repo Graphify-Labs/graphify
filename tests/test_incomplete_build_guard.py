@@ -108,3 +108,62 @@ def test_complete_extraction_keeps_force_write(monkeypatch, tmp_path):
     mainmod.main()
 
     assert rec["called"] and rec["force"] is True
+
+
+def _seed_existing_graph(gout, n):
+    import json
+    gout.mkdir(parents=True, exist_ok=True)
+    (gout / "graph.json").write_text(
+        json.dumps({"nodes": [{"id": f"keep{i}", "label": f"k{i}"} for i in range(n)],
+                    "links": []}),
+        encoding="utf-8",
+    )
+
+
+def _arm_no_cluster(monkeypatch, tmp_path, *, extra_argv=()):
+    corpus = _make_docs_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    gout = out_dir / "graphify-out"
+    _seed_existing_graph(gout, 5)  # existing complete graph
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+
+    def _stub_corpus(paths, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 3, {"nodes": [], "edges": [], "hyperedges": []})  # 1 of 3 -> partial
+        return {"nodes": [{"id": "s1", "source_file": str(corpus / "README.md"),
+                           "file_type": "document", "label": "Notes"}],
+                "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _stub_corpus)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude", "--no-cluster",
+         "--out", str(out_dir), *extra_argv],
+    )
+    return gout / "graph.json"
+
+
+def test_no_cluster_incomplete_build_refuses_to_shrink(tmp_path, monkeypatch, capsys):
+    import json
+    graph = _arm_no_cluster(monkeypatch, tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+
+    assert exc.value.code == 1
+    assert "Refusing to overwrite" in capsys.readouterr().err
+    # The existing 5-node graph is untouched — the partial 1-node graph was refused.
+    assert len(json.loads(graph.read_text())["nodes"]) == 5
+
+
+def test_no_cluster_allow_partial_overwrites(tmp_path, monkeypatch):
+    import json
+    graph = _arm_no_cluster(monkeypatch, tmp_path, extra_argv=["--allow-partial"])
+
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+
+    assert exc.value.code == 0  # the raw --no-cluster path exits 0 on success
+    assert len(json.loads(graph.read_text())["nodes"]) == 1
