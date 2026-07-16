@@ -93,11 +93,21 @@ def _zip_within_caps(path: Path) -> bool:
         return False
     return True
 
-# Parent directories whose contents are always sensitive.
-# Checked against path.parts[:-1] (parents only) so a root-level file named
-# "credentials" or "secrets" is not falsely flagged by this stage.
-_SENSITIVE_DIRS = frozenset({
-    ".ssh", ".gnupg", ".aws", ".gcloud", "secrets", ".secrets", "credentials",
+# Dedicated credential-store directories: everything beneath them is sensitive,
+# with no carve-out — a .py inside ~/.ssh or ~/.aws is tooling for key material,
+# not a source package, and keys there are routinely extensionless.
+# Both sets are checked against path.parts[:-1] (parents only) so a root-level
+# file named "credentials" or "secrets" is not falsely flagged by this stage.
+_CREDENTIAL_STORE_DIRS = frozenset({
+    ".ssh", ".gnupg", ".aws", ".gcloud",
+})
+
+# Bare-name directories that are as often legitimate source packages (Go
+# internal/secrets, a credentials/ service module) as credential stores. Their
+# contents are sensitive EXCEPT genuine programming-language source, mirroring
+# the Stage 3 keyword carve-out (#1666) at the directory level (#1943).
+_AMBIGUOUS_SENSITIVE_DIRS = frozenset({
+    "secrets", ".secrets", "credentials",
 })
 
 # Files that may contain secrets - skip silently. These patterns are specific
@@ -126,9 +136,11 @@ _GENERIC_KEYWORD_PATTERNS = [
 ]
 
 # Data/serialization extensions that commonly ARE secret stores when their name
-# hits a generic keyword (credentials.json, secrets.yaml, token.toml). These stay
-# subject to the Stage 3 keyword drop even though some route through the CODE path
-# for manifest parsing — only real programming-language source is exempt (#1666).
+# hits a generic keyword (credentials.json, secrets.yaml, token.toml) or they sit
+# in an ambiguous sensitive dir (secrets/db.json). These stay subject to the
+# Stage 1 ambiguous-dir drop and the Stage 3 keyword drop even though some route
+# through the CODE path for manifest parsing — only real programming-language
+# source is exempt (#1666, #1943).
 _SECRET_PRONE_DATA_EXTS = frozenset({
     ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".config",
     ".xml", ".properties", ".env", ".txt",
@@ -182,12 +194,28 @@ _PAPER_SIGNALS = [
 _PAPER_SIGNAL_THRESHOLD = 3  # need at least this many signals to call it a paper
 
 
+def _is_graphable_source(path: Path) -> bool:
+    """True for genuine programming-language source — the only category exempt
+    from the ambiguous-dir (Stage 1, #1943) and generic-keyword (Stage 3, #1666)
+    drops. Data/serialization formats are NOT exempt even though some route
+    through the CODE path for manifest parsing: credentials.json / secrets.yaml
+    are exactly the stores those stages must keep catching.
+    """
+    return classify_file(path) == FileType.CODE and path.suffix.lower() not in _SECRET_PRONE_DATA_EXTS
+
+
 def _is_sensitive(path: Path) -> bool:
     """Return True if this file likely contains secrets and should be skipped."""
     # Stage 1: any PARENT directory is a known secrets dir (parts[:-1] excludes
     # the filename itself so a root-level file named "credentials" is not falsely
-    # skipped — the name patterns in Stage 2 handle the filename).
-    if any(part in _SENSITIVE_DIRS for part in path.parts[:-1]):
+    # skipped — the name patterns in Stage 2 handle the filename). Dedicated
+    # credential stores drop everything unconditionally; ambiguous bare-name dirs
+    # (secrets/, credentials/) spare genuine source (#1943), which still falls
+    # through so Stages 2-3 screen its filename like anywhere else.
+    parents = path.parts[:-1]
+    if any(part in _CREDENTIAL_STORE_DIRS for part in parents):
+        return True
+    if any(part in _AMBIGUOUS_SENSITIVE_DIRS for part in parents) and not _is_graphable_source(path):
         return True
     # Stage 2: filename pattern match
     name = path.name
@@ -202,9 +230,7 @@ def _is_sensitive(path: Path) -> bool:
     # secret stores this stage must catch. The specific Stage 2 patterns (.env, .pem,
     # id_rsa, ...) still apply to everything regardless of extension.
     if _generic_keyword_hit(name):
-        ext = path.suffix.lower()
-        is_source_code = classify_file(path) == FileType.CODE and ext not in _SECRET_PRONE_DATA_EXTS
-        return not is_source_code
+        return not _is_graphable_source(path)
     return False
 
 

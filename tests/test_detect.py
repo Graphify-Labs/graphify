@@ -1072,6 +1072,42 @@ def test_sensitive_token_config_yaml():
     assert _is_sensitive(Path("token_config.yaml"))
 
 
+# ── #1943: Stage 1 dir check gets the same source carve-out as Stage 3 ──
+# secrets/ and credentials/ are as often real source packages (Go
+# internal/secrets, a credentials/ service module) as credential stores.
+# Genuine programming-language source beneath them must be graphed; data and
+# config formats — the formats credentials actually ship in — stay dropped,
+# and dedicated credential-store dirs (.ssh, .gnupg, .aws, .gcloud) keep
+# dropping everything with no carve-out.
+
+def test_sensitive_does_not_flag_source_under_secrets_dir():
+    # #1943 exact cases: real source under ambiguous dir names survives.
+    assert not _is_sensitive(Path("internal/secrets/vault.go"))
+    assert not _is_sensitive(Path("app/services/credentials/manager.py"))
+
+def test_sensitive_still_flags_data_under_secrets_dir():
+    # #1943 guard: the carve-out is ONLY for real source — data/config files
+    # under ambiguous dirs remain flagged, whatever their nesting depth.
+    assert _is_sensitive(Path("secrets/db.json"))
+    assert _is_sensitive(Path(".secrets/token.yaml"))
+    assert _is_sensitive(Path("deploy/credentials/prod.env"))
+    assert _is_sensitive(Path("internal/secrets/README.md"))  # docs are not source
+
+def test_sensitive_flags_everything_under_credential_store_dirs():
+    # #1943: dedicated stores get no carve-out — even source-classified files
+    # inside .ssh/.gnupg/.aws/.gcloud stay dropped.
+    assert _is_sensitive(Path("/home/user/.ssh/config"))
+    assert _is_sensitive(Path(".aws/credentials"))
+    assert _is_sensitive(Path(".gnupg/helper.py"))
+    assert _is_sensitive(Path("backup/.gcloud/sync.sh"))
+
+def test_sensitive_dir_carveout_does_not_bypass_name_screens():
+    # #1943: rescued source still falls through to Stages 2-3, so a file whose
+    # NAME is sensitive stays dropped even though its dir carve-out applied.
+    assert _is_sensitive(Path("secrets/service_account.py"))   # Stage 2 pattern
+    assert _is_sensitive(Path("credentials/id_rsa"))           # extensionless key
+
+
 # ── Generic keywords must be load-bearing: topic slugs are not secret stores ──
 # A keyword buried mid-phrase in a >=3-word descriptive name is a note ABOUT
 # the topic, not a credential file. It must not be silently dropped.
