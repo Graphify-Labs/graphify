@@ -912,15 +912,26 @@ def _rebuild_code(
                     watch_root=watch_root,
                     normalize_source=_nsf,
                 )
-                # Semantic doc nodes lack the AST origin marker. Gate on
-                # file_type=="document" as well so a pre-#1865 graph whose
-                # AST nodes lack the ``_origin`` marker isn't misread as
-                # semantic-backed via some other marker-less node kind.
+                # Semantic doc nodes lack the AST origin marker. Gate on the
+                # doc-shaped subset of the six-value file_type enum
+                # (document/concept/rationale/paper, matching build.py's
+                # canonical set minus code/image) rather than "document"
+                # alone: per the extraction spec, a doc full of named
+                # concepts may be represented with ONLY concept/rationale
+                # nodes and no separate "document" node — that's still
+                # evidence of a semantic layer, not a marker-less AST node
+                # (#1954). The narrower pre-#1954 check under-recognized
+                # exactly that doc shape, letting it be re-quick-scanned
+                # every rebuild. A pre-#1865 graph whose AST nodes lack the
+                # ``_origin`` marker still isn't misread as semantic-backed,
+                # since "code" stays outside this set.
                 semantic_doc_identities: set[str] = set()
                 for node in prior.get("nodes", []):
                     if node.get("_origin") == "ast":
                         continue
-                    if node.get("file_type") != "document":
+                    if node.get("file_type") not in (
+                        "document", "concept", "rationale", "paper"
+                    ):
                         continue
                     identity = prior_paths.identity(node.get("source_file"))
                     if identity:

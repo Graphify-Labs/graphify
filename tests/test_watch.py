@@ -1702,6 +1702,48 @@ def _seed_semantic_doc_graph(corpus):
     return graph_path
 
 
+_CONCEPT_ONLY_GUIDE_IDS = {"auth_flow", "session_model"}
+
+
+def _seed_semantic_doc_graph_concept_only(corpus):
+    """Like ``_seed_semantic_doc_graph``, but guide.md's semantic layer is
+    ONLY concept/rationale nodes (no ``file_type=="document"`` node) — the
+    extraction spec's preferred shape for a doc full of named concepts (#1954).
+    """
+    from graphify.watch import _rebuild_code
+
+    corpus.mkdir()
+    (corpus / "app.py").write_text(
+        "def handle_login():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    (corpus / "guide.md").write_text(
+        "# Overview\n\nIntro.\n\n## Setup\n\nSteps.\n\n## Usage\n\nMore.\n",
+        encoding="utf-8",
+    )
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    code_node_id = next(
+        n["id"] for n in data["nodes"] if n.get("source_file") == "app.py"
+    )
+    data["nodes"].extend([
+        {"id": "auth_flow", "label": "Auth Flow", "file_type": "concept",
+         "source_file": "guide.md"},
+        {"id": "session_model", "label": "Session Model", "file_type": "rationale",
+         "source_file": "guide.md"},
+    ])
+    data["links"].extend([
+        {"source": "auth_flow", "target": "session_model", "relation": "explains",
+         "confidence": "INFERRED", "source_file": "guide.md"},
+        {"source": "auth_flow", "target": code_node_id,
+         "relation": "implemented_by", "confidence": "INFERRED",
+         "source_file": "guide.md"},
+    ])
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    return graph_path
+
+
 def test_rebuild_code_semantic_doc_not_double_represented_on_full_rebuild(tmp_path):
     """#1915: a full _rebuild_code must not AST-quick-scan a doc whose semantic
     (LLM) nodes already represent it. Before the fix the quick-scan minted
@@ -1723,6 +1765,31 @@ def test_rebuild_code_semantic_doc_not_double_represented_on_full_rebuild(tmp_pa
     )
     assert len(after["nodes"]) == len(before["nodes"]), (
         f"node count inflated {len(before['nodes'])} -> {len(after['nodes'])} (#1915)"
+    )
+
+
+def test_rebuild_code_concept_only_semantic_doc_not_double_represented_on_full_rebuild(
+    tmp_path,
+):
+    """#1954: a doc represented ONLY by concept/rationale nodes (no
+    file_type=="document" node) must also be recognized as semantic-backed
+    and skipped by the AST quick-scan — not just docs with a "document" node."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    graph_path = _seed_semantic_doc_graph_concept_only(corpus)
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_ids = {n["id"] for n in after["nodes"]}
+    assert _CONCEPT_ONLY_GUIDE_IDS <= after_ids, "semantic doc nodes must be preserved"
+    assert not (_AST_GUIDE_IDS & after_ids), (
+        "AST heading nodes minted for a concept-only semantic-backed doc (#1954)"
+    )
+    assert len(after["nodes"]) == len(before["nodes"]), (
+        f"node count inflated {len(before['nodes'])} -> {len(after['nodes'])} (#1954)"
     )
 
 
@@ -1764,6 +1831,47 @@ def test_rebuild_code_incremental_preserves_semantic_doc_nodes_and_edges(
     ), "doc-to-code semantic edge dropped by an incremental rebuild"
     assert not (_AST_GUIDE_IDS & after_ids), (
         "incremental rebuild AST-quick-scanned a semantic-backed doc (#1915)"
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [[Path("guide.md")], [Path("guide.md"), Path("app.py")]],
+    ids=["doc-only", "doc-plus-code"],
+)
+def test_rebuild_code_incremental_preserves_concept_only_semantic_doc_nodes_and_edges(
+    tmp_path, changed
+):
+    """#1954: incremental analogue — a concept/rationale-only semantic doc
+    must not lose its nodes/edges nor get AST-quick-scanned on an incremental
+    rebuild, mirroring the #1915 doc-node case above."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    graph_path = _seed_semantic_doc_graph_concept_only(corpus)
+
+    assert _rebuild_code(
+        corpus, changed_paths=changed, no_cluster=True, acquire_lock=False
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_ids = {n["id"] for n in after["nodes"]}
+    assert _CONCEPT_ONLY_GUIDE_IDS <= after_ids, (
+        "concept-only semantic doc nodes wiped by an incremental rebuild"
+    )
+    relations = {
+        (e.get("source"), e.get("target"), e.get("relation"))
+        for e in after["links"]
+    }
+    assert ("auth_flow", "session_model", "explains") in relations, (
+        "concept-only semantic doc edge dropped by an incremental rebuild"
+    )
+    assert any(
+        src == "auth_flow" and rel == "implemented_by"
+        for src, _tgt, rel in relations
+    ), "doc-to-code semantic edge dropped by an incremental rebuild"
+    assert not (_AST_GUIDE_IDS & after_ids), (
+        "incremental rebuild AST-quick-scanned a concept-only semantic-backed doc (#1954)"
     )
 
 
