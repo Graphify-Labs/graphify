@@ -329,6 +329,33 @@ def test_checkpoint_scopes_cache_writes_to_chunk_files(tmp_path):
     assert a_cache and any(n["id"] == "a_ok" for n in a_cache["nodes"])
 
 
+def test_truncated_chunk_is_cached_partial_and_missed_on_reload(tmp_path):
+    """A single-file chunk that stays truncated is checkpointed as a PARTIAL
+    entry, so reloading it is a cache miss (the file re-dispatches next run)
+    instead of serving the incomplete node set forever."""
+    from graphify.llm import extract_corpus_parallel, _extraction_system
+    from graphify.cache import load_cached
+
+    doc = tmp_path / "doc.md"; doc.write_text("# Heading\nlots of prose\n")
+
+    def truncated(chunk, **kwargs):
+        return {
+            "nodes": [{"id": "n1", "source_file": "doc.md", "file_type": "document"}],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 1, "output_tokens": 1,
+            "finish_reason": "length",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=truncated):
+        extract_corpus_parallel(
+            [doc], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+        )
+
+    # The entry was written but stamped partial, so load_cached rejects it.
+    assert load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system()) is None
+
+
 def test_checkpoint_writes_deep_namespace_in_deep_mode(tmp_path):
     """#1894: the per-chunk checkpoint must follow the run's mode — a
     deep_mode=True run checkpoints into cache/semantic-deep/, leaving the
@@ -710,6 +737,68 @@ def test_adaptive_retry_single_file_truncation_does_not_recurse(tmp_path, capsys
     assert calls == [1], f"single-file chunk recursed; calls = {calls}"
     err = capsys.readouterr().err
     assert "single-file chunk" in err and "truncated" in err
+
+
+def test_adaptive_retry_marks_single_file_truncation_partial(tmp_path):
+    """A non-splittable single-file truncation keeps its partial result but
+    marks every item ``_partial`` so it is not cached as complete."""
+    from graphify.llm import _extract_with_adaptive_retry
+
+    f = tmp_path / "huge.py"; f.write_text("x")
+
+    def stub(chunk, **kwargs):
+        return _stub_with_finish(len(chunk), finish_reason="length")
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        result = _extract_with_adaptive_retry(
+            [f], backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    assert result["nodes"], "the partial result should still be returned"
+    assert all(n.get("_partial") for n in result["nodes"])
+
+
+def test_adaptive_retry_marks_max_depth_giveup_partial(tmp_path):
+    """When recursion caps at max_depth with everything still truncated, the
+    merged partial result is marked ``_partial`` on every item."""
+    from graphify.llm import _extract_with_adaptive_retry
+
+    files = [tmp_path / f"f{i}.py" for i in range(8)]
+    for f in files:
+        f.write_text("x")
+
+    def stub(chunk, **kwargs):
+        return _stub_with_finish(len(chunk), finish_reason="length")
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        result = _extract_with_adaptive_retry(
+            files, backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=2
+        )
+
+    assert result["nodes"]
+    assert all(n.get("_partial") for n in result["nodes"])
+
+
+def test_adaptive_retry_successful_split_is_not_marked_partial(tmp_path):
+    """A truncation that IS recovered by splitting yields a complete result —
+    it must NOT carry the partial marker."""
+    from graphify.llm import _extract_with_adaptive_retry
+
+    files = [tmp_path / f"f{i}.py" for i in range(4)]
+    for f in files:
+        f.write_text("x")
+
+    def stub(chunk, **kwargs):
+        finish = "length" if len(chunk) == 4 else "stop"
+        return _stub_with_finish(len(chunk), finish_reason=finish)
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        result = _extract_with_adaptive_retry(
+            files, backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    assert result["nodes"]
+    assert not any(n.get("_partial") for n in result["nodes"])
 
 
 def test_corpus_parallel_uses_adaptive_retry(tmp_path):

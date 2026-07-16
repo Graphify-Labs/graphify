@@ -1636,6 +1636,50 @@ def _looks_like_context_exceeded(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CONTEXT_EXCEEDED_MARKERS)
 
 
+def _mark_partial(result: dict) -> None:
+    """Tag every node/edge/hyperedge in a truncated chunk result with an internal
+    ``_partial`` marker.
+
+    A chunk whose LLM response was truncated (`finish_reason="length"`) and could
+    not be recovered by splitting yields a PARTIAL node set. Left unmarked, that
+    set is checkpointed and (via the final save) written to the content-hash
+    semantic cache as authoritative, so it is served forever until the file
+    content changes or ``--force``. The marker rides these item dicts up through
+    every chunk merge (which concatenate the same object references) so it reaches
+    ``save_semantic_cache`` on both the checkpoint and the final-save paths, which
+    stamp the entry ``partial: True``; ``load_cached`` then treats it as a miss.
+    """
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in result.get(bucket, []):
+            if isinstance(item, dict):
+                item["_partial"] = True
+
+
+def _partial_source_files(result: dict) -> list[str]:
+    """Source files that carry at least one ``_partial`` item in ``result``."""
+    seen: set[str] = set()
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in result.get(bucket, []):
+            if isinstance(item, dict) and item.get("_partial"):
+                sf = item.get("source_file")
+                if sf:
+                    seen.add(str(sf))
+    return sorted(seen)
+
+
+def _strip_partial_markers(result: dict) -> None:
+    """Remove the internal ``_partial`` marker from every item in ``result``.
+
+    Call this only AFTER the semantic cache has been saved (the save consumes the
+    marker to stamp affected entries ``partial: True``). Stripping it keeps the
+    internal flag out of the graph.json nodes/edges the corpus result feeds into.
+    """
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in result.get(bucket, []):
+            if isinstance(item, dict):
+                item.pop("_partial", None)
+
+
 def _extract_with_adaptive_retry(
     chunk: list[Path],
     backend: str,
@@ -1769,17 +1813,25 @@ def _extract_with_adaptive_retry(
             return _merge_two([halves[0]], [halves[1]])
         print(
             f"[graphify] single-file chunk {unit_path(chunk[0])} truncated at "
-            f"max_completion_tokens — partial result kept",
+            f"max_completion_tokens — partial result kept (not cached as complete)",
             file=sys.stderr,
         )
+        # The node set is incomplete; mark it so it is not promoted to the
+        # semantic cache as authoritative and is re-dispatched next run.
+        _mark_partial(result)
         return result
 
     if _depth >= max_depth:
         print(
             f"[graphify] chunk of {len(chunk)} still truncated at recursion "
-            f"depth {_depth} (max {max_depth}) — partial result kept",
+            f"depth {_depth} (max {max_depth}) — partial result kept (not cached as complete)",
             file=sys.stderr,
         )
+        # Conservative: this marks every file in the merged chunk partial, even
+        # ones that finished cleanly during recursion. Over-marking only costs a
+        # re-extraction next run; under-marking would serve a truncated file as
+        # complete, so err toward re-extraction.
+        _mark_partial(result)
         return result
 
     print(
@@ -1939,6 +1991,10 @@ def extract_corpus_parallel(
                 # that changes _EXTRACTION_SYSTEM re-extracts instead of replaying
                 # this vintage forever (#1939).
                 prompt=_extraction_system(deep=deep_mode),
+                # A truncated/partial chunk must not be checkpointed as
+                # authoritative: pass the partial file set so its entry is
+                # stamped ``partial: True`` and re-dispatched next run.
+                partial_source_files=_partial_source_files(result) or None,
             )
         except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
             print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)

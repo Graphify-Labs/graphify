@@ -58,11 +58,18 @@ def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
     root: Path,
+    partial_source_files: "set[str] | None" = None,
 ) -> dict[str, list[str]]:
     """Manifest-safe files dict: only stamp semantic files that actually
     produced output (cache hit or fresh extraction). Files whose chunk failed
     have no source_file entry in sem_result — leaving their semantic_hash
     empty so detect_incremental re-queues them (#933).
+
+    A file in ``partial_source_files`` DID produce output this run, but only a
+    truncated fragment of it, so it is excluded from stamping too — otherwise
+    detect_incremental would see it "done" and never re-dispatch it, leaving the
+    incomplete node set live forever on the warm-incremental path. Same #933
+    mechanism: leave it unstamped and it is re-queued next run.
 
     Both sides of the membership test are resolved against the scan ``root``
     before comparing (#1897): node/edge/hyperedge ``source_file`` values are
@@ -95,11 +102,13 @@ def _stamped_manifest_files(
             sf = item.get("source_file", "")
             if sf:
                 sem_extracted.add(_resolve(sf))
+    partial_resolved = {_resolve(p) for p in (partial_source_files or set())}
     sem_types = {"document", "paper", "image"}
     return {
         ftype: [
             f for f in flist
-            if ftype not in sem_types or _resolve(f) in sem_extracted
+            if ftype not in sem_types
+            or (_resolve(f) in sem_extracted and _resolve(f) not in partial_resolved)
         ]
         for ftype, flist in files_by_type.items()
     }
@@ -2548,6 +2557,11 @@ def dispatch_command(cmd: str) -> None:
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
         }
+        # Semantic files whose extraction truncated this run. They are left
+        # unstamped in the manifest so detect_incremental re-queues them next run
+        # (mirrors the #933 failed-chunk handling); captured below before the
+        # _partial markers are stripped from the corpus.
+        _partial_semantic_files: set[str] = set()
         sem_cache_hits = 0
         sem_cache_misses = 0
         # Deep mode uses its own namespace (cache/semantic-deep/) so deep and
@@ -2647,6 +2661,17 @@ def dispatch_command(cmd: str) -> None:
                     )
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write semantic cache: {exc}", file=sys.stderr)
+                # Record which files truncated (before the markers are stripped)
+                # so they are left unstamped in the manifest and re-queued on the
+                # next incremental run. The save above consumed the marker to
+                # stamp affected cache entries partial: True; strip it before the
+                # corpus feeds the graph so it never leaks into graph.json.
+                from graphify.llm import (
+                    _partial_source_files as _partial_sf,
+                    _strip_partial_markers as _strip_partial,
+                )
+                _partial_semantic_files = set(_partial_sf(fresh))
+                _strip_partial(fresh)
                 sem_result["nodes"].extend(fresh.get("nodes", []))
                 sem_result["edges"].extend(fresh.get("edges", []))
                 sem_result["hyperedges"].extend(fresh.get("hyperedges", []))
@@ -2726,7 +2751,8 @@ def dispatch_command(cmd: str) -> None:
         # Path normalization against the scan root happens inside the helper
         # (#1897) so fresh root-relative source_files match detect()'s
         # absolute file lists.
-        _manifest_files = _stamped_manifest_files(files_by_type, sem_result, target)
+        _manifest_files = _stamped_manifest_files(files_by_type, sem_result, target,
+                                                   partial_source_files=_partial_semantic_files)
 
         # Full-scan manifest saves prune rows for in-root files that left the
         # scan corpus but still exist on disk (#1908). The corpus must be the
