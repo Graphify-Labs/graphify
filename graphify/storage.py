@@ -398,13 +398,17 @@ def ingest_communities(
     # Uses neug's primary-key index on n.id for O(log N) lookup per node.
     # CASE WHEN is O(N*M) — too slow for large graphs (28K nodes = 63s).
     # Parameterized SET with index lookup: ~27K queries × O(log N) ≈ 2-3s.
+    # For symbol-level nodes (label='node'), IDs are normalized during graph
+    # building, so we must normalize again to match.  For file-level TempFile
+    # nodes, IDs are raw file paths — _normalize_id would corrupt them.
+    normalize = node_label == "node"
     comm_map: dict[str, int] = {}
     for cid, node_ids in communities.items():
         cid_int = int(cid)
         for nid in node_ids:
-            nid_norm = _normalize_id(nid)
-            if nid_norm:
-                comm_map[nid_norm] = cid_int
+            nid_key = _normalize_id(nid) if normalize else nid
+            if nid_key:
+                comm_map[nid_key] = cid_int
 
     for nid, cid in comm_map.items():
         conn.execute(
