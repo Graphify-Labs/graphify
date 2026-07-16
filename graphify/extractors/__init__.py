@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from graphify.extractors.apex import extract_apex
+from graphify.extractors.advpl import extract_advpl
 from graphify.extractors.bash import extract_bash
 from graphify.extractors.blade import extract_blade
 from graphify.extractors.dart import extract_dart
@@ -34,6 +35,7 @@ from graphify.extractors.verilog import extract_verilog
 from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
+    "advpl": extract_advpl,
     "apex": extract_apex,
     "bash": extract_bash,
     "blade": extract_blade,

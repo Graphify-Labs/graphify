@@ -338,3 +338,34 @@ def test_update_prunes_a_removed_imports_edge(tmp_path):
              if e.get("relation") in ("imports", "imports_from")
              and str(e.get("source_file", "")).endswith("a.py")]
     assert not stale, f"removed import's edge survived update (stale): {stale}"
+
+
+def test_advpl_update_replaces_changed_symbols(tmp_path):
+    project = tmp_path / "advpl-project"
+    project.mkdir()
+    source = project / "main.prw"
+    header = project / "common.ch"
+    source.write_text(
+        '#include "common.ch"\nUser Function BeforeChange()\nReturn HeaderValue()\n',
+        encoding="utf-8",
+    )
+    header.write_text("Function HeaderValue()\nReturn 1\n", encoding="utf-8")
+
+    first = _run(["extract", str(project), "--no-cluster"], tmp_path)
+    assert first.returncode == 0, first.stderr
+    graph_path = project / "graphify-out" / "graph.json"
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert "BeforeChange()" in {node["label"] for node in before["nodes"]}
+
+    source.write_text(
+        '#include "common.ch"\nUser Function AfterChange()\nReturn HeaderValue()\n',
+        encoding="utf-8",
+    )
+    second = _run(["update", str(project), "--no-cluster"], tmp_path)
+    assert second.returncode == 0, second.stderr
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    labels = {node["label"] for node in after["nodes"]}
+
+    assert "AfterChange()" in labels
+    assert "BeforeChange()" not in labels
+    assert "common.ch" in labels

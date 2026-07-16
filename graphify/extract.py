@@ -32,6 +32,7 @@ from graphify.extractors.base import (  # noqa: F401
     _read_text,
 )
 from graphify.extractors.apex import extract_apex  # noqa: F401
+from graphify.extractors.advpl import extract_advpl  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.csharp import (
@@ -1981,6 +1982,7 @@ def _canonicalize_csharp_namespace_nodes(all_nodes: list[dict], all_edges: list[
 # may fold case. Everywhere else, case is semantic (`Path` the class vs `PATH` the
 # env var are distinct) and folding manufactures false edges / super-hubs (#1581).
 _CASE_INSENSITIVE_EXTS = frozenset({
+    ".prw", ".tlpp", ".ch", ".th",                              # AdvPL / TLPP
     ".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps",  # PHP fns/classes
     ".sql",                                                          # SQL identifiers
     ".nim", ".nims", ".nimble",                                      # Nim (style-insensitive)
@@ -2028,6 +2030,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
     ".dart": "dart",
+    ".prw": "advpl", ".tlpp": "advpl", ".ch": "advpl", ".th": "advpl",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
 }
@@ -4767,6 +4770,10 @@ def extract_xaml(path: Path) -> dict:
 
 
 _DISPATCH: dict[str, Any] = {
+    ".prw": extract_advpl,
+    ".tlpp": extract_advpl,
+    ".ch": extract_advpl,
+    ".th": extract_advpl,
     ".py": extract_python,
     ".js": extract_js,
     ".jsx": extract_js,
@@ -6129,6 +6136,7 @@ def extract(
             n for n in resolution_context_nodes
             if n.get("id") and n["id"] not in _fresh_ids
         ]
+    file_local_nids = {n["id"] for n in resolution_nodes if n.get("_file_local")}
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
@@ -6302,6 +6310,13 @@ def extract(
             if not candidates:
                 continue
             go_exact_import = True
+        candidates = [
+            c for c in candidates
+            if c not in file_local_nids
+            or nid_to_source_file.get(c) == str(rc.get("source_file", ""))
+        ]
+        if not candidates:
+            continue
         caller = rc["caller_nid"]
         # Resolve the caller's file via the raw_call's own source_file string,
         # which is stable regardless of any caller_nid remap. An indirect
@@ -6323,6 +6338,7 @@ def extract(
             candidate_file_nid = nid_to_file_nid.get(candidate_id)
             return (
                 candidate_id in imported_symbols
+                or (candidate_file_nid is not None and candidate_file_nid in imported_symbols)
                 or (candidate_file_nid is not None and candidate_file_nid in imported_modules)
             )
 
@@ -6337,7 +6353,10 @@ def extract(
             # matches only when they too collapse to a single target. Without a
             # unique evidence-backed pick we skip, preserving the #543 guard
             # against over-connecting common short names (log, execute, find).
-            symbol_matches = [c for c in candidates if c in imported_symbols]
+            symbol_matches = [
+                c for c in candidates
+                if c in imported_symbols or nid_to_file_nid.get(c) in imported_symbols
+            ]
             if len(symbol_matches) == 1:
                 tgt = symbol_matches[0]
                 has_import_evidence = True
@@ -6574,6 +6593,7 @@ def extract(
     # cache keeps its own copy, which is what the colliding-id pass reads on a cache hit.
     for n in all_nodes:
         n.pop("origin_file", None)
+        n.pop("_file_local", None)
     # `_callable` / `_callable_class` are deliberately NOT popped (#2438): they
     # persist into graph.json — the same underscore-provenance precedent as
     # `_origin` below — so an incremental rebuild can hand them back as
