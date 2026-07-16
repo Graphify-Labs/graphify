@@ -507,6 +507,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `AWS_*` / `~/.aws/credentials` | AWS Bedrock — standard credential chain | `--backend bedrock` (no API key, uses IAM) |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
+| `GRAPHIFY_FILE_CHAR_CAP` | Per-file input cap and slice size for oversized documents | optional — default `20000`; e.g. `60000` for fewer, larger slices |
 | `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, and Anthropic SDK backends (default: 600) | optional — also `--api-timeout` flag |
 | `GRAPHIFY_MAX_RETRIES` | How many times to retry a rate-limited (429) request before giving up (default: 6; honors `Retry-After`) | optional — raise for strict per-org limits (e.g. kimi); `0` disables |
 | `GRAPHIFY_FORCE` | Force graph rebuild even with fewer nodes | optional — also `--force` flag |
@@ -718,6 +719,7 @@ graphify extract ./docs --force                # overwrite graph.json even if ne
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
 graphify extract ./docs --global --as myrepo   # extract and register into the cross-project global graph
 GRAPHIFY_MAX_OUTPUT_TOKENS=32768 graphify extract ./docs --backend claude  # raise output cap for dense corpora
+GRAPHIFY_FILE_CHAR_CAP=60000 graphify extract ./docs --backend claude      # 60k chars per file/slice (fewer, larger slices)
 
 graphify export callflow-html                       # graphify-out/<project>-callflow.html
 graphify export callflow-html --max-sections 8      # cap generated architecture sections

@@ -273,6 +273,19 @@ def _resolve_max_tokens(default: int) -> int:
     return default
 
 
+def _resolve_file_char_cap(default: int = _FILE_CHAR_CAP) -> int:
+    """Honour GRAPHIFY_FILE_CHAR_CAP env var override, else use default."""
+    raw = os.environ.get("GRAPHIFY_FILE_CHAR_CAP", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return default
+
+
 # Model-name fragments for OpenAI-compatible "reasoning" models that reject an
 # explicit temperature: the API returns 400 "Unsupported value: 'temperature'
 # does not support 0 with this model. Only the default (1) value is supported."
@@ -532,6 +545,7 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
     source_file and the graph isn't fragmented per-slice.
     """
     parts: list[str] = []
+    file_char_cap = _resolve_file_char_cap()
     for u in units:
         p = unit_path(u)
         safe_path = _resolve_under_root(p, root)
@@ -551,7 +565,7 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
             continue
         # Whole files are still capped (covers non-splittable large files like
         # code); slices are already bounded to the cap, so the cap is a no-op.
-        parts.append(_wrap_untrusted(rel, content[:_FILE_CHAR_CAP]))
+        parts.append(_wrap_untrusted(rel, content[:file_char_cap]))
     return "\n\n".join(parts)
 
 
@@ -1526,17 +1540,19 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
     """Estimate the prompt-token cost of a file or slice under `_read_files` rules.
 
     Uses tiktoken (`cl100k_base`) when available for accurate counts. Falls back
-    to the chars/4 heuristic if tiktoken is not installed. Both paths cap at
-    `_FILE_CHAR_CAP` to match `_read_files`'s truncation, plus a constant for
-    the wrapper. Returns 0 for unreadable paths so they don't blow up packing.
+    to the chars/4 heuristic if tiktoken is not installed. Both paths use the
+    resolved file-character cap to match `_read_files`'s truncation, plus a
+    constant for the wrapper. Returns 0 for unreadable paths so they don't
+    blow up packing.
     """
+    file_char_cap = _resolve_file_char_cap()
     if isinstance(unit, FileSlice):
-        # A slice's size is its char range (already ≤ _FILE_CHAR_CAP). Use the
+        # A slice's size is its char range (already ≤ the resolved cap). Use the
         # tokenizer on its text when available, else the chars/4 heuristic.
         if _TOKENIZER is None:
-            return (min(unit.end - unit.start, _FILE_CHAR_CAP) + _PER_FILE_OVERHEAD_CHARS) // _CHARS_PER_TOKEN
+            return (min(unit.end - unit.start, file_char_cap) + _PER_FILE_OVERHEAD_CHARS) // _CHARS_PER_TOKEN
         try:
-            content = read_slice_text(unit)[:_FILE_CHAR_CAP]
+            content = read_slice_text(unit)[:file_char_cap]
         except OSError:
             return 0
         return len(_TOKENIZER.encode(content, disallowed_special=())) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
@@ -1551,11 +1567,11 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
             size = path.stat().st_size
         except OSError:
             return 0
-        chars = min(size, _FILE_CHAR_CAP) + _PER_FILE_OVERHEAD_CHARS
+        chars = min(size, file_char_cap) + _PER_FILE_OVERHEAD_CHARS
         return chars // _CHARS_PER_TOKEN
 
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
+        content = path.read_text(encoding="utf-8", errors="replace")[:file_char_cap]
     except OSError:
         return 0
     return len(_TOKENIZER.encode(content, disallowed_special=())) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
@@ -1862,9 +1878,12 @@ def extract_corpus_parallel(
     """
     files = [f if isinstance(f, (Path, FileSlice)) else Path(f) for f in files]
     # Split oversized splittable documents into slices that cover the whole file
-    # before packing, so content past _FILE_CHAR_CAP is extracted instead of
+    # before packing, so content past the per-file cap is extracted instead of
     # silently dropped (#1369). Files at/under the cap pass through unchanged.
-    files = expand_oversized_files(files, _FILE_CHAR_CAP)
+    # The cap doubles as the slice size, so GRAPHIFY_FILE_CHAR_CAP trades
+    # fewer, larger slices (more intra-document context per call) for bigger
+    # per-call prompts.
+    files = expand_oversized_files(files, _resolve_file_char_cap())
     if token_budget is not None:
         chunks = _pack_chunks_by_tokens(files, token_budget=token_budget)
     else:
