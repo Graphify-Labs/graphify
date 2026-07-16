@@ -246,7 +246,8 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
         data["hyperedges"] = kept_hyper
     from graphify.export import backup_if_protected as _backup
     _backup(graph_path.parent)
-    graph_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    from graphify.paths import write_json_atomic
+    write_json_atomic(graph_path, data, indent=2)
     return n_removed
 
 
@@ -1615,7 +1616,8 @@ def dispatch_command(cmd: str) -> None:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
             out_data = _jg.node_link_data(merged)
-        Path(_current_path).write_text(json.dumps(out_data, indent=2), encoding="utf-8")
+        from graphify.paths import write_json_atomic
+        write_json_atomic(_current_path, out_data, indent=2)
         sys.exit(0)
 
     elif cmd == "merge-graphs":

@@ -1597,8 +1597,10 @@ def save_manifest(
         # their absolute form so the manifest round-trips on the saving
         # machine even when not every entry can be portably encoded.
         manifest = {_to_relative_for_storage(k, root): v for k, v in manifest.items()}
-    Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(manifest_path).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    from graphify.paths import write_json_atomic
+    # Atomic write: a crash mid-write must not leave a truncated manifest that
+    # detect_incremental then fails to parse.
+    write_json_atomic(manifest_path, manifest, indent=2)
 
 
 def detect_incremental(

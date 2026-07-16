@@ -16,11 +16,80 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import stat
+import tempfile
 from pathlib import Path, PurePosixPath
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+
+def _atomic_replace(path: "str | Path", write_fn) -> None:
+    """Atomically replace ``path`` with content written by ``write_fn(f)``.
+
+    Writes a temp file in the SAME directory, then ``os.replace``s it into place
+    (an atomic rename on one filesystem). A process kill (SIGKILL/Ctrl-C), OOM, or
+    ENOSPC mid-write leaves the previous file intact — the destination is
+    untouched until the rename. This is NOT a power-loss durability guarantee:
+    there is no fsync (matching the rest of the codebase), so an OS/hardware crash
+    right after the rename can still expose unflushed bytes on some filesystems.
+    The temp file is removed if the write fails.
+
+    A symlinked destination is resolved first so the write goes THROUGH the link
+    to its target (rather than replacing the link with a regular file), keeping
+    the shared-output/worktree symlink setups this module documents working.
+    """
+    # Resolve symlinks so the temp lands on the target's filesystem (same-fs
+    # atomic rename) and the replace writes through the link, not over it.
+    real = Path(os.path.realpath(str(path)))
+    real.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(real.parent), prefix=f".{real.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            write_fn(f)
+        # mkstemp creates the temp file 0600; match the destination's existing
+        # mode (or the umask default for a new file) so an atomic replace never
+        # silently tightens a previously group/world-readable output to
+        # owner-only. Best-effort — a chmod failure must not fail the write.
+        try:
+            mode = stat.S_IMODE(os.stat(real).st_mode)
+        except OSError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass
+        try:
+            os.replace(tmp, str(real))
+        except PermissionError:
+            # Windows: os.replace fails (WinError 5/32) when the destination is
+            # briefly locked by another handle (antivirus, an open reader). Fall
+            # back to copy-then-delete, matching graphify.cache's atomic writer.
+            import shutil
+            shutil.copy2(tmp, str(real))
+            os.unlink(tmp)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_text_atomic(path: "str | Path", text: str) -> None:
+    """Atomically write ``text`` (UTF-8) to ``path``. See :func:`_atomic_replace`."""
+    _atomic_replace(path, lambda f: f.write(text))
+
+
+def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None) -> None:
+    """Atomically write ``obj`` as JSON to ``path``, streaming the encode into the
+    temp file rather than materializing the whole string first (matters for very
+    large graphs). See :func:`_atomic_replace`."""
+    _atomic_replace(path, lambda f: json.dump(obj, f, indent=indent))
 
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw
