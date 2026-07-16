@@ -392,6 +392,12 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "pi",
     },
+    "omp": {
+        "skill_file": "skill-agents.md",
+        "skill_dst": Path(".agents") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "agents",
+    },
     "codebuddy": {
         # Reuses claude's split bundle (shares skill.md).
         "skill_file": "skill.md",
@@ -607,6 +613,10 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
 
     if platform == "opencode":
         _install_opencode_plugin(project_dir if project else Path("."))
+
+    if platform == "omp":
+        _omp_install(project_dir, project=project)
+        return
 
     # Refresh version stamps in all other previously-installed skill dirs so
     # stale-version warnings don't fire for platforms not explicitly re-installed.
@@ -1285,6 +1295,130 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
             config.pop("plugin")
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
         print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin deregistered")
+
+# OMP (Oh My Pi) extension — loaded by the OMP extension runner as a native
+# extension module. It listens to tool_result events and prepends a graphify
+# nudge to grep/search/read/glob results when a knowledge graph exists.
+_OMP_EXTENSION_TS = r"""import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+
+const GRAPH_PATH = "graphify-out/graph.json";
+
+const SEARCH_NUDGE =
+  'graphify: graphify-out/graph.json exists. For focused questions, run graphify query "<question>" before grepping raw files. Only grep after graphify has oriented you, or to modify/debug specific lines.';
+const READ_NUDGE =
+  'graphify: graphify-out/graph.json exists. For focused questions, run graphify query/explain/path before reading source files. Only read raw files after graphify has oriented you, or to modify/debug specific lines.';
+
+const SOURCE_EXTS = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+  ".py", ".go", ".rs", ".java", ".kt", ".scala",
+  ".c", ".cpp", ".h", ".hpp", ".cs", ".rb",
+  ".swift", ".php", ".sh", ".bash", ".zsh",
+  ".md", ".json", ".yaml", ".yml", ".toml",
+]);
+
+function isUnderGraphifyOut(path: string): boolean {
+  return path.toLowerCase().includes("graphify-out/");
+}
+
+function isSourceFile(path: string): boolean {
+  const lower = path.toLowerCase();
+  if (isUnderGraphifyOut(lower)) return false;
+  const dot = lower.lastIndexOf(".");
+  if (dot === -1) return false;
+  return SOURCE_EXTS.has(lower.slice(dot));
+}
+
+export default function graphifyOmp(pi: ExtensionAPI): void {
+  pi.setLabel("graphify guard");
+
+  pi.on("tool_result", async (event, ctx) => {
+    const graphPath = resolve(ctx.cwd, GRAPH_PATH);
+    if (!existsSync(graphPath)) return;
+
+    let nudge = "";
+    if (event.toolName === "bash") {
+      const cmd = String(event.input?.command ?? "");
+      if (/\b(grep|ripgrep|rg |find |fd |ack |ag )\b/.test(cmd)) {
+        nudge = SEARCH_NUDGE;
+      }
+    } else if (event.toolName === "read" || event.toolName === "glob") {
+      const input = (event.input ?? {}) as any;
+      const path = String(input.path ?? input.file_path ?? input.pattern ?? "");
+      if (isSourceFile(path)) {
+        nudge = READ_NUDGE;
+      }
+    }
+
+    if (!nudge) return;
+
+    const content = [{ type: "text", text: nudge }, ...(event.content ?? [])];
+    return { content };
+  });
+}
+"""
+
+_OMP_EXTENSION_PATH = Path(".omp") / "agent" / "extensions" / "graphify.ts"
+_OMP_PROJECT_EXTENSION_PATH = Path(".omp") / "extensions" / "graphify.ts"
+
+
+def _install_omp_extension(project_dir: Path | None = None, *, project: bool = False) -> None:
+    """Write graphify OMP extension to the native extension directory.
+
+    OMP auto-discovers extensions from ~/.omp/agent/extensions (user scope) and
+    <cwd>/.omp/extensions (project scope), so no settings registration is needed.
+    """
+    if project:
+        ext_path = (project_dir or Path(".")) / _OMP_PROJECT_EXTENSION_PATH
+    else:
+        ext_path = Path.home() / _OMP_EXTENSION_PATH
+    ext_path.parent.mkdir(parents=True, exist_ok=True)
+    ext_path.write_text(_OMP_EXTENSION_TS, encoding="utf-8")
+    print(f"  {ext_path}  ->  OMP extension written")
+
+
+def _uninstall_omp_extension(project_dir: Path | None = None, *, project: bool = False) -> None:
+    """Remove graphify OMP extension from the native extension directory."""
+    if project:
+        ext_path = (project_dir or Path(".")) / _OMP_PROJECT_EXTENSION_PATH
+    else:
+        ext_path = Path.home() / _OMP_EXTENSION_PATH
+    if ext_path.exists():
+        ext_path.unlink()
+        print(f"  {ext_path}  ->  removed")
+
+
+def _omp_install(project_dir: Path | None = None, *, project: bool = False) -> None:
+    """Install graphify skill and OMP extension."""
+    skill_dst = _copy_skill_file("omp", project=project, project_dir=project_dir)
+    _install_omp_extension(project_dir, project=project)
+    if project:
+        _agents_install(project_dir or Path("."), "omp")
+        _print_project_git_add_hint(
+            [
+                _project_scope_root(skill_dst, project_dir or Path(".")),
+                (project_dir or Path(".")) / ".omp",
+                (project_dir or Path(".")) / "AGENTS.md",
+            ]
+        )
+    else:
+        _refresh_all_version_stamps()
+        print()
+        print("Oh My Pi (OMP) will now check the knowledge graph before answering")
+        print("codebase questions and rebuild it after code changes.")
+
+
+def _omp_uninstall(project_dir: Path | None = None, *, project: bool = False) -> None:
+    """Remove graphify skill and OMP extension."""
+    removed = _remove_skill_file("omp", project=project, project_dir=project_dir)
+    _uninstall_omp_extension(project_dir, project=project)
+    if project:
+        _agents_uninstall(project_dir or Path("."), "omp")
+    if not removed:
+        print("nothing to remove")
+
+
 def _resolve_graphify_exe() -> str:
     """Return the absolute path to the graphify executable.
 
@@ -1373,11 +1507,12 @@ def _agents_install(project_dir: Path, platform: str) -> None:
         _install_kilo_plugin(project_dir or Path("."))
 
     print()
+    display_name = "Oh My Pi (OMP)" if platform == "omp" else platform.capitalize()
     print(
-        f"{platform.capitalize()} will now check the knowledge graph before answering"
+        f"{display_name} will now check the knowledge graph before answering"
     )
     print("codebase questions and rebuild it after code changes.")
-    if platform not in ("codex", "opencode", "kilo"):
+    if platform not in ("codex", "opencode", "kilo", "omp"):
         print()
         print("Note: unlike Claude Code, there is no PreToolUse hook equivalent for")
         print(
@@ -1497,6 +1632,8 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         if not removed:
             print("nothing to remove")
+    elif platform_name == "omp":
+        _omp_uninstall(project_dir, project=True)
     elif platform_name == "codebuddy":
         codebuddy_uninstall(project_dir)
     else:
@@ -1679,6 +1816,9 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     _remove_skill_file("agents")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
+    _uninstall_omp_extension(pd, project=True)
+    _uninstall_omp_extension(pd, project=False)
+    _remove_skill_file("omp")
 
     # Git hook
     try:
@@ -1872,6 +2012,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "kilo",
     "kiro",
     "opencode",
+    "omp",
     "pi",
     "skills",
     "trae",
@@ -2067,6 +2208,21 @@ def dispatch_install_cli(cmd: str) -> bool:
                 print("skill removed" if removed else "nothing to remove")
         else:
             print("Usage: graphify devin [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "omp":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _omp_install(Path("."), project=True)
+            else:
+                _omp_install(project=False)
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _omp_uninstall(Path("."), project=True)
+            else:
+                _omp_uninstall(project=False)
+        else:
+            print("Usage: graphify omp [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "pi":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

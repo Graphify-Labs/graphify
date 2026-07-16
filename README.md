@@ -221,6 +221,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify install --platform pi` |
+| Oh My Pi (OMP) | `graphify omp install` |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -291,12 +292,13 @@ Run this once in your project after building a graph:
 | Agent Skills (cross-framework) | `graphify agents install` (alias `graphify skills install`) |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify pi install` |
+| Oh My Pi (OMP) | `graphify omp install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
 This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions, preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files.
 
-- **Hook platforms** (Claude Code, Gemini CLI): a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path.
+- **Hook platforms** (Claude Code, Gemini CLI, Oh My Pi): a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path.
 - **Instruction-file platforms** (Codex, OpenCode, Cursor, etc.): persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance.
 
 `GRAPH_REPORT.md` is still available for broad architecture review.
@@ -688,6 +690,8 @@ graphify kiro install               # .kiro/skills/ + .kiro/steering/graphify.md
 graphify kiro uninstall
 graphify pi install                # skill file (Pi coding agent)
 graphify pi uninstall
+graphify omp install               # skill file + OMP extension (Oh My Pi)
+graphify omp uninstall
 graphify devin install             # skill file + .windsurf/rules/graphify.md (Devin CLI)
 graphify devin uninstall
 graphify antigravity install       # .agents/rules + .agents/workflows (Google Antigravity)
