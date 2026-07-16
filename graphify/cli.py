@@ -3040,11 +3040,23 @@ def dispatch_command(cmd: str) -> None:
             chunk_files.extend(sorted(expanded) if expanded else [arg])
         merged: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
         seen_ids: set[str] = set()
+        # These chunk files are untrusted subagent output. load_validated_...
+        # stats the file size BEFORE reading it (so a multi-GB chunk can't blow up
+        # memory), parses the JSON, and validates the security caps + the node/
+        # edge id charset that blocks path traversal (#825) — the same enforcement
+        # the skill merge path applies. A bad chunk is skipped with a warning
+        # (filter semantics; never abort). Deliberately NOT wired into
+        # build_from_json/load_graph_json, which must keep loading valid
+        # pre-existing graphs. file_type is left to build's coercion (#840).
+        from graphify.semantic_cleanup import load_validated_semantic_fragment
         for cf in chunk_files:
-            try:
-                chunk = json.loads(Path(cf).read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as exc:
-                print(f"[graphify merge-chunks] warning: skipping {cf}: {exc}", file=sys.stderr)
+            chunk, _chunk_errs = load_validated_semantic_fragment(Path(cf))
+            if _chunk_errs:
+                print(
+                    f"[graphify merge-chunks] warning: skipping invalid chunk {cf}: "
+                    f"{'; '.join(_chunk_errs[:3])}",
+                    file=sys.stderr,
+                )
                 continue
             for n in chunk.get("nodes", []):
                 if n.get("id") not in seen_ids:
