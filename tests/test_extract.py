@@ -987,6 +987,48 @@ def test_degenerate_symbol_name_does_not_leak_absolute_id(tmp_path):
     assert "$()" not in labels, "the degenerate `$` symbol must be dropped (#1899)"
 
 
+def test_out_of_tree_cache_root_keeps_source_file_relative_to_scan_root(tmp_path):
+    """#1941: `--out <far-away-dir>` must not basename every in-root node.
+
+    The CLI passes cache_root=<out dir> to relocate the cache, but that value also
+    anchored relativization, so every scanned file failed `relative_to(root)`, fell
+    into `_portable_out_of_root_sf`, tripped the `updepth > 3` walk-up guard meant
+    for stray out-of-root ProjectReferences, and collapsed to a bare basename.
+    An explicit `root=` anchors ids/source_file on the SCAN root regardless of
+    where the cache lives.
+    """
+    scan_root = tmp_path / "corpus"
+    nested = scan_root / "src" / "Data" / "Database" / "RepositoryTests"
+    nested.mkdir(parents=True)
+    (nested / "order_repository_tests.py").write_text(
+        "class OrderRepositoryTests:\n    def test_get(self):\n        return 1\n",
+        encoding="utf-8",
+    )
+    # >3 levels off the shared ancestor: the exact shape that triggered basenaming.
+    out_dir = tmp_path / "a" / "b" / "c" / "d" / "out"
+    out_dir.mkdir(parents=True)
+
+    result = extract(
+        [nested / "order_repository_tests.py"],
+        cache_root=out_dir,
+        root=scan_root,
+    )
+    source_files = {
+        n["source_file"] for n in result["nodes"] if n.get("source_file")
+    }
+    assert source_files, "expected nodes carrying a source_file"
+    assert source_files == {
+        "src/Data/Database/RepositoryTests/order_repository_tests.py"
+    }, f"source_file must stay relative to the scan root, got {source_files}"
+    # The point of the field: it resolves back to a real file against the root.
+    for sf in source_files:
+        assert (scan_root / sf).is_file(), f"{sf} does not resolve under {scan_root}"
+    # #1899 must not regress: no absolute path / username leak.
+    for n in result["nodes"]:
+        assert str(tmp_path) not in (n.get("source_file") or "")
+        assert str(tmp_path) not in n["id"]
+
+
 def test_python_module_qualified_call_resolves_extracted(tmp_path):
     """`module.func()` where `module` is imported resolves to the callable that
     module contains, with an EXTRACTED `calls` edge (#1883). A lowercase module

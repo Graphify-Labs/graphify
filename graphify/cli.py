@@ -125,9 +125,11 @@ def _stale_graph_sources(
     (--include sources, symlinked external corpora) are never walked by
     detect, so their absence from the corpus is not staleness evidence.
     Relative entries are re-anchored against both the scan root and the
-    graph's own output root (``--out`` extracts store source_files relative
-    to the OUT root, e.g. ``../project/x.py``, #555/#1899); only anchors
-    that land inside the scan root count.
+    graph's own output root; only anchors that land inside the scan root
+    count. Since #1941 extracts always store source_file relative to the SCAN
+    root, so the scan-root anchor is the live one; the out-root anchor stays
+    for graphs written by <=0.9.16, which stored them relative to the OUT root
+    (e.g. ``../project/x.py``, #555/#1899).
     ``seen_files`` must be the FULL detect output including unclassified
     files, so nodes from walked-but-unsupported sources (e.g. introspected
     Cargo.toml manifests) are not misread as stale.
@@ -2527,7 +2529,9 @@ def dispatch_command(cmd: str) -> None:
             # Anchor the cache at the output root, not the scanned project:
             # with --out, a <target>/graphify-out/cache/ would leak a
             # graphify-out/ dir into a project that asked for external output.
-            ast_kwargs: dict = {"cache_root": out_root}
+            # `root` stays the scanned project so source_file/ids relativize
+            # against it; conflating the two basenamed every node (#1941).
+            ast_kwargs: dict = {"cache_root": out_root, "root": target}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
