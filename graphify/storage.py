@@ -961,10 +961,10 @@ def cluster_by_neug(
     graph_json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     stages.mark("export")
 
-    # 7. Write .graphify_analysis.json
+    # 7. Write .graphify_analysis.json (sorted by community ID)
     analysis = {
-        "communities": {str(k): v for k, v in communities.items()},
-        "cohesion": {str(k): v for k, v in cohesion.items()},
+        "communities": {str(k): v for k, v in sorted(communities.items())},
+        "cohesion": {str(k): v for k, v in sorted(cohesion.items())},
         "gods": gods,
         "surprises": surprises,
         "tokens": {
@@ -1272,11 +1272,17 @@ def delta_analyze(
         info["cohesion"] = delta_cohesion.get(cid, 0.0)
         info["community_name"] = labels.get(cid, f"Community {cid}")
 
+    # Sort all community sections by community ID (ascending)
+    sorted_changed = dict(sorted(changes["changed_communities"].items(), key=lambda x: int(x[0])))
+    sorted_new = dict(sorted(changes["new_communities"].items(), key=lambda x: int(x[0])))
+    sorted_stable = sorted(changes["stable_communities"], key=lambda x: int(x))
+    sorted_dissolved = sorted(changes["dissolved_communities"], key=lambda x: x["cid"])
+
     delta = {
-        "changed_communities": changes["changed_communities"],
-        "new_communities": changes["new_communities"],
-        "stable_communities": changes["stable_communities"],
-        "dissolved_communities": changes["dissolved_communities"],
+        "changed_communities": sorted_changed,
+        "new_communities": sorted_new,
+        "stable_communities": sorted_stable,
+        "dissolved_communities": sorted_dissolved,
         "summary": changes["summary"],
         "gods": gods,
         "surprises": surprises,
