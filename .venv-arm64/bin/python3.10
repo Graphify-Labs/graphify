@@ -1,0 +1,1 @@
+/opt/homebrew/opt/python@3.10/bin/python3.10

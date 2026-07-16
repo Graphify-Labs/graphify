@@ -1,0 +1,112 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: neug-leiden-integration
+exported_at: "2026-07-15T13:22:31Z"
+modules:
+    "":
+        dir_name: Graphify 项目根与发布编排
+        title: Graphify 项目根与发布编排
+        scope:
+            - README.md
+            - ARCHITECTURE.md
+            - BENCHMARKS.md
+            - SECURITY.md
+            - AGENTS.md
+            - pyproject.toml
+            - uv.lock
+            - Dockerfile
+            - .pre-commit-config.yaml
+            - .gitignore
+            - .dockerignore
+            - .gitattributes
+            - CHANGELOG.md
+            - LICENSE
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    graphify_core:
+        dir_name: Graphify 代码知识图谱核心运行时
+        title: Graphify 代码知识图谱核心运行时
+        scope:
+            - graphify/
+        source_files: []
+        children:
+            - graphify_core/llm_backends_integrations
+            - graphify_core/skills_and_references
+            - graphify_core/exporters
+            - graphify_core/extractors
+            - graphify_core/core_runtime
+        depends_on: []
+        related_to: []
+    graphify_core/core_runtime:
+        dir_name: 核心运行时：CLI 分发、图构建与全局_持久化存储
+        title: 核心运行时：CLI 分发、图构建与全局/持久化存储
+        scope:
+            - graphify/cli.py
+            - graphify/build.py
+            - graphify/global_graph.py
+            - graphify/storage.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: graphify_core/extractors
+            - path: graphify_core/exporters
+            - path: graphify_core/llm_backends_integrations
+    graphify_core/exporters:
+        dir_name: 图导出与可视化输出器
+        title: 图导出与可视化输出器
+        scope:
+            - graphify/exporters/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: graphify_core/core_runtime
+            - path: graphify_core/extractors
+    graphify_core/extractors:
+        dir_name: 多语言源码提取器集合
+        title: 多语言源码提取器集合
+        scope:
+            - graphify/extractors/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: graphify_core/core_runtime
+            - path: graphify_core/exporters
+    graphify_core/llm_backends_integrations:
+        dir_name: LLM 后端集成与 Git Hook_PR 工具
+        title: LLM 后端集成与 Git Hook/PR 工具
+        scope:
+            - graphify/llm.py
+            - graphify/hooks.py
+            - graphify/prs.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: graphify_core/core_runtime
+    graphify_core/skills_and_references:
+        dir_name: 多智能体技能参考与 Always-On 提示词
+        title: 多智能体技能参考与 Always-On 提示词
+        scope:
+            - graphify/skills/
+            - graphify/always_on/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: skillgen_tool
+    skillgen_tool:
+        dir_name: Graphify Skill 文档渲染与漂移守卫工具
+        title: Graphify Skill 文档渲染与漂移守卫工具
+        scope:
+            - tools/skillgen/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: graphify_core/skills_and_references

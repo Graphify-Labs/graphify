@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: graphify_core/llm_backends_integrations
+title: LLM 后端集成与 Git Hook/PR 工具
+scope:
+    - graphify/llm.py
+    - graphify/hooks.py
+    - graphify/prs.py
+source_files: []
+depends_on: []
+related_to:
+    - path: graphify_core/core_runtime

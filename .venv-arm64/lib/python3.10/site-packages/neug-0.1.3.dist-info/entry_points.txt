@@ -1,0 +1,2 @@
+[console_scripts]
+neug-cli = neug.neug_cli:cli

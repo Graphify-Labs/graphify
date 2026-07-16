@@ -1,0 +1,21 @@
+Metadata-Version: 2.1
+Name: tree-sitter-groovy
+Version: 0.1.2
+Summary: Groovy grammar for tree-sitter
+Author-email: Amaan Qureshi <amaanq12@gmail.com>
+License: MIT
+Project-URL: Homepage, https://github.com/amaanq/tree-sitter-groovy
+Keywords: incremental,parsing,tree-sitter,groovy
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Software Development :: Compilers
+Classifier: Topic :: Text Processing :: Linguistic
+Classifier: Typing :: Typed
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Provides-Extra: core
+Requires-Dist: tree-sitter~=0.22; extra == "core"
+
+## tree-sitter-groovy
+
+> [!Note]
+> this is a WIP and is not super polished, I cobbled this together in an hour to test something, eventually I'd like to clean it up but it works for me for now.

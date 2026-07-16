@@ -1,0 +1,15 @@
+iniconfig-2.3.0.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+iniconfig-2.3.0.dist-info/METADATA,sha256=QNdz-E5OES9JW79PG-nL0tRWwK6271MR910b8yLyFls,2526
+iniconfig-2.3.0.dist-info/RECORD,,
+iniconfig-2.3.0.dist-info/WHEEL,sha256=_zCd3N1l69ArxyTb8rzEoP9TpbYXkqRFSNOD5OuxnTs,91
+iniconfig-2.3.0.dist-info/licenses/LICENSE,sha256=NAn6kfes5VeJRjJnZlbjImT-XvdYFTVyXcmiN3RVG9Q,1098
+iniconfig-2.3.0.dist-info/top_level.txt,sha256=7KfM0fugdlToj9UW7enKXk2HYALQD8qHiyKtjhSzgN8,10
+iniconfig/__init__.py,sha256=XL5eqUYj4mskAOorZ5jfRAinJvJzTI-fJxpP4xfXtaw,7497
+iniconfig/__pycache__/__init__.cpython-310.pyc,,
+iniconfig/__pycache__/_parse.cpython-310.pyc,,
+iniconfig/__pycache__/_version.cpython-310.pyc,,
+iniconfig/__pycache__/exceptions.cpython-310.pyc,,
+iniconfig/_parse.py,sha256=5ncBl7MAQiaPNnpRrs9FR4t6G6DkgOUs458OY_1CR28,5223
+iniconfig/_version.py,sha256=KNFYe-Vtdt7Z-oHyl8jmDAQ9qXoCNMAEXigj6BR1QUI,704
+iniconfig/exceptions.py,sha256=mipQ_aMxD9CvSvFWN1oTXY4QuRnKAMZ1f3sCdmjDTU0,399
+iniconfig/py.typed,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0

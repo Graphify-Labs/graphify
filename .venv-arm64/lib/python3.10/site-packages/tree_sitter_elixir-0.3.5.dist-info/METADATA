@@ -1,0 +1,31 @@
+Metadata-Version: 2.4
+Name: tree-sitter-elixir
+Version: 0.3.5
+Summary: Elixir grammar for tree-sitter
+License: Apache-2.0
+Project-URL: Homepage, https://github.com/elixir-lang/tree-sitter-elixir
+Keywords: incremental,parsing,tree-sitter,elixir
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Topic :: Software Development :: Compilers
+Classifier: Topic :: Text Processing :: Linguistic
+Classifier: Typing :: Typed
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+License-File: NOTICE
+Provides-Extra: core
+Requires-Dist: tree-sitter~=0.23; extra == "core"
+Dynamic: license-file
+
+# tree-sitter-elixir
+
+[![Test](https://github.com/elixir-lang/tree-sitter-elixir/actions/workflows/test.yml/badge.svg)](https://github.com/elixir-lang/tree-sitter-elixir/actions/workflows/test.yml)
+
+Elixir grammar for [tree-sitter](https://github.com/tree-sitter/tree-sitter).
+
+Ready for production. Currently used by GitHub itself for source code highlighting and code navigation.
+
+## Development
+
+See [the docs](./docs/index.md) for more details.

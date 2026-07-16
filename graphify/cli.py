@@ -1386,9 +1386,25 @@ def dispatch_command(cmd: str) -> None:
         from graphify.storage import init_db as _init_db, close_db as _close_db, delta_analyze as _delta_analyze
 
         if len(sys.argv) < 3:
-            print("Usage: graphify delta-cluster <path>", file=sys.stderr)
+            print("Usage: graphify delta-cluster <path> [--resolution R]", file=sys.stderr)
             sys.exit(1)
-        _target = Path(sys.argv[2]).resolve()
+
+        _delta_resolution: float = 1.0
+        _delta_args = sys.argv[2:]
+        _delta_pos: list[str] = []
+        _di = 0
+        while _di < len(_delta_args):
+            _da = _delta_args[_di]
+            if _da == "--resolution" and _di + 1 < len(_delta_args):
+                _delta_resolution = float(_delta_args[_di + 1]); _di += 2
+            elif _da.startswith("--resolution="):
+                _delta_resolution = float(_da.split("=", 1)[1]); _di += 1
+            else:
+                _delta_pos.append(_da); _di += 1
+        if not _delta_pos:
+            print("Usage: graphify delta-cluster <path> [--resolution R]", file=sys.stderr)
+            sys.exit(1)
+        _target = Path(_delta_pos[0]).resolve()
         _graphify_out = _target / _GRAPHIFY_OUT
         _analysis_path = _graphify_out / ".graphify_analysis.json"
         _delta_path = _graphify_out / ".graphify_delta_analysis.json"
@@ -1420,6 +1436,7 @@ def dispatch_command(cmd: str) -> None:
                 delta_analysis_path=_delta_path,
                 stages=_stages,
                 merged={"input_tokens": 0, "output_tokens": 0},
+                resolution=_delta_resolution,
             )
         finally:
             _close_db(_neug_db, _neug_conn)
@@ -2702,6 +2719,7 @@ def dispatch_command(cmd: str) -> None:
                 stages=stages,
                 export_fn=_export_to_json,
                 hyperedges=merged.get("hyperedges", []),
+                resolution=cli_resolution,
             )
             _close_db(_neug_db, _neug_conn)
             if merged.get("output_tokens", 0) > 0:

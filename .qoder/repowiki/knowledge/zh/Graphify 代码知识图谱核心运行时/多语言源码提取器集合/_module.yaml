@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: graphify_core/extractors
+title: 多语言源码提取器集合
+scope:
+    - graphify/extractors/
+source_files: []
+depends_on: []
+related_to:
+    - path: graphify_core/core_runtime
+    - path: graphify_core/exporters

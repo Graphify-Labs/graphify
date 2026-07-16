@@ -1,0 +1,3 @@
+[console_scripts]
+flask=flask.cli:main
+

@@ -1,0 +1,152 @@
+Metadata-Version: 2.4
+Name: pluggy
+Version: 1.6.0
+Summary: plugin and hook calling mechanisms for python
+Author-email: Holger Krekel <holger@merlinux.eu>
+License: MIT
+Classifier: Development Status :: 6 - Mature
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: POSIX
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: MacOS :: MacOS X
+Classifier: Topic :: Software Development :: Testing
+Classifier: Topic :: Software Development :: Libraries
+Classifier: Topic :: Utilities
+Classifier: Programming Language :: Python :: Implementation :: CPython
+Classifier: Programming Language :: Python :: Implementation :: PyPy
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Requires-Python: >=3.9
+Description-Content-Type: text/x-rst
+License-File: LICENSE
+Provides-Extra: dev
+Requires-Dist: pre-commit; extra == "dev"
+Requires-Dist: tox; extra == "dev"
+Provides-Extra: testing
+Requires-Dist: pytest; extra == "testing"
+Requires-Dist: pytest-benchmark; extra == "testing"
+Requires-Dist: coverage; extra == "testing"
+Dynamic: license-file
+
+====================================================
+pluggy - A minimalist production ready plugin system
+====================================================
+
+|pypi| |conda-forge| |versions| |github-actions| |gitter| |black| |codecov|
+
+This is the core framework used by the `pytest`_, `tox`_, and `devpi`_ projects.
+
+Please `read the docs`_ to learn more!
+
+A definitive example
+====================
+.. code-block:: python
+
+    import pluggy
+
+    hookspec = pluggy.HookspecMarker("myproject")
+    hookimpl = pluggy.HookimplMarker("myproject")
+
+
+    class MySpec:
+        """A hook specification namespace."""
+
+        @hookspec
+        def myhook(self, arg1, arg2):
+            """My special little hook that you can customize."""
+
+
+    class Plugin_1:
+        """A hook implementation namespace."""
+
+        @hookimpl
+        def myhook(self, arg1, arg2):
+            print("inside Plugin_1.myhook()")
+            return arg1 + arg2
+
+
+    class Plugin_2:
+        """A 2nd hook implementation namespace."""
+
+        @hookimpl
+        def myhook(self, arg1, arg2):
+            print("inside Plugin_2.myhook()")
+            return arg1 - arg2
+
+
+    # create a manager and add the spec
+    pm = pluggy.PluginManager("myproject")
+    pm.add_hookspecs(MySpec)
+
+    # register plugins
+    pm.register(Plugin_1())
+    pm.register(Plugin_2())
+
+    # call our ``myhook`` hook
+    results = pm.hook.myhook(arg1=1, arg2=2)
+    print(results)
+
+
+Running this directly gets us::
+
+    $ python docs/examples/toy-example.py
+    inside Plugin_2.myhook()
+    inside Plugin_1.myhook()
+    [-1, 3]
+
+
+.. badges
+
+.. |pypi| image:: https://img.shields.io/pypi/v/pluggy.svg
+    :target: https://pypi.org/pypi/pluggy
+
+.. |versions| image:: https://img.shields.io/pypi/pyversions/pluggy.svg
+    :target: https://pypi.org/pypi/pluggy
+
+.. |github-actions| image:: https://github.com/pytest-dev/pluggy/workflows/main/badge.svg
+    :target: https://github.com/pytest-dev/pluggy/actions
+
+.. |conda-forge| image:: https://img.shields.io/conda/vn/conda-forge/pluggy.svg
+    :target: https://anaconda.org/conda-forge/pytest
+
+.. |gitter| image:: https://badges.gitter.im/pytest-dev/pluggy.svg
+    :alt: Join the chat at https://gitter.im/pytest-dev/pluggy
+    :target: https://gitter.im/pytest-dev/pluggy?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge
+
+.. |black| image:: https://img.shields.io/badge/code%20style-black-000000.svg
+    :target: https://github.com/ambv/black
+
+.. |codecov| image:: https://codecov.io/gh/pytest-dev/pluggy/branch/master/graph/badge.svg
+    :target: https://codecov.io/gh/pytest-dev/pluggy
+    :alt: Code coverage Status
+
+.. links
+.. _pytest:
+    http://pytest.org
+.. _tox:
+    https://tox.readthedocs.org
+.. _devpi:
+    http://doc.devpi.net
+.. _read the docs:
+   https://pluggy.readthedocs.io/en/latest/
+
+
+Support pluggy
+--------------
+
+`Open Collective`_ is an online funding platform for open and transparent communities.
+It provides tools to raise money and share your finances in full transparency.
+
+It is the platform of choice for individuals and companies that want to make one-time or
+monthly donations directly to the project.
+
+``pluggy`` is part of the ``pytest-dev`` project, see more details in the `pytest collective`_.
+
+.. _Open Collective: https://opencollective.com
+.. _pytest collective: https://opencollective.com/pytest

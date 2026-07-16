@@ -1,0 +1,21 @@
+schema_version: 1
+module_path: ""
+title: Graphify 项目根与发布编排
+scope:
+    - README.md
+    - ARCHITECTURE.md
+    - BENCHMARKS.md
+    - SECURITY.md
+    - AGENTS.md
+    - pyproject.toml
+    - uv.lock
+    - Dockerfile
+    - .pre-commit-config.yaml
+    - .gitignore
+    - .dockerignore
+    - .gitattributes
+    - CHANGELOG.md
+    - LICENSE
+source_files: []
+depends_on: []
+related_to: []

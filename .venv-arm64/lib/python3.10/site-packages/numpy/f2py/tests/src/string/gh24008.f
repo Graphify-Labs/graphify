@@ -1,0 +1,8 @@
+      SUBROUTINE GREET(NAME, GREETING)
+      CHARACTER NAME*(*), GREETING*(*)
+      CHARACTER*(50) MESSAGE
+
+      MESSAGE = 'Hello, ' // NAME // ', ' // GREETING
+c$$$      PRINT *, MESSAGE
+
+      END SUBROUTINE GREET

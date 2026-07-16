@@ -361,6 +361,79 @@ def test_run_leiden_freeze_assign(tmp_db):
     _close(db, conn)
 
 
+def test_run_leiden_resolution(tmp_db):
+    """run_leiden accepts a resolution parameter and passes it to neug GDS."""
+    from graphify.storage import run_leiden
+    db, conn = _init(tmp_db)
+    _populate_test_graph(conn)
+
+    # Default resolution (1.0)
+    communities_default = run_leiden(conn)
+    # High resolution (5.0) — favours smaller communities
+    communities_high = run_leiden(conn, resolution=5.0)
+    # Low resolution (0.1) — favours larger communities
+    communities_low = run_leiden(conn, resolution=0.1)
+
+    # All should produce valid community dicts
+    assert isinstance(communities_default, dict)
+    assert isinstance(communities_high, dict)
+    assert isinstance(communities_low, dict)
+
+    # All nodes should be assigned in each case
+    all_nodes = {f"n{i}" for i in range(1, 14)}
+    for label, comms in [("default", communities_default),
+                          ("high", communities_high),
+                          ("low", communities_low)]:
+        assigned = set()
+        for node_ids in comms.values():
+            assigned.update(node_ids)
+        assert assigned == all_nodes, f"{label}: missing nodes {all_nodes - assigned}"
+
+    _close(db, conn)
+
+
+def test_run_leiden_freeze_assign_resolution(tmp_db):
+    """run_leiden_freeze_assign accepts resolution and passes it to neug GDS."""
+    from graphify.storage import run_leiden, ingest_communities, run_leiden_freeze_assign
+    db, conn = _init(tmp_db)
+    _populate_test_graph(conn)
+
+    # Phase 1: full leiden with resolution=0.5
+    communities = run_leiden(conn, resolution=0.5)
+    ingest_communities(conn, communities)
+
+    old_communities = {}
+    for cid, node_ids in communities.items():
+        for nid in node_ids:
+            old_communities[nid] = cid
+
+    # Phase 2: add new node
+    conn.execute(
+        "CREATE (n:node {id: 'n14', label: 'NewFunc', file_type: 'code', "
+        "source_file: 'src/new.py', source_location: '', community: 0, community_name: ''})"
+    )
+    conn.execute(
+        "MATCH (a:node {id: 'n14'}), (b:node {id: 'n1'}) "
+        "CREATE (a)-[:edge {relation: 'calls', confidence: 'EXTRACTED', "
+        "confidence_score: 1.0, source_file: 'src/new.py', weight: 1.0}]->(b)"
+    )
+
+    # Run freeze-assign with resolution=0.5 (should match the full leiden resolution)
+    results = run_leiden_freeze_assign(conn, old_communities, resolution=0.5)
+
+    # Old nodes should be frozen
+    results_map = {nid: (new_cid, prev_cid) for nid, new_cid, prev_cid in results}
+    for nid, old_cid in old_communities.items():
+        assert nid in results_map
+        new_cid, prev_cid = results_map[nid]
+        assert new_cid == old_cid, f"Frozen node {nid} moved: {old_cid} -> {new_cid}"
+
+    # New node should have prev=None
+    assert results_map["n14"][1] is None
+
+    _close(db, conn)
+
+
 def test_analyze_community_changes():
     """Classify communities into 4 types: stable, changed, new, dissolved."""
     from graphify.storage import analyze_community_changes

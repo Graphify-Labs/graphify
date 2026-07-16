@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: graphify_core/exporters
+title: 图导出与可视化输出器
+scope:
+    - graphify/exporters/
+source_files: []
+depends_on: []
+related_to:
+    - path: graphify_core/core_runtime
+    - path: graphify_core/extractors

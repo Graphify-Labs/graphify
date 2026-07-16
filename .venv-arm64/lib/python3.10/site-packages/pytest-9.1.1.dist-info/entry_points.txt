@@ -1,0 +1,3 @@
+[console_scripts]
+py.test = _pytest.config:_console_main
+pytest = _pytest.config:_console_main

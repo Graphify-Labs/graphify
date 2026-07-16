@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: graphify_core/skills_and_references
+title: 多智能体技能参考与 Always-On 提示词
+scope:
+    - graphify/skills/
+    - graphify/always_on/
+source_files: []
+depends_on: []
+related_to:
+    - path: skillgen_tool

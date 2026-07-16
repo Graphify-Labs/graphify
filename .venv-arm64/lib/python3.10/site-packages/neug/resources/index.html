@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Neug Query - GraphScope Query Interface</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      function loadScript(url, isModule = false) {
+        return new Promise(function (resolve, reject) {
+          var script = document.createElement('script');
+          script.type = isModule ? 'module' : 'text/javascript';
+          script.src = url;
+          script.crossOrigin = 'anonymous';
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      }
+      
+      function loadCSS(url) {
+        return new Promise(function (resolve, reject) {
+          var link = document.createElement('link');
+          link.rel = 'stylesheet';
+          link.href = url;
+          link.onload = resolve;
+          link.onerror = reject;
+          document.head.appendChild(link);
+        });
+      }
+      
+      // 加载项目依赖 (ES 模块方式)
+      loadScript('https://cdn.jsdelivr.net/npm/@graphscope/neug-query@latest/dist/assets/react-vendor.js', true)
+        .then(function () {
+          // 加载路由依赖
+          return loadScript('https://cdn.jsdelivr.net/npm/@graphscope/neug-query@latest/dist/assets/router.js', true);
+        })
+        .then(function () {
+          // 加载 Ant Design 依赖
+          return loadScript('https://cdn.jsdelivr.net/npm/@graphscope/neug-query@latest/dist/assets/antd.js', true);
+        })
+        .then(function () {
+          // 最后加载主应用文件和样式
+          return Promise.all([
+            loadScript('https://cdn.jsdelivr.net/npm/@graphscope/neug-query@latest/dist/assets/index.js', true),
+            loadCSS('https://cdn.jsdelivr.net/npm/@graphscope/neug-query@latest/dist/assets/index.css'),
+          ]);
+        })
+        .then(function () {
+          // 所有资源加载完成，应用应该自动初始化
+          console.log('Neug Query 所有资源加载完成');
+        })
+        .catch(function (error) {
+          console.error('加载脚本时出错：', error);
+          document.getElementById('root').innerHTML = 
+            '<div style="padding: 20px; text-align: center; color: #ff4d4f;">' +
+            '<h2>加载失败</h2>' +
+            '<p>无法加载 Neug Query 组件，请检查网络连接。</p>' +
+            '</div>';
+        });
+    </script>
+  </body>
+</html>

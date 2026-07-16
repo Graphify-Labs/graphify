@@ -1,0 +1,3 @@
+[console_scripts]
+graphify = graphify.__main__:main
+graphify-mcp = graphify.serve:_main

@@ -1,0 +1,4 @@
+Wheel-Version: 1.0
+Generator: meson
+Root-Is-Purelib: false
+Tag: cp310-cp310-macosx_14_0_arm64

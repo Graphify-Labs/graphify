@@ -1,0 +1,211 @@
+Metadata-Version: 2.4
+Name: pytest
+Version: 9.1.1
+Summary: pytest: simple powerful testing with Python
+Author: Brianna Laugher, Bruno Oliveira, Floris Bruynooghe, Freya Bruhin, Holger Krekel, Others (See AUTHORS), Ronny Pfannschmidt
+License-Expression: MIT
+Project-URL: Changelog, https://docs.pytest.org/en/stable/changelog.html
+Project-URL: Contact, https://docs.pytest.org/en/stable/contact.html
+Project-URL: Funding, https://docs.pytest.org/en/stable/sponsor.html
+Project-URL: Homepage, https://docs.pytest.org/en/latest/
+Project-URL: Source, https://github.com/pytest-dev/pytest
+Project-URL: Tracker, https://github.com/pytest-dev/pytest/issues
+Keywords: test,unittest
+Classifier: Development Status :: 6 - Mature
+Classifier: Intended Audience :: Developers
+Classifier: Operating System :: MacOS
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX
+Classifier: Operating System :: Unix
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Programming Language :: Python :: 3.15
+Classifier: Topic :: Software Development :: Libraries
+Classifier: Topic :: Software Development :: Testing
+Classifier: Topic :: Utilities
+Requires-Python: >=3.10
+Description-Content-Type: text/x-rst
+License-File: LICENSE
+Requires-Dist: colorama>=0.4; sys_platform == "win32"
+Requires-Dist: exceptiongroup>=1; python_version < "3.11"
+Requires-Dist: iniconfig>=1.0.1
+Requires-Dist: packaging>=22
+Requires-Dist: pluggy<2,>=1.5
+Requires-Dist: pygments>=2.7.2
+Requires-Dist: tomli>=1; python_version < "3.11"
+Provides-Extra: dev
+Requires-Dist: argcomplete; extra == "dev"
+Requires-Dist: attrs>=19.2; extra == "dev"
+Requires-Dist: hypothesis>=3.56; extra == "dev"
+Requires-Dist: mock; extra == "dev"
+Requires-Dist: requests; extra == "dev"
+Requires-Dist: setuptools; extra == "dev"
+Requires-Dist: xmlschema; extra == "dev"
+Dynamic: license-file
+
+.. image:: https://github.com/pytest-dev/pytest/raw/main/doc/en/img/pytest_logo_curves.svg
+   :target: https://docs.pytest.org/en/stable/
+   :align: center
+   :height: 200
+   :alt: pytest
+
+
+------
+
+.. image:: https://img.shields.io/pypi/v/pytest.svg
+    :target: https://pypi.org/project/pytest/
+
+.. image:: https://img.shields.io/conda/vn/conda-forge/pytest.svg
+    :target: https://anaconda.org/conda-forge/pytest
+
+.. image:: https://img.shields.io/pypi/pyversions/pytest.svg
+    :target: https://pypi.org/project/pytest/
+
+.. image:: https://codecov.io/gh/pytest-dev/pytest/branch/main/graph/badge.svg
+    :target: https://codecov.io/gh/pytest-dev/pytest
+    :alt: Code coverage Status
+
+.. image:: https://github.com/pytest-dev/pytest/actions/workflows/test.yml/badge.svg
+    :target: https://github.com/pytest-dev/pytest/actions?query=workflow%3Atest
+
+.. image:: https://results.pre-commit.ci/badge/github/pytest-dev/pytest/main.svg
+   :target: https://results.pre-commit.ci/latest/github/pytest-dev/pytest/main
+   :alt: pre-commit.ci status
+
+.. image:: https://www.codetriage.com/pytest-dev/pytest/badges/users.svg
+    :target: https://www.codetriage.com/pytest-dev/pytest
+
+.. image:: https://readthedocs.org/projects/pytest/badge/?version=latest
+    :target: https://pytest.readthedocs.io/en/latest/?badge=latest
+    :alt: Documentation Status
+
+.. image:: https://img.shields.io/badge/Discord-pytest--dev-blue
+    :target: https://discord.com/invite/pytest-dev
+    :alt: Discord
+
+.. image:: https://img.shields.io/badge/Libera%20chat-%23pytest-orange
+    :target: https://web.libera.chat/#pytest
+    :alt: Libera chat
+
+
+The ``pytest`` framework makes it easy to write small tests, yet
+scales to support complex functional testing for applications and libraries.
+
+An example of a simple test:
+
+.. code-block:: python
+
+    # content of test_sample.py
+    def inc(x):
+        return x + 1
+
+
+    def test_answer():
+        assert inc(3) == 5
+
+
+To execute it::
+
+    $ pytest
+    ============================= test session starts =============================
+    collected 1 items
+
+    test_sample.py F
+
+    ================================== FAILURES ===================================
+    _________________________________ test_answer _________________________________
+
+        def test_answer():
+    >       assert inc(3) == 5
+    E       assert 4 == 5
+    E        +  where 4 = inc(3)
+
+    test_sample.py:5: AssertionError
+    ========================== 1 failed in 0.04 seconds ===========================
+
+
+Thanks to ``pytest``'s detailed assertion introspection, you can simply use plain ``assert`` statements. See `getting-started <https://docs.pytest.org/en/stable/getting-started.html#our-first-test-run>`_ for more examples.
+
+
+Features
+--------
+
+- Detailed info on failing `assert statements <https://docs.pytest.org/en/stable/how-to/assert.html>`_ (no need to remember ``self.assert*`` names)
+
+- `Auto-discovery
+  <https://docs.pytest.org/en/stable/explanation/goodpractices.html#python-test-discovery>`_
+  of test modules and functions
+
+- `Modular fixtures <https://docs.pytest.org/en/stable/explanation/fixtures.html>`_ for
+  managing small or parametrized long-lived test resources
+
+- Can run `unittest <https://docs.pytest.org/en/stable/how-to/unittest.html>`_ (or trial)
+  test suites out of the box
+
+- Python 3.10+ or PyPy3
+
+- Rich plugin architecture, with over 1300+ `external plugins <https://docs.pytest.org/en/latest/reference/plugin_list.html>`_ and thriving community
+
+
+Documentation
+-------------
+
+For full documentation, including installation, tutorials and PDF documents, please see https://docs.pytest.org/en/stable/.
+
+
+Bugs/Requests
+-------------
+
+Please use the `GitHub issue tracker <https://github.com/pytest-dev/pytest/issues>`_ to submit bugs or request features.
+
+
+Changelog
+---------
+
+Consult the `Changelog <https://docs.pytest.org/en/stable/changelog.html>`__ page for fixes and enhancements of each version.
+
+
+Support pytest
+--------------
+
+`Open Collective`_ is an online funding platform for open and transparent communities.
+It provides tools to raise money and share your finances in full transparency.
+
+It is the platform of choice for individuals and companies that want to make one-time or
+monthly donations directly to the project.
+
+See more details in the `pytest collective`_.
+
+.. _Open Collective: https://opencollective.com
+.. _pytest collective: https://opencollective.com/pytest
+
+
+pytest for enterprise
+---------------------
+
+Available as part of the Tidelift Subscription.
+
+The maintainers of pytest and thousands of other packages are working with Tidelift to deliver commercial support and
+maintenance for the open source dependencies you use to build your applications.
+Save time, reduce risk, and improve code health, while paying the maintainers of the exact dependencies you use.
+
+`Learn more. <https://tidelift.com/subscription/pkg/pypi-pytest?utm_source=pypi-pytest&utm_medium=referral&utm_campaign=enterprise&utm_term=repo>`_
+
+Security
+^^^^^^^^
+
+If you have found an issue that you believe is a security vulnerability, please do not create an issue -- instead, report it via a `new security advisory <https://github.com/pytest-dev/pytest/security/advisories/new>`__.
+
+
+License
+-------
+
+Copyright Holger Krekel and others, 2004.
+
+Distributed under the terms of the `MIT`_ license, pytest is free and open source software.
+
+.. _`MIT`: https://github.com/pytest-dev/pytest/blob/main/LICENSE

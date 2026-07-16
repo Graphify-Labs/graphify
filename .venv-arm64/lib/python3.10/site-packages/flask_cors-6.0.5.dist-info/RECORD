@@ -1,0 +1,15 @@
+flask_cors-6.0.5.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+flask_cors-6.0.5.dist-info/METADATA,sha256=VnSfhXDOUAIUQl8vlHh741-tY3bhlDy7U9cy_GERI64,5392
+flask_cors-6.0.5.dist-info/RECORD,,
+flask_cors-6.0.5.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+flask_cors-6.0.5.dist-info/WHEEL,sha256=aeYiig01lYGDzBgS8HxWXOg3uV61G9ijOsup-k9o1sk,91
+flask_cors-6.0.5.dist-info/top_level.txt,sha256=aWye_0QNZPp_QtPF4ZluLHqnyVLT9CPJsfiGhwqkWuo,11
+flask_cors/__init__.py,sha256=tnaGlwkJFxwAO6F-7RWrwDyCdvZVatVDE-Gk8o10ftY,701
+flask_cors/__pycache__/__init__.cpython-310.pyc,,
+flask_cors/__pycache__/core.cpython-310.pyc,,
+flask_cors/__pycache__/decorator.cpython-310.pyc,,
+flask_cors/__pycache__/extension.cpython-310.pyc,,
+flask_cors/core.py,sha256=Uz4JGJXK0aVe9l-pDpuXctTs2JuPWYkiaAew1S70iwM,22655
+flask_cors/decorator.py,sha256=IBCL6ldVfaK1bD5fDfzAmXyX0kKaCVCtH7APdGia9D0,5349
+flask_cors/extension.py,sha256=2kV_-MX8jhAmlGwFf-xTXScjuh3GtBwyRjfSSTb3mRo,9577
+flask_cors/py.typed,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0

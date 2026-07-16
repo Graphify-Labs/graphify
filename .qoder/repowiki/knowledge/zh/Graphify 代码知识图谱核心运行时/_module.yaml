@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: graphify_core
+title: Graphify 代码知识图谱核心运行时
+scope:
+    - graphify/
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: skillgen_tool
+title: Graphify Skill 文档渲染与漂移守卫工具
+scope:
+    - tools/skillgen/
+source_files: []
+depends_on: []
+related_to:
+    - path: graphify_core/skills_and_references

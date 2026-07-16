@@ -1,0 +1,60 @@
+Metadata-Version: 2.3
+Name: blinker
+Version: 1.9.0
+Summary: Fast, simple object-to-object and broadcast signaling
+Author: Jason Kirtland
+Maintainer-email: Pallets Ecosystem <contact@palletsprojects.com>
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python
+Classifier: Typing :: Typed
+Project-URL: Chat, https://discord.gg/pallets
+Project-URL: Documentation, https://blinker.readthedocs.io
+Project-URL: Source, https://github.com/pallets-eco/blinker/
+
+# Blinker
+
+Blinker provides a fast dispatching system that allows any number of
+interested parties to subscribe to events, or "signals".
+
+
+## Pallets Community Ecosystem
+
+> [!IMPORTANT]\
+> This project is part of the Pallets Community Ecosystem. Pallets is the open
+> source organization that maintains Flask; Pallets-Eco enables community
+> maintenance of related projects. If you are interested in helping maintain
+> this project, please reach out on [the Pallets Discord server][discord].
+>
+> [discord]: https://discord.gg/pallets
+
+
+## Example
+
+Signal receivers can subscribe to specific senders or receive signals
+sent by any sender.
+
+```pycon
+>>> from blinker import signal
+>>> started = signal('round-started')
+>>> def each(round):
+...     print(f"Round {round}")
+...
+>>> started.connect(each)
+
+>>> def round_two(round):
+...     print("This is round two.")
+...
+>>> started.connect(round_two, sender=2)
+
+>>> for round in range(1, 4):
+...     started.send(round)
+...
+Round 1!
+Round 2!
+This is round two.
+Round 3!
+```
+

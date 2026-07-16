@@ -1,0 +1,14 @@
+schema_version: 1
+module_path: graphify_core/core_runtime
+title: 核心运行时：CLI 分发、图构建与全局/持久化存储
+scope:
+    - graphify/cli.py
+    - graphify/build.py
+    - graphify/global_graph.py
+    - graphify/storage.py
+source_files: []
+depends_on: []
+related_to:
+    - path: graphify_core/extractors
+    - path: graphify_core/exporters
+    - path: graphify_core/llm_backends_integrations

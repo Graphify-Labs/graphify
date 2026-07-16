@@ -1,0 +1,7 @@
+prefix=${pcfiledir}/../..
+includedir=${prefix}/include
+
+Name: numpy
+Description: NumPy is the fundamental package for scientific computing with Python.
+Version: 2.2.6
+Cflags: -I${includedir}

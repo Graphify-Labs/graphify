@@ -1,0 +1,241 @@
+.TH "TQDM" "1" "2015\-2026" "tqdm User Manuals"
+.SH NAME
+tqdm \- fast, extensible progress bar for Python and CLI
+.SH SYNOPSIS
+tqdm [\f[I]options\f[R]]
+.SH DESCRIPTION
+See \c
+.UR https://github.com/tqdm/tqdm
+.UE \c
+\&.
+Can be used as a pipe:
+.IP
+.EX
+$ \f[I]# count lines of code\f[R]
+$ cat *.py \f[B]|\f[R] tqdm \f[B]|\f[R] wc \-l
+327it [00:00, 981773.38it/s]
+327
+
+$ \f[I]# find all files\f[R]
+$ find . \-name \(dq*.py\(dq \f[B]|\f[R] tqdm \f[B]|\f[R] wc \-l
+432it [00:00, 833842.30it/s]
+432
+
+\f[I]# ... and more info\f[R]
+$ find . \-name \(aq*.py\(aq \-exec wc \-l \(rs{} \(rs; \(rs
+  \f[B]|\f[R] tqdm \-\-total 432 \-\-unit files \-\-desc counting \(rs
+  \f[B]|\f[R] awk \(aq{ sum += $1 }; END { print sum }\(aq
+counting: 100%\f[B]|\f[R]█████████\f[B]|\f[R] 432/432 [00:00<00:00, 794361.83files/s]
+131998
+.EE
+.SH OPTIONS
+.TP
+\-h, \-\-help
+Print this help and exit.
+.TP
+\-v, \-\-version
+Print version and exit.
+.TP
+\-\-desc=\f[I]desc\f[R]
+str, optional.
+Prefix for the progress bar.
+.TP
+\-\-total=\f[I]total\f[R]
+int or float, optional.
+The number of expected iterations.
+If unspecified, len(iterable) is used if possible.
+If float(\(lqinf\(rq) or as a last resort, only basic progress
+statistics are displayed (no ETA, no progress bar).
+If \f[CR]gui\f[R] is True and this parameter needs subsequent updating,
+specify an initial arbitrary large positive number, e.g.\ 9e9.
+.TP
+\-\-leave
+bool, optional.
+If [default: True], keeps all traces of the progress bar upon
+termination of iteration.
+If \f[CR]None\f[R], will leave only if \f[CR]position\f[R] is
+\f[CR]0\f[R].
+.TP
+\-\-ncols=\f[I]ncols\f[R]
+int, optional.
+The width of the entire output message.
+If specified, dynamically resizes the progress bar to stay within this
+bound.
+If unspecified, attempts to use environment width.
+The fallback is a meter width of 10 and no limit for the counter and
+statistics.
+If 0, will not print any meter (only stats).
+.TP
+\-\-mininterval=\f[I]mininterval\f[R]
+float, optional.
+Minimum progress display update interval [default: 0.1] seconds.
+.TP
+\-\-maxinterval=\f[I]maxinterval\f[R]
+float, optional.
+Maximum progress display update interval [default: 10] seconds.
+Automatically adjusts \f[CR]miniters\f[R] to correspond to
+\f[CR]mininterval\f[R] after long display update lag.
+Only works if \f[CR]dynamic_miniters\f[R] or monitor thread is enabled.
+.TP
+\-\-miniters=\f[I]miniters\f[R]
+int or float, optional.
+Minimum progress display update interval, in iterations.
+If 0 and \f[CR]dynamic_miniters\f[R], will automatically adjust to equal
+\f[CR]mininterval\f[R] (more CPU efficient, good for tight loops).
+If > 0, will skip display of specified number of iterations.
+Tweak this and \f[CR]mininterval\f[R] to get very efficient loops.
+If your progress is erratic with both fast and slow iterations (network,
+skipping items, etc) you should set miniters=1.
+.TP
+\-\-ascii=\f[I]ascii\f[R]
+bool or str, optional.
+If unspecified or False, use unicode (smooth blocks) to fill the meter.
+The fallback is to use ASCII characters \(rq 123456789#\(lq.
+.TP
+\-\-disable
+bool, optional.
+Whether to disable the entire progress bar wrapper [default: False].
+If set to None, disable on non\-TTY.
+.TP
+\-\-unit=\f[I]unit\f[R]
+str, optional.
+String that will be used to define the unit of each iteration [default:
+it].
+.TP
+\-\-unit\-scale=\f[I]unit_scale\f[R]
+bool or int or float, optional.
+If 1 or True, the number of iterations will be reduced/scaled
+automatically and a metric prefix following the International System of
+Units standard will be added (kilo, mega, etc.)
+[default: False].
+If any other non\-zero number, will scale \f[CR]total\f[R] and
+\f[CR]n\f[R].
+.TP
+\-\-dynamic\-ncols
+bool, optional.
+If set, constantly alters \f[CR]ncols\f[R] and \f[CR]nrows\f[R] to the
+environment (allowing for window resizes) [default: False].
+.TP
+\-\-smoothing=\f[I]smoothing\f[R]
+float, optional.
+Exponential moving average smoothing factor for speed estimates (ignored
+in GUI mode).
+Ranges from 0 (average speed) to 1 (current/instantaneous speed)
+[default: 0.3].
+.TP
+\-\-bar\-format=\f[I]bar_format\f[R]
+str, optional.
+Specify a custom bar string formatting.
+May impact performance.
+[default: `{l_bar}{bar}{r_bar}'], where l_bar=`{desc}:
+{percentage:3.0f}%|' and r_bar=`| {n_fmt}/{total_fmt}
+[{elapsed}<{remaining}, \(cq \(cq{rate_fmt}{postfix}]' Possible vars:
+l_bar, bar, r_bar, n, n_fmt, total, total_fmt, percentage, elapsed,
+elapsed_s, ncols, nrows, desc, unit, rate, rate_fmt, rate_noinv,
+rate_noinv_fmt, rate_inv, rate_inv_fmt, postfix, unit_divisor,
+remaining, remaining_s, eta.
+Note that a trailing \(lq:\(rq is automatically removed after {desc} if
+the latter is empty.
+.TP
+\-\-initial=\f[I]initial\f[R]
+int or float, optional.
+The initial counter value.
+Useful when restarting a progress bar [default: 0].
+If using float, consider specifying \f[CR]{n:.3f}\f[R] or similar in
+\f[CR]bar_format\f[R], or specifying \f[CR]unit_scale\f[R].
+.TP
+\-\-position=\f[I]position\f[R]
+int, optional.
+Specify the line offset to print this bar (starting from 0) Automatic if
+unspecified.
+Useful to manage multiple bars at once (eg, from threads).
+.TP
+\-\-postfix=\f[I]postfix\f[R]
+dict or *, optional.
+Specify additional stats to display at the end of the bar.
+Calls \f[CR]set_postfix(**postfix)\f[R] if possible (dict).
+.TP
+\-\-unit\-divisor=\f[I]unit_divisor\f[R]
+float, optional.
+[default: 1000], ignored unless \f[CR]unit_scale\f[R] is True.
+.TP
+\-\-write\-bytes
+bool, optional.
+Whether to write bytes.
+If (default: False) will write unicode.
+.TP
+\-\-lock\-args=\f[I]lock_args\f[R]
+tuple, optional.
+Passed to \f[CR]refresh\f[R] for intermediate output (initialisation,
+iterating, and updating).
+.TP
+\-\-nrows=\f[I]nrows\f[R]
+int, optional.
+The screen height.
+If specified, hides nested bars outside this bound.
+If unspecified, attempts to use environment height.
+The fallback is 20.
+.TP
+\-\-colour=\f[I]colour\f[R]
+str, optional.
+Bar colour (e.g.\ `green', `#00ff00').
+.TP
+\-\-delay=\f[I]delay\f[R]
+float, optional.
+Don\(cqt display until [default: 0] seconds have elapsed.
+.TP
+\-\-delim=\f[I]delim\f[R]
+chr, optional.
+Delimiting character [default: `\(rsn'].
+Use `\(rs0' for null.
+N.B.: on Windows systems, Python converts `\(rsn' to `\(rsr\(rsn'.
+.TP
+\-\-buf\-size=\f[I]buf_size\f[R]
+int, optional.
+String buffer size in bytes [default: 256] used when \f[CR]delim\f[R] is
+specified.
+.TP
+\-\-bytes
+bool, optional.
+If true, will count bytes, ignore \f[CR]delim\f[R], and default
+\f[CR]unit_scale\f[R] to True, \f[CR]unit_divisor\f[R] to 1024, and
+\f[CR]unit\f[R] to `B'.
+.TP
+\-\-tee
+bool, optional.
+If true, passes \f[CR]stdin\f[R] to both \f[CR]stderr\f[R] and
+\f[CR]stdout\f[R].
+.TP
+\-\-update
+bool, optional.
+If true, will treat input as newly elapsed iterations, i.e.\ numbers to
+pass to \f[CR]update()\f[R].
+Note that this is slow (\(ti2e5 it/s) since every input must be decoded
+as a number.
+.TP
+\-\-update\-to
+bool, optional.
+If true, will treat input as total elapsed iterations, i.e.\ numbers to
+assign to \f[CR]self.n\f[R].
+Note that this is slow (\(ti2e5 it/s) since every input must be decoded
+as a number.
+.TP
+\-\-null
+bool, optional.
+If true, will discard input (no stdout).
+.TP
+\-\-manpath=\f[I]manpath\f[R]
+str, optional.
+Directory in which to install tqdm man pages.
+.TP
+\-\-comppath=\f[I]comppath\f[R]
+str, optional.
+Directory in which to place tqdm completion.
+.TP
+\-\-log=\f[I]log\f[R]
+str, optional.
+CRITICAL|FATAL|ERROR|WARN(ING)|[default: `INFO']|DEBUG|NOTSET.
+.SH AUTHORS
+tqdm developers \c
+.UR https://github.com/tqdm
+.UE \c.

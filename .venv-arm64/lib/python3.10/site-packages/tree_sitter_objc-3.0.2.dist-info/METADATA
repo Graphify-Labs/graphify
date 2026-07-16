@@ -1,0 +1,38 @@
+Metadata-Version: 2.1
+Name: tree-sitter-objc
+Version: 3.0.2
+Summary: Objective-C grammar for tree-sitter
+Author-email: Amaan Qureshi <amaanq12@gmail.com>
+License: MIT
+Project-URL: Homepage, https://github.com/tree-sitter-grammars/tree-sitter-objc
+Keywords: incremental,parsing,tree-sitter,objc
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Software Development :: Compilers
+Classifier: Topic :: Text Processing :: Linguistic
+Classifier: Typing :: Typed
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Provides-Extra: core
+Requires-Dist: tree-sitter~=0.22; extra == "core"
+
+# tree-sitter-objc
+
+
+[![CI][ci]](https://github.com/tree-sitter-grammars/tree-sitter-objc/actions/workflows/ci.yml)
+[![discord][discord]](https://discord.gg/w7nTvsVJhm)
+[![matrix][matrix]](https://matrix.to/#/#tree-sitter-chat:matrix.org)
+[![crates][crates]](https://crates.io/crates/tree-sitter-objc)
+[![npm][npm]](https://www.npmjs.com/package/tree-sitter-objc)
+[![pypi][pypi]](https://pypi.org/project/tree-sitter-objc)
+
+
+[Objective C](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjectiveC/Introduction/introObjectiveC.html)
+grammar for [tree-sitter](https://tree-sitter.github.io)
+
+[ci]: https://img.shields.io/github/actions/workflow/status/tree-sitter-grammars/tree-sitter-objc/ci.yml?logo=github&label=CI
+[discord]: https://img.shields.io/discord/1063097320771698699?logo=discord&label=discord
+[matrix]: https://img.shields.io/matrix/tree-sitter-chat%3Amatrix.org?logo=matrix&label=matrix
+[npm]: https://img.shields.io/npm/v/tree-sitter-objc?logo=npm
+[crates]: https://img.shields.io/crates/v/tree-sitter-objc?logo=rust
+[pypi]: https://img.shields.io/pypi/v/tree-sitter-objc?logo=pypi&logoColor=ffd242

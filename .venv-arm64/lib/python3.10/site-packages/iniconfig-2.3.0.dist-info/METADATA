@@ -1,0 +1,79 @@
+Metadata-Version: 2.4
+Name: iniconfig
+Version: 2.3.0
+Summary: brain-dead simple config-ini parsing
+Author-email: Ronny Pfannschmidt <opensource@ronnypfannschmidt.de>, Holger Krekel <holger.krekel@gmail.com>
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/pytest-dev/iniconfig
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Operating System :: MacOS :: MacOS X
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Topic :: Software Development :: Libraries
+Classifier: Topic :: Utilities
+Requires-Python: >=3.10
+Description-Content-Type: text/x-rst
+License-File: LICENSE
+Dynamic: license-file
+
+iniconfig: brain-dead simple parsing of ini files
+=======================================================
+
+iniconfig is a small and simple INI-file parser module
+having a unique set of features:
+
+* maintains order of sections and entries
+* supports multi-line values with or without line-continuations
+* supports "#" comments everywhere
+* raises errors with proper line-numbers
+* no bells and whistles like automatic substitutions
+* iniconfig raises an Error if two sections have the same name.
+
+If you encounter issues or have feature wishes please report them to:
+
+    https://github.com/RonnyPfannschmidt/iniconfig/issues
+
+Basic Example
+===================================
+
+If you have an ini file like this:
+
+.. code-block:: ini
+
+    # content of example.ini
+    [section1] # comment
+    name1=value1  # comment
+    name1b=value1,value2  # comment
+
+    [section2]
+    name2=
+        line1
+        line2
+
+then you can do:
+
+.. code-block:: pycon
+
+    >>> import iniconfig
+    >>> ini = iniconfig.IniConfig("example.ini")
+    >>> ini['section1']['name1'] # raises KeyError if not exists
+    'value1'
+    >>> ini.get('section1', 'name1b', [], lambda x: x.split(","))
+    ['value1', 'value2']
+    >>> ini.get('section1', 'notexist', [], lambda x: x.split(","))
+    []
+    >>> [x.name for x in list(ini)]
+    ['section1', 'section2']
+    >>> list(list(ini)[0].items())
+    [('name1', 'value1'), ('name1b', 'value1,value2')]
+    >>> 'section1' in ini
+    True
+    >>> 'inexistendsection' in ini
+    False

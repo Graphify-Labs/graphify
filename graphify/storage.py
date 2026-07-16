@@ -532,8 +532,27 @@ def _is_json_key_node_row(label: str, source_file: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def run_leiden(conn: object) -> dict[int, list[str]]:
+_GDS_GRAPH_COUNTER = 0
+
+
+def _next_graph_name() -> str:
+    """Return a unique projected-graph name.
+
+    neug has a bug where re-creating a dropped projected graph with the same
+    name makes it invisible to subsequent GDS calls on the same connection.
+    Using a unique name each time avoids this.
+    """
+    global _GDS_GRAPH_COUNTER
+    _GDS_GRAPH_COUNTER += 1
+    return f"g{_GDS_GRAPH_COUNTER}"
+
+
+def run_leiden(conn: object, *, resolution: float = 1.0) -> dict[int, list[str]]:
     """Run neug GDS Leiden community detection.
+
+    Args:
+        resolution: Leiden resolution parameter (gamma).  > 1 favours smaller
+            communities, < 1 favours larger communities.  Default 1.0.
 
     Returns ``{community_id: [node_ids]}``.
     neug leiden guarantees stable community IDs — no re-indexing needed.
@@ -555,19 +574,26 @@ def run_leiden(conn: object) -> dict[int, list[str]]:
         conn.execute("INSTALL gds;")
         conn.execute("LOAD gds;")
 
+    # Use a unique projected-graph name to avoid neug's stale-graph bug
+    # (re-creating a dropped graph with the same name makes it invisible
+    # to subsequent GDS calls on the same connection).
+    gname = _next_graph_name()
+
     # Project graph for GDS algorithms
-    conn.execute("CALL project_graph('g', ['node'], {'[node, edge, node]': ''})")
+    conn.execute(
+        f"CALL project_graph('{gname}', ['node'], {{'[node, edge, node]': ''}})"
+    )
 
     # Run Leiden
     results = list(conn.execute(
-        "CALL leiden('g', {concurrency: 1}) "
+        f"CALL leiden('{gname}', {{concurrency: 1, resolution: {resolution}}}) "
         "YIELD node, community "
         "RETURN node.id, community"
     ))
 
     # Clean up projected graph
     try:
-        conn.execute("CALL drop_projected_graph('g')")
+        conn.execute(f"CALL drop_projected_graph('{gname}')")
     except RuntimeError:
         pass
 
@@ -901,6 +927,7 @@ def cluster_by_neug(
     stages: object,
     export_fn: object,
     hyperedges: list | None = None,
+    resolution: float = 1.0,
 ) -> None:
     """Orchestrate the neug clustered path.
 
@@ -911,7 +938,7 @@ def cluster_by_neug(
     import json
 
     # 1. Leiden community detection
-    communities = run_leiden(conn)
+    communities = run_leiden(conn, resolution=resolution)
     stages.mark("cluster")
 
     # 2. Batch writeback community IDs (CASE WHEN)
@@ -958,11 +985,15 @@ def cluster_by_neug(
 def run_leiden_freeze_assign(
     conn: object,
     old_communities: dict[str, int],
+    *,
+    resolution: float = 1.0,
 ) -> list[tuple[str, int, int | None]]:
     """Run freeze-assign leiden. Old nodes frozen, new nodes assigned.
 
     Args:
         old_communities: {node_id: old_community_id} from .graphify_analysis.json.
+        resolution: Leiden resolution parameter (gamma).  > 1 favours smaller
+            communities, < 1 favours larger communities.  Default 1.0.
 
     Returns [(node_id, new_community, previous_community), ...].
     previous_community is None for new nodes (delta_comm was -1).
@@ -1024,19 +1055,25 @@ def run_leiden_freeze_assign(
         conn.execute("INSTALL gds;")
         conn.execute("LOAD gds;")
 
+    # Use a unique projected-graph name (see run_leiden for rationale)
+    gname = _next_graph_name()
+
     # Project graph (picks up delta_comm property)
-    conn.execute("CALL project_graph('g', ['node'], {'[node, edge, node]': ''})")
+    conn.execute(
+        f"CALL project_graph('{gname}', ['node'], {{'[node, edge, node]': ''}})"
+    )
 
     # Run freeze-assign leiden (allow_relocation defaults to false = frozen)
     results = list(conn.execute(
-        "CALL leiden('g', {concurrency: 1, initial_community_property: 'delta_comm'}) "
+        f"CALL leiden('{gname}', {{concurrency: 1, resolution: {resolution}, "
+        "initial_community_property: 'delta_comm'}) "
         "YIELD node, community, previous_community "
         "RETURN node.id, community, previous_community"
     ))
 
     # Clean up projected graph
     try:
-        conn.execute("CALL drop_projected_graph('g')")
+        conn.execute(f"CALL drop_projected_graph('{gname}')")
     except RuntimeError:
         pass
 
@@ -1137,6 +1174,7 @@ def delta_analyze(
     delta_analysis_path: object,
     stages: object,
     merged: dict,
+    resolution: float = 1.0,
 ) -> dict:
     """Orchestrate incremental delta analysis (preview mode).
 
@@ -1154,7 +1192,7 @@ def delta_analyze(
             old_communities[nid] = cid
 
     # 2. Run freeze-assign leiden
-    leiden_results = run_leiden_freeze_assign(conn, old_communities)
+    leiden_results = run_leiden_freeze_assign(conn, old_communities, resolution=resolution)
     stages.mark("freeze-assign")
 
     # 3. Analyze community changes

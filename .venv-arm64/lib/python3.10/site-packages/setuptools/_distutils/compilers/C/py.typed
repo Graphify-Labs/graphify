@@ -1,0 +1,1 @@
+# Ensure that checkers who see this as a separate namespace package still understand it's typed.

@@ -1,0 +1,12 @@
+blinker-1.9.0.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+blinker-1.9.0.dist-info/LICENSE.txt,sha256=nrc6HzhZekqhcCXSrhvjg5Ykx5XphdTw6Xac4p-spGc,1054
+blinker-1.9.0.dist-info/METADATA,sha256=uIRiM8wjjbHkCtbCyTvctU37IAZk0kEe5kxAld1dvzA,1633
+blinker-1.9.0.dist-info/RECORD,,
+blinker-1.9.0.dist-info/WHEEL,sha256=CpUCUxeHQbRN5UGRQHYRJorO5Af-Qy_fHMctcQ8DSGI,82
+blinker/__init__.py,sha256=I2EdZqpy4LyjX17Hn1yzJGWCjeLaVaPzsMgHkLfj_cQ,317
+blinker/__pycache__/__init__.cpython-310.pyc,,
+blinker/__pycache__/_utilities.cpython-310.pyc,,
+blinker/__pycache__/base.cpython-310.pyc,,
+blinker/_utilities.py,sha256=0J7eeXXTUx0Ivf8asfpx0ycVkp0Eqfqnj117x2mYX9E,1675
+blinker/base.py,sha256=QpDuvXXcwJF49lUBcH5BiST46Rz9wSG7VW_p7N_027M,19132
+blinker/py.typed,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0

@@ -1,0 +1,40 @@
+Metadata-Version: 2.1
+Name: tree-sitter-ruby
+Version: 0.23.1
+Summary: Ruby grammar for tree-sitter
+Author-email: Max Brunsfeld <maxbrunsfeld@gmail.com>, Amaan Qureshi <amaanq12@gmail.com>
+License: MIT
+Project-URL: Homepage, https://github.com/tree-sitter/tree-sitter-ruby
+Keywords: incremental,parsing,tree-sitter,ruby
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Topic :: Software Development :: Compilers
+Classifier: Topic :: Text Processing :: Linguistic
+Classifier: Typing :: Typed
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Provides-Extra: core
+Requires-Dist: tree-sitter~=0.22; extra == "core"
+
+# tree-sitter-ruby
+
+[![CI][ci]](https://github.com/tree-sitter/tree-sitter-ruby/actions/workflows/ci.yml)
+[![discord][discord]](https://discord.gg/w7nTvsVJhm)
+[![matrix][matrix]](https://matrix.to/#/#tree-sitter-chat:matrix.org)
+[![crates][crates]](https://crates.io/crates/tree-sitter-ruby)
+[![npm][npm]](https://www.npmjs.com/package/tree-sitter-ruby)
+[![pypi][pypi]](https://pypi.org/project/tree-sitter-ruby)
+
+Ruby grammar for [tree-sitter](https://github.com/tree-sitter/tree-sitter).
+
+#### References
+
+- [AST Format of the Whitequark parser](https://github.com/whitequark/parser/blob/master/doc/AST_FORMAT.md)
+
+[ci]: https://img.shields.io/github/actions/workflow/status/tree-sitter/tree-sitter-ruby/ci.yml?logo=github&label=CI
+[discord]: https://img.shields.io/discord/1063097320771698699?logo=discord&label=discord
+[matrix]: https://img.shields.io/matrix/tree-sitter-chat%3Amatrix.org?logo=matrix&label=matrix
+[npm]: https://img.shields.io/npm/v/tree-sitter-ruby?logo=npm
+[crates]: https://img.shields.io/crates/v/tree-sitter-ruby?logo=rust
+[pypi]: https://img.shields.io/pypi/v/tree-sitter-ruby?logo=pypi&logoColor=ffd242
