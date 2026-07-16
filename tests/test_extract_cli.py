@@ -1,6 +1,8 @@
 """Tests for `graphify extract` CLI dispatch path in graphify.__main__."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import graphify.__main__ as mainmod
@@ -360,8 +362,9 @@ def test_extract_mode_deep_dispatches_over_warm_cache(monkeypatch, tmp_path):
     assert len(calls) == 2, (
         "second deep run must be served from cache/semantic-deep/"
     )
-    # The deep entry landed in its own namespace, not cache/semantic/.
-    assert any((corpus / "graphify-out" / "cache" / "semantic-deep").glob("*.json"))
+    # The deep entry landed in its own namespace, not cache/semantic/. Entries are
+    # nested under a p{prompt-fingerprint}/ subdir (#1939), hence the recursive glob.
+    assert any((corpus / "graphify-out" / "cache" / "semantic-deep").glob("**/*.json"))
 
 
 def test_extract_force_flag_redispatches_and_stamps_manifest(monkeypatch, tmp_path):
@@ -393,7 +396,8 @@ def test_extract_force_flag_redispatches_and_stamps_manifest(monkeypatch, tmp_pa
     assert calls[1]["paths"] == [str(corpus / "README.md")]
 
     # The forced run still wrote the semantic cache and stamped the manifest.
-    assert any((corpus / "graphify-out" / "cache" / "semantic").glob("*.json"))
+    # Entries nest under a p{prompt-fingerprint}/ subdir (#1939).
+    assert any((corpus / "graphify-out" / "cache" / "semantic").glob("**/*.json"))
     manifest = json.loads(
         (corpus / "graphify-out" / "manifest.json").read_text()
     )
@@ -824,3 +828,30 @@ def test_no_cluster_incremental_prunes_newly_excluded_file(
         f"--no-cluster early exit must prune excluded sources, still see {sources}"
     )
     assert any("keep.py" in s for s in sources)
+
+
+def test_cache_check_prompt_file_scopes_hits_to_that_prompt(monkeypatch, tmp_path, capsys):
+    """#1939: cache-check --prompt-file only counts entries produced by that same
+    extraction prompt, so an upgraded prompt reports a miss (re-extract) rather
+    than replaying the older vintage."""
+    from graphify.cache import save_semantic_cache
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n")
+    spec = tmp_path / "extraction-spec.md"
+    spec.write_text("PROMPT V1", encoding="utf-8")
+    save_semantic_cache([{"id": "d", "source_file": "doc.md"}], [],
+                        root=tmp_path, prompt_file=str(spec))
+    files_from = tmp_path / "files.txt"
+    files_from.write_text(str(doc) + "\n")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    base = ["graphify", "cache-check", str(files_from), "--root", str(tmp_path)]
+    _run_extract(monkeypatch, base + ["--prompt-file", str(spec)])
+    assert "Cache: 1 hit, 0 miss" in capsys.readouterr().out
+
+    # An upgrade rewrites the prompt: the entry must no longer satisfy the run.
+    spec.write_text("PROMPT V2 — rewritten by an upgrade", encoding="utf-8")
+    os.utime(spec, ns=(0, 0))
+    _run_extract(monkeypatch, base + ["--prompt-file", str(spec)])
+    assert "Cache: 0 hit, 1 miss" in capsys.readouterr().out

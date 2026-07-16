@@ -903,3 +903,234 @@ def test_save_semantic_cache_merge_existing_prunes_only_incoming(tmp_path):
     assert ("a", "a") in pairs, "prior entry's valid edge must survive the union"
     assert ("a", "b") in pairs, "incoming valid edge must be kept"
     assert not any("stray" in p for p in pairs)
+
+
+# --- extraction-prompt fingerprinting (#1939) -------------------------------
+
+
+def test_prompt_fingerprint_stable_and_prompt_sensitive(tmp_path):
+    """The fingerprint is stable for identical prompts and differs when the
+    prompt text changes — the whole invalidation signal rests on this."""
+    from graphify.cache import prompt_fingerprint
+
+    assert prompt_fingerprint("extract a graph") == prompt_fingerprint("extract a graph")
+    assert prompt_fingerprint("extract a graph") != prompt_fingerprint("extract a graph v2")
+
+    # A Path is read and hashed as its contents, so the skill path (which loads
+    # references/extraction-spec.md) and the Python path agree on the same text.
+    spec = tmp_path / "extraction-spec.md"
+    spec.write_text("extract a graph", encoding="utf-8")
+    assert prompt_fingerprint(spec) == prompt_fingerprint("extract a graph")
+
+
+def test_prompt_fingerprint_ignores_line_endings(tmp_path):
+    """A CRLF checkout of the same spec must not look like a prompt change —
+    otherwise every Windows run re-bills the whole corpus."""
+    from graphify.cache import prompt_fingerprint
+
+    assert prompt_fingerprint("a\r\nb\r\n") == prompt_fingerprint("a\nb\n")
+    assert prompt_fingerprint("a  \nb\n") == prompt_fingerprint("a\nb\n")
+
+
+def test_semantic_cache_prompt_change_invalidates(tmp_path):
+    """The reported bug (#1939): after the extraction prompt changes, an
+    unchanged file must MISS instead of replaying the older vintage."""
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    f = tmp_path / "doc.md"
+    f.write_text("# Doc\n\nBody.\n")
+    save_semantic_cache([{"id": "old_vintage", "source_file": "doc.md"}], [],
+                        root=tmp_path, prompt="PROMPT V1")
+
+    # Same prompt: hit.
+    nodes, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path, prompt="PROMPT V1")
+    assert [n["id"] for n in nodes] == ["old_vintage"]
+    assert uncached == []
+
+    # Prompt changed (an upgrade shipped a new extraction-spec): must re-extract.
+    nodes, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path, prompt="PROMPT V2")
+    assert nodes == []
+    assert uncached == [str(f)], "a new prompt must not replay the old prompt's entry"
+
+    # V2's results land in their own namespace and do not clobber V1's, so
+    # rolling back to V1 still hits rather than re-billing.
+    save_semantic_cache([{"id": "new_vintage", "source_file": "doc.md"}], [],
+                        root=tmp_path, prompt="PROMPT V2")
+    nodes, _, _, _ = check_semantic_cache([str(f)], root=tmp_path, prompt="PROMPT V2")
+    assert [n["id"] for n in nodes] == ["new_vintage"]
+    nodes, _, _, _ = check_semantic_cache([str(f)], root=tmp_path, prompt="PROMPT V1")
+    assert [n["id"] for n in nodes] == ["old_vintage"]
+
+
+def test_semantic_cache_prompt_namespaced_layout(tmp_path):
+    """Fingerprinted entries live under cache/semantic/p{fp}/, never flat."""
+    from graphify.cache import prompt_fingerprint, save_semantic_cache
+
+    f = tmp_path / "doc.md"
+    f.write_text("# Doc\n")
+    save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [],
+                        root=tmp_path, prompt="PROMPT V1")
+
+    sem = tmp_path / "graphify-out" / "cache" / "semantic"
+    h = file_hash(f, tmp_path)
+    assert (sem / f"p{prompt_fingerprint('PROMPT V1')}" / f"{h}.json").exists()
+    assert not (sem / f"{h}.json").exists(), (
+        "a known-vintage entry must never be written into the flat unknown-vintage layout"
+    )
+
+
+def test_semantic_cache_prompt_and_mode_compose(tmp_path):
+    """The prompt fingerprint nests inside the deep namespace (#1894), so the
+    two dimensions are independent."""
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    f = tmp_path / "doc.md"
+    f.write_text("# Doc\n")
+    save_semantic_cache([{"id": "d", "source_file": "doc.md"}], [],
+                        root=tmp_path, mode="deep", prompt="PROMPT V1")
+
+    deep = tmp_path / "graphify-out" / "cache" / "semantic-deep"
+    assert list(deep.glob("p*/*.json")), "deep + prompt must nest under semantic-deep/p{fp}/"
+
+    # Right mode, wrong prompt -> miss. Right prompt, wrong mode -> miss.
+    _, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path, mode="deep",
+                                             prompt="PROMPT V2")
+    assert uncached == [str(f)]
+    _, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path, prompt="PROMPT V1")
+    assert uncached == [str(f)]
+    # Both right -> hit.
+    nodes, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path, mode="deep",
+                                                 prompt="PROMPT V1")
+    assert [n["id"] for n in nodes] == ["d"] and uncached == []
+
+
+def test_semantic_cache_legacy_entries_served_with_warning(tmp_path):
+    """Entries written before fingerprinting have unknowable vintage. They are
+    still served — dropping them would re-bill a whole corpus on upgrade — but
+    the user is told how many, which is the signal #1939 says is missing today."""
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    a = tmp_path / "a.md"
+    a.write_text("# A\n")
+    b = tmp_path / "b.md"
+    b.write_text("# B\n")
+    # Pre-fingerprint writes: the historical flat layout.
+    save_semantic_cache([{"id": "a_old", "source_file": "a.md"},
+                         {"id": "b_old", "source_file": "b.md"}], [], root=tmp_path)
+
+    with pytest.warns(RuntimeWarning, match="2 semantic cache entries predate"):
+        nodes, _, _, uncached = check_semantic_cache(
+            [str(a), str(b)], root=tmp_path, prompt="PROMPT V1"
+        )
+    assert {n["id"] for n in nodes} == {"a_old", "b_old"}
+    assert uncached == []
+
+
+def test_semantic_cache_fingerprinted_entry_beats_legacy(tmp_path):
+    """Once a file is re-extracted under the current prompt, its fingerprinted
+    entry wins and the stale flat one is no longer consulted (no warning)."""
+    import warnings as _warnings
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    f = tmp_path / "doc.md"
+    f.write_text("# Doc\n")
+    save_semantic_cache([{"id": "unknown_vintage", "source_file": "doc.md"}], [],
+                        root=tmp_path)  # legacy flat
+    save_semantic_cache([{"id": "current", "source_file": "doc.md"}], [],
+                        root=tmp_path, prompt="PROMPT V1")
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")  # any legacy warning would raise here
+        nodes, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path,
+                                                     prompt="PROMPT V1")
+    assert [n["id"] for n in nodes] == ["current"]
+    assert uncached == []
+
+
+def test_semantic_cache_merge_existing_never_fuses_legacy_vintage(tmp_path):
+    """merge_existing must not union a pre-fingerprint entry into a write it is
+    about to stamp as current-vintage — that would mix two prompts inside one
+    entry and then attest the result to a prompt that produced half of it."""
+    from graphify.cache import load_cached, save_semantic_cache
+
+    f = tmp_path / "doc.md"
+    f.write_text("# Doc\n")
+    save_semantic_cache([{"id": "unknown_vintage", "source_file": "doc.md"}], [],
+                        root=tmp_path)  # legacy flat
+    save_semantic_cache([{"id": "current", "source_file": "doc.md"}], [],
+                        root=tmp_path, merge_existing=True, prompt="PROMPT V1")
+
+    entry = load_cached(f, root=tmp_path, kind="semantic", prompt="PROMPT V1")
+    assert [n["id"] for n in entry["nodes"]] == ["current"]
+
+    # Within one prompt, merge_existing still unions across checkpoints.
+    save_semantic_cache([{"id": "second_chunk", "source_file": "doc.md"}], [],
+                        root=tmp_path, merge_existing=True, prompt="PROMPT V1")
+    entry = load_cached(f, root=tmp_path, kind="semantic", prompt="PROMPT V1")
+    assert {n["id"] for n in entry["nodes"]} == {"current", "second_chunk"}
+
+
+def test_semantic_prune_and_clear_reach_fingerprint_subdirs(tmp_path):
+    """A glob that stopped at the top level would leave every fingerprinted
+    entry unprunable, re-growing the unbounded-orphan problem of #1527."""
+    from graphify.cache import (
+        cached_files, clear_cache, prune_semantic_cache, save_semantic_cache,
+    )
+
+    f = tmp_path / "doc.md"
+    f.write_text("# Doc\n")
+    save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [],
+                        root=tmp_path, prompt="PROMPT V1")
+    h = file_hash(f, tmp_path)
+    assert h in cached_files(tmp_path), "cached_files must see fingerprinted entries"
+
+    # Live: kept.
+    assert prune_semantic_cache(tmp_path, {h}) == 0
+    # Orphaned (content changed / file deleted): pruned.
+    assert prune_semantic_cache(tmp_path, set()) == 1
+
+    save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [],
+                        root=tmp_path, prompt="PROMPT V1")
+    clear_cache(tmp_path)
+    assert not list((tmp_path / "graphify-out" / "cache" / "semantic").glob("**/*.json"))
+
+
+def test_semantic_cache_unreadable_prompt_file_warns_and_falls_back(tmp_path):
+    """A skill snippet substitutes SPEC_PATH by hand. If it lands on a path that
+    isn't there, the fallback to the unattributed layout must be loud: silently
+    reverting to unversioned keying is exactly the #1939 behavior being fixed."""
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    f = tmp_path / "doc.md"
+    f.write_text("# Doc\n")
+    save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [], root=tmp_path)
+
+    with pytest.warns(RuntimeWarning, match="could not read extraction prompt"):
+        nodes, _, _, uncached = check_semantic_cache(
+            [str(f)], root=tmp_path, prompt_file=str(tmp_path / "nope.md")
+        )
+    # Fell back rather than aborting the run.
+    assert [n["id"] for n in nodes] == ["n"] and uncached == []
+
+
+def test_prompt_file_reflects_edited_spec(tmp_path):
+    """The prompt-file fingerprint is memoized per (path, size, mtime); an edited
+    spec must still register as a new prompt rather than reusing a stale memo."""
+    from graphify.cache import check_semantic_cache, save_semantic_cache
+
+    spec = tmp_path / "extraction-spec.md"
+    spec.write_text("prompt one", encoding="utf-8")
+    f = tmp_path / "doc.md"
+    f.write_text("# Doc\n")
+
+    save_semantic_cache([{"id": "v1", "source_file": "doc.md"}], [],
+                        root=tmp_path, prompt_file=str(spec))
+    nodes, _, _, _ = check_semantic_cache([str(f)], root=tmp_path, prompt_file=str(spec))
+    assert [n["id"] for n in nodes] == ["v1"]
+
+    # An upgrade rewrites the spec: the same file path is now a different prompt.
+    import os as _os
+    spec.write_text("prompt two — rewritten by an upgrade", encoding="utf-8")
+    _os.utime(spec, ns=(0, 0))  # force a distinct stat signature
+    _, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path, prompt_file=str(spec))
+    assert uncached == [str(f)], "an edited spec must invalidate, not reuse the memo"
