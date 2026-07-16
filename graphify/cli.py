@@ -1386,10 +1386,11 @@ def dispatch_command(cmd: str) -> None:
         from graphify.storage import init_db as _init_db, close_db as _close_db, delta_analyze as _delta_analyze
 
         if len(sys.argv) < 3:
-            print("Usage: graphify delta-cluster <path> [--resolution R]", file=sys.stderr)
+            print("Usage: graphify delta-cluster <path> [--resolution R] [--cluster-on-files]", file=sys.stderr)
             sys.exit(1)
 
         _delta_resolution: float = 1.0
+        _delta_file_level: bool = False
         _delta_args = sys.argv[2:]
         _delta_pos: list[str] = []
         _di = 0
@@ -1399,10 +1400,12 @@ def dispatch_command(cmd: str) -> None:
                 _delta_resolution = float(_delta_args[_di + 1]); _di += 2
             elif _da.startswith("--resolution="):
                 _delta_resolution = float(_da.split("=", 1)[1]); _di += 1
+            elif _da == "--cluster-on-files":
+                _delta_file_level = True; _di += 1
             else:
                 _delta_pos.append(_da); _di += 1
         if not _delta_pos:
-            print("Usage: graphify delta-cluster <path> [--resolution R]", file=sys.stderr)
+            print("Usage: graphify delta-cluster <path> [--resolution R] [--cluster-on-files]", file=sys.stderr)
             sys.exit(1)
         _target = Path(_delta_pos[0]).resolve()
         _graphify_out = _target / _GRAPHIFY_OUT
@@ -1437,6 +1440,7 @@ def dispatch_command(cmd: str) -> None:
                 stages=_stages,
                 merged={"input_tokens": 0, "output_tokens": 0},
                 resolution=_delta_resolution,
+                file_level=_delta_file_level,
             )
         finally:
             _close_db(_neug_db, _neug_conn)
@@ -2088,6 +2092,7 @@ def dispatch_command(cmd: str) -> None:
         cli_exclude_hubs: float | None = None
         cli_excludes: list[str] = []
         cli_timing: bool = False
+        cli_cluster_on_files: bool = False
 
         def _parse_int(name: str, raw: str) -> int:
             try:
@@ -2171,6 +2176,8 @@ def dispatch_command(cmd: str) -> None:
                 cli_excludes.append(args[i + 1]); i += 2
             elif a.startswith("--exclude="):
                 cli_excludes.append(a.split("=", 1)[1]); i += 1
+            elif a == "--cluster-on-files":
+                cli_cluster_on_files = True; i += 1
             elif a == "--postgres" and i + 1 < len(args):
                 cli_postgres_dsn = args[i + 1]; i += 2
             elif a.startswith("--postgres="):
@@ -2720,6 +2727,7 @@ def dispatch_command(cmd: str) -> None:
                 export_fn=_export_to_json,
                 hyperedges=merged.get("hyperedges", []),
                 resolution=cli_resolution,
+                file_level=cli_cluster_on_files,
             )
             _close_db(_neug_db, _neug_conn)
             if merged.get("output_tokens", 0) > 0:

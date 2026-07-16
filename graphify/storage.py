@@ -605,6 +605,171 @@ def run_leiden(conn: object, *, resolution: float = 1.0) -> dict[int, list[str]]
 
 
 # ---------------------------------------------------------------------------
+# File-level clustering (aggregate symbol edges → file graph → leiden)
+# ---------------------------------------------------------------------------
+
+
+def _aggregate_file_edges(conn: object, csv_path: Path) -> set[str]:
+    """Aggregate symbol-level edges into file-level edge table, write to CSV.
+
+    Returns the set of all source_file values (for creating temp file nodes).
+    Edges where either endpoint has empty source_file (concept/stub nodes)
+    or where both endpoints share the same source_file (intra-file edges)
+    are excluded.
+    """
+    import csv
+
+    results = list(conn.execute(
+        "MATCH (a:node)-[:edge]->(b:node) "
+        "WHERE a.source_file <> '' AND b.source_file <> '' "
+        "AND a.source_file <> b.source_file "
+        "RETURN a.source_file, b.source_file, count(*) AS weight"
+    ))
+
+    all_files: set[str] = set()
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["from_file", "to_file", "weight"])
+        for from_file, to_file, weight in results:
+            writer.writerow([from_file, to_file, int(weight)])
+            all_files.add(from_file)
+            all_files.add(to_file)
+
+    return all_files
+
+
+def run_leiden_subgraph(
+    conn: object,
+    *,
+    node_label: str,
+    edge_label: str,
+    resolution: float = 1.0,
+    weight: str | None = None,
+    initial_community_property: str | None = None,
+) -> dict[str, int] | dict[str, tuple[int, int | None]]:
+    """Run leiden on an existing node/edge label pair (project + leiden + cleanup).
+
+    Does NOT create or drop temp tables — caller is responsible for that.
+
+    Args:
+        node_label: Existing node table name in DB (persistent or temporary).
+        edge_label: Existing edge table name in DB.
+        resolution: Leiden resolution parameter (gamma).
+        weight: If set (e.g. 'weight'), run weighted leiden.
+        initial_community_property: If set (e.g. 'delta_comm'), run freeze-assign
+            leiden.  When set, returns ``{node_id: (new_cid, prev_cid)}`` instead
+            of ``{node_id: community_id}``.
+    """
+    # Load GDS extension
+    try:
+        conn.execute("LOAD gds;")
+    except RuntimeError:
+        conn.execute("INSTALL gds;")
+        conn.execute("LOAD gds;")
+
+    gname = _next_graph_name()
+    conn.execute(
+        f"CALL project_graph('{gname}', ['{node_label}'], "
+        f"{{'[{node_label}, {edge_label}, {node_label}]': ''}})"
+    )
+
+    # Build leiden options
+    opts = f"concurrency: 1, resolution: {resolution}"
+    if weight:
+        opts += f", weight: '{weight}'"
+    if initial_community_property:
+        opts += f", initial_community_property: '{initial_community_property}'"
+
+    if initial_community_property:
+        # Freeze-assign: also return previous_community
+        results = list(conn.execute(
+            f"CALL leiden('{gname}', {{{opts}}}) "
+            "YIELD node, community, previous_community "
+            "RETURN node.id, community, previous_community"
+        ))
+        try:
+            conn.execute(f"CALL drop_projected_graph('{gname}')")
+        except RuntimeError:
+            pass
+        return {nid: (int(cid), prev) for nid, cid, prev in results}
+    else:
+        results = list(conn.execute(
+            f"CALL leiden('{gname}', {{{opts}}}) "
+            "YIELD node, community RETURN node.id, community"
+        ))
+        try:
+            conn.execute(f"CALL drop_projected_graph('{gname}')")
+        except RuntimeError:
+            pass
+        return {nid: int(cid) for nid, cid in results}
+
+
+def cluster_on_files(
+    conn: object, *, resolution: float = 1.0
+) -> dict[int, list[str]]:
+    """File-level clustering. Returns ``{community_id: [symbol_node_ids]}``.
+
+    Each symbol node inherits its source_file's community.
+    Nodes with empty source_file (concept/stub) are excluded.
+    """
+    import tempfile, csv
+
+    _NODE_LABEL = "TempFile"
+    _EDGE_LABEL = "TEMP_FILE_EDGE"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        edge_csv = Path(tmpdir) / "file_edges.csv"
+        node_csv = Path(tmpdir) / "file_nodes.csv"
+
+        # 1. Aggregate symbol edges → file-level edge CSV
+        all_files = _aggregate_file_edges(conn, edge_csv)
+
+        # 2. Write file node CSV (id = file path, must match edge CSV from/to)
+        with open(node_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["id", "label"])
+            for sf in sorted(all_files):
+                writer.writerow([sf, Path(sf).name])
+
+        # 3. COPY TEMP to create temp tables (independent step)
+        conn.execute(
+            f"COPY TEMP {_NODE_LABEL} FROM '{node_csv}' "
+            "(header=true, delim=',')"
+        )
+        conn.execute(
+            f"COPY TEMP {_EDGE_LABEL} FROM '{edge_csv}' "
+            f"(header=true, delim=',', from='{_NODE_LABEL}', to='{_NODE_LABEL}')"
+        )
+
+    # 4. Run leiden on the temp subgraph
+    file_communities = run_leiden_subgraph(
+        conn,
+        node_label=_NODE_LABEL,
+        edge_label=_EDGE_LABEL,
+        resolution=resolution,
+        weight="weight",
+    )
+
+    # 5. Clean up temp tables
+    conn.execute(f"DROP TABLE {_EDGE_LABEL}")
+    conn.execute(f"DROP TABLE {_NODE_LABEL}")
+
+    # 6. Map file communities back to symbol-level
+    results = list(conn.execute(
+        "MATCH (n:node) WHERE n.source_file <> '' "
+        "RETURN n.id, n.source_file"
+    ))
+
+    communities: dict[int, list[str]] = {}
+    for nid, sf in results:
+        cid = file_communities.get(sf)
+        if cid is not None:
+            communities.setdefault(cid, []).append(nid)
+
+    return communities
+
+
+# ---------------------------------------------------------------------------
 # Cohesion + community labeling
 # ---------------------------------------------------------------------------
 
@@ -928,6 +1093,7 @@ def cluster_by_neug(
     export_fn: object,
     hyperedges: list | None = None,
     resolution: float = 1.0,
+    file_level: bool = False,
 ) -> None:
     """Orchestrate the neug clustered path.
 
@@ -937,8 +1103,11 @@ def cluster_by_neug(
     """
     import json
 
-    # 1. Leiden community detection
-    communities = run_leiden(conn, resolution=resolution)
+    # 1. Leiden community detection (symbol-level or file-level)
+    if file_level:
+        communities = cluster_on_files(conn, resolution=resolution)
+    else:
+        communities = run_leiden(conn, resolution=resolution)
     stages.mark("cluster")
 
     # 2. Batch writeback community IDs (CASE WHEN)
@@ -1167,6 +1336,93 @@ def analyze_community_changes(
     }
 
 
+def _delta_analyze_file_level(
+    conn: object,
+    old_communities: dict[str, int],
+    *,
+    resolution: float = 1.0,
+) -> list[tuple[str, int, int | None]]:
+    """File-level freeze-assign leiden for incremental analysis.
+
+    1. Map old symbol-level communities to file-level: {file_path: old_cid}
+    2. Aggregate edges → CSV (same as full file-level clustering)
+    3. Write file node CSV with delta_comm column (old_cid or -1 for new files)
+    4. COPY TEMP → run_leiden_subgraph with freeze-assign
+    5. Expand file-level results to symbol-level
+    6. Clean up temp tables
+
+    Returns [(symbol_node_id, new_cid, prev_cid), ...] — same format as
+    run_leiden_freeze_assign.
+    """
+    import tempfile, csv
+
+    _NODE_LABEL = "TempFile"
+    _EDGE_LABEL = "TEMP_FILE_EDGE"
+
+    # 1. Map old symbol communities → file-level communities
+    node_to_sf: dict[str, str] = {}
+    for row in conn.execute(
+        "MATCH (n:node) WHERE n.source_file <> '' RETURN n.id, n.source_file"
+    ):
+        node_to_sf[row[0]] = row[1]
+
+    old_file_communities: dict[str, int] = {}
+    for nid, old_cid in old_communities.items():
+        sf = node_to_sf.get(nid)
+        if sf and sf not in old_file_communities:
+            old_file_communities[sf] = old_cid
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        edge_csv = Path(tmpdir) / "file_edges.csv"
+        node_csv = Path(tmpdir) / "file_nodes.csv"
+
+        # 2. Aggregate edges → CSV
+        all_files = _aggregate_file_edges(conn, edge_csv)
+
+        # 3. Write file node CSV with delta_comm column
+        #    id = file path, delta_comm = old community (or -1 for new files)
+        with open(node_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["id", "label", "delta_comm"])
+            for sf in sorted(all_files):
+                old_cid = old_file_communities.get(sf, -1)
+                writer.writerow([sf, Path(sf).name, old_cid])
+
+        # 4. COPY TEMP
+        conn.execute(
+            f"COPY TEMP {_NODE_LABEL} FROM '{node_csv}' "
+            "(header=true, delim=',')"
+        )
+        conn.execute(
+            f"COPY TEMP {_EDGE_LABEL} FROM '{edge_csv}' "
+            f"(header=true, delim=',', from='{_NODE_LABEL}', to='{_NODE_LABEL}')"
+        )
+
+    # 5. Run freeze-assign leiden on temp subgraph
+    file_results = run_leiden_subgraph(
+        conn,
+        node_label=_NODE_LABEL,
+        edge_label=_EDGE_LABEL,
+        resolution=resolution,
+        weight="weight",
+        initial_community_property="delta_comm",
+    )
+    # file_results: {file_path: (new_cid, prev_cid)}
+
+    # 6. Clean up temp tables
+    conn.execute(f"DROP TABLE {_EDGE_LABEL}")
+    conn.execute(f"DROP TABLE {_NODE_LABEL}")
+
+    # 7. Expand to symbol-level: each symbol inherits its file's community
+    symbol_results: list[tuple[str, int, int | None]] = []
+    for nid, sf in node_to_sf.items():
+        if sf in file_results:
+            new_cid, prev_cid = file_results[sf]
+            symbol_results.append((nid, new_cid, prev_cid))
+
+    return symbol_results
+
+
 def delta_analyze(
     conn: object,
     *,
@@ -1175,6 +1431,7 @@ def delta_analyze(
     stages: object,
     merged: dict,
     resolution: float = 1.0,
+    file_level: bool = False,
 ) -> dict:
     """Orchestrate incremental delta analysis (preview mode).
 
@@ -1191,8 +1448,13 @@ def delta_analyze(
         for nid in node_ids:
             old_communities[nid] = cid
 
-    # 2. Run freeze-assign leiden
-    leiden_results = run_leiden_freeze_assign(conn, old_communities, resolution=resolution)
+    # 2. Run freeze-assign leiden (symbol-level or file-level)
+    if file_level:
+        leiden_results = _delta_analyze_file_level(
+            conn, old_communities, resolution=resolution
+        )
+    else:
+        leiden_results = run_leiden_freeze_assign(conn, old_communities, resolution=resolution)
     stages.mark("freeze-assign")
 
     # 3. Analyze community changes

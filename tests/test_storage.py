@@ -572,3 +572,159 @@ def test_delta_analyze(tmp_db):
     assert rows[0][0] == 0, f"n14 community should be 0 (preview), got {rows[0][0]}"
 
     _close(db, conn)
+
+
+# --- file-level clustering ---
+
+
+def test_aggregate_file_edges(tmp_db):
+    """_aggregate_file_edges should exclude concept nodes and intra-file edges."""
+    from graphify.storage import _aggregate_file_edges
+    db, conn = _init(tmp_db)
+    _populate_test_graph(conn)
+
+    import tempfile
+    csv_path = Path(tmp_db).parent / "file_edges.csv"
+    all_files = _aggregate_file_edges(conn, csv_path)
+
+    # 3 source files in test data
+    assert all_files == {"src/auth.py", "src/models.py", "src/client.py"}
+
+    # Read CSV and verify edges
+    import csv as _csv
+    with open(csv_path) as f:
+        rows = list(_csv.DictReader(f))
+
+    # Cross-file edges: n3(auth)→n6(client), n3(auth)→n4(models)
+    # Intra-file and concept edges should be excluded
+    edge_pairs = {(r["from_file"], r["to_file"], int(r["weight"])) for r in rows}
+    assert ("src/auth.py", "src/client.py", 1) in edge_pairs
+    assert ("src/auth.py", "src/models.py", 1) in edge_pairs
+
+    # No intra-file edges
+    for r in rows:
+        assert r["from_file"] != r["to_file"], "Intra-file edge should be excluded"
+
+    # No concept nodes (source_file='')
+    for r in rows:
+        assert r["from_file"] != "", "Concept node should be excluded"
+        assert r["to_file"] != "", "Concept node should be excluded"
+
+    _close(db, conn)
+
+
+def test_cluster_on_files(tmp_db):
+    """File-level clustering: all symbols in same file get same community."""
+    from graphify.storage import cluster_on_files
+    db, conn = _init(tmp_db)
+    _populate_test_graph(conn)
+
+    communities = cluster_on_files(conn)
+
+    # All non-concept nodes should be assigned
+    total = sum(len(v) for v in communities.values())
+    # n11 has source_file='' and should be excluded
+    assert total == len(_TEST_NODES) - 1, f"Expected {len(_TEST_NODES) - 1} nodes, got {total}"
+
+    # Build file → community map
+    node_to_sf = {n["id"]: n["source_file"] for n in _TEST_NODES if n["source_file"]}
+    file_to_comm: dict[str, int] = {}
+    for cid, members in communities.items():
+        for nid in members:
+            sf = node_to_sf.get(nid)
+            if sf:
+                if sf in file_to_comm:
+                    assert file_to_comm[sf] == cid, (
+                        f"File {sf} has nodes in different communities: "
+                        f"{file_to_comm[sf]} and {cid}"
+                    )
+                file_to_comm[sf] = cid
+
+    # n11 (concept node) should not appear in any community
+    all_nodes = set()
+    for members in communities.values():
+        all_nodes.update(members)
+    assert "n11" not in all_nodes, "Concept node n11 should be excluded"
+
+    _close(db, conn)
+
+
+def test_cluster_on_files_resolution(tmp_db):
+    """cluster_on_files accepts resolution parameter."""
+    from graphify.storage import cluster_on_files
+    db, conn = _init(tmp_db)
+    _populate_test_graph(conn)
+
+    # Just verify it doesn't crash with different resolution
+    communities = cluster_on_files(conn, resolution=0.5)
+    assert len(communities) >= 1
+    _close(db, conn)
+
+
+def test_delta_analyze_file_level(tmp_db):
+    """File-level delta analysis: freeze-assign on file-level graph."""
+    from graphify.storage import (
+        cluster_on_files, ingest_communities, delta_analyze,
+    )
+    db, conn = _init(tmp_db)
+    _populate_test_graph(conn)
+
+    # Phase 1: full file-level clustering
+    communities = cluster_on_files(conn)
+    ingest_communities(conn, communities)
+
+    # Build prev_analysis (simulates .graphify_analysis.json)
+    prev_analysis = {
+        "communities": {str(k): v for k, v in communities.items()},
+        "cohesion": {},
+        "gods": [],
+        "surprises": [],
+        "tokens": {"input": 0, "output": 0},
+    }
+
+    # Phase 2: add a new file with a node + edge to existing graph
+    conn.execute(
+        "CREATE (n:node {id: 'n14', label: 'NewFunc', file_type: 'code', "
+        "source_file: 'src/new.py', source_location: '', community: 0, community_name: ''})"
+    )
+    conn.execute(
+        "MATCH (a:node {id: 'n14'}), (b:node {id: 'n1'}) "
+        "CREATE (a)-[:edge {relation: 'calls', confidence: 'EXTRACTED', "
+        "confidence_score: 1.0, source_file: 'src/new.py', weight: 1.0}]->(b)"
+    )
+
+    # Run file-level delta_analyze
+    delta_path = Path(tmp_db).parent / "delta_file_level.json"
+
+    class FakeStages:
+        def mark(self, stage):
+            pass
+
+    delta = delta_analyze(
+        conn,
+        prev_analysis=prev_analysis,
+        delta_analysis_path=delta_path,
+        stages=FakeStages(),
+        merged={"input_tokens": 0, "output_tokens": 0},
+        file_level=True,
+    )
+
+    # Verify output structure
+    assert "changed_communities" in delta
+    assert "new_communities" in delta
+    assert "stable_communities" in delta
+    assert "dissolved_communities" in delta
+    assert "summary" in delta
+
+    # Summary should be consistent
+    s = delta["summary"]
+    assert s["total_after"] == s["stable"] + s["changed"] + s["new"], (
+        f"total_after={s['total_after']} != stable+changed+new={s['stable']+s['changed']+s['new']}"
+    )
+
+    # Verify file was written
+    assert delta_path.exists()
+    written = json.loads(delta_path.read_text())
+    assert written["summary"] == delta["summary"]
+
+    _close(db, conn)
