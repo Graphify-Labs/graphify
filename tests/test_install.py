@@ -676,7 +676,19 @@ def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
     import json as _json
 
     config = _json.loads(config_file.read_text())
-    assert any("graphify.js" in p for p in config.get("plugin", []))
+    assert "plugins/graphify.js" in config.get("plugin", [])
+    assert ".opencode/plugins/graphify.js" not in config.get("plugin", [])
+
+
+def test_opencode_agents_install_repairs_legacy_plugin_entry(tmp_path):
+    import json as _json
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(_json.dumps({"plugin": [".opencode/plugins/graphify.js"]}))
+    _agents_install(tmp_path, "opencode")
+    config = _json.loads(config_file.read_text())
+    assert config["plugin"] == ["plugins/graphify.js"]
 
 
 def test_opencode_agents_install_merges_existing_config(tmp_path):
