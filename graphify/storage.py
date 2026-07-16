@@ -1155,6 +1155,45 @@ def _find_surprising_file_connections(
 
 
 # ---------------------------------------------------------------------------
+# Post-cluster: merge small communities
+# ---------------------------------------------------------------------------
+
+
+def merge_small_communities(
+    conn: object,
+    communities: dict[int, list[str]],
+    *,
+    min_size: int = 5,
+    node_label: str = "node",
+    edge_label: str = "edge",
+) -> dict[int, list[str]]:
+    """Merge communities smaller than *min_size* into their best neighbour.
+
+    TODO: implement merging logic.  For now this is a no-op pass-through.
+
+    Planned strategy:
+      1. Collect communities with len(members) < min_size.
+      2. For each small community, find the neighbour community with the
+         strongest edge connection (by total edge weight or edge count).
+      3. Merge the small community into that neighbour.
+      4. Repeat until no community is below the threshold.
+
+    Args:
+        conn: neug connection.
+        communities: {cid: [node_ids]} from leiden.
+        min_size: minimum community size; smaller ones get merged.
+        node_label / edge_label: graph labels (``TempFile`` /
+            ``TEMP_FILE_EDGE`` for file-level, ``node`` / ``edge`` for
+            symbol-level).
+
+    Returns:
+        Updated communities dict (same format, possibly fewer keys).
+    """
+    # Placeholder: return communities unchanged.
+    return communities
+
+
+# ---------------------------------------------------------------------------
 # Orchestration: neug clustered path
 # ---------------------------------------------------------------------------
 
@@ -1189,6 +1228,14 @@ def cluster_by_neug(
     else:
         communities = run_leiden(conn, resolution=resolution)
     stages.mark("cluster")
+
+    # 1b. Merge small communities (placeholder — not yet implemented)
+    communities = merge_small_communities(
+        conn, communities,
+        node_label=_FILE_NODE if file_level else "node",
+        edge_label=_FILE_EDGE if file_level else "edge",
+    )
+    stages.mark("merge")
 
     if file_level:
         # 2a. Label + analysis on temp tables (file-level graph)
