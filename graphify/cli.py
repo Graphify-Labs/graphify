@@ -3158,12 +3158,15 @@ def dispatch_command(cmd: str) -> None:
             chunk_files.extend(sorted(expanded) if expanded else [arg])
         merged: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
         seen_ids: set[str] = set()
+        valid_chunks = 0
         # These chunk files are untrusted subagent output. load_validated_...
         # stats the file size BEFORE reading it (so a multi-GB chunk can't blow up
         # memory), parses the JSON, and validates the security caps + the node/
         # edge id charset that blocks path traversal (#825) — the same enforcement
         # the skill merge path applies. A bad chunk is skipped with a warning
-        # (filter semantics; never abort). Deliberately NOT wired into
+        # while valid siblings still merge; if every chunk is invalid, fail
+        # closed instead of reporting success and replacing --out with an empty
+        # semantic layer. Deliberately NOT wired into
         # build_from_json/load_graph_json, which must keep loading valid
         # pre-existing graphs. file_type is left to build's coercion (#840).
         from graphify.semantic_cleanup import load_validated_semantic_fragment
@@ -3176,6 +3179,7 @@ def dispatch_command(cmd: str) -> None:
                     file=sys.stderr,
                 )
                 continue
+            valid_chunks += 1
             for n in chunk.get("nodes", []):
                 if n.get("id") not in seen_ids:
                     seen_ids.add(n["id"])
@@ -3188,11 +3192,23 @@ def dispatch_command(cmd: str) -> None:
             for _tok in ("input_tokens", "output_tokens"):
                 _v = chunk.get(_tok, 0)
                 merged[_tok] += _v if isinstance(_v, (int, float)) else 0
+        if not valid_chunks:
+            print(
+                f"[graphify merge-chunks] error: no valid chunks to merge; "
+                f"refusing to write {out_path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, merged, ensure_ascii=False)
+        chunk_summary = (
+            f"{valid_chunks} chunks"
+            if valid_chunks == len(chunk_files)
+            else f"{valid_chunks} of {len(chunk_files)} chunks"
+        )
         print(
-            f"Merged {len(chunk_files)} chunks: {len(merged['nodes'])} nodes, {len(merged['edges'])} edges, "
+            f"Merged {chunk_summary}: {len(merged['nodes'])} nodes, {len(merged['edges'])} edges, "
             f"{merged['input_tokens']:,} in / {merged['output_tokens']:,} out tokens"
         )
 

@@ -3,11 +3,12 @@
 merge-chunks concatenates agent-written `.graphify_chunk_*.json` files. Those are
 untrusted output, so each is run through `validate_semantic_fragment` (caps + the
 node/edge ID charset that blocks path-escape). An invalid chunk is skipped with a
-warning; valid chunks still merge.
+warning; valid chunks still merge, but an all-invalid input set fails closed.
 """
 import json
 
 import graphify.__main__ as mainmod
+import pytest
 
 
 def _write(path, obj):
@@ -32,19 +33,64 @@ def test_merge_chunks_skips_chunk_with_path_escape_id(tmp_path, monkeypatch, cap
 
     merged = json.loads(out.read_text())
     assert {n["id"] for n in merged["nodes"]} == {"pkg.mod.good"}
-    assert "skipping invalid chunk" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "skipping invalid chunk" in captured.err
+    assert "Merged 1 of 2 chunks" in captured.out
 
 
-def test_merge_chunks_skips_malformed_shape(tmp_path, monkeypatch, capsys):
+def test_merge_chunks_fails_closed_when_every_chunk_is_invalid(tmp_path, monkeypatch, capsys):
     bad = tmp_path / ".graphify_chunk_0.json"
     _write(bad, {"nodes": "not-a-list", "edges": []})
     out = tmp_path / "merged.json"
+    out.write_text('{"previous": "semantic result"}', encoding="utf-8")
 
-    _run_merge(monkeypatch, ["graphify", "merge-chunks", str(bad), "--out", str(out)])
+    with pytest.raises(SystemExit) as exc:
+        _run_merge(monkeypatch, ["graphify", "merge-chunks", str(bad), "--out", str(out)])
+
+    assert exc.value.code == 1
+    assert json.loads(out.read_text()) == {"previous": "semantic result"}
+    err = capsys.readouterr().err
+    assert "skipping invalid chunk" in err
+    assert "no valid chunks to merge" in err
+
+
+def test_merge_chunks_accepts_valid_empty_chunk(tmp_path, monkeypatch):
+    """A valid fragment may legitimately contain no entities; it still counts."""
+    empty = tmp_path / ".graphify_chunk_0.json"
+    _write(empty, {"nodes": [], "edges": [], "hyperedges": []})
+    out = tmp_path / "merged.json"
+
+    _run_merge(monkeypatch, ["graphify", "merge-chunks", str(empty), "--out", str(out)])
 
     merged = json.loads(out.read_text())
     assert merged["nodes"] == []
-    assert "skipping invalid chunk" in capsys.readouterr().err
+    assert merged["edges"] == []
+
+
+def test_merge_chunks_fails_closed_without_chunk_arguments(tmp_path, monkeypatch, capsys):
+    out = tmp_path / "merged.json"
+
+    with pytest.raises(SystemExit) as exc:
+        _run_merge(monkeypatch, ["graphify", "merge-chunks", "--out", str(out)])
+
+    assert exc.value.code == 1
+    assert not out.exists()
+    assert "no valid chunks to merge" in capsys.readouterr().err
+
+
+def test_merge_chunks_fails_closed_on_unmatched_glob(tmp_path, monkeypatch, capsys):
+    out = tmp_path / "merged.json"
+    out.write_text('{"previous": true}', encoding="utf-8")
+    unmatched = str(tmp_path / ".graphify_chunk_*.json")
+
+    with pytest.raises(SystemExit) as exc:
+        _run_merge(monkeypatch, ["graphify", "merge-chunks", unmatched, "--out", str(out)])
+
+    assert exc.value.code == 1
+    assert json.loads(out.read_text()) == {"previous": True}
+    err = capsys.readouterr().err
+    assert "skipping invalid chunk" in err
+    assert "no valid chunks to merge" in err
 
 
 def test_merge_chunks_accepts_synonym_file_type(tmp_path, monkeypatch):
