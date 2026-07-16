@@ -378,6 +378,7 @@ def ingest_communities(
     communities: dict[int, list[str]],
     community_labels: dict[int, str] | None = None,
     node_types: dict[str, str] | None = None,
+    node_label: str = "node",
 ) -> None:
     """Write community assignments into NeuG node properties.
 
@@ -388,6 +389,10 @@ def ingest_communities(
 
     If community_labels is provided, community_name is also written in a
     separate per-community pass (inline values, not parameters).
+
+    Args:
+        node_label: Target node table label (default 'node'; use 'TempFile'
+            for file-level clustering on temp tables).
     """
     # Bulk writeback via parameterized per-node SET.
     # Uses neug's primary-key index on n.id for O(log N) lookup per node.
@@ -403,7 +408,7 @@ def ingest_communities(
 
     for nid, cid in comm_map.items():
         conn.execute(
-            f"MATCH (n:node {{id: '{nid}'}}) SET n.community = {cid}"
+            f"MATCH (n:{node_label} {{id: '{nid}'}}) SET n.community = {cid}"
         )
 
     # Write community_name per-community (inline values, not $param)
@@ -412,7 +417,7 @@ def ingest_communities(
             cid_int = int(cid)
             safe_name = (name or "").replace("'", "\\'")
             conn.execute(
-                f"MATCH (n:node) WHERE n.community = {cid_int} "
+                f"MATCH (n:{node_label}) WHERE n.community = {cid_int} "
                 f"SET n.community_name = '{safe_name}'"
             )
 
@@ -719,15 +724,23 @@ def _maybe_dump_temp_csvs(edge_csv: Path, node_csv: Path, tag: str) -> None:
 def cluster_on_files(
     conn: object, *, resolution: float = 1.0
 ) -> dict[int, list[str]]:
-    """File-level clustering. Returns ``{community_id: [symbol_node_ids]}``.
+    """File-level clustering. Returns ``{community_id: [file_paths]}``.
 
-    Each symbol node inherits its source_file's community.
-    Nodes with empty source_file (concept/stub) are excluded.
+    Creates temp tables (TempFile / TEMP_FILE_EDGE) and keeps them alive
+    for subsequent analysis.  Caller is responsible for cleaning up:
+    ``DROP TABLE TEMP_FILE_EDGE; DROP TABLE TempFile;``
     """
     import tempfile, csv
 
     _NODE_LABEL = "TempFile"
     _EDGE_LABEL = "TEMP_FILE_EDGE"
+
+    # Defensive: clean up any leftover temp tables from previous calls
+    for lbl in (_EDGE_LABEL, _NODE_LABEL):
+        try:
+            conn.execute(f"DROP TABLE {lbl}")
+        except RuntimeError:
+            pass
 
     with tempfile.TemporaryDirectory() as tmpdir:
         edge_csv = Path(tmpdir) / "file_edges.csv"
@@ -737,11 +750,12 @@ def cluster_on_files(
         all_files = _aggregate_file_edges(conn, edge_csv)
 
         # 2. Write file node CSV (id = file path, must match edge CSV from/to)
+        #    Include community + community_name columns for ingest_communities writeback
         with open(node_csv, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["id", "label"])
+            writer.writerow(["id", "label", "community", "community_name"])
             for sf in sorted(all_files):
-                writer.writerow([sf, Path(sf).name])
+                writer.writerow([sf, Path(sf).name, 0, ""])
 
         # Keep temp CSVs for debugging if GRAPHIFY_KEEP_TEMP is set
         _maybe_dump_temp_csvs(edge_csv, node_csv, "file_cluster")
@@ -765,22 +779,13 @@ def cluster_on_files(
         weight="weight",
     )
 
-    # 5. Clean up temp tables
-    conn.execute(f"DROP TABLE {_EDGE_LABEL}")
-    conn.execute(f"DROP TABLE {_NODE_LABEL}")
-
-    # 6. Map file communities back to symbol-level
-    results = list(conn.execute(
-        "MATCH (n:node) WHERE n.source_file <> '' "
-        "RETURN n.id, n.source_file"
-    ))
-
+    # 5. Write community to TempFile nodes (for analysis queries)
     communities: dict[int, list[str]] = {}
-    for nid, sf in results:
-        cid = file_communities.get(sf)
-        if cid is not None:
-            communities.setdefault(cid, []).append(nid)
+    for file_path, cid in file_communities.items():
+        communities.setdefault(cid, []).append(file_path)
+    ingest_communities(conn, communities, node_label=_NODE_LABEL)
 
+    # NOTE: temp tables NOT dropped here — caller cleans up after analysis
     return communities
 
 
@@ -790,7 +795,8 @@ def cluster_on_files(
 
 
 def compute_cohesion(
-    conn: object, communities: dict[int, list[str]]
+    conn: object, communities: dict[int, list[str]],
+    *, node_label: str = "node", edge_label: str = "edge",
 ) -> dict[int, float]:
     """Per-community cohesion: undirected internal edges / max possible.
 
@@ -800,7 +806,10 @@ def compute_cohesion(
     node_comm = {n: cid for cid, nodes in communities.items() for n in nodes}
     intra: dict[int, set] = {cid: set() for cid in communities}
 
-    for row in conn.execute("MATCH (a:node)-[:edge]->(b:node) RETURN a.id, b.id"):
+    for row in conn.execute(
+        f"MATCH (a:{node_label})-[:{edge_label}]->(b:{node_label}) "
+        f"RETURN a.id, b.id"
+    ):
         a, b = row[0], row[1]
         if a == b:  # skip self-loops
             continue
@@ -821,7 +830,8 @@ def compute_cohesion(
 
 
 def label_communities_by_hub(
-    conn: object, communities: dict[int, list[str]]
+    conn: object, communities: dict[int, list[str]],
+    *, node_label: str = "node", edge_label: str = "edge",
 ) -> dict[int, str]:
     """Name each community after its highest-degree member.
 
@@ -829,13 +839,13 @@ def label_communities_by_hub(
     """
     try:
         rows = list(conn.execute(
-            "MATCH (n:node) "
-            "WHERE n.community IS NOT NULL "
-            "OPTIONAL MATCH (n)-[e:edge]-() "
-            "WITH n, n.community AS cid, count(e) AS degree "
-            "ORDER BY cid, degree DESC, n.id ASC "
-            "WITH cid, collect(n)[0] AS hub "
-            "RETURN cid, hub.label, hub.id"
+            f"MATCH (n:{node_label}) "
+            f"WHERE n.community IS NOT NULL "
+            f"OPTIONAL MATCH (n)-[e:{edge_label}]-() "
+            f"WITH n, n.community AS cid, count(e) AS degree "
+            f"ORDER BY cid, degree DESC, n.id ASC "
+            f"WITH cid, collect(n)[0] AS hub "
+            f"RETURN cid, hub.label, hub.id"
         ))
         labels: dict[int, str] = {}
         for cid, label, nid in rows:
@@ -846,10 +856,10 @@ def label_communities_by_hub(
     except RuntimeError:
         # Fallback: two-step approach
         deg_rows = list(conn.execute(
-            "MATCH (n:node)-[e:edge]-() "
-            "WITH n, count(e) AS degree "
-            "RETURN n.id, n.community, n.label, degree "
-            "ORDER BY n.community, degree DESC, n.id"
+            f"MATCH (n:{node_label})-[e:{edge_label}]-() "
+            f"WITH n, count(e) AS degree "
+            f"RETURN n.id, n.community, n.label, degree "
+            f"ORDER BY n.community, degree DESC, n.id"
         ))
         labels = {}
         seen: set[int] = set()
@@ -1094,6 +1104,53 @@ def find_surprising_connections(
 
 
 # ---------------------------------------------------------------------------
+# File-level analysis helpers (operate on TempFile / TEMP_FILE_EDGE)
+# ---------------------------------------------------------------------------
+
+
+def _find_god_files(conn: object, top_n: int = 10) -> list[dict]:
+    """File-level god nodes: top-N files by edge degree."""
+    rows = list(conn.execute(
+        "MATCH (n:TempFile)-[e:TEMP_FILE_EDGE]-() "
+        "WITH n, count(e) AS degree "
+        "WHERE degree > 0 "
+        "RETURN n.id, n.label, degree "
+        "ORDER BY degree DESC, n.id ASC "
+        f"LIMIT {top_n}"
+    ))
+    return [{"id": nid, "label": label, "degree": deg} for nid, label, deg in rows]
+
+
+def _find_surprising_file_connections(
+    conn: object,
+    communities: dict[int, list[str]],
+    top_n: int = 5,
+) -> list[dict]:
+    """File-level surprising connections: cross-community edges ranked by weight."""
+    node_comm = {n: cid for cid, nodes in communities.items() for n in nodes}
+
+    rows = list(conn.execute(
+        "MATCH (a:TempFile)-[e:TEMP_FILE_EDGE]->(b:TempFile) "
+        "WHERE a.community IS NOT NULL AND b.community IS NOT NULL "
+        "  AND a.community <> b.community "
+        "RETURN a.id, a.label, a.community, b.id, b.label, b.community, e.weight"
+    ))
+
+    candidates: list[dict] = []
+    for a_id, a_label, a_comm, b_id, b_label, b_comm, weight in rows:
+        candidates.append({
+            "source": a_label or a_id,
+            "target": b_label or b_id,
+            "source_files": [a_id, b_id],
+            "weight": int(weight) if weight else 1,
+            "why": f"cross-community file edge (weight={int(weight) if weight else 1})",
+        })
+
+    candidates.sort(key=lambda x: x["weight"], reverse=True)
+    return candidates[:top_n]
+
+
+# ---------------------------------------------------------------------------
 # Orchestration: neug clustered path
 # ---------------------------------------------------------------------------
 
@@ -1118,27 +1175,59 @@ def cluster_by_neug(
     """
     import json
 
+    _FILE_NODE = "TempFile"
+    _FILE_EDGE = "TEMP_FILE_EDGE"
+
     # 1. Leiden community detection (symbol-level or file-level)
     if file_level:
         communities = cluster_on_files(conn, resolution=resolution)
+        # communities = {cid: [file_paths]}, temp tables still alive
     else:
         communities = run_leiden(conn, resolution=resolution)
     stages.mark("cluster")
 
-    # 2. Batch writeback community IDs (CASE WHEN)
-    ingest_communities(conn, communities)
+    if file_level:
+        # 2a. Label + analysis on temp tables (file-level graph)
+        labels = label_communities_by_hub(
+            conn, communities, node_label=_FILE_NODE, edge_label=_FILE_EDGE
+        )
+        ingest_communities(
+            conn, communities, community_labels=labels, node_label=_FILE_NODE
+        )
+        cohesion = compute_cohesion(
+            conn, communities, node_label=_FILE_NODE, edge_label=_FILE_EDGE
+        )
+        gods = _find_god_files(conn)
+        surprises = _find_surprising_file_connections(conn, communities)
+        stages.mark("analyze")
 
-    # 3. Label communities by hub
-    labels = label_communities_by_hub(conn, communities)
+        # 2b. Write community to symbol-level :node by source_file
+        #     (so graph.json export includes community info per symbol)
+        for cid, file_paths in communities.items():
+            if not file_paths:
+                continue
+            files_inline = ", ".join(f"'{f}'" for f in file_paths)
+            safe_name = (labels.get(cid, f"Community {cid}") or "").replace("'", "\\'")
+            conn.execute(
+                f"MATCH (n:node) WHERE n.source_file IN [{files_inline}] "
+                f"SET n.community = {cid}, n.community_name = '{safe_name}'"
+            )
+        stages.mark("writeback")
+    else:
+        # 2. Batch writeback community IDs
+        ingest_communities(conn, communities)
 
-    # 4. Write community_name (inline values via ingest_communities)
-    ingest_communities(conn, communities, community_labels=labels)
+        # 3. Label communities by hub
+        labels = label_communities_by_hub(conn, communities)
 
-    # 5. Analysis
-    cohesion = compute_cohesion(conn, communities)
-    gods = find_god_nodes(conn)
-    surprises = find_surprising_connections(conn, communities)
-    stages.mark("analyze")
+        # 4. Write community_name
+        ingest_communities(conn, communities, community_labels=labels)
+
+        # 5. Analysis
+        cohesion = compute_cohesion(conn, communities)
+        gods = find_god_nodes(conn)
+        surprises = find_surprising_connections(conn, communities)
+        stages.mark("analyze")
 
     # 6. Export graph.json (with community + community_name)
     data = export_fn(conn, hyperedges=hyperedges or [])
@@ -1157,6 +1246,14 @@ def cluster_by_neug(
         },
     }
     analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
+
+    # 8. Clean up temp tables (file-level only)
+    if file_level:
+        try:
+            conn.execute(f"DROP TABLE {_FILE_EDGE}")
+            conn.execute(f"DROP TABLE {_FILE_NODE}")
+        except RuntimeError:
+            pass
 
     return data
 
@@ -1359,33 +1456,30 @@ def _delta_analyze_file_level(
 ) -> list[tuple[str, int, int | None]]:
     """File-level freeze-assign leiden for incremental analysis.
 
-    1. Map old symbol-level communities to file-level: {file_path: old_cid}
+    1. Map old file-level communities from prev_analysis (file paths → old_cid)
     2. Aggregate edges → CSV (same as full file-level clustering)
     3. Write file node CSV with delta_comm column (old_cid or -1 for new files)
     4. COPY TEMP → run_leiden_subgraph with freeze-assign
-    5. Expand file-level results to symbol-level
-    6. Clean up temp tables
+    5. Write community to TempFile (for analysis queries)
 
-    Returns [(symbol_node_id, new_cid, prev_cid), ...] — same format as
-    run_leiden_freeze_assign.
+    Temp tables are NOT dropped — caller cleans up after analysis.
+
+    Returns [(file_path, new_cid, prev_cid), ...].
     """
     import tempfile, csv
 
     _NODE_LABEL = "TempFile"
     _EDGE_LABEL = "TEMP_FILE_EDGE"
 
-    # 1. Map old symbol communities → file-level communities
-    node_to_sf: dict[str, str] = {}
-    for row in conn.execute(
-        "MATCH (n:node) WHERE n.source_file <> '' RETURN n.id, n.source_file"
-    ):
-        node_to_sf[row[0]] = row[1]
+    # Defensive: clean up any leftover temp tables from previous calls
+    for lbl in (_EDGE_LABEL, _NODE_LABEL):
+        try:
+            conn.execute(f"DROP TABLE {lbl}")
+        except RuntimeError:
+            pass
 
-    old_file_communities: dict[str, int] = {}
-    for nid, old_cid in old_communities.items():
-        sf = node_to_sf.get(nid)
-        if sf and sf not in old_file_communities:
-            old_file_communities[sf] = old_cid
+    # 1. old_communities is already {file_path: old_cid} in file-level mode
+    old_file_communities: dict[str, int] = old_communities
 
     with tempfile.TemporaryDirectory() as tmpdir:
         edge_csv = Path(tmpdir) / "file_edges.csv"
@@ -1394,14 +1488,15 @@ def _delta_analyze_file_level(
         # 2. Aggregate edges → CSV
         all_files = _aggregate_file_edges(conn, edge_csv)
 
-        # 3. Write file node CSV with delta_comm column
+        # 3. Write file node CSV with delta_comm + community columns
         #    id = file path, delta_comm = old community (or -1 for new files)
+        #    community = 0 (placeholder, overwritten by ingest_communities)
         with open(node_csv, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["id", "label", "delta_comm"])
+            writer.writerow(["id", "label", "delta_comm", "community", "community_name"])
             for sf in sorted(all_files):
                 old_cid = old_file_communities.get(sf, -1)
-                writer.writerow([sf, Path(sf).name, old_cid])
+                writer.writerow([sf, Path(sf).name, old_cid, 0, ""])
 
         # Keep temp CSVs for debugging if GRAPHIFY_KEEP_TEMP is set
         _maybe_dump_temp_csvs(edge_csv, node_csv, "file_delta")
@@ -1427,18 +1522,17 @@ def _delta_analyze_file_level(
     )
     # file_results: {file_path: (new_cid, prev_cid)}
 
-    # 6. Clean up temp tables
-    conn.execute(f"DROP TABLE {_EDGE_LABEL}")
-    conn.execute(f"DROP TABLE {_NODE_LABEL}")
+    # 6. Write community to TempFile nodes (for analysis queries)
+    new_communities: dict[int, list[str]] = {}
+    for file_path, (new_cid, _) in file_results.items():
+        new_communities.setdefault(new_cid, []).append(file_path)
+    ingest_communities(conn, new_communities, node_label=_NODE_LABEL)
 
-    # 7. Expand to symbol-level: each symbol inherits its file's community
-    symbol_results: list[tuple[str, int, int | None]] = []
-    for nid, sf in node_to_sf.items():
-        if sf in file_results:
-            new_cid, prev_cid = file_results[sf]
-            symbol_results.append((nid, new_cid, prev_cid))
-
-    return symbol_results
+    # 7. Return file-level results (NOT expanded to symbol level)
+    return [
+        (file_path, new_cid, prev_cid)
+        for file_path, (new_cid, prev_cid) in file_results.items()
+    ]
 
 
 def delta_analyze(
@@ -1491,54 +1585,63 @@ def delta_analyze(
     for cid_str in changes["new_communities"]:
         changed_cids.add(int(cid_str))
 
-    # Compute cohesion for all communities, then filter
-    all_cohesion = compute_cohesion(conn, new_communities)
-    delta_cohesion = {cid: score for cid, score in all_cohesion.items() if cid in changed_cids}
+    _FILE_NODE = "TempFile"
+    _FILE_EDGE = "TEMP_FILE_EDGE"
 
-    # 6. Label communities (reuse label_communities_by_hub)
-    # Temporarily write community to DB for label_communities_by_hub
-    # (which reads n.community). Use delta_comm values.
-    # Actually, label_communities_by_hub reads n.community, not n.delta_comm.
-    # We need a different approach: use the leiden results directly.
-    labels: dict[int, str] = {}
-    try:
-        # Get degree per node for hub detection
-        node_degree: dict[str, int] = {}
-        for row in conn.execute(
-            "MATCH (n:node)-[e:edge]-() "
-            "WITH n, count(e) AS degree "
-            "RETURN n.id, degree"
-        ):
-            node_degree[row[0]] = row[1]
-    except RuntimeError:
-        node_degree = {}
+    if file_level:
+        # File-level analysis on temp tables
+        all_cohesion = compute_cohesion(
+            conn, new_communities, node_label=_FILE_NODE, edge_label=_FILE_EDGE
+        )
+        delta_cohesion = {cid: score for cid, score in all_cohesion.items() if cid in changed_cids}
 
-    node_label: dict[str, str] = {}
-    try:
-        for row in conn.execute("MATCH (n:node) RETURN n.id, n.label"):
-            node_label[row[0]] = row[1] or row[0]
-    except RuntimeError:
-        pass
+        labels = label_communities_by_hub(
+            conn, new_communities, node_label=_FILE_NODE, edge_label=_FILE_EDGE
+        )
+        gods = _find_god_files(conn)
+        surprises = _find_surprising_file_connections(conn, new_communities)
+    else:
+        # Symbol-level analysis (existing path)
+        all_cohesion = compute_cohesion(conn, new_communities)
+        delta_cohesion = {cid: score for cid, score in all_cohesion.items() if cid in changed_cids}
 
-    for cid, members in new_communities.items():
-        if cid not in changed_cids:
-            continue
-        # Find highest-degree member
-        best_nid = members[0]
-        best_deg = -1
-        for nid in members:
-            deg = node_degree.get(nid, 0)
-            if deg > best_deg:
-                best_deg = deg
-                best_nid = nid
-        name = (node_label.get(best_nid, best_nid) or best_nid).strip()
-        if name.endswith("()"):
-            name = name[:-2]
-        labels[cid] = name or f"Community {cid}"
+        # 6. Label communities (reuse label_communities_by_hub)
+        labels: dict[int, str] = {}
+        try:
+            node_degree: dict[str, int] = {}
+            for row in conn.execute(
+                "MATCH (n:node)-[e:edge]-() "
+                "WITH n, count(e) AS degree "
+                "RETURN n.id, degree"
+            ):
+                node_degree[row[0]] = row[1]
+        except RuntimeError:
+            node_degree = {}
 
-    # 7. Full gods + surprising connections
-    gods = find_god_nodes(conn)
-    surprises = find_surprising_connections(conn, new_communities)
+        node_label: dict[str, str] = {}
+        try:
+            for row in conn.execute("MATCH (n:node) RETURN n.id, n.label"):
+                node_label[row[0]] = row[1] or row[0]
+        except RuntimeError:
+            pass
+
+        for cid, members in new_communities.items():
+            if cid not in changed_cids:
+                continue
+            best_nid = members[0]
+            best_deg = -1
+            for nid in members:
+                deg = node_degree.get(nid, 0)
+                if deg > best_deg:
+                    best_deg = deg
+                    best_nid = nid
+            name = (node_label.get(best_nid, best_nid) or best_nid).strip()
+            if name.endswith("()"):
+                name = name[:-2]
+            labels[cid] = name or f"Community {cid}"
+
+        gods = find_god_nodes(conn)
+        surprises = find_surprising_connections(conn, new_communities)
     stages.mark("analyze-full")
 
     # 8. Build delta JSON
@@ -1573,5 +1676,13 @@ def delta_analyze(
     }
 
     delta_analysis_path.write_text(json.dumps(delta, indent=2), encoding="utf-8")
+
+    # Clean up temp tables (file-level only)
+    if file_level:
+        try:
+            conn.execute(f"DROP TABLE {_FILE_EDGE}")
+            conn.execute(f"DROP TABLE {_FILE_NODE}")
+        except RuntimeError:
+            pass
 
     return delta

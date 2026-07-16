@@ -614,37 +614,24 @@ def test_aggregate_file_edges(tmp_db):
 
 
 def test_cluster_on_files(tmp_db):
-    """File-level clustering: all symbols in same file get same community."""
+    """File-level clustering: community members are file paths, not symbol IDs."""
     from graphify.storage import cluster_on_files
     db, conn = _init(tmp_db)
     _populate_test_graph(conn)
 
     communities = cluster_on_files(conn)
 
-    # All non-concept nodes should be assigned
-    total = sum(len(v) for v in communities.values())
-    # n11 has source_file='' and should be excluded
-    assert total == len(_TEST_NODES) - 1, f"Expected {len(_TEST_NODES) - 1} nodes, got {total}"
-
-    # Build file → community map
-    node_to_sf = {n["id"]: n["source_file"] for n in _TEST_NODES if n["source_file"]}
-    file_to_comm: dict[str, int] = {}
-    for cid, members in communities.items():
-        for nid in members:
-            sf = node_to_sf.get(nid)
-            if sf:
-                if sf in file_to_comm:
-                    assert file_to_comm[sf] == cid, (
-                        f"File {sf} has nodes in different communities: "
-                        f"{file_to_comm[sf]} and {cid}"
-                    )
-                file_to_comm[sf] = cid
-
-    # n11 (concept node) should not appear in any community
-    all_nodes = set()
+    # Community members should be file paths (3 source files in test data)
+    all_members = set()
     for members in communities.values():
-        all_nodes.update(members)
-    assert "n11" not in all_nodes, "Concept node n11 should be excluded"
+        all_members.update(members)
+    assert all_members == {"src/auth.py", "src/models.py", "src/client.py"}, (
+        f"Expected 3 file paths, got {all_members}"
+    )
+
+    # No symbol node IDs should appear
+    for n in _TEST_NODES:
+        assert n["id"] not in all_members, f"Symbol ID {n['id']} should not be in communities"
 
     _close(db, conn)
 
@@ -664,14 +651,14 @@ def test_cluster_on_files_resolution(tmp_db):
 def test_delta_analyze_file_level(tmp_db):
     """File-level delta analysis: freeze-assign on file-level graph."""
     from graphify.storage import (
-        cluster_on_files, ingest_communities, delta_analyze,
+        cluster_on_files, delta_analyze,
     )
     db, conn = _init(tmp_db)
     _populate_test_graph(conn)
 
     # Phase 1: full file-level clustering
     communities = cluster_on_files(conn)
-    ingest_communities(conn, communities)
+    # communities = {cid: [file_paths]}
 
     # Build prev_analysis (simulates .graphify_analysis.json)
     prev_analysis = {
