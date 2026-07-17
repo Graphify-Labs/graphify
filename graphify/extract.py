@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -4536,6 +4537,7 @@ def extract(
                 e["target"] = id_remap[e["target"]]
     if prefix_remap:
         sym_remap: dict[str, str] = {}
+        edge_alias_candidates: dict[str, set[str]] = {}
         for n in all_nodes:
             sf = n.get("source_file")
             if not sf:
@@ -4556,12 +4558,28 @@ def extract(
             # Try both the input-form and absolute-form prefixes for this file
             # (#1529). source_file gating above already prevents cross-file
             # contamination, so the first matching prefix wins.
+            canonical_nid: str | None = None
             for old_pref, new_pref in entry:
                 if nid.startswith(old_pref + "_"):
-                    new_nid = new_pref + nid[len(old_pref):]
-                    if new_nid != nid:
-                        sym_remap[nid] = new_nid
+                    canonical_nid = new_pref + nid[len(old_pref):]
+                    if canonical_nid != nid:
+                        sym_remap[nid] = canonical_nid
                     break
+                if nid.startswith(new_pref + "_"):
+                    canonical_nid = nid
+                    break
+            if canonical_nid is None:
+                continue
+            # Named alias imports can retain an absolute-prefixed target even
+            # when the symbol node is already canonical. Record every old form
+            # so a redundant edge can be recognized without globally
+            # reinterpreting an id that another real node may own.
+            for old_pref, new_pref in entry:
+                if not canonical_nid.startswith(new_pref + "_"):
+                    continue
+                old_nid = old_pref + canonical_nid[len(new_pref):]
+                if old_nid != canonical_nid:
+                    edge_alias_candidates.setdefault(old_nid, set()).add(canonical_nid)
         if sym_remap:
             for n in all_nodes:
                 if n.get("id") in sym_remap:
@@ -4578,6 +4596,34 @@ def extract(
                 cn = rc.get("caller_nid")
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
+        if edge_alias_candidates:
+            edge_key_counts = Counter(
+                json.dumps(edge, sort_keys=True, separators=(",", ":"), default=str)
+                for edge in all_edges
+            )
+            owned_node_ids = {node.get("id") for node in all_nodes}
+            deduped_edges: list[dict] = []
+            for edge in all_edges:
+                candidates = (
+                    edge_alias_candidates.get(edge.get("target", ""), set())
+                    if edge.get("relation") == "imports"
+                    else set()
+                )
+                if len(candidates) == 1:
+                    candidate = next(iter(candidates))
+                    twin = {**edge, "target": candidate}
+                    twin_key = json.dumps(
+                        twin, sort_keys=True, separators=(",", ":"), default=str
+                    )
+                    # Drop only when the shared resolver emitted the exact
+                    # canonical twin. Otherwise the target may be a legitimate
+                    # owned node id.
+                    if edge_key_counts[twin_key]:
+                        if edge.get("target") in owned_node_ids:
+                            edge_key_counts[twin_key] -= 1
+                        continue
+                deduped_edges.append(edge)
+            all_edges[:] = deduped_edges
 
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
