@@ -608,7 +608,7 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
 # slips through it. This closes that intra-file gap with a lenient substring
 # check and FLAGS (never drops) an unverifiable node with ``verification =
 # "unverified"``, surfaced by the caller (stderr), reported by the diagnostics,
-# and left on the node in graph.json.
+# and left on the node in native graph.
 # Short tokens (len < 3) are ignored: they match too readily to be evidence and
 # their absence is not a reliable fabrication signal, so skipping them avoids
 # false positives.
@@ -1439,7 +1439,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     # attached — what would you like me to do with it?"). That prose parses to
     # zero nodes/edges, so _response_is_hollow flags it as truncation and the
     # adaptive-retry path bisects the chunk indefinitely, never converging and
-    # never writing graph.json (verified against Claude Code 2.1.197).
+    # never writing native graph (verified against Claude Code 2.1.197).
     #
     # Putting the full extraction schema plus an explicit imperative in the
     # user turn — and dropping --system-prompt — makes the CLI emit the JSON
@@ -1948,7 +1948,7 @@ def _strip_partial_markers(result: dict) -> None:
 
     Call this only AFTER the semantic cache has been saved (the save consumes the
     marker to stamp affected entries ``partial: True``). Stripping it keeps the
-    internal flag out of the graph.json nodes/edges the corpus result feeds into.
+    internal flag out of the native graph nodes/edges the corpus result feeds into.
     """
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in result.get(bucket, []):
@@ -2161,7 +2161,7 @@ def extract_corpus_parallel(
     max_concurrency: int = 4,
     max_retry_depth: int = 3,
     deep_mode: bool = False,
-    cache_root: "Path | None" = None,
+    cache: dict | None = None,
 ) -> dict:
     """Extract a corpus in chunks, merging results.
 
@@ -2196,14 +2196,6 @@ def extract_corpus_parallel(
     Returns merged dict with nodes, edges, hyperedges, input_tokens,
     output_tokens. Failed chunks are logged to stderr and skipped — one bad
     chunk does not abort the run.
-
-    ``cache_root`` (when given) is where per-chunk checkpoint cache entries are
-    written, decoupled from ``root`` which anchors content-hash keys and
-    ``source_file`` resolution — the same split the AST cache uses (#1774).
-    With ``--out``, cli.py passes the corpus as ``root`` and the output
-    directory as ``cache_root`` so checkpoints land where the recovery read
-    looks, instead of creating an unwanted ``graphify-out/`` inside the
-    analyzed source tree (#1990).
 
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so packing/slicing helpers can rely on ``Path`` semantics (#1386).
@@ -2280,7 +2272,6 @@ def extract_corpus_parallel(
                 result.get("edges", []),
                 result.get("hyperedges", []),
                 root=root,
-                cache_root=cache_root,
                 merge_existing=True,
                 allowed_source_files=allowed,
                 mode="deep" if deep_mode else None,
@@ -2292,6 +2283,7 @@ def extract_corpus_parallel(
                 # authoritative: pass the partial file set so its entry is
                 # stamped ``partial: True`` and re-dispatched next run.
                 partial_source_files=_partial_source_files(result) or None,
+                cache=cache,
             )
         except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
             print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)
@@ -2314,7 +2306,7 @@ def extract_corpus_parallel(
     else:
         # Merge in deterministic submission order, NOT completion order. Merging
         # as chunks finish makes the node/edge ordering in the returned corpus
-        # (and therefore graph.json) depend on which network call happened to
+        # (and therefore native graph) depend on which network call happened to
         # return first — so identical input churned run-to-run (#1632). Collect
         # results keyed by chunk index and merge in sorted order after the pool
         # drains; this matches the serial path's order. The progress callback
@@ -2359,7 +2351,7 @@ def extract_corpus_parallel(
     # Out-of-scope node filter (#1895). The #1757 cache guard already refuses
     # to WRITE a cache entry for a node whose source_file is a real file that
     # was not dispatched, but the node itself still flowed into the merged
-    # result and landed in graph.json. Mirror the #1757 condition here: resolve
+    # result and landed in native graph. Mirror the #1757 condition here: resolve
     # each source_file against root and drop the node only when it resolves to
     # an existing file (.is_file()) outside the dispatched set — non-file
     # source_files (concepts, model-invented anchors) pass through untouched.
@@ -2782,6 +2774,8 @@ def _community_label_lines(G, communities, gods, max_communities, top_k):
     representative node labels (god nodes first). Returns (lines, labeled_cids);
     skips communities with no resolvable nodes."""
     # gods may be node-id strings or god_nodes() dicts ({"id": ..., "label": ...}).
+    from graphify.helix.model import node_attributes
+
     god_set = {g["id"] if isinstance(g, dict) else g for g in (gods or [])}
     ordered = sorted(communities.items(), key=lambda kv: -len(kv[1]))
     lines: list[str] = []
@@ -2791,7 +2785,11 @@ def _community_label_lines(G, communities, gods, max_communities, top_k):
         names: list[str] = []
         seen: set[str] = set()
         for nid in ranked:
-            label = str(G.nodes[nid].get("label", nid)) if nid in G.nodes else str(nid)
+            label = (
+                str(node_attributes(G, nid).get("label", nid))
+                if G.contains_node(nid)
+                else str(nid)
+            )
             label = label.strip().strip("()")[:_LABEL_MAXLEN]
             if label and label.lower() not in seen:
                 seen.add(label.lower())

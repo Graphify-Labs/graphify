@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def _csharp_namespace_id(dotted_name: str) -> str:
-    digest = hashlib.sha1(dotted_name.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha1(dotted_name.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
     return f"csharp_namespace:{digest}"
 
 REFERENCE_CONTEXTS = frozenset({

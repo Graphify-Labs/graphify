@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from graphify.analyze import _node_community_map
-import networkx as nx
+from graphify.helix.model import edge_attributes, graphify_attributes
 import re
+from typing import Any
 
 
 def push_to_neo4j(
-    G: nx.Graph,
+    G: Any,
     uri: str,
     user: str,
     password: str,
@@ -42,7 +43,8 @@ def push_to_neo4j(
     edges_pushed = 0
 
     with driver.session() as session:
-        for node_id, data in G.nodes(data=True):
+        for node in G.nodes():
+            node_id, data = node.id, graphify_attributes(node.attributes)
             props = {
                 k: v for k, v in data.items()
                 if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
@@ -59,7 +61,8 @@ def push_to_neo4j(
             )
             nodes_pushed += 1
 
-        for u, v, data in G.edges(data=True):
+        for edge in G.edges():
+            u, v, data = edge.source, edge.target, edge_attributes(edge)
             rel = _safe_rel(data.get("relation", "RELATED_TO"))
             props = {
                 k: v for k, v in data.items()
@@ -78,7 +81,7 @@ def push_to_neo4j(
     return {"nodes": nodes_pushed, "edges": edges_pushed}
 
 def push_to_falkordb(
-    G: nx.Graph,
+    G: Any,
     uri: str,
     user: str | None = None,
     password: str | None = None,
@@ -141,7 +144,8 @@ def push_to_falkordb(
     nodes_pushed = 0
     edges_pushed = 0
 
-    for node_id, data in G.nodes(data=True):
+    for node in G.nodes():
+        node_id, data = node.id, graphify_attributes(node.attributes)
         props = {
             k: v for k, v in data.items()
             if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
@@ -157,7 +161,8 @@ def push_to_falkordb(
         )
         nodes_pushed += 1
 
-    for u, v, data in G.edges(data=True):
+    for edge in G.edges():
+        u, v, data = edge.source, edge.target, edge_attributes(edge)
         rel = _safe_rel(data.get("relation", "RELATED_TO"))
         props = {
             k: v for k, v in data.items()

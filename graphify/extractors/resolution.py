@@ -628,7 +628,9 @@ def _disambiguate_colliding_node_ids(
             if not source_key:
                 continue
             if source_key in needs_hash:
-                salt = hashlib.sha1(source_key.encode("utf-8")).hexdigest()[:6]
+                salt = hashlib.sha1(
+                    source_key.encode("utf-8"), usedforsecurity=False
+                ).hexdigest()[:6]
                 new_id = _make_id(source_key, old_id, salt)
             else:
                 new_id = naive.get(source_key) or _make_id(source_key, old_id)

@@ -572,9 +572,12 @@ def write_tree_html(
     # kept for CLI compatibility with the older signature; ignored now
     top_k_edges: int = 0,
 ) -> Path:
-    from graphify.security import check_graph_file_size_cap
-    check_graph_file_size_cap(graph_path)
-    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    from graphify.helix.model import GraphBuildData
+    from graphify.helix.persistence import load_graph
+    from graphify.security import validate_store_path
+
+    loaded = load_graph(validate_store_path(graph_path))
+    graph = GraphBuildData.from_native(loaded.graph).to_node_link(tagged_identities=True)
     tree = build_tree(graph, root=root, max_children=max_children,
                       project_label=project_label)
     title = f"{tree['name']} — graphify tree viewer"

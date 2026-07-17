@@ -1,4 +1,4 @@
-# write graph to HTML, JSON, SVG, GraphML, Obsidian vault, and Neo4j Cypher
+# write native graph snapshots to presentation and graph-database formats
 from __future__ import annotations
 import hashlib
 import html as _html
@@ -6,13 +6,12 @@ import json
 import math
 import os
 import re
-import shutil
 import sys
 from collections import Counter
-from datetime import date
 from pathlib import Path
-import networkx as nx
-from networkx.readwrite import json_graph
+from typing import Any
+
+from .helix.model import GraphBuildData, edge_attributes, graphify_attributes, node_attributes
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
@@ -20,81 +19,13 @@ from graphify.build import edge_data
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
 
-# Artifacts worth preserving across rebuilds (non-regenerable without LLM or curation).
-_BACKUP_ARTIFACTS = [
-    "graph.json",
-    "GRAPH_REPORT.md",
-    ".graphify_labels.json",
-    ".graphify_analysis.json",
-    "manifest.json",
-    ".graphify_semantic_marker",
-    "cost.json",
-]
+def _portable_identity(value: Any) -> str:
+    """Lossless string identity for formats without Helix typed IDs."""
+    from helixdb import external_id_to_json
 
-
-def backup_if_protected(out_dir: Path) -> "Path | None":
-    """Snapshot graph artifacts to a dated subfolder before an overwrite.
-
-    Triggers when graph.json exists AND either:
-    - .graphify_semantic_marker is present (graph cost real LLM tokens), or
-    - .graphify_labels.json contains at least one non-default community label
-      (graph has been curated by a human or skill).
-
-    Returns the backup folder path, or None if no backup was taken.
-    Never raises — backup failure prints a warning but never blocks the write.
-    Set GRAPHIFY_NO_BACKUP=1 to disable.
-    """
-    if os.environ.get("GRAPHIFY_NO_BACKUP"):
-        return None
-    out = Path(out_dir)
-    if not (out / "graph.json").exists():
-        return None
-
-    is_semantic = (out / ".graphify_semantic_marker").exists()
-    is_curated = False
-    labels_file = out / ".graphify_labels.json"
-    if labels_file.exists():
-        try:
-            labels = json.loads(labels_file.read_text(encoding="utf-8"))
-            is_curated = any(v != f"Community {k}" for k, v in labels.items())
-        except Exception:
-            pass
-
-    if not is_semantic and not is_curated:
-        return None
-
-    reason = "+".join(filter(None, ["semantic" if is_semantic else "", "curated" if is_curated else ""]))
-    today = date.today().isoformat()
-    backup_dir = out / today
-    graph_src = out / "graph.json"
-
-    # Skip re-copying if today's backup already has identical graph.json content.
-    # If content differs (graph changed since the last backup today), overwrite
-    # the backup in place — one folder per day, always the latest pre-overwrite state.
-    if backup_dir.exists() and (backup_dir / "graph.json").exists():
-        src_hash = hashlib.sha256(graph_src.read_bytes()).hexdigest()
-        bak_hash = hashlib.sha256((backup_dir / "graph.json").read_bytes()).hexdigest()
-        if src_hash == bak_hash:
-            return backup_dir  # identical content, nothing to do
-
-    try:
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        copied = 0
-        for name in _BACKUP_ARTIFACTS:
-            src = out / name
-            if src.exists():
-                try:
-                    shutil.copy2(src, backup_dir / name)
-                    copied += 1
-                except Exception:
-                    pass
-        if copied:
-            print(f"[graphify] backed up {reason} graph ({copied} files) -> {backup_dir.name}/")
-        return backup_dir
-    except Exception as exc:
-        import sys
-        print(f"[graphify] warning: backup failed ({exc}) - continuing with overwrite", file=sys.stderr)
-        return None
+    return json.dumps(
+        external_id_to_json(value), sort_keys=True, separators=(",", ":")
+    )
 
 def _obsidian_tag(name: str) -> str:
     """Sanitize a community name for use as an Obsidian tag.
@@ -159,15 +90,36 @@ from graphify.exporters.html import to_html  # noqa: E402,F401
 _CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.5, "AMBIGUOUS": 0.2}
 
 
-def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:
+def _edge_rows(graph: Any, node_id: Any | None = None):
+    records = graph.edges() if node_id is None else (
+        graph.edge(edge_id) for edge_id in graph.incident_edge_ids(node_id)
+    )
+    for edge in records:
+        if edge is not None:
+            yield edge.source, edge.target, edge_attributes(edge), edge
+
+
+def _edge_attributes(graph: Any, source: Any, target: Any) -> dict:
+    edge_ids = graph.edges_between(source, target)
+    edge = graph.edge(edge_ids[0]) if edge_ids else None
+    return edge_attributes(edge) if edge is not None else {}
+
+
+def _graph_attributes(graph: Any) -> dict:
+    metadata = dict(graph.attributes)
+    value = metadata.get("graph", {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def attach_hyperedges(G: GraphBuildData, hyperedges: list) -> None:
     """Store hyperedges in the graph's metadata dict."""
-    existing = G.graph.get("hyperedges", [])
+    existing = G.attributes.get("hyperedges", [])
     seen_ids = {h["id"] for h in existing}
     for h in hyperedges:
         if h.get("id") and h["id"] not in seen_ids:
             existing.append(h)
             seen_ids.add(h["id"])
-    G.graph["hyperedges"] = existing
+    G.attributes["hyperedges"] = existing
 
 
 def _git_head() -> str | None:
@@ -178,147 +130,6 @@ def _git_head() -> str | None:
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
-
-
-# Sentinel: an existing graph.json is present and non-empty but cannot be parsed
-# into a node count (corrupt, mid-write, or structurally wrong). The caller must
-# fail CLOSED on this — the same way to_json's #479 guard refuses to overwrite
-# such a file — because we cannot prove the new graph isn't a silent shrink.
-MALFORMED_GRAPH = object()
-
-
-def existing_graph_node_count(path: "str | Path"):
-    """Node count of an existing graph.json.
-
-    Returns:
-      - an ``int`` node count when the file parses;
-      - ``None`` when there is verifiably nothing to protect — absent, empty, or
-        over the size cap (matching how :func:`to_json` lets the new graph
-        replace an empty/oversized file);
-      - :data:`MALFORMED_GRAPH` when the file is present and non-empty but
-        unparseable — the caller must treat this as fail-closed (refuse to
-        overwrite), mirroring to_json's #479 handling of a corrupt/mid-write file.
-
-    The raw ``--no-cluster`` write path uses this to apply the same #479 shrink
-    guard that :func:`to_json` applies inline for the clustered path.
-    """
-    p = Path(path)
-    if not p.exists():
-        return None
-    from graphify.security import check_graph_file_size_cap
-    try:
-        check_graph_file_size_cap(p)
-    except Exception:
-        # Oversized: reading it to compare would be the DoS the cap guards against.
-        return None
-    try:
-        raw = p.read_text(encoding="utf-8")
-    except Exception:
-        # Present but unreadable: fail closed if it has bytes, else nothing to lose.
-        try:
-            return MALFORMED_GRAPH if p.stat().st_size > 0 else None
-        except Exception:
-            return None
-    if not raw.strip():
-        return None
-    try:
-        data = json.loads(raw)
-    except Exception:
-        return MALFORMED_GRAPH
-    nodes = data.get("nodes") if isinstance(data, dict) else None
-    return len(nodes) if isinstance(nodes, list) else MALFORMED_GRAPH
-
-
-def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
-    # Safety check: refuse to silently shrink an existing graph (#479)
-    existing_path = Path(output_path)
-    if not force and existing_path.exists():
-        from graphify.security import check_graph_file_size_cap
-        try:
-            check_graph_file_size_cap(existing_path)
-        except Exception:
-            # Existing graph.json trips the size cap; reading it to compare would
-            # be the very DoS the cap guards against. Can't verify — let the new
-            # graph replace the oversized file.
-            oversized = True
-        else:
-            oversized = False
-        if not oversized:
-            try:
-                raw = existing_path.read_text(encoding="utf-8")
-            except Exception:
-                raw = ""
-            if not raw.strip():
-                # Empty/whitespace existing file (e.g. a freshly touched path):
-                # no nodes to lose, so any new graph is a growth — proceed.
-                existing_n = 0
-            else:
-                try:
-                    existing_data = json.loads(raw)
-                    existing_n = len(existing_data.get("nodes", []))
-                except Exception as exc:
-                    # Non-empty but unparseable existing graph (corrupt or a
-                    # mid-write): we cannot verify the new graph is not a silent
-                    # shrink. Fail SAFE — refuse rather than overwrite. A
-                    # fail-OPEN here (the prior behavior) is the silent data-loss
-                    # path #479 exists to prevent: a transiently unreadable
-                    # graph.json would let a partial rebuild clobber a good one.
-                    import sys as _sys
-                    print(
-                        f"[graphify] WARNING: existing {existing_path} could not be "
-                        f"read to verify the new graph is not smaller ({exc}). "
-                        f"Refusing to overwrite; pass force=True to override.",
-                        file=_sys.stderr,
-                    )
-                    return False
-            new_n = G.number_of_nodes()
-            if new_n < existing_n:
-                import sys as _sys
-                print(
-                    f"[graphify] WARNING: new graph has {new_n} nodes but existing "
-                    f"graph.json has {existing_n} (net -{existing_n - new_n}). "
-                    f"Refusing to overwrite. Possible causes: missing chunk files from "
-                    f"a previous session, or fuzzy dedup collapsed same-named symbols "
-                    f"across files during an --update on an already-current graph. "
-                    f"Run a full rebuild (/graphify .) to be safe, or pass force=True "
-                    f"only if you have verified the reduction is legitimate.",
-                    file=_sys.stderr,
-                )
-                return False
-
-    node_community = _node_community_map(communities)
-    _labels: dict[int, str] = {int(k): v for k, v in (community_labels or {}).items()}
-    try:
-        data = json_graph.node_link_data(G, edges="links")
-    except TypeError:
-        data = json_graph.node_link_data(G)
-    for node in data["nodes"]:
-        cid = node_community.get(node["id"])
-        node["community"] = cid
-        if cid is not None and _labels:
-            node["community_name"] = _labels.get(cid, f"Community {cid}")
-        node["norm_label"] = _strip_diacritics(node.get("label", "")).lower()
-    for link in data["links"]:
-        if "confidence_score" not in link:
-            conf = link.get("confidence", "EXTRACTED")
-            link["confidence_score"] = _CONFIDENCE_SCORE_DEFAULTS.get(conf, 1.0)
-        # Restore original edge direction. Undirected NetworkX storage may
-        # canonicalize endpoint order, flipping `calls` and other directional
-        # edges in graph.json. The build path stashes the true endpoints in
-        # _src/_tgt for exactly this purpose (#563).
-        true_src = link.pop("_src", None)
-        true_tgt = link.pop("_tgt", None)
-        if true_src is not None and true_tgt is not None:
-            link["source"] = true_src
-            link["target"] = true_tgt
-    data["hyperedges"] = getattr(G, "graph", {}).get("hyperedges", [])
-    commit = built_at_commit if built_at_commit is not None else _git_head()
-    if commit:
-        data["built_at_commit"] = commit
-    from graphify.paths import write_json_atomic
-    # Atomic write: a crash/ENOSPC mid-write must not truncate a good graph.json.
-    write_json_atomic(output_path, data, indent=2)
-    return True
 
 
 def prune_dangling_edges(graph_data: dict) -> tuple[dict, int]:
@@ -381,25 +192,27 @@ def _cypher_label(raw: str, fallback: str) -> str:
     return cleaned
 
 
-def to_cypher(G: nx.Graph, output_path: str) -> None:
+def to_cypher(G: Any, output_path: str) -> None:
     lines = ["// Neo4j Cypher import - generated by /graphify", ""]
-    for node_id, data in G.nodes(data=True):
+    for node in G.nodes():
+        node_id, data = node.id, graphify_attributes(node.attributes)
         label = _cypher_escape(data.get("label", node_id))
-        node_id_esc = _cypher_escape(node_id)
+        node_id_esc = _cypher_escape(_portable_identity(node_id))
         ftype = _cypher_label(
             (data.get("file_type", "unknown") or "unknown").capitalize(),
             "Entity",
         )
         lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}', label: '{label}'}});")
     lines.append("")
-    for u, v, data in G.edges(data=True):
+    for edge in G.edges():
+        u, v, data = edge.source, edge.target, edge_attributes(edge)
         rel = _cypher_label(
             (data.get("relation", "RELATES_TO") or "RELATES_TO").upper(),
             "RELATES_TO",
         )
         conf = _cypher_escape(data.get("confidence", "EXTRACTED"))
-        u_esc = _cypher_escape(u)
-        v_esc = _cypher_escape(v)
+        u_esc = _cypher_escape(_portable_identity(u))
+        v_esc = _cypher_escape(_portable_identity(v))
         lines.append(
             f"MATCH (a {{id: '{u_esc}'}}), (b {{id: '{v_esc}'}}) "
             f"MERGE (a)-[:{rel} {{confidence: '{conf}'}}]->(b);"
@@ -429,7 +242,7 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     return f"{truncated}_{digest}"
 
 
-def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
+def _dedup_node_filenames(G: Any, safe_name) -> dict[Any, str]:
     """Map each node_id to a unique note filename, appending a numeric suffix on
     collision. The collision set is keyed on the lowercased name so two labels
     differing only by case (e.g. "References" vs "references") still get distinct
@@ -439,7 +252,8 @@ def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
     silently overwrites a node whose literal label is already "base_1"."""
     node_filenames: dict[str, str] = {}
     used: set[str] = set()
-    for node_id, data in G.nodes(data=True):
+    for node in G.nodes():
+        node_id, data = node.id, graphify_attributes(node.attributes)
         base = safe_name(data.get("label", node_id))
         candidate = base
         n = 1
@@ -452,7 +266,7 @@ def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
 
 
 def to_obsidian(
-    G: nx.Graph,
+    G: Any,
     communities: dict[int, list[str]],
     output_dir: str,
     community_labels: dict[int, str] | None = None,
@@ -515,7 +329,7 @@ def to_obsidian(
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
         confs = []
-        for u, v, edata in G.edges(node_id, data=True):
+        for u, v, edata, _ in _edge_rows(G, node_id):
             confs.append(edata.get("confidence", "EXTRACTED"))
         if not confs:
             return "EXTRACTED"
@@ -531,7 +345,8 @@ def to_obsidian(
 
     # Write one .md file per node
     node_notes_written = 0
-    for node_id, data in G.nodes(data=True):
+    for node in G.nodes():
+        node_id, data = node.id, graphify_attributes(node.attributes)
         label = data.get("label", node_id)
         cid = node_community.get(node_id)
         community_name = (
@@ -571,7 +386,10 @@ def to_obsidian(
         neighbors = list(G.neighbors(node_id))
         if neighbors:
             lines.append("## Connections")
-            for neighbor in sorted(neighbors, key=lambda n: G.nodes[n].get("label", n)):
+            for neighbor in sorted(
+                neighbors,
+                key=lambda n: str(node_attributes(G, n).get("label", n)),
+            ):
                 edata = edge_data(G, node_id, neighbor)
                 neighbor_label = node_filename[neighbor]
                 relation = edata.get("relation", "")
@@ -592,7 +410,8 @@ def to_obsidian(
     inter_community_edges: dict[int, dict[int, int]] = {}
     for cid in communities:
         inter_community_edges[cid] = {}
-    for u, v in G.edges():
+    for edge in G.edges():
+        u, v = edge.source, edge.target
         cu = node_community.get(u)
         cv = node_community.get(v)
         if cu is not None and cv is not None and cu != cv:
@@ -642,7 +461,7 @@ def to_obsidian(
         # synthesized/merge-artifact ids). Dereferencing those via G.nodes[n] or
         # node_filename[n] raises KeyError and aborts the whole vault export, so
         # skip dangling members rather than crashing (issue #1236).
-        members = [m for m in all_members if m in G and m in node_filename]
+        members = [m for m in all_members if G.contains_node(m) and m in node_filename]
         n_members = len(members)
         coh_value = cohesion.get(cid) if cohesion else None
 
@@ -672,8 +491,10 @@ def to_obsidian(
 
         # Members section
         lines.append("## Members")
-        for node_id in sorted(members, key=lambda n: G.nodes[n].get("label", n)):
-            data = G.nodes[node_id]
+        for node_id in sorted(
+            members, key=lambda n: str(node_attributes(G, n).get("label", n))
+        ):
+            data = node_attributes(G, node_id)
             node_label = node_filename[node_id]
             ftype = data.get("file_type", "")
             source = data.get("source_file", "")
@@ -706,7 +527,7 @@ def to_obsidian(
 
         # Top bridge nodes - highest degree nodes that connect to other communities
         bridge_nodes = [
-            (node_id, G.degree(node_id), _community_reach(node_id))
+            (node_id, G.degree(node_id).degree, _community_reach(node_id))
             for node_id in members
             if _community_reach(node_id) > 0
         ]
@@ -783,7 +604,7 @@ def to_obsidian(
 
 
 def to_canvas(
-    G: nx.Graph,
+    G: Any,
     communities: dict[int, list[str]],
     output_path: str,
     community_labels: dict[int, str] | None = None,
@@ -818,8 +639,8 @@ def to_canvas(
     # analysis sidecar) the grid below produces nothing and the canvas is written
     # as an empty 32-byte shell on an otherwise populated graph. Emit every node
     # into one synthetic community so the canvas always reflects the graph (#1324).
-    if not communities and G.number_of_nodes() > 0:
-        communities = {0: [str(n) for n in G.nodes()]}
+    if not communities and G.node_count > 0:
+        communities = {0: [node.id for node in G.nodes()]}
 
     num_communities = len(communities)
     cols = math.ceil(math.sqrt(num_communities)) if num_communities > 0 else 1
@@ -844,7 +665,7 @@ def to_canvas(
         # Skip dangling community members with no backing node / filename, so box
         # sizing matches the cards actually laid out and `G.nodes[m]` never
         # KeyErrors below — mirrors the to_obsidian guard (#1236).
-        members = [m for m in communities[cid] if m in G and m in node_filenames]
+        members = [m for m in communities[cid] if G.contains_node(m) and m in node_filenames]
         n = len(members)
         inner_cols = max(1, math.ceil(math.sqrt(n)))
         w = max(600, 220 * inner_cols)
@@ -919,16 +740,21 @@ def to_canvas(
         inner_cols = group_cols[cid]
         # Same dangling-member guard as the sizing loop and to_obsidian (#1236):
         # a community id absent from G / node_filenames would KeyError the sort.
-        members = [m for m in members if m in G and m in node_filenames]
-        sorted_members = sorted(members, key=lambda n: G.nodes[n].get("label", n))
+        members = [m for m in members if G.contains_node(m) and m in node_filenames]
+        sorted_members = sorted(
+            members, key=lambda n: str(node_attributes(G, n).get("label", n))
+        )
         for m_idx, node_id in enumerate(sorted_members):
             col = m_idx % inner_cols
             row = m_idx // inner_cols
             nx_x = gx + 20 + col * (180 + 20)
             nx_y = gy + 80 + row * (60 + 20)
-            fname = node_filenames.get(node_id, safe_name(G.nodes[node_id].get("label", node_id)))
+            fallback_name = safe_name(
+                str(node_attributes(G, node_id).get("label", node_id))
+            )
+            fname = node_filenames.get(node_id, fallback_name)
             canvas_nodes.append({
-                "id": f"n_{node_id}",
+                "id": f"n_{_portable_identity(node_id)}",
                 "type": "file",
                 "file": f"{fname}.md",
                 "x": nx_x,
@@ -939,7 +765,7 @@ def to_canvas(
 
     # Generate edges - only between nodes both in canvas, cap at 200 highest-weight
     all_edges_weighted: list[tuple[float, str, str, str]] = []
-    for u, v, edata in G.edges(data=True):
+    for u, v, edata, _ in _edge_rows(G):
         if u in all_canvas_nodes and v in all_canvas_nodes:
             weight = edata.get("weight", 1.0)
             relation = edata.get("relation", "")
@@ -950,9 +776,9 @@ def to_canvas(
     all_edges_weighted.sort(key=lambda x: -x[0])
     for weight, u, v, label in all_edges_weighted[:200]:
         canvas_edges.append({
-            "id": f"e_{u}_{v}",
-            "fromNode": f"n_{u}",
-            "toNode": f"n_{v}",
+            "id": f"e_{_portable_identity(u)}_{_portable_identity(v)}",
+            "fromNode": f"n_{_portable_identity(u)}",
+            "toNode": f"n_{_portable_identity(v)}",
             "label": label,
         })
 
@@ -961,7 +787,7 @@ def to_canvas(
 
 
 def to_graphml(
-    G: nx.Graph,
+    G: Any,
     communities: dict[int, list[str]],
     output_path: str,
 ) -> None:
@@ -970,61 +796,66 @@ def to_graphml(
     Community IDs are written as a node attribute so Gephi can colour by community.
     Edge confidence (EXTRACTED/INFERRED/AMBIGUOUS) is preserved as an edge attribute.
     """
-    H = G.copy()
+    import xml.etree.ElementTree as ET
+
     node_community = _node_community_map(communities)
-    for node_id in H.nodes():
-        H.nodes[node_id]["community"] = node_community.get(node_id, -1)
-    # Drop internal markers (e.g. the AST-provenance "_origin" tag, #1116, and
-    # the "_src"/"_tgt" direction markers) — they are persistence/runtime details,
-    # not graph data, and should not leak into the exported file.
-    for _, attrs in H.nodes(data=True):
-        for k in [k for k in attrs if k.startswith("_")]:
-            del attrs[k]
-    for _, _, attrs in H.edges(data=True):
-        for k in [k for k in attrs if k.startswith("_")]:
-            del attrs[k]
-    # nx.write_graphml only accepts scalar attribute values: None raises, and a
-    # dict/list value (e.g. a per-node `metadata` dict, or the graph-level
-    # `hyperedges` list set by attach_hyperedges()) raises
-    # "GraphML does not support type <class 'dict'/'list'> as data values" (#1831).
-    # Coerce None -> "" and non-scalars -> a JSON string, across all three scopes.
-    def _graphml_safe(val):
-        if val is None:
-            return ""
-        if isinstance(val, bool) or isinstance(val, (int, float, str)):
-            return val  # GraphML-native scalars pass through unchanged
-        try:
-            return json.dumps(val, default=str, sort_keys=True)
-        except (TypeError, ValueError):
-            return str(val)
-
-    for key, val in list(H.graph.items()):
-        H.graph[key] = _graphml_safe(val)
-    for node_id in H.nodes():
-        for key, val in list(H.nodes[node_id].items()):
-            H.nodes[node_id][key] = _graphml_safe(val)
-    for u, v in H.edges():
-        for key, val in list(H.edges[u, v].items()):
-            H.edges[u, v][key] = _graphml_safe(val)
-
-    # Write atomically: a mid-serialization error otherwise leaves a 0-byte
-    # .graphml on disk that downstream tooling mistakes for a completed export
-    # (#1831). Write to a sibling temp file, then replace on success.
+    root = ET.Element("graphml", xmlns="http://graphml.graphdrawing.org/xmlns")
+    nodes = [
+        (
+            node.id,
+            {
+                **{k: v for k, v in graphify_attributes(node.attributes).items() if not k.startswith("_")},
+                "community": node_community.get(node.id, -1),
+            },
+        )
+        for node in G.nodes()
+    ]
+    edges = [
+        (
+            edge.source,
+            edge.target,
+            {k: v for k, v in edge_attributes(edge).items() if not k.startswith("_")},
+        )
+        for edge in G.edges()
+    ]
+    keys = sorted(
+        {key for _, values in nodes for key in values}
+        | {key for _, _, values in edges for key in values}
+    )
+    for key in keys:
+        ET.SubElement(root, "key", attrib={
+            "id": str(key), "for": "all", "attr.name": str(key), "attr.type": "string"
+        })
+    graph_element = ET.SubElement(
+        root, "graph", edgedefault="directed" if G.directed else "undirected"
+    )
+    for node_id, values in nodes:
+        element = ET.SubElement(graph_element, "node", id=_portable_identity(node_id))
+        for key, value in sorted(values.items()):
+            data = ET.SubElement(element, "data", key=str(key))
+            data.text = value if isinstance(value, str) else json.dumps(value, default=str, sort_keys=True)
+    for index, (source, target, values) in enumerate(edges):
+        element = ET.SubElement(
+            graph_element,
+            "edge",
+            id=f"e{index}",
+            source=_portable_identity(source),
+            target=_portable_identity(target),
+        )
+        for key, value in sorted(values.items()):
+            data = ET.SubElement(element, "data", key=str(key))
+            data.text = value if isinstance(value, str) else json.dumps(value, default=str, sort_keys=True)
     out = Path(output_path)
     tmp = out.with_name(out.name + ".tmp")
     try:
-        nx.write_graphml(H, str(tmp))
-        os.replace(str(tmp), str(out))
+        ET.ElementTree(root).write(tmp, encoding="utf-8", xml_declaration=True)
+        os.replace(tmp, out)
     finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+        tmp.unlink(missing_ok=True)
 
 
 def to_svg(
-    G: nx.Graph,
+    G: Any,
     communities: dict[int, list[str]],
     output_path: str,
     community_labels: dict[int, str] | None = None,
@@ -1051,16 +882,23 @@ def to_svg(
     ax.set_facecolor("#1a1a2e")
     ax.axis("off")
 
-    pos = nx.spring_layout(G, seed=42, k=2.0 / (G.number_of_nodes() ** 0.5 + 1))
+    from helixdb import LayoutOptions
 
-    degree = dict(G.degree())
+    pos = {
+        point.node_id: (point.x, point.y)
+        for point in G.spring_layout(LayoutOptions(
+            seed=42, k=2.0 / (G.node_count ** 0.5 + 1)
+        ))
+    }
+    degree = {row.node_id: int(row.degree) for row in G.degrees()}
     max_deg = max(degree.values(), default=1) or 1
 
-    node_colors = [COMMUNITY_COLORS[node_community.get(n, 0) % len(COMMUNITY_COLORS)] for n in G.nodes()]
-    node_sizes = [300 + 1200 * (degree.get(n, 1) / max_deg) for n in G.nodes()]
+    node_ids = [node.id for node in G.nodes()]
+    node_colors = [COMMUNITY_COLORS[node_community.get(n, 0) % len(COMMUNITY_COLORS)] for n in node_ids]
+    node_sizes = [300 + 1200 * (degree.get(n, 1) / max_deg) for n in node_ids]
 
     # Draw edges - dashed for non-EXTRACTED
-    for u, v, data in G.edges(data=True):
+    for u, v, data, _ in _edge_rows(G):
         conf = data.get("confidence", "EXTRACTED")
         style = "solid" if conf == "EXTRACTED" else "dashed"
         alpha = 0.6 if conf == "EXTRACTED" else 0.3
@@ -1069,11 +907,25 @@ def to_svg(
         ax.plot([x0, x1], [y0, y1], color="#aaaaaa", linewidth=0.8,
                 linestyle=style, alpha=alpha, zorder=1)
 
-    nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
-                           node_size=node_sizes, alpha=0.9)
-    nx.draw_networkx_labels(G, pos, ax=ax,
-                            labels={n: G.nodes[n].get("label", n) for n in G.nodes()},
-                            font_size=7, font_color="white")
+    ax.scatter(
+        [pos[node][0] for node in node_ids],
+        [pos[node][1] for node in node_ids],
+        c=node_colors,
+        s=node_sizes,
+        alpha=0.9,
+        zorder=2,
+    )
+    for node in node_ids:
+        ax.text(
+            pos[node][0],
+            pos[node][1],
+            str(node_attributes(G, node).get("label", node)),
+            fontsize=7,
+            color="white",
+            ha="center",
+            va="center",
+            zorder=3,
+        )
 
     # Legend
     if community_labels:
