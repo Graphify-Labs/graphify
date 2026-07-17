@@ -945,9 +945,9 @@ def test_watch_loads_graphifyignore_once(tmp_path, monkeypatch):
     calls = {"n": 0}
     real_loader = detect_mod._load_graphifyignore
 
-    def counting_loader(root):
+    def counting_loader(root, **kwargs):
         calls["n"] += 1
-        return real_loader(root)
+        return real_loader(root, **kwargs)
 
     # Patch the symbol the watch module imported at module-load time.
     monkeypatch.setattr(watch_mod, "_load_graphifyignore", counting_loader)
