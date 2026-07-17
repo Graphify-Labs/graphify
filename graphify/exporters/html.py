@@ -6,7 +6,9 @@ from pathlib import Path
 import html as _html
 from graphify.analyze import _node_community_map
 import json
-import networkx as nx
+from typing import Any
+
+from graphify.helix.model import edge_attributes, graphify_attributes
 from graphify.security import sanitize_label
 
 
@@ -323,7 +325,7 @@ LEGEND.forEach(c => {{
 </script>"""
 
 def to_html(
-    G: nx.Graph,
+    G: Any,
     communities: dict[int, list[str]],
     output_path: str,
     community_labels: dict[int, str] | None = None,
@@ -340,91 +342,34 @@ def to_html(
     If member_counts is provided (aggregated community view), node sizes are
     based on community member counts rather than graph degree.
 
-    If node_limit is set and the graph exceeds it, automatically builds an
-    aggregated community-level meta-graph instead of raising ValueError.
+    Large graphs must be exported with a non-browser format.
     """
     limit = node_limit if node_limit is not None else _viz_node_limit()
-    if G.number_of_nodes() > limit:
-        if node_limit is not None:
-            # Build aggregated community meta-graph
-            from collections import Counter as _Counter
-            import networkx as _nx
-            print(f"Graph has {G.number_of_nodes()} nodes (above {limit} limit). Building aggregated community view...")
-            node_to_community = {nid: cid for cid, members in communities.items() for nid in members}
-            meta = _nx.Graph()
-            for cid, members in communities.items():
-                meta.add_node(str(cid), label=(community_labels or {}).get(cid, f"Community {cid}"))
-            edge_counts = _Counter()
-            for u, v in G.edges():
-                cu, cv = node_to_community.get(u), node_to_community.get(v)
-                if cu is not None and cv is not None and cu != cv:
-                    edge_counts[(min(cu, cv), max(cu, cv))] += 1
-            for (cu, cv), w in edge_counts.items():
-                meta.add_edge(str(cu), str(cv), weight=w,
-                              relation=f"{w} cross-community edges", confidence="AGGREGATED")
-            if meta.number_of_nodes() <= 1:
-                print("Single community - aggregated view not useful. Skipping graph.html.")
-                return
-            meta_communities = {cid: [str(cid)] for cid in communities}
-            mc = {cid: len(members) for cid, members in communities.items()}
-            # Remap hyperedges from semantic node IDs to community IDs
-            raw_hyperedges = G.graph.get("hyperedges", [])
-            if raw_hyperedges:
-                remapped = []
-                for he in raw_hyperedges:
-                    he_members = he.get("nodes", [])
-                    comm_ids, seen = [], set()
-                    for nid in he_members:
-                        c = node_to_community.get(nid)
-                        if c is None:
-                            continue
-                        s = str(c)
-                        if s in seen:
-                            continue
-                        seen.add(s)
-                        comm_ids.append(s)
-                    if len(comm_ids) < 2:
-                        continue
-                    remapped.append({
-                        "id": he.get("id", ""),
-                        "label": he.get("label") or he.get("relation", "").replace("_", " "),
-                        "nodes": comm_ids,
-                    })
-                meta.graph["hyperedges"] = remapped
-            to_html(meta, meta_communities, output_path,
-                    community_labels=community_labels, member_counts=mc)
-            print(f"graph.html written (aggregated: {meta.number_of_nodes()} community nodes, {meta.number_of_edges()} cross-community edges)")
-            print("Tip: run with --obsidian for full node-level detail.")
-            return
+    if G.node_count > limit:
         raise ValueError(
-            f"Graph has {G.number_of_nodes()} nodes - too large for HTML viz "
+            f"Graph has {G.node_count} nodes - too large for HTML viz "
             f"(limit: {limit}). Use --no-viz, raise GRAPHIFY_VIZ_NODE_LIMIT, "
             f"or reduce input size."
         )
 
     node_community = _node_community_map(communities)
-    degree = dict(G.degree())
+    degree = {row.node_id: int(row.degree) for row in G.degrees()}
     max_deg = max(degree.values(), default=1) or 1
     max_mc = (max(member_counts.values(), default=1) or 1) if member_counts else 1
 
-    # Work-memory overlay (derived sidecar). When not passed explicitly, load it
-    # best-effort from the sibling .graphify_learning.json next to the output
-    # graph.html (which lives beside graph.json). Empty/missing => no learning
+    # Work-memory overlay comes from the active native generation. When it is not
+    # passed explicitly, leave it empty; graph.html remains a presentation export.
     # fields, so the un-annotated render is byte-identical to pre-feature.
     if learning_overlay is None:
         learning_overlay = {}
-        try:
-            from graphify.reflect import load_learning_overlay as _llo
-            learning_overlay = _llo(Path(output_path))
-        except Exception:
-            learning_overlay = {}
     # Status -> ring color. preferred=green, contested=amber. Tentative gets no
     # ring (it's not yet trustworthy enough to highlight in the map).
     _RING = {"preferred": "#22c55e", "contested": "#f59e0b"}
 
     # Build nodes list for vis.js
     vis_nodes = []
-    for node_id, data in G.nodes(data=True):
+    for record in G.nodes():
+        node_id, data = record.id, graphify_attributes(record.attributes)
         cid = node_community.get(node_id, 0)
         color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
         label = sanitize_label(data.get("label", node_id))
@@ -482,19 +427,15 @@ def to_html(
             node["title"] = _html.escape(label) + "\n" + _html.escape(sanitize_label(lesson))
         vis_nodes.append(node)
 
-    # Build edges list. Restore original edge direction from _src/_tgt
-    # (stashed by build.py for exactly this reason): undirected NetworkX
-    # canonicalizes endpoint order, which would otherwise flip the arrow
-    # for `calls` and `rationale_for` in the rendered graph (#563).
+    # Build edges directly from native records, whose endpoints retain direction.
     vis_edges = []
-    for u, v, data in G.edges(data=True):
+    for record in G.edges():
+        u, v, data = record.source, record.target, edge_attributes(record)
         confidence = data.get("confidence", "EXTRACTED")
         relation = data.get("relation", "")
-        true_src = data.get("_src", u)
-        true_tgt = data.get("_tgt", v)
         vis_edges.append({
-            "from": true_src,
-            "to": true_tgt,
+            "from": u,
+            "to": v,
             "label": relation,
             "title": _html.escape(f"{relation} [{confidence}]"),
             "dashes": confidence != "EXTRACTED",
@@ -518,9 +459,10 @@ def to_html(
     nodes_json = _js_safe(vis_nodes)
     edges_json = _js_safe(vis_edges)
     legend_json = _js_safe(legend_data)
-    hyperedges_json = _js_safe(getattr(G, "graph", {}).get("hyperedges", []))
+    metadata = dict(G.attributes).get("graph", {})
+    hyperedges_json = _js_safe(metadata.get("hyperedges", []) if isinstance(metadata, dict) else [])
     title = _html.escape(sanitize_label(str(output_path)))
-    stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
+    stats = f"{G.node_count} nodes &middot; {G.edge_count} edges &middot; {len(communities)} communities"
 
     html = f"""<!DOCTYPE html>
 <html lang="en">

@@ -21,50 +21,6 @@ _ALLOWED_SCHEMES = {"http", "https"}
 _MAX_FETCH_BYTES = 52_428_800   # 50 MB hard cap for binary downloads
 _MAX_TEXT_BYTES  = 10_485_760   # 10 MB hard cap for HTML / text
 
-# Graph-load memory-bomb cap: reject .json files larger than this before
-# JSON-parsing them into a dict. Without this, a multi-gigabyte (or
-# specifically crafted) graph.json can exhaust process memory during
-# json.loads + node_link_graph rehydration.
-# Default fallback cap. Kept as a module-level constant so the value is
-# discoverable and so existing callers/tests that reference it directly keep
-# working; the effective cap is resolved at call time by
-# ``_max_graph_file_bytes`` (which lets ``GRAPHIFY_MAX_GRAPH_BYTES`` override it).
-_MAX_GRAPH_FILE_BYTES = 512 * 1024 * 1024   # 512 MiB
-
-
-def _max_graph_file_bytes() -> int:
-    """Return the graph.json size cap in bytes.
-
-    Honors the ``GRAPHIFY_MAX_GRAPH_BYTES`` environment variable so users with
-    large codebases can raise the limit without editing source. The value may
-    be plain bytes (``671088640``) or carry an ``MB`` / ``GB`` suffix
-    (``640MB``, ``2GB`` — case-insensitive, binary multipliers: ``MB`` is
-    1024*1024 and ``GB`` is 1024*1024*1024, i.e. MiB / GiB).
-    Falls back to ``_MAX_GRAPH_FILE_BYTES`` (512 MiB) when the env var is unset,
-    blank, or unparseable.
-
-    Read fresh on every call so the env var can be set before import and still
-    take effect.
-    """
-    raw = os.environ.get("GRAPHIFY_MAX_GRAPH_BYTES", "").strip()
-    if not raw:
-        return _MAX_GRAPH_FILE_BYTES
-    text = raw.upper()
-    multiplier = 1
-    if text.endswith("GB"):
-        multiplier = 1024 * 1024 * 1024
-        text = text[:-2].strip()
-    elif text.endswith("MB"):
-        multiplier = 1024 * 1024
-        text = text[:-2].strip()
-    try:
-        value = int(text)
-    except ValueError:
-        return _MAX_GRAPH_FILE_BYTES
-    if value <= 0:
-        return _MAX_GRAPH_FILE_BYTES
-    return value * multiplier
-
 # AWS metadata, link-local, and common cloud metadata endpoints
 _BLOCKED_HOSTS = {"metadata.google.internal", "metadata.google.com"}
 
@@ -309,81 +265,6 @@ def safe_fetch_text(url: str, max_bytes: int = _MAX_TEXT_BYTES, timeout: int = 1
 
 
 # ---------------------------------------------------------------------------
-# Path validation
-# ---------------------------------------------------------------------------
-
-def validate_graph_path(path: str | Path, base: Path | None = None) -> Path:
-    """Resolve *path* and verify it stays inside *base*.
-
-    *base* defaults to the `graphify-out` directory relative to CWD.
-    Also requires the base directory to exist, so a caller cannot
-    trick graphify into reading files before any graph has been built.
-
-    Raises:
-        ValueError  - path escapes base, or base does not exist
-        FileNotFoundError - resolved path does not exist
-    """
-    if base is None:
-        resolved_hint = Path(path).resolve()
-        for candidate in [resolved_hint, *resolved_hint.parents]:
-            if candidate.name == GRAPHIFY_OUT_NAME:
-                base = candidate
-                break
-        if base is None:
-            base = Path(GRAPHIFY_OUT).resolve()
-
-    base = base.resolve()
-    if not base.exists():
-        raise ValueError(
-            f"Graph base directory does not exist: {base}. "
-            "Run /graphify first to build the graph."
-        )
-
-    resolved = Path(path).resolve()
-    try:
-        resolved.relative_to(base)
-    except ValueError:
-        raise ValueError(
-            f"Path {path!r} escapes the allowed directory {base}. "
-            "Only paths inside graphify-out/ are permitted."
-        )
-
-    if not resolved.exists():
-        raise FileNotFoundError(f"Graph file not found: {resolved}")
-
-    return resolved
-
-
-def check_graph_file_size_cap(path: Path) -> None:
-    """Reject *path* if its size exceeds the configured graph-file cap.
-
-    Protects callers from memory bombs by failing fast before a multi-GiB
-    graph.json is read into memory and JSON-parsed. Silently returns when
-    ``path.stat()`` cannot be read — the caller's own existence/path check
-    is expected to surface a clearer error in that case.
-
-    The cap is resolved on every call via :func:`_max_graph_file_bytes`, so the
-    ``GRAPHIFY_MAX_GRAPH_BYTES`` env var can be set before import and still
-    apply.
-
-    Raises:
-        ValueError - file size exceeds the cap. The message includes the
-        observed size, the cap, and how to raise the limit.
-    """
-    cap = _max_graph_file_bytes()
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return
-    if size > cap:
-        raise ValueError(
-            f"graph file {path} is {size:_d} bytes, exceeds {cap:_d}-byte cap\n"
-            f"(set GRAPHIFY_MAX_GRAPH_BYTES=<bytes> or "
-            f"GRAPHIFY_MAX_GRAPH_BYTES=<N>GB to raise the limit)"
-        )
-
-
-# ---------------------------------------------------------------------------
 # Label sanitisation (mirrors code-review-graph's _sanitize_name pattern)
 # ---------------------------------------------------------------------------
 
@@ -403,6 +284,18 @@ def sanitize_label(text: str | None) -> str:
     if len(text) > _MAX_LABEL_LEN:
         text = text[:_MAX_LABEL_LEN]
     return text
+
+
+def validate_store_path(path: str | Path) -> Path:
+    """Resolve and validate an embedded Helix store directory."""
+    resolved = Path(path).expanduser().resolve()
+    if resolved.suffix.lower() == ".json" or resolved.is_file():
+        raise ValueError(
+            "legacy JSON graphs are obsolete; pass a graph.helix store and rebuild from source"
+        )
+    if not resolved.is_dir():
+        raise FileNotFoundError(f"Helix store not found: {resolved}")
+    return resolved
 
 
 # ---------------------------------------------------------------------------
