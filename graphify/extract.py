@@ -4409,7 +4409,10 @@ def extract(
     _empty_sources: list[str] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
-        if _res.get("nodes") or _res.get("error"):
+        # JSON data files are intentionally skipped by the structural extractor
+        # (#1224). They are not failed code extractions and must not repeatedly
+        # trigger the zero-node warning (#1666).
+        if _res.get("nodes") or _res.get("error") or _res.get("skipped"):
             continue
         if _get_extractor(_p) is not None:
             _empty_sources.append(str(_p))
