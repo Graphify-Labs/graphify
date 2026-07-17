@@ -320,3 +320,26 @@ def test_dfm_dispatch_registered():
 def test_dfm_detect_extension_registered():
     from graphify.detect import CODE_EXTENSIONS
     assert ".dfm" in CODE_EXTENSIONS
+
+
+def _dup_edges(r):
+    from collections import Counter
+    triples = Counter((e["source"], e["target"], e["relation"]) for e in r["edges"])
+    return {k: v for k, v in triples.items() if v > 1}
+
+
+def test_pascal_no_duplicate_method_edges_tree_sitter():
+    """A class method appears in both the interface declaration and the
+    implementation; each used to emit a `method` edge to the same node, so the
+    graph carried doubled method/contains/inherits edges (skewing degree and
+    breaking the cross-file inherited-call resolver's god-node guard). Edges are
+    now deduped on (source, target, relation)."""
+    from graphify.extract import extract_pascal
+    r = extract_pascal(FIXTURES / "sample.pas")
+    assert _dup_edges(r) == {}, f"duplicate edges: {_dup_edges(r)}"
+
+
+def test_pascal_no_duplicate_method_edges_regex():
+    from graphify.extract import _extract_pascal_regex
+    r = _extract_pascal_regex(FIXTURES / "sample.pas")
+    assert _dup_edges(r) == {}, f"duplicate edges: {_dup_edges(r)}"

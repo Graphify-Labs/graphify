@@ -1,3 +1,4 @@
+import os
 import unicodedata
 from pathlib import Path
 from graphify.detect import classify_file, count_words, detect, detect_incremental, save_manifest, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore, _is_sensitive
@@ -21,6 +22,10 @@ def test_classify_powershell_manifest():
 
 def test_classify_markdown():
     assert classify_file(Path("README.md")) == FileType.DOCUMENT
+
+def test_classify_skill():
+    # #1901: .skill agent files (Markdown with YAML frontmatter) were dropped as unclassified.
+    assert classify_file(Path("10_Orchestrator.skill")) == FileType.DOCUMENT
 
 def test_classify_pdf():
     assert classify_file(Path("paper.pdf")) == FileType.PAPER
@@ -226,6 +231,86 @@ def test_graphifyignore_at_git_root_is_included(tmp_path):
     assert result["graphifyignore_patterns"] == 1
 
 
+def test_gitignore_nested_below_root_excludes_file(tmp_path):
+    """A .gitignore in a subdirectory below the scan root is honored too (#1206).
+
+    Previously only the scan root and its ancestors were read, so a
+    .gitignore sitting inside e.g. vendor/sub/ was silently skipped.
+    """
+    (tmp_path / ".gitignore").write_text("*.log\n")
+    sub = tmp_path / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("secret.txt\n")
+    (tmp_path / "root.py").write_text("x = 1")
+    (tmp_path / "root.log").write_text("noise")
+    (sub / "keep.py").write_text("y = 2")
+    (sub / "secret.txt").write_text("shh")
+
+    result = detect(tmp_path)
+    code_files = result["files"]["code"]
+    assert any("root.py" in f for f in code_files)
+    assert any("keep.py" in f for f in code_files)
+    assert not any("root.log" in f for f in code_files)
+    assert not any("secret.txt" in f for f in code_files)
+    assert result["graphifyignore_patterns"] == 2
+
+
+def test_gitignore_nested_below_root_prunes_whole_directory(tmp_path):
+    """A nested .gitignore excluding a directory prevents descending into it."""
+    sub = tmp_path / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("build/\n")
+    build = sub / "build"
+    build.mkdir()
+    (build / "generated.py").write_text("x = 1")
+    (sub / "keep.py").write_text("y = 2")
+
+    result = detect(tmp_path)
+    code_files = result["files"]["code"]
+    assert any("keep.py" in f for f in code_files)
+    assert not any("generated.py" in f for f in code_files)
+
+
+def test_gitignore_nested_negation_overrides_broader_root_rule(tmp_path):
+    """A closer (nested) .gitignore's `!` re-include wins over a root exclude,
+    matching git's closer-file-wins precedence. Uses .py so classification lands
+    in the deterministic `code` bucket."""
+    (tmp_path / ".gitignore").write_text("*.py\n")
+    sub = tmp_path / "vendor" / "sub"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("!important.py\n")
+    (tmp_path / "root.py").write_text("a = 1")
+    (sub / "important.py").write_text("b = 1")
+    (sub / "other.py").write_text("c = 1")
+
+    result = detect(tmp_path)
+    code = result["files"]["code"]
+    # nested `!important.py` re-includes it despite the root `*.py` exclude...
+    assert any("vendor/sub/important.py" in f for f in code)
+    # ...while the root-excluded and non-re-included files stay out
+    assert not any(f.endswith("root.py") for f in code)
+    assert not any(f.endswith("other.py") for f in code)
+
+
+def test_nested_ignore_overrides_git_info_exclude_and_root(tmp_path):
+    """Precedence across all three sources: a nested `.gitignore` `!` re-include
+    outranks both a root `.gitignore` and `.git/info/exclude` (lowest, from
+    #1810), while an info/exclude-only file with no re-include stays out."""
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("*.py\n")
+    (tmp_path / ".gitignore").write_text("keep.py\n")           # root also excludes it
+    sub = tmp_path / "a" / "b"
+    sub.mkdir(parents=True)
+    (sub / ".gitignore").write_text("!keep.py\n")               # nearest wins -> re-included
+    (sub / "keep.py").write_text("x = 1")
+    (tmp_path / "drop.py").write_text("y = 1")                  # only info/exclude -> excluded
+
+    result = detect(tmp_path)
+    code = result["files"]["code"]
+    assert any("a/b/keep.py" in f for f in code), "nested ! must beat root + info/exclude"
+    assert not any(f.endswith("drop.py") for f in code)
+
+
 def test_detect_handles_circular_symlinks(tmp_path):
     sub = tmp_path / "a"
     sub.mkdir()
@@ -368,6 +453,67 @@ def test_detect_incremental_survives_dict_valued_mtime(tmp_path, monkeypatch):
     assert not any("mod.py" in f for f in result["unchanged_files"]["code"])
 
 
+def test_detect_incremental_legacy_float_reextracts_on_backwards_mtime(tmp_path, monkeypatch):
+    """Legacy float manifests must re-extract when mtime moves BACKWARDS (#1859).
+
+    Pre-fix the legacy branch used `current_mtime > stored`, which silently kept
+    the cached entry after operations that restore older mtimes: `git checkout`
+    of an older commit, `tar -xf` restore, or `rsync --times`. The graph then
+    reflected the newer content while disk held the older content. The dict
+    branch has always used `!=`; this test pins the legacy branch to the same
+    contract.
+    """
+    import json
+
+    monkeypatch.chdir(tmp_path)
+
+    src = tmp_path / "mod.py"
+    src.write_text("def old_content():\n    return 1\n", encoding="utf-8")
+    current_mtime = os.stat(src).st_mtime
+
+    manifest_dir = tmp_path / "graphify-out"
+    manifest_dir.mkdir()
+    manifest_path = str(manifest_dir / "manifest.json")
+
+    # Legacy schema (pre-dict-migration): the value is a bare float mtime.
+    # Store a mtime FROM THE FUTURE, simulating a checkout of an older
+    # revision that restored the file to an earlier timestamp.
+    future_mtime = current_mtime + 3600
+    legacy = {str(src.resolve()): future_mtime}
+    Path(manifest_path).write_text(json.dumps(legacy), encoding="utf-8")
+
+    result = detect_incremental(tmp_path, manifest_path)
+
+    assert any("mod.py" in f for f in result["new_files"]["code"]), (
+        "backwards-moving mtime on a legacy manifest entry must trigger re-extract"
+    )
+    assert not any("mod.py" in f for f in result["unchanged_files"]["code"])
+
+
+def test_detect_incremental_legacy_float_skips_when_mtime_matches(tmp_path, monkeypatch):
+    """Non-regression for the fix above: legacy float branch still skips when
+    the stored mtime equals the current mtime."""
+    import json
+
+    monkeypatch.chdir(tmp_path)
+
+    src = tmp_path / "mod.py"
+    src.write_text("def stable():\n    return 1\n", encoding="utf-8")
+
+    manifest_dir = tmp_path / "graphify-out"
+    manifest_dir.mkdir()
+    manifest_path = str(manifest_dir / "manifest.json")
+
+    # Legacy schema with the exact current mtime → no change → skip.
+    legacy = {str(src.resolve()): os.stat(src).st_mtime}
+    Path(manifest_path).write_text(json.dumps(legacy), encoding="utf-8")
+
+    result = detect_incremental(tmp_path, manifest_path)
+
+    assert not any("mod.py" in f for f in result["new_files"]["code"])
+    assert any("mod.py" in f for f in result["unchanged_files"]["code"])
+
+
 def test_classify_video_extensions():
     """Video and audio file extensions should classify as VIDEO."""
     from graphify.detect import FileType
@@ -467,14 +613,33 @@ def test_detect_skips_visual_tests_dir(tmp_path):
 
 
 def test_detect_skips_snapshots_dir(tmp_path):
-    """__snapshots__/ and snapshots/ are jest/vitest artefacts — must be excluded."""
+    """__snapshots__/ and real jest/vitest snapshots/ dirs are artefacts — excluded."""
     (tmp_path / "__snapshots__").mkdir()
     (tmp_path / "__snapshots__" / "app.test.ts.snap").write_text("// Jest Snapshot\nexports[`test 1`] = `<div/>`")
+    # a bare snapshots/ dir that actually holds .snap files is still a JS artefact
+    snap = tmp_path / "snapshots"
+    snap.mkdir()
+    (snap / "component.test.tsx.snap").write_text("exports[`renders`] = `<span/>`")
     (tmp_path / "app.ts").write_text("export function greet() { return 'hi'; }")
     result = detect(tmp_path)
     all_files = [f for files in result["files"].values() for f in files]
     assert not any("__snapshots__" in f for f in all_files)
+    assert not any(f"{os.sep}snapshots{os.sep}" in f for f in all_files)
     assert any("app.ts" in f for f in all_files)
+
+
+def test_detect_keeps_snapshots_code_namespace(tmp_path):
+    """#1666: a bare snapshots/ dir with no .snap files is a legit code namespace
+    (e.g. Rails app/services/snapshots/) and must NOT be pruned as a JS artefact."""
+    svc = tmp_path / "app" / "services" / "snapshots"
+    svc.mkdir(parents=True)
+    (svc / "round_reader.rb").write_text("class RoundReader\n  def call; end\nend\n")
+    (svc / "backfill_marker.rb").write_text("class BackfillMarker\n  def run; end\nend\n")
+    (tmp_path / "app.rb").write_text("class App; end\n")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert any("round_reader.rb" in f for f in all_files)
+    assert any("backfill_marker.rb" in f for f in all_files)
 
 
 def test_detect_skips_storybook_static_dir(tmp_path):
@@ -515,6 +680,48 @@ def test_detect_skips_next_cache(tmp_path):
     all_files = [f for files in result["files"].values() for f in files]
     assert not any(".next" in f for f in all_files)
     assert any("index.tsx" in f for f in all_files)
+
+
+def test_detect_skips_nox_virtualenv(tmp_path):
+    """.nox/ (nox virtualenvs, tox's successor) must be excluded like .tox (#1804)."""
+    nox = tmp_path / ".nox" / "tests" / "lib" / "site-packages" / "pydeck"
+    nox.mkdir(parents=True)
+    (nox / "widget.py").write_text("class Deck: pass")
+    (tmp_path / "app.py").write_text("def go(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any(".nox" in f for f in all_files)
+    assert any("app.py" in f for f in all_files)
+
+
+def test_detect_honors_git_info_exclude(tmp_path):
+    """.git/info/exclude (where `git worktree add` records nested worktree paths,
+    and where local-only excludes live) must be honored, not just .gitignore /
+    .graphifyignore — otherwise nested worktree copies get fully indexed (#1810)."""
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("worktrees/\n")
+    wt = tmp_path / "worktrees" / "foo"
+    wt.mkdir(parents=True)
+    (wt / "dupe.py").write_text("def dupe(): pass")
+    (tmp_path / "real.py").write_text("def real(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("dupe.py" in f for f in all_files), "worktree dir was not excluded"
+    assert any("real.py" in f for f in all_files), "real source was dropped"
+
+
+def test_git_info_exclude_ranks_below_gitignore_negation(tmp_path):
+    """info/exclude is loaded at lowest priority, so a later .gitignore `!` negation
+    of the same (non-directory) pattern still wins under last-match-wins (#1810)."""
+    from graphify.detect import _load_graphifyignore, _is_ignored
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("secret*.txt\n")
+    (tmp_path / ".gitignore").write_text("!secret-ok.txt\n")
+    (tmp_path / "secret-bad.txt").write_text("x")
+    (tmp_path / "secret-ok.txt").write_text("x")
+    patterns = _load_graphifyignore(tmp_path)
+    assert _is_ignored(tmp_path / "secret-bad.txt", tmp_path, patterns)
+    assert not _is_ignored(tmp_path / "secret-ok.txt", tmp_path, patterns)
 
 
 def test_detect_skips_graphify_own_cache(tmp_path):
@@ -810,9 +1017,26 @@ def test_sensitive_does_not_flag_tokenizer_py():
 def test_sensitive_does_not_flag_tokenize_py():
     assert not _is_sensitive(Path("tokenize.py"))
 
-def test_sensitive_flags_passwords_py():
-    # passwords.py is just as likely a secret store as passwords.txt — code ext is no excuse
-    assert _is_sensitive(Path("passwords.py"))
+def test_sensitive_does_not_flag_passwords_py():
+    # #1666: a programming-language source file named after a domain noun is a
+    # module, not a secret store. Silently dropping it hid real code from the graph.
+    # Genuine secret stores are .env/.pem/credentials.json etc. (still flagged below).
+    assert not _is_sensitive(Path("passwords.py"))
+
+
+def test_sensitive_does_not_flag_ruby_code_modules():
+    # #1666 exact cases: Rails source modules with keyword-ish names must survive.
+    assert not _is_sensitive(Path("app/models/device_token.rb"))
+    assert not _is_sensitive(Path("app/controllers/api/v1/passwords_controller.rb"))
+
+
+def test_sensitive_still_flags_data_secret_stores():
+    # #1666 guard: the exemption is ONLY for real source code, not data/config
+    # formats — credentials.json / oauth_token.json / secrets.yaml are the secret
+    # stores Stage 3 must keep catching (even though .json routes through CODE).
+    assert _is_sensitive(Path("credentials.json"))
+    assert _is_sensitive(Path("oauth_token.json"))
+    assert _is_sensitive(Path("app_secret.yaml"))
 
 def test_sensitive_flags_ssh_dir():
     assert _is_sensitive(Path("/home/user/.ssh/id_rsa"))
@@ -846,6 +1070,52 @@ def test_sensitive_secret_handler_txt():
 def test_sensitive_token_config_yaml():
     # "token_config.yaml": "token" followed by "_" (not alpha) → flagged.
     assert _is_sensitive(Path("token_config.yaml"))
+
+
+# ── #1943: Stage 1 dir check gets the same source carve-out as Stage 3 ──
+# secrets/ and credentials/ are as often real source packages (Go
+# internal/secrets, a credentials/ service module) as credential stores.
+# Genuine programming-language source beneath them must be graphed; data and
+# config formats — the formats credentials actually ship in — stay dropped,
+# and dedicated credential-store dirs (.ssh, .gnupg, .aws, .gcloud) keep
+# dropping everything with no carve-out.
+
+def test_sensitive_does_not_flag_source_under_secrets_dir():
+    # #1943 exact cases: real source under ambiguous dir names survives.
+    assert not _is_sensitive(Path("internal/secrets/vault.go"))
+    assert not _is_sensitive(Path("app/services/credentials/manager.py"))
+
+def test_sensitive_still_flags_data_under_secrets_dir():
+    # #1943 guard: the carve-out is ONLY for real source — data/config files
+    # under ambiguous dirs remain flagged, whatever their nesting depth.
+    assert _is_sensitive(Path("secrets/db.json"))
+    assert _is_sensitive(Path(".secrets/token.yaml"))
+    assert _is_sensitive(Path("deploy/credentials/prod.env"))
+    assert _is_sensitive(Path("internal/secrets/README.md"))  # docs are not source
+
+def test_sensitive_flags_everything_under_credential_store_dirs():
+    # #1943: dedicated stores get no carve-out — even source-classified files
+    # inside .ssh/.gnupg/.aws/.gcloud stay dropped.
+    assert _is_sensitive(Path("/home/user/.ssh/config"))
+    assert _is_sensitive(Path(".aws/credentials"))
+    assert _is_sensitive(Path(".gnupg/helper.py"))
+    assert _is_sensitive(Path("backup/.gcloud/sync.sh"))
+
+def test_sensitive_dir_carveout_does_not_bypass_name_screens():
+    # #1943: rescued source still falls through to Stages 2-3, so a file whose
+    # NAME is sensitive stays dropped even though its dir carve-out applied.
+    assert _is_sensitive(Path("secrets/service_account.py"))   # Stage 2 pattern
+    assert _is_sensitive(Path("credentials/id_rsa"))           # extensionless key
+
+
+def test_sensitive_dir_carveout_still_drops_tfvars_values_store():
+    # #1943 follow-up: genuine source under secrets/ is rescued, but .tfvars is
+    # Terraform's canonical values store (real secrets), not source — it stays
+    # dropped, while the real code file beside it is kept.
+    assert _is_sensitive(Path("secrets/prod.tfvars"))
+    assert not _is_sensitive(Path("secrets/loader.py"))
+    # .tf / .hcl are genuine infra source and remain graphable under secrets/.
+    assert not _is_sensitive(Path("secrets/main.tf"))
 
 
 # ── Generic keywords must be load-bearing: topic slugs are not secret stores ──
@@ -910,6 +1180,42 @@ def test_save_manifest_skips_semantic_hash_for_files_without_cache(tmp_path):
     assert manifest[str(doc1)]["semantic_hash"] != "", "successful file must have semantic_hash"
     assert str(doc2) not in manifest, "failed-chunk file must be absent from manifest"
 
+
+def test_save_manifest_clear_semantic_erases_stale_hash_for_omitted_file(tmp_path):
+    """#1948: a file stamped in an earlier run, then omitted from ``files`` on
+    a later run (LLM dropped its chunk / #1890 retry), must not keep surviving
+    with its stale semantic_hash from the prior run — the seed loop copies
+    the on-disk row verbatim otherwise, and detect_incremental(kind='semantic')
+    reports it unchanged, silently defeating the #1890 retry promise."""
+    import json
+
+    doc = tmp_path / "docs" / "doc.md"
+    doc.parent.mkdir()
+    doc.write_text("# Doc\n\ncontent")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+
+    # Run 1: doc.md is dispatched and stamped.
+    corpus = {str(doc)}
+    save_manifest({"document": [str(doc)]}, manifest_path, root=tmp_path, scan_corpus=corpus)
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["docs/doc.md"]["semantic_hash"] != ""
+
+    # Run 2 (--force re-run): the model omits doc.md this time, so cli.py's
+    # _stamped_manifest_files() drops it from the files dict passed here —
+    # but it was still dispatched, so the caller passes it via clear_semantic.
+    save_manifest(
+        {"document": []}, manifest_path, root=tmp_path,
+        scan_corpus=corpus, clear_semantic={str(doc)},
+    )
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["docs/doc.md"]["semantic_hash"] == "", (
+        "omitted file must have its stale semantic_hash cleared, not inherited"
+    )
+
+    inc = detect_incremental(tmp_path, manifest_path, kind="semantic")
+    assert [Path(f).name for f in inc["new_files"]["document"]] == ["doc.md"], (
+        "cleared file must be re-queued for semantic extraction"
+    )
 
 
 def test_save_manifest_without_filter_unchanged_for_code(tmp_path):
@@ -1538,3 +1844,278 @@ def test_convert_office_file_does_not_rewrite_existing_sidecar(tmp_path, monkeyp
     second = detect_mod.convert_office_file(src, out_dir)
     assert second == first
     assert second.stat().st_mtime_ns == mtime_before
+
+
+def test_detect_records_unclassified_extensionless_files(tmp_path):
+    # #1692: extensionless, non-shebang project files (Dockerfile, Makefile, ...)
+    # were considered but left no trace. detect() now lists them under
+    # "unclassified" so they can be surfaced instead of silently vanishing.
+    (tmp_path / "app.py").write_text("def f():\n    return 1\n")
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12\nRUN pip install x\n")
+    (tmp_path / "Makefile").write_text("build:\n\techo hi\n")
+    (tmp_path / "LICENSE").write_text("MIT License\n")
+    res = detect(tmp_path)
+    unclassified = sorted(Path(p).name for p in res.get("unclassified", []))
+    assert unclassified == ["Dockerfile", "LICENSE", "Makefile"]
+    # real code is still classified, not swept into unclassified
+    assert any("app.py" in f for f in res["files"].get("code", []))
+
+
+def test_detect_unclassified_empty_when_all_supported(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "README.md").write_text("# hi\n")
+    res = detect(tmp_path)
+    assert res.get("unclassified", []) == []
+
+
+def test_detect_reports_walk_errors_key():
+    """detect() always surfaces a walk_errors list so callers can tell whether
+    enumeration was complete."""
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    (d / "a.py").write_text("def f(): pass\n")
+    res = detect(d)
+    assert "walk_errors" in res
+    assert res["walk_errors"] == []
+
+
+def test_detect_surfaces_unreadable_dir_instead_of_silent_skip(tmp_path, capsys):
+    """os.walk silently skips a subtree whose scandir raises (permissions, or a
+    dir deleted mid-walk); that under-enumeration used to be invisible and could
+    yield a silently partial graph. detect() now records it in walk_errors and
+    warns, while still enumerating the rest of the tree."""
+    import os
+    if os.geteuid() == 0:
+        import pytest
+        pytest.skip("running as root: chmod 000 does not block scandir")
+    (tmp_path / "a.py").write_text("def f(): pass\n")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "b.py").write_text("def g(): pass\n")
+    os.chmod(locked, 0o000)
+    try:
+        res = detect(tmp_path)
+    finally:
+        os.chmod(locked, 0o755)  # restore for cleanup
+    code = res["files"]["code"]
+    assert any(f.endswith("a.py") for f in code)  # rest of tree still enumerated
+    assert len(res["walk_errors"]) >= 1
+    assert "could not scan" in capsys.readouterr().err
+
+
+def test_nested_gitignore_star_does_not_ignore_outside_its_dir(tmp_path):
+    """A nested .gitignore containing a bare `*` (auto-written by e.g. the
+    hypothesis library into .hypothesis/) must ignore ONLY that directory's
+    contents — matching it against root-relative paths ignored the entire
+    corpus (detect() returned 0 files on a real repo). Regression for #1873."""
+    (tmp_path / "README.md").write_text("# hello")
+    (tmp_path / "main.py").write_text("x = 1")
+    hyp = tmp_path / ".hypothesis"
+    hyp.mkdir()
+    (hyp / ".gitignore").write_text("*\n")
+    (hyp / "cached.py").write_text("y = 2")
+
+    result = detect(tmp_path)
+
+    assert result["total_files"] == 2  # README.md + main.py survive; .hypothesis/* ignored
+
+
+def test_nested_gitignore_patterns_still_apply_inside_their_dir(tmp_path):
+    """Counterpart guard: the anchor-scoped fix must not stop nested ignore
+    files from working WITHIN their own subtree."""
+    (tmp_path / "main.py").write_text("x = 1")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / ".gitignore").write_text("*.log\n")
+    (sub / "keep.py").write_text("y = 2")
+    (sub / "noise.log").write_text("z")
+
+    result = detect(tmp_path)
+
+    assert result["total_files"] == 2  # main.py + sub/keep.py; sub/noise.log ignored
+
+
+def test_nested_gitignore_does_not_govern_sibling_project(tmp_path):
+    """A nested .gitignore ('data/') in one project must not drop a sibling
+    project's data/ files, and the drop must be recorded in the `ignored`
+    diagnostic field rather than silently vanishing (#1922)."""
+    (tmp_path / "run.py").write_text("x = 1")
+    pa = tmp_path / "project_a" / "data"
+    pa.mkdir(parents=True)
+    (pa / "loader.py").write_text("def load(): pass")
+    pb = tmp_path / "project_b"
+    (pb / "data").mkdir(parents=True)
+    (pb / ".gitignore").write_text("data/\n")
+    (pb / "data" / "dump.csv").write_text("a,b\n1,2\n")
+
+    result = detect(tmp_path)
+
+    all_paths = [f for v in result["files"].values() for f in v]
+    assert any(
+        f.endswith(os.path.join("project_a", "data", "loader.py")) for f in all_paths
+    ), "sibling project_a/data/loader.py must survive project_b's nested ignore"
+    assert not any(f.endswith("dump.csv") for f in all_paths)
+    # The legitimately-ignored subtree is recorded, not silently dropped.
+    assert any(
+        e.rstrip(os.sep).endswith(os.path.join("project_b", "data"))
+        for e in result["ignored"]
+    ), f"ignored subtree should be recorded in detect()['ignored']: {result['ignored']}"
+
+
+# ---------------------------------------------------------------------------
+# #1908: manifest must not retain scan-excluded files as permanent
+# "deleted" entries. Full-scan saves prune excluded-but-alive rows; subset
+# saves keep preserving untouched rows (#917); out-of-root rows never prune.
+# ---------------------------------------------------------------------------
+
+def test_save_manifest_full_scan_prunes_excluded_but_alive_row(tmp_path):
+    """A row for a file that still exists on disk but left the scan corpus
+    (newly excluded) is dropped when the caller passes the full corpus."""
+    import json
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("x = 1\n")
+    b.write_text("y = 2\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+
+    save_manifest({"code": [str(a), str(b)]}, manifest_path, root=tmp_path)
+    raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py"}
+
+    # Second full scan no longer covers b.py (excluded), yet b.py is alive.
+    save_manifest(
+        {"code": [str(a)]}, manifest_path, root=tmp_path,
+        scan_corpus={str(a)},
+    )
+    raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py"}, (
+        f"excluded-but-alive row must be pruned on a full-scan save, got {set(raw)}"
+    )
+
+
+def test_save_manifest_full_scan_still_prunes_missing_file(tmp_path):
+    """Genuine deletions keep being pruned when scan_corpus is passed."""
+    import json
+    a = tmp_path / "a.py"
+    gone = tmp_path / "gone.py"
+    a.write_text("x = 1\n")
+    gone.write_text("y = 2\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"code": [str(a), str(gone)]}, manifest_path, root=tmp_path)
+
+    gone.unlink()
+    save_manifest(
+        {"code": [str(a)]}, manifest_path, root=tmp_path,
+        scan_corpus={str(a)},
+    )
+    raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py"}
+
+
+def test_save_manifest_subset_save_preserves_untouched_rows(tmp_path):
+    """Without scan_corpus (changed_paths hooks, skill runbooks, #917) a
+    subset save must keep seeding rows for files it wasn't given."""
+    import json
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("x = 1\n")
+    b.write_text("y = 2\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"code": [str(a), str(b)]}, manifest_path, root=tmp_path)
+
+    # Incremental hook re-stamps only a.py; b.py's row must survive.
+    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
+    raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py"}, (
+        f"subset saves must preserve untouched rows (#917), got {set(raw)}"
+    )
+
+
+def test_save_manifest_full_scan_keeps_out_of_root_rows(tmp_path):
+    """Out-of-root entries (--include sources, symlinked corpora) are never
+    walked by detect, so their absence from the corpus is not exclusion
+    evidence — a full-scan save must keep them."""
+    import json
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n")
+    outside = tmp_path.parent / f"{tmp_path.name}-extern.py"
+    outside.write_text("z = 3\n")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(outside)]}, manifest_path, root=tmp_path
+        )
+        save_manifest(
+            {"code": [str(a)]}, manifest_path, root=tmp_path,
+            scan_corpus={str(a)},
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert "a.py" in raw
+        assert str(outside.resolve()) in raw, (
+            f"out-of-root rows must never be pruned to the scan, got {set(raw)}"
+        )
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_detect_incremental_reports_excluded_not_deleted(tmp_path):
+    """A previously-indexed file that becomes excluded (still on disk) must
+    land in excluded_files, not deleted_files (#1908)."""
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("x = 1\n")
+    b.write_text("y = 2\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    full = detect(tmp_path)
+    save_manifest(full["files"], manifest_path, root=tmp_path)
+
+    inc = detect_incremental(
+        tmp_path, manifest_path, extra_excludes=["b.py"]
+    )
+    assert inc["deleted_files"] == [], (
+        f"excluded-but-alive file misreported as deleted: {inc['deleted_files']}"
+    )
+    assert [Path(f).name for f in inc["excluded_files"]] == ["b.py"]
+
+
+def test_detect_incremental_still_reports_real_deletions(tmp_path):
+    """Counterpart: a manifest row whose file is gone from disk stays in
+    deleted_files."""
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("x = 1\n")
+    b.write_text("y = 2\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    full = detect(tmp_path)
+    save_manifest(full["files"], manifest_path, root=tmp_path)
+
+    b.unlink()
+    inc = detect_incremental(tmp_path, manifest_path)
+    assert [Path(f).name for f in inc["deleted_files"]] == ["b.py"]
+    assert inc["excluded_files"] == []
+
+
+def test_detect_incremental_exclusion_stable_across_runs(tmp_path):
+    """After a full-scan save prunes the excluded row, later incremental runs
+    report the file neither as deleted nor as excluded — the exclusion has
+    fully settled instead of resurfacing forever."""
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("x = 1\n")
+    b.write_text("y = 2\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    full = detect(tmp_path)
+    save_manifest(full["files"], manifest_path, root=tmp_path)
+
+    # Run 1: b.py newly excluded — reported as excluded, then the full-scan
+    # save (what extract does at the end of the run) prunes its row.
+    inc1 = detect_incremental(tmp_path, manifest_path, extra_excludes=["b.py"])
+    assert [Path(f).name for f in inc1["excluded_files"]] == ["b.py"]
+    assert inc1["deleted_files"] == []
+    corpus = {f for flist in inc1["files"].values() for f in flist}
+    save_manifest(inc1["files"], manifest_path, root=tmp_path, scan_corpus=corpus)
+
+    # Run 2 (and beyond): steady state — nothing deleted, nothing excluded.
+    inc2 = detect_incremental(tmp_path, manifest_path, extra_excludes=["b.py"])
+    assert inc2["deleted_files"] == []
+    assert inc2["excluded_files"] == []

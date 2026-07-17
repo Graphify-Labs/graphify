@@ -359,6 +359,41 @@ def test_codebuddy_install_writes_hook(tmp_path):
     assert any("graphify" in str(h) for h in hooks)
 
 
+def test_claude_hook_is_shell_agnostic(tmp_path):
+    # #522: the installed PreToolUse hooks must be plain exe invocations, not
+    # POSIX bash (which fails on Windows cmd.exe/PowerShell).
+    import json as _json
+    from graphify.__main__ import _install_claude_hook
+    _install_claude_hook(tmp_path)
+    hooks = _json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]["PreToolUse"]
+    matchers = {h["matcher"] for h in hooks}
+    assert {"Bash", "Read|Glob"} <= matchers
+    for h in hooks:
+        cmd = h["hooks"][0]["command"]
+        for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):
+            assert token not in cmd, f"shell syntax {token!r} in {cmd!r}"
+        assert "graphify" in cmd and "hook-guard" in cmd
+
+
+def test_claude_hook_install_idempotent_and_replaces_old_bash_hook(tmp_path):
+    import json as _json
+    from graphify.__main__ import _install_claude_hook
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    # Pre-seed a legacy bash-style graphify hook (the thing #522 shipped before).
+    settings_path.write_text(_json.dumps({"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command",
+         "command": "[ -f graphify-out/graph.json ] && echo '{...}' || true"}]},
+    ]}}), encoding="utf-8")
+    _install_claude_hook(tmp_path)
+    _install_claude_hook(tmp_path)  # second install must not duplicate
+    hooks = _json.loads(settings_path.read_text())["hooks"]["PreToolUse"]
+    graphify_hooks = [h for h in hooks if "graphify" in str(h)]
+    assert len(graphify_hooks) == 2, "exactly the Bash + Read|Glob guards, no dupes"
+    # the legacy bash payload must be gone
+    assert not any("[ -f graphify-out" in h["hooks"][0]["command"] for h in graphify_hooks)
+
+
 def test_codebuddy_install_idempotent(tmp_path):
     from graphify.__main__ import codebuddy_install
     codebuddy_install(tmp_path)

@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 from graphify.build import build_from_json
 from graphify.cluster import cluster
-from graphify.analyze import god_nodes, surprising_connections, _is_concept_node, graph_diff, _surprise_score, _file_category, _is_json_key_node, find_import_cycles
+from graphify.analyze import god_nodes, surprising_connections, _is_concept_node, graph_diff, _surprise_score, _file_category, _is_json_key_node, find_import_cycles, suggest_questions
 from graphify.extract import _make_id
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -601,6 +601,19 @@ def test_god_nodes_filter_is_case_insensitive():
     labels = [r["label"] for r in result]
     for variant in ("Start", "START", "Name", "ID"):
         assert variant not in labels, f"`{variant}` should be filtered as JSON-key noise"
+
+
+def test_suggest_questions_excludes_rationale_nodes_from_isolated_count():
+    G = nx.Graph()
+    G.add_node("service", label="Service", file_type="code", source_file="service.py")
+    G.add_node("reason", label="Explains service", file_type="rationale", source_file="service.py")
+
+    questions = suggest_questions(G, communities={}, community_labels={}, top_n=10)
+    isolated = next(question for question in questions if question["type"] == "isolated_nodes")
+
+    assert isolated["why"].startswith("1 weakly-connected node")
+    assert "`Service`" in isolated["question"]
+    assert "Explains service" not in isolated["question"]
 
 
 # ── find_import_cycles tests ──────────────────────────────────────────────────

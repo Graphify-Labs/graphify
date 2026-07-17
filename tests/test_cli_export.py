@@ -321,6 +321,42 @@ def test_cluster_only_creates_output_dir_when_missing(tmp_path):
     assert (tmp_path / "graphify-out" / "GRAPH_REPORT.md").exists()
 
 
+def test_cluster_only_graph_in_graphify_out_writes_beside_it(tmp_path):
+    """#1747 Case 2: `cluster-only --graph <elsewhere>/graphify-out/graph.json`
+    must write GRAPH_REPORT.md and the re-clustered graph beside that graph, not
+    into a stray graphify-out/ in the CWD."""
+    project = tmp_path / "project"
+    project.mkdir()
+    out_dir = _make_graph(project)  # project/graphify-out/graph.json
+
+    cwd = tmp_path / "elsewhere"
+    cwd.mkdir()
+    r = _run(
+        ["cluster-only", ".", "--graph", str(out_dir / "graph.json"), "--no-viz", "--no-label"],
+        cwd,
+    )
+    assert r.returncode == 0, r.stderr
+    assert (out_dir / "GRAPH_REPORT.md").exists()          # beside --graph
+    assert not (cwd / "graphify-out").exists()             # no CWD pollution
+
+
+def test_extract_out_does_not_pollute_corpus(tmp_path):
+    """#1747 Case 1: `extract <corpus> --out <elsewhere>` must not leave a stray
+    graphify-out/ (cache, stat-index) inside the scanned corpus."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def main():\n    return 1\n")
+    out = tmp_path / "scratch"
+
+    r = _run(
+        ["extract", str(corpus), "--out", str(out), "--no-cluster", "--code-only"],
+        tmp_path,
+    )
+    assert r.returncode == 0, r.stderr
+    assert (out / "graphify-out" / "graph.json").exists()   # graph in --out
+    assert not (corpus / "graphify-out").exists()           # corpus untouched
+
+
 # Regression test for #1027 - cluster-only must remap labels via node overlap
 
 def test_cluster_only_persists_analysis_sidecar(tmp_path):
@@ -484,3 +520,24 @@ def test_export_html_no_community_data_at_all_still_succeeds(tmp_path):
     # code stays clean — same behaviour as the pre-fallback empty-communities
     # path, just no longer silently failing on the common case.
     assert r.returncode == 0, r.stderr
+
+
+def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
+    """#1789: the committed graph.json's node ids must be relative to the scan
+    root — not embed the absolute path — so the same repo yields identical ids
+    on any machine/checkout and leaks no local username/home."""
+    def _build(root: Path):
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "mod.py").write_text("def f(): return 1\n")
+        (root / "pkg" / "app.py").write_text("from pkg.mod import f\ndef g(): return f()\n")
+        r = _run(["extract", ".", "--code-only", "--no-cluster"], root)
+        assert r.returncode == 0, r.stderr
+        data = json.loads((root / "graphify-out" / "graph.json").read_text())
+        return sorted(n["id"] for n in data["nodes"])
+
+    a = _build(tmp_path / "alice_home" / "proj")
+    b = _build(tmp_path / "bob_elsewhere" / "checkout" / "proj")
+    assert a == b, f"node ids differ across checkout paths: {a} vs {b}"
+    leak = {"alice_home", "bob_elsewhere", "checkout", "tmp", "private", "users", "home", "var"}
+    assert not any(part in leak for ident in a for part in ident.split("_")), \
+        f"node id embeds an absolute-path component: {a}"

@@ -23,12 +23,12 @@ _BUILTIN_NOISE_LABELS = frozenset({
 # Language families — extensions sharing a runtime can legitimately call each other
 _LANG_FAMILY: dict[str, str] = {
     **{e: "python" for e in (".py", ".pyw")},
-    **{e: "js" for e in (".js", ".jsx", ".mjs", ".ejs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte")},
+    **{e: "js" for e in (".js", ".jsx", ".mjs", ".cjs", ".ejs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte")},
     **{e: "go" for e in (".go",)},
     **{e: "rust" for e in (".rs",)},
     **{e: "jvm" for e in (".java", ".kt", ".kts", ".scala")},
     **{e: "c" for e in (".c", ".h", ".cpp", ".cc", ".cxx", ".hpp")},
-    **{e: "ruby" for e in (".rb",)},
+    **{e: "ruby" for e in (".rb", ".rake")},
     **{e: "swift" for e in (".swift",)},
     **{e: "dotnet" for e in (".cs",)},
     **{e: "php" for e in (".php",)},
@@ -504,7 +504,10 @@ def suggest_questions(
     # 4. Isolated or weakly-connected nodes → exploration questions
     isolated = [
         n for n in G.nodes()
-        if G.degree(n) <= 1 and not _is_file_node(G, n) and not _is_concept_node(G, n)
+        if G.degree(n) <= 1
+        and not _is_file_node(G, n)
+        and not _is_concept_node(G, n)
+        and G.nodes[n].get("file_type") != "rationale"
     ]
     if isolated:
         labels = [G.nodes[n].get("label", n) for n in isolated[:3]]

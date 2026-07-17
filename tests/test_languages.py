@@ -115,6 +115,15 @@ def test_java_no_dangling_edges():
         assert e["source"] in node_ids
 
 
+def test_java_enum_constants_have_case_of_edge():
+    r = extract_java(FIXTURES / "sample.java")
+    labels = _labels(r)
+    assert "OK" in labels
+    assert "GAME_DONE" in labels
+    assert ("ErrorCode", "OK") in _edge_labels(r, "case_of")
+    assert ("ErrorCode", "GAME_DONE") in _edge_labels(r, "case_of")
+
+
 # ── C ────────────────────────────────────────────────────────────────────────
 
 def test_c_no_error():
@@ -472,7 +481,9 @@ def test_java_record_component_type_references(tmp_path):
     result = extract_java(source)
 
     assert ("Order", "Payload") in _edge_labels(result, "references", "field")
-    assert ("Order", "List") in _edge_labels(result, "references", "field")
+    # `List` is a java.util library type: skipped as noise, so only its user-type
+    # generic argument (`Item`) survives, not the container itself.
+    assert ("Order", "List") not in _edge_labels(result, "references")
     assert ("Order", "Item") in _edge_labels(result, "references", "generic_arg")
     assert ("Order", "Attachment") in _edge_labels(result, "references", "field")
 
@@ -604,6 +615,14 @@ def test_kotlin_finds_function():
     r = extract_kotlin(FIXTURES / "sample.kt")
     assert any("createClient" in l for l in _labels(r))
 
+def test_kotlin_enum_entries_have_case_of_edge():
+    # #1700 (Kotlin half): enum entries must be nodes with case_of edges to the enum.
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    labels = _labels(r)
+    assert "NORMAL" in labels and "GROUP" in labels and "SYSTEM" in labels
+    assert ("ChatType", "NORMAL") in _edge_labels(r, "case_of")
+    assert ("ChatType", "SYSTEM") in _edge_labels(r, "case_of")
+
 def test_kotlin_emits_in_file_calls():
     """Regression test for the call-walker `simple_identifier` /
     `identifier` rename — see graphify-kmp's PythonParityTest."""
@@ -636,6 +655,27 @@ def test_kotlin_parameter_return_generic_and_field_contexts():
     assert ("run", "Result") in _edge_labels(r, "references", "return_type")
     assert ("run", "DataProcessor") in _edge_labels(r, "references", "generic_arg")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
+
+def test_kotlin_builtin_types_not_emitted_as_references():
+    # kotlin.* scalar/collection/core types used as parameter, return, or field
+    # types carry no useful graph meaning: they never resolve to a project node,
+    # so emitting `references` edges to them is pure noise (mirrors the Java
+    # _JAVA_BUILTIN_TYPES / Python _PYTHON_ANNOTATION_NOISE handling).
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    ref_targets = {target for (_, target) in _edge_labels(r, "references")}
+    for builtin in ("String", "Int"):
+        assert builtin not in ref_targets, (
+            f"builtin type {builtin!r} should not be a references target"
+        )
+
+def test_kotlin_user_types_still_emit_references():
+    # Guard against over-filtering: a user-defined class sharing its name with a
+    # common domain-modeling identifier (Result) must still resolve to a real
+    # edge - the builtin filter is a fixed name list, so it must stay narrow
+    # enough not to swallow common user-chosen names like a sealed-class "Result".
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
+    assert ("run", "DataProcessor") in _edge_labels(r, "references", "parameter_type")
 
 
 # ── Scala ─────────────────────────────────────────────────────────────────────

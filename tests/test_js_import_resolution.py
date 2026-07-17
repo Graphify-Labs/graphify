@@ -1212,15 +1212,149 @@ def test_alias_import_edge_resolves_with_relative_input_paths(tmp_path, monkeypa
     # that exists in the graph), not an orphan keyed by an absolute prefix.
     assert _has_edge(result, "src/components/Button.tsx", "src/lib/utils.ts")
     assert target_id in node_ids
-    import_targets = {
+    import_targets = [
         e["target"]
         for e in result["edges"]
         if e["relation"] == "imports_from" and e["source"] == _file_node_id(Path("src/components/Button.tsx"))
-    }
-    assert target_id in import_targets
+    ]
+    assert import_targets == [target_id]
     # No surviving edge target may carry an absolute-path prefix from tmp_path.
     abs_prefix = _file_node_id(Path("src/lib/utils.ts").resolve())
     assert all(not t.startswith(abs_prefix + "_") and t != abs_prefix for t in import_targets)
 
     # The named-symbol edge to formatDate must resolve to the real symbol node too.
     assert _has_symbol_edge(result, "src/components/Button.tsx", "src/lib/utils.ts", "formatDate")
+    symbol_target = _make_id(_file_stem(Path("src/lib/utils.ts")), "formatDate")
+    named_imports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(Path("src/components/Button.tsx"))
+        and edge["relation"] == "imports"
+        and edge["source_location"] == "L1"
+    ]
+    assert [edge["target"] for edge in named_imports] == [symbol_target]
+    assert all(
+        edge["source"] in node_ids and edge["target"] in node_ids
+        for edge in result["edges"]
+        if edge["relation"] in ("imports", "imports_from")
+    )
+
+
+def test_alias_import_symbol_resolves_from_parent_working_directory(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    _write(
+        project / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(project / "src/lib/utils.ts", "export function formatDate(d) { return d }\n")
+    _write(
+        project / "src/components/Button.tsx",
+        "import { formatDate } from '@/lib/utils'\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    result = extract(
+        [Path("project/src/lib/utils.ts"), Path("project/src/components/Button.tsx")],
+        cache_root=Path("project"),
+    )
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    source_id = _file_node_id(Path("src/components/Button.tsx"))
+    symbol_target = _make_id(_file_stem(Path("src/lib/utils.ts")), "formatDate")
+    named_imports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == source_id and edge["relation"] == "imports"
+    ]
+
+    assert [edge["target"] for edge in named_imports] == [symbol_target]
+    assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in named_imports)
+
+
+def test_alias_import_does_not_remap_an_owned_symbol_id(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = Path("src/lib/utils.ts")
+    absolute_prefix = _file_node_id(target.resolve())
+    mirror = Path(f"{absolute_prefix}.ts")
+    button = Path("src/components/Button.tsx")
+    mirror_user = Path("src/components/Mirror.tsx")
+
+    _write(
+        Path("tsconfig.json"),
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(target, "export function formatDate(d) { return d }\n")
+    _write(mirror, "export function formatDate(d) { return 999 }\n")
+    _write(
+        button,
+        "import { formatDate } from '@/lib/utils'\nexport const a = formatDate(1)\n",
+    )
+    _write(
+        mirror_user,
+        f"import {{ formatDate }} from '../../{mirror.stem}'\nexport const b = formatDate(2)\n",
+    )
+
+    result = extract(
+        [target, mirror, button, mirror_user],
+        cache_root=Path("."),
+    )
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    symbols = {
+        node["source_file"]: node["id"]
+        for node in result["nodes"]
+        if node.get("label") == "formatDate()"
+    }
+    target_symbol = _make_id(_file_stem(target), "formatDate")
+    mirror_symbol = _make_id(_file_stem(mirror), "formatDate")
+    assert symbols[str(target)] == target_symbol
+    assert symbols[str(mirror)] == mirror_symbol
+
+    imports = [
+        edge
+        for edge in result["edges"]
+        if edge["relation"] == "imports" and edge["source_location"] == "L1"
+    ]
+    by_source: dict[str, list[str]] = {}
+    for edge in imports:
+        by_source.setdefault(edge["source_file"], []).append(edge["target"])
+    assert by_source[str(button)] == [target_symbol]
+    assert by_source[str(mirror_user)] == [mirror_symbol]
+    assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in imports)
+
+
+def test_alias_import_preserves_owned_same_line_symbol_edge(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = Path("src/lib/utils.ts")
+    absolute_prefix = _file_node_id(target.resolve())
+    mirror = Path(f"{absolute_prefix}.ts")
+    importer = Path("src/components/Both.tsx")
+
+    _write(
+        Path("tsconfig.json"),
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(target, "export function formatDate(d) { return d }\n")
+    _write(mirror, "export function formatDate(d) { return 999 }\n")
+    _write(
+        importer,
+        f"import {{ formatDate as a }} from '@/lib/utils'; "
+        f"import {{ formatDate as b }} from '../../{mirror.stem}';\n"
+        "export const value = a(1) + b(2)\n",
+    )
+
+    result = extract([target, mirror, importer], cache_root=Path("."))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    target_symbol = _make_id(_file_stem(target), "formatDate")
+    mirror_symbol = _make_id(_file_stem(mirror), "formatDate")
+    imports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(importer)
+        and edge["relation"] == "imports"
+        and edge["source_location"] == "L1"
+    ]
+
+    assert sorted(edge["target"] for edge in imports) == sorted([target_symbol, mirror_symbol])
+    assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in imports)

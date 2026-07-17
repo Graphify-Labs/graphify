@@ -578,6 +578,53 @@ def test_call_openai_compat_extra_body_wins_over_moonshot_default(monkeypatch):
     assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
+# ---------------------------------------------------------------------------
+# GRAPHIFY_DISABLE_THINKING: opt-in disable-thinking for reasoning models like
+# deepseek-v4-flash. Off by default — disabling thinking trades a rare reasoning
+# leak for lower extraction quality/coverage, so it must not be forced (#1621).
+# ---------------------------------------------------------------------------
+
+
+def test_deepseek_thinking_on_by_default(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_DISABLE_THINKING", raising=False)
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.deepseek.com", "sk", "deepseek-v4-flash",
+        "u", temperature=0, max_completion_tokens=8192, backend="deepseek",
+    )
+
+    eb = captured.get("extra_body")
+    assert eb is None or "thinking" not in eb, "thinking must NOT be disabled by default"
+
+
+def test_deepseek_thinking_disabled_via_env(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.deepseek.com", "sk", "deepseek-v4-flash",
+        "u", temperature=0, max_completion_tokens=8192, backend="deepseek",
+    )
+
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_explicit_extra_body_wins_over_thinking_env(monkeypatch):
+    # A provider-supplied extra_body is an explicit request-shape choice and must
+    # take precedence over the env toggle.
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    captured = _install_capturing_openai(monkeypatch)
+
+    llm._call_openai_compat(
+        "https://api.deepseek.com", "sk", "deepseek-v4-flash",
+        "u", temperature=0, max_completion_tokens=8192, backend="deepseek",
+        extra_body={"thinking": {"type": "enabled"}},
+    )
+
+    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
 def test_call_openai_compat_explicit_extra_body_skips_ollama_auto_derive(monkeypatch):
     # An explicit extra_body means "I own this request shape" — Ollama's
     # num_ctx auto-derive (a default) must step aside or we'd clobber it.

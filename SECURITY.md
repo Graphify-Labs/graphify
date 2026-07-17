@@ -42,7 +42,7 @@ graphify is a **local development tool**. It runs as a Claude Code skill and opt
 
 ### What graphify does NOT do
 
-- Does not run a network listener (MCP server communicates over stdio only)
+- Does not run a network listener by default (stdio transport); `--transport http` is opt-in, documented in the README, and binds to `127.0.0.1` unless `--host 0.0.0.0` is passed
 - Does not execute code from source files (tree-sitter parses ASTs - no eval/exec)
 - Does not use `shell=True` in any subprocess call
 - Does not store credentials or API keys

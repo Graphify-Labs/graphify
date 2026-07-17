@@ -15,7 +15,7 @@ def introspect_postgres(dsn: str | None = None) -> dict:
     except ModuleNotFoundError:
         raise ImportError(
             "psycopg is required for --postgres. "
-            "Install with: pip install 'graphify[postgres]'"
+            "Install with: pip install 'graphifyy[postgres]'"
         )
 
     try:
@@ -58,33 +58,42 @@ def introspect_postgres(dsn: str | None = None) -> dict:
             """)
             routines = cur.fetchall()
 
-            # 4. Query foreign keys — grouped by constraint to handle composites
+            # 4. Query foreign keys — grouped by constraint to handle composites.
+            # Read pg_catalog.pg_constraint, NOT information_schema.referential_
+            # constraints: that view only shows constraints where the current
+            # user has WRITE access to the referencing table (owner or a
+            # privilege other than SELECT), so a read-only introspection role
+            # sees zero FK rows while tables/views/routines all appear — the
+            # graph then silently loses every 'references' edge (#1746).
+            # pg_constraint is not privilege-filtered. It also keys constraints
+            # by oid rather than by name (constraint names are only unique per
+            # table, so the old name-based key_column_usage joins could
+            # cross-match same-named constraints on sibling tables).
             cur.execute("""
                 SELECT
-                    tc.constraint_name,
-                    kcu1.table_schema,
-                    kcu1.table_name,
-                    ARRAY_AGG(kcu1.column_name ORDER BY kcu1.ordinal_position) AS columns,
-                    kcu2.table_schema AS foreign_table_schema,
-                    kcu2.table_name AS foreign_table_name,
-                    ARRAY_AGG(kcu2.column_name ORDER BY kcu2.ordinal_position) AS foreign_columns
-                FROM
-                    information_schema.table_constraints AS tc
-                    JOIN information_schema.referential_constraints AS rc
-                      ON tc.constraint_name = rc.constraint_name
-                      AND tc.table_schema = rc.constraint_schema
-                    JOIN information_schema.key_column_usage AS kcu1
-                      ON tc.constraint_name = kcu1.constraint_name
-                      AND tc.table_schema = kcu1.table_schema
-                    JOIN information_schema.key_column_usage AS kcu2
-                      ON rc.unique_constraint_name = kcu2.constraint_name
-                      AND rc.unique_constraint_schema = kcu2.table_schema
-                      AND kcu1.position_in_unique_constraint = kcu2.ordinal_position
-                WHERE tc.constraint_type = 'FOREIGN KEY'
-                  AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')
-                GROUP BY tc.constraint_name, kcu1.table_schema, kcu1.table_name,
-                         kcu2.table_schema, kcu2.table_name
-                ORDER BY kcu1.table_schema, kcu1.table_name;
+                    con.conname AS constraint_name,
+                    ns.nspname AS table_schema,
+                    rel.relname AS table_name,
+                    (SELECT ARRAY_AGG(att.attname ORDER BY k.ord)
+                       FROM UNNEST(con.conkey) WITH ORDINALITY AS k(attnum, ord)
+                       JOIN pg_catalog.pg_attribute att
+                         ON att.attrelid = con.conrelid AND att.attnum = k.attnum
+                    ) AS columns,
+                    fns.nspname AS foreign_table_schema,
+                    frel.relname AS foreign_table_name,
+                    (SELECT ARRAY_AGG(att.attname ORDER BY k.ord)
+                       FROM UNNEST(con.confkey) WITH ORDINALITY AS k(attnum, ord)
+                       JOIN pg_catalog.pg_attribute att
+                         ON att.attrelid = con.confrelid AND att.attnum = k.attnum
+                    ) AS foreign_columns
+                FROM pg_catalog.pg_constraint con
+                JOIN pg_catalog.pg_class rel ON rel.oid = con.conrelid
+                JOIN pg_catalog.pg_namespace ns ON ns.oid = rel.relnamespace
+                JOIN pg_catalog.pg_class frel ON frel.oid = con.confrelid
+                JOIN pg_catalog.pg_namespace fns ON fns.oid = frel.relnamespace
+                WHERE con.contype = 'f'
+                  AND ns.nspname NOT IN ('pg_catalog', 'information_schema')
+                ORDER BY ns.nspname, rel.relname, con.conname;
             """)
             fks = cur.fetchall()
     finally:
@@ -104,6 +113,22 @@ def introspect_postgres(dsn: str | None = None) -> dict:
         else:
             ddl.append(f"CREATE VIEW {_quote_ident(schema)}.{_quote_ident(name)} AS SELECT 1;")
 
+    # FK edges — one ALTER TABLE per constraint (handles composite FKs correctly).
+    # Emitted BEFORE the function DDL: routine bodies the grammar can't parse
+    # (notably C-language extension functions, whose "body" is just the C symbol
+    # name) put tree-sitter into error recovery that consumes the statements
+    # after them — with FKs last, every 'references' edge is silently lost on
+    # any DB with a common extension installed (#1854). FK statements only
+    # reference tables, which are emitted first, so this order is always safe.
+    for constraint_name, t_schema, t_name, cols, r_schema, r_name, r_cols in fks:
+        col_list = ", ".join(_quote_ident(c) for c in cols)
+        ref_col_list = ", ".join(_quote_ident(c) for c in r_cols)
+        ddl.append(
+            f"ALTER TABLE {_quote_ident(t_schema)}.{_quote_ident(t_name)} "
+            f"ADD CONSTRAINT {_quote_ident(constraint_name)} "
+            f"FOREIGN KEY ({col_list}) REFERENCES {_quote_ident(r_schema)}.{_quote_ident(r_name)}({ref_col_list});"
+        )
+
     # Functions & Procedures — real body if available, stub if NULL
     # Use $gfx$ as the dollar-quote tag to avoid collision with $$ inside bodies.
     # Use external_language from the catalog; fall back to plpgsql if NULL/blank.
@@ -118,16 +143,6 @@ def introspect_postgres(dsn: str | None = None) -> dict:
                 f"CREATE FUNCTION {fn_sig} RETURNS void"
                 f" AS $gfx$ {actual_body} $gfx$ LANGUAGE {lang};"
             )
-
-    # FK edges — one ALTER TABLE per constraint (handles composite FKs correctly)
-    for constraint_name, t_schema, t_name, cols, r_schema, r_name, r_cols in fks:
-        col_list = ", ".join(_quote_ident(c) for c in cols)
-        ref_col_list = ", ".join(_quote_ident(c) for c in r_cols)
-        ddl.append(
-            f"ALTER TABLE {_quote_ident(t_schema)}.{_quote_ident(t_name)} "
-            f"ADD CONSTRAINT {_quote_ident(constraint_name)} "
-            f"FOREIGN KEY ({col_list}) REFERENCES {_quote_ident(r_schema)}.{_quote_ident(r_name)}({ref_col_list});"
-        )
 
     ddl_string = "\n".join(ddl)
 
