@@ -303,8 +303,15 @@ def test_windows_frontmatter_name_and_shell_and_extra():
     assert core.index("## Troubleshooting") < core.index("## Honesty Rules")
 
 
-def test_windows_interpreter_guard_recovers_uv_tool_python(tmp_path):
-    """#1619 A1: recovery must probe uv's Python, not parse graphify.exe."""
+@pytest.mark.parametrize(
+    ("manager", "manager_args"),
+    (
+        ("uv", "tool dir"),
+        ("pipx", "environment --value PIPX_LOCAL_VENVS"),
+    ),
+)
+def test_windows_interpreter_guard_recovers_tool_python(tmp_path, manager, manager_args):
+    """#1619 A1: recovery must probe uv/pipx Python, not graphify.exe."""
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash is required to exercise the generated recovery guard")
@@ -314,41 +321,97 @@ def test_windows_interpreter_guard_recovers_uv_tool_python(tmp_path):
     fence_start = section.index("```bash\n") + len("```bash\n")
     guard = section[fence_start:section.index("\n```", fence_start)]
 
+    distribution_probe = (
+        "from importlib.metadata import version; version('graphifyy'); import graphify"
+    )
     assert 'head -1 "$GRAPHIFY_BIN"' not in guard
     for command in ("uv tool dir", "pipx environment --value PIPX_LOCAL_VENVS"):
         assert command in guard
     for suffix in ("graphifyy/Scripts/python.exe", "graphifyy/bin/python"):
         assert suffix in guard
-    assert '"$_PY" -c "import graphify"' in guard
+    assert guard.count(f'"$_PY" -I -c "{distribution_probe}"') == 4
 
-    tool_dir = tmp_path / "uv-tools"
+    tool_dir = tmp_path / f"{manager}-tools"
     python_exe = tool_dir / "graphifyy" / "Scripts" / "python.exe"
     python_exe.parent.mkdir(parents=True)
     python_exe.write_text(
         "#!/bin/sh\n"
-        "[ \"$1\" = -c ] && [ \"$2\" = \"import graphify\" ]\n",
+        f'[ "$1" = -I ] && [ "$2" = -c ] && [ "$3" = "{distribution_probe}" ]\n',
         encoding="utf-8",
     )
     python_exe.chmod(0o755)
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    uv = fake_bin / "uv"
-    uv.write_text(
-        f"#!/bin/sh\nprintf '%s\\n' '{tool_dir}'\n",
+    manager_bin = fake_bin / manager
+    manager_bin.write_text(
+        "#!/bin/sh\n"
+        f'[ "$*" = "{manager_args}" ] || exit 1\n'
+        f"printf '%s\\n' '{tool_dir}'\n",
         encoding="utf-8",
     )
-    uv.chmod(0o755)
+    manager_bin.chmod(0o755)
     graphify_exe = fake_bin / "graphify"
     graphify_exe.write_bytes(b"MZ\x90\x00not-a-script")
     graphify_exe.chmod(0o755)
 
     env = os.environ.copy()
-    env["PATH"] = os.pathsep.join((str(fake_bin), env.get("PATH", "")))
+    env["PATH"] = os.pathsep.join((str(fake_bin), "/usr/bin", "/bin"))
     subprocess.run([bash, "-c", guard], cwd=tmp_path, env=env, check=True)
 
     saved = (tmp_path / "graphify-out" / ".graphify_python").read_text(encoding="utf-8")
     assert saved == str(python_exe)
+
+
+@pytest.mark.parametrize(
+    "candidate_state", ("shadow_module", "metadata_only", "combined_shadow")
+)
+def test_interpreter_guard_rejects_incomplete_cwd_install(tmp_path, candidate_state):
+    """Cwd artifacts must not validate an unrelated or broken Python."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required to exercise the generated recovery guard")
+
+    core, _ = _platform_artifacts("windows")
+    section = core[core.index("## Interpreter guard for subcommands"):]
+    fence_start = section.index("```bash\n") + len("```bash\n")
+    guard = section[fence_start:section.index("\n```", fence_start)]
+
+    if candidate_state in ("shadow_module", "combined_shadow"):
+        (tmp_path / "graphify.py").write_text(
+            "# shadows an installed package\n", encoding="utf-8"
+        )
+    if candidate_state in ("metadata_only", "combined_shadow"):
+        dist_info = tmp_path / "graphifyy-1.0.dist-info"
+        dist_info.mkdir()
+        (dist_info / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: graphifyy\nVersion: 1.0\n",
+            encoding="utf-8",
+        )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    python_wrapper = "#!/bin/sh\nexec \"$REAL_PYTHON\" -S \"$@\"\n"
+    for name in ("python3", "python"):
+        candidate = fake_bin / name
+        candidate.write_text(python_wrapper, encoding="utf-8")
+        candidate.chmod(0o755)
+    for name in ("uv", "pipx"):
+        unavailable = fake_bin / name
+        unavailable.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        unavailable.chmod(0o755)
+    graphify_exe = fake_bin / "graphify"
+    graphify_exe.write_bytes(b"MZ\x90\x00not-a-script")
+    graphify_exe.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join((str(fake_bin), "/usr/bin", "/bin"))
+    env["REAL_PYTHON"] = sys.executable
+    env.pop("PYTHONPATH", None)
+    result = subprocess.run([bash, "-c", guard], cwd=tmp_path, env=env, check=False)
+
+    assert result.returncode != 0
+    assert not (tmp_path / "graphify-out" / ".graphify_python").exists()
 
 
 def test_posix_interpreter_guard_preserves_shebang_install(tmp_path):
@@ -366,7 +429,9 @@ def test_posix_interpreter_guard_preserves_shebang_install(tmp_path):
     python_exe.parent.mkdir(parents=True)
     python_exe.write_text(
         "#!/bin/sh\n"
-        "[ \"$1\" = -c ] && [ \"$2\" = \"import graphify\" ]\n",
+        "[ \"$1\" = -I ] && [ \"$2\" = -c ] && "
+        "[ \"$3\" = \"from importlib.metadata import version; "
+        "version('graphifyy'); import graphify\" ]\n",
         encoding="utf-8",
     )
     python_exe.chmod(0o755)

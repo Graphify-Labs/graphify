@@ -647,7 +647,7 @@ if [ ! -f graphify-out/.graphify_python ]; then
         if command -v uv >/dev/null 2>&1; then
             _TOOL_DIR=$(uv tool dir 2>/dev/null | tr -d '\r' | tr '\\' '/')
             for _PY in "$_TOOL_DIR/graphifyy/Scripts/python.exe" "$_TOOL_DIR/graphifyy/bin/python"; do
-                if [ -x "$_PY" ] && "$_PY" -c "import graphify" 2>/dev/null; then
+                if [ -x "$_PY" ] && "$_PY" -I -c "from importlib.metadata import version; version('graphifyy'); import graphify" 2>/dev/null; then
                     printf '%s\n' "$_PY"
                     return 0
                 fi
@@ -656,7 +656,7 @@ if [ ! -f graphify-out/.graphify_python ]; then
         if command -v pipx >/dev/null 2>&1; then
             _VENV_DIR=$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null | tr -d '\r' | tr '\\' '/')
             for _PY in "$_VENV_DIR/graphifyy/Scripts/python.exe" "$_VENV_DIR/graphifyy/bin/python"; do
-                if [ -x "$_PY" ] && "$_PY" -c "import graphify" 2>/dev/null; then
+                if [ -x "$_PY" ] && "$_PY" -I -c "from importlib.metadata import version; version('graphifyy'); import graphify" 2>/dev/null; then
                     printf '%s\n' "$_PY"
                     return 0
                 fi
@@ -670,7 +670,7 @@ if [ ! -f graphify-out/.graphify_python ]; then
                     case "$_PY" in
                         *[!a-zA-Z0-9/_.@-]*) ;;
                         *)
-                            if [ -x "$_PY" ] && "$_PY" -c "import graphify" 2>/dev/null; then
+                            if [ -x "$_PY" ] && "$_PY" -I -c "from importlib.metadata import version; version('graphifyy'); import graphify" 2>/dev/null; then
                                 printf '%s\n' "$_PY"
                                 return 0
                             fi
@@ -680,7 +680,7 @@ if [ ! -f graphify-out/.graphify_python ]; then
             esac
         fi
         for _PY in python3 python; do
-            if command -v "$_PY" >/dev/null 2>&1 && "$_PY" -c "import graphify" 2>/dev/null; then
+            if command -v "$_PY" >/dev/null 2>&1 && "$_PY" -I -c "from importlib.metadata import version; version('graphifyy'); import graphify" 2>/dev/null; then
                 "$_PY" -c "import sys; print(sys.executable.replace(chr(92), '/'))" | tr -d '\r'
                 return 0
             fi
