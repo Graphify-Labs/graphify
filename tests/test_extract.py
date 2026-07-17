@@ -1753,6 +1753,16 @@ def test_extract_json_top_level_array_skipped(tmp_path):
     assert result["edges"] == []
 
 
+def test_extract_json_data_file_does_not_trigger_zero_node_warning(tmp_path, capsys):
+    """Intentionally skipped data JSON must stay quiet in the aggregate pass."""
+    data = tmp_path / "records.json"
+    data.write_text(json.dumps([{"id": 1}, {"id": 2}]))
+
+    extract([data], cache_root=tmp_path / "out", parallel=False)
+
+    assert "zero nodes" not in capsys.readouterr().err
+
+
 def test_extract_json_config_by_filename_still_extracted(tmp_path):
     """tsconfig.json must still be AST-extracted even without telltale keys."""
     cfg = tmp_path / "tsconfig.json"
