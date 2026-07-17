@@ -46,7 +46,7 @@
 graphify-out/
 ├── graph.html       נפתח בכל דפדפן — לחיצה על צמתים, סינון, חיפוש
 ├── GRAPH_REPORT.md  עיקרי הדברים: מושגי מפתח, קשרים מפתיעים, שאלות מוצעות
-└── graph.json       הגרף המלא — אפשר לשאול עליו בכל רגע בלי לקרוא שוב את הקבצים
+└── graph.helix       הגרף המלא — אפשר לשאול עליו בכל רגע בלי לקרוא שוב את הקבצים
 ```
 
 <div dir="rtl">
@@ -391,7 +391,7 @@ graphify-out/cost.json        # מקומי בלבד
 **תהליך העבודה:**
 1. אחד מחברי הצוות מריץ `‎/graphify .` ומבצע commit ל-`graphify-out/`.
 2. כולם מושכים — העוזר שלהם קורא את הגרף מיד.
-3. הריצו `graphify hook install` לבנייה אוטומטית מחדש אחרי כל commit ‏(AST בלבד, ללא עלות API). זה גם מגדיר merge driver של git כך ש-`graph.json` לעולם לא יישאר עם סימוני קונפליקט — שני מפתחים שמבצעים commit במקביל מקבלים מיזוג-איחוד אוטומטי של הגרפים.
+3. הריצו `graphify hook install` לבנייה אוטומטית מחדש אחרי כל commit ‏(AST בלבד, ללא עלות API). זה גם מגדיר merge driver של git כך ש-`graph.helix` לעולם לא יישאר עם סימוני קונפליקט — שני מפתחים שמבצעים commit במקביל מקבלים מיזוג-איחוד אוטומטי של הגרפים.
 4. כשמסמכים או מאמרים משתנים, הריצו `‎/graphify --update` לרענון הצמתים הללו.
 
 ---
@@ -403,18 +403,18 @@ graphify-out/cost.json        # מקומי בלבד
 ```bash
 # שאילתת גרף מהטרמינל
 graphify query "הצג את זרימת האימות"
-graphify query "מה מחבר בין DigestAuth ל-Response?" --graph graphify-out/graph.json
+graphify query "מה מחבר בין DigestAuth ל-Response?" --graph graphify-out/graph.helix
 
 # חשיפת הגרף כשרת MCP (לגישת כלים חוזרת)
-python -m graphify.serve graphify-out/graph.json
-python -m graphify.serve --graph graphify-out/graph.json  # גם הדגל --graph מתקבל
+python -m graphify.serve graphify-out/graph.helix
+python -m graphify.serve --graph graphify-out/graph.helix  # גם הדגל --graph מתקבל
 
 # רישום ב-Kimi Code:
-kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out/graph.json
+kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out/graph.helix
 
 # או הגשה על HTTP כך שכל הצוות מצביע על URL אחד (בלי graphify מקומי):
-python -m graphify.serve graphify-out/graph.json --transport http --port 8080
-python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+python -m graphify.serve graphify-out/graph.helix --transport http --port 8080
+python -m graphify.serve graphify-out/graph.helix --transport http --host 0.0.0.0 --api-key "$SECRET"
 ```
 
 <div dir="rtl">
@@ -443,7 +443,7 @@ python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0
 ```bash
 docker build -t graphify .
 docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
-  /data/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+  /data/graph.helix --transport http --host 0.0.0.0 --api-key "$SECRET"
 ```
 
 <div dir="rtl">
@@ -495,7 +495,7 @@ python3 -m venv .venv && .venv/bin/pip install "graphifyy[mcp]"
 | `GRAPHIFY_QUERY_LOG` | דריסת נתיב יומן השאילתות (ברירת מחדל: `~/.cache/graphify-queries.log`) | אופציונלי — ערך ריק או `/dev/null` להשתקה |
 | `GRAPHIFY_QUERY_LOG_DISABLE` | הגדירו `1` לביטול מוחלט של יומן השאילתות | אופציונלי |
 | `GRAPHIFY_QUERY_LOG_RESPONSES` | הגדירו `1` לרישום גם של תשובות תת-גרף מלאות (כבוי כברירת מחדל) | אופציונלי |
-| `GRAPHIFY_MAX_GRAPH_BYTES` | דריסת תקרת הגודל של graph.json ‏(512 MiB) — למשל `700MB`, ‏`2GB` או בייטים | אופציונלי — שימושי לקורפוסים גדולים מאוד |
+| `GRAPHIFY_MAX_GRAPH_BYTES` | דריסת תקרת הגודל של graph.helix ‏(512 MiB) — למשל `700MB`, ‏`2GB` או בייטים | אופציונלי — שימושי לקורפוסים גדולים מאוד |
 | `GRAPHIFY_LLM_TEMPERATURE` | דריסת טמפרטורת ה-LLM לחילוץ סמנטי — למשל `0.7`, או `none` להשמטה | אופציונלי — מושמט אוטומטית למודלי היסק o1/o3/o4/gpt-5 |
 
 ---
@@ -579,8 +579,8 @@ graphify query "..."
 
 <div dir="rtl">
 
-**ל-`graph.json` יש סימוני קונפליקט אחרי ששני מפתחים ביצעו commit במקביל**
-הריצו `graphify hook install` — הוא מגדיר merge driver של git שממזג-מאחד את `graph.json` אוטומטית כך שקונפליקטים לא קורים בכלל.
+**ל-`graph.helix` יש סימוני קונפליקט אחרי ששני מפתחים ביצעו commit במקביל**
+הריצו `graphify hook install` — הוא מגדיר merge driver של git שממזג-מאחד את `graph.helix` אוטומטית כך שקונפליקטים לא קורים בכלל.
 
 **החילוץ מחזיר צמתים/קשתות ריקים למסמכים או PDF**
 מסמכים, PDF ותמונות דורשים קריאת LLM — קורפוסים של קוד בלבד אינם דורשים מפתח. ודאו שמפתח ה-API מוגדר וה-backend נכון:
@@ -644,7 +644,7 @@ graphify save-result --question "Q" --answer "A" --nodes Foo Bar --outcome usefu
 graphify reflect                   # איחוד תוצאות graphify-out/memory/ אל reflections/LESSONS.md
 graphify reflect --if-stale        # לא עושה דבר אם LESSONS.md כבר חדש מכל הקלטים (זול להרצה בכל סשן)
 graphify reflect --out docs/LESSONS.md    # כתיבת מסמך הלקחים למקום אחר
-graphify reflect --graph graphify-out/graph.json  # קיבוץ לקחים לפי קהילה + כתיבת שכבת זיכרון העבודה (.graphify_learning.json)
+graphify reflect --graph graphify-out/graph.helix  # קיבוץ לקחים לפי קהילה + כתיבת שכבת זיכרון העבודה (.graphify_learning.json)
                                    # השכבה מתייגת צמתים preferred/tentative/contested (משוקלל-עדכניות, עם מקור);
                                    # graphify explain / query מציגים אז רמז "Lesson:", מסומן "code changed — re-verify" כשהמקור התקדם
 
@@ -717,7 +717,7 @@ graphify extract ./docs --google-workspace     # ייצוא .gdoc/.gsheet/.gslid
 graphify extract ./docs --mode deep            # חילוץ סמנטי עשיר יותר עם system prompt מורחב
 graphify extract ./docs --no-cluster           # חילוץ גולמי בלבד, דילוג על אשכול
 graphify extract ./docs --timing               # הדפסת זמני ריצה פר-שלב ל-stderr ‏(עובד גם ב-cluster-only)
-graphify extract ./docs --force                # דריסת graph.json גם אם לגרף החדש פחות צמתים (אחרי refactors או לניקוי כפילויות רפאים)
+graphify extract ./docs --force                # דריסת graph.helix גם אם לגרף החדש פחות צמתים (אחרי refactors או לניקוי כפילויות רפאים)
 graphify extract ./docs --dedup-llm            # ‏LLM כמכריע לזוגות ישויות עמומים (משתמש באותו מפתח API)
 graphify extract ./docs --global --as myrepo   # חילוץ ורישום בגרף הגלובלי חוצה-הפרויקטים
 GRAPHIFY_MAX_OUTPUT_TOKENS=32768 graphify extract ./docs --backend claude  # הרמת תקרת הפלט לקורפוסים צפופים
@@ -727,7 +727,7 @@ graphify export callflow-html --max-sections 8      # הגבלת מספר קטע
 graphify export callflow-html --output docs/arch.html
 graphify export callflow-html ./some-repo/graphify-out
 
-graphify global add graphify-out/graph.json --as myrepo   # רישום גרף פרויקט אל ~/.graphify/global-graph.json
+graphify global add graphify-out/graph.helix --as myrepo   # רישום גרף פרויקט אל ~/.graphify/global-graph.helix
 graphify global remove myrepo                         # הסרת פרויקט מהגרף הגלובלי
 graphify global list                                  # הצגת כל המאגרים הרשומים + ספירות צמתים/קשתות
 graphify global path                                  # הדפסת הנתיב לקובץ הגרף הגלובלי
@@ -750,7 +750,7 @@ graphify update ./src
 graphify update ./src --no-cluster  # דילוג על אשכול מחדש, כתיבת גרף AST גולמי בלבד
 graphify update ./src --force       # דריסה גם אם לגרף החדש פחות צמתים
 graphify cluster-only ./my-project
-graphify cluster-only ./my-project --graph path/to/graph.json  # מיקום גרף מותאם
+graphify cluster-only ./my-project --graph path/to/graph.helix  # מיקום גרף מותאם
 graphify cluster-only ./my-project --max-concurrency 16 --batch-size 200  # תיוג קהילות מקבילי (גרפים גדולים)
 graphify cluster-only ./my-project --resolution 1.5            # יותר קהילות, קטנות יותר
 graphify cluster-only ./my-project --exclude-hubs 99           # החרגת צומתי p99 מהחלוקה

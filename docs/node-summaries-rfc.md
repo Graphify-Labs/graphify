@@ -5,7 +5,7 @@ summaries for AI coding agents.
 
 ## Problem
 
-`graph.json` gives agents graph structure, source files, node labels, and
+The native Helix graph gives agents graph structure, source files, node labels, and
 relationships. That helps avoid reading an entire repository, but agents still
 often need to inspect raw files just to answer a basic navigation question:
 
@@ -84,7 +84,7 @@ or every symbol in the file. Those details already belong in the graph and can
 be fetched through `graphify explain`, `graphify query`, or direct file reads
 when needed.
 
-## Option A: `summary` attribute in `graph.json`
+## Option A: `summary` property on native nodes
 
 Add an optional `summary` field to file-level nodes:
 
@@ -107,8 +107,8 @@ graphify explain "extract.py"
 
 Pros:
 
-- Single artifact for graph consumers.
-- Matches NetworkX node attributes and existing node metadata.
+- One generation-safe store for graph consumers.
+- Matches existing native node properties and metadata.
 - Easy for `explain`, `serve`, visualizers, and MCP tools to consume.
 - No sidecar freshness or node-ID join logic.
 
@@ -116,12 +116,11 @@ Cons:
 
 - Adds text to the core graph artifact.
 - Expands the graph schema surface.
-- Consumers that dump all of `graph.json` into an LLM context would pay for all
-  summaries at once.
+- Consumers that request every node would pay for all summaries at once.
 
-## Option B: sidecar `node-summaries.json`
+## Option B: generation-scoped summary records
 
-Write summaries to a separate artifact keyed by node ID:
+Write summaries as generation-scoped native records keyed by node ID:
 
 ```json
 {
@@ -146,15 +145,15 @@ graphify explain "extract.py"
 
 Pros:
 
-- Keeps `graph.json` lean and topology-focused.
+- Keeps topology records lean and focused.
 - Makes summaries clearly optional.
 - Can be regenerated independently.
 - Provides a natural place for future generator metadata.
 
 Cons:
 
-- Adds a second artifact that consumers must discover and load.
-- Introduces freshness and synchronization questions.
+- Adds a second native record family that consumers must query.
+- Requires transactional activation with the topology generation.
 - Every consumer that wants summaries must join by node ID.
 
 ## Suggested first implementation once storage is chosen
@@ -177,8 +176,7 @@ Cons:
 
 ## Questions for maintainers and users
 
-1. Should graphify prefer one artifact (`graph.json`) or keep generated text in a
-   sidecar?
+1. Should graphify prefer node properties or generation-scoped summary records?
 2. Should deterministic file-level summaries be generated during graph creation,
    or only through an explicit command such as `graphify summarize`?
 3. Is `summary` the right term, or would `synopsis` better communicate a short,
