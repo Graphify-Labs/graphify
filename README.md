@@ -720,7 +720,7 @@ graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow lo
 graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides via gws before extraction
 graphify extract ./src --no-gitignore          # include git-ignored source; still honor .graphifyignore
 graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
-graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
+graphify extract ./docs --no-cluster           # normalized unclustered graph, skip clustering
 graphify extract ./docs --timing               # print per-stage wall-clock timings to stderr (also works on cluster-only)
 graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
@@ -752,7 +752,7 @@ graphify --version                                    # print installed version
 graphify watch ./src
 graphify check-update ./src
 graphify update ./src
-graphify update ./src --no-cluster  # skip reclustering, write raw AST graph only
+graphify update ./src --no-cluster  # skip reclustering, write a normalized unclustered graph
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
 graphify cluster-only ./my-project
 graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph location

@@ -3043,17 +3043,17 @@ def dispatch_command(cmd: str) -> None:
         )
 
         if no_cluster:
-            # --no-cluster: dump the raw merged extraction as graph.json.
-            # No NetworkX, no community detection, no analysis sidecar.
-            # Dedupe nodes (by id) and parallel edges so the raw output matches the
-            # clustered path (whose DiGraph collapses both) and stays deterministic
-            # across modes (#1317; node dedup also collapses shared Swift module
-            # anchors emitted per importing file, #1327).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+            # --no-cluster: write an unclustered graph without community
+            # detection or an analysis sidecar. Build it through the same
+            # endpoint reconciliation as the clustered path; a raw merged
+            # extraction can contain external endpoints and parallel edges,
+            # which makes graph.json unsafe for downstream consumers (#1781).
+            from graphify.build import build_from_json as _build_unclustered
             from graphify.export import (
                 backup_if_protected as _backup,
                 existing_graph_node_count as _existing_graph_node_count,
             )
+            from networkx.readwrite import json_graph as _json_graph
             if (
                 incremental_mode
                 and not code_files
@@ -3089,16 +3089,19 @@ def dispatch_command(cmd: str) -> None:
                 stages.total()
                 sys.exit(0)
 
-            merged["nodes"] = _dedupe_nodes(merged["nodes"])
-            merged["edges"] = _dedupe_edges(merged["edges"])
-            # Backfill source_file from endpoint nodes — this raw path bypasses
-            # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
-            _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}
-            for _e in merged["edges"]:
-                if not _e.get("source_file"):
-                    _e["source_file"] = (
-                        _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
-                    )
+            _unclustered = _build_unclustered(merged, root=target)
+            try:
+                _normalized = _json_graph.node_link_data(_unclustered, edges="links")
+            except TypeError:
+                _normalized = _json_graph.node_link_data(_unclustered)
+            for _link in _normalized.get("links", []):
+                _true_src = _link.pop("_src", None)
+                _true_tgt = _link.pop("_tgt", None)
+                if _true_src is not None and _true_tgt is not None:
+                    _link["source"] = _true_src
+                    _link["target"] = _true_tgt
+            _normalized["input_tokens"] = merged["input_tokens"]
+            _normalized["output_tokens"] = merged["output_tokens"]
             # RT-parity for the raw path: an incomplete build must not force a
             # partial graph over a larger complete one here either. The clustered
             # path gets this from to_json's #479 guard; this path never calls
@@ -3108,7 +3111,7 @@ def dispatch_command(cmd: str) -> None:
                 from graphify.export import MALFORMED_GRAPH as _MALFORMED_GRAPH
                 _existing_n = _existing_graph_node_count(graph_json_path)
                 _malformed = _existing_n is _MALFORMED_GRAPH
-                _shrinks = isinstance(_existing_n, int) and len(merged["nodes"]) < _existing_n
+                _shrinks = isinstance(_existing_n, int) and len(_normalized["nodes"]) < _existing_n
                 if _malformed or _shrinks:
                     _detail = (
                         f"the existing {graph_json_path} is present but unparseable "
@@ -3127,14 +3130,14 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
             _backup(graphify_out)
             from graphify.paths import write_json_atomic as _write_json_atomic
-            _write_json_atomic(graph_json_path, merged, indent=2)
+            _write_json_atomic(graph_json_path, _normalized, indent=2)
             stages.mark("write")
             cost = _estimate_cost(
                 backend, merged["input_tokens"], merged["output_tokens"]
             )
             print(
                 f"[graphify extract] wrote {graph_json_path} — "
-                f"{len(merged['nodes'])} nodes, {len(merged['edges'])} edges "
+                f"{len(_normalized['nodes'])} nodes, {len(_normalized['links'])} edges "
                 f"(no clustering)"
             )
             if merged["input_tokens"] or merged["output_tokens"]:
