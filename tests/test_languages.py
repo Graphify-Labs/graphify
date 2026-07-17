@@ -953,7 +953,9 @@ def test_swift_imports_survive_build():
     # Edges must survive the build (which prunes edges with unknown endpoints).
     G = build_from_json(r)
     surviving = [
-        (u, v) for u, v, d in G.edges(data=True) if d.get("relation") == "imports"
+        (edge.source, edge.target)
+        for edge in G.edges
+        if edge.attributes.get("relation") == "imports"
     ]
     assert surviving, "Swift import edges must survive build_from_json (#1327)"
 

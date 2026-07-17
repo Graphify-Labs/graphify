@@ -1131,7 +1131,7 @@ def test_relationship_edges_survive_validate_extraction_and_build():
     assert errors == [], f"validate_extraction failures: {errors}"
     graph = build_from_json(result)
     # Two edges should survive into the graph
-    edge_count = sum(1 for _ in graph.edges())
+    edge_count = len(graph.edges)
     assert edge_count == 2, f"expected 2 edges in graph, got {edge_count}"
 
 
