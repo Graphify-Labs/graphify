@@ -1271,6 +1271,106 @@ def test_alias_import_symbol_resolves_from_parent_working_directory(tmp_path, mo
     assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in named_imports)
 
 
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "export { formatDate } from '@/lib/utils'\n",
+        "export { formatDate as displayDate } from '@/lib/utils'\n",
+    ],
+)
+def test_alias_reexport_symbol_resolves_with_relative_input_paths(
+    tmp_path, monkeypatch, statement
+):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(tmp_path / "src/lib/utils.ts", "export function formatDate() { return 'ok' }\n")
+    _write(tmp_path / "src/lib/index.ts", statement)
+
+    monkeypatch.chdir(tmp_path)
+    target = Path("src/lib/utils.ts")
+    barrel = Path("src/lib/index.ts")
+    result = extract([target, barrel], cache_root=Path("."))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    file_target = _file_node_id(target)
+    symbol_target = _make_id(_file_stem(target), "formatDate")
+    reexports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(barrel)
+        and edge["relation"] == "re_exports"
+    ]
+
+    assert sorted(edge["target"] for edge in reexports) == sorted(
+        [file_target, symbol_target]
+    )
+    assert all(edge["target"] in node_ids for edge in reexports)
+    absolute_prefix = _file_node_id(target.resolve())
+    assert all(not edge["target"].startswith(absolute_prefix + "_") for edge in reexports)
+
+
+def test_alias_reexport_symbol_resolves_from_parent_working_directory(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    _write(
+        project / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(project / "src/lib/utils.ts", "export function formatDate() { return 'ok' }\n")
+    _write(project / "src/lib/index.ts", "export { formatDate } from '@/lib/utils'\n")
+
+    monkeypatch.chdir(tmp_path)
+    target = Path("project/src/lib/utils.ts")
+    barrel = Path("project/src/lib/index.ts")
+    result = extract([target, barrel], cache_root=Path("project"))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    source = _file_node_id(Path("src/lib/index.ts"))
+    symbol_target = _make_id(_file_stem(Path("src/lib/utils.ts")), "formatDate")
+    symbol_reexports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == source
+        and edge["relation"] == "re_exports"
+        and edge["target"] != _file_node_id(Path("src/lib/utils.ts"))
+    ]
+
+    assert [edge["target"] for edge in symbol_reexports] == [symbol_target]
+    assert all(edge["target"] in node_ids for edge in symbol_reexports)
+
+
+def test_alias_reexport_does_not_rewrite_an_owned_symbol_id(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = Path("src/lib/utils.ts")
+    absolute_prefix = _file_node_id(target.resolve())
+    mirror = Path(f"{absolute_prefix}.ts")
+    barrel = Path("src/lib/index.ts")
+
+    _write(
+        Path("tsconfig.json"),
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(target, "export function formatDate() { return 'target' }\n")
+    _write(mirror, "export function formatDate() { return 'mirror' }\n")
+    _write(barrel, "export { formatDate } from '@/lib/utils'\n")
+
+    result = extract([target, mirror, barrel], cache_root=Path("."))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    owned_target = _make_id(_file_stem(mirror), "formatDate")
+    symbol_reexports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(barrel)
+        and edge["relation"] == "re_exports"
+        and edge["target"] != _file_node_id(target)
+    ]
+
+    assert [edge["target"] for edge in symbol_reexports] == [owned_target]
+    assert owned_target in node_ids
+
+
 def test_alias_import_does_not_remap_an_owned_symbol_id(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     target = Path("src/lib/utils.ts")
