@@ -343,6 +343,35 @@ def test_rebuild_code_deleted_cwd_uses_graphify_repo_root(tmp_path, monkeypatch)
         os.chdir(old_cwd)
 
 
+def test_no_cluster_writes_endpoint_safe_graph(tmp_path):
+    """The unclustered output must be a valid graph, not raw extraction JSON."""
+    from graphify.diagnostics import diagnose_file
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "main.py").write_text(
+        "import missing_module\n\n"
+        "def main():\n"
+        "    return missing_module.value\n",
+        encoding="utf-8",
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    node_ids = {node["id"] for node in data["nodes"]}
+
+    assert all(
+        link["source"] in node_ids and link["target"] in node_ids
+        for link in data["links"]
+    )
+    summary = diagnose_file(graph_path)
+    assert summary["dangling_endpoint_edges"] == 0
+    assert summary["directed_same_endpoint_collapsed_edges"] == 0
+    assert summary["undirected_same_endpoint_collapsed_edges"] == 0
+
+
 def test_rebuild_code_evicts_nodes_from_deleted_files(tmp_path):
     """#1007: graphify update (_rebuild_code with no changed_paths) must remove
     nodes and edges from files deleted since the last run."""

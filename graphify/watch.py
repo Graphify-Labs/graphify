@@ -792,8 +792,11 @@ def _rebuild_code(
     ``block_on_lock=True`` to wait instead of skip (used by the interactive
     ``graphify update`` CLI).
 
-    ``no_cluster`` skips community detection and writes raw merged extraction
-    JSON to graphify-out/graph.json (mirrors ``extract --no-cluster``).
+    ``no_cluster`` skips community detection and writes the merged extraction
+    after the same endpoint reconciliation used by the clustered path. The
+    result is an unclustered graph, not an intermediate raw extraction, so
+    graph.json remains safe for consumers that expect every link endpoint to
+    name a node.
 
     Returns True on success, False on error or skipped-due-to-lock.
     """
@@ -1054,16 +1057,19 @@ def _rebuild_code(
         out.mkdir(exist_ok=True)
 
         if no_cluster:
-            # Normalise to "links" key so schema is consistent with the full clustered path.
-            # Dedupe parallel edges (the clustered path's DiGraph collapses them implicitly);
-            # without it, --no-cluster + repeated `update` accumulate duplicates and edge
-            # counts diverge across build modes (#1317).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
-            candidate_graph_data = {
-                **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
-                "nodes": _dedupe_nodes(result.get("nodes", [])),
-                "links": _dedupe_edges(result.get("edges", [])),
-            }
+            # Keep the no-cluster output on the same normalization path as the
+            # full build. The old raw dump preserved unresolved external
+            # endpoints and parallel edges, which made a freshly generated
+            # graph.json fail the diagnostic integrity gate even though the
+            # clustered build was healthy (#1781).
+            normalized_graph = build_from_json(result, root=project_root)
+            candidate_graph_data = _topology_from_graph(normalized_graph)
+            for link in candidate_graph_data.get("links", []):
+                true_src = link.pop("_src", None)
+                true_tgt = link.pop("_tgt", None)
+                if true_src is not None and true_tgt is not None:
+                    link["source"] = true_src
+                    link["target"] = true_tgt
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
             if existing_graph.exists():
