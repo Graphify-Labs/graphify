@@ -56,6 +56,31 @@ def _get_tokenizer():
 # Cached at import time. None if tiktoken is unavailable; consumers must handle.
 _TOKENIZER = _get_tokenizer()
 
+
+def _ollama_base_url() -> str:
+    """Resolve the Ollama base URL from OLLAMA_BASE_URL, OLLAMA_HOST, or default.
+
+    OLLAMA_BASE_URL (graphify-specific) takes priority for backward compatibility.
+    OLLAMA_HOST is the standard Ollama environment variable (e.g.
+    ``127.0.0.1:11434``) that Ollama itself recognises.  When OLLAMA_HOST is set
+    but OLLAMA_BASE_URL is not, Graphify now auto-configures from the standard
+    variable so users with a pre-existing Ollama setup do not need to set a
+    separate, Graphify-specific variable (#1940).
+    """
+    url = os.environ.get("OLLAMA_BASE_URL")
+    if url:
+        return url
+    host = os.environ.get("OLLAMA_HOST")
+    if host:
+        # OLLAMA_HOST is typically ``host:port`` (e.g. ``127.0.0.1:11434``), but
+        # some users may include a scheme.
+        if "://" in host:
+            host = host.rstrip("/")
+            return f"{host}/v1"
+        return f"http://{host}/v1"
+    return "http://localhost:11434/v1"
+
+
 BACKENDS: dict[str, dict] = {
     "claude": {
         # ANTHROPIC_BASE_URL points the backend at any Anthropic-compatible
@@ -83,7 +108,7 @@ BACKENDS: dict[str, dict] = {
         "max_tokens": 16384,
     },
     "ollama": {
-        "base_url": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+        "base_url": _ollama_base_url(),
         "default_model": os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b"),
         "env_key": "OLLAMA_API_KEY",
         "pricing": {"input": 0.0, "output": 0.0},
@@ -1572,7 +1597,7 @@ def extract_files_direct(
         # Ollama ignores auth but the OpenAI client library requires a non-empty
         # string. Use a placeholder and surface a visible warning so this never
         # silently routes traffic without the user realising — see F-029.
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
+        ollama_url = _ollama_base_url()
         _validate_ollama_base_url(ollama_url)
         print(
             "[graphify] WARNING: ollama backend selected with no OLLAMA_API_KEY set; "
@@ -2363,7 +2388,7 @@ def _call_llm(
     cfg = BACKENDS[backend]
     key = _get_backend_api_key(backend)
     if not key and backend == "ollama":
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
+        ollama_url = _ollama_base_url()
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
     if not key and backend not in ("bedrock", "claude-cli"):
@@ -2603,10 +2628,10 @@ def detect_backend() -> str | None:
     Priority: gemini → kimi → claude → openai → deepseek → azure → bedrock → ollama (last, opt-in).
 
     Ollama is intentionally checked LAST so a paid API key (Anthropic/OpenAI/etc.)
-    is never silently shadowed by an incidental OLLAMA_BASE_URL in the environment
-    — see security finding F-002/F-029. Setting OLLAMA_BASE_URL alongside a paid
-    key now keeps you on the paid backend; remove the paid key (or pass
-    --backend ollama explicitly) to route to the local model.
+    is never silently shadowed by an incidental OLLAMA_BASE_URL or OLLAMA_HOST in
+    the environment — see security finding F-002/F-029. Setting OLLAMA_BASE_URL or
+    OLLAMA_HOST alongside a paid key now keeps you on the paid backend; remove the
+    paid key (or pass --backend ollama explicitly) to route to the local model.
     """
     for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
@@ -2615,9 +2640,8 @@ def detect_backend() -> str | None:
         return "azure"
     if os.environ.get("AWS_PROFILE") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
         return "bedrock"
-    ollama_url = os.environ.get("OLLAMA_BASE_URL")
-    if ollama_url:
-        _validate_ollama_base_url(ollama_url)
+    if os.environ.get("OLLAMA_BASE_URL") or os.environ.get("OLLAMA_HOST"):
+        _validate_ollama_base_url(_ollama_base_url())
         return "ollama"
     for name in BACKENDS:
         if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):

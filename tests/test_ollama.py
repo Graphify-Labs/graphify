@@ -80,9 +80,44 @@ def test_detect_backend_claude_beats_ollama(monkeypatch):
     assert detect_backend() == "claude"
 
 
+def test_detect_backend_ollama_via_ollama_host(monkeypatch):
+    """OLLAMA_HOST (the standard Ollama env var) should auto-detect the backend (#1940)."""
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "192.168.1.50:11434")
+    assert detect_backend() == "ollama"
+
+
+def test_ollama_base_url_resolves_ollama_host(monkeypatch):
+    """_ollama_base_url should construct the URL from OLLAMA_HOST when
+    OLLAMA_BASE_URL is not set."""
+    from graphify.llm import _ollama_base_url
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "127.0.0.1:11434")
+    assert _ollama_base_url() == "http://127.0.0.1:11434/v1"
+
+
+def test_ollama_base_url_prefers_ollama_base_url_over_host(monkeypatch):
+    """OLLAMA_BASE_URL should win over OLLAMA_HOST for backward compatibility."""
+    from graphify.llm import _ollama_base_url
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://custom:8080/v1")
+    monkeypatch.setenv("OLLAMA_HOST", "127.0.0.1:11434")
+    assert _ollama_base_url() == "http://custom:8080/v1"
+
+
+def test_ollama_base_url_host_with_scheme(monkeypatch):
+    """OLLAMA_HOST with an explicit scheme should be honoured."""
+    from graphify.llm import _ollama_base_url
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "https://ollama.example.com")
+    assert _ollama_base_url() == "https://ollama.example.com/v1"
+
+
 def test_detect_backend_none_without_envvars(monkeypatch):
     monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert detect_backend() is None
 

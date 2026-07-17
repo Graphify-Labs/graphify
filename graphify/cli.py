@@ -2488,8 +2488,8 @@ def dispatch_command(cmd: str) -> None:
                 )
                 sys.exit(1)
             if backend == "ollama":
-                from graphify.llm import _validate_ollama_base_url
-                _oll_url = os.environ.get("OLLAMA_BASE_URL", _BACKENDS["ollama"].get("base_url", ""))
+                from graphify.llm import _ollama_base_url, _validate_ollama_base_url
+                _oll_url = _ollama_base_url()
                 try:
                     _validate_ollama_base_url(_oll_url, warn=False)
                 except ValueError as exc:
@@ -2499,10 +2499,7 @@ def dispatch_command(cmd: str) -> None:
                 allow_no_key = False
                 if backend == "ollama":
                     from urllib.parse import urlparse
-                    ollama_url = os.environ.get(
-                        "OLLAMA_BASE_URL",
-                        _BACKENDS["ollama"].get("base_url", ""),
-                    )
+                    ollama_url = _ollama_base_url()
                     try:
                         host = (urlparse(ollama_url).hostname or "").lower()
                     except Exception:
