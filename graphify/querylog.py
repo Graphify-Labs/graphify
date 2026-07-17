@@ -13,12 +13,22 @@ _NODES_RE = re.compile(r"(\d+)\s+nodes?\s+found")
 
 
 def _log_path() -> Path | None:
+    # Opt-in only (#1797). The log records every query/path/explain question and
+    # corpus path (and full responses if GRAPHIFY_QUERY_LOG_RESPONSES) in a
+    # plaintext file under ~/.cache — outside any repo's .gitignore/retention. A
+    # default-on record of proprietary queries contradicts graphify's on-device,
+    # no-telemetry posture, so it is OFF unless explicitly enabled:
+    #   GRAPHIFY_QUERY_LOG=<path>   log to that path, or
+    #   GRAPHIFY_QUERY_LOG_ENABLE=1 log to ~/.cache/graphify-queries.log.
+    # GRAPHIFY_QUERY_LOG_DISABLE=1 still forces it off (back-compat, wins).
     if os.environ.get("GRAPHIFY_QUERY_LOG_DISABLE", "").lower() in ("1", "true", "yes"):
         return None
     override = os.environ.get("GRAPHIFY_QUERY_LOG", "").strip()
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".cache" / "graphify-queries.log"
+    if os.environ.get("GRAPHIFY_QUERY_LOG_ENABLE", "").lower() in ("1", "true", "yes"):
+        return Path.home() / ".cache" / "graphify-queries.log"
+    return None
 
 
 def _log_responses() -> bool:

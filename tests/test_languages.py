@@ -656,6 +656,27 @@ def test_kotlin_parameter_return_generic_and_field_contexts():
     assert ("run", "DataProcessor") in _edge_labels(r, "references", "generic_arg")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
 
+def test_kotlin_builtin_types_not_emitted_as_references():
+    # kotlin.* scalar/collection/core types used as parameter, return, or field
+    # types carry no useful graph meaning: they never resolve to a project node,
+    # so emitting `references` edges to them is pure noise (mirrors the Java
+    # _JAVA_BUILTIN_TYPES / Python _PYTHON_ANNOTATION_NOISE handling).
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    ref_targets = {target for (_, target) in _edge_labels(r, "references")}
+    for builtin in ("String", "Int"):
+        assert builtin not in ref_targets, (
+            f"builtin type {builtin!r} should not be a references target"
+        )
+
+def test_kotlin_user_types_still_emit_references():
+    # Guard against over-filtering: a user-defined class sharing its name with a
+    # common domain-modeling identifier (Result) must still resolve to a real
+    # edge - the builtin filter is a fixed name list, so it must stay narrow
+    # enough not to swallow common user-chosen names like a sealed-class "Result".
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
+    assert ("run", "DataProcessor") in _edge_labels(r, "references", "parameter_type")
+
 
 # ── Scala ─────────────────────────────────────────────────────────────────────
 

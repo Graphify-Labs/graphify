@@ -22,6 +22,7 @@
 #
 from __future__ import annotations
 import json
+import math
 import os
 import re
 import sys
@@ -49,7 +50,7 @@ _EDGE_LANG_FAMILY: dict[str, str] = {
     ".c": "c", ".h": "c", ".cc": "c", ".cpp": "c", ".hpp": "c",
     ".cxx": "c", ".hh": "c", ".hxx": "c",
     ".cu": "c", ".cuh": "c", ".metal": "c", ".m": "c", ".mm": "c",
-    ".rb": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
+    ".rb": "rb", ".rake": "rb", ".php": "php", ".cs": "cs", ".swift": "swift", ".lua": "lua",
 }
 
 
@@ -287,6 +288,16 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
         if not new_stem:
             continue
         norm_nid = _normalize_id(nid)
+        # Idempotency guard (#1917): an id already carrying its canonical stem is
+        # done — do not re-run the legacy branch on it. When the canonical stem
+        # contains a shorter legacy stem as a prefix (parent dir name == file
+        # stem, e.g. `.claude/CLAUDE.md` -> `claude_claude` over legacy `claude`),
+        # an already-migrated id like `claude_claude_x` still matches the legacy
+        # `claude_` prefix below and would gain another stem segment on every
+        # build, defeating the same_topology/no_change short-circuits. Mirrors the
+        # canonical check in graph_has_legacy_ids.
+        if norm_nid == new_stem or norm_nid.startswith(new_stem + "_"):
+            continue
         new_id: str | None = None
         for old_stem in _old_file_stems(rel):
             if old_stem == new_stem:
@@ -346,6 +357,38 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
         if checked >= sample:
             break
     return False
+
+
+def _doc_twin_remap(nodes: list) -> dict[str, str]:
+    """Map a markdown quick-scan's bare doc node ``<slug>`` to the semantic
+    ``<slug>_doc`` node for the SAME file (#1799).
+
+    The markdown quick-scan (``extract_markdown``) mints a file node with the
+    bare id ``_make_id(path)`` while the semantic pass mints ``<slug>_doc`` for
+    the same document. A ``graphify update`` after a semantic build leaves both,
+    splitting the file's edges across two disconnected nodes. Canonicalize to the
+    semantic ``_doc`` node (it carries the richer references/hyperedges). Gated to
+    ``file_type == "document"`` on BOTH twins with an identical ``source_file``,
+    so an unrelated code symbol ``foo`` and ``foo_doc`` never merge.
+    """
+    by_id: dict[str, dict] = {}
+    for n in nodes:
+        if isinstance(n, dict) and n.get("id"):
+            by_id[str(n["id"])] = n
+    remap: dict[str, str] = {}
+    for nid, node in by_id.items():
+        if not nid.endswith("_doc"):
+            continue
+        bare = by_id.get(nid[:-4])
+        if bare is None:
+            continue
+        sf = node.get("source_file")
+        if not sf or bare.get("source_file") != sf:
+            continue
+        if node.get("file_type") != "document" or bare.get("file_type") != "document":
+            continue
+        remap[nid[:-4]] = nid
+    return remap
 
 
 def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
@@ -427,6 +470,33 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         for he in extraction.get("hyperedges", []) or []:
             if isinstance(he, dict) and isinstance(he.get("nodes"), list):
                 he["nodes"] = [_rekey.get(n, n) for n in he["nodes"]]
+
+    # Merge markdown quick-scan bare doc nodes into their semantic `_doc` twin
+    # for the same file, so a document is one node regardless of which pipeline
+    # touched it last (#1799).
+    _doc_remap = _doc_twin_remap(extraction.get("nodes", []))
+    if _doc_remap:
+        extraction["nodes"] = [
+            n for n in extraction.get("nodes", [])
+            if not (isinstance(n, dict) and n.get("id") in _doc_remap)
+        ]
+        _new_edges = []
+        for edge in extraction.get("edges", []):
+            if isinstance(edge, dict):
+                s0, t0 = edge.get("source"), edge.get("target")
+                if s0 in _doc_remap:
+                    edge["source"] = _doc_remap[s0]
+                if t0 in _doc_remap:
+                    edge["target"] = _doc_remap[t0]
+                # Drop only self-loops the remap itself collapsed (a bare->_doc
+                # link becoming doc->doc); leave any pre-existing self-loop alone.
+                if edge.get("source") == edge.get("target") and (s0 in _doc_remap or t0 in _doc_remap):
+                    continue
+            _new_edges.append(edge)
+        extraction["edges"] = _new_edges
+        for he in extraction.get("hyperedges", []) or []:
+            if isinstance(he, dict) and isinstance(he.get("nodes"), list):
+                he["nodes"] = [_doc_remap.get(n, n) for n in he["nodes"]]
 
     G: nx.Graph = nx.DiGraph() if directed else nx.Graph()
     for node in extraction.get("nodes", []):
@@ -637,6 +707,24 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if src not in node_set or tgt not in node_set:
             continue  # skip edges to external/stdlib nodes - expected, not an error
         attrs = {k: v for k, v in edge.items() if k not in ("source", "target")}
+        # Sanitize numeric edge fields (#1960): an explicit ``"weight": null`` in
+        # the extraction JSON survives ``.get("weight", 1.0)`` (the key is present,
+        # so the default never applies) and reaches Louvain/Leiden as None,
+        # crashing modularity arithmetic with a TypeError (graspologic's Leiden
+        # even panics on NaN). Coerce to float and fall back to the schema default
+        # of 1.0 for anything the clustering backends reject — None, non-numeric
+        # strings, NaN/inf, negatives — while numeric strings coerce cleanly.
+        # Repair (not drop) the key so graph.json round-trips a clean value and a
+        # cluster-only/--update reload never re-ingests the null.
+        for _num_key in ("weight", "confidence_score"):
+            if _num_key in attrs:
+                try:
+                    _num_val = float(attrs[_num_key])
+                except (TypeError, ValueError):
+                    _num_val = 1.0
+                if not math.isfinite(_num_val) or _num_val < 0:
+                    _num_val = 1.0
+                attrs[_num_key] = _num_val
         # Backfill source_file from the endpoint nodes (every node carries one).
         # Semantic/LLM edges occasionally omit it, which downstream validation
         # flags and leaves query results with no file reference (#1279).
@@ -696,10 +784,43 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # Relativize hyperedge source_file the same way nodes and edges are
         # (above), so to_json — which has no root and writes G.graph["hyperedges"]
         # verbatim — never leaks an absolute path from a semantic subagent (#1418).
+        kept_hyperedges = []
         for he in hyperedges:
             if isinstance(he, dict) and he.get("source_file"):
                 he["source_file"] = _norm_source_file(he["source_file"], _root)
-        G.graph["hyperedges"] = hyperedges
+            # Validate members against the built node set (#1916): a hyperedge
+            # member absent from the graph used to be copied into
+            # G.graph["hyperedges"] verbatim and reach graph.json dangling,
+            # even from a live (non-cache) extraction. Mirror the pairwise-edge
+            # handling above: remap mismatched ids via normalization first,
+            # then drop members that still don't resolve; drop the hyperedge
+            # itself when no valid member remains (single-member hyperedges
+            # are legal in this codebase, e.g. a per-file flow, so we prune
+            # rather than require two survivors).
+            if isinstance(he, dict) and isinstance(he.get("nodes"), list):
+                valid_members = []
+                for m in he["nodes"]:
+                    try:
+                        hash(m)
+                    except TypeError:
+                        continue
+                    if m not in node_set and isinstance(m, str):
+                        m = norm_to_id.get(_normalize_id(m), m)
+                    if m in node_set:
+                        valid_members.append(m)
+                if not valid_members:
+                    print(
+                        f"[graphify] WARNING: dropping hyperedge "
+                        f"{he.get('id', '?')!r} — none of its members "
+                        f"{he.get('nodes')!r} match built nodes.",
+                        file=sys.stderr,
+                    )
+                    continue
+                if valid_members != he["nodes"]:
+                    he["nodes"] = valid_members
+            kept_hyperedges.append(he)
+        if kept_hyperedges:
+            G.graph["hyperedges"] = kept_hyperedges
     return G
 
 
@@ -908,6 +1029,13 @@ def build_merge(
         norm = _norm_source_file(p, _eff_root)
         if norm:
             prune_set.add(norm)
+    # A file that was just re-extracted (present in new_chunks) is being REPLACED,
+    # never deleted — so never prune it, even if the caller also lists it in
+    # prune_sources. Otherwise its fresh, just-built nodes are silently removed
+    # (data loss): common when an edit keeps a node's label and the caller follows
+    # the old edit-workflow of passing the changed file in prune_sources (#1796).
+    # "replace" wins over a contradictory "delete" of the same source.
+    prune_set -= new_sources
 
     # Carry forward hyperedges from files that were neither re-extracted nor
     # deleted (#1574). build() only sees the new chunks' hyperedges, so without

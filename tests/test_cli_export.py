@@ -520,3 +520,24 @@ def test_export_html_no_community_data_at_all_still_succeeds(tmp_path):
     # code stays clean — same behaviour as the pre-fallback empty-communities
     # path, just no longer silently failing on the common case.
     assert r.returncode == 0, r.stderr
+
+
+def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
+    """#1789: the committed graph.json's node ids must be relative to the scan
+    root — not embed the absolute path — so the same repo yields identical ids
+    on any machine/checkout and leaks no local username/home."""
+    def _build(root: Path):
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "mod.py").write_text("def f(): return 1\n")
+        (root / "pkg" / "app.py").write_text("from pkg.mod import f\ndef g(): return f()\n")
+        r = _run(["extract", ".", "--code-only", "--no-cluster"], root)
+        assert r.returncode == 0, r.stderr
+        data = json.loads((root / "graphify-out" / "graph.json").read_text())
+        return sorted(n["id"] for n in data["nodes"])
+
+    a = _build(tmp_path / "alice_home" / "proj")
+    b = _build(tmp_path / "bob_elsewhere" / "checkout" / "proj")
+    assert a == b, f"node ids differ across checkout paths: {a} vs {b}"
+    leak = {"alice_home", "bob_elsewhere", "checkout", "tmp", "private", "users", "home", "var"}
+    assert not any(part in leak for ident in a for part in ident.split("_")), \
+        f"node id embeds an absolute-path component: {a}"

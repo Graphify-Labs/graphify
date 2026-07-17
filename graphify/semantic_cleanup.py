@@ -1,11 +1,13 @@
 # Semantic fragment sanitizer — converts sentence-like rationale nodes into
 # attributes on related nodes and removes invalid file_type values.
 #
-# Currently called from the skill merge scripts (skill-opencode.md,
-# skill-codex.md) so that rationale text never leaks into the knowledge
-# graph as standalone nodes. (Future: graphify.llm may wire this into
-# _parse_llm_json / _merge_into for non-skill code paths; not done in
-# this cycle.)
+# Called from the skill merge path (see skill-devin.md) and from the in-process
+# `graphify merge-chunks` command — both ingest untrusted agent-written chunk
+# JSON, and validate_semantic_fragment() rejects malformed/oversized payloads and
+# crafted node/edge IDs before they touch the graph. The primary build/load paths
+# (build_from_json, load_graph_json) deliberately do NOT run this: they must keep
+# loading valid pre-existing graphs whose AST node IDs predate the stricter
+# semantic-ID charset.
 from __future__ import annotations
 
 import json
@@ -31,7 +33,12 @@ MAX_SEMANTIC_FRAGMENT_HYPEREDGES = 10_000
 MAX_SEMANTIC_HYPEREDGE_NODES = 256
 MAX_SEMANTIC_ID_LENGTH = 256
 VALID_SEMANTIC_FILE_TYPES = frozenset({"code", "document", "paper", "image", "rationale", "concept"})
-_SEMANTIC_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+# Unicode word characters are allowed: build's normalize_id preserves CJK /
+# Cyrillic / accented-Latin identifiers, so an ASCII-only gate would reject valid
+# ids that the loader accepts. The explicit path-separator / ".." check in
+# _validate_semantic_id still blocks directory escape (#825); "/", "\\", spaces,
+# "@", "#" etc. are not \w and remain rejected.
+_SEMANTIC_ID_RE = re.compile(r"^[\w.:-]+$")
 
 
 def validate_semantic_fragment(fragment: object) -> list[str]:
@@ -74,12 +81,12 @@ def validate_semantic_fragment(fragment: object) -> list[str]:
             errors.append(f"nodes[{i}] must be an object")
             continue
         _validate_semantic_id(errors, f"nodes[{i}].id", node.get("id"))
-        file_type = node.get("file_type")
-        if file_type is not None and file_type not in VALID_SEMANTIC_FILE_TYPES:
-            errors.append(
-                f"nodes[{i}].file_type {file_type!r} is not one of "
-                f"{sorted(VALID_SEMANTIC_FILE_TYPES)}"
-            )  # validate file_type before any sanitize path can run
+        # file_type is intentionally NOT rejected here. It carries no security
+        # risk (it can't exhaust memory or escape a directory), and
+        # build_from_json already coerces every value via _FILE_TYPE_SYNONYMS
+        # (unknown -> "concept", #840). Rejecting a whole chunk over a synonym
+        # like "markdown"/"tool"/"framework" that the loader would happily map is
+        # pure data loss, so leave file_type normalization to build.
 
     for i, edge in enumerate(edges):
         if not isinstance(edge, dict):

@@ -78,8 +78,19 @@ def introspect_cargo(root: str | Path) -> dict[str, Any]:
         if not isinstance(dependencies, dict):
             continue
         source_file = manifest.relative_to(root_path).as_posix()
-        for dependency_name in sorted(dependencies):
-            target = crates.get(dependency_name)
+        for dep_key, spec in sorted(dependencies.items()):
+            # Cargo lets a dep table entry rename the crate via `package = "..."`:
+            #   db = { path = "../storage", package = "internal-storage" }
+            # The key `db` is the name used in `use db::…;`; the actual crate
+            # published under `[package].name = "internal-storage"` is what
+            # `crates` is keyed by. Without honoring `package`, every renamed
+            # workspace-internal dep silently drops its edge (#1858).
+            real_name = dep_key
+            if isinstance(spec, dict):
+                pkg_override = spec.get("package")
+                if isinstance(pkg_override, str) and pkg_override:
+                    real_name = pkg_override
+            target = crates.get(real_name)
             if target is None:
                 continue
             edges.append(

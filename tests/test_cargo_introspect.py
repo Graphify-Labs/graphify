@@ -363,3 +363,95 @@ edition = "2021"{dependency_block}
         "source_file": "crates/crate_198/Cargo.toml",
         "source_location": "L1",
     } in result["edges"]
+
+
+def test_cargo_introspect_honors_package_rename_on_internal_dep(tmp_path):
+    """Renamed workspace-internal deps still produce a `crate_depends_on` edge (#1858).
+
+    Cargo's `package = "..."` inside a dep table entry lets the key used in
+    `use db::…;` differ from the crate's real `[package].name`. Looking up
+    `crates` by the raw dep-table key misses the rename and silently drops
+    the edge.
+    """
+    _write_manifest(
+        tmp_path / "Cargo.toml",
+        """
+[workspace]
+members = ["app", "storage"]
+""",
+    )
+    app = tmp_path / "app"
+    storage = tmp_path / "storage"
+    app.mkdir()
+    storage.mkdir()
+    _write_manifest(
+        app / "Cargo.toml",
+        """
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+db = { path = "../storage", package = "internal-storage" }
+""",
+    )
+    _write_manifest(
+        storage / "Cargo.toml",
+        """
+[package]
+name = "internal-storage"
+version = "0.1.0"
+edition = "2021"
+""",
+    )
+
+    result = introspect_cargo(tmp_path)
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    assert node_ids == {"crate:app", "crate:internal-storage"}
+    assert {
+        "source": "crate:app",
+        "target": "crate:internal-storage",
+        "relation": "crate_depends_on",
+        "context": "cargo_dependency",
+        "weight": 1.0,
+        "confidence": "EXTRACTED",
+        "source_file": "app/Cargo.toml",
+        "source_location": "L1",
+    } in result["edges"]
+
+
+def test_cargo_introspect_package_rename_falls_through_when_unresolved(tmp_path):
+    """A rename pointing at an external (non-workspace) crate stays a no-op.
+
+    Guards against the fix silently emitting edges to registry crates: the
+    resolved name still has to appear in `crates` (the workspace-internal
+    index) for an edge to be produced.
+    """
+    _write_manifest(
+        tmp_path / "Cargo.toml",
+        """
+[workspace]
+members = ["app"]
+""",
+    )
+    app = tmp_path / "app"
+    app.mkdir()
+    _write_manifest(
+        app / "Cargo.toml",
+        """
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio_rt = { version = "1", package = "tokio" }
+""",
+    )
+
+    result = introspect_cargo(tmp_path)
+
+    assert {node["id"] for node in result["nodes"]} == {"crate:app"}
+    assert result["edges"] == []
