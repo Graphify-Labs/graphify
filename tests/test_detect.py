@@ -738,6 +738,69 @@ def test_detect_skips_graphify_own_cache(tmp_path):
 
 # --- #882: gitignore parent-exclusion rule for ! re-includes ---
 
+def test_anchored_root_wildcard_negation_reincludes_subtree(tmp_path):
+    """`/*` stays at the root, so `!/src/` makes the subtree walkable (#1975)."""
+    for rel in ("src/app/main.py", "src/lib/util.py", "docs/guide.md", "README.md"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n")
+    (tmp_path / ".graphifyignore").write_text("/*\n!/src/\n")
+
+    result = detect(tmp_path)
+
+    files = {
+        Path(path).relative_to(tmp_path).as_posix()
+        for paths in result["files"].values()
+        for path in paths
+    }
+    assert files == {"src/app/main.py", "src/lib/util.py"}
+
+
+def test_anchored_negation_cannot_skip_excluded_parent(tmp_path):
+    """Re-including a child cannot rescue it while its parent stays excluded."""
+    victim = tmp_path / "src" / "app" / "main.py"
+    victim.parent.mkdir(parents=True)
+    victim.write_text("x\n")
+    (tmp_path / ".graphifyignore").write_text("/*\n!/src/app/\n")
+
+    assert detect(tmp_path)["total_files"] == 0
+
+
+def test_path_pattern_single_star_does_not_cross_segment(tmp_path):
+    """A regular `*` matches one component; recursive matching requires `**`."""
+    direct = tmp_path / "src" / "main.py"
+    nested = tmp_path / "src" / "app" / "main.py"
+    nested.parent.mkdir(parents=True)
+    direct.write_text("x\n")
+    nested.write_text("x\n")
+    for pattern in ("/src/*.py", "src/*.py"):
+        (tmp_path / ".graphifyignore").write_text(f"{pattern}\n")
+        result = detect(tmp_path)
+        files = [path for paths in result["files"].values() for path in paths]
+        assert not any(path.endswith("src/main.py") for path in files)
+        assert any(path.endswith("src/app/main.py") for path in files)
+
+
+def test_directory_only_negation_does_not_reinclude_file(tmp_path):
+    """A trailing slash restricts a pattern to directories, as in gitignore."""
+    readme = tmp_path / "README.md"
+    readme.write_text("# docs\n")
+    (tmp_path / ".graphifyignore").write_text("/*\n!/README.md/\n")
+
+    assert detect(tmp_path)["total_files"] == 0
+
+
+def test_anchored_double_star_crosses_path_segments(tmp_path):
+    """`**` retains recursive gitignore matching at zero or more depths."""
+    direct = tmp_path / "src" / "generated.py"
+    nested = tmp_path / "src" / "app" / "deep" / "generated.py"
+    nested.parent.mkdir(parents=True)
+    direct.write_text("x\n")
+    nested.write_text("x\n")
+    (tmp_path / ".graphifyignore").write_text("/src/**/generated.py\n")
+
+    assert detect(tmp_path)["total_files"] == 0
+
 def test_negation_cannot_rescue_file_under_excluded_dir(tmp_path):
     """A ! re-include cannot un-ignore a file whose parent dir is excluded (#882)."""
     from graphify.detect import _is_ignored, _load_graphifyignore

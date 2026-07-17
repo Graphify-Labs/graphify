@@ -7,6 +7,7 @@ import re
 import shlex
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 
 from graphify.google_workspace import (
@@ -934,6 +935,34 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
     return patterns
 
 
+def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
+    """Match an anchored gitignore pattern without letting ``*`` cross ``/``."""
+    path_parts = tuple(path.split("/"))
+    pattern_parts = tuple(pattern.split("/"))
+
+    @lru_cache(maxsize=None)
+    def _matches(path_idx: int, pattern_idx: int) -> bool:
+        if pattern_idx == len(pattern_parts):
+            return path_idx == len(path_parts)
+
+        part = pattern_parts[pattern_idx]
+        if part == "**":
+            if pattern_idx == len(pattern_parts) - 1:
+                return path_idx < len(path_parts)
+            return _matches(path_idx, pattern_idx + 1) or (
+                path_idx < len(path_parts)
+                and _matches(path_idx + 1, pattern_idx)
+            )
+
+        return (
+            path_idx < len(path_parts)
+            and fnmatch.fnmatchcase(path_parts[path_idx], part)
+            and _matches(path_idx + 1, pattern_idx + 1)
+        )
+
+    return _matches(0, 0)
+
+
 def _is_ignored(
     path: Path,
     root: Path,
@@ -961,9 +990,9 @@ def _is_ignored(
         """Apply last-match-wins to a single target path."""
         if _cache is not None and target in _cache:
             return _cache[target]
-        def _matches(rel: str, p: str, anchored: bool) -> bool:
-            if anchored:
-                return fnmatch.fnmatch(rel, p)
+        def _matches(rel: str, p: str, path_relative: bool) -> bool:
+            if path_relative:
+                return _match_anchored_ignore_pattern(rel, p)
             parts = rel.split("/")
             if fnmatch.fnmatch(rel, p):
                 return True
@@ -980,7 +1009,8 @@ def _is_ignored(
         for anchor, pattern in patterns:
             negated = pattern.startswith("!")
             raw = pattern[1:] if negated else pattern
-            anchored = raw.startswith("/")
+            directory_only = raw.endswith("/")
+            path_relative = "/" in raw.rstrip("/")
             p = raw.strip("/")
             if not p:
                 continue
@@ -996,7 +1026,9 @@ def _is_ignored(
             except ValueError:
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":
-                matched = _matches(rel_anchor, p, anchored=anchored)
+                matched = _matches(rel_anchor, p, path_relative=path_relative)
+                if matched and directory_only and not target.is_dir():
+                    matched = False
 
             if matched:
                 result = not negated  # last match wins; ! flips to un-ignore
