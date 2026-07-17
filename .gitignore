@@ -12,6 +12,7 @@ build/
 .ruff_cache/
 *.so
 *.egg
+.DS_Store
 .graphify/
 graphify-out/
 .graphify_*.json

@@ -37,12 +37,12 @@ jobs:
         run: uv run --frozen graphify cluster-only . --no-label
 
       - name: Generate HTML viewer
-        run: uv run --frozen graphify export html --graph graphify-out/graph.json
+        run: uv run --frozen graphify export html --graph graphify-out/graph.helix
 
       - name: Bundle release asset
         run: |
           mkdir -p dist-graph
-          cp graphify-out/graph.json dist-graph/
+          cp -R graphify-out/graph.helix dist-graph/
           cp graphify-out/graph.html dist-graph/
           [ -f graphify-out/GRAPH_REPORT.md ] && cp graphify-out/GRAPH_REPORT.md dist-graph/ || true
           tar -czf graphify-self-graph.tar.gz -C dist-graph .

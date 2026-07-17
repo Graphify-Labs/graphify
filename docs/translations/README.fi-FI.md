@@ -27,13 +27,13 @@ Täysin multimodaalinen. Lisää koodia, PDF:iä, markdownia, kuvakaappauksia, k
 graphify-out/
 ├── graph.html       interaktiivinen graafi — avaa missä tahansa selaimessa
 ├── GRAPH_REPORT.md  jumalsolmut, yllättävät yhteydet, ehdotetut kysymykset
-├── graph.json       pysyvä graafi — kyselytavissa viikkojen kuluttua
+├── graph.helix       pysyvä graafi — kyselytavissa viikkojen kuluttua
 └── cache/           SHA256-välimuisti — toistuvat ajot käsittelevät vain muuttuneet tiedostot
 ```
 
 ## Miten se toimii
 
-graphify toimii kolmessa läpiajossa. Ensin deterministinen AST-läpiajo poimii rakenteen kooditiedostoista ilman LLM:ää. Sitten video- ja äänitiedostot litteroidaan paikallisesti faster-whisperillä. Lopuksi Clauden ala-agentit suoritetaan rinnakkain asiakirjoissa, papereissa, kuvissa ja litteroinneissa. Tulokset yhdistetään NetworkX-graafiin, klusteroidaan Leidenillä ja viedään interaktiivisena HTML:nä, kyselytavissa olevana JSON:na ja tarkastusraporttina.
+graphify toimii kolmessa läpiajossa. Ensin deterministinen AST-läpiajo poimii rakenteen kooditiedostoista ilman LLM:ää. Sitten video- ja äänitiedostot litteroidaan paikallisesti faster-whisperillä. Lopuksi Clauden ala-agentit suoritetaan rinnakkain asiakirjoissa, papereissa, kuvissa ja litteroinneissa. Tulokset yhdistetään Helix-graafiin, klusteroidaan Leidenillä ja viedään interaktiivisena HTML:nä, kyselytavissa olevana JSON:na ja tarkastusraporttina.
 
 Jokainen suhde on merkitty `EXTRACTED`, `INFERRED` (luottamuspisteineen) tai `AMBIGUOUS`.
 

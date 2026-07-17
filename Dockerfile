@@ -2,10 +2,10 @@
 #
 # Build:  docker build -t graphify .
 # Run:    docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
-#             /data/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+#             /data/graph.helix --transport http --host 0.0.0.0 --api-key "$SECRET"
 #
 # Builds from source so the image includes the Streamable HTTP transport even
-# before it lands on PyPI. The graph.json is mounted at runtime (-v), never
+# before it lands on PyPI. The native Helix store is mounted at runtime (-v), never
 # baked into the image.
 FROM python:3.12-slim
 
@@ -22,4 +22,4 @@ USER graphify
 EXPOSE 8080
 
 ENTRYPOINT ["python", "-m", "graphify.serve"]
-CMD ["/data/graph.json", "--transport", "http", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["/data/graph.helix", "--transport", "http", "--host", "0.0.0.0", "--port", "8080"]

@@ -27,13 +27,13 @@ Teljesen multimodális. Adjon hozzá kódot, PDF-eket, markdownt, képernyőkép
 graphify-out/
 ├── graph.html       interaktív gráf — nyissa meg bármely böngészőben
 ├── GRAPH_REPORT.md  isten-csúcspontok, meglepő kapcsolatok, javasolt kérdések
-├── graph.json       állandó gráf — hetekkel később is lekérdezhető
+├── graph.helix       állandó gráf — hetekkel később is lekérdezhető
 └── cache/           SHA256-gyorsítótár — ismételt futtatások csak a módosított fájlokat dolgozzák fel
 ```
 
 ## Hogyan működik
 
-A graphify három menetben dolgozik. Először egy determinisztikus AST-menet kinyeri a struktúrát a kódfájlokból LLM nélkül. Ezután a video- és hangfájlokat a faster-whisper segítségével helyben írja át. Végül a Claude alügynökök párhuzamosan futnak dokumentumokon, cikkeken, képeken és átiratokban. Az eredményeket egy NetworkX-gráfba olvasztja össze, Leiden-nel klaszterezik, és interaktív HTML-ként, lekérdezhető JSON-ként és auditjelentésként exportálja.
+A graphify három menetben dolgozik. Először egy determinisztikus AST-menet kinyeri a struktúrát a kódfájlokból LLM nélkül. Ezután a video- és hangfájlokat a faster-whisper segítségével helyben írja át. Végül a Claude alügynökök párhuzamosan futnak dokumentumokon, cikkeken, képeken és átiratokban. Az eredményeket egy Helix-gráfba olvasztja össze, Leiden-nel klaszterezik, és interaktív HTML-ként, lekérdezhető JSON-ként és auditjelentésként exportálja.
 
 Minden kapcsolat `EXTRACTED`, `INFERRED` (megbízhatósági pontszámmal) vagy `AMBIGUOUS` feliratot kap.
 

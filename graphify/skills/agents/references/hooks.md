@@ -12,7 +12,7 @@ graphify hook uninstall  # remove
 graphify hook status     # check
 ```
 
-After every `git commit`, the hook detects which code files changed (via `git diff HEAD~1`), re-runs AST extraction on those files, and rebuilds `graph.json` and `GRAPH_REPORT.md`. Doc/image changes are ignored by the hook - run `/graphify --update` manually for those.
+After every `git commit`, the hook detects changed code, stages a native update, and atomically activates `graphify-out/graph.helix` with its report. Doc/image changes require an explicit `graphify update .`.
 
 If a post-commit hook already exists, graphify appends to it rather than replacing it.
 

@@ -133,11 +133,8 @@ _EXTRACTION_SOURCE = {
     "verbose": "references/shared/extraction-spec.md",
     "compact": "references/shared/extraction-spec-compact.md",
 }
-# Single unified query reference + stub: superior vocab-expansion (Step 0) plus
-# CLI traversal plus inline NetworkX fallback, shipped to every platform. The
-# capabilities used to be split across cli.md / cli-inline.md so no platform got
-# both — Claude had expansion but no fallback, the rest had the fallback but the
-# weaker matcher (#1325).
+# Single unified query reference + stub. Vocabulary expansion and traversal are
+# owned by the native CLI so generated skills never duplicate runtime logic.
 _QUERY_REFERENCE = "references/query/default.md"
 _QUERY_STUB = "query-stub/default.md"
 # The hooks reference is host-flavored. Most hosts read CLAUDE.md and wire
@@ -590,16 +587,15 @@ def _git_show(ref: str) -> str:
 
 
 def _v8_available() -> bool:
-    """Whether origin/v8 is fetchable in this checkout.
+    """Whether the pinned pre-split v8 commit exists in this checkout.
 
-    The git-show validators (audit-coverage, monolith-roundtrip,
-    always-on-roundtrip) read blobs from origin/v8. CI's default shallow checkout
-    does not fetch that ref, so the validators set fetch-depth: 0 to fetch it.
+    The heading audit reads blobs from a pinned commit. CI's default shallow
+    checkout does not fetch that history, so the validator job uses fetch-depth 0.
     This probe lets the CLI skip with a clear, actionable message (rather than
     crash with a cryptic git error) when the ref is genuinely unreachable.
     """
     result = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", "origin/v8"],
+        ["git", "cat-file", "-e", f"{_V8_BASELINE_SHA}^{{commit}}"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -983,45 +979,32 @@ def _is_sanctioned_monolith_diff(line: str) -> bool:
 
 
 def monolith_roundtrip(platform: Platform) -> list[str]:
-    """Assert a monolith renders diff-clean vs its v8 blob modulo allowed changes.
+    """Validate the Helix-only contract of a generated single-file skill.
 
-    The monolith bodies are hand-maintained single files frozen against a pinned
-    pristine v8 blob (``roundtrip_ref``); this is the guard that stops an
-    arbitrary edit (even a blessed one) from drifting them. Sanctioned changes are
-    enumerated as predicates in ``_SANCTIONED_MONOLITH_DIFFS``: the file_type enum
-    unification, the unified frontmatter description, the chunk-cleanup rewrite
-    (#1172), the four #1392 runbook fixes (directed propagation, content-only
-    semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
-
-    The comparison is a multiset diff, not a positional zip: a line whose text is
-    unchanged but merely *moved* (the report-write line shifted below ``to_json``
-    in the ordering fix) cancels out and is not flagged. Only lines whose content
-    is genuinely added or removed are checked, and each must be sanctioned.
+    The old byte comparison against the legacy v8 runbook would preserve removed
+    storage and compatibility instructions. Monoliths now have an explicit native
+    contract instead: the sole runtime store is Helix, required public commands
+    remain documented, and removed runtime names cannot return.
     """
     if platform.bucket != "monolith":
         return []
-    if platform.roundtrip_ref is None:
-        return [f"[{platform.key}] monolith is missing roundtrip_ref"]
-
-    rendered_lines = render(platform)[0].content.splitlines()
-    # Strip trigger lines from the original — they are non-spec and their removal
-    # (#1180) is a permitted diff.
-    original_lines = [
-        l for l in _normalise(_git_show(platform.roundtrip_ref)).splitlines()
-        if not _is_trigger_line(l)
-    ]
-
-    added = Counter(rendered_lines) - Counter(original_lines)
-    removed = Counter(original_lines) - Counter(rendered_lines)
-
+    body = render(platform)[0].content
     problems: list[str] = []
-    for line in list(added.elements()) + list(removed.elements()):
-        if _is_sanctioned_monolith_diff(line):
-            continue
-        problems.append(
-            f"[{platform.key}] unsanctioned monolith change vs pristine v8: {line!r}"
-        )
+    required = (
+        "graphify-out/graph.helix",
+        "graphify extract",
+        "graphify update",
+        "graphify query",
+        "graphify path",
+        "graphify explain",
+    )
+    for marker in required:
+        if marker not in body:
+            problems.append(f"[{platform.key}] native monolith is missing {marker!r}")
+    folded = body.casefold()
+    for removed in ("networkx", "graspologic", "graph.json", "build_from_json", "to_json("):
+        if removed in folded:
+            problems.append(f"[{platform.key}] native monolith retains removed term {removed!r}")
     return problems
 
 
@@ -1051,36 +1034,18 @@ def _always_on_constants(ref: str) -> dict[str, str]:
 
 
 def always_on_roundtrip() -> list[str]:
-    """Assert each always_on/*.md reproduces its former constant byte for byte.
-
-    The six always-on instruction blocks were extracted from triple-quoted
-    constants in __main__.py into packaged markdown. This validator renders each
-    block and compares it, byte for byte, against the constant's value in the
-    pre-extraction source (ALWAYS_ON_BASELINE_REF). A mismatch means the
-    extraction is not faithful and the install-string / issue-#580 contract would
-    break.
-    """
-    baseline = _always_on_constants(ALWAYS_ON_BASELINE_REF)
+    """Validate packaged always-on instructions against the Helix-only contract."""
     problems: list[str] = []
     rendered = {a.path: a.content for a in render_always_on()}
     for basename, const_name in sorted(ALWAYS_ON_BLOCKS.items()):
         path = f"graphify/always_on/{basename}.md"
-        if const_name not in baseline:
-            problems.append(f"could not find constant {const_name} in {ALWAYS_ON_BASELINE_REF}")
-            continue
-        expected = baseline[const_name]
-        for old, new in ALWAYS_ON_SANCTIONED_EDITS.get(const_name, ()):
-            if old not in expected:
-                problems.append(
-                    f"sanctioned edit for {const_name} no longer applies: "
-                    f"old text not found in {ALWAYS_ON_BASELINE_REF}"
-                )
-            expected = expected.replace(old, new)
-        if rendered[path] != expected:
-            problems.append(
-                f"always_on/{basename}.md does not reproduce {const_name} byte for byte "
-                f"(rendered {len(rendered[path])} chars vs baseline {len(expected)} chars)"
-            )
+        body = rendered[path]
+        if "graphify-out/graph.helix" not in body:
+            problems.append(f"always_on/{basename}.md does not name the native store")
+        folded = body.casefold()
+        for removed in ("networkx", "graspologic", "graph.json"):
+            if removed in folded:
+                problems.append(f"always_on/{basename}.md retains removed term {removed!r}")
     return problems
 
 
@@ -1093,8 +1058,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--check", action="store_true", help="byte-diff render vs committed + expected/, exit 1 on drift")
     p.add_argument("--audit-coverage", action="store_true", help="per host: assert every heading of that host's own v8 body single-homes in its render")
     p.add_argument("--schema-singleton", action="store_true", help="assert the file_type enum is byte-identical everywhere")
-    p.add_argument("--monolith-roundtrip", action="store_true", help="assert each monolith == v8 modulo the enum unification")
-    p.add_argument("--always-on-roundtrip", action="store_true", help="assert each always_on/*.md reproduces its former __main__.py constant byte for byte")
+    p.add_argument("--monolith-roundtrip", action="store_true", help="validate each monolith's Helix-only runtime contract")
+    p.add_argument("--always-on-roundtrip", action="store_true", help="validate packaged always-on Helix instructions")
     p.add_argument("--bless", action="store_true", help="rewrite expected/ from the current render")
     return p.parse_args(argv)
 
@@ -1103,15 +1068,12 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     platforms = load_platforms()
 
-    # The git-show validators read origin/v8. On a shallow checkout that ref is
-    # absent; skip with a clear, actionable message instead of crashing. CI fixes
-    # this for real by setting fetch-depth: 0 so the validators actually run.
-    _GIT_SHOW_VALIDATORS = (args.audit_coverage, args.monolith_roundtrip, args.always_on_roundtrip)
-    if any(_GIT_SHOW_VALIDATORS) and not _v8_available():
+    # The heading audit reads a pinned historical commit. A shallow checkout may
+    # omit it; CI fetches full history so this guard executes for real.
+    if args.audit_coverage and not _v8_available():
         print(
-            "SKIPPED: origin/v8 is not fetchable in this checkout, so the git-show "
-            "validators cannot run. On CI, set fetch-depth: 0 on this job (actions/"
-            "checkout) so origin/v8 is fetched and the validators run for real.",
+            f"SKIPPED: pinned v8 baseline {_V8_BASELINE_SHA} is unavailable. "
+            "On CI, set fetch-depth: 0 so the heading audit can run.",
             file=sys.stderr,
         )
         return 0
@@ -1153,7 +1115,7 @@ def main(argv: list[str] | None = None) -> int:
             for m in all_problems:
                 print(f"  {m}", file=sys.stderr)
             return 1
-        print("monolith-roundtrip OK: each monolith matches v8 modulo the enum unification.")
+        print("monolith-roundtrip OK: each monolith satisfies the Helix-only contract.")
         return 0
 
     if args.always_on_roundtrip:
@@ -1163,7 +1125,7 @@ def main(argv: list[str] | None = None) -> int:
             for m in problems:
                 print(f"  {m}", file=sys.stderr)
             return 1
-        print("always-on-roundtrip OK: each always_on/*.md reproduces its former constant byte for byte.")
+        print("always-on-roundtrip OK: each always_on/*.md satisfies the Helix-only contract.")
         return 0
 
     artifacts = render_all(platforms, only=args.platform)

@@ -37,7 +37,7 @@
 graphify-out/
 ├── graph.html       відкрийте в будь-якому браузері — клікайте по вузлах, фільтруйте, шукайте
 ├── GRAPH_REPORT.md  основне: ключові концепції, неочікувані зв’язки, запропоновані запитання
-└── graph.json       повний граф — запитуйте його будь-коли без повторного перечитування ваших файлів
+└── graph.helix       повний граф — запитуйте його будь-коли без повторного перечитування ваших файлів
 ```
 
 Для читабельної сторінки архітектури з діаграмами викликів Mermaid виконайте:
@@ -291,7 +291,7 @@ graphify-out/cost.json        # лише локальний
 **Робочий процес:**
 1. Одна людина запускає `/graphify .` і комітить `graphify-out/`.
 2. Усі виконують pull — їхній асистент одразу читає граф.
-3. Запустіть `graphify hook install` для автоматичного перебудування після кожного коміту (лише AST, без витрат API). Це також налаштовує git merge driver, щоб `graph.json` ніколи не залишався з маркерами конфліктів — два розробники, що комітять одночасно, отримають автоматично об'єднані графи.
+3. Запустіть `graphify hook install` для автоматичного перебудування після кожного коміту (лише AST, без витрат API). Це також налаштовує git merge driver, щоб `graph.helix` ніколи не залишався з маркерами конфліктів — два розробники, що комітять одночасно, отримають автоматично об'єднані графи.
 4. Коли документи або статті змінюються, запустіть `/graphify --update`, щоб оновити ці вузли.
 
 ---
@@ -301,13 +301,13 @@ graphify-out/cost.json        # лише локальний
 ```bash
 # запит до графу з терміналу
 graphify query "покажи потік автентифікації"
-graphify query "що пов'язує DigestAuth з Response?" --graph graphify-out/graph.json
+graphify query "що пов'язує DigestAuth з Response?" --graph graphify-out/graph.helix
 
 # відкрити граф як MCP-сервер (для повторного доступу через інструменти)
-python -m graphify.serve graphify-out/graph.json
+python -m graphify.serve graphify-out/graph.helix
 
 # зареєструвати в Kimi Code:
-kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out/graph.json
+kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out/graph.helix
 ```
 
 MCP-сервер надає асистенту структурований доступ: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
@@ -394,8 +394,8 @@ graphify cluster-only ./my-project --no-viz
 graphify query "..."
 ```
 
-**`graph.json` має маркери конфліктів після одночасного коміту двох розробників**
-Запустіть `graphify hook install` — це налаштовує git merge driver, який автоматично об'єднує `graph.json`, щоб конфліктів ніколи не виникало.
+**`graph.helix` має маркери конфліктів після одночасного коміту двох розробників**
+Запустіть `graphify hook install` — це налаштовує git merge driver, який автоматично об'єднує `graph.helix`, щоб конфліктів ніколи не виникало.
 
 **Вилучення повертає порожні вузли/ребра для документів або PDF**
 Документи та PDF потребують LLM-виклику. Перевірте, що API-ключ встановлено і backend правильний:
@@ -479,7 +479,7 @@ graphify extract ./docs --max-concurrency 2    # менше паралельни
 graphify extract ./docs --api-timeout 900      # довший HTTP тайм-аут для повільних локальних моделей (типово 600с)
 graphify extract ./docs --google-workspace     # експортувати .gdoc/.gsheet/.gslides через gws перед витягуванням
 graphify extract ./docs --no-cluster           # лише сире витягування, пропустити кластеризацію
-graphify extract ./docs --force                # перезаписати graph.json навіть якщо новий граф має менше вузлів (використовуйте після рефакторингу або для очищення фантомних дублікатів)
+graphify extract ./docs --force                # перезаписати graph.helix навіть якщо новий граф має менше вузлів (використовуйте після рефакторингу або для очищення фантомних дублікатів)
 graphify extract ./docs --dedup-llm            # LLM-арбітр для неоднозначних пар сутностей (використовує той самий API-ключ)
 graphify extract ./docs --global --as myrepo   # витягнути і зареєструвати в крос-проектний глобальний граф
 GRAPHIFY_MAX_OUTPUT_TOKENS=32768 graphify extract ./docs --backend claude  # підвищити ліміт виводу для щільних корпусів
@@ -489,7 +489,7 @@ graphify export callflow-html --max-sections 8      # обмежити кіль�
 graphify export callflow-html --output docs/arch.html
 graphify export callflow-html ./some-repo/graphify-out
 
-graphify global add graphify-out/graph.json myrepo   # зареєструвати граф проекту в ~/.graphify/global.json
+graphify global add graphify-out/graph.helix myrepo   # зареєструвати граф проекту в ~/.graphify/global.json
 graphify global remove myrepo                         # видалити проект з глобального графу
 graphify global list                                  # показати всі зареєстровані репо + кількість вузлів/ребер
 graphify global path                                  # вивести шлях до файлу глобального графу
@@ -512,7 +512,7 @@ graphify update ./src
 graphify update ./src --no-cluster  # пропустити рекластеризацію, записати лише сирий AST граф
 graphify update ./src --force       # перезаписати навіть якщо новий граф має менше вузлів
 graphify cluster-only ./my-project
-graphify cluster-only ./my-project --graph path/to/graph.json  # власне розташування графу
+graphify cluster-only ./my-project --graph path/to/graph.helix  # власне розташування графу
 graphify cluster-only ./my-project --resolution 1.5            # більше, менших спільнот
 graphify cluster-only ./my-project --exclude-hubs 99           # виключити вузли p99 ступеня з розбиття
 ```
