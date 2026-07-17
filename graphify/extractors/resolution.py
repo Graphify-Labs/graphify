@@ -637,6 +637,12 @@ def _disambiguate_colliding_node_ids(
                 node["id"] = new_id
 
     if not remap:
+        # No colliding ids to salt apart, but the transient `target_file` hint an
+        # importer stamps on every resolved import (#1814) still has to be dropped
+        # here — this early exit skips the edge loop below, so without it a
+        # non-colliding import would carry its absolute path into graph.json.
+        for edge in edges:
+            edge.pop("target_file", None)
         return
 
     unambiguous_remaps: dict[str, str] = {}
@@ -671,7 +677,20 @@ def _disambiguate_colliding_node_ids(
     for edge in edges:
         edge_source_key = _source_key(str(edge.get("source_file", "")), root)
         source_key = (edge.get("source", ""), edge_source_key)
-        target_key = (edge.get("target", ""), edge_source_key)
+        # An import/re-export edge's target is a FILE node that can collapse with a
+        # same-basename cross-extension sibling (foo.ts vs foo.mjs, #1814). Keying
+        # its target salt by the IMPORTER's own source_file mis-points it back at the
+        # importer's variant (a self-loop). When the emitter stamped the resolved
+        # target file, key the target salt by THAT file so the salt lands on the
+        # correct sibling. Generalizes the #1475 C/ObjC header carve-out (below) to
+        # every language and to re_exports. `pop` it as we consume it: this is the
+        # hint's only reader, and its absolute path must not persist into graph.json.
+        target_file = edge.pop("target_file", None)
+        if target_file and edge.get("relation") in ("imports", "imports_from", "re_exports"):
+            target_edge_key = _source_key(str(target_file), root)
+        else:
+            target_edge_key = edge_source_key
+        target_key = (edge.get("target", ""), target_edge_key)
         if source_key in remap:
             edge["source"] = remap[source_key]
         elif edge.get("source") in unambiguous_remaps:
@@ -777,12 +796,12 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None) -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
         existing_edges.add(key)
-        edges.append({
+        edge = {
             "source": source,
             "target": target,
             "relation": relation,
@@ -791,7 +810,13 @@ def _apply_symbol_resolution_facts(
             "source_file": str(source_path),
             "source_location": f"L{line}",
             "weight": 1.0,
-        })
+        }
+        # A re-export edge's target is a FILE node that can collapse with a
+        # same-basename cross-extension sibling; stamp the resolved target file so
+        # the id-disambiguation salt is keyed by the TARGET, not the importer (#1814).
+        if target_file is not None:
+            edge["target_file"] = target_file
+        edges.append(edge)
 
     for declaration in facts.declarations:
         ensure_symbol_node(declaration.file_path, declaration.name, declaration.line)
@@ -837,6 +862,7 @@ def _apply_symbol_resolution_facts(
                 "export",
                 star_fact.line,
                 star_fact.file_path,
+                target_file=str(path_by_resolved.get(target_path, target_path)),
             )
 
     for namespace_fact in facts.namespace_exports:
@@ -867,6 +893,7 @@ def _apply_symbol_resolution_facts(
                 "export",
                 namespace_fact.line,
                 namespace_fact.file_path,
+                target_file=str(path_by_resolved.get(target_path, target_path)),
             )
 
     for export_fact in facts.exports:
@@ -891,6 +918,7 @@ def _apply_symbol_resolution_facts(
                     "export",
                     export_fact.line,
                     export_fact.file_path,
+                    target_file=str(path_by_resolved.get(origin[0], origin[0])),
                 )
 
     def resolve_exported_origin(target_path: Path, imported_name: str, seen: set[tuple[Path, str]] | None = None) -> tuple[Path, str]:

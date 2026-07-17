@@ -1258,11 +1258,11 @@ def _dynamic_import_js(node, source: bytes, caller_nid: str, str_path: str, edge
         resolved = _resolve_js_import_target(raw, str_path)
         if resolved is None:
             break
-        tgt_nid, _ = resolved
+        tgt_nid, resolved_path = resolved
         pair = (caller_nid, tgt_nid)
         if pair not in seen_dyn_pairs:
             seen_dyn_pairs.add(pair)
-            edges.append({
+            edge = {
                 "source": caller_nid,
                 "target": tgt_nid,
                 # A deferred `import(...)` is a real dependency, so keep it as an
@@ -1276,7 +1276,12 @@ def _dynamic_import_js(node, source: bytes, caller_nid: str, str_path: str, edge
                 "source_file": str_path,
                 "source_location": f"L{node.start_point[0] + 1}",
                 "weight": 1.0,
-            })
+            }
+            # Key the target salt by the resolved target file so a same-basename
+            # cross-extension sibling isn't mis-salted onto the importer (#1814).
+            if resolved_path is not None:
+                edge["target_file"] = str(resolved_path)
+            edges.append(edge)
         break
     return True
 
@@ -1570,7 +1575,7 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
             continue
         tgt_nid, resolved_path = resolved
         line = node.start_point[0] + 1
-        edges.append({
+        edge = {
             "source": file_nid,
             "target": tgt_nid,
             "relation": "imports_from",
@@ -1579,7 +1584,12 @@ def _require_imports_js(node, source: bytes, file_nid: str, stem: str, edges: li
             "source_file": str_path,
             "source_location": f"L{line}",
             "weight": 1.0,
-        })
+        }
+        # Key the target salt by the resolved target file so a same-basename
+        # cross-extension sibling isn't mis-salted onto the importer (#1814).
+        if resolved_path is not None:
+            edge["target_file"] = str(resolved_path)
+        edges.append(edge)
         found = True
 
         # Symbol-level edges for destructured / accessor binders.
