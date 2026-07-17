@@ -24,7 +24,8 @@ def test_zero_node_result_not_cached_then_self_heals(tmp_path, capsys, monkeypat
 
     # First run: force a zero-node extraction for this file.
     monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", _empty)
-    ex.extract([f], cache_root=tmp_path / "out", parallel=False)
+    extraction_cache = {}
+    ex.extract([f], cache_root=tmp_path / "out", cache=extraction_cache, parallel=False)
 
     err = capsys.readouterr().err
     assert "zero nodes" in err and "thing.rb" in err, err
@@ -32,7 +33,7 @@ def test_zero_node_result_not_cached_then_self_heals(tmp_path, capsys, monkeypat
     # Second run with the real extractor: because the empty was NOT cached, the
     # file re-extracts and lands in the graph (self-heal).
     monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", real)
-    r2 = ex.extract([f], cache_root=tmp_path / "out", parallel=False)
+    r2 = ex.extract([f], cache_root=tmp_path / "out", cache=extraction_cache, parallel=False)
     assert any(str(n.get("source_file", "")).endswith("thing.rb") for n in r2["nodes"])
 
 
@@ -40,10 +41,11 @@ def test_normal_file_still_cached(tmp_path):
     # Guard against over-correction: a normal (non-empty) result must still cache.
     f = tmp_path / "ok.rb"
     f.write_text("class Bar\n  def baz; end\nend\n")
-    r1 = ex.extract([f], cache_root=tmp_path / "out", parallel=False)
+    extraction_cache = {}
+    r1 = ex.extract([f], cache_root=tmp_path / "out", cache=extraction_cache, parallel=False)
     assert r1["nodes"]
     from graphify.cache import load_cached
-    assert load_cached(f, tmp_path / "out") is not None, "non-empty result should be cached"
+    assert load_cached(f, tmp_path / "out", cache=extraction_cache) is not None, "non-empty result should be cached"
 
 
 def test_no_warning_when_all_files_produce_nodes(tmp_path, capsys):

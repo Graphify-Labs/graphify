@@ -5,8 +5,9 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
-import networkx as nx
 import pytest
+from graphify.helix.state import new_state
+from tests.native_helpers import graph_from_payload, make_loaded
 
 from graphify.prs import (
     PRInfo,
@@ -151,13 +152,13 @@ class TestPathMatch:
 # ── compute_pr_impact ─────────────────────────────────────────────────────────
 
 class TestComputePrImpact:
-    def _make_graph(self) -> nx.Graph:
+    def _make_graph(self):
         """3 nodes across 2 communities, 2 distinct source files."""
-        G = nx.Graph()
-        G.add_node("n1", source_file="src/auth/api.py", community=0)
-        G.add_node("n2", source_file="src/auth/api.py", community=0)
-        G.add_node("n3", source_file="src/utils/helpers.py", community=1)
-        return G
+        return graph_from_payload([
+            {"id": "n1", "source_file": "src/auth/api.py", "community": 0},
+            {"id": "n2", "source_file": "src/auth/api.py", "community": 0},
+            {"id": "n3", "source_file": "src/utils/helpers.py", "community": 1},
+        ])
 
     def test_matching_files_returns_correct_communities_and_count(self):
         G = self._make_graph()
@@ -187,9 +188,10 @@ class TestComputePrImpact:
 
     def test_no_double_counting_when_basename_matches_multiple_paths(self):
         # "api.py" should NOT match both src/auth/api.py AND src/admin/api.py
-        G = nx.Graph()
-        G.add_node("a1", source_file="src/auth/api.py", community=0)
-        G.add_node("a2", source_file="src/admin/api.py", community=1)
+        G = graph_from_payload([
+            {"id": "a1", "source_file": "src/auth/api.py", "community": 0},
+            {"id": "a2", "source_file": "src/admin/api.py", "community": 1},
+        ])
         comms, nodes = compute_pr_impact(["src/auth/api.py"], G)
         # Only src/auth/api.py matches by exact path — not src/admin/api.py
         assert nodes == 1
@@ -198,9 +200,10 @@ class TestComputePrImpact:
     def test_no_double_counting_same_graph_file_matched_by_two_pr_files(self):
         # If PR diff lists both "api.py" and "src/auth/api.py", the graph node
         # for src/auth/api.py should only be counted once
-        G = nx.Graph()
-        G.add_node("n1", source_file="src/auth/api.py", community=0)
-        G.add_node("n2", source_file="src/auth/api.py", community=0)
+        G = graph_from_payload([
+            {"id": "n1", "source_file": "src/auth/api.py", "community": 0},
+            {"id": "n2", "source_file": "src/auth/api.py", "community": 0},
+        ])
         comms, nodes = compute_pr_impact(["src/auth/api.py", "api.py"], G)
         assert nodes == 2  # 2 nodes in that file, counted once
         assert comms == [0]
@@ -378,26 +381,35 @@ class TestDetectDefaultBranch:
 
 class TestBuildCommunityLabels:
     def test_basic_grouping(self):
-        data = {
-            "nodes": [
+        loaded = make_loaded(
+            nodes=[
                 {"id": "a", "label": "Alpha", "community": 0},
                 {"id": "b", "label": "Beta",  "community": 0},
                 {"id": "c", "label": "Gamma", "community": 1},
-            ]
-        }
-        labels = build_community_labels(data)
+            ],
+            state=new_state(communities=[
+                {"id": 0, "members": ["a", "b"], "name": "Community 0"},
+                {"id": 1, "members": ["c"], "name": "Community 1"},
+            ]),
+        )
+        labels = build_community_labels(loaded)
         assert set(labels[0]) == {"Alpha", "Beta"}
         assert labels[1] == ["Gamma"]
 
     def test_top_n_capped(self):
         nodes = [{"id": str(i), "label": f"Node{i}", "community": 0} for i in range(10)]
-        labels = build_community_labels({"nodes": nodes}, top_n=4)
+        loaded = make_loaded(
+            nodes=nodes,
+            state=new_state(communities=[
+                {"id": 0, "members": [str(i) for i in range(10)], "name": "Community 0"},
+            ]),
+        )
+        labels = build_community_labels(loaded, top_n=4)
         assert len(labels[0]) == 4
 
     def test_no_community_field_skipped(self):
-        data = {"nodes": [{"id": "x", "label": "X"}]}
-        assert build_community_labels(data) == {}
+        loaded = make_loaded(nodes=[{"id": "x", "label": "X"}])
+        assert build_community_labels(loaded) == {}
 
     def test_empty_nodes(self):
-        assert build_community_labels({}) == {}
-        assert build_community_labels({"nodes": []}) == {}
+        assert build_community_labels(make_loaded()) == {}

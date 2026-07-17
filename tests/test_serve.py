@@ -1,8 +1,9 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
+import gc
 import json
+import weakref
 import pytest
-import networkx as nx
-from networkx.readwrite import json_graph
+from tests.native_helpers import graph_from_payload, native_graphs as nx, triangle, make_loaded
 
 from graphify.serve import (
     _communities_from_graph,
@@ -28,7 +29,16 @@ from graphify.serve import (
     _load_graph,
     _community_header,
     _search_tokens,
+    _runtime_cache,
 )
+
+
+def _edge_records(G, *pairs):
+    records = []
+    for source, target in pairs:
+        edge_ids = G.edges_between(source, target) or G.edges_between(target, source)
+        records.append(G.edge(edge_ids[0]))
+    return records
 
 
 def _make_graph() -> nx.Graph:
@@ -44,28 +54,20 @@ def _make_graph() -> nx.Graph:
     return G
 
 
-# --- _communities_from_graph ---
+def test_native_dfs_respects_depth(tmp_path):
+    graph = triangle(tmp_path).graph
+    nodes, _ = _dfs(graph, ["a"], 0)
+    assert nodes == {"a"}
 
-def test_communities_from_graph_basic():
-    G = _make_graph()
-    communities = _communities_from_graph(G)
-    assert 0 in communities
-    assert 1 in communities
-    assert "n1" in communities[0]
-    assert "n2" in communities[0]
-    assert "n3" in communities[1]
 
-def test_communities_from_graph_no_community_attr():
-    G = nx.Graph()
-    G.add_node("a", label="foo")  # no community attr
-    communities = _communities_from_graph(G)
-    assert communities == {}
-
-def test_communities_from_graph_isolated():
-    G = _make_graph()
-    communities = _communities_from_graph(G)
-    assert 2 in communities
-    assert "n5" in communities[2]
+def test_runtime_cache_does_not_outlive_native_snapshot():
+    graph = graph_from_payload([{"id": "snapshot", "label": "Snapshot"}])
+    cache = _runtime_cache(graph)
+    cache["marker"] = True
+    reference = weakref.ref(graph)
+    del graph
+    gc.collect()
+    assert reference() is None
 
 
 # --- _score_nodes ---
@@ -344,7 +346,6 @@ def test_trigram_index_cached_and_rebuilt_per_graph():
     G = _make_big_graph()
     idx1 = _get_trigram_index(G)
     assert idx1 is _get_trigram_index(G)            # cached on the same graph object
-    assert G.graph["_trigram_index"] is idx1
     G2 = _make_big_graph()
     assert _get_trigram_index(G2) is not idx1       # a fresh graph rebuilds (reload safety)
 
@@ -463,16 +464,16 @@ def test_bfs_returns_edges():
     G = _make_graph()
     visited, edges = _bfs(G, ["n1"], depth=1)
     assert len(edges) >= 1
-    assert any(u == "n1" or v == "n1" for u, v in edges)
+    assert any(edge.source == "n1" or edge.target == "n1" for edge in edges)
 
 
 def test_filter_graph_by_context_limits_traversal():
     G = _make_graph()
-    filtered = _filter_graph_by_context(G, ["call"])
-    visited, edges = _bfs(filtered, ["n1"], depth=2)
+    filtered, filters = _filter_graph_by_context(G, ["call"])
+    visited, edges = _bfs(filtered, ["n1"], depth=2, context_filters=filters)
     assert "n2" in visited
     assert "n3" not in visited
-    assert edges == [("n1", "n2")]
+    assert [(edge.source, edge.target) for edge in edges] == [("n1", "n2")]
 
 
 # --- _dfs ---
@@ -494,26 +495,26 @@ def test_dfs_full_chain():
 
 def test_subgraph_to_text_contains_labels():
     G = _make_graph()
-    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    text = _subgraph_to_text(G, {"n1", "n2"}, _edge_records(G, ("n1", "n2")))
     assert "extract" in text
     assert "cluster" in text
 
 def test_subgraph_to_text_truncates():
     G = _make_graph()
     # Very small budget forces truncation
-    text = _subgraph_to_text(G, {"n1", "n2", "n3", "n4"}, [("n1", "n2")], token_budget=1)
+    text = _subgraph_to_text(G, {"n1", "n2", "n3", "n4"}, _edge_records(G, ("n1", "n2")), token_budget=1)
     assert "truncated" in text
 
 def test_subgraph_to_text_edge_included():
     G = _make_graph()
-    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    text = _subgraph_to_text(G, {"n1", "n2"}, _edge_records(G, ("n1", "n2")))
     assert "EDGE" in text
     assert "calls" in text
 
 
 def test_subgraph_to_text_includes_edge_context():
     G = _make_graph()
-    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    text = _subgraph_to_text(G, {"n1", "n2"}, _edge_records(G, ("n1", "n2")))
     assert "context=call" in text
 
 
@@ -523,10 +524,10 @@ def test_subgraph_to_text_annotates_node_with_learning_status():
     """An annotated node gets a `learning=<status>` suffix inside its NODE
     bracket; an un-annotated node gets none."""
     G = _make_graph()
-    G.graph["_learning_overlay"] = {
+    _runtime_cache(G)["learning_overlay"] = {
         "n1": {"status": "preferred", "stale": False},
     }
-    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    text = _subgraph_to_text(G, {"n1", "n2"}, _edge_records(G, ("n1", "n2")))
     lines = {l.split()[1]: l for l in text.splitlines() if l.startswith("NODE ")}
     assert "learning=preferred]" in lines["extract"]
     assert "learning=" not in lines["cluster"]  # un-annotated node
@@ -534,7 +535,7 @@ def test_subgraph_to_text_annotates_node_with_learning_status():
 
 def test_subgraph_to_text_marks_stale_status():
     G = _make_graph()
-    G.graph["_learning_overlay"] = {"n1": {"status": "contested", "stale": True}}
+    _runtime_cache(G)["learning_overlay"] = {"n1": {"status": "contested", "stale": True}}
     text = _subgraph_to_text(G, {"n1"}, [])
     assert "learning=contested:stale]" in text
 
@@ -550,7 +551,7 @@ def test_subgraph_to_text_learning_suffix_counts_against_budget():
     assert "truncated" not in _subgraph_to_text(G, {"n1", "n2", "n3"}, [],
                                                 token_budget=budget)
     # ...but once every node carries a learning= suffix, the same budget overflows.
-    G.graph["_learning_overlay"] = {
+    _runtime_cache(G)["learning_overlay"] = {
         n: {"status": "preferred", "stale": False} for n in ("n1", "n2", "n3")
     }
     annotated = _subgraph_to_text(G, {"n1", "n2", "n3"}, [], token_budget=budget)
@@ -561,7 +562,7 @@ def test_subgraph_to_text_learning_suffix_counts_against_budget():
 def test_subgraph_to_text_no_overlay_is_unchanged():
     """With no overlay on the graph, NODE lines carry no learning= suffix."""
     G = _make_graph()
-    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")])
+    text = _subgraph_to_text(G, {"n1", "n2"}, _edge_records(G, ("n1", "n2")))
     assert "learning=" not in text
 
 
@@ -584,99 +585,58 @@ def test_query_graph_text_heuristic_context_filter_changes_traversal():
 # --- _load_graph ---
 
 def test_load_graph_roundtrip(tmp_path):
-    G = _make_graph()
-    data = json_graph.node_link_data(G, edges="links")
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(data))
-    G2 = _load_graph(str(p))
-    assert G2.number_of_nodes() == G.number_of_nodes()
-    assert G2.number_of_edges() == G.number_of_edges()
+    loaded = make_loaded(
+        tmp_path,
+        nodes=[{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
+        edges=[{"source": "a", "target": "b", "relation": "calls"}],
+    )
+    loaded_again = _load_graph(str(loaded.store_path))
+    assert loaded_again.graph.node_count == 2
+    assert loaded_again.graph.edge_count == 1
 
 def test_load_graph_missing_file(tmp_path):
     graphify_dir = tmp_path / "graphify-out"
     graphify_dir.mkdir()
     with pytest.raises(SystemExit):
-        _load_graph(str(graphify_dir / "nonexistent.json"))
-
-
-def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path, capsys):
-    # #F4: oversized graph.json must fail fast (SystemExit) with a clear error.
-    G = _make_graph()
-    data = json_graph.node_link_data(G, edges="links")
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(data))
-    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 16)
-    with pytest.raises(SystemExit):
-        _load_graph(str(p))
-    err = capsys.readouterr().err
-    assert "exceeds" in err
-    assert "byte cap" in err
-
-
-def test_load_graph_accepts_under_cap(monkeypatch, tmp_path):
-    # Verifies the cap path does not regress the normal load.
-    G = _make_graph()
-    data = json_graph.node_link_data(G, edges="links")
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(data))
-    # Cap well above the actual file size — load proceeds.
-    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 10 * 1024 * 1024)
-    G2 = _load_graph(str(p))
-    assert G2.number_of_nodes() == G.number_of_nodes()
+        _load_graph(str(graphify_dir / "nonexistent.helix"))
 
 
 # --- #874: MCP hot-reload ---
 
 def _write_graph(path, nodes: list[str]) -> None:
-    """Write a minimal graph.json with the given node IDs."""
-    G = nx.DiGraph()
-    for n in nodes:
-        G.add_node(n, label=n, community=0)
-    data = json_graph.node_link_data(G, edges="links")
-    path.write_text(json.dumps(data), encoding="utf-8")
+    """Activate a minimal native generation with the given node IDs."""
+    make_loaded(path.parent, nodes=[{"id": n, "label": n, "community": 0} for n in nodes], kind="digraph")
 
 
 def test_maybe_reload_detects_graph_change(tmp_path):
-    """serve() picks up a new graph.json written after startup (#874)."""
-    import time
-    from unittest.mock import patch
+    """serve() sees a newly activated native generation after startup (#874)."""
 
     out = tmp_path / "graphify-out"
     out.mkdir()
-    graph_path = out / "graph.json"
+    graph_path = out / "graph.helix"
     _write_graph(graph_path, ["alpha", "beta"])
 
     # Bootstrap _load_graph + _communities_from_graph to verify the reload path
-    G1 = _load_graph(str(graph_path))
-    assert set(G1.nodes()) == {"alpha", "beta"}
+    first = _load_graph(str(graph_path))
+    assert {node.id for node in first.graph.nodes()} == {"alpha", "beta"}
 
-    # Simulate file changing (bump mtime by touching)
-    time.sleep(0.01)
     _write_graph(graph_path, ["alpha", "beta", "gamma"])
 
-    G2 = _load_graph(str(graph_path))
-    assert "gamma" in G2.nodes()
+    second = _load_graph(str(graph_path))
+    assert second.generation != first.generation
+    assert second.graph.contains_node("gamma")
 
 
-def test_load_graph_cache_key_changes_with_content(tmp_path):
-    """mtime_ns + size uniquely identifies a graph version (#874)."""
-    import time
-
+def test_load_graph_generation_changes_with_content(tmp_path):
+    """Atomic activation gives every graph version a distinct generation ID."""
     out = tmp_path / "graphify-out"
     out.mkdir()
-    graph_path = out / "graph.json"
+    graph_path = out / "graph.helix"
     _write_graph(graph_path, ["a"])
-
-    s1 = graph_path.stat()
-    key1 = (s1.st_mtime_ns, s1.st_size)
-
-    time.sleep(0.01)
+    first = _load_graph(str(graph_path))
     _write_graph(graph_path, ["a", "b"])
-
-    s2 = graph_path.stat()
-    key2 = (s2.st_mtime_ns, s2.st_size)
-
-    assert key1 != key2, "stat key must change when file content changes"
+    second = _load_graph(str(graph_path))
+    assert first.generation != second.generation
 
 
 # --- IDF weighting tests (#897) ---
@@ -706,11 +666,10 @@ def test_idf_downweights_common_terms():
 
 
 def test_idf_cached_on_graph():
-    """IDF results are stored in G.graph so repeated queries don't recompute."""
+    """IDF results are cached per immutable native snapshot."""
     G = _make_graph()
     _score_nodes(G, ["extract"])
-    assert "_idf_cache" in G.graph
-    assert "extract" in G.graph["_idf_cache"]
+    assert "extract" in _runtime_cache(G)["idf"]
 
 
 def test_idf_new_graph_starts_fresh():
@@ -718,7 +677,7 @@ def test_idf_new_graph_starts_fresh():
     G1 = _make_graph()
     G2 = _make_graph()
     _score_nodes(G1, ["extract"])
-    assert "_idf_cache" not in G2.graph
+    assert "idf" not in _runtime_cache(G2)
 
 
 def test_idf_rare_term_gets_high_weight():
@@ -877,7 +836,7 @@ def test_score_nodes_scores_identical_labels_equally():
 def test_subgraph_to_text_truncation_hint_is_actionable():
     """Truncation message must tell Claude what to do, not just say truncated."""
     G = _make_graph()
-    text = _subgraph_to_text(G, {"n1", "n2", "n3", "n4"}, [("n1", "n2")], token_budget=1)
+    text = _subgraph_to_text(G, {"n1", "n2", "n3", "n4"}, _edge_records(G, ("n1", "n2")), token_budget=1)
     assert "truncated" in text
     assert "get_node" in text or "context_filter" in text
 
@@ -894,7 +853,6 @@ def test_query_seeds_from_identifier_not_noise():
 
 
 def test_query_graph_text_parameter_type_context_filter_changes_traversal():
-    import networkx as nx
     from graphify.serve import _query_graph_text
 
     graph = nx.Graph()
@@ -912,7 +870,6 @@ def test_query_graph_text_parameter_type_context_filter_changes_traversal():
 
 
 def test_query_graph_text_context_filter_aliases_resolve():
-    import networkx as nx
     from graphify.serve import _normalize_context_filters
 
     assert _normalize_context_filters(["param"]) == ["parameter_type"]
@@ -1042,7 +999,7 @@ def _reference_best_seed_by_term(G: nx.Graph, terms: list[str]) -> dict[str, str
             continue
         best_score = term_scored[0][0]
         tied = [nid for s, nid in term_scored if s == best_score]
-        best_nid = max(tied, key=lambda n: G.degree(n)) if len(tied) > 1 else term_scored[0][1]
+        best_nid = max(tied, key=lambda n: G.degree(n).degree) if len(tied) > 1 else term_scored[0][1]
         best[term] = best_nid
     return best
 

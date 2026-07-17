@@ -243,6 +243,7 @@ def test_decorated_method_node_id_is_class_qualified(tmp_path):
     # After build_from_json, each decorated-method docstring node must be
     # connected (degree > 0), not an orphan dropped from the graph.
     g = build_from_json(result)
+    built_node_ids = {node.id for node in g.nodes}
     for decorated_name in ("baz", "helper", "factory", "normal"):
         method_id = next(
             nid for nid, n in nodes_by_id.items()
@@ -256,8 +257,8 @@ def test_decorated_method_node_id_is_class_qualified(tmp_path):
             f"no rationale_for edge found for ``.{decorated_name}()`` method"
         )
         for r_id in attached_rationale:
-            assert r_id in g.nodes, f"rationale node {r_id} missing from graph"
-            assert g.degree(r_id) > 0, (
+            assert r_id in built_node_ids, f"rationale node {r_id} missing from graph"
+            assert any(edge.source == r_id or edge.target == r_id for edge in g.edges), (
                 f"rationale node {r_id} for ``.{decorated_name}()`` is orphaned "
                 f"(degree 0) after build_from_json"
             )

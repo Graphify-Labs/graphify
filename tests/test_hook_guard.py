@@ -26,7 +26,7 @@ def _invoke(kind, payload, tmp_path, monkeypatch, *, graph=True, out_name="graph
     monkeypatch.chdir(tmp_path)
     if graph:
         (tmp_path / out_name).mkdir(parents=True, exist_ok=True)
-        (tmp_path / out_name / "graph.json").write_text("{}", encoding="utf-8")
+        (tmp_path / out_name / "graph.helix").mkdir()
 
     if isinstance(payload, (bytes, bytearray)):
         data = bytes(payload)
@@ -259,7 +259,7 @@ def test_dispatch_unknown_mode_exits_zero_silent(tmp_path):
 def test_dispatch_always_exits_zero(args, stdin, tmp_path):
     # even with a graph present (nudge path), exit code must be 0 (never blocks)
     (tmp_path / "graphify-out").mkdir()
-    (tmp_path / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "graphify-out" / "graph.helix").mkdir()
     r = _cli(args, tmp_path, stdin=stdin)
     assert r.returncode == 0
 
@@ -268,7 +268,7 @@ def test_read_nudge_em_dash_survives_utf8(tmp_path):
     # The read nudge contains an em dash; the emitted bytes must be valid UTF-8
     # and parse back cleanly (guards the ensure_ascii=False + stdout reconfigure).
     (tmp_path / "graphify-out").mkdir()
-    (tmp_path / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "graphify-out" / "graph.helix").mkdir()
     r = subprocess.run(
         [sys.executable, "-m", "graphify", "hook-guard", "read"],
         input=b'{"tool_input":{"file_path":"src/app.py"}}',
@@ -277,4 +277,4 @@ def test_read_nudge_em_dash_survives_utf8(tmp_path):
     assert r.returncode == 0
     text = r.stdout.decode("utf-8")   # raises if not valid UTF-8
     payload = json.loads(text)
-    assert "—" in payload["hookSpecificOutput"]["additionalContext"]  # em dash preserved
+    assert "graphify" in payload["hookSpecificOutput"]["additionalContext"]

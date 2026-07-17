@@ -40,7 +40,7 @@ def test_build_from_json_with_root_level_concept_node():
         "edges": [],
     }
     G = build_from_json(combined, root=root)    # previously crashed here
-    assert G.number_of_nodes() == 2
+    assert G.node_count == 2
 
 
 def test_normal_semantic_remap_still_works():

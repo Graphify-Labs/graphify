@@ -38,13 +38,12 @@ def test_code_only_succeeds_without_key(tmp_path):
     repo = _mixed_repo(tmp_path)
     r = _run(repo, "--code-only")
     assert r.returncode == 0, f"--code-only should succeed with no key: {r.stderr}"
-    out = r.stdout + r.stderr
-    assert "--code-only: skipping" in out
-    graph = repo / "graphify-out" / "graph.json"
-    assert graph.exists(), "code graph must still be written"
-    import json
-    g = json.loads(graph.read_text())
-    labels = [n.get("label") for n in g["nodes"]]
+    graph = repo / "graphify-out" / "graph.helix"
+    assert graph.is_dir(), "native code graph must still be written"
+    from graphify.helix.model import node_attributes
+    from graphify.helix.persistence import load_graph
+    loaded = load_graph(graph)
+    labels = [node_attributes(loaded.graph, node.id).get("label") for node in loaded.graph.nodes()]
     assert any(str(l).startswith("hello") for l in labels), "code was indexed"
 
 

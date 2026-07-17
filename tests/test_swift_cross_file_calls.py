@@ -104,8 +104,9 @@ def test_swift_cross_file_member_calls_have_correct_confidence_and_resolve(tmp_p
     # Edges survive graph construction (no dangling targets pruned).
     g = build_from_json(result)
     surviving = sum(
-        1 for _, _, d in g.edges(data=True)
-        if d.get("relation") == "calls" and d.get("confidence") in ("INFERRED", "EXTRACTED")
+        1 for edge in g.edges
+        if edge.attributes.get("relation") == "calls"
+        and edge.attributes.get("confidence") in ("INFERRED", "EXTRACTED")
     )
     assert surviving >= 5
 

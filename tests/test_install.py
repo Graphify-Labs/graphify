@@ -227,7 +227,7 @@ def test_codex_skill_uses_graphify_with_existing_graph():
     import graphify
     skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
     assert "Fast path — existing graph" in skill
-    assert "skip Steps 1–5 entirely and jump straight to `## For /graphify query`" in skill
+    assert "run `graphify query \"<question>\"` immediately" in skill
     assert "graphify query" in skill
     assert "graphify explain" in skill
     assert "graphify path" in skill
@@ -383,7 +383,7 @@ def test_claude_hook_install_idempotent_and_replaces_old_bash_hook(tmp_path):
     # Pre-seed a legacy bash-style graphify hook (the thing #522 shipped before).
     settings_path.write_text(_json.dumps({"hooks": {"PreToolUse": [
         {"matcher": "Bash", "hooks": [{"type": "command",
-         "command": "[ -f graphify-out/graph.json ] && echo '{...}' || true"}]},
+         "command": "[ -d graphify-out/graph.helix ] && echo '{...}' || true"}]},
     ]}}), encoding="utf-8")
     _install_claude_hook(tmp_path)
     _install_claude_hook(tmp_path)  # second install must not duplicate

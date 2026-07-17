@@ -1,4 +1,4 @@
-name: CI
+name: Helix native CI
 
 on:
   push:
@@ -18,10 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # The audit-coverage, monolith-roundtrip, and always-on-roundtrip
-          # validators read blobs from origin/v8. A shallow checkout omits that
-          # ref, so fetch the full history here and the validators run for real
-          # (rather than skipping). The other jobs stay shallow.
+          # The heading audit reads a pinned pre-split v8 commit. A shallow
+          # checkout can omit it, so fetch full history for this job.
           fetch-depth: 0
 
       - name: Install uv
@@ -47,11 +45,17 @@ jobs:
         run: uv run --frozen python -m tools.skillgen --always-on-roundtrip
 
   test:
-    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
-
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.12"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -77,14 +81,38 @@ jobs:
         run: |
           uv run --frozen graphify --help
           uv run --frozen graphify install
+          uv build
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --all-extras --frozen
+
+      - name: Ruff
+        run: uv run --frozen ruff check graphify tests tools benchmarks
+
+      - name: Pyright native integration surface
+        run: >-
+          uv run --frozen pyright graphify/helix graphify/operations.py graphify/cli.py
+          graphify/cluster.py graphify/analyze.py graphify/benchmark.py
+          graphify/global_graph.py graphify/impact.py graphify/affected.py
+          graphify/paths.py graphify/prs.py graphify/export.py graphify/watch.py
+
+      - name: Compile and whitespace checks
+        run: |
+          uv run --frozen python -m compileall -q graphify
+          git diff --check
 
   security-scan:
     # The dev deps include bandit and pip-audit. Run them in CI so a new
     # HIGH-severity finding or vulnerable dependency is caught on the PR that
     # introduces it, rather than at the next manual audit.
-    # Non-blocking for now (continue-on-error) to avoid breaking CI on
-    # pre-existing findings; remove continue-on-error after the initial
-    # cleanup pass.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -98,9 +126,7 @@ jobs:
         run: uv sync --frozen
 
       - name: bandit (static security analysis)
-        continue-on-error: true
         run: uv run --frozen bandit -r graphify -ll
 
       - name: pip-audit (dependency vulnerabilities)
-        continue-on-error: true
         run: uv run --frozen pip-audit --strict
