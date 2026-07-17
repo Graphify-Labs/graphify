@@ -28,7 +28,7 @@ Totalmente multimodal. Adicione código, PDFs, markdown, capturas de tela, diagr
 graphify-out/
 ├── graph.html       grafo interativo — abrir em qualquer navegador, clicar em nós, pesquisar
 ├── GRAPH_REPORT.md  nós deus, conexões surpreendentes, perguntas sugeridas
-├── graph.json       grafo persistente — consultar semanas depois sem reler
+├── graph.helix       grafo persistente — consultar semanas depois sem reler
 └── cache/           cache SHA256 — re-execuções processam apenas arquivos modificados
 ```
 
@@ -46,7 +46,7 @@ Mesma sintaxe do `.gitignore`.
 
 ## Como funciona
 
-graphify executa em três passes. Primeiro, uma passagem AST determinística extrai estrutura de arquivos de código (classes, funções, importações, grafos de chamadas, docstrings, comentários de justificativa) sem LLM. Segundo, arquivos de vídeo e áudio são transcritos localmente com faster-whisper. Terceiro, subagentes Claude executam em paralelo sobre documentos, papers, imagens e transcrições para extrair conceitos, relações e justificativas de design. Os resultados são mesclados em um grafo NetworkX, agrupados com detecção de comunidades Leiden, e exportados como HTML interativo, JSON consultável e um relatório de auditoria em linguagem natural.
+graphify executa em três passes. Primeiro, uma passagem AST determinística extrai estrutura de arquivos de código (classes, funções, importações, grafos de chamadas, docstrings, comentários de justificativa) sem LLM. Segundo, arquivos de vídeo e áudio são transcritos localmente com faster-whisper. Terceiro, subagentes Claude executam em paralelo sobre documentos, papers, imagens e transcrições para extrair conceitos, relações e justificativas de design. Os resultados são mesclados em um grafo Helix, agrupados com detecção de comunidades Leiden, e exportados como HTML interativo, JSON consultável e um relatório de auditoria em linguagem natural.
 
 **O clustering é baseado em topologia de grafo — sem embeddings.** Leiden encontra comunidades por densidade de arestas. As arestas de similaridade semântica que Claude extrai (`semantically_similar_to`, marcadas INFERRED) já estão no grafo. A estrutura do grafo é o sinal de similaridade — nenhum passo de embedding separado ou banco de dados vetorial é necessário.
 
@@ -157,7 +157,7 @@ graphify envia conteúdo de arquivos para a API do modelo do seu assistente IA p
 
 ## Stack técnico
 
-NetworkX + Leiden (graspologic) + tree-sitter + vis.js. Extração semântica via Claude, GPT-4 ou o modelo da sua plataforma. Transcrição de vídeo via faster-whisper + yt-dlp (opcional).
+Helix + Leiden (native Leiden) + tree-sitter + vis.js. Extração semântica via Claude, GPT-4 ou o modelo da sua plataforma. Transcrição de vídeo via faster-whisper + yt-dlp (opcional).
 
 ## Construído sobre graphify — Penpax
 

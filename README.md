@@ -48,13 +48,13 @@ Then, in your AI assistant:
 /graphify .
 ```
 
-That's it. You get **three files**:
+That's it. You get **three outputs**:
 
 ```
 graphify-out/
 ├── graph.html       open in any browser — click nodes, filter, search
 ├── GRAPH_REPORT.md  the highlights: key concepts, surprising connections, suggested questions
-└── graph.json       the full graph — query it anytime without re-reading your files
+└── graph.helix/     the embedded native graph — query it anytime without re-reading your files
 ```
 
 **Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
@@ -101,7 +101,7 @@ What you get out of the box:
 | **God nodes** | The most-connected concepts, so you see what everything flows through |
 | **Communities** | The graph split into subsystems (Leiden), with LLM-free labels |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` resolved across ~40 languages via tree-sitter AST |
-| **Query, path, explain** | Ask a question, trace the path between two things, or explain one concept, all against `graph.json` |
+| **Query, path, explain** | Ask a question, trace the path between two things, or explain one concept, all against the active `graph.helix` generation |
 | **Rationale + doc refs** | `# NOTE:` / `# WHY:` comments and ADR/RFC citations become first-class nodes linked to the code |
 | **Beyond code** | Docs, PDFs, images, and video/audio all map into the same graph |
 | **Local-first** | Code is parsed locally with tree-sitter (no LLM, nothing leaves your machine); only the semantic pass over docs/media calls a backend, and only if you configure one |
@@ -134,10 +134,7 @@ Every system ran on the same harness with the same model and budgets, scored by 
 brew install python@3.12 uv
 ```
 
-**Windows quick install:**
-```powershell
-winget install astral-sh.uv
-```
+**Windows:** the embedded Helix runtime is temporarily unsupported. Use macOS or Linux (including a Linux CI runner).
 
 **Ubuntu/Debian:**
 ```bash
@@ -186,13 +183,11 @@ print a `git add` hint for files that can be committed.
 Per-platform commands that support project-scoped installs accept the same flag,
 for example `graphify claude install --project` or `graphify codex install --project`.
 
-> **PowerShell note:** Use `graphify .` not `/graphify .` — the leading slash is a path separator in PowerShell.
-
 > **`graphify: command not found`?** `uv tool install` / `pipx install` put the `graphify` command in their tool bin dir (`~/.local/bin`). If your shell can't find it right after install — common on a fresh macOS + zsh setup — that dir isn't on your `PATH` yet: run `uv tool update-shell` (or `pipx ensurepath`), then open a new terminal. With plain `pip`, add `~/.local/bin` (Linux) or `~/Library/Python/3.x/bin` (Mac) to your PATH, or run `python -m graphify`.
 
 > **Running with `uvx` / `uv tool run` instead of installing?** Name the package, not the command: `uvx --from graphifyy graphify install`. Plain `uvx graphify …` fails (`No solution found … no versions of graphify`) because `uv tool run` reads the first word as a *package*, and the package is `graphifyy` — the `graphify` command lives inside it.
 
-> **Avoid `pip install` on Mac/Windows** if possible. The skill resolves Python at runtime from `graphify-out/.graphify_python`; if that points to a different environment than where `pip` installed the package, you'll get `ModuleNotFoundError: No module named 'graphify'`. `uv tool install` and `pipx install` isolate the package in their own env and avoid this entirely.
+> **Avoid `pip install` on Mac** if possible. The skill resolves Python at runtime from `graphify-out/.graphify_python`; if that points to a different environment than where `pip` installed the package, you'll get `ModuleNotFoundError: No module named 'graphify'`. `uv tool install` and `pipx install` isolate the package in their own env and avoid this entirely.
 
 > **Git hooks and uv tool / pipx:** `graphify hook install` embeds the current interpreter path directly into the hook scripts at install time, so the post-commit hook fires correctly even in GUI git clients and CI runners where `~/.local/bin` is not on PATH. If you reinstall or upgrade graphify, re-run `graphify hook install` to refresh the embedded path.
 
@@ -202,7 +197,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Platform | Install command |
 |----------|----------------|
 | Claude Code (Linux/Mac) | `graphify install` |
-| Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows` |
+| Claude Code (Windows) | Skill installation only; graph builds require a supported macOS or Linux runtime |
 | CodeBuddy | `graphify install --platform codebuddy` |
 | Codex | `graphify install --platform codex` |
 | OpenCode | `graphify install --platform opencode` |
@@ -366,7 +361,7 @@ You can also set `GRAPHIFY_GOOGLE_WORKSPACE=1`. Graphify exports shortcuts into
 /graphify . --cluster-only         # rerun clustering without re-extracting
 /graphify . --cluster-only --resolution 1.5      # more granular communities
 /graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
-/graphify . --no-viz               # skip the HTML, just the report + JSON
+/graphify . --no-viz               # skip HTML; keep the report + native store
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
 
@@ -378,7 +373,7 @@ graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-r
 /graphify add <youtube-url>                       # transcribe and add a video
 
 graphify hook install              # auto-rebuild on git commit
-graphify merge-graphs a.json b.json              # combine two graphs
+graphify global add ./project-a --as project-a   # register a project in the native global graph
 
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
@@ -412,20 +407,19 @@ dist/
 
 ## Team setup
 
-`graphify-out/` is meant to be committed to git so everyone on the team starts with a map.
+`graphify-out/graph.helix` is a local embedded store. Share source and rebuild it per checkout; do not merge native store internals across branches.
 
 **Recommended `.gitignore` additions:**
 ```
-graphify-out/cost.json        # local only
-# graphify-out/cache/         # optional: commit for speed, skip to keep repo small
+graphify-out/graph.helix/     # local embedded store
 ```
 
-> `manifest.json` is now portable — keys are stored as relative paths and re-anchored on load, so committing it is safe and avoids a full rebuild on first checkout.
+Hashes, extraction cache, analysis, labels, learning state, and generation metadata all live inside the Helix store.
 
 **Workflow:**
-1. One person runs `/graphify .` and commits `graphify-out/`.
-2. Everyone pulls — their assistant reads the graph immediately.
-3. Run `graphify hook install` to auto-rebuild after each commit (AST only, no API cost). This also sets up a git merge driver so `graph.json` is never left with conflict markers — two devs committing in parallel get their graphs union-merged automatically.
+1. Each developer runs `/graphify .` after checkout to create the local native store.
+2. Run `graphify hook install` to update the active generation after commits.
+3. Helix serializes writers and keeps readers on immutable snapshots while a new generation activates.
 4. When docs or papers change, run `/graphify --update` to refresh those nodes.
 
 ---
@@ -435,18 +429,18 @@ graphify-out/cost.json        # local only
 ```bash
 # query the graph from the terminal
 graphify query "show the auth flow"
-graphify query "what connects DigestAuth to Response?" --graph graphify-out/graph.json
+graphify query "what connects DigestAuth to Response?" --store graphify-out/graph.helix
 
 # expose the graph as an MCP server (for repeated tool-call access)
-python -m graphify.serve graphify-out/graph.json
-python -m graphify.serve --graph graphify-out/graph.json  # --graph flag also accepted
+python -m graphify.serve graphify-out/graph.helix
+python -m graphify.serve --graph graphify-out/graph.helix  # --graph flag also accepted
 
 # register with Kimi Code:
-kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out/graph.json
+kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out/graph.helix
 
 # or serve over HTTP so a whole team points at one URL (no local graphify needed):
-python -m graphify.serve graphify-out/graph.json --transport http --port 8080
-python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+python -m graphify.serve graphify-out/graph.helix --transport http --port 8080
+python -m graphify.serve graphify-out/graph.helix --transport http --host 0.0.0.0 --api-key "$SECRET"
 ```
 
 The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
@@ -471,7 +465,7 @@ The default `127.0.0.1` bind is loopback-only. Set `--host 0.0.0.0` **and** `--a
 ```bash
 docker build -t graphify .
 docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
-  /data/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+  /data/graph.helix --transport http --host 0.0.0.0 --api-key "$SECRET"
 ```
 
 > **WSL / Linux note:** Ubuntu ships `python3`, not `python`. Use a venv to avoid conflicts:
@@ -517,7 +511,6 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_QUERY_LOG` | Enable the query log and write it to this path instead of the default | optional — off unless this or `_ENABLE` is set |
 | `GRAPHIFY_QUERY_LOG_DISABLE` | Set to `1` to force the query log off (wins over the enable vars) | optional |
 | `GRAPHIFY_QUERY_LOG_RESPONSES` | When the log is enabled, also record full subgraph responses (off by default) | optional |
-| `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
 
 ---
@@ -547,14 +540,14 @@ The PyPI package is `graphifyy`; `graphify` is only the command it provides. `uv
 **`python -m graphify` works but `graphify` command doesn't**
 Your shell's `PATH` doesn't include the bin directory the command was installed to. Prefer `uv tool install` / `pipx install` over plain `pip`, then run `uv tool update-shell` / `pipx ensurepath` and open a new terminal (see the install notes above).
 
-**`/graphify .` causes "path not recognized" in PowerShell**
-PowerShell treats a leading `/` as a path separator. Use `graphify .` (no slash) on Windows.
+**Graphify is invoked from Windows**
+The embedded Helix runtime is temporarily unsupported on Windows. Build and query the graph on macOS or Linux.
 
 **Graph has fewer nodes after `--update` or rebuild**
 If a refactor deleted files, the old nodes linger. Pass `--force` (or set `GRAPHIFY_FORCE=1`) to overwrite even when the rebuild has fewer nodes.
 
 **`extract` exits with "extraction was incomplete ... refusing to overwrite"**
-When an extraction pass crashes or a walk can't fully read the corpus, the run would be smaller than a complete one, so `graphify extract` refuses to overwrite a larger existing graph with the partial result (protecting your `graph.json`). Fix the underlying failure and re-run, or pass `--allow-partial` to overwrite anyway.
+When extraction fails, Graphify does not activate the incomplete generation. Fix the underlying failure and rerun; existing readers remain pinned to the prior valid generation.
 
 **Graph has duplicate nodes for the same entity (ghost duplicates)**
 Ghost duplicates (same symbol appearing twice — once from AST extraction with a source location, once from semantic extraction without) are now automatically merged at build time. If you see this in a graph built before v0.8.33, run a full re-extract to clean up:
@@ -577,14 +570,14 @@ graphify extract . --mode deep --token-budget 4000                # smaller inpu
 With a cloud gateway like OpenRouter, prefer `--backend openai` (set `OPENAI_BASE_URL`) over the Ollama shim — it's a cleaner OpenAI-compatible path. If the model has its own max-output ceiling, lowering `--token-budget` is the reliable lever.
 
 **Graph HTML is too large to open in a browser (>5000 nodes)**
-Skip HTML generation and use the JSON directly:
+Skip HTML generation and query the native store directly:
 ```bash
 graphify cluster-only ./my-project --no-viz
 graphify query "..."
 ```
 
-**`graph.json` has conflict markers after two devs commit at once**
-Run `graphify hook install` — it sets up a git merge driver that union-merges `graph.json` automatically so conflicts never happen.
+**A native store was copied or merged between branches**
+Rebuild from source. Native stores are generation directories, not mergeable source artifacts.
 
 **Extraction returns empty nodes/edges for docs or PDFs**
 Docs, PDFs, and images require an LLM call — code-only corpora need no key. Check that your API key is set and the backend is correct:
@@ -600,10 +593,9 @@ graphify install  # overwrites the skill file
 ```
 
 **Claude Code prompt cache invalidated after every `graphify extract`**
-Graphify writes output files (`graph.json`, `graphify-out/`) into the workspace. If those paths aren't ignored, every write invalidates Claude Code's prompt cache, forcing a full re-upload at cache-write rates on the next turn. Add them to `.claudeignore`:
+Graphify writes its embedded store and exports under `graphify-out/`. If that path is not ignored, every write can invalidate Claude Code's prompt cache. Add it to `.claudeignore`:
 ```text
 # .claudeignore
-graph.json
 graphify-out/
 ```
 
@@ -639,13 +631,17 @@ graphify-out/
 /graphify query "..." --dfs --budget 1500
 /graphify path "DigestAuth" "Response"
 /graphify explain "SwinTransformer"
+graphify impact --base origin/main   # PR impact from active Helix generation
+graphify update .                    # reuse embedded extraction records, atomically replace
+graphify cluster                     # rerun native weighted Leiden against active Helix
+graphify analyze                     # refresh durable analysis in one generation
 
 graphify save-result --question "Q" --answer "A" --nodes Foo Bar --outcome useful   # record how a Q&A turned out (work memory; outcome ∈ useful|dead_end|corrected)
 graphify reflect                   # aggregate graphify-out/memory/ outcomes into reflections/LESSONS.md
 graphify reflect --if-stale        # no-op when LESSONS.md is already newer than every input (cheap to run each session)
 graphify reflect --out docs/LESSONS.md    # write the lessons doc somewhere else
-graphify reflect --graph graphify-out/graph.json  # group lessons by community + write the work-memory overlay (.graphify_learning.json)
-                                   # the overlay tags nodes preferred/tentative/contested (recency-weighted, with provenance);
+graphify reflect --graph graphify-out/graph.helix  # group lessons by community + commit work-memory state
+                                   # native state tags nodes preferred/tentative/contested (recency-weighted, with provenance);
                                    # graphify explain / query then show a "Lesson:" hint, flagged "code changed — re-verify" when the source moved on
 
 graphify uninstall                 # remove from all platforms in one shot
@@ -717,7 +713,7 @@ graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides v
 graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
 graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
 graphify extract ./docs --timing               # print per-stage wall-clock timings to stderr (also works on cluster-only)
-graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
+graphify extract ./docs --force                # force a full source rescan and activate a new native generation
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
 graphify extract ./docs --global --as myrepo   # extract and register into the cross-project global graph
 GRAPHIFY_MAX_OUTPUT_TOKENS=32768 graphify extract ./docs --backend claude  # raise output cap for dense corpora
@@ -727,7 +723,7 @@ graphify export callflow-html --max-sections 8      # cap generated architecture
 graphify export callflow-html --output docs/arch.html
 graphify export callflow-html ./some-repo/graphify-out
 
-graphify global add graphify-out/graph.json --as myrepo   # register a project graph into ~/.graphify/global-graph.json
+graphify global add graphify-out/graph.helix --as myrepo  # register a project store into ~/.graphify/global-graph.helix
 graphify global remove myrepo                         # remove a project from the global graph
 graphify global list                                  # show all registered repos + node/edge counts
 graphify global path                                  # print path to the global graph file
@@ -742,7 +738,6 @@ graphify prs --repo owner/repo            # run against a different GitHub repo
 GRAPHIFY_TRIAGE_BACKEND=kimi graphify prs --triage   # use a specific backend for triage
 
 graphify clone https://github.com/karpathy/nanoGPT
-graphify merge-graphs a.json b.json --out merged.json
 graphify --version                                    # print installed version
 graphify watch ./src
 graphify check-update ./src
@@ -750,7 +745,7 @@ graphify update ./src
 graphify update ./src --no-cluster  # skip reclustering, write raw AST graph only
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
 graphify cluster-only ./my-project
-graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph location
+graphify cluster-only ./my-project --store path/to/graph.helix # custom Helix store directory
 graphify cluster-only ./my-project --max-concurrency 16 --batch-size 200  # parallel community labeling (large graphs)
 graphify cluster-only ./my-project --resolution 1.5            # more, smaller communities
 graphify cluster-only ./my-project --exclude-hubs 99           # exclude p99 degree nodes from partitioning

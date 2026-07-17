@@ -1,7 +1,7 @@
 ## graphify
 
 For any question about this repo's architecture, structure, components, or how to add/modify/find
-code, your first action should be `graphify query "<question>"` when `graphify-out/graph.json`
+code, your first action should be `graphify query "<question>"` when `graphify-out/graph.helix`
 exists. Use `graphify path "<A>" "<B>"` for relationship questions and `graphify explain "<concept>"`
 for focused-concept questions. These return a scoped subgraph, usually much smaller than the full
 report or raw grep output.
