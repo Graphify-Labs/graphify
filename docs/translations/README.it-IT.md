@@ -27,13 +27,13 @@ Completamente multimodale. Aggiungi codice, PDF, markdown, screenshot, diagrammi
 graphify-out/
 ├── graph.html       grafo interattivo — apri in qualsiasi browser
 ├── GRAPH_REPORT.md  nodi dio, connessioni sorprendenti, domande suggerite
-├── graph.json       grafo persistente — interrogabile settimane dopo
+├── graph.helix       grafo persistente — interrogabile settimane dopo
 └── cache/           cache SHA256 — le riesecuzioni elaborano solo i file modificati
 ```
 
 ## Come funziona
 
-graphify esegue in tre passaggi. Prima, un passaggio AST deterministico estrae la struttura dai file di codice senza LLM. Poi, i file video e audio vengono trascritti localmente con faster-whisper. Infine, i subagenti Claude eseguono in parallelo su documenti, paper, immagini e trascrizioni. I risultati vengono uniti in un grafo NetworkX, raggruppati con Leiden e esportati come HTML interattivo, JSON interrogabile e report di audit.
+graphify esegue in tre passaggi. Prima, un passaggio AST deterministico estrae la struttura dai file di codice senza LLM. Poi, i file video e audio vengono trascritti localmente con faster-whisper. Infine, i subagenti Claude eseguono in parallelo su documenti, paper, immagini e trascrizioni. I risultati vengono uniti in un grafo Helix, raggruppati con Leiden e esportati come HTML interattivo, JSON interrogabile e report di audit.
 
 Ogni relazione è etichettata `EXTRACTED`, `INFERRED` (con punteggio di confidenza) o `AMBIGUOUS`.
 

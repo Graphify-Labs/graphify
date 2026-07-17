@@ -38,7 +38,11 @@ graphify is a **local development tool**. It runs as a Claude Code skill and opt
 | YAML frontmatter injection | `_yaml_str()` escapes backslashes, double quotes, and newlines before embedding user-controlled strings (webpage titles, query questions) in YAML frontmatter. |
 | Encoding crashes on source files | All tree-sitter byte slices decoded with `errors="replace"` - non-UTF-8 source files degrade gracefully instead of crashing extraction. |
 | Symlink traversal | `os.walk(..., followlinks=False)` is explicit throughout `detect.py`. |
-| Corrupted graph.json | `_load_graph()` in `serve.py` wraps `json.JSONDecodeError` and prints a clear recovery message instead of crashing. |
+| Corrupted or mixed-generation store | Active Helix generations carry counts and SHA-256 checksums; readers reject mismatches before exposing the graph. |
+| Partial/interrupted build | Topology and durable state remain inactive until complete verification and one active-generation pointer update. |
+| Competing embedded writers | A process lock permits one writer; read-only handles reject every write path. |
+| Public or mismatched Helix build | Startup validates the exact pinned SDK revision, version, and native graph API payload and fails closed. |
+| MCP HTTP exposure | Streamable HTTP binds only to loopback addresses; non-loopback hosts are rejected. Use a trusted authenticated proxy if remote access is required. |
 
 ### What graphify does NOT do
 
@@ -46,6 +50,7 @@ graphify is a **local development tool**. It runs as a Claude Code skill and opt
 - Does not execute code from source files (tree-sitter parses ASTs - no eval/exec)
 - Does not use `shell=True` in any subprocess call
 - Does not store credentials or API keys
+- Does not persist Graphify graph/index state in JSON sidecars
 
 ### Optional network calls
 

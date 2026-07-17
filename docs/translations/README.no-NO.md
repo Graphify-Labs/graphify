@@ -27,13 +27,13 @@ Fullt multimodal. Legg til kode, PDF-er, markdown, skjermbilder, diagrammer, whi
 graphify-out/
 ├── graph.html       interaktiv graf — åpne i en hvilken som helst nettleser
 ├── GRAPH_REPORT.md  gudnoder, overraskende forbindelser, foreslåtte spørsmål
-├── graph.json       vedvarende graf — forespørselbar uker senere
+├── graph.helix       vedvarende graf — forespørselbar uker senere
 └── cache/           SHA256-cache — gjentatte kjøringer behandler bare endrede filer
 ```
 
 ## Hvordan det fungerer
 
-graphify arbeider i tre gjennomganger. Først ekstraherer et deterministisk AST-gjennomgang struktur fra kodefiler uten LLM. Deretter transkriberes video- og lydfiler lokalt med faster-whisper. Til slutt kjører Claude-underagenter parallelt på dokumenter, artikler, bilder og transkripsjoner. Resultatene slås sammen i en NetworkX-graf, klynges med Leiden og eksporteres som interaktiv HTML, forespørselbar JSON og revisjonsrapport.
+graphify arbeider i tre gjennomganger. Først ekstraherer et deterministisk AST-gjennomgang struktur fra kodefiler uten LLM. Deretter transkriberes video- og lydfiler lokalt med faster-whisper. Til slutt kjører Claude-underagenter parallelt på dokumenter, artikler, bilder og transkripsjoner. Resultatene slås sammen i en Helix-graf, klynges med Leiden og eksporteres som interaktiv HTML, forespørselbar JSON og revisjonsrapport.
 
 Hver relasjon er merket `EXTRACTED`, `INFERRED` (med konfidenspoeng) eller `AMBIGUOUS`.
 

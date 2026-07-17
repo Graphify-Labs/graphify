@@ -20,7 +20,7 @@
 graphify-out/
 ├── graph.html       인터랙티브 그래프 - 노드 클릭, 검색, 커뮤니티별 필터
 ├── GRAPH_REPORT.md  갓 노드, 의외의 연결, 추천 질문
-├── graph.json       영속 그래프 - 몇 주 후에도 재읽기 없이 쿼리 가능
+├── graph.helix       영속 그래프 - 몇 주 후에도 재읽기 없이 쿼리 가능
 └── cache/           SHA256 캐시 - 재실행 시 변경된 파일만 처리
 ```
 
@@ -38,7 +38,7 @@ dist/
 
 ## 동작 원리
 
-graphify는 두 번의 패스로 실행됩니다. 첫 번째는 결정론적 AST 패스로, 코드 파일에서 구조(클래스, 함수, 임포트, 콜 그래프, docstring, 근거 주석)를 LLM 없이 추출합니다. 두 번째는 Claude 서브에이전트가 문서, 논문, 이미지에 대해 병렬로 실행되어 개념, 관계, 설계 근거를 추출합니다. 결과는 NetworkX 그래프로 병합되고, Leiden 커뮤니티 탐지로 클러스터링되며, 인터랙티브 HTML, 쿼리 가능한 JSON, 그리고 일반 언어 감사 보고서로 내보내집니다.
+graphify는 두 번의 패스로 실행됩니다. 첫 번째는 결정론적 AST 패스로, 코드 파일에서 구조(클래스, 함수, 임포트, 콜 그래프, docstring, 근거 주석)를 LLM 없이 추출합니다. 두 번째는 Claude 서브에이전트가 문서, 논문, 이미지에 대해 병렬로 실행되어 개념, 관계, 설계 근거를 추출합니다. 결과는 Helix 그래프로 병합되고, Leiden 커뮤니티 탐지로 클러스터링되며, 인터랙티브 HTML, 쿼리 가능한 JSON, 그리고 일반 언어 감사 보고서로 내보내집니다.
 
 **클러스터링은 그래프 토폴로지 기반 — 임베딩을 사용하지 않습니다.** Leiden은 엣지 밀도를 기반으로 커뮤니티를 찾습니다. Claude가 추출하는 의미적 유사성 엣지(`semantically_similar_to`, INFERRED로 표시)는 이미 그래프에 포함되어 있으므로 커뮤니티 탐지에 직접 영향을 줍니다. 그래프 구조 자체가 유사성 신호이며 — 별도의 임베딩 단계나 벡터 데이터베이스가 필요하지 않습니다.
 
@@ -103,13 +103,13 @@ Codex 사용자는 병렬 추출을 위해 `~/.codex/config.toml`의 `[features]
 
 상시 작동 훅은 `GRAPH_REPORT.md`를 노출합니다 — 갓 노드, 커뮤니티, 의외의 연결을 한 페이지로 요약한 것입니다. 어시스턴트는 파일 검색 전에 이것을 읽으므로 키워드 매칭이 아닌 구조 기반으로 탐색합니다. 이것만으로 대부분의 일상적인 질문을 처리할 수 있습니다.
 
-`/graphify query`, `/graphify path`, `/graphify explain`은 더 깊이 들어갑니다: 원시 `graph.json`을 홉 단위로 순회하고, 노드 간의 정확한 경로를 추적하며, 엣지 수준의 세부 정보(관계 유형, 신뢰도 점수, 소스 위치)를 보여줍니다. 일반적인 오리엔테이션이 아닌 그래프에서 특정 질문에 답하고 싶을 때 사용하세요.
+`/graphify query`, `/graphify path`, `/graphify explain`은 더 깊이 들어갑니다: 원시 `graph.helix`을 홉 단위로 순회하고, 노드 간의 정확한 경로를 추적하며, 엣지 수준의 세부 정보(관계 유형, 신뢰도 점수, 소스 위치)를 보여줍니다. 일반적인 오리엔테이션이 아닌 그래프에서 특정 질문에 답하고 싶을 때 사용하세요.
 
 이렇게 생각하면 됩니다: 상시 작동 훅은 어시스턴트에게 지도를 주고, `/graphify` 명령은 그 지도를 정확하게 탐색하게 합니다.
 
-## `graph.json`을 LLM과 함께 사용하기
+## `graph.helix`을 LLM과 함께 사용하기
 
-`graph.json`은 프롬프트에 한 번에 전부 붙여넣기 위한 것이 아닙니다. 유용한 워크플로우는 다음과 같습니다:
+`graph.helix`은 프롬프트에 한 번에 전부 붙여넣기 위한 것이 아닙니다. 유용한 워크플로우는 다음과 같습니다:
 
 1. `graphify-out/GRAPH_REPORT.md`로 높은 수준의 개요를 파악합니다.
 2. `graphify query`를 사용하여 답하려는 특정 질문에 대한 더 작은 서브그래프를 가져옵니다.
@@ -118,8 +118,8 @@ Codex 사용자는 병렬 추출을 위해 `~/.codex/config.toml`의 `[features]
 예를 들어, 프로젝트에서 graphify를 실행한 후:
 
 ```bash
-graphify query "show the auth flow" --graph graphify-out/graph.json
-graphify query "what connects DigestAuth to Response?" --graph graphify-out/graph.json
+graphify query "show the auth flow" --graph graphify-out/graph.helix
+graphify query "what connects DigestAuth to Response?" --graph graphify-out/graph.helix
 ```
 
 출력에는 노드 레이블, 엣지 유형, 신뢰도 태그, 소스 파일, 소스 위치가 포함됩니다. 이는 LLM을 위한 좋은 중간 컨텍스트 블록이 됩니다:
@@ -129,10 +129,10 @@ graphify query "what connects DigestAuth to Response?" --graph graphify-out/grap
 가능한 경우 소스 파일을 인용하세요.
 ```
 
-어시스턴트가 도구 호출이나 MCP를 지원하는 경우, 텍스트를 붙여넣는 대신 그래프를 직접 사용하세요. graphify는 `graph.json`을 MCP 서버로 노출할 수 있습니다:
+어시스턴트가 도구 호출이나 MCP를 지원하는 경우, 텍스트를 붙여넣는 대신 그래프를 직접 사용하세요. graphify는 `graph.helix`을 MCP 서버로 노출할 수 있습니다:
 
 ```bash
-python -m graphify.serve graphify-out/graph.json
+python -m graphify.serve graphify-out/graph.helix
 ```
 
 이를 통해 어시스턴트가 `query_graph`, `get_node`, `get_neighbors`, `shortest_path` 같은 반복 쿼리에 구조화된 그래프 접근을 할 수 있습니다.
@@ -207,7 +207,7 @@ graphify trae-cn uninstall
 graphify query "어텐션과 옵티마이저를 연결하는 것은?"
 graphify query "인증 흐름 보기" --dfs
 graphify query "CfgNode이 뭐지?" --budget 500
-graphify query "..." --graph path/to/graph.json
+graphify query "..." --graph path/to/graph.helix
 ```
 
 다양한 파일 유형의 조합과 함께 동작합니다:
@@ -252,7 +252,7 @@ graphify query "..." --graph path/to/graph.json
 | graphify 소스 + Transformer 논문 | 4 | **5.4x** | [`worked/mixed-corpus/`](worked/mixed-corpus/) |
 | httpx (합성 Python 라이브러리) | 6 | ~1x | [`worked/httpx/`](worked/httpx/) |
 
-토큰 축소는 코퍼스 크기에 비례하여 확장됩니다. 6개 파일은 어차피 컨텍스트 윈도우에 들어가므로, 그래프의 가치는 압축이 아닌 구조적 명확성에 있습니다. 52개 파일(코드 + 논문 + 이미지)에서는 71배 이상을 달성합니다. 각 `worked/` 폴더에는 원본 입력 파일과 실제 출력(`GRAPH_REPORT.md`, `graph.json`)이 있어 직접 실행하여 수치를 검증할 수 있습니다.
+토큰 축소는 코퍼스 크기에 비례하여 확장됩니다. 6개 파일은 어차피 컨텍스트 윈도우에 들어가므로, 그래프의 가치는 압축이 아닌 구조적 명확성에 있습니다. 52개 파일(코드 + 논문 + 이미지)에서는 71배 이상을 달성합니다. 각 `worked/` 폴더에는 원본 입력 파일과 실제 출력(`GRAPH_REPORT.md`, `graph.helix`)이 있어 직접 실행하여 수치를 검증할 수 있습니다.
 
 ## 개인정보 보호
 
@@ -260,7 +260,7 @@ graphify는 문서, 논문, 이미지의 의미적 추출을 위해 파일 내�
 
 ## 기술 스택
 
-NetworkX + Leiden (graspologic) + tree-sitter + vis.js. 의미적 추출은 Claude(Claude Code), GPT-4(Codex), 또는 플랫폼이 실행하는 모델을 통해 수행됩니다. Neo4j 불필요, 서버 불필요, 완전히 로컬에서 실행됩니다.
+Helix + Leiden (native Leiden) + tree-sitter + vis.js. 의미적 추출은 Claude(Claude Code), GPT-4(Codex), 또는 플랫폼이 실행하는 모델을 통해 수행됩니다. Neo4j 불필요, 서버 불필요, 완전히 로컬에서 실행됩니다.
 
 ## 다음 계획
 

@@ -40,7 +40,7 @@
 graphify-out/
 ├── graph.html       در هر مرورگری باز کنید — روی گره‌ها کلیک کنید، فیلتر کنید، جستجو کنید
 ├── GRAPH_REPORT.md  نکات کلیدی: مفاهیم محوری، اتصالات شگفت‌انگیز، سؤالات پیشنهادی
-└── graph.json       گراف کامل — هر زمان بدون نیاز به بازخوانی فایل‌ها پرس‌وجو کنید
+└── graph.helix       گراف کامل — هر زمان بدون نیاز به بازخوانی فایل‌ها پرس‌وجو کنید
 ```
 
 <div dir="rtl">
@@ -355,14 +355,14 @@ graphify-out/cost.json        # فقط محلی
 ```bash
 # پرس‌وجو از گراف در ترمینال
 graphify query "جریان احراز هویت را نشان بده"
-graphify query "چه چیزی DigestAuth را به Response متصل می‌کند؟" --graph graphify-out/graph.json
+graphify query "چه چیزی DigestAuth را به Response متصل می‌کند؟" --graph graphify-out/graph.helix
 
 # نمایش گراف به‌عنوان سرور MCP
-python -m graphify.serve graphify-out/graph.json
+python -m graphify.serve graphify-out/graph.helix
 
 # یا سرویس‌دهی از طریق HTTP برای دسترسی تیمی:
-python -m graphify.serve graphify-out/graph.json --transport http --port 8080
-python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+python -m graphify.serve graphify-out/graph.helix --transport http --port 8080
+python -m graphify.serve graphify-out/graph.helix --transport http --host 0.0.0.0 --api-key "$SECRET"
 ```
 
 <div dir="rtl">

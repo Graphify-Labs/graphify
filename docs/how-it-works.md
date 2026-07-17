@@ -64,7 +64,7 @@ On a mixed corpus (Karpathy repos + 5 papers + 4 images, 52 files): **71.5x fewe
 
 Token reduction scales with corpus size. Six files already fits in a context window — the graph value there is structural clarity, not compression. At 52 files the savings compound quickly.
 
-Each `worked/` folder in the repo has the raw input files and actual output (`GRAPH_REPORT.md`, `graph.json`) so you can run it yourself and verify.
+Each `worked/` folder in the repo has raw input files and a report so you can run the current native build yourself and verify it.
 
 ---
 
@@ -76,13 +76,13 @@ Code files are extracted in parallel using `ProcessPoolExecutor` — bypasses Py
 
 ## SHA256 cache
 
-Every extracted file is fingerprinted by content hash. Re-runs skip unchanged files entirely — only new or modified files go through extraction again. The cache lives in `graphify-out/cache/`.
+Every extracted file is fingerprinted by content hash. Re-runs skip unchanged files entirely — only new or modified files go through extraction again. Hashes and extraction cache entries live in the active Helix generation.
 
 ---
 
 ## The graph format
 
-The output `graph.json` uses NetworkX's node-link format. Each node has:
+The embedded `graphify-out/graph.helix` store is the sole runtime graph. Each native node has:
 - `id` — stable identifier
 - `label` — human-readable name
 - `file_type` — `code`, `document`, `paper`, `image`, `rationale`
@@ -98,4 +98,4 @@ Each edge has:
 - `confidence_score` — float (INFERRED only)
 - `source_file` — where the relationship was found
 
-Hyperedges (group relationships connecting 3+ nodes) live in `G.graph["hyperedges"]`.
+Hyperedges (group relationships connecting 3+ nodes) are stored as generation-scoped native metadata.
