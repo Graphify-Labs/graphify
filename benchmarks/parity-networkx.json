@@ -1,0 +1,15 @@
+{
+  "helix_revision": "0.2.0b1",
+  "networkx_version": "3.6.1",
+  "checks": {
+    "directed_path": true,
+    "bfs": true,
+    "dfs": true,
+    "node_betweenness": true,
+    "edge_betweenness": true,
+    "louvain": true,
+    "layout": true,
+    "transformations": true
+  },
+  "all_passed": true
+}

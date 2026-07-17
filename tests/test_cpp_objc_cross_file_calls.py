@@ -176,8 +176,9 @@ def test_cpp_resolved_call_survives_build(tmp_path: Path):
 
     g = build_from_json(result)
     cross = [
-        d for _, _, d in g.edges(data=True)
-        if d.get("relation") == "calls" and d.get("confidence") == "INFERRED"
+        edge.attributes for edge in g.edges
+        if edge.attributes.get("relation") == "calls"
+        and edge.attributes.get("confidence") == "INFERRED"
     ]
     assert len(cross) >= 1
 
@@ -257,7 +258,8 @@ def test_objc_resolved_calls_survive_build(tmp_path: Path):
 
     g = build_from_json(result)
     cross = [
-        d for _, _, d in g.edges(data=True)
-        if d.get("relation") == "calls" and d.get("confidence") == "INFERRED"
+        edge.attributes for edge in g.edges
+        if edge.attributes.get("relation") == "calls"
+        and edge.attributes.get("confidence") == "INFERRED"
     ]
     assert len(cross) >= 1

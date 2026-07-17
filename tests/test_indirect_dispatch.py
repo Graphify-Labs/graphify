@@ -12,7 +12,8 @@ non-callable same-named node is never a dispatch target — neither may manufact
 import os
 from pathlib import Path
 
-import networkx as nx
+from graphify.build import build_from_json
+from tests.native_helpers import graph_from_build
 
 from graphify.affected import affected_nodes
 from graphify.extract import extract, extract_python
@@ -76,11 +77,7 @@ def test_emits_indirect_call_edges_and_keeps_calls_precise(tmp_path):
 
 def test_affected_includes_indirect_callers(tmp_path):
     r, nid = _build(tmp_path)
-    g = nx.DiGraph()
-    for n in r["nodes"]:
-        g.add_node(n["id"], **n)
-    for e in r["edges"]:
-        g.add_edge(e["source"], e["target"], **e)
+    g = graph_from_build(build_from_json(r, directed=True))
 
     affected = {h.node_id for h in affected_nodes(g, nid["handler"])}
     # blast radius of `handler` now includes the dispatchers it used to drop
@@ -224,7 +221,7 @@ def test_cross_file_indirect_survives_id_relativization(tmp_path):
         os.chdir(old)
     nid = {n["label"].rstrip("()"): n["id"] for n in r["nodes"]}
     assert (nid["schedule"], nid["on_event"]) in _rels(r, "indirect_call")
-    # the internal callable marker must never ship to graph.json
+    # the internal callable marker must never ship to graph.helix
     assert not any("_callable" in n for n in r["nodes"])
 
 
@@ -257,11 +254,7 @@ def test_cross_file_affected_includes_importing_dispatcher(tmp_path):
             "    pool.submit(on_event)\n"
         ),
     })
-    g = nx.DiGraph()
-    for n in r["nodes"]:
-        g.add_node(n["id"], **n)
-    for e in r["edges"]:
-        g.add_edge(e["source"], e["target"], **e)
+    g = graph_from_build(build_from_json(r, directed=True))
     affected = {h.node_id for h in affected_nodes(g, nid["on_event"])}
     # editing on_event now flags the cross-module dispatcher — the gap #1565
     # left open (it only saw same-file callbacks).

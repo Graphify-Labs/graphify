@@ -93,8 +93,12 @@ def test_apm_dependency_collapses_to_single_canonical_node(tmp_path):
     assert core[0]["id"] == "pkg_coding_standards_core" and core[0]["source_file"]
 
     g = build_from_json(result)
-    core_ids = [n for n, d in g.nodes(data=True) if d.get("label") == "coding-standards-core"]
-    dep_edges = [(u, v) for u, v, d in g.edges(data=True) if d.get("relation") == "depends_on"]
+    core_ids = [n.id for n in g.nodes if n.attributes.get("label") == "coding-standards-core"]
+    dep_edges = [
+        (edge.source, edge.target)
+        for edge in g.edges
+        if edge.attributes.get("relation") == "depends_on"
+    ]
     assert len(core_ids) == 1
     assert len(dep_edges) == 2  # both dependents point at the one core node
 
@@ -104,8 +108,8 @@ def test_external_dependency_edge_pruned_not_orphaned(tmp_path):
     p = _write(tmp_path / "apm.yml", "name: leaf\ndependencies:\n  - some-external-pkg\n")
     result = extract([p], cache_root=tmp_path)
     g = build_from_json(result)
-    assert "pkg_some_external_pkg" not in set(g.nodes())  # no fabricated external node
-    assert [n for n, d in g.nodes(data=True) if d.get("label") == "leaf"]
+    assert "pkg_some_external_pkg" not in {node.id for node in g.nodes}
+    assert [node for node in g.nodes if node.attributes.get("label") == "leaf"]
 
 
 def test_malformed_manifest_does_not_crash(tmp_path):

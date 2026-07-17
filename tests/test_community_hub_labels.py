@@ -4,20 +4,18 @@ Names each community after its highest-degree member so a report reads "log_acti
 instead of "Community 70", with no backend. Ties break by node id for run-to-run
 stability; a community with no members present in the graph falls back to "Community N".
 """
-import networkx as nx
-
 from graphify.cluster import label_communities_by_hub
+from tests.native_helpers import graph_from_payload
 
 
 def _g(node_labels, edges):
-    g = nx.Graph()
-    for nid, label in node_labels.items():
-        if label is None:
-            g.add_node(nid)
-        else:
-            g.add_node(nid, label=label)
-    g.add_edges_from(edges)
-    return g
+    return graph_from_payload(
+        [
+            {"id": nid, **({"label": label} if label is not None else {})}
+            for nid, label in node_labels.items()
+        ],
+        [{"source": source, "target": target} for source, target in edges],
+    )
 
 
 def test_labels_by_highest_degree_hub():
@@ -50,9 +48,7 @@ def test_absent_members_fall_back_to_placeholder():
 
 
 def test_node_without_label_attr_uses_id():
-    g = nx.Graph()
-    g.add_nodes_from(["hub", "x", "y"])
-    g.add_edges_from([("hub", "x"), ("hub", "y")])  # hub degree 2, no label attrs
+    g = _g({"hub": None, "x": None, "y": None}, [("hub", "x"), ("hub", "y")])
     assert label_communities_by_hub(g, {0: ["hub", "x", "y"]})[0] == "hub"
 
 
