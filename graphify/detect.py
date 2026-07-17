@@ -862,7 +862,7 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     return exclude if exclude.is_file() else None
 
 
-def _load_dir_own_ignore(d: Path) -> list[tuple[Path, str]]:
+def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path, str]]:
     """Read .gitignore/.graphifyignore directly inside *d* (not its ancestors).
 
     Merges .gitignore and .graphifyignore for this one directory (#1363):
@@ -879,7 +879,7 @@ def _load_dir_own_ignore(d: Path) -> list[tuple[Path, str]]:
     were read, so e.g. `vendor/sub/.gitignore` was silently ignored (#1206).
     """
     patterns: list[tuple[Path, str]] = []
-    for fname in (".gitignore", ".graphifyignore"):
+    for fname in ((".gitignore", ".graphifyignore") if gitignore else (".graphifyignore",)):
         ignore_file = d / fname
         if ignore_file.exists():
             for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -889,7 +889,7 @@ def _load_dir_own_ignore(d: Path) -> list[tuple[Path, str]]:
     return patterns
 
 
-def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
+def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Path, str]]:
     """Read .graphifyignore files and return (anchor_dir, pattern) pairs.
 
     Patterns are returned outer-first so that inner (closer) rules are
@@ -922,7 +922,7 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
     # per-directory .gitignore/.graphifyignore — so load it first (lowest priority
     # under last-match-wins) anchored at the VCS root, letting a nearer `!`
     # re-include still override it (#1810).
-    info_exclude = _git_info_exclude(ceiling)
+    info_exclude = _git_info_exclude(ceiling) if gitignore else None
     if info_exclude is not None:
         for raw in info_exclude.read_text(encoding="utf-8", errors="ignore").splitlines():
             line = _parse_gitignore_line(raw)
@@ -930,7 +930,7 @@ def _load_graphifyignore(root: Path) -> list[tuple[Path, str]]:
                 patterns.append((ceiling, line))
 
     for d in dirs:
-        patterns.extend(_load_dir_own_ignore(d))
+        patterns.extend(_load_dir_own_ignore(d, gitignore=gitignore))
     return patterns
 
 
@@ -1157,7 +1157,7 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
     return True
 
 
-def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None) -> dict:
+def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
     root = root.resolve()
     if follow_symlinks is None:
         follow_symlinks = False
@@ -1186,7 +1186,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     # of silently vanishing from the graph (#1922). Directory-level entries keep
     # this bounded — a pruned `data/` is one entry, not one per contained file.
     ignored: list[str] = []
-    ignore_patterns = _load_graphifyignore(root)
+    ignore_patterns = _load_graphifyignore(root, gitignore=gitignore)
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
     # CLI --exclude patterns are anchored at the scan root and appended last
     # so they win over any .graphifyignore/.gitignore rules (#947).
@@ -1244,7 +1244,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # Load it now, before pruning dp's children, so a nested ignore
                 # file governs its own subtree the same way git honors it (#1206).
                 if dp != root:
-                    ignore_patterns.extend(_load_dir_own_ignore(dp))
+                    ignore_patterns.extend(_load_dir_own_ignore(dp, gitignore=gitignore))
                 # Prune noise dirs in-place so os.walk never descends into them.
                 # Dot dirs are allowed — users often want .github/, .claude/, etc.
                 # Framework caches (.next, .nuxt, …) are caught by _is_noise_dir.
@@ -1663,6 +1663,7 @@ def detect_incremental(
     google_workspace: bool | None = None,
     kind: str = "semantic",
     extra_excludes: list[str] | None = None,
+    gitignore: bool = True,
 ) -> dict:
     """Like detect(), but returns only new or modified files since the last run.
 
@@ -1686,7 +1687,13 @@ def detect_incremental(
     runs. ``None`` (default) does not follow symlinked directories; callers must
     opt in explicitly, and resolved targets outside the scan root are skipped.
     """
-    full = detect(root, follow_symlinks=follow_symlinks, google_workspace=google_workspace, extra_excludes=extra_excludes)
+    full = detect(
+        root,
+        follow_symlinks=follow_symlinks,
+        google_workspace=google_workspace,
+        extra_excludes=extra_excludes,
+        gitignore=gitignore,
+    )
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
     # re-anchored to the absolute form the rest of this function compares
     # against. Legacy absolute-keyed manifests pass through unchanged.

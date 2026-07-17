@@ -76,19 +76,32 @@ def _drain_pending(out_dir: Path) -> list[Path]:
 _BUILD_CONFIG_FILENAME = ".graphify_build.json"
 
 
-def _write_build_config(out_dir: Path, *, excludes: "list[str] | None") -> None:
-    """Persist build options (currently ``--exclude`` patterns) under ``out_dir``.
+def _write_build_config(
+    out_dir: Path,
+    *,
+    excludes: "list[str] | None",
+    gitignore: bool | None = None,
+) -> None:
+    """Persist corpus-shaping options under ``out_dir``.
 
-    Best-effort and non-clobbering: with no excludes it leaves any existing file
-    untouched, so a plain rebuild never erases patterns a prior extract recorded.
+    Best effort and non clobbering: omitted options retain their existing values.
     """
-    if not excludes:
+    if not excludes and gitignore is None:
         return
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / _BUILD_CONFIG_FILENAME).write_text(
-            json.dumps({"excludes": list(excludes)}), encoding="utf-8"
-        )
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        try:
+            config = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            config = {}
+        if not isinstance(config, dict):
+            config = {}
+        if excludes:
+            config["excludes"] = list(excludes)
+        if gitignore is not None:
+            config["gitignore"] = gitignore
+        path.write_text(json.dumps(config), encoding="utf-8")
     except OSError:
         pass
 
@@ -105,6 +118,19 @@ def _read_build_excludes(out_dir: Path) -> list[str]:
     except (OSError, json.JSONDecodeError):
         pass
     return []
+
+
+def _read_build_gitignore(out_dir: Path) -> bool:
+    """Return whether rebuilds should honor VCS ignore files (default True)."""
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and isinstance(cfg.get("gitignore"), bool):
+                return cfg["gitignore"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return True
 
 
 def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
@@ -872,6 +898,7 @@ def _rebuild_code(
         detected = detect(
             watch_path, follow_symlinks=follow_symlinks,
             extra_excludes=_persisted_excludes or None,
+            gitignore=_read_build_gitignore(out),
         )
         code_files = [Path(f) for f in detected['files']['code']]
 
@@ -1335,7 +1362,10 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     # without this short-circuit a busy volume can saturate a CPU core
     # discarding events one extension at a time. (gh-928)
     watch_root_for_ignore = watch_path.resolve()
-    ignore_patterns = _load_graphifyignore(watch_root_for_ignore)
+    ignore_patterns = _load_graphifyignore(
+        watch_root_for_ignore,
+        gitignore=_read_build_gitignore(watch_path / _GRAPHIFY_OUT),
+    )
 
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):

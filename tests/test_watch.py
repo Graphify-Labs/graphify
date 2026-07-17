@@ -277,6 +277,26 @@ def test_rebuild_honors_persisted_excludes(tmp_path):
     )
 
 
+def test_rebuild_honors_persisted_no_gitignore(tmp_path):
+    import json
+    from graphify.watch import _rebuild_code, _write_build_config
+
+    corpus = tmp_path / "corpus"
+    generated = corpus / "generated"
+    generated.mkdir(parents=True)
+    (corpus / ".gitignore").write_text("generated/\n")
+    (generated / "gen.py").write_text("def generated(): return 1\n")
+    _write_build_config(
+        corpus / "graphify-out", excludes=None, gitignore=False
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    graph = json.loads((corpus / "graphify-out" / "graph.json").read_text())
+    sources = {Path(str(node.get("source_file", ""))).as_posix() for node in graph["nodes"]}
+    assert any(source.endswith("generated/gen.py") for source in sources)
+
+
 def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
     """When the caller supplies an absolute path, ``.graphify_root`` stores
     that absolute form verbatim — preserving explicit-absolute intent."""

@@ -605,6 +605,7 @@ def _run_cli() -> None:
         print("    --api-timeout S         per-request timeout in seconds for the LLM client (default: 600)")
         print("    --out DIR               output dir (default: <path>); writes <DIR>/graphify-out/")
         print("    --google-workspace      export .gdoc/.gsheet/.gslides shortcuts via gws before extraction")
+        print("    --no-gitignore         ignore .gitignore and .git/info/exclude (prioritizes .graphifyignore)")
         print("    --no-cluster            skip clustering, write raw extraction only")
         print("    --code-only             index code (local AST, no API key) and skip doc/paper/image files")
         print("    --postgres DSN          extract schema from a live PostgreSQL database")
