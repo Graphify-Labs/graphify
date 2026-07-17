@@ -1,0 +1,2 @@
+# Isolated comparison environment only; never install in Graphify production.
+networkx==3.6.1

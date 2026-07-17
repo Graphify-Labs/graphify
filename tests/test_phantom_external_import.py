@@ -67,20 +67,22 @@ def test_no_phantom_edge_from_tsx_to_unrelated_python_file(tmp_path: Path):
 
     # Find the python file node.
     py_ids = [
-        n for n, d in G.nodes(data=True)
-        if str(d.get("source_file", "")).endswith("colors.py")
+        node.id for node in G.nodes
+        if str(node.attributes.get("source_file", "")).endswith("colors.py")
     ]
     assert py_ids, "colors.py should have produced at least one node"
 
     # No edge from the TSX file (or any TS symbol) should land on the python file
     # as an imports_from relationship.
-    for u, v, d in G.edges(data=True):
+    attrs_by_id = {node.id: node.attributes for node in G.nodes}
+    for edge in G.edges:
+        u, v, d = edge.source, edge.target, edge.attributes
         if d.get("relation") != "imports_from":
             continue
         endpoints = {u, v}
         if endpoints & set(py_ids):
             other = (endpoints - set(py_ids)) or endpoints
-            srcfiles = {str(G.nodes[e].get("source_file", "")) for e in other}
+            srcfiles = {str(attrs_by_id[e].get("source_file", "")) for e in other}
             assert not any(sf.endswith((".tsx", ".ts")) for sf in srcfiles), (
                 f"phantom cross-language imports_from edge onto colors.py: "
                 f"{u} -> {v} ({d})"
@@ -106,11 +108,12 @@ def test_multiple_tsx_files_do_not_all_alias_onto_one_python_file(tmp_path: Path
     G = build_from_json(result, root=str(tmp_path))
 
     py_ids = {
-        n for n, d in G.nodes(data=True)
-        if str(d.get("source_file", "")).endswith("colors.py")
+        node.id for node in G.nodes
+        if str(node.attributes.get("source_file", "")).endswith("colors.py")
     }
     phantom = [
-        (u, v) for u, v, d in G.edges(data=True)
-        if d.get("relation") == "imports_from" and ({u, v} & py_ids)
+        (edge.source, edge.target) for edge in G.edges
+        if edge.attributes.get("relation") == "imports_from"
+        and ({edge.source, edge.target} & py_ids)
     ]
     assert not phantom, f"phantom edges onto colors.py: {phantom}"

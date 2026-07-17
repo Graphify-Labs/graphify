@@ -139,7 +139,10 @@ resource "azurerm_network_interface" "nic" {
         }
     )
     nic_id = next(n["id"] for n in r_user["nodes"] if n["label"] == "azurerm_network_interface.nic")
-    assert G.has_edge(nic_id, rg_id)
+    assert any(
+        {edge.source, edge.target} == {nic_id, rg_id}
+        for edge in G.edges
+    )
 
 
 def test_empty_and_commentonly_files_are_safe(tmp_path):

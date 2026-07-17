@@ -207,7 +207,7 @@ def test_corpus_parallel_merge_order_is_submission_order_not_completion(tmp_path
     """#1632: merged node/edge order must be deterministic (submission order),
     not the order chunks' network calls happen to finish. We skew latencies so
     the first-submitted chunk finishes LAST; the merged result must still be in
-    file/submission order so graph.json is stable run-to-run."""
+    file/submission order so the graph is stable run-to-run."""
     from graphify.llm import extract_corpus_parallel
 
     files = []
@@ -289,13 +289,14 @@ def test_checkpoint_scopes_cache_writes_to_chunk_files(tmp_path):
 
     a = tmp_path / "A.py"; a.write_text("def a(): pass")
     b = tmp_path / "B.py"; b.write_text("def b(): pass")
+    cache = {}
 
     # Seed B.py's legitimate semantic cache (a full, correct entry).
     save_semantic_cache(
         [{"id": "b_real", "source_file": "B.py", "file_type": "code"}],
-        [], [], root=tmp_path,
+        [], [], root=tmp_path, cache=cache,
     )
-    before = load_cached(b, tmp_path, kind="semantic")
+    before = load_cached(b, tmp_path, kind="semantic", cache=cache)
     assert before and [n["id"] for n in before["nodes"]] == ["b_real"]
 
     # The chunk dispatches only A.py, but the (untrusted) model result attributes
@@ -314,10 +315,11 @@ def test_checkpoint_scopes_cache_writes_to_chunk_files(tmp_path):
         extract_corpus_parallel(
             [a], backend="kimi", root=tmp_path,
             token_budget=None, chunk_size=1, max_concurrency=1,
+            cache=cache,
         )
 
     # B.py's cache is unchanged: the stray node was rejected, not merged in.
-    after = load_cached(b, tmp_path, kind="semantic")
+    after = load_cached(b, tmp_path, kind="semantic", cache=cache)
     assert [n["id"] for n in after["nodes"]] == ["b_real"], (
         f"B.py cache was clobbered by an out-of-chunk node: {after}"
     )
@@ -325,7 +327,7 @@ def test_checkpoint_scopes_cache_writes_to_chunk_files(tmp_path):
     # entries with the prompt that produced them (#1939), so read that namespace.
     from graphify.llm import _extraction_system
 
-    a_cache = load_cached(a, tmp_path, kind="semantic", prompt=_extraction_system())
+    a_cache = load_cached(a, tmp_path, kind="semantic", prompt=_extraction_system(), cache=cache)
     assert a_cache and any(n["id"] == "a_ok" for n in a_cache["nodes"])
 
 
@@ -337,6 +339,7 @@ def test_truncated_chunk_is_cached_partial_and_missed_on_reload(tmp_path):
     from graphify.cache import load_cached
 
     doc = tmp_path / "doc.md"; doc.write_text("# Heading\nlots of prose\n")
+    cache = {}
 
     def truncated(chunk, **kwargs):
         return {
@@ -350,10 +353,12 @@ def test_truncated_chunk_is_cached_partial_and_missed_on_reload(tmp_path):
         extract_corpus_parallel(
             [doc], backend="kimi", root=tmp_path,
             token_budget=None, chunk_size=1, max_concurrency=1,
+            cache=cache,
         )
 
     # The entry was written but stamped partial, so load_cached rejects it.
-    assert load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system()) is None
+    assert load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system(), cache=cache) is None
+    assert any(entry.get("partial") for entry in cache.values())
 
 
 def test_checkpoint_writes_deep_namespace_in_deep_mode(tmp_path):
@@ -365,6 +370,7 @@ def test_checkpoint_writes_deep_namespace_in_deep_mode(tmp_path):
 
     doc = tmp_path / "doc.md"
     doc.write_text("# Doc\n\nsome content\n")
+    cache = {}
 
     def ok(chunk, **kwargs):
         return {
@@ -377,17 +383,18 @@ def test_checkpoint_writes_deep_namespace_in_deep_mode(tmp_path):
             [doc], backend="kimi", root=tmp_path,
             token_budget=None, chunk_size=1, max_concurrency=1,
             deep_mode=True,
+            cache=cache,
         )
 
     # The checkpoint also stamps entries with the prompt that produced them
     # (#1939) — a deep run's prompt carries the deep suffix.
     deep = load_cached(doc, tmp_path, kind="semantic-deep",
-                       prompt=_extraction_system(deep=True))
+                       prompt=_extraction_system(deep=True), cache=cache)
     assert deep and [n["id"] for n in deep["nodes"]] == ["d1"], (
         "deep-mode checkpoint must land in cache/semantic-deep/"
     )
     assert load_cached(doc, tmp_path, kind="semantic",
-                       prompt=_extraction_system(deep=False)) is None, (
+                       prompt=_extraction_system(deep=False), cache=cache) is None, (
         "deep-mode checkpoint must not write the standard semantic namespace"
     )
 
@@ -429,7 +436,7 @@ def test_omitted_documents_are_reconciled_and_warned(tmp_path, capsys):
 def test_out_of_scope_nodes_are_dropped_from_merged_result(tmp_path, capsys):
     """#1895: the #1757 cache guard skips the CACHE write for a node attributed
     to a real corpus file that was not dispatched, but the node itself still
-    flowed into merged["nodes"] and landed in graph.json. The merged result must
+    flowed into merged["nodes"] and landed in the durable graph. The merged result must
     drop such nodes (and edges/hyperedges touching them), warn once, and record
     the count — while keeping in-scope sibling attributions (a node attributed
     to a different dispatched file in the same chunk) and non-file concept
@@ -528,6 +535,7 @@ def test_checkpoint_caches_sliced_document_chunks(tmp_path, capsys):
     doc.write_text("# Title\n" + ("word " * 12000) + "\n## Section\n" + ("more " * 12000))
     # sanity: the doc really does slice into FileSlice units
     units = expand_oversized_files([doc], _FILE_CHAR_CAP)
+    cache = {}
     assert len(units) > 1 and all(isinstance(u, FileSlice) for u in units)
 
     def sliced(chunk, **kwargs):
@@ -541,13 +549,14 @@ def test_checkpoint_caches_sliced_document_chunks(tmp_path, capsys):
         extract_corpus_parallel(
             [doc], backend="kimi", root=tmp_path,
             token_budget=None, chunk_size=1, max_concurrency=1,
+            cache=cache,
         )
 
     assert "incremental cache checkpoint failed" not in capsys.readouterr().err, (
         "checkpoint raised on a FileSlice chunk (#1870)"
     )
     # The checkpoint stamps entries with the prompt that produced them (#1939).
-    cached = load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system())
+    cached = load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system(), cache=cache)
     assert cached and any(n["id"] == "big_title" for n in cached["nodes"]), (
         "sliced document was never checkpointed (#1870)"
     )

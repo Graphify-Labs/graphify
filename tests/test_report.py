@@ -1,58 +1,57 @@
-import json
-from pathlib import Path
-from graphify.build import build_from_json
-from graphify.cluster import cluster, score_all
 from graphify.analyze import god_nodes, surprising_connections
+from graphify.cluster import cluster, score_all
 from graphify.report import generate
+from tests.native_helpers import graph_from_payload, triangle
 
-FIXTURES = Path(__file__).parent / "fixtures"
 
 def make_inputs():
-    extraction = json.loads((FIXTURES / "extraction.json").read_text())
-    G = build_from_json(extraction)
+    G = graph_from_payload(
+        [
+            {"id": "extract", "label": "extract", "file_type": "code", "source_file": "extract.py"},
+            {"id": "build", "label": "build", "file_type": "code", "source_file": "build.py"},
+            {"id": "report", "label": "report", "file_type": "code", "source_file": "report.py"},
+        ],
+        [
+            {"source": "extract", "target": "build", "relation": "imports", "confidence": "EXTRACTED"},
+            {"source": "build", "target": "report", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    )
     communities = cluster(G)
     cohesion = score_all(G, communities)
     labels = {cid: f"Community {cid}" for cid in communities}
-    gods = god_nodes(G)
-    surprises = surprising_connections(G)
-    detection = {"total_files": 4, "total_words": 62400, "needs_graph": True, "warning": None}
-    tokens = {"input": extraction["input_tokens"], "output": extraction["output_tokens"]}
-    return G, communities, cohesion, labels, gods, surprises, detection, tokens
+    return (
+        G,
+        communities,
+        cohesion,
+        labels,
+        god_nodes(G),
+        surprising_connections(G, communities),
+        {"total_files": 3, "total_words": 1000, "needs_graph": True, "warning": None},
+        {"input": 10, "output": 2},
+    )
 
-def test_report_contains_header():
-    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
-    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
-    assert "# Graph Report" in report
 
-def test_report_contains_corpus_check():
-    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
-    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
-    assert "## Corpus Check" in report
-
-def test_report_contains_god_nodes():
-    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
-    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
-    assert "## God Nodes" in report
-
-def test_report_contains_surprising_connections():
-    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
-    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
-    assert "## Surprising Connections" in report
-
-def test_report_contains_communities():
-    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
-    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
-    assert "## Communities" in report
-
-def test_report_contains_ambiguous_section():
-    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
-    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
-    assert "## Ambiguous Edges" in report
-
-def test_report_shows_token_cost():
-    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
-    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
-    assert "Token cost" in report
+def test_report_is_generated_from_native_snapshot(tmp_path):
+    graph = triangle(tmp_path).graph
+    communities = cluster(graph)
+    cohesion = score_all(graph, communities)
+    labels = {cid: f"Community {cid}" for cid in communities}
+    report = generate(
+        graph,
+        communities,
+        cohesion,
+        labels,
+        god_nodes(graph),
+        surprising_connections(graph, communities),
+        {"total_files": 3, "total_words": 10_000, "warning": None},
+        {"input": 1_200, "output": 100},
+        "./project",
+    )
+    for heading in (
+        "# Graph Report", "## Corpus Check", "## God Nodes",
+        "## Surprising Connections", "## Communities", "## Ambiguous Edges",
+    ):
+        assert heading in report
     assert "1,200" in report
 
 def test_report_shows_raw_cohesion_scores():
@@ -125,7 +124,7 @@ def test_import_cycles_section_absent_for_documents_only_corpus():
         "edges": [{"source": "d1", "target": "d2", "relation": "references"}],
         "input_tokens": 0, "output_tokens": 0,
     }
-    G = build_from_json(extraction)
+    G = graph_from_payload(extraction["nodes"], extraction["edges"])
     communities = cluster(G)
     cohesion = score_all(G, communities)
     labels = {cid: f"Community {cid}" for cid in communities}

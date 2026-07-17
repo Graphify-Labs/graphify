@@ -1,21 +1,23 @@
 """Regression tests for issue #1094: to_obsidian / to_canvas must cap filenames
 to stay under the 255-byte filesystem limit, instead of crashing with
 OSError ENAMETOOLONG on long node labels."""
-import networkx as nx
-
 from graphify.export import to_obsidian, to_canvas
+from tests.native_helpers import graph_from_payload
 
 
-def _graph(labels: list[str]) -> tuple[nx.Graph, dict[int, list[str]]]:
-    G = nx.Graph()
+def _graph(labels: list[str]):
+    nodes = []
     ids = []
     for i, lab in enumerate(labels):
         nid = f"n{i}"
-        G.add_node(nid, label=lab, file_type="code", source_file="x.py", community=0)
+        nodes.append({"id": nid, "label": lab, "file_type": "code", "source_file": "x.py", "community": 0})
         ids.append(nid)
     # chain them so each note has at least one wikilink
-    for a, b in zip(ids, ids[1:]):
-        G.add_edge(a, b, relation="calls", confidence="EXTRACTED")
+    edges = [
+        {"source": a, "target": b, "relation": "calls", "confidence": "EXTRACTED"}
+        for a, b in zip(ids, ids[1:])
+    ]
+    G = graph_from_payload(nodes, edges)
     return G, {0: ids}
 
 

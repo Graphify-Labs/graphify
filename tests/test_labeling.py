@@ -6,19 +6,20 @@ malformed replies, and the no-backend fallback.
 import json
 import sys
 
-import networkx as nx
 import pytest
 
 from graphify.llm import label_communities, generate_community_labels
+from graphify.helix.state import new_state
+from tests.native_helpers import graph_from_payload, make_loaded
 
 
 def _graph():
-    G = nx.Graph()
-    # community 0 = ordering, community 1 = payments
-    G.add_node("order_place", label="place_order")
-    G.add_node("order_repo", label="OrderRepository")
-    G.add_node("pay_charge", label="charge_card")
-    G.add_node("pay_stripe", label="StripeClient")
+    G = graph_from_payload([
+        {"id": "order_place", "label": "place_order"},
+        {"id": "order_repo", "label": "OrderRepository"},
+        {"id": "pay_charge", "label": "charge_card"},
+        {"id": "pay_stripe", "label": "StripeClient"},
+    ])
     communities = {0: ["order_place", "order_repo"], 1: ["pay_charge", "pay_stripe"]}
     return G, communities
 
@@ -69,27 +70,24 @@ def test_label_cli_passes_model_override(tmp_path, monkeypatch):
 
     out = tmp_path / "graphify-out"
     out.mkdir()
-    graph = {
-        "directed": False,
-        "multigraph": False,
-        "nodes": [
-            {"id": "n1", "label": "OrderService", "community": 0},
-        ],
-        "links": [],
-    }
-    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+    make_loaded(
+        out,
+        nodes=[{"id": "n1", "label": "OrderService"}],
+        state=new_state(communities=[{"id": 0, "members": ["n1"], "name": "Community 0"}]),
+    )
 
     captured = {}
 
     def fake_generate(G, communities, *, backend=None, model=None, gods=None,
-                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+                      max_concurrency=4, batch_size=100, **kwargs):
         captured["backend"] = backend
         captured["model"] = model
         captured["max_concurrency"] = max_concurrency
         captured["batch_size"] = batch_size
-        return {0: "Orders"}, "llm"
+        return {0: "Orders"}
 
-    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.operations.label_communities", fake_generate, raising=False)
+    monkeypatch.setattr("graphify.llm.label_communities", fake_generate)
     monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         sys,
@@ -125,29 +123,26 @@ def test_label_cli_missing_only_preserves_existing_labels(tmp_path, monkeypatch)
 
     out = tmp_path / "graphify-out"
     out.mkdir()
-    graph = {
-        "directed": False,
-        "multigraph": False,
-        "nodes": [
-            {"id": "orders", "label": "OrderService", "community": 0},
-            {"id": "payments", "label": "PaymentService", "community": 1},
+    make_loaded(
+        out,
+        nodes=[
+            {"id": "orders", "label": "OrderService"},
+            {"id": "payments", "label": "PaymentService"},
         ],
-        "links": [],
-    }
-    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
-    (out / ".graphify_labels.json").write_text(
-        json.dumps({"0": "Order Management", "1": "Community 1"}),
-        encoding="utf-8",
+        state=new_state(communities=[
+            {"id": 0, "members": ["orders"], "name": "Order Management"},
+            {"id": 1, "members": ["payments"], "name": "Community 1"},
+        ]),
     )
 
     captured = {}
 
     def fake_generate(G, communities, *, backend=None, model=None, gods=None,
-                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+                      max_concurrency=4, batch_size=100, **kwargs):
         captured["communities"] = dict(communities)
-        return {1: "Payment Flow"}, "llm"
+        return {1: "Payment Flow"}
 
-    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.llm.label_communities", fake_generate)
     monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         sys,
@@ -158,8 +153,14 @@ def test_label_cli_missing_only_preserves_existing_labels(tmp_path, monkeypatch)
     cli.main()
 
     assert set(captured["communities"]) == {1}
-    labels = json.loads((out / ".graphify_labels.json").read_text(encoding="utf-8"))
-    assert labels == {"0": "Order Management", "1": "Payment Flow"}
+    from graphify.helix.persistence import HelixEmbeddedStore
+
+    with HelixEmbeddedStore(out / "graph.helix", read_only=True) as store:
+        communities = store.load().state["communities"]
+    assert {str(item["id"]): item["name"] for item in communities} == {
+        "0": "Order Management",
+        "1": "Payment Flow",
+    }
 
 
 def test_label_communities_partial_reply_fills_placeholder(monkeypatch):
@@ -226,7 +227,7 @@ def test_gods_as_dicts_do_not_crash(monkeypatch):
 
 
 def test_empty_communities_returns_placeholders(monkeypatch):
-    G = nx.Graph()
+    G = graph_from_payload([])
     called = False
 
     def fake_call(p, *, backend, max_tokens=200):
@@ -249,14 +250,16 @@ def test_empty_communities_returns_placeholders(monkeypatch):
 
 
 def _wide_graph(n_communities: int):
-    G = nx.Graph()
     communities: dict[int, list[str]] = {}
+    nodes = []
     for cid in range(n_communities):
         a, b = f"c{cid}_a", f"c{cid}_b"
-        G.add_node(a, label=f"node_{cid}_a")
-        G.add_node(b, label=f"node_{cid}_b")
+        nodes.extend([
+            {"id": a, "label": f"node_{cid}_a"},
+            {"id": b, "label": f"node_{cid}_b"},
+        ])
         communities[cid] = [a, b]
-    return G, communities
+    return graph_from_payload(nodes), communities
 
 
 def test_label_communities_batches_when_over_batch_size(monkeypatch):
@@ -341,13 +344,13 @@ import time as _time
 
 
 def _many_communities(n):
-    G = nx.Graph()
     comms = {}
+    nodes = []
     for i in range(n):
         nid = f"n{i}"
-        G.add_node(nid, label=f"sym_{i}")
+        nodes.append({"id": nid, "label": f"sym_{i}"})
         comms[i] = [nid]
-    return G, comms
+    return graph_from_payload(nodes), comms
 
 
 def test_label_communities_parallel_matches_sequential(monkeypatch):
@@ -467,8 +470,7 @@ def test_label_communities_counts_tokens_for_failed_batch(monkeypatch):
     usage = {"input": 0, "output": 0}
     # single community -> no split retry; the only batch fails to parse, so
     # label_communities re-raises (every batch failed) after counting tokens.
-    G2 = nx.Graph()
-    G2.add_node("a", label="alpha")
+    G2 = graph_from_payload([{"id": "a", "label": "alpha"}])
     with pytest.raises((ValueError, json.JSONDecodeError)):
         label_communities(
             G2, {0: ["a"]}, backend="gemini", usage_out=usage,
