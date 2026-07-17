@@ -37,7 +37,7 @@ def extract_sln(path: Path) -> dict:
         # A solution folder is a VIRTUAL grouping, not a file: Visual Studio writes
         # its name as both the display name and the "path" (proj_name == proj_path,
         # no real file). Resolving it to an absolute path and keying the node id off
-        # that leaked the absolute scan path (incl. the OS username) into graph.json,
+        # that leaked the absolute scan path (incl. the OS username) into native graph,
         # because the CLI's id-relativization only remaps ids of real files in the
         # scan set — a virtual folder never matches, so its absolute id survived
         # (#1789). Use the folder name itself (relative, no filesystem resolution).

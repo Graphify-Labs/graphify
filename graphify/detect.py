@@ -1289,7 +1289,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     # directory subtree is silently skipped). That turns a transient
     # PermissionError, or a directory created/deleted mid-walk (e.g. concurrent
     # writes racing the scan), into a partial file list and, downstream, a
-    # silently partial graph.json. Record and surface every skipped directory
+    # silently partial native graph. Record and surface every skipped directory
     # so an incomplete enumeration is visible rather than silent.
     walk_errors: list[str] = []
 
