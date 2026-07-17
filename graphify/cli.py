@@ -1678,6 +1678,10 @@ def dispatch_command(cmd: str) -> None:
             # via node_link_data but older runs may have used "edges" (#738).
             if "links" not in data and "edges" in data:
                 data = dict(data, links=data["edges"])
+            for link in data.get("links", []):
+                if isinstance(link, dict) and "source" in link and "target" in link:
+                    link["_src"] = link["source"]
+                    link["_tgt"] = link["target"]
             try:
                 G = _jg.node_link_graph(data, edges="links")
             except TypeError:
@@ -1711,6 +1715,12 @@ def dispatch_command(cmd: str) -> None:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
             out_data = _jg.node_link_data(merged)
+        for link in out_data.get("links", []):
+            true_src = link.pop("_src", None)
+            true_tgt = link.pop("_tgt", None)
+            if true_src is not None and true_tgt is not None:
+                link["source"] = true_src
+                link["target"] = true_tgt
         out_data["hyperedges"] = merged.graph.get("hyperedges", [])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja

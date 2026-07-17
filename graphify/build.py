@@ -1208,6 +1208,11 @@ def compose_repository_graphs(tagged_graphs: list[tuple[str, nx.Graph]]) -> nx.G
     for tag, source_graph in tagged_graphs:
         graph = source_graph if type(source_graph) is nx.Graph else nx.Graph(source_graph)
         prefixed = prefix_graph_for_global(graph, tag)
+        for _source, _target, data in prefixed.edges(data=True):
+            if data.get("_src") is not None:
+                data["_src"] = f"{tag}::{data['_src']}"
+            if data.get("_tgt") is not None:
+                data["_tgt"] = f"{tag}::{data['_tgt']}"
 
         for _node, data in prefixed.nodes(data=True):
             local_community = data.get("community")
@@ -1224,6 +1229,9 @@ def compose_repository_graphs(tagged_graphs: list[tuple[str, nx.Graph]]) -> nx.G
             if not isinstance(raw_hyperedge, dict):
                 continue
             hyperedge = copy.deepcopy(raw_hyperedge)
+            hyperedge_id = hyperedge.get("id")
+            if not isinstance(hyperedge_id, str) or not hyperedge_id:
+                continue
             _normalize_hyperedge_members(hyperedge)
             hyperedge_nodes = hyperedge.get("nodes")
             if not isinstance(hyperedge_nodes, list):
@@ -1232,10 +1240,9 @@ def compose_repository_graphs(tagged_graphs: list[tuple[str, nx.Graph]]) -> nx.G
                 node for node in hyperedge_nodes
                 if isinstance(node, str) and node in graph
             ]
-            if len(filtered_nodes) < 2:
+            if not filtered_nodes:
                 continue
-            if hyperedge.get("id") is not None:
-                hyperedge["id"] = f"{tag}::{hyperedge['id']}"
+            hyperedge["id"] = f"{tag}::{hyperedge_id}"
             hyperedge["nodes"] = [f"{tag}::{node}" for node in filtered_nodes]
             merged_hyperedges.append(hyperedge)
 

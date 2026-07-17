@@ -77,6 +77,30 @@ def test_merge_graphs_mixed_directed_and_multigraph(tmp_path):
     assert data.get("multigraph") is False
 
 
+def test_merge_graphs_preserves_directional_edge_endpoints(tmp_path):
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    a.write_text(json.dumps({
+        "directed": True,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [{"id": "target"}, {"id": "source"}],
+        "links": [{"source": "source", "target": "target", "relation": "calls"}],
+    }))
+    _write(b, directed=False, multigraph=False, node_id="other")
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+
+    assert r.returncode == 0, r.stderr
+    calls = next(
+        edge for edge in json.loads(out.read_text())["links"]
+        if edge.get("relation") == "calls"
+    )
+    assert (calls["source"], calls["target"]) == ("a::source", "a::target")
+    assert "_src" not in calls and "_tgt" not in calls
+
+
 def test_merge_graphs_same_named_repo_dirs_do_not_collapse(tmp_path):
     # #1729: two graphs under a same-named repo dir (src/graphify-out and
     # frontend/src/graphify-out both → tag "src") share the `src::` prefix, so a
@@ -260,6 +284,7 @@ def test_merge_graphs_skips_malformed_hyperedge_entries(tmp_path):
         None,
         "invalid",
         {"id": "scalar_nodes", "nodes": "entry"},
+        {"nodes": ["entry", "worker"]},
         {"id": "ghost_member", "nodes": ["entry", "ghost"]},
         {"id": "request_flow", "nodes": ["entry", "worker"], "relation": "flow"},
     ]
@@ -269,12 +294,16 @@ def test_merge_graphs_skips_malformed_hyperedge_entries(tmp_path):
     r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
 
     assert r.returncode == 0, r.stderr
-    hyperedges = json.loads(out.read_text())["hyperedges"]
-    assert all(isinstance(hyperedge, dict) for hyperedge in hyperedges)
-    assert {hyperedge["id"] for hyperedge in hyperedges} == {
+    hyperedges = {
+        hyperedge["id"]: hyperedge
+        for hyperedge in json.loads(out.read_text())["hyperedges"]
+    }
+    assert set(hyperedges) == {
+        "a::ghost_member",
         "a::request_flow",
         "b::request_flow",
     }
+    assert hyperedges["a::ghost_member"]["nodes"] == ["a::entry"]
 
 
 def test_merge_graphs_accepts_explicit_repository_tags(tmp_path):
@@ -311,6 +340,24 @@ def test_merge_graphs_rejects_duplicate_explicit_tags(tmp_path):
 
     assert r.returncode != 0
     assert "duplicate repository tag(s): 'service'" in r.stderr
+    assert not out.exists()
+
+
+def test_merge_graphs_rejects_tag_with_namespace_delimiter(tmp_path):
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    _write_repository_graph(a, "A")
+    _write_repository_graph(b, "B")
+    out = tmp_path / "merged.json"
+
+    r = _run([
+        "merge-graphs", str(a), str(b),
+        "--repo-tag", "bad::tag", "--repo-tag", "service",
+        "--out", str(out),
+    ], tmp_path)
+
+    assert r.returncode != 0
+    assert "repository tags must be non-empty and cannot contain '::'" in r.stderr
     assert not out.exists()
 
 
