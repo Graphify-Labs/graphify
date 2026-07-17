@@ -1,14 +1,12 @@
 """Token-reduction benchmark - measures how much context graphify saves vs naive full-corpus approach."""
 from __future__ import annotations
-import json
 import sys
-from pathlib import Path
-import networkx as nx
-from networkx.readwrite import json_graph
+from typing import Any
 
 from graphify.build import edge_data
+from graphify.helix.model import graphify_attributes, node_attributes
+from graphify.helix.persistence import DEFAULT_PROJECT_STORE, load_graph
 from graphify.serve import _query_terms
-from graphify.paths import default_graph_json as _default_graph_json
 
 
 _CHARS_PER_TOKEN = 4  # standard approximation
@@ -37,11 +35,12 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // _CHARS_PER_TOKEN)
 
 
-def _query_subgraph_tokens(G: nx.Graph, question: str, depth: int = 3) -> int:
+def _query_subgraph_tokens(G: Any, question: str, depth: int = 3) -> int:
     """Run BFS from best-matching nodes and return estimated tokens in the subgraph context."""
     terms = _query_terms(question)
     scored = []
-    for nid, data in G.nodes(data=True):
+    for node in G.nodes():
+        nid, data = node.id, graphify_attributes(node.attributes)
         label = data.get("label", "").lower()
         score = sum(1 for t in terms if t in label)
         if score > 0:
@@ -51,27 +50,22 @@ def _query_subgraph_tokens(G: nx.Graph, question: str, depth: int = 3) -> int:
     if not start_nodes:
         return 0
 
-    visited: set[str] = set(start_nodes)
-    frontier = set(start_nodes)
-    edges_seen: list[tuple] = []
-    for _ in range(depth):
-        next_frontier: set[str] = set()
-        for n in frontier:
-            for neighbor in G.neighbors(n):
-                if neighbor not in visited:
-                    next_frontier.add(neighbor)
-                    edges_seen.append((n, neighbor))
-        visited.update(next_frontier)
-        frontier = next_frontier
+    from helixdb import TraversalOptions
+
+    traversal = G.traverse(TraversalOptions(
+        seeds=tuple(start_nodes), max_depth=depth, direction="both"
+    ))
+    visited = {visit.node_id for visit in traversal.visits}
 
     lines = []
     for nid in visited:
-        d = G.nodes[nid]
+        d = node_attributes(G, nid)
         lines.append(f"NODE {d.get('label', nid)} src={d.get('source_file', '')} loc={d.get('source_location', '')}")
-    for u, v in edges_seen:
+    for traversed in traversal.discovery_edges:
+        u, v = traversed.source, traversed.target
         if u in visited and v in visited:
             d = edge_data(G, u, v)
-            lines.append(f"EDGE {G.nodes[u].get('label', u)} --{d.get('relation', '')}--> {G.nodes[v].get('label', v)}")
+            lines.append(f"EDGE {node_attributes(G, u).get('label', u)} --{d.get('relation', '')}--> {node_attributes(G, v).get('label', v)}")
 
     return _estimate_tokens("\n".join(lines))
 
@@ -99,19 +93,13 @@ def run_benchmark(
 
     Returns dict with: corpus_tokens, avg_query_tokens, reduction_ratio, per_question
     """
-    graph_path = graph_path or _default_graph_json()
-    from graphify.security import check_graph_file_size_cap
-    check_graph_file_size_cap(Path(graph_path))
-    data = json.loads(Path(graph_path).read_text(encoding="utf-8"))
-    try:
-        G = json_graph.node_link_graph(data, edges="links")
-    except TypeError:
-        G = json_graph.node_link_graph(data)
+    G = load_graph(graph_path or DEFAULT_PROJECT_STORE).graph
 
     if corpus_words is None:
         # Rough estimate: each node label is ~3 words, plus source context
-        corpus_words = G.number_of_nodes() * 50
+        corpus_words = G.node_count * 50
 
+    assert corpus_words is not None
     corpus_tokens = corpus_words * 100 // 75  # words → tokens (100 words ≈ 133 tokens)
 
     qs = questions or _SAMPLE_QUESTIONS
@@ -130,8 +118,8 @@ def run_benchmark(
     return {
         "corpus_tokens": corpus_tokens,
         "corpus_words": corpus_words,
-        "nodes": G.number_of_nodes(),
-        "edges": G.number_of_edges(),
+        "nodes": G.node_count,
+        "edges": G.edge_count,
         "avg_query_tokens": avg_query_tokens,
         "reduction_ratio": reduction_ratio,
         "per_question": per_question,

@@ -5,7 +5,7 @@
 # `graphify merge-chunks` command — both ingest untrusted agent-written chunk
 # JSON, and validate_semantic_fragment() rejects malformed/oversized payloads and
 # crafted node/edge IDs before they touch the graph. The primary build/load paths
-# (build_from_json, load_graph_json) deliberately do NOT run this: they must keep
+# Build DTO assembly deliberately does not run this: it must keep
 # loading valid pre-existing graphs whose AST node IDs predate the stricter
 # semantic-ID charset.
 from __future__ import annotations

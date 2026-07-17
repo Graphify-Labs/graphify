@@ -1,9 +1,23 @@
 """Graph analysis: god nodes (most connected), surprising connections (cross-community), suggested questions."""
 from __future__ import annotations
 from pathlib import Path
-import networkx as nx
+from typing import Any
 
-from graphify.build import edge_data
+from graphify.helix.access import (
+    degree as _degree,
+    degree_map,
+    edge_rows as _edges,
+    first_edge_attributes as edge_data,
+    node_attributes,
+    node_ids,
+)
+from graphify.helix.model import graphify_attributes
+
+
+def _graphify_betweenness_options():
+    from helixdb import BetweennessOptions
+
+    return BetweennessOptions(mode="auto", sample_count=100, seed=42, exact_through=1_000)
 
 # Builtin/mock names that can appear as annotation-derived nodes in pre-existing
 # graphs. Excluded from god-node ranking so they don't displace real abstractions
@@ -52,7 +66,7 @@ def _node_community_map(communities: dict[int, list[str]]) -> dict[str, int]:
     return {n: cid for cid, nodes in communities.items() for n in nodes}
 
 
-def _is_file_node(G: nx.Graph, node_id: str) -> bool:
+def _is_file_node(G: Any, node_id: str) -> bool:
     """
     Return True if this node is a file-level hub node (e.g. 'client', 'models')
     or an AST method stub (e.g. '.auth_flow()', '.__init__()').
@@ -60,7 +74,7 @@ def _is_file_node(G: nx.Graph, node_id: str) -> bool:
     These are synthetic nodes created by the AST extractor and should be excluded
     from god nodes, surprising connections, and knowledge gap reporting.
     """
-    attrs = G.nodes[node_id]
+    attrs = node_attributes(G, node_id)
     label = attrs.get("label", "")
     if not label:
         return False
@@ -75,7 +89,7 @@ def _is_file_node(G: nx.Graph, node_id: str) -> bool:
         return True
     # Module-level function stub: labeled 'function_name()' - only has a contains edge
     # These are real functions but structurally isolated by definition; not a gap worth flagging
-    if label.endswith("()") and G.degree(node_id) <= 1:
+    if label.endswith("()") and _degree(G, node_id) <= 1:
         return True
     return False
 
@@ -88,8 +102,8 @@ _JSON_NOISE_LABELS: frozenset[str] = frozenset({
 })
 
 
-def _is_json_key_node(G: nx.Graph, node_id: str) -> bool:
-    attrs = G.nodes[node_id]
+def _is_json_key_node(G: Any, node_id: str) -> bool:
+    attrs = node_attributes(G, node_id)
     src = (attrs.get("source_file") or "").lower()
     if not src.endswith(".json"):
         return False
@@ -97,23 +111,23 @@ def _is_json_key_node(G: nx.Graph, node_id: str) -> bool:
     return label in _JSON_NOISE_LABELS
 
 
-def god_nodes(G: nx.Graph, top_n: int = 10) -> list[dict]:
+def god_nodes(G: Any, top_n: int = 10) -> list[dict]:
     """Return the top_n most-connected real entities - the core abstractions.
 
     File-level hub nodes are excluded: they accumulate import/contains edges
     mechanically and don't represent meaningful architectural abstractions.
     """
-    degree = dict(G.degree())
+    degree = {row.node_id: int(row.degree) for row in G.degrees()}
     sorted_nodes = sorted(degree.items(), key=lambda x: x[1], reverse=True)
     result = []
     for node_id, deg in sorted_nodes:
         if _is_file_node(G, node_id) or _is_concept_node(G, node_id) or _is_json_key_node(G, node_id):
             continue
-        if G.nodes[node_id].get("label", "") in _BUILTIN_NOISE_LABELS:
+        if node_attributes(G, node_id).get("label", "") in _BUILTIN_NOISE_LABELS:
             continue
         result.append({
             "id": node_id,
-            "label": G.nodes[node_id].get("label", node_id),
+            "label": node_attributes(G, node_id).get("label", node_id),
             "degree": deg,
         })
         if len(result) >= top_n:
@@ -122,7 +136,7 @@ def god_nodes(G: nx.Graph, top_n: int = 10) -> list[dict]:
 
 
 def surprising_connections(
-    G: nx.Graph,
+    G: Any,
     communities: dict[int, list[str]] | None = None,
     top_n: int = 5,
 ) -> list[dict]:
@@ -142,7 +156,8 @@ def surprising_connections(
     # Identify unique source files (ignore empty/null source_file)
     source_files = {
         data.get("source_file", "")
-        for _, data in G.nodes(data=True)
+        for node in G.nodes()
+        if (data := graphify_attributes(node.attributes)) is not None
         if data.get("source_file", "")
     }
     is_multi_source = len(source_files) > 1
@@ -153,7 +168,7 @@ def surprising_connections(
         return _cross_community_surprises(G, communities or {}, top_n)
 
 
-def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
+def _is_concept_node(G: Any, node_id: str) -> bool:
     """
     Return True if this node is a manually-injected semantic concept node
     rather than a real entity found in source code.
@@ -162,7 +177,7 @@ def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
     - Empty source_file
     - source_file doesn't look like a real file path (no extension)
     """
-    data = G.nodes[node_id]
+    data = node_attributes(G, node_id)
     source = data.get("source_file", "")
     if not source:
         return True
@@ -192,7 +207,7 @@ def _top_level_dir(path: str) -> str:
 
 
 def _surprise_score(
-    G: nx.Graph,
+    G: Any,
     u: str,
     v: str,
     data: dict,
@@ -241,7 +256,7 @@ def _surprise_score(
         score += 2
         reasons.append("connects across different repos/directories")
 
-    # 4. Cross-community bonus - Leiden says these are structurally distant
+        # 4. Cross-community bonus - Leiden says these are structurally distant
     cid_u = node_community.get(u)
     cid_v = node_community.get(v)
     if cid_u is not None and cid_v is not None and cid_u != cid_v and not _suppress_structural:
@@ -254,18 +269,18 @@ def _surprise_score(
         reasons.append("semantically similar concepts with no structural link")
 
     # 5. Peripheral→hub: a low-degree node connecting to a high-degree one
-    deg_u = degrees[u] if degrees is not None else G.degree(u)
-    deg_v = degrees[v] if degrees is not None else G.degree(v)
+    deg_u = degrees[u] if degrees is not None else _degree(G, u)
+    deg_v = degrees[v] if degrees is not None else _degree(G, v)
     if min(deg_u, deg_v) <= 2 and max(deg_u, deg_v) >= 5:
         score += 1
-        peripheral = G.nodes[u].get("label", u) if deg_u <= 2 else G.nodes[v].get("label", v)
-        hub = G.nodes[v].get("label", v) if deg_u <= 2 else G.nodes[u].get("label", u)
+        peripheral = node_attributes(G, u).get("label", u) if deg_u <= 2 else node_attributes(G, v).get("label", v)
+        hub = node_attributes(G, v).get("label", v) if deg_u <= 2 else node_attributes(G, u).get("label", u)
         reasons.append(f"peripheral node `{peripheral}` unexpectedly reaches hub `{hub}`")
 
     return score, reasons
 
 
-def _cross_file_surprises(G: nx.Graph, communities: dict[int, list[str]], top_n: int) -> list[dict]:
+def _cross_file_surprises(G: Any, communities: dict[int, list[str]], top_n: int) -> list[dict]:
     """
     Cross-file edges between real code/doc entities, ranked by a composite
     surprise score rather than confidence alone.
@@ -280,10 +295,10 @@ def _cross_file_surprises(G: nx.Graph, communities: dict[int, list[str]], top_n:
     Each result includes a 'why' field explaining what makes it non-obvious.
     """
     node_community = _node_community_map(communities)
-    degrees = dict(G.degree())
+    degrees = degree_map(G)
     candidates = []
 
-    for u, v, data in G.edges(data=True):
+    for u, v, data, _ in _edges(G):
         relation = data.get("relation", "")
         if relation in ("imports", "imports_from", "contains", "method"):
             continue
@@ -292,26 +307,26 @@ def _cross_file_surprises(G: nx.Graph, communities: dict[int, list[str]], top_n:
         if _is_file_node(G, u) or _is_file_node(G, v):
             continue
 
-        u_source = G.nodes[u].get("source_file", "")
-        v_source = G.nodes[v].get("source_file", "")
+        u_source = node_attributes(G, u).get("source_file", "")
+        v_source = node_attributes(G, v).get("source_file", "")
 
         if not u_source or not v_source or u_source == v_source:
             continue
 
         score, reasons = _surprise_score(G, u, v, data, node_community, u_source, v_source, degrees)
         src_id = data.get("_src", u)
-        if src_id not in G.nodes:
+        if not G.contains_node(src_id):
             src_id = u
         tgt_id = data.get("_tgt", v)
-        if tgt_id not in G.nodes:
+        if not G.contains_node(tgt_id):
             tgt_id = v
         candidates.append({
             "_score": score,
-            "source": G.nodes[src_id].get("label", src_id),
-            "target": G.nodes[tgt_id].get("label", tgt_id),
+            "source": node_attributes(G, src_id).get("label", src_id),
+            "target": node_attributes(G, tgt_id).get("label", tgt_id),
             "source_files": [
-                G.nodes[src_id].get("source_file", ""),
-                G.nodes[tgt_id].get("source_file", ""),
+                node_attributes(G, src_id).get("source_file", ""),
+                node_attributes(G, tgt_id).get("source_file", ""),
             ],
             "confidence": data.get("confidence", "EXTRACTED"),
             "relation": relation,
@@ -329,7 +344,7 @@ def _cross_file_surprises(G: nx.Graph, communities: dict[int, list[str]], top_n:
 
 
 def _cross_community_surprises(
-    G: nx.Graph,
+    G: Any,
     communities: dict[int, list[str]],
     top_n: int,
 ) -> list[dict]:
@@ -342,21 +357,28 @@ def _cross_community_surprises(
     """
     if not communities:
         # No community info - use edge betweenness centrality
-        if G.number_of_edges() == 0:
+        if G.edge_count == 0:
             return []
-        if G.number_of_nodes() > 5000:
+        if G.node_count > 5000:
             return []
-        betweenness = nx.edge_betweenness_centrality(G)
-        top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
+        top_edges = sorted(
+            G.edge_betweenness_centrality(_graphify_betweenness_options()),
+            key=lambda row: row.score,
+            reverse=True,
+        )[:top_n]
         result = []
-        for (u, v), score in top_edges:
+        for row in top_edges:
+            edge = G.edge(row.edge_id)
+            if edge is None:
+                continue
+            u, v, score = edge.source, edge.target, row.score
             data = edge_data(G, u, v)
             result.append({
-                "source": G.nodes[u].get("label", u),
-                "target": G.nodes[v].get("label", v),
+                "source": node_attributes(G, u).get("label", u),
+                "target": node_attributes(G, v).get("label", v),
                 "source_files": [
-                    G.nodes[u].get("source_file", ""),
-                    G.nodes[v].get("source_file", ""),
+                    node_attributes(G, u).get("source_file", ""),
+                    node_attributes(G, v).get("source_file", ""),
                 ],
                 "confidence": data.get("confidence", "EXTRACTED"),
                 "relation": data.get("relation", ""),
@@ -368,7 +390,7 @@ def _cross_community_surprises(
     node_community = _node_community_map(communities)
 
     surprises = []
-    for u, v, data in G.edges(data=True):
+    for u, v, data, _ in _edges(G):
         cid_u = node_community.get(u)
         cid_v = node_community.get(v)
         if cid_u is None or cid_v is None or cid_u == cid_v:
@@ -382,17 +404,17 @@ def _cross_community_surprises(
         # This edge crosses community boundaries - interesting
         confidence = data.get("confidence", "EXTRACTED")
         src_id = data.get("_src", u)
-        if src_id not in G.nodes:
+        if not G.contains_node(src_id):
             src_id = u
         tgt_id = data.get("_tgt", v)
-        if tgt_id not in G.nodes:
+        if not G.contains_node(tgt_id):
             tgt_id = v
         surprises.append({
-            "source": G.nodes[src_id].get("label", src_id),
-            "target": G.nodes[tgt_id].get("label", tgt_id),
+            "source": node_attributes(G, src_id).get("label", src_id),
+            "target": node_attributes(G, tgt_id).get("label", tgt_id),
             "source_files": [
-                G.nodes[src_id].get("source_file", ""),
-                G.nodes[tgt_id].get("source_file", ""),
+                node_attributes(G, src_id).get("source_file", ""),
+                node_attributes(G, tgt_id).get("source_file", ""),
             ],
             "confidence": confidence,
             "relation": relation,
@@ -417,7 +439,7 @@ def _cross_community_surprises(
 
 
 def suggest_questions(
-    G: nx.Graph,
+    G: Any,
     communities: dict[int, list[str]],
     community_labels: dict[int, str],
     top_n: int = 7,
@@ -434,10 +456,10 @@ def suggest_questions(
     node_community = _node_community_map(communities)
 
     # 1. AMBIGUOUS edges → unresolved relationship questions
-    for u, v, data in G.edges(data=True):
+    for u, v, data, _ in _edges(G):
         if data.get("confidence") == "AMBIGUOUS":
-            ul = G.nodes[u].get("label", u)
-            vl = G.nodes[v].get("label", v)
+            ul = node_attributes(G, u).get("label", u)
+            vl = node_attributes(G, v).get("label", v)
             relation = data.get("relation", "related to")
             questions.append({
                 "type": "ambiguous_edge",
@@ -446,9 +468,11 @@ def suggest_questions(
             })
 
     # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
-    if G.number_of_edges() > 0:
-        k = min(100, G.number_of_nodes()) if G.number_of_nodes() > 1000 else None
-        betweenness = nx.betweenness_centrality(G, k=k, seed=42)
+    if G.edge_count > 0:
+        betweenness = {
+            row.node_id: row.score
+            for row in G.betweenness_centrality(_graphify_betweenness_options())
+        }
         # Top bridge nodes that are NOT file-level hubs
         bridges = sorted(
             [(n, s) for n, s in betweenness.items()
@@ -457,11 +481,15 @@ def suggest_questions(
             reverse=True,
         )[:3]
         for node_id, score in bridges:
-            label = G.nodes[node_id].get("label", node_id)
+            label = node_attributes(G, node_id).get("label", node_id)
             cid = node_community.get(node_id)
             comm_label = community_labels.get(cid, f"Community {cid}") if cid is not None else "unknown"
             neighbors = list(G.neighbors(node_id))
-            neighbor_comms = {node_community.get(n) for n in neighbors if node_community.get(n) != cid}
+            neighbor_comms = {
+                neighbor_cid
+                for n in neighbors
+                if (neighbor_cid := node_community.get(n)) is not None and neighbor_cid != cid
+            }
             if neighbor_comms:
                 other_labels = [community_labels.get(c, f"Community {c}") for c in neighbor_comms]
                 questions.append({
@@ -471,7 +499,7 @@ def suggest_questions(
                 })
 
     # 3. God nodes with many INFERRED edges → verification questions
-    degree = dict(G.degree())
+    degree = {row.node_id: int(row.degree) for row in G.degrees()}
     top_nodes = sorted(
         [(n, d) for n, d in degree.items() if not _is_file_node(G, n)],
         key=lambda x: x[1],
@@ -479,22 +507,22 @@ def suggest_questions(
     )[:5]
     for node_id, _ in top_nodes:
         inferred = [
-            (u, v, d) for u, v, d in G.edges(node_id, data=True)
+            (u, v, d) for u, v, d, _ in _edges(G, node_id)
             if d.get("confidence") == "INFERRED"
         ]
         if len(inferred) >= 2:
-            label = G.nodes[node_id].get("label", node_id)
+            label = node_attributes(G, node_id).get("label", node_id)
             # Use _src/_tgt to get the correct direction; fall back to v (the other node)
             others = []
             for u, v, d in inferred[:2]:
                 src_id = d.get("_src", u)
-                if src_id not in G.nodes:
+                if not G.contains_node(src_id):
                     src_id = u
                 tgt_id = d.get("_tgt", v)
-                if tgt_id not in G.nodes:
+                if not G.contains_node(tgt_id):
                     tgt_id = v
                 other_id = tgt_id if src_id == node_id else src_id
-                others.append(G.nodes[other_id].get("label", other_id))
+                others.append(node_attributes(G, other_id).get("label", other_id))
             questions.append({
                 "type": "verify_inferred",
                 "question": f"Are the {len(inferred)} inferred relationships involving `{label}` (e.g. with `{others[0]}` and `{others[1]}`) actually correct?",
@@ -503,14 +531,14 @@ def suggest_questions(
 
     # 4. Isolated or weakly-connected nodes → exploration questions
     isolated = [
-        n for n in G.nodes()
-        if G.degree(n) <= 1
+        n for n in node_ids(G)
+        if _degree(G, n) <= 1
         and not _is_file_node(G, n)
         and not _is_concept_node(G, n)
-        and G.nodes[n].get("file_type") != "rationale"
+        and node_attributes(G, n).get("file_type") != "rationale"
     ]
     if isolated:
-        labels = [G.nodes[n].get("label", n) for n in isolated[:3]]
+        labels = [node_attributes(G, n).get("label", n) for n in isolated[:3]]
         questions.append({
             "type": "isolated_nodes",
             "question": f"What connects {', '.join(f'`{l}`' for l in labels)} to the rest of the system?",
@@ -544,7 +572,7 @@ def suggest_questions(
     return questions[:top_n]
 
 
-def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
+def graph_diff(G_old: Any, G_new: Any) -> dict:
     """Compare two graph snapshots and return what changed.
 
     Returns:
@@ -556,40 +584,40 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
           "summary": "3 new nodes, 5 new edges, 1 node removed"
         }
     """
-    old_nodes = set(G_old.nodes())
-    new_nodes = set(G_new.nodes())
+    old_nodes = {node.id for node in G_old.nodes()}
+    new_nodes = {node.id for node in G_new.nodes()}
 
     added_node_ids = new_nodes - old_nodes
     removed_node_ids = old_nodes - new_nodes
 
     new_nodes_list = [
-        {"id": n, "label": G_new.nodes[n].get("label", n)}
+        {"id": n, "label": node_attributes(G_new, n).get("label", n)}
         for n in added_node_ids
     ]
     removed_nodes_list = [
-        {"id": n, "label": G_old.nodes[n].get("label", n)}
+        {"id": n, "label": node_attributes(G_old, n).get("label", n)}
         for n in removed_node_ids
     ]
 
-    def edge_key(G: nx.Graph, u: str, v: str, data: dict) -> tuple:
-        if G.is_directed():
+    def edge_key(G: Any, u: str, v: str, data: dict) -> tuple:
+        if G.directed:
             return (u, v, data.get("relation", ""))
         return (min(u, v), max(u, v), data.get("relation", ""))
 
     old_edge_keys = {
         edge_key(G_old, u, v, d)
-        for u, v, d in G_old.edges(data=True)
+        for u, v, d, _ in _edges(G_old)
     }
     new_edge_keys = {
         edge_key(G_new, u, v, d)
-        for u, v, d in G_new.edges(data=True)
+        for u, v, d, _ in _edges(G_new)
     }
 
     added_edge_keys = new_edge_keys - old_edge_keys
     removed_edge_keys = old_edge_keys - new_edge_keys
 
     new_edges_list = []
-    for u, v, d in G_new.edges(data=True):
+    for u, v, d, _ in _edges(G_new):
         if edge_key(G_new, u, v, d) in added_edge_keys:
             new_edges_list.append({
                 "source": u,
@@ -599,7 +627,7 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
             })
 
     removed_edges_list = []
-    for u, v, d in G_old.edges(data=True):
+    for u, v, d, _ in _edges(G_old):
         if edge_key(G_old, u, v, d) in removed_edge_keys:
             removed_edges_list.append({
                 "source": u,
@@ -629,7 +657,7 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
 
 
 def find_import_cycles(
-    G: nx.Graph,
+    G: Any,
     max_cycle_length: int = 5,
     top_n: int = 20,
 ) -> list[dict]:
@@ -653,15 +681,17 @@ def find_import_cycles(
         }
     """
     def _endpoint_source_file(node_id: str) -> str:
-        attrs = G.nodes.get(node_id, {})
+        if not G.contains_node(node_id):
+            return ""
+        attrs = node_attributes(G, node_id)
         src_file = attrs.get("source_file", "")
         return src_file if isinstance(src_file, str) else ""
 
     # Step 1: Build a directed file-level graph from import/re-export edges.
     # IMPORTANT: resolve endpoints using source_file only; never infer from label/id.
-    file_graph = nx.DiGraph()
+    adjacency: dict[str, set[str]] = {}
 
-    for u, v, data in G.edges(data=True):
+    for u, v, data, _ in _edges(G):
         rel = data.get("relation", "")
         if rel not in ("imports_from", "re_exports"):
             continue
@@ -693,21 +723,27 @@ def find_import_cycles(
         if not tgt_file:
             continue
 
-        file_graph.add_edge(src_file_attr, tgt_file)
+        adjacency.setdefault(src_file_attr, set()).add(tgt_file)
 
-    if not file_graph.edges():
+    if not adjacency:
         return []
 
     # Step 2: Find simple cycles, bounded by length.
-    # Pass length_bound so networkx prunes during enumeration rather than
-    # enumerating all elementary cycles and post-filtering — avoids exponential
-    # blowup on dense graphs with many long cycles (#1196).
+    # Bound enumeration to avoid exponential blowup on dense graphs.
     cycles: list[list[str]] = []
-    for cycle in nx.simple_cycles(file_graph, length_bound=max_cycle_length):
-        if len(cycle) <= max_cycle_length:
-            cycles.append(cycle)
+
+    def walk(start: str, current: str, path: list[str], seen: set[str]) -> None:
+        if len(cycles) >= top_n * 10 or len(path) > max_cycle_length:
+            return
+        for target in sorted(adjacency.get(current, ())):
+            if target == start:
+                cycles.append(path.copy())
+            elif target not in seen and len(path) < max_cycle_length:
+                walk(start, target, [*path, target], {*seen, target})
+
+    for start in sorted(adjacency):
+        walk(start, start, [start], {start})
         if len(cycles) >= top_n * 10:
-            # Stop early to avoid combinatorial explosion
             break
 
     # Step 3: Sort by length (shortest = tightest coupling), then deduplicate.

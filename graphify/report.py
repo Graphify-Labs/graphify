@@ -2,7 +2,9 @@
 from __future__ import annotations
 import re
 from datetime import date
-import networkx as nx
+from typing import Any
+
+from .helix.model import edge_attributes, graphify_attributes, node_attributes
 
 
 def _safe_community_name(label: str) -> str:
@@ -13,12 +15,10 @@ def _safe_community_name(label: str) -> str:
 
 
 def load_learning_for_report(graph_path) -> dict | None:
-    """Assemble the report's work-memory inputs from sibling artifacts.
+    """Assemble work-memory inputs from native state and memory documents.
 
-    Reads the ``.graphify_learning.json`` overlay (preferred sources) next to
-    ``graph_path`` and re-aggregates the memory docs for the query-scoped
-    dead-ends. Best-effort: returns None if neither is available, so the report
-    simply omits the section. Never raises.
+    Best-effort: returns None if neither is available, so the report simply
+    omits the section. Never raises.
     """
     from pathlib import Path as _Path
     try:
@@ -69,7 +69,7 @@ def _learning_section(lines: list, learning: dict | None, top_n: int = 10) -> No
 
 
 def generate(
-    G: nx.Graph,
+    G: Any,
     communities: dict[int, list[str]],
     cohesion_scores: dict[int, float],
     community_labels: dict[int, str],
@@ -90,13 +90,16 @@ def generate(
     if community_labels:
         community_labels = {int(k) if isinstance(k, str) else k: v for k, v in community_labels.items()}
 
-    confidences = [d.get("confidence", "EXTRACTED") for _, _, d in G.edges(data=True)]
+    edge_rows = [
+        (edge.source, edge.target, edge_attributes(edge)) for edge in G.edges()
+    ]
+    confidences = [data.get("confidence", "EXTRACTED") for _, _, data in edge_rows]
     total = len(confidences) or 1
     ext_pct = round(confidences.count("EXTRACTED") / total * 100)
     inf_pct = round(confidences.count("INFERRED") / total * 100)
     amb_pct = round(confidences.count("AMBIGUOUS") / total * 100)
 
-    inf_edges = [(u, v, d) for u, v, d in G.edges(data=True) if d.get("confidence") == "INFERRED"]
+    inf_edges = [(u, v, data) for u, v, data in edge_rows if data.get("confidence") == "INFERRED"]
     inf_scores = [d.get("confidence_score", 0.5) for _, _, d in inf_edges]
     inf_avg = round(sum(inf_scores) / len(inf_scores), 2) if inf_scores else None
 
@@ -125,7 +128,7 @@ def generate(
     lines += [
         "",
         "## Summary",
-        f"- {G.number_of_nodes()} nodes · {G.number_of_edges()} edges · {len(communities)} communities"
+        f"- {G.node_count} nodes · {G.edge_count} edges · {len(communities)} communities"
         + (f" ({shown_count} shown, {thin_count_summary} thin omitted)" if thin_count_summary else ""),
         f"- Extraction: {ext_pct}% EXTRACTED · {inf_pct}% INFERRED · {amb_pct}% AMBIGUOUS"
         + (f" · INFERRED: {len(inf_edges)} edges (avg confidence: {inf_avg})" if inf_avg is not None else ""),
@@ -189,10 +192,11 @@ def generate(
     # noise there ("None detected" on every run). Emit it only when the graph
     # actually contains code (#1657).
     _has_code = any(
-        d.get("file_type") == "code" for _, d in G.nodes(data=True)
+        graphify_attributes(node.attributes).get("file_type") == "code"
+        for node in G.nodes()
     ) or any(
         d.get("relation") in ("imports", "imports_from")
-        for *_e, d in G.edges(data=True)
+        for *_e, d in edge_rows
     )
     if _has_code:
         from .analyze import find_import_cycles
@@ -209,7 +213,8 @@ def generate(
         else:
             lines.append("- None detected.")
 
-    hyperedges = G.graph.get("hyperedges", [])
+    metadata = dict(G.attributes).get("graph", {})
+    hyperedges = metadata.get("hyperedges", []) if isinstance(metadata, dict) else []
     if hyperedges:
         lines += ["", "## Hyperedges (group relationships)"]
         for h in hyperedges:
@@ -229,7 +234,7 @@ def generate(
             continue
         if len(real_nodes) < min_community_size:
             continue
-        display = [G.nodes[n].get("label", n) for n in real_nodes[:8]]
+        display = [node_attributes(G, n).get("label", n) for n in real_nodes[:8]]
         suffix = f" (+{len(real_nodes)-8} more)" if len(real_nodes) > 8 else ""
         lines += [
             "",
@@ -238,12 +243,12 @@ def generate(
             f"Nodes ({len(real_nodes)}): {', '.join(display)}{suffix}",
         ]
 
-    ambiguous = [(u, v, d) for u, v, d in G.edges(data=True) if d.get("confidence") == "AMBIGUOUS"]
+    ambiguous = [(u, v, data) for u, v, data in edge_rows if data.get("confidence") == "AMBIGUOUS"]
     if ambiguous:
         lines += ["", "## Ambiguous Edges - Review These"]
         for u, v, d in ambiguous:
-            ul = G.nodes[u].get("label", u)
-            vl = G.nodes[v].get("label", v)
+            ul = node_attributes(G, u).get("label", u)
+            vl = node_attributes(G, v).get("label", v)
             lines += [
                 f"- `{ul}` → `{vl}`  [AMBIGUOUS]",
                 f"  {d.get('source_file', '')} · relation: {d.get('relation', 'unknown')}",
@@ -253,11 +258,11 @@ def generate(
     from .analyze import _is_file_node, _is_concept_node
 
     isolated = [
-        n for n in G.nodes()
-        if G.degree(n) <= 1
-        and not _is_file_node(G, n)
-        and not _is_concept_node(G, n)
-        and G.nodes[n].get("file_type") != "rationale"
+        node.id for node in G.nodes()
+        if G.degree(node.id).degree <= 1
+        and not _is_file_node(G, node.id)
+        and not _is_concept_node(G, node.id)
+        and graphify_attributes(node.attributes).get("file_type") != "rationale"
     ]
     thin_communities = {
         cid: nodes for cid, nodes in communities.items()
@@ -268,7 +273,7 @@ def generate(
     if gap_count > 0 or amb_pct > 20:
         lines += ["", "## Knowledge Gaps"]
         if isolated:
-            isolated_labels = [G.nodes[n].get("label", n) for n in isolated[:5]]
+            isolated_labels = [node_attributes(G, n).get("label", n) for n in isolated[:5]]
             suffix = f" (+{len(isolated)-5} more)" if len(isolated) > 5 else ""
             lines.append(f"- **{len(isolated)} isolated node(s):** {', '.join(f'`{l}`' for l in isolated_labels)}{suffix}")
             lines.append("  These have ≤1 connection - possible missing edges or undocumented components.")
@@ -278,7 +283,7 @@ def generate(
             lines.append(f"- **High ambiguity: {amb_pct}% of edges are AMBIGUOUS.** Review the Ambiguous Edges section above.")
 
     # --- Work-memory lessons (derived overlay) ---
-    # Preferred sources come from the .graphify_learning.json sidecar; the
+    # Preferred sources come from native learning state; the
     # query-scoped dead-ends come from the reflect aggregate. Section omitted
     # entirely when neither is present, so a graph with no work-memory is
     # byte-identical to the pre-feature report.
