@@ -334,8 +334,8 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
 | `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
-| `acp` | Generic Agent Client Protocol provider (including Codex subscription through `codex-acp`; no Graphify API key) | install/configure an ACP adapter |
-| `codex-cli` | Deprecated compatibility alias for `acp` | use `acp` for new configuration |
+| `acp` | Generic Agent Client Protocol provider (including provider-managed subscriptions; no Graphify API key) | install/configure an ACP adapter |
+| `codex-cli` | OpenAI Codex CLI through the logged-in ChatGPT/Codex subscription (no API key) | install the Codex CLI separately |
 | `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
 | `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
 | `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
@@ -589,6 +589,9 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `AZURE_OPENAI_API_VERSION` | Azure API version override | optional — default `2024-12-01-preview` |
 | `AZURE_OPENAI_DEPLOYMENT` or `GRAPHIFY_AZURE_MODEL` | Azure deployment name | optional — default `gpt-4o` |
 | `AWS_*` / `~/.aws/credentials` | AWS Bedrock — standard credential chain | `--backend bedrock` (no API key, uses IAM) |
+| `GRAPHIFY_CODEX_CLI_MODEL` | Optional model override passed to `codex exec` | `--backend codex-cli`; otherwise Codex uses its configured model |
+| `GRAPHIFY_CODEX_CLI_PARALLEL` | Allow concurrent Codex CLI extraction sessions | optional — default is serial to avoid subscription bursts |
+| `GRAPHIFY_CODEX_BIN` | Absolute path to the Codex executable when it is not on the service `PATH` | optional — otherwise resolves `codex` from `PATH` |
 | `GRAPHIFY_ACP_BIN` | ACP adapter command (normally `codex-acp`) | `--backend acp`; otherwise resolves `codex-acp` from `PATH` |
 | `GRAPHIFY_ACP_ARGS_JSON` | JSON array of ACP adapter arguments | optional — defaults to `[]` |
 | `GRAPHIFY_ACP_CONFIG_JSON` | JSON object of ACP session configuration options | optional — defaults to read-only mode |
@@ -597,7 +600,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_ACP_PARALLEL` | Allow concurrent ACP extraction sessions | optional — default is serial |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
-| `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, ACP, and SDK backends (default: 600) | optional — also `--api-timeout` flag |
+| `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, codex-cli, ACP, and SDK backends (default: 600) | optional — also `--api-timeout` flag |
 | `GRAPHIFY_MAX_RETRIES` | How many times to retry a rate-limited (429) request before giving up (default: 6; honors `Retry-After`) | optional — raise for strict per-org limits (e.g. kimi); `0` disables |
 | `GRAPHIFY_FORCE` | Force graph rebuild even with fewer nodes | optional — also `--force` flag |
 | `GRAPHIFY_GOOGLE_WORKSPACE` | Auto-enable Google Workspace export | optional — set to `1` |
@@ -796,7 +799,8 @@ GRAPHIFY_OLLAMA_NUM_CTX=32768 graphify extract ./docs --backend ollama   # overr
 GRAPHIFY_OLLAMA_KEEP_ALIVE=0 graphify extract ./docs --backend ollama    # unload model after each chunk (saves VRAM on small GPUs)
 graphify extract ./docs --backend bedrock      # AWS Bedrock via IAM - no API key, uses AWS credential chain
 graphify extract ./docs --backend claude-cli   # route through Claude Code CLI - no API key, uses your Claude subscription
-graphify extract ./docs --backend acp           # route through an ACP adapter, such as codex-acp
+graphify extract ./docs --backend codex-cli    # route through Codex CLI - no API key, uses `codex login` subscription auth
+graphify extract ./docs --backend acp           # route through a generic ACP adapter, such as codex-acp
 graphify extract ./docs --backend azure        # Azure OpenAI (set AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)
 graphify extract ./docs --max-workers 16       # AST parallelism (also GRAPHIFY_MAX_WORKERS)
 graphify extract --postgres "postgresql://user:pass@host/db"   # introspect live PostgreSQL schema directly
