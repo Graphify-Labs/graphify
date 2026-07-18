@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Any
 
-from graphify.helix.access import degree, degree_map, node_attributes, node_ids
+from graphify.helix.access import degree_map, node_attributes, node_ids
 
 
 def _partition(graph: Any, resolution: float = 1.0) -> dict[Any, int]:
@@ -35,13 +35,14 @@ def label_communities_by_hub(
     overrides these with richer names.
     """
     labels: dict[int, str] = {}
+    degrees = degree_map(G)
     for cid, members in communities.items():
         present = [n for n in members if G.contains_node(n)]
         if not present:
             labels[cid] = f"Community {cid}"
             continue
         # highest degree wins; ties broken by node id (ascending) for determinism
-        hub = min(present, key=lambda n: (-degree(G, n), str(n)))
+        hub = min(present, key=lambda n: (-degrees.get(n, 0), str(n)))
         name = str(node_attributes(G, hub).get("label") or hub).strip()
         if name.endswith("()"):
             name = name[:-2]
@@ -98,21 +99,25 @@ def cluster(
     if G.edge_count == 0:
         return {i: [n] for i, n in enumerate(sorted(node_ids(G), key=repr))}
 
+    all_degrees = degree_map(G)
+
     # Compute hub exclusion set before removing anything so degree is based on full graph
     hub_nodes: set[str] = set()
     if exclude_hubs_percentile is not None:
-        degrees = sorted(degree_map(G).values())
+        degrees = sorted(all_degrees.values())
         if degrees:
             idx = max(0, int(len(degrees) * exclude_hubs_percentile / 100) - 1)
             threshold = degrees[idx]
-            hub_nodes = {n for n, d in degree_map(G).items() if d > threshold}
+            hub_nodes = {n for n, d in all_degrees.items() if d > threshold}
 
     # Leiden warns and drops isolates - handle them separately
     # Also exclude hub nodes from partitioning so they don't pull unrelated
     # subsystems into the same community
     excluded = hub_nodes
-    isolates = [n for n in node_ids(G) if degree(G, n) == 0 and n not in excluded]
-    connected_nodes = [n for n in node_ids(G) if degree(G, n) > 0 and n not in excluded]
+    isolates = [n for n, value in all_degrees.items() if value == 0 and n not in excluded]
+    connected_nodes = [
+        n for n, value in all_degrees.items() if value > 0 and n not in excluded
+    ]
     connected = G.induced_subgraph(connected_nodes)
 
     raw: dict[int, list[str]] = {}

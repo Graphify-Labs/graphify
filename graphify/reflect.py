@@ -779,15 +779,14 @@ def write_learning_state(agg: dict[str, Any], graph_path: Path,
                          *, now: datetime | None = None) -> Path:
     """Atomically persist the learning projection with native topology."""
     import copy
-    from graphify.helix.model import GraphBuildData
     from graphify.helix.persistence import HelixEmbeddedStore
 
     overlay = build_learning_overlay(agg, graph_path, now=now)
     with HelixEmbeddedStore(graph_path) as store:
-        loaded = store.load()
-        state = copy.deepcopy(dict(loaded.state))
+        previous_state = store.read_state()
+        state = copy.deepcopy(previous_state)
         state["learning"] = overlay
-        store.save_generation(GraphBuildData.from_native(loaded.graph), state)
+        store.replace_state(state, previous_state=previous_state)
     return Path(graph_path)
 
 
