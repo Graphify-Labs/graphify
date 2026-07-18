@@ -13,6 +13,7 @@
     "bedrock"
     "claude"
     "claude-cli"
+    "codex-cli"
     "deepseek"
     "gemini"
     "kimi"
@@ -368,7 +369,7 @@
         type = types.listOf types.package;
         default = [];
         example = lib.literalExpression "[ pkgs.claude-code pkgs.gws ]";
-        description = "External executables added to service PATH, such as claude for claude-cli or gws for Google Workspace export.";
+        description = "External executables added to service PATH, such as claude for claude-cli, codex for codex-cli, or gws for Google Workspace export.";
       };
     };
   };
