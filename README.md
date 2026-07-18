@@ -128,6 +128,7 @@ Every system ran on the same harness with the same model and budgets, scored by 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
 | Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Node.js *(Svelte extraction)* | 18+ | `node --version` | [nodejs.org](https://nodejs.org/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
