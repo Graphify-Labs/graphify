@@ -160,11 +160,6 @@ def open_embedded_client(path: str | Path, *, read_only: bool = False) -> Any:
     return module.Client.embedded(source)
 
 
-def open_embedded_graph(path: str | Path) -> Any:
-    """Backward-compatible name for the official embedded client opener."""
-    return open_embedded_client(path)
-
-
 __all__ = [
     "HELIX_REPOSITORY",
     "HELIX_PYTHON_VERSION",
@@ -177,5 +172,4 @@ __all__ = [
     "load_native_module",
     "native_backend_info",
     "open_embedded_client",
-    "open_embedded_graph",
 ]

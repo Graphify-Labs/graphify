@@ -22,7 +22,6 @@ from .native import load_native_module, open_embedded_client
 
 _SCHEMA_VERSION = 6
 _NODE_LABEL = "GraphifyNode"
-_LEGACY_EDGE_LABEL = "GraphifyEdge"
 _META_LABEL = "GraphifyMeta"
 _CONTROL_LABEL = "GraphifyControl"
 _STATE_LABEL = "GraphifyState"
@@ -35,7 +34,6 @@ _PREVIOUS_GENERATION = "previous_generation"
 _INTERNAL_ID = "$id"
 _ATTRS = "attrs"
 _ORDER = "graphify_order"
-_LEGACY_SOURCE_KEY = "source_key"
 _LEGACY_TARGET_KEY = "target_key"
 _EDGE_KEY = "edge_key"
 _NATIVE_WEIGHT = "graphify_weight"
@@ -242,34 +240,6 @@ def _decode_identity(value: Any) -> Any:
     return _decode_tagged_key(value)
 
 
-def _decode_legacy_key(value: str) -> Any:
-    """Decode schema-v5 Graphify identities during verified migration only."""
-    try:
-        tagged = json.loads(value)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("legacy Helix identity is invalid") from exc
-    if not isinstance(tagged, dict):
-        raise RuntimeError("legacy Helix identity is not tagged")
-    kind, raw = tagged.get("t"), tagged.get("v")
-    if kind == "none":
-        return None
-    if kind == "bool" and isinstance(raw, bool):
-        return raw
-    if kind == "int" and isinstance(raw, str):
-        return int(raw)
-    if kind == "float" and isinstance(raw, str):
-        return float.fromhex(raw)
-    if kind == "str" and isinstance(raw, str):
-        return raw
-    if kind == "bytes" and isinstance(raw, str):
-        return base64.b64decode(raw, validate=True)
-    if kind == "tuple" and isinstance(raw, list):
-        return tuple(_decode_legacy_key(json.dumps(item)) for item in raw)
-    if kind == "frozenset" and isinstance(raw, list):
-        return frozenset(_decode_legacy_key(json.dumps(item)) for item in raw)
-    raise RuntimeError(f"legacy Helix identity type {kind!r} is invalid")
-
-
 def _checksum(payload: dict[str, Any]) -> str:
     def encode_non_json(value: Any) -> Any:
         if isinstance(value, bytes):
@@ -451,7 +421,7 @@ class HelixEmbeddedStore:
         if not read_only:
             try:
                 self._ensure_indexes()
-                self._migrate_previous_schema()
+                self._validate_active_schema()
                 self._cleanup_inactive_generations()
                 self._cleanup_inactive_state_revisions()
             except Exception:
@@ -485,155 +455,22 @@ class HelixEmbeddedStore:
         )
         self._query(batch)
 
-    def _migrate_previous_schema(self) -> None:
-        """Atomically replace the schema-v5 generic-edge generation."""
+    def _validate_active_schema(self) -> None:
+        """Reject stores written by an obsolete Graphify Helix schema.
+
+        Production readers never reconstruct a graph in Python to upgrade it.
+        Rebuild the project from source when an older store is encountered.
+        """
         generation = self._active_generation(required=False)
         if generation is None:
             return
         meta = self._metadata(generation)
         version = meta.get("schema_version")
-        if version == _SCHEMA_VERSION:
-            self._migrate_state_revision_schema(generation, meta)
-            return
-        if version != 5:
+        if version != _SCHEMA_VERSION:
             raise RuntimeError(
-                f"unsupported embedded Helix graph schema: {version!r}"
+                "unsupported embedded Helix graph schema: "
+                f"expected {_SCHEMA_VERSION}, got {version!r}; rebuild from source"
             )
-        predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
-        result = self._query(
-            self._helix.read_batch()
-            .var_as(
-                "nodes",
-                self._helix.g().n_with_label_where(_NODE_LABEL, predicate).value_map(),
-            )
-            .var_as(
-                "edges",
-                self._helix.g().e_with_label_where(
-                    _LEGACY_EDGE_LABEL, predicate
-                ).value_map(),
-            )
-            .var_as(
-                "state",
-                self._helix.g().n_with_label_where(_STATE_LABEL, predicate).value_map(),
-            )
-            .returning(["nodes", "edges", "state"])
-        )
-        nodes: list[tuple[int, dict[str, Any]]] = []
-        for raw in _rows(result, "nodes"):
-            row = _properties(raw, "legacy node")
-            identity, attrs, order = row.get(_EXTERNAL_KEY), row.get(_ATTRS), row.get(_ORDER)
-            if not isinstance(identity, str) or not isinstance(attrs, dict) or not isinstance(order, int):
-                raise RuntimeError("legacy Helix node is missing schema fields")
-            nodes.append((order, {"id": _decode_legacy_key(identity), **attrs}))
-        edges: list[tuple[int, dict[str, Any]]] = []
-        multigraph = bool(meta.get("multigraph"))
-        for raw in _rows(result, "edges"):
-            row = _properties(raw, "legacy edge")
-            source = row.get(_LEGACY_SOURCE_KEY)
-            target = row.get(_LEGACY_TARGET_KEY)
-            key, attrs, order = row.get(_EDGE_KEY), row.get(_ATTRS), row.get(_ORDER)
-            if not all(isinstance(value, str) for value in (source, target, key)) or not isinstance(attrs, dict) or not isinstance(order, int):
-                raise RuntimeError("legacy Helix edge is missing schema fields")
-            assert isinstance(source, str) and isinstance(target, str) and isinstance(key, str)
-            edge = {
-                "source": _decode_legacy_key(source),
-                "target": _decode_legacy_key(target),
-                **attrs,
-            }
-            if multigraph:
-                edge["key"] = _decode_legacy_key(key)
-            edges.append((order, edge))
-        nodes.sort(key=lambda item: item[0])
-        edges.sort(key=lambda item: item[0])
-        state = self._verified_state_from_rows(_rows(result, "state"), meta)
-        payload = {
-            "directed": bool(meta.get("directed")),
-            "multigraph": multigraph,
-            "graph": meta.get("graph", {}),
-            "nodes": [row for _, row in nodes],
-            "links": [row for _, row in edges],
-            **meta.get("extras", {}),
-        }
-        if state:
-            payload[_DURABLE_STATE] = state
-        self._save_data(payload, activate=True)
-
-    def _migrate_state_revision_schema(
-        self, generation: str, meta: dict[str, Any]
-    ) -> None:
-        """Upgrade an early schema-v6 generation to revisioned native state."""
-        if (
-            meta.get(_CHECKSUM_MODE) == _SPLIT_CHECKSUM_MODE
-            and isinstance(meta.get(_ACTIVE_STATE_REVISION), str)
-            and isinstance(meta.get(_TOPOLOGY_CHECKSUM), str)
-            and all(
-                isinstance(meta.get(key), str)
-                for key in (
-                    *_STATE_REVISION_KEYS.values(),
-                    *_STATE_CHECKSUM_KEYS.values(),
-                )
-            )
-            and all(
-                isinstance(meta.get(key), int)
-                for key in _STATE_COUNT_KEYS.values()
-            )
-        ):
-            return
-
-        # This is the only compatibility read that reconstructs topology in
-        # Python. It runs once for stores created before state revisions existed;
-        # every newly written generation records the split checksums directly.
-        payload = self._read_generation_data(generation)
-        payload.pop(_DURABLE_STATE, None)
-        topology_checksum = _checksum(payload)
-        # Preserve the original row ordering in category checksums. Early v6
-        # stores used one global order, while current stores use a local order
-        # per category; both layouts reconstruct the same durable state.
-        records = self._state_records_from_rows(
-            self._read_state_rows(generation, metadata=meta)
-        )
-        category_records = {
-            kind: [record for record in records if record[0] == kind]
-            for kind in _STATE_KINDS
-        }
-        category_checksums = {
-            kind: _state_category_checksum(category_records[kind])
-            for kind in _STATE_KINDS
-        }
-        state_checksum = _combined_state_checksum(category_checksums)
-        revision = generation
-
-        state_predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
-        state_traversal = self._helix.g().n_with_label_where(
-            _STATE_LABEL, state_predicate
-        ).set_property(_STATE_REVISION, revision)
-        meta_traversal = self._helix.g().n_with_label_where(
-            _META_LABEL, state_predicate
-        )
-        updates = {
-            _ACTIVE_STATE_REVISION: revision,
-            _CHECKSUM_MODE: _SPLIT_CHECKSUM_MODE,
-            _TOPOLOGY_CHECKSUM: topology_checksum,
-            "state_checksum": state_checksum,
-            "checksum": _generation_checksum(topology_checksum, state_checksum),
-            **{key: revision for key in _STATE_REVISION_KEYS.values()},
-            **{
-                _STATE_CHECKSUM_KEYS[kind]: category_checksums[kind]
-                for kind in _STATE_KINDS
-            },
-            **{
-                _STATE_COUNT_KEYS[kind]: len(category_records[kind])
-                for kind in _STATE_KINDS
-            },
-        }
-        for key, value in updates.items():
-            meta_traversal = meta_traversal.set_property(key, value)
-        self._query(
-            self._helix.write_batch()
-            .var_as("state_revision", state_traversal)
-            .var_as("metadata_revision", meta_traversal)
-            .returning(["state_revision", "metadata_revision"])
-        )
 
     def save(self, graph: GraphBuildData, *, state: dict[str, Any] | None = None) -> None:
         self.save_data(graph.to_node_link(state=state))
