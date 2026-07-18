@@ -25,9 +25,7 @@ def test_native_loader_rejects_wrong_sdk_version(monkeypatch):
     native.load_native_module.cache_clear()
 
 
-def test_schema_five_generation_migrates_and_retains_semantic_edge_label(tmp_path):
-    # Current generations are verified through a real reopen; the detailed
-    # schema-v5 migration path is covered by native persistence tests.
+def test_current_generation_reopens_and_retains_semantic_edge_label(tmp_path):
     path = tmp_path / "graph.helix"
     with HelixEmbeddedStore(path) as store:
         store.save_generation(
