@@ -10,6 +10,7 @@ from graphify.reflect import (
     render_lessons_md,
 )
 from graphify.helix.state import community_records, new_state
+from graphify.helix.persistence import load_graph
 from tests.native_helpers import make_loaded
 
 
@@ -63,3 +64,4 @@ def test_reflect_persists_learning_inside_atomic_generation(tmp_path):
     overlay = load_learning_overlay(loaded.store_path)
     assert overlay["auth"]["status"] == "preferred"
     assert "Security" in output.read_text()
+    assert load_graph(loaded.store_path).generation == loaded.generation

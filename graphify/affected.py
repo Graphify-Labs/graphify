@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -154,10 +153,9 @@ def affected_nodes(
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
 ) -> list[AffectedHit]:
-    relation_set = set(relations)
-    seen = {seed}
-    queue: deque[tuple[Any, int]] = deque([(seed, 0)])
-    hits: list[AffectedHit] = []
+    from helixdb import TraversalOptions
+
+    relation_list = tuple(dict.fromkeys(str(relation) for relation in relations))
 
     # #1669: seed the reverse walk with the root's own member nodes (one outward
     # `method`/`contains` hop). A caller can bind to a class's method node rather
@@ -166,47 +164,39 @@ def affected_nodes(
     # otherwise. The member nodes are seeds only (not reported as hits), and
     # `method`/`contains` stay out of the general relation-filtered walk, so this
     # adds no forward noise anywhere else.
-    member_edges = (
-        graph.edge(edge_id) for edge_id in graph.out_edge_ids(seed)
-    )
+    member_seeds: list[Any] = []
+    member_edges = (graph.edge(edge_id) for edge_id in graph.out_edge_ids(seed))
     for edge in member_edges:
         if edge is None:
             continue
         member, data = edge.target, edge_attributes(edge)
         if str(data.get("relation", "")) not in ("method", "contains"):
             continue
-        if member not in seen:
-            seen.add(member)
-            queue.append((member, 0))
+        if member != seed and member not in member_seeds:
+            member_seeds.append(member)
 
-    while queue:
-        current, current_depth = queue.popleft()
-        if current_depth >= depth:
-            continue
-        incoming = (graph.edge(edge_id) for edge_id in graph.in_edge_ids(current))
-        for edge in incoming:
-            if edge is None:
-                continue
-            source, data = edge.source, edge_attributes(edge)
-            relation = str(data.get("relation", ""))
-            if relation not in relation_set:
-                continue
-            if source in seen:
-                continue
-            seen.add(source)
-            # Carry the matched edge's location (taken from the SAME edge dict
-            # whose relation passed the filter, so relation and location stay
-            # consistent) — that is the call/import/reference site in `source`'s
-            # own file, which is where the user should click (#BUG1).
-            hit = AffectedHit(
-                source, current_depth + 1, relation,
-                via_file=str(data.get("source_file") or "") or None,
-                via_location=str(data.get("source_location") or "") or None,
-            )
-            hits.append(hit)
-            queue.append((source, current_depth + 1))
-
-    return hits
+    seeds = (seed, *member_seeds)
+    result = graph.traverse(TraversalOptions(
+        seeds=seeds,
+        max_depth=max(0, depth),
+        direction="in",
+        allowed_labels=relation_list,
+    ))
+    seed_set = set(seeds)
+    via: dict[Any, tuple[str, str | None, str | None]] = {}
+    for traversed in result.discovery_edges:
+        edge = graph.edge(traversed.edge_id)
+        data = edge_attributes(edge) if edge is not None else {}
+        via[traversed.source] = (
+            str(data.get("relation") or traversed.label or ""),
+            str(data.get("source_file") or "") or None,
+            str(data.get("source_location") or "") or None,
+        )
+    return [
+        AffectedHit(visit.node_id, visit.depth, *via.get(visit.node_id, ("", None, None)))
+        for visit in result.visits
+        if visit.node_id not in seed_set
+    ]
 
 
 def format_affected(

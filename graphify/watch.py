@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .helix.model import node_attributes
+from .helix.model import graphify_attributes, node_attributes
 from .paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 
 
@@ -221,24 +221,27 @@ def _rebuild_code(
 
         previous_state = new_state()
         has_active_generation = False
+        loaded = None
         if store_path.is_dir():
             try:
                 with HelixEmbeddedStore(store_path, read_only=True) as existing_store:
-                    loaded = existing_store.load()
+                    if changed_paths is None:
+                        loaded = existing_store.load()
+                        previous_state = copy.deepcopy(dict(loaded.state))
+                    else:
+                        previous_state = copy.deepcopy(existing_store.read_state())
+                    has_active_generation = True
             except RuntimeError as exc:
                 if "no active generation" not in str(exc):
                     raise
-                loaded = None
             if loaded is not None:
-                has_active_generation = True
-                previous_state = copy.deepcopy(dict(loaded.state))
                 if changed_paths is None:
                     current_sources = {
                         path.relative_to(watch_path).as_posix()
                         for path in current_files if path.is_relative_to(watch_path)
                     }
                     for node in loaded.graph.nodes():
-                        attrs = node_attributes(loaded.graph, node.id)
+                        attrs = graphify_attributes(node.attributes)
                         source = attrs.get("source_file")
                         if source and source not in current_sources:
                             deleted_sources.add(str(source))
@@ -345,6 +348,7 @@ def _rebuild_code(
                 graph_path=store_path,
                 prune_sources=sorted(deleted_sources),
                 root=watch_path,
+                base_graph=loaded.graph if loaded is not None else None,
             )
             if has_active_generation
             else build_from_json(result, root=watch_path)
