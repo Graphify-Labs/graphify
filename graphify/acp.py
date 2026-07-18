@@ -163,7 +163,7 @@ async def _run_acp(
         for image in images:
             if getattr(image, "raw", None):
                 content.append(image_block(image.b64, image.media_type, uri=str(image.path)))
-        response = await asyncio.wait_for(connection.prompt(content, session_id), timeout=timeout)
+        response = await asyncio.wait_for(connection.prompt(session_id, content), timeout=timeout)
 
         usage = getattr(response, "usage", None) or client.usage
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
