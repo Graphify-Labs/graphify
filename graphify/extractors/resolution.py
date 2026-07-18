@@ -10,6 +10,12 @@ from graphify.extractors.base import (  # noqa: F401
     _make_id,
     _read_text,
 )
+from graphify.extractors.svelte import (
+    SvelteExtractionContext,
+    has_fatal_svelte_diagnostics,
+    svelte_script_facts,
+)
+from graphify.security import sanitize_metadata
 import hashlib
 import json
 import os
@@ -448,6 +454,12 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
 
     return _resolve_workspace_import(raw, start_dir)
 
+
+def _canonical_js_file_identity(path: Path) -> tuple[Path, str]:
+    """Return the resolver-owned canonical path and corresponding file node id."""
+    canonical = path.resolve()
+    return canonical, _make_id(str(canonical))
+
 def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | None] | None":
     """Resolve a JS/TS import path string to (target_nid, resolved_path).
 
@@ -786,21 +798,57 @@ def _apply_symbol_resolution_facts(
         })
         return node_id
 
-    existing_edges = {
+    existing_edge_by_key = {
         (
             str(edge.get("source")),
             str(edge.get("target")),
             str(edge.get("relation")),
             str(edge.get("context") or ""),
-        )
+        ): edge
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None) -> None:
+    def add_edge(
+        source: str,
+        target: str,
+        relation: str,
+        context: str,
+        line: int,
+        source_path: Path,
+        target_file: str | None = None,
+        local_alias: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
         key = (source, target, relation, context or "")
-        if key in existing_edges:
+        existing = existing_edge_by_key.get(key)
+        if existing is not None:
+            if target_file is not None:
+                existing.setdefault("target_file", target_file)
+            if local_alias is not None:
+                existing.setdefault("local_alias", local_alias)
+            if metadata:
+                prior = existing.get("metadata")
+                merged = dict(prior) if isinstance(prior, dict) else {}
+                incoming = sanitize_metadata(metadata)
+                aliases: list[dict] = []
+                for candidate in (merged.get("aliases"), incoming.get("aliases")):
+                    if isinstance(candidate, list):
+                        aliases.extend(item for item in candidate if isinstance(item, dict))
+                if aliases:
+                    merged["aliases"] = sorted(
+                        {
+                            json.dumps(alias, sort_keys=True): alias
+                            for alias in aliases
+                        }.values(),
+                        key=lambda alias: (
+                            str(alias.get("local_name", "")),
+                            str(alias.get("imported_name", "")),
+                            str(alias.get("script_context", "")),
+                        ),
+                    )
+                merged.update({key: value for key, value in incoming.items() if key != "aliases"})
+                existing["metadata"] = merged
             return
-        existing_edges.add(key)
         edge = {
             "source": source,
             "target": target,
@@ -821,18 +869,23 @@ def _apply_symbol_resolution_facts(
         # cross-file member-call resolver match `alias.func()` (#2082).
         if local_alias is not None:
             edge["local_alias"] = local_alias
+        if metadata:
+            edge["metadata"] = sanitize_metadata(metadata)
         edges.append(edge)
+        existing_edge_by_key[key] = edge
 
     for declaration in facts.declarations:
         ensure_symbol_node(declaration.file_path, declaration.name, declaration.line)
 
-    local_aliases_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
+    local_aliases_by_file: dict[
+        Path,
+        dict[tuple[str, str | None], tuple[Path, str]],
+    ] = {}
     for import_fact in facts.imports:
         file_path = import_fact.file_path.resolve()
-        local_aliases_by_file.setdefault(file_path, {})[import_fact.local_name] = (
-            import_fact.target_path.resolve(),
-            import_fact.imported_name,
-        )
+        local_aliases_by_file.setdefault(file_path, {})[
+            (import_fact.local_name, import_fact.script_context)
+        ] = (import_fact.target_path.resolve(), import_fact.imported_name)
 
     pending_aliases_by_file: dict[Path, list[_SymbolAliasFact]] = {}
     for alias_fact in facts.aliases:
@@ -844,11 +897,14 @@ def _apply_symbol_resolution_facts(
         while changed:
             changed = False
             for alias_fact in aliases:
-                if alias_fact.alias in local_aliases:
+                alias_key = (alias_fact.alias, alias_fact.script_context)
+                if alias_key in local_aliases:
                     continue
-                origin = local_aliases.get(alias_fact.target_name)
+                origin = local_aliases.get(
+                    (alias_fact.target_name, alias_fact.script_context)
+                )
                 if origin is not None:
-                    local_aliases[alias_fact.alias] = origin
+                    local_aliases[alias_key] = origin
                     changed = True
 
     named_exports_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
@@ -907,7 +963,9 @@ def _apply_symbol_resolution_facts(
         if export_fact.target_path is not None and export_fact.target_name is not None:
             origin = (export_fact.target_path.resolve(), export_fact.target_name)
         elif export_fact.local_name is not None:
-            origin = local_aliases_by_file.get(file_path, {}).get(export_fact.local_name)
+            origin = local_aliases_by_file.get(file_path, {}).get(
+                (export_fact.local_name, export_fact.script_context)
+            )
             if origin is None and (file_path, export_fact.local_name) in symbol_nodes:
                 origin = (file_path, export_fact.local_name)
         if origin is None:
@@ -955,8 +1013,30 @@ def _apply_symbol_resolution_facts(
             import_fact.imported_name,
         )
         target_id = symbol_nodes.get((origin_path, origin_symbol))
+        if (
+            target_id is None
+            and origin_symbol in ("default", "*")
+            and origin_path.name.endswith(".svelte")
+        ):
+            target_id = source_file_id.get(origin_path)
         if target_id is None:
             continue
+        alias = {
+            "local_name": import_fact.local_name,
+            "imported_name": import_fact.imported_name,
+        }
+        if import_fact.binding_id is not None:
+            alias["binding_id"] = import_fact.binding_id
+        if import_fact.script_context is not None:
+            alias["script_context"] = import_fact.script_context
+        for key, value in (
+            ("start_offset", import_fact.start_offset),
+            ("end_offset", import_fact.end_offset),
+            ("start_byte", import_fact.start_byte),
+            ("end_byte", import_fact.end_byte),
+        ):
+            if value is not None:
+                alias[key] = value
         add_edge(
             source_id,
             target_id,
@@ -964,6 +1044,11 @@ def _apply_symbol_resolution_facts(
             "import",
             import_fact.line,
             import_fact.file_path,
+            metadata={
+                "local_name": import_fact.local_name,
+                "imported_name": import_fact.imported_name,
+                "aliases": [alias],
+            },
         )
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
@@ -983,7 +1068,9 @@ def _apply_symbol_resolution_facts(
     for use_fact in facts.uses:
         file_path = use_fact.file_path.resolve()
         target_id = None
-        unresolved_origin = local_aliases_by_file.get(file_path, {}).get(use_fact.local_name)
+        unresolved_origin = local_aliases_by_file.get(file_path, {}).get(
+            (use_fact.local_name, use_fact.script_context)
+        )
         if unresolved_origin is not None:
             origin_path, origin_symbol = resolve_exported_origin(*unresolved_origin)
             target_id = symbol_nodes.get((origin_path, origin_symbol))
@@ -1006,32 +1093,69 @@ def _apply_symbol_resolution_facts(
             use_fact.file_path,
         )
 
+def _parse_js_source(source: bytes, *, use_ts: bool):
+    from tree_sitter import Language, Parser
+
+    if use_ts:
+        import tree_sitter_typescript as tstypescript
+
+        language = Language(tstypescript.language_typescript())
+    else:
+        import tree_sitter_javascript as tsjavascript
+
+        language = Language(tsjavascript.language())
+    parser = Parser(language)
+    return source, parser.parse(source).root_node
+
+
 def _parse_js_tree(path: Path):
+    """Parse one ordinary JS/TS or Vue lexical program.
+
+    Svelte programs require extraction-scoped compiler facts and are handled by
+    ``_parse_js_programs``. Keeping that dependency explicit prevents a hidden
+    per-file Node invocation in resolution.
+    """
     try:
-        from tree_sitter import Language, Parser
-        # .vue embeds the script in non-JS markup; mask it out and parse the
-        # <script> with TS.
         vue_lang: str | None = None
         if path.suffix == ".vue":
             masked, vue_lang = _vue_mask_non_script(
                 path.read_text(encoding="utf-8", errors="replace")
             )
             source = masked.encode("utf-8")
+        elif path.suffix == ".svelte":
+            return None
         else:
             source = path.read_bytes()
         use_ts = path.suffix in (".ts", ".tsx", ".mts", ".cts") or (
             path.suffix == ".vue" and vue_lang not in ("js", "jsx")
         )
-        if use_ts:
-            import tree_sitter_typescript as tstypescript
-            language = Language(tstypescript.language_typescript())
-        else:
-            import tree_sitter_javascript as tsjavascript
-            language = Language(tsjavascript.language())
-        parser = Parser(language)
-        return source, parser.parse(source).root_node
+        return _parse_js_source(source, use_ts=use_ts)
     except Exception:
         return None
+
+
+def _parse_js_programs(
+    path: Path,
+    svelte_context: SvelteExtractionContext,
+) -> list[tuple[bytes, object, str | None]]:
+    if path.suffix != ".svelte":
+        parsed = _parse_js_tree(path)
+        return [(*parsed, None)] if parsed is not None else []
+
+    source_facts = svelte_context.get(path)
+    if source_facts is None or has_fatal_svelte_diagnostics(source_facts.facts):
+        return []
+    programs: list[tuple[bytes, object, str | None]] = []
+    for script in svelte_script_facts(source_facts.facts):
+        try:
+            source, root = _parse_js_source(
+                source_facts.masked_script(script),
+                use_ts=script["language"] == "ts",
+            )
+        except Exception:
+            continue
+        programs.append((source, root, str(script["context"])))
+    return programs
 
 def _walk_js_tree(node):
     # Iterative DFS avoids Python's O(depth) generator-chain overhead.
@@ -1281,7 +1405,8 @@ def _ts_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[st
                 _ts_collect_type_refs(c, source, generic, out)
 
 def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str,
-                            facts: _SymbolResolutionFacts) -> None:
+                            facts: _SymbolResolutionFacts, *,
+                            script_context: str | None = None) -> None:
     """Emit type-relation and type-reference use facts for a class declaration node."""
     line = class_node.start_point[0] + 1
     for child in class_node.children:
@@ -1291,13 +1416,13 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "inherits", "type",
-                                           clause.start_point[0] + 1)
+                                           clause.start_point[0] + 1, script_context)
                         )
                 elif clause.type == "implements_clause":
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "implements", "type",
-                                           clause.start_point[0] + 1)
+                                           clause.start_point[0] + 1, script_context)
                         )
         elif child.type == "extends_type_clause":
             # Interface heritage (`interface A extends B, C`) is an
@@ -1307,7 +1432,7 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
             for name in _ts_heritage_clause_entries(child, source):
                 facts.uses.append(
                     _SymbolUseFact(path, class_nid, name, "inherits", "type",
-                                   child.start_point[0] + 1)
+                                   child.start_point[0] + 1, script_context)
                 )
 
     body = class_node.child_by_field_name("body")
@@ -1335,7 +1460,10 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
                     for name, role in refs:
                         ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
                         facts.uses.append(
-                            _SymbolUseFact(path, method_nid, name, "references", ctx, m_line)
+                            _SymbolUseFact(
+                                path, method_nid, name, "references", ctx, m_line,
+                                script_context,
+                            )
                         )
             return_type = member.child_by_field_name("return_type")
             if return_type is not None:
@@ -1344,7 +1472,10 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
                 for name, role in refs:
                     ctx = "generic_arg" if role == "generic_arg" else "return_type"
                     facts.uses.append(
-                        _SymbolUseFact(path, method_nid, name, "references", ctx, m_line)
+                        _SymbolUseFact(
+                            path, method_nid, name, "references", ctx, m_line,
+                            script_context,
+                        )
                     )
         elif member.type in ("public_field_definition", "property_signature"):
             type_anno = None
@@ -1359,10 +1490,18 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
             for name, role in refs:
                 ctx = "generic_arg" if role == "generic_arg" else "field"
                 facts.uses.append(
-                    _SymbolUseFact(path, class_nid, name, "references", ctx, m_line)
+                    _SymbolUseFact(
+                        path, class_nid, name, "references", ctx, m_line,
+                        script_context,
+                    )
                 )
 
-def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
+def _collect_js_symbol_resolution_facts(
+    paths: list[Path],
+    facts: _SymbolResolutionFacts,
+    *,
+    svelte_context: SvelteExtractionContext | None = None,
+) -> None:
     js_paths = [
         path for path in paths
         if path.suffix in _JS_CACHE_BYPASS_SUFFIXES
@@ -1370,94 +1509,160 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
     if not js_paths:
         return
 
-    trees: dict[Path, tuple[bytes, object]] = {}
+    if svelte_context is None:
+        svelte_context = SvelteExtractionContext.read(js_paths)
+
+    trees: dict[Path, list[tuple[bytes, object, str | None]]] = {}
 
     for path in js_paths:
         resolved_path = path.resolve()
-        parsed = _parse_js_tree(path)
-        if parsed is None:
+        if path.suffix == ".svelte":
+            source_facts = svelte_context.get(path)
+            if source_facts is not None:
+                for imported in source_facts.facts.get("imports", []):
+                    raw_module = imported.get("source")
+                    local_name = imported.get("local")
+                    imported_name = imported.get("imported")
+                    line = imported.get("line")
+                    if not (
+                        isinstance(raw_module, str)
+                        and isinstance(local_name, str)
+                        and isinstance(imported_name, str)
+                        and isinstance(line, int)
+                    ):
+                        continue
+                    target_path = _resolve_js_module_path(raw_module, path.parent)
+                    if target_path is None:
+                        continue
+                    facts.imports.append(
+                        _SymbolImportFact(
+                            path,
+                            local_name,
+                            target_path.resolve(),
+                            imported_name,
+                            line,
+                            imported.get("binding_id")
+                            if isinstance(imported.get("binding_id"), str) else None,
+                            imported.get("context")
+                            if isinstance(imported.get("context"), str) else None,
+                            imported.get("start")
+                            if isinstance(imported.get("start"), int) else None,
+                            imported.get("end")
+                            if isinstance(imported.get("end"), int) else None,
+                            imported.get("start_byte")
+                            if isinstance(imported.get("start_byte"), int) else None,
+                            imported.get("end_byte")
+                            if isinstance(imported.get("end_byte"), int) else None,
+                        )
+                    )
+
+        programs = _parse_js_programs(path, svelte_context)
+        if not programs:
             continue
-        source, root_node = parsed
-        trees[resolved_path] = parsed
+        trees[resolved_path] = programs
 
-        for node in _walk_js_tree(root_node):
-            if node.type == "export_statement":
-                for name in _js_exported_declaration_names(node, source):
-                    facts.declarations.append(
-                        _SymbolDeclarationFact(path, name, node.start_point[0] + 1)
-                    )
+        for source, root_node, script_context in programs:
+            for node in _walk_js_tree(root_node):
+                if node.type == "export_statement":
+                    for name in _js_exported_declaration_names(node, source):
+                        facts.declarations.append(
+                            _SymbolDeclarationFact(path, name, node.start_point[0] + 1)
+                        )
 
-            if node.type != "import_statement":
-                continue
-            raw_module = _js_module_specifier(node, source)
-            if raw_module is None:
-                continue
-            target_path = _resolve_js_module_path(raw_module, path.parent)
-            if target_path is None:
-                continue
-            target_path = target_path.resolve()
-            for imported_name, local_name in _js_named_specifiers(node, source, "import_specifier"):
-                facts.imports.append(
-                    _SymbolImportFact(
-                        path,
-                        local_name,
-                        target_path,
-                        imported_name,
-                        node.start_point[0] + 1,
-                    )
-                )
-            default_local = _js_default_import_name(node, source)
-            if default_local is not None:
-                facts.imports.append(
-                    _SymbolImportFact(
-                        path,
-                        default_local,
-                        target_path,
-                        "default",
-                        node.start_point[0] + 1,
-                    )
-                )
-
-        for node in _walk_js_tree(root_node):
-            for alias, target in _js_lexical_aliases(node, source):
-                facts.aliases.append(
-                    _SymbolAliasFact(path, alias, target, node.start_point[0] + 1)
-                )
-
-    for path in js_paths:
-        resolved_path = path.resolve()
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, root_node = parsed
-
-        for node in _walk_js_tree(root_node):
-            if node.type != "export_statement":
-                continue
-
-            raw_module = _js_module_specifier(node, source)
-            export_clause = _js_export_clause(node)
-            if raw_module is not None:
+                # Compiler imports own Svelte identity and exact author ranges.
+                if node.type != "import_statement" or path.suffix == ".svelte":
+                    continue
+                raw_module = _js_module_specifier(node, source)
+                if raw_module is None:
+                    continue
                 target_path = _resolve_js_module_path(raw_module, path.parent)
                 if target_path is None:
                     continue
                 target_path = target_path.resolve()
-                namespace_name = _js_namespace_export_name(node, source)
-                if namespace_name is not None:
-                    facts.namespace_exports.append(
-                        _NamespaceExportFact(
+                for imported_name, local_name in _js_named_specifiers(
+                    node, source, "import_specifier"
+                ):
+                    facts.imports.append(
+                        _SymbolImportFact(
                             path,
-                            namespace_name,
+                            local_name,
                             target_path,
+                            imported_name,
                             node.start_point[0] + 1,
                         )
                     )
-                elif _js_export_statement_is_star(node):
-                    facts.star_exports.append(
-                        _StarExportFact(path, target_path, node.start_point[0] + 1)
+                default_local = _js_default_import_name(node, source)
+                if default_local is not None:
+                    facts.imports.append(
+                        _SymbolImportFact(
+                            path,
+                            default_local,
+                            target_path,
+                            "default",
+                            node.start_point[0] + 1,
+                        )
                     )
+
+            for node in _walk_js_tree(root_node):
+                for alias, target in _js_lexical_aliases(node, source):
+                    facts.aliases.append(
+                        _SymbolAliasFact(
+                            path,
+                            alias,
+                            target,
+                            node.start_point[0] + 1,
+                            script_context,
+                        )
+                    )
+
+    for path in js_paths:
+        programs = trees.get(path.resolve())
+        if programs is None:
+            continue
+        for source, root_node, script_context in programs:
+            for node in _walk_js_tree(root_node):
+                if node.type != "export_statement":
+                    continue
+
+                raw_module = _js_module_specifier(node, source)
+                export_clause = _js_export_clause(node)
+                if raw_module is not None:
+                    target_path = _resolve_js_module_path(raw_module, path.parent)
+                    if target_path is None:
+                        continue
+                    target_path = target_path.resolve()
+                    namespace_name = _js_namespace_export_name(node, source)
+                    if namespace_name is not None:
+                        facts.namespace_exports.append(
+                            _NamespaceExportFact(
+                                path,
+                                namespace_name,
+                                target_path,
+                                node.start_point[0] + 1,
+                            )
+                        )
+                    elif _js_export_statement_is_star(node):
+                        facts.star_exports.append(
+                            _StarExportFact(path, target_path, node.start_point[0] + 1)
+                        )
+                    if export_clause is not None:
+                        for original_name, exported_name in _js_named_specifiers(
+                            export_clause, source, "export_specifier"
+                        ):
+                            facts.exports.append(
+                                _SymbolExportFact(
+                                    path,
+                                    exported_name,
+                                    node.start_point[0] + 1,
+                                    target_path=target_path,
+                                    target_name=original_name,
+                                    script_context=script_context,
+                                )
+                            )
+                    continue
+
                 if export_clause is not None:
-                    for original_name, exported_name in _js_named_specifiers(
+                    for local_name, exported_name in _js_named_specifiers(
                         export_clause, source, "export_specifier"
                     ):
                         facts.exports.append(
@@ -1465,95 +1670,85 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                                 path,
                                 exported_name,
                                 node.start_point[0] + 1,
-                                target_path=target_path,
-                                target_name=original_name,
+                                local_name=local_name,
+                                script_context=script_context,
                             )
                         )
-                continue
+                    continue
 
-            if export_clause is not None:
-                for local_name, exported_name in _js_named_specifiers(
-                    export_clause, source, "export_specifier"
-                ):
+                for exported_name in _js_exported_declaration_names(node, source):
                     facts.exports.append(
                         _SymbolExportFact(
                             path,
                             exported_name,
                             node.start_point[0] + 1,
-                            local_name=local_name,
+                            local_name=exported_name,
+                            script_context=script_context,
                         )
                     )
-                continue
 
-            for exported_name in _js_exported_declaration_names(node, source):
-                facts.exports.append(
-                    _SymbolExportFact(
-                        path,
-                        exported_name,
-                        node.start_point[0] + 1,
-                        local_name=exported_name,
+                default_name = _js_default_export_name(node, source)
+                if default_name is not None:
+                    facts.exports.append(
+                        _SymbolExportFact(
+                            path,
+                            "default",
+                            node.start_point[0] + 1,
+                            local_name=default_name,
+                            script_context=script_context,
+                        )
                     )
-                )
-
-            # `export default class Foo {}` / `export default foo` exposes the
-            # symbol under the name "default"; record that so a default import
-            # (imported_name="default") resolves to it. `export { X as default }`
-            # is already handled via the export_clause path above.
-            default_name = _js_default_export_name(node, source)
-            if default_name is not None:
-                facts.exports.append(
-                    _SymbolExportFact(
-                        path,
-                        "default",
-                        node.start_point[0] + 1,
-                        local_name=default_name,
-                    )
-                )
 
     for path in js_paths:
-        resolved_path = path.resolve()
-        parsed = trees.get(resolved_path)
-        if parsed is None:
+        programs = trees.get(path.resolve())
+        if programs is None:
             continue
-        source, root_node = parsed
-        for source_id, body in _js_top_level_function_bodies(path, root_node, source):
-            for node in _walk_js_tree(body):
-                imported_name = _js_call_identifier(node, source)
-                if imported_name is None:
+        for source, root_node, script_context in programs:
+            for source_id, body in _js_top_level_function_bodies(path, root_node, source):
+                for node in _walk_js_tree(body):
+                    imported_name = _js_call_identifier(node, source)
+                    if imported_name is None:
+                        continue
+                    facts.uses.append(
+                        _SymbolUseFact(
+                            path,
+                            source_id,
+                            imported_name,
+                            "calls",
+                            "call",
+                            node.start_point[0] + 1,
+                            script_context,
+                        )
+                    )
+
+    for path in js_paths:
+        programs = trees.get(path.resolve())
+        if programs is None:
+            continue
+        for source, root_node, script_context in programs:
+            stem = _file_stem(path)
+            for node in _walk_js_tree(root_node):
+                if node.type not in (
+                    "class_declaration",
+                    "abstract_class_declaration",
+                    "interface_declaration",
+                ):
                     continue
-                facts.uses.append(
-                    _SymbolUseFact(
-                        path,
-                        source_id,
-                        imported_name,
-                        "calls",
-                        "call",
-                        node.start_point[0] + 1,
-                    )
+                name_node = node.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                class_name = _read_text(name_node, source)
+                if not class_name:
+                    continue
+                class_nid = _make_id(stem, class_name)
+                _ts_walk_class_members(
+                    node,
+                    source,
+                    path,
+                    class_nid,
+                    facts,
+                    script_context=script_context,
                 )
-
-    for path in js_paths:
-        resolved_path = path.resolve()
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, root_node = parsed
-        stem = _file_stem(path)
-        for node in _walk_js_tree(root_node):
-            if node.type not in (
-                "class_declaration",
-                "abstract_class_declaration",
-                "interface_declaration",
-            ):
-                continue
-            name_node = node.child_by_field_name("name")
-            if name_node is None:
-                continue
-            class_name = _read_text(name_node, source)
-            if not class_name:
-                continue
-            class_nid = _make_id(stem, class_name)
-            _ts_walk_class_members(node, source, path, class_nid, facts)
 
 def _parse_python_tree(path: Path):
     try:
@@ -1767,9 +1962,15 @@ def _augment_symbol_resolution_edges(
     nodes: list[dict],
     edges: list[dict],
     root: Path,
+    *,
+    svelte_context: SvelteExtractionContext | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
-    _collect_js_symbol_resolution_facts(paths, facts)
+    _collect_js_symbol_resolution_facts(
+        paths,
+        facts,
+        svelte_context=svelte_context,
+    )
     _collect_python_symbol_resolution_facts(paths, root, facts)
     _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 

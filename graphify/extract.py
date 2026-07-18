@@ -50,6 +50,17 @@ from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
+from graphify.extractors.svelte import (
+    SvelteExtractionContext,
+    SvelteSourceFacts,
+    augment_svelte_component,
+    augment_svelte_runes,
+    augment_svelte_semantic_edges,
+    has_fatal_svelte_diagnostics,
+    mask_svelte_script_facts,
+    parse_svelte_ast_batch,
+    svelte_script_facts,
+)
 from graphify.extractors.terraform import extract_terraform  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
@@ -1160,6 +1171,7 @@ def extract_js(path: Path) -> dict:
         config = _JS_CONFIG
     result = _extract_generic(path, config)
     if "error" not in result:
+        augment_svelte_runes(path, result)
         _extract_js_rationale(path, result)
     return result
 
@@ -1268,129 +1280,114 @@ def _extract_js_rationale(path: Path, result: dict) -> None:
                 _add_doc_ref(m.group(1), lineno)
 
 
-def extract_svelte(path: Path) -> dict:
-    """Extract imports from .svelte files: script-block via JS AST + template regex fallback.
+def extract_svelte(
+    path: Path,
+    *,
+    _ast_facts: dict | None = None,
+    _source: str | None = None,
+    _source_facts: SvelteSourceFacts | None = None,
+    _defer_semantic_targets: bool = False,
+) -> dict:
+    """Extract a Svelte component from its modern author AST.
 
-    Tree-sitter only sees the <script> block. Svelte template syntax like
-    {#await import('./X.svelte')} lives in the markup layer and is invisible
-    to the JS parser, so a regex pass covers those dynamic imports.
+    A bundled ``svelte/compiler`` bridge owns component structure and returns
+    exact script/template ranges. Tree-sitter parses only the original JS/TS
+    script bytes for Graphify's shared symbol and call pipeline.
     """
-    result = _extract_generic(path, _JS_CONFIG)
     try:
-        import re as _re
-        src = path.read_text(encoding="utf-8", errors="replace")
-        existing_ids = {n["id"] for n in result.get("nodes", [])}
-        # Source file node ID must match the one _extract_generic creates:
-        # _make_id(str(path)) - single arg, no stem prefix. Otherwise the source
-        # endpoint is a phantom node and build_from_json drops the edge (#701).
+        src = _source_facts.source if _source_facts is not None else (
+            _source
+            if _source is not None
+            else path.read_text(encoding="utf-8", errors="replace")
+        )
+        facts = _source_facts.facts if _source_facts is not None else (
+            _ast_facts or parse_svelte_ast_batch([(path, src)])[path]
+        )
+        diagnostics = facts.get("diagnostics", [])
+        fatal_diagnostics = diagnostics if has_fatal_svelte_diagnostics(facts) else []
+        if fatal_diagnostics:
+            message = "; ".join(
+                str(item.get("message", "Svelte parse failed"))
+                for item in fatal_diagnostics
+                if isinstance(item, dict)
+            ) or "Svelte parse failed"
+            return {
+                "nodes": [{
+                    "id": _make_id(str(path)),
+                    "label": path.name,
+                    "file_type": "code",
+                    "source_file": str(path),
+                    "source_location": "L1",
+                }],
+                "edges": [],
+                "diagnostics": diagnostics,
+                "error": message,
+            }
+
+        partials = []
+        for script in svelte_script_facts(facts):
+            config = _TS_CONFIG if script["language"] == "ts" else _JS_CONFIG
+            partials.append(
+                _extract_generic(
+                    path,
+                    config,
+                    source_override=mask_svelte_script_facts(src, facts, script=script),
+                )
+            )
+
+        result: dict = {"nodes": [], "edges": [], "raw_calls": []}
+        if diagnostics:
+            result["diagnostics"] = diagnostics
+        merged_type_table: dict[str, str] = {}
+        for partial in partials:
+            result["nodes"].extend(partial.get("nodes", []))
+            result["edges"].extend(partial.get("edges", []))
+            result["raw_calls"].extend(partial.get("raw_calls", []))
+            table = partial.get("ts_type_table", {}).get("table", {})
+            if isinstance(table, dict):
+                merged_type_table.update(table)
+
         file_node_id = _make_id(str(path))
-        aliases = _load_tsconfig_aliases(path.parent)
-        for m in _re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
-            raw = m.group(1)
-            if not raw:
-                continue
-            if raw.startswith("."):
-                # Relative import - resolve to full path so IDs match file node IDs.
-                resolved = Path(os.path.normpath(path.parent / raw))
-                # Apply same TS/Svelte resolver fixups as static imports so dynamic
-                # imports of bare paths and .svelte.ts rune files land on real
-                # file nodes instead of phantom ids (#716).
-                resolved = _resolve_js_module_path(resolved)
-                node_id = _make_id(str(resolved))
-                stub_source_file = str(resolved)
-            else:
-                # Check tsconfig.json path aliases (e.g. "$lib/" -> "src/lib/", "@/" -> "src/")
-                # before treating as external. Mirrors _import_js logic so SvelteKit alias
-                # imports resolve to the same file node IDs the extractor creates (#701).
-                resolved_alias = _resolve_tsconfig_alias(raw, aliases)
-                if resolved_alias is not None:
-                    resolved_alias = _resolve_js_module_path(resolved_alias)
-                    node_id = _make_id(str(resolved_alias))
-                    stub_source_file = str(resolved_alias)
-                else:
-                    # Bare/scoped import (node_modules) - use last segment;
-                    # build_from_json drops as external if no matching node exists.
-                    module_name = raw.split("/")[-1]
-                    if not module_name:
-                        continue
-                    node_id = _make_id(module_name)
-                    stub_source_file = raw
-            if node_id in existing_ids:
-                # Edge target already a real node - just add the edge, don't add a node.
-                result.setdefault("edges", []).append({
-                    "source": file_node_id, "target": node_id,
-                    "relation": "dynamic_import", "confidence": "EXTRACTED",
-                    "source_file": str(path),
-                })
-                continue
-            result.setdefault("nodes", []).append({
-                "id": node_id, "label": raw,
-                "file_type": "code", "source_file": stub_source_file,
-                "confidence": "EXTRACTED",
-            })
-            result.setdefault("edges", []).append({
-                "source": file_node_id, "target": node_id,
-                "relation": "dynamic_import", "confidence": "EXTRACTED",
+        if not any(node.get("id") == file_node_id for node in result["nodes"]):
+            result["nodes"].append({
+                "id": file_node_id,
+                "label": path.name,
+                "file_type": "code",
                 "source_file": str(path),
+                "source_location": "L1",
             })
-            existing_ids.add(node_id)
-        # Static imports inside <script> blocks. The JS tree-sitter parser fed
-        # the full .svelte file produces a top-level ERROR node (HTML markup
-        # is not valid JS), so import_statement nodes are never reached and
-        # static imports are silently dropped (#713). Regex over each script
-        # body recovers them.
-        script_re = _re.compile(
-            r"<script\b[^>]*>([\s\S]*?)</script\s*>", _re.IGNORECASE
+        if merged_type_table:
+            result["ts_type_table"] = {"path": str(path), "table": merged_type_table}
+
+        seen_nodes: set[str] = set()
+        result["nodes"] = [
+            node for node in result["nodes"]
+            if isinstance(node.get("id"), str) and not (
+                node["id"] in seen_nodes or seen_nodes.add(node["id"])
+            )
+        ]
+        seen_edges: set[tuple] = set()
+        deduped_edges = []
+        for edge in result["edges"]:
+            key = (
+                edge.get("source"), edge.get("target"), edge.get("relation"),
+                edge.get("source_location"), edge.get("context"),
+            )
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            deduped_edges.append(edge)
+        result["edges"] = deduped_edges
+        augment_svelte_component(
+            path,
+            src,
+            facts,
+            result,
+            include_standalone_dynamic_targets=not _defer_semantic_targets,
         )
-        static_import_re = _re.compile(
-            r"""import\s+(?:[^'"`;]+?\s+from\s+)?['"]([^'"]+)['"]"""
-        )
-        for script_match in script_re.finditer(src):
-            script_body = script_match.group(1)
-            for m in static_import_re.finditer(script_body):
-                raw = m.group(1)
-                if not raw:
-                    continue
-                if raw.startswith("."):
-                    resolved = Path(os.path.normpath(path.parent / raw))
-                    if resolved.suffix == ".js":
-                        resolved = resolved.with_suffix(".ts")
-                    elif resolved.suffix == ".jsx":
-                        resolved = resolved.with_suffix(".tsx")
-                    node_id = _make_id(str(resolved))
-                    stub_source_file = str(resolved)
-                else:
-                    resolved_alias = _resolve_tsconfig_alias(raw, aliases)
-                    if resolved_alias is not None:
-                        node_id = _make_id(str(resolved_alias))
-                        stub_source_file = str(resolved_alias)
-                    else:
-                        module_name = raw.split("/")[-1]
-                        if not module_name:
-                            continue
-                        node_id = _make_id(module_name)
-                        stub_source_file = raw
-                if node_id in existing_ids:
-                    result.setdefault("edges", []).append({
-                        "source": file_node_id, "target": node_id,
-                        "relation": "imports_from", "confidence": "EXTRACTED",
-                        "source_file": str(path),
-                    })
-                    continue
-                result.setdefault("nodes", []).append({
-                    "id": node_id, "label": raw,
-                    "file_type": "code", "source_file": stub_source_file,
-                    "confidence": "EXTRACTED",
-                })
-                result.setdefault("edges", []).append({
-                    "source": file_node_id, "target": node_id,
-                    "relation": "imports_from", "confidence": "EXTRACTED",
-                    "source_file": str(path),
-                })
-                existing_ids.add(node_id)
-    except Exception:
-        pass
-    return result
+        return result
+    except Exception as exc:
+        return {"nodes": [], "edges": [], "error": str(exc)}
 
 
 def extract_astro(path: Path) -> dict:
@@ -2409,6 +2406,28 @@ def _resolve_typescript_member_calls(
         if tnode is not None:
             method_index[(src, _key(tnode.get("label", "")))] = tgt
 
+    imported_type_by_file_local: dict[tuple[str, str], str] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "imports":
+            continue
+        metadata = edge.get("metadata") or {}
+        alias_names = {
+            alias.get("local_name")
+            for alias in metadata.get("aliases", [])
+            if isinstance(alias, dict) and isinstance(alias.get("local_name"), str)
+        }
+        if isinstance(metadata.get("local_name"), str):
+            alias_names.add(metadata["local_name"])
+        target = edge.get("target")
+        source_file = edge.get("source_file")
+        if (
+            isinstance(target, str)
+            and isinstance(source_file, str)
+            and _is_type_like_definition(node_by_id.get(target, {}))
+        ):
+            for local_name in alias_names:
+                imported_type_by_file_local[(source_file, local_name)] = target
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -2435,10 +2454,16 @@ def _resolve_typescript_member_calls(
         # cross-file CALL resolver already skips these globals; do the same here.
         if type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
-        type_defs = type_def_nids.get(_key(type_name), [])
-        if len(type_defs) != 1:
-            continue
-        type_nid = type_defs[0]
+        imported_type = imported_type_by_file_local.get(
+            (str(rc.get("source_file", "")), type_name)
+        )
+        if imported_type is not None:
+            type_nid = imported_type
+        else:
+            type_defs = type_def_nids.get(_key(type_name), [])
+            if len(type_defs) != 1:
+                continue
+            type_nid = type_defs[0]
         method_nid = method_index.get((type_nid, _key(callee)))
         target = method_nid or type_nid
         relation = "calls" if method_nid else "references"
@@ -2915,7 +2940,11 @@ register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb", ".rake"}), resolve_ruby_member_calls)
 )
 register_language_resolver(
-    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
+    LanguageResolver(
+        "typescript_member_calls",
+        frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".svelte"}),
+        _resolve_typescript_member_calls,
+    )
 )
 # C++ (#1547) and ObjC (#1556) receiver-typed member-call resolution. `.h` is in
 # both suffix sets because it routes to extract_cpp or extract_objc by content; the
@@ -4510,6 +4539,30 @@ def extract(
                 continue
         uncached_work.append((i, path))
 
+    # Parse all Svelte author sources in one bundled-compiler invocation. These
+    # stay in the parent process so ProcessPool extraction never starts one Node
+    # compiler per worker (and behaves identically under Windows spawn).
+    svelte_context = SvelteExtractionContext({})
+    svelte_work = [(idx, path) for idx, path in uncached_work if path.suffix == ".svelte"]
+    if svelte_work:
+        svelte_sources: dict[Path, str] = {}
+        for idx, path in svelte_work:
+            try:
+                svelte_sources[path] = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                per_file[idx] = {"nodes": [], "edges": [], "error": str(exc)}
+        svelte_context = SvelteExtractionContext.parse(svelte_sources)
+        for idx, path in svelte_work:
+            source_facts = svelte_context.get(path)
+            if source_facts is None:
+                continue
+            per_file[idx] = extract_svelte(
+                path,
+                _source_facts=source_facts,
+                _defer_semantic_targets=True,
+            )
+        uncached_work = [item for item in uncached_work if item[1].suffix != ".svelte"]
+
     # Phase 2: extract uncached files (parallel or sequential)
     if uncached_work:
         ran_parallel = False
@@ -4611,7 +4664,21 @@ def extract(
     # marker set in the per-file extractor. Populated just before the pass that uses it.
     callable_nids: set[str] = set()
 
-    _augment_symbol_resolution_edges(paths, all_nodes, all_edges, root)
+    _augment_symbol_resolution_edges(
+        paths,
+        all_nodes,
+        all_edges,
+        root,
+        svelte_context=svelte_context,
+    )
+    augment_svelte_semantic_edges(
+        paths,
+        per_file,
+        all_nodes,
+        all_edges,
+        root,
+        svelte_context=svelte_context,
+    )
 
     # Merge a header-declared class (and its methods) with its sibling-impl
     # definition into ONE node (C/C++/ObjC #1547/#1556). Runs BEFORE the id-remap
@@ -4750,15 +4817,23 @@ def extract(
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
         if edge_alias_candidates:
-            def _edge_key(edge: dict) -> str:
-                # target_file is a transient stamp (#1814/#1983); exclude it
-                # from twin identity or an alias edge (stamped) never matches
-                # the canonical twin the shared resolver emits (unstamped).
+            def _import_identity(edge: dict) -> str:
                 return json.dumps(
-                    {k: v for k, v in edge.items() if k != "target_file"},
-                    sort_keys=True, separators=(",", ":"), default=str,
+                    {
+                        key: value
+                        for key, value in edge.items()
+                        if key not in ("metadata", "target", "target_file")
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
                 )
-            edge_key_counts = Counter(_edge_key(edge) for edge in all_edges)
+
+            canonical_imports = {
+                (edge.get("target"), _import_identity(edge))
+                for edge in all_edges
+                if edge.get("relation") == "imports"
+            }
             owned_node_ids = {node.get("id") for node in all_nodes}
             deduped_edges: list[dict] = []
             for edge in all_edges:
@@ -4775,13 +4850,16 @@ def extract(
                 )
                 if len(candidates) == 1:
                     candidate = next(iter(candidates))
-                    twin_key = _edge_key({**edge, "target": candidate})
-                    # Drop only when the shared resolver emitted the exact
-                    # canonical twin. Otherwise the target may be a legitimate
-                    # owned node id.
-                    if edge_key_counts[twin_key]:
-                        if edge.get("target") in owned_node_ids:
-                            edge_key_counts[twin_key] -= 1
+                    has_canonical_twin = (
+                        candidate,
+                        _import_identity(edge),
+                    ) in canonical_imports
+                    # A generic AST import edge has no alias metadata. When the
+                    # shared resolver emitted its canonical target twin, this
+                    # absolute-prefixed edge is redundant. A metadata-bearing
+                    # edge is independently resolved and may legitimately target
+                    # an owned same-id symbol (#1529 collision fixtures).
+                    if has_canonical_twin and not edge.get("metadata"):
                         continue
                 deduped_edges.append(edge)
             all_edges[:] = deduped_edges

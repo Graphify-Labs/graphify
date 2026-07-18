@@ -66,6 +66,12 @@ class _SymbolImportFact:
     target_path: Path
     imported_name: str
     line: int
+    binding_id: str | None = None
+    script_context: str | None = None
+    start_offset: int | None = None
+    end_offset: int | None = None
+    start_byte: int | None = None
+    end_byte: int | None = None
 
 @dataclass(frozen=True)
 class _SymbolAliasFact:
@@ -73,6 +79,7 @@ class _SymbolAliasFact:
     alias: str
     target_name: str
     line: int
+    script_context: str | None = None
 
 @dataclass(frozen=True)
 class _SymbolExportFact:
@@ -82,6 +89,7 @@ class _SymbolExportFact:
     local_name: str | None = None
     target_path: Path | None = None
     target_name: str | None = None
+    script_context: str | None = None
 
 @dataclass(frozen=True)
 class _StarExportFact:
@@ -104,6 +112,7 @@ class _SymbolUseFact:
     relation: str
     context: str
     line: int
+    script_context: str | None = None
 
 @dataclass
 class _SymbolResolutionFacts:
