@@ -174,12 +174,22 @@ BACKENDS: dict[str, dict] = {
         # CLI's Read tool rather than as inline base64 (see `_call_claude_cli`).
         "vision": True,
     },
+    "acp": {
+        # Provider-managed ACP authentication. The adapter owns subscription
+        # and API-key handling; Graphify deliberately never reads an OpenAI key
+        # for this backend.
+        "default_model": "",
+        "model_env_key": "GRAPHIFY_ACP_MODEL",
+        "pricing": {"input": 0.0, "output": 0.0},
+        "max_tokens": 16384,
+        "vision": True,
+    },
+    # Compatibility spelling retained for callers that selected the old
+    # backend. It is normalized to ACP before dispatch and never invokes
+    # `codex exec` directly.
     "codex-cli": {
-        # Routes through the locally-installed Codex CLI. The CLI owns ChatGPT
-        # subscription/API-key authentication; Graphify deliberately never
-        # reads or fabricates an OpenAI API key for this backend.
-        "default_model": "codex-cli-default",
-        "model_env_key": "GRAPHIFY_CODEX_CLI_MODEL",
+        "default_model": "",
+        "model_env_key": "GRAPHIFY_ACP_MODEL",
         "pricing": {"input": 0.0, "output": 0.0},
         "max_tokens": 16384,
         "vision": True,
@@ -719,7 +729,7 @@ _MAX_IMAGES_PER_CHUNK = 20
 # Backends that read an image by file path (claude-cli's Read tool)
 # instead of inlining base64. They open the file themselves and downsample as
 # needed, so `_MAX_IMAGE_BYTES` does not apply and the bytes never need loading.
-_PATH_IMAGE_BACKENDS = {"claude-cli", "codex-cli"}
+_PATH_IMAGE_BACKENDS = {"claude-cli"}
 
 
 @dataclass
@@ -819,6 +829,11 @@ def _backend_supports_vision(backend: str) -> bool:
     if backend == "ollama":
         return os.environ.get("GRAPHIFY_OLLAMA_VISION", "").strip() == "1"
     return bool(BACKENDS.get(backend, {}).get("vision", False))
+
+
+def _normalize_backend(backend: str) -> str:
+    """Map the retired direct-Codex spelling to the generic ACP backend."""
+    return "acp" if backend == "codex-cli" else backend
 
 
 def _image_notes(refs: list[_ImageRef], *, with_paths: bool = False) -> str:
@@ -1435,123 +1450,7 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     return result
 
 
-def _codex_cli_result(stdout: str) -> tuple[str, dict]:
-    """Extract the final assistant message and usage from Codex JSONL events."""
-    messages: list[str] = []
-    usage: dict = {}
-    for line in stdout.splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            # --json is JSONL, but tolerate harmless launcher noise so the
-            # final agent message remains parseable.
-            continue
-        if not isinstance(event, dict):
-            continue
-        if event.get("type") == "item.completed":
-            item = event.get("item")
-            if isinstance(item, dict) and item.get("type") == "agent_message":
-                text = item.get("text")
-                if isinstance(text, str):
-                    messages.append(text)
-        elif event.get("type") == "turn.completed":
-            event_usage = event.get("usage")
-            if isinstance(event_usage, dict):
-                usage = event_usage
-
-    if not messages:
-        raise RuntimeError(
-            "codex exec produced no final assistant message; verify `codex login status` "
-            f"and inspect the CLI error. stdout began with: {stdout[:300]!r}"
-        )
-    return messages[-1], usage
-
-
-def _run_codex_cli(
-    prompt: str,
-    *,
-    model: str | None = None,
-    max_tokens: int = 8192,
-    extraction: bool = False,
-    deep_mode: bool = False,
-    images: list[_ImageRef] | None = None,
-) -> tuple[str, dict, str]:
-    """Run Codex CLI with the user's existing subscription authentication.
-
-    The process receives the corpus inline and runs from an empty temporary
-    directory. This prevents project instructions or source files from being
-    mistaken for Codex task instructions, while ``--sandbox read-only`` and
-    ``--ephemeral`` keep the provider call side-effect free.
-    """
-    import shutil
-    import subprocess
-    import tempfile
-
-    codex_cmd = os.environ.get("GRAPHIFY_CODEX_BIN", "").strip() or shutil.which("codex")
-    if codex_cmd is None:
-        raise RuntimeError(
-            "Codex CLI not found. Install Codex, set GRAPHIFY_CODEX_BIN if it is "
-            "outside $PATH, and run `codex login` to authenticate with ChatGPT "
-            "or an API key."
-        )
-
-    selected_model = (model or os.environ.get("GRAPHIFY_CODEX_CLI_MODEL", "")).strip()
-    message = prompt
-    if extraction:
-        message = (
-            _extraction_system(deep=deep_mode)
-            + "\n\n---\n"
-            + "Now extract the knowledge graph from the following source file(s) "
-            + "and output ONLY the JSON object described above. No prose, no "
-            + "preamble, no markdown fences. Keep the response within roughly "
-            + f"{max_tokens} output tokens.\n\n"
-            + prompt
-        )
-    if images:
-        # Codex receives image bytes through --image. Keep only relative source
-        # metadata in the prompt; unlike Claude Code it does not need filesystem
-        # Read-tool access to the temporary working directory.
-        message = _with_image_notes(message, images)
-
-    cli_args = [
-        codex_cmd,
-        "exec",
-        "--ephemeral",
-        "--sandbox",
-        "read-only",
-        "--skip-git-repo-check",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--json",
-    ]
-    if selected_model and selected_model != "codex-cli-default":
-        cli_args.extend(["--model", selected_model])
-    for image in images or []:
-        cli_args.extend(["--image", str(image.path)])
-
-    with tempfile.TemporaryDirectory(prefix="graphify-codex-") as working_directory:
-        proc = subprocess.run(
-            cli_args,
-            input=message,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=working_directory,
-            timeout=_resolve_api_timeout(),
-            check=False,
-            **_no_window_kwargs(),
-        )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"codex exec exited {proc.returncode}: {proc.stderr.strip()[:500]}"
-        )
-
-    raw_content, usage = _codex_cli_result(proc.stdout)
-    return raw_content, usage, selected_model or "codex-cli-default"
-
-
-def _call_codex_cli(
+def _call_acp(
     user_message: str,
     max_tokens: int = 8192,
     *,
@@ -1559,8 +1458,10 @@ def _call_codex_cli(
     deep_mode: bool = False,
     images: list[_ImageRef] | None = None,
 ) -> dict:
-    """Call Codex through the locally authenticated Codex CLI subscription."""
-    raw_content, usage, resolved_model = _run_codex_cli(
+    """Call the configured ACP provider through the official Python SDK."""
+    from graphify.acp import run_acp
+
+    response = run_acp(
         user_message,
         model=model,
         max_tokens=max_tokens,
@@ -1568,16 +1469,15 @@ def _call_codex_cli(
         deep_mode=deep_mode,
         images=images,
     )
+    raw_content = response.text
     result = _parse_llm_json(raw_content or "{}")
-    result["input_tokens"] = int(usage.get("input_tokens", 0) or 0) + int(
-        usage.get("cached_input_tokens", 0) or 0
-    )
-    result["output_tokens"] = int(usage.get("output_tokens", 0) or 0)
-    result["model"] = resolved_model
-    result["finish_reason"] = "stop"
-    if _response_is_hollow(raw_content, result):
+    result["input_tokens"] = response.input_tokens
+    result["output_tokens"] = response.output_tokens
+    result["model"] = response.model
+    result["finish_reason"] = "length" if response.stop_reason == "max_tokens" else "stop"
+    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
         print(
-            "[graphify] codex-cli returned a hollow response; treating as "
+            "[graphify] ACP provider returned a hollow response; treating as "
             "truncation so adaptive retry can bisect the chunk.",
             file=sys.stderr,
         )
@@ -1721,9 +1621,10 @@ def extract_files_direct(
                 "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
                 "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, "
                 "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
-                "AWS credentials, or a logged-in Codex CLI. Pass backend= explicitly "
+                "AWS credentials, or an ACP adapter such as codex-acp. Pass backend= explicitly "
                 "to select a provider."
             )
+    backend = _normalize_backend(backend)
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}. Available: {sorted(BACKENDS)}")
 
@@ -1742,7 +1643,7 @@ def extract_files_direct(
             file=sys.stderr,
         )
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli", "codex-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "acp"):
         raise ValueError(
             f"No API key for backend '{backend}'. "
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
@@ -1755,7 +1656,7 @@ def extract_files_direct(
     user_msg = _read_files(text_files, root)
     vision = _backend_supports_vision(backend)
     # Only base64 (inline) vision backends need the bytes loaded + size-capped;
-    # path-based backends (claude-cli/codex-cli) and non-vision backends do not.
+    # path-based backends (claude-cli) and non-vision backends do not.
     read_bytes = vision and backend not in _PATH_IMAGE_BACKENDS
     image_refs = _build_image_refs(image_files, root, read_bytes=read_bytes) if image_files else []
     if image_refs and not vision:
@@ -1766,10 +1667,8 @@ def extract_files_direct(
         result = _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "claude-cli":
         result = _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    elif backend == "codex-cli":
-        # Pass only an explicit --model value here. With no model override the
-        # Codex CLI selects the model configured for the user's subscription.
-        result = _call_codex_cli(
+    elif backend == "acp":
+        result = _call_acp(
             user_msg,
             max_tokens=max_out,
             model=model,
@@ -2253,6 +2152,7 @@ def extract_corpus_parallel(
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so packing/slicing helpers can rely on ``Path`` semantics (#1386).
     """
+    backend = _normalize_backend(backend)
     files = [f if isinstance(f, (Path, FileSlice)) else Path(f) for f in files]
     # Split oversized splittable documents into slices that cover the whole file
     # before packing, so content past _FILE_CHAR_CAP is extracted instead of
@@ -2296,9 +2196,9 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
-    # Codex CLI owns a subscription-backed agent session; keep calls serial by
-    # default to avoid concurrent subscription sessions and rate-limit bursts.
-    if backend == "codex-cli" and os.environ.get("GRAPHIFY_CODEX_CLI_PARALLEL", "").strip() != "1":
+    # ACP providers own subscription-backed agent sessions; keep calls serial
+    # by default to avoid concurrent sessions and rate-limit bursts.
+    if backend == "acp" and os.environ.get("GRAPHIFY_ACP_PARALLEL", "").strip() != "1":
         max_concurrency = 1
     def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
         # Persist each chunk's semantic results to the cache as soon as it
@@ -2533,6 +2433,7 @@ def _call_llm(
     exist in this module, so the LLM tiebreaker silently no-op'd on
     `ImportError` (F-038). Adding the function here re-enables it.
     """
+    backend = _normalize_backend(backend)
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}")
     cfg = BACKENDS[backend]
@@ -2541,7 +2442,7 @@ def _call_llm(
         ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli", "codex-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "acp"):
         raise ValueError(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
@@ -2609,18 +2510,12 @@ def _call_llm(
             )
         return envelope.get("result", "")
 
-    if backend == "codex-cli":
-        raw_content, codex_usage, _ = _run_codex_cli(
-            prompt,
-            model=model,
-            max_tokens=max_tokens,
-        )
-        _rec(
-            int(codex_usage.get("input_tokens", 0) or 0)
-            + int(codex_usage.get("cached_input_tokens", 0) or 0),
-            codex_usage.get("output_tokens", 0),
-        )
-        return raw_content
+    if backend == "acp":
+        from graphify.acp import run_acp
+
+        response = run_acp(prompt, model=mdl, max_tokens=max_tokens)
+        _rec(response.input_tokens, response.output_tokens)
+        return response.text
 
 
     if backend == "bedrock":
@@ -3021,7 +2916,7 @@ def label_communities(
         max_concurrency = 1
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
-    if backend == "codex-cli" and os.environ.get("GRAPHIFY_CODEX_CLI_PARALLEL", "").strip() != "1":
+    if backend == "acp" and os.environ.get("GRAPHIFY_ACP_PARALLEL", "").strip() != "1":
         max_concurrency = 1
     workers = max(1, min(max_concurrency, n_batches))
 

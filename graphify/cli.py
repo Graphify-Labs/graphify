@@ -2120,7 +2120,7 @@ def dispatch_command(cmd: str) -> None:
         # has an API key set.
         if len(sys.argv) < 3:
             print(
-                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
+                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama|acp] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
@@ -2533,6 +2533,16 @@ def dispatch_command(cmd: str) -> None:
                         print(
                             "error: backend 'claude-cli' requires the `claude` CLI on $PATH "
                             "(install Claude Code and run `claude` once to authenticate).",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                elif backend in ("acp", "codex-cli"):
+                    import shutil as _shutil
+                    allow_no_key = _shutil.which(os.environ.get("GRAPHIFY_ACP_BIN", "codex-acp")) is not None
+                    if not allow_no_key:
+                        print(
+                            "error: backend 'acp' requires an ACP adapter on PATH "
+                            "(normally codex-acp, configured with GRAPHIFY_ACP_BIN).",
                             file=sys.stderr,
                         )
                         sys.exit(1)

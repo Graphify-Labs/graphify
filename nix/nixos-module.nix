@@ -13,6 +13,7 @@
     "bedrock"
     "claude"
     "claude-cli"
+    "acp"
     "codex-cli"
     "deepseek"
     "gemini"
@@ -211,6 +212,28 @@
         default = null;
         description = "Custom providers.json mounted read-only at HOME/.graphify/providers.json.";
       };
+      acp = mkOption {
+        type = types.submodule {
+          options = {
+            binary = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              description = "ACP provider command. Defaults to codex-acp on PATH.";
+            };
+            args = mkOption {
+              type = types.listOf types.str;
+              default = [];
+              description = "ACP adapter arguments encoded as JSON for the client.";
+            };
+            configOptions = mkOption {
+              type = types.attrsOf types.str;
+              default = {mode = "read-only";};
+              description = "ACP session configuration options applied after session/new.";
+            };
+          };
+        };
+        default = {};
+      };
     };
   };
 
@@ -369,7 +392,7 @@
         type = types.listOf types.package;
         default = [];
         example = lib.literalExpression "[ pkgs.claude-code pkgs.gws ]";
-        description = "External executables added to service PATH, such as claude for claude-cli, codex for codex-cli, or gws for Google Workspace export.";
+        description = "External executables added to service PATH, such as claude, codex-acp, or gws.";
       };
     };
   };
@@ -389,6 +412,7 @@
   baseEnvironment = instance: let
     pg = instance.source.postgresql;
     backend = instance.llm.backend;
+    acpBackend = builtins.elem backend ["acp" "codex-cli"];
     baseUrlVariable =
       if backend != null
       then backendBaseUrlVariables.${backend} or null
@@ -408,6 +432,13 @@
     // optionalAttrs (instance.llm.baseUrl != null && baseUrlVariable != null) {
       ${baseUrlVariable} = instance.llm.baseUrl;
     }
+    // optionalAttrs acpBackend ({
+      GRAPHIFY_ACP_ARGS_JSON = builtins.toJSON instance.llm.acp.args;
+      GRAPHIFY_ACP_CONFIG_JSON = builtins.toJSON instance.llm.acp.configOptions;
+      GRAPHIFY_ACP_MODEL = if instance.llm.model != null then instance.llm.model else "";
+    } // optionalAttrs (instance.llm.acp.binary != null) {
+      GRAPHIFY_ACP_BIN = instance.llm.acp.binary;
+    })
     // instance.environment;
 
   extractionArguments = name: instance:
