@@ -199,4 +199,4 @@ def test_install_hook_carries_strict_flag():
     assert read_strict.endswith("hook-guard read --strict")
     # search hook is unchanged either way
     for hooks in (soft, strict):
-        assert next(h for h in hooks if h["matcher"] == "Bash")["hooks"][0]["command"].endswith("hook-guard search")
+        assert next(h for h in hooks if h["matcher"] == "Bash|Grep")["hooks"][0]["command"].endswith("hook-guard search")

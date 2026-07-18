@@ -444,11 +444,18 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     try:
         if kind == "search":
             cmd_str = str(t.get("command", "") or "")
-            # Same set the old `case` matched: *grep*, *ripgrep*, and rg/find/fd/
+            # Two input shapes reach this guard (matcher "Bash|Grep", #1986):
+            # the Bash tool carries `command`, while Claude Code's dedicated
+            # Grep tool carries `pattern` (plus optional path/glob) and no
+            # command — a Grep call IS a content search by definition, so it
+            # nudges whenever a graph exists. For Bash, keep matching the same
+            # set the old `case` matched: *grep*, *ripgrep*, and rg/find/fd/
             # ack/ag as a token (name followed by a space). Nudge-only, even in
             # strict mode — see the docstring.
-            if any(tok in cmd_str for tok in ("grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag ")) \
-                    and out_path("graph.json").is_file():
+            is_grep_tool = not cmd_str and bool(t.get("pattern"))
+            is_bash_search = any(tok in cmd_str for tok in (
+                "grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag "))
+            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]

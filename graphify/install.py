@@ -290,9 +290,12 @@ def _claude_pretooluse_hooks(strict: bool = False) -> "list[dict]":
 
     The command invokes `graphify hook-guard <search|read>` via the absolute exe
     path (`_resolve_graphify_exe`), so it parses under sh, cmd.exe and PowerShell
-    alike — this is the #522 fix, and mirrors the codex hook. Matchers stay "Bash"
-    and "Read|Glob" and the command always contains "graphify", so the existing
-    install/uninstall filters find and replace both old bash hooks and these.
+    alike — this is the #522 fix, and mirrors the codex hook. Matchers are
+    "Bash|Grep" and "Read|Glob" and the command always contains "graphify", so the
+    existing install/uninstall filters find and replace both old bash hooks and
+    these. "Grep" is in the search matcher because current Claude Code routes
+    content search through its dedicated Grep tool, not Bash (#1986) — a
+    Bash-only matcher never fired on the agent's primary search path.
 
     When ``strict`` is set, the read hook carries ``--strict`` so it blocks the
     first raw read per session (Claude Code only). The ``GRAPHIFY_HOOK_STRICT`` env
@@ -303,7 +306,7 @@ def _claude_pretooluse_hooks(strict: bool = False) -> "list[dict]":
         exe = f'"{exe}"'
     read_cmd = f"{exe} hook-guard read" + (" --strict" if strict else "")
     return [
-        {"matcher": "Bash",
+        {"matcher": "Bash|Grep",
          "hooks": [{"type": "command", "command": f"{exe} hook-guard search"}]},
         {"matcher": "Read|Glob",
          "hooks": [{"type": "command", "command": read_cmd}]},
@@ -1637,11 +1640,11 @@ def _install_claude_hook(project_dir: Path, strict: bool = False) -> None:
     hooks = settings.setdefault("hooks", {})
     pre_tool = hooks.setdefault("PreToolUse", [])
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict))
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     _mode = " (strict)" if strict else ""
-    print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash search + Read/Glob){_mode}")
+    print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob){_mode}")
 def _uninstall_claude_hook(project_dir: Path) -> None:
     """Remove the graphify PreToolUse hook from .claude/settings.json and its
     local-only sibling .claude/settings.local.json.
@@ -1661,7 +1664,7 @@ def _strip_graphify_hook(settings_path: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Read|Glob") and "graphify" in str(h))]
+    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
     if len(filtered) == len(pre_tool):
         return
     settings["hooks"]["PreToolUse"] = filtered
@@ -1812,7 +1815,7 @@ def _install_codebuddy_hook(project_dir: Path) -> None:
     hooks = settings.setdefault("hooks", {})
     pre_tool = hooks.setdefault("PreToolUse", [])
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks())
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     print(f"  .codebuddy/settings.json  ->  PreToolUse hooks registered")
@@ -1826,7 +1829,7 @@ def _uninstall_codebuddy_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Read|Glob") and "graphify" in str(h))]
+    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
     if len(filtered) == len(pre_tool):
         return
     settings["hooks"]["PreToolUse"] = filtered
