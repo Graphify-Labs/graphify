@@ -1286,23 +1286,31 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
         print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin deregistered")
 def _resolve_graphify_exe() -> str:
-    """Return the absolute path to the graphify executable.
+    """Return the absolute path to the graphify executable, with forward slashes.
 
     Falls back to bare 'graphify' if resolution fails. Using an absolute path
     ensures the hook works in environments where the venv Scripts/ directory is
     not on PATH (e.g. VS Code Codex extension on Windows).
+
+    The path is normalized to forward slashes so it survives every shell that
+    runs the hook command. On Windows, Claude Code runs command-type hooks
+    through Git Bash by default, where an unquoted backslash is an escape
+    character: a raw ``C:\\Users\\me\\graphify.EXE`` collapses to
+    ``C:Usersmegraphify.EXE: command not found`` and the guard silently fails.
+    Forward slashes are accepted by Git Bash, cmd.exe, and PowerShell alike, and
+    ``.replace`` is a no-op on POSIX where paths already use forward slashes.
     """
     import shutil
     found = shutil.which("graphify")
-    if found:
-        return found
-    # Derive from sys.executable: same Scripts/ (Windows) or bin/ (Unix) dir
-    scripts_dir = Path(sys.executable).parent
-    for name in ("graphify.exe", "graphify"):
-        candidate = scripts_dir / name
-        if candidate.exists():
-            return str(candidate)
-    return "graphify"
+    if not found:
+        # Derive from sys.executable: same Scripts/ (Windows) or bin/ (Unix) dir
+        scripts_dir = Path(sys.executable).parent
+        for name in ("graphify.exe", "graphify"):
+            candidate = scripts_dir / name
+            if candidate.exists():
+                found = str(candidate)
+                break
+    return (found or "graphify").replace("\\", "/")
 def _install_codex_hook(project_dir: Path) -> None:
     """Add graphify PreToolUse hook to .codex/hooks.json."""
     hooks_path = project_dir / ".codex" / "hooks.json"

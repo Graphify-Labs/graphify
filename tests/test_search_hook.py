@@ -39,6 +39,18 @@ def test_matcher_targets_bash():
     assert _search_matcher()["matcher"] == "Bash"
 
 
+def test_hook_command_has_no_backslashes(monkeypatch):
+    # On Windows the resolved exe is a backslash path; Claude Code runs command
+    # hooks through Git Bash by default, which treats an unquoted backslash as an
+    # escape character and strips it (C:\Users\me\graphify.EXE -> C:Usersme...),
+    # breaking every guard. The emitted command must use forward slashes.
+    from graphify.__main__ import _resolve_graphify_exe
+    monkeypatch.setattr("shutil.which", lambda _name: r"C:\Users\me\graphify.EXE")
+    assert _resolve_graphify_exe() == "C:/Users/me/graphify.EXE"
+    for h in _claude_pretooluse_hooks():
+        assert "\\" not in h["hooks"][0]["command"]
+
+
 def test_command_has_no_shell_syntax():
     # #522: no POSIX bash that Windows cmd.exe/PowerShell can't parse.
     cmd = _search_matcher()["hooks"][0]["command"]
