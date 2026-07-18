@@ -2836,8 +2836,8 @@ def dispatch_command(cmd: str) -> None:
                 uncached_paths = list(sem_paths_str)
             else:
                 cached_nodes, cached_edges, cached_hyperedges, uncached_paths = (
-                    _check_semantic_cache(sem_paths_str, root=out_root, mode=sem_cache_mode,
-                                          prompt=sem_prompt)
+                    _check_semantic_cache(sem_paths_str, root=target, cache_root=out_root,
+                                          mode=sem_cache_mode, prompt=sem_prompt)
                 )
             sem_cache_hits = len(semantic_files) - len(uncached_paths)
             sem_cache_misses = len(uncached_paths)
@@ -2853,6 +2853,7 @@ def dispatch_command(cmd: str) -> None:
                     "backend": backend,
                     "model": model,
                     "root": target,
+                    "cache_root": out_root,
                 }
                 if deep_mode:
                     corpus_kwargs["deep_mode"] = True
@@ -2923,7 +2924,8 @@ def dispatch_command(cmd: str) -> None:
                         fresh.get("nodes", []),
                         fresh.get("edges", []),
                         fresh.get("hyperedges", []),
-                        root=out_root,
+                        root=target,
+                        cache_root=out_root,
                         allowed_source_files=uncached_paths,
                         mode=sem_cache_mode,
                         prompt=sem_prompt,
@@ -2948,6 +2950,11 @@ def dispatch_command(cmd: str) -> None:
         # incremental and full branches), NOT the incremental ``semantic_files``
         # changed-subset, which would delete every unchanged doc's valid entry.
         # Best-effort: a prune failure must never break extraction.
+        # Hash keys are anchored to the corpus (``target``) — the same anchor
+        # the cache read/write above use — while the stat-index artifact
+        # follows the cache location (``out_root``). Anchoring these hashes to
+        # ``out_root`` instead would mismatch every key under ``--out`` and
+        # sweep the entire fresh cache as orphaned (#1990/#1991).
         try:
             from graphify.cache import file_hash as _file_hash
             _live_hashes: set[str] = set()
@@ -2955,11 +2962,11 @@ def dispatch_command(cmd: str) -> None:
                 for _fp in files_by_type.get(_kind, []):
                     _abs = Path(_fp)
                     if not _abs.is_absolute():
-                        _abs = Path(out_root) / _abs
+                        _abs = Path(target) / _abs
                     if not _abs.is_file():
                         continue  # deleted/missing — leave out so its entry is pruned
                     try:
-                        _live_hashes.add(_file_hash(_abs, out_root))
+                        _live_hashes.add(_file_hash(_abs, target, cache_root=out_root))
                     except OSError:
                         pass
             _prune_semantic_cache(out_root, _live_hashes)

@@ -2044,6 +2044,7 @@ def extract_corpus_parallel(
     max_concurrency: int = 4,
     max_retry_depth: int = 3,
     deep_mode: bool = False,
+    cache_root: "Path | None" = None,
 ) -> dict:
     """Extract a corpus in chunks, merging results.
 
@@ -2078,6 +2079,14 @@ def extract_corpus_parallel(
     Returns merged dict with nodes, edges, hyperedges, input_tokens,
     output_tokens. Failed chunks are logged to stderr and skipped — one bad
     chunk does not abort the run.
+
+    ``cache_root`` (when given) is where per-chunk checkpoint cache entries are
+    written, decoupled from ``root`` which anchors content-hash keys and
+    ``source_file`` resolution — the same split the AST cache uses (#1774).
+    With ``--out``, cli.py passes the corpus as ``root`` and the output
+    directory as ``cache_root`` so checkpoints land where the recovery read
+    looks, instead of creating an unwanted ``graphify-out/`` inside the
+    analyzed source tree (#1990).
 
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so packing/slicing helpers can rely on ``Path`` semantics (#1386).
@@ -2154,6 +2163,7 @@ def extract_corpus_parallel(
                 result.get("edges", []),
                 result.get("hyperedges", []),
                 root=root,
+                cache_root=cache_root,
                 merge_existing=True,
                 allowed_source_files=allowed,
                 mode="deep" if deep_mode else None,

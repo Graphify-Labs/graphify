@@ -722,6 +722,7 @@ def check_semantic_cache(
     mode: str | None = None,
     prompt: "str | Path | None" = None,
     prompt_file: "str | Path | None" = None,
+    cache_root: "Path | None" = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[str]]:
     """Check semantic extraction cache for a list of absolute file paths.
 
@@ -744,6 +745,12 @@ def check_semantic_cache(
     vintage is unknowable and dropping them would re-bill a whole corpus — but
     a warning reports how many were served. Omitting ``prompt`` keeps the
     historical behavior for existing callers.
+
+    ``cache_root`` decouples *where* the cache is read from the key-anchor
+    ``root``, mirroring :func:`load_cached` and :func:`save_semantic_cache`
+    (#1774 / #1990). With ``--out``, pass the corpus as ``root`` (so content-hash
+    keys and relative-path resolution stay anchored to the source tree) and the
+    output directory as ``cache_root``. Omitting it keeps ``root`` for both.
     """
     global _legacy_semantic_hits
     kind = "semantic" if mode is None else f"semantic-{mode}"
@@ -757,7 +764,8 @@ def check_semantic_cache(
         p = Path(fpath)
         if not p.is_absolute():
             p = Path(root) / p
-        result = load_cached(p, root, kind=kind, prompt=prompt, prompt_file=prompt_file)
+        result = load_cached(p, root, kind=kind, cache_root=cache_root,
+                             prompt=prompt, prompt_file=prompt_file)
         if result is not None:
             cached_nodes.extend(result.get("nodes", []))
             cached_edges.extend(result.get("edges", []))
@@ -808,6 +816,7 @@ def save_semantic_cache(
     prompt: "str | Path | None" = None,
     prompt_file: "str | Path | None" = None,
     partial_source_files: Iterable[str | Path] | None = None,
+    cache_root: "Path | None" = None,
 ) -> int:
     """Save semantic extraction results to cache, keyed by source_file.
 
@@ -845,6 +854,16 @@ def save_semantic_cache(
     replaying them (#1939). Pass the same prompt here as to
     :func:`check_semantic_cache`, or the write lands in a namespace the next
     read won't consult.
+
+    ``cache_root`` decouples *where* the cache directory is written from the
+    source-key anchor ``root`` — mirroring the same split that :func:`load_cached`
+    and :func:`save_cached` already expose (#1774). When given, cache files land
+    under ``cache_root`` while ``source_file`` paths are still resolved and
+    relativized against ``root``. When omitted, ``root`` is used for both
+    purposes (unchanged behaviour for existing callers). This fixes checkpoints
+    and the final save going to the corpus tree instead of ``--out`` (#1990,
+    #1991).
+
     Returns the number of files cached.
     """
     from collections import defaultdict
@@ -952,6 +971,7 @@ def save_semantic_cache(
                 ]
 
     saved = 0
+    skipped_not_file = 0
     for fpath, result in by_file.items():
         p = resolved_source_path(fpath)
         if p.is_file():
@@ -975,9 +995,9 @@ def save_semantic_cache(
                 # markers ride through, so is_partial below re-detects it) rather
                 # than a later clean slice silently replacing it and promoting the
                 # half-file to complete.
-                prev = load_cached(p, root, kind=kind, prompt=prompt,
-                                   prompt_file=prompt_file, allow_legacy=False,
-                                   allow_partial=True)
+                prev = load_cached(p, root, kind=kind, cache_root=cache_root,
+                                   prompt=prompt, prompt_file=prompt_file,
+                                   allow_legacy=False, allow_partial=True)
                 _prev_partial = bool(prev.get("partial")) if prev else False
                 if prev:
                     result = {
@@ -1002,6 +1022,19 @@ def save_semantic_cache(
             )
             if is_partial:
                 result = {**result, "partial": True}
-            save_cached(p, result, root, kind=kind, prompt=prompt, prompt_file=prompt_file)
+            save_cached(p, result, root, kind=kind, cache_root=cache_root,
+                        prompt=prompt, prompt_file=prompt_file)
             saved += 1
+        else:
+            skipped_not_file += 1
+    if skipped_not_file and skipped_not_file == len(by_file):
+        warnings.warn(
+            f"save_semantic_cache: all {skipped_not_file} source_file group(s) were "
+            "skipped because their paths do not resolve to real files. This usually "
+            "means ``root`` is anchored to the wrong directory (e.g. the --out "
+            "directory instead of the corpus root). Pass the corpus directory as "
+            "``root`` and the output directory as ``cache_root`` (#1991).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return saved
