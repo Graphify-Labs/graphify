@@ -19,13 +19,13 @@ jobs:
       XDG_CACHE_HOME: "/tmp/.cache"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
 
       - name: Check generated flake wiring
-        run: nix run git+https://codeberg.org/caniko/simit.git -- init flake --check --diff
+        run: nix run --no-write-lock-file git+https://codeberg.org/caniko/simit.git -- init flake --check --diff
 
       - name: Check flake evaluation
         run: nix flake check --no-build

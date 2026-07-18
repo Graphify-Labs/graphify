@@ -174,6 +174,25 @@ BACKENDS: dict[str, dict] = {
         # CLI's Read tool rather than as inline base64 (see `_call_claude_cli`).
         "vision": True,
     },
+    "acp": {
+        # Provider-managed ACP authentication. The adapter owns subscription
+        # and API-key handling; Graphify deliberately never reads an OpenAI key
+        # for this backend.
+        "default_model": "",
+        "model_env_key": "GRAPHIFY_ACP_MODEL",
+        "pricing": {"input": 0.0, "output": 0.0},
+        "max_tokens": 16384,
+        "vision": True,
+    },
+    # Deprecated compatibility alias. `_normalize_backend` routes this through
+    # the generic ACP backend; it never invokes `codex exec` directly.
+    "codex-cli": {
+        "default_model": "",
+        "model_env_key": "GRAPHIFY_CODEX_CLI_MODEL",
+        "pricing": {"input": 0.0, "output": 0.0},
+        "max_tokens": 16384,
+        "vision": True,
+    },
 }
 
 
@@ -811,6 +830,33 @@ def _backend_supports_vision(backend: str) -> bool:
     return bool(BACKENDS.get(backend, {}).get("vision", False))
 
 
+_WARNED_BACKEND_ALIASES: set[str] = set()
+
+
+def _normalize_backend(backend: str) -> str:
+    """Normalize deprecated backend names to their supported transports."""
+    if backend != "codex-cli":
+        return backend
+
+    if os.environ.get("GRAPHIFY_CODEX_BIN", "").strip() and not os.environ.get(
+        "GRAPHIFY_ACP_BIN", ""
+    ).strip():
+        raise RuntimeError(
+            "The deprecated codex-cli backend now uses ACP, but GRAPHIFY_CODEX_BIN "
+            "points to the Codex CLI rather than an ACP adapter. Set GRAPHIFY_ACP_BIN "
+            "to codex-acp (and CODEX_PATH for the adapter when needed), then remove "
+            "GRAPHIFY_CODEX_BIN."
+        )
+    if backend not in _WARNED_BACKEND_ALIASES:
+        print(
+            "[graphify] WARNING: --backend codex-cli is deprecated and now routes "
+            "through ACP. Use --backend acp and GRAPHIFY_ACP_* settings.",
+            file=sys.stderr,
+        )
+        _WARNED_BACKEND_ALIASES.add(backend)
+    return "acp"
+
+
 def _image_notes(refs: list[_ImageRef], *, with_paths: bool = False) -> str:
     """Text block listing the images so the model emits one node per image.
 
@@ -1425,6 +1471,41 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     return result
 
 
+def _call_acp(
+    user_message: str,
+    max_tokens: int = 8192,
+    *,
+    model: str | None = None,
+    deep_mode: bool = False,
+    images: list[_ImageRef] | None = None,
+) -> dict:
+    """Call the configured ACP provider through the official Python SDK."""
+    from graphify.acp import run_acp
+
+    response = run_acp(
+        user_message,
+        model=model,
+        max_tokens=max_tokens,
+        extraction=True,
+        deep_mode=deep_mode,
+        images=images,
+    )
+    raw_content = response.text
+    result = _parse_llm_json(raw_content or "{}")
+    result["input_tokens"] = response.input_tokens
+    result["output_tokens"] = response.output_tokens
+    result["model"] = response.model
+    result["finish_reason"] = "length" if response.stop_reason == "max_tokens" else "stop"
+    if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
+        print(
+            "[graphify] ACP provider returned a hollow response; treating as "
+            "truncation so adaptive retry can bisect the chunk.",
+            file=sys.stderr,
+        )
+        result["finish_reason"] = "length"
+    return result
+
+
 def _azure_client(api_key: str, endpoint: str):
     """Construct an AzureOpenAI client with env-driven api_version and timeout."""
     try:
@@ -1561,8 +1642,10 @@ def extract_files_direct(
                 "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
                 "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, "
                 "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
-                "or AWS credentials. Pass backend= explicitly to select a provider."
+                "AWS credentials, or an ACP adapter such as codex-acp. Pass backend= explicitly "
+                "to select a provider."
             )
+    backend = _normalize_backend(backend)
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}. Available: {sorted(BACKENDS)}")
 
@@ -1581,7 +1664,7 @@ def extract_files_direct(
             file=sys.stderr,
         )
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "acp"):
         raise ValueError(
             f"No API key for backend '{backend}'. "
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
@@ -1605,6 +1688,14 @@ def extract_files_direct(
         result = _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "claude-cli":
         result = _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "acp":
+        result = _call_acp(
+            user_msg,
+            max_tokens=max_out,
+            model=model,
+            deep_mode=deep_mode,
+            images=image_refs,
+        )
     elif backend == "bedrock":
         result = _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "azure":
@@ -2082,6 +2173,7 @@ def extract_corpus_parallel(
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so packing/slicing helpers can rely on ``Path`` semantics (#1386).
     """
+    backend = _normalize_backend(backend)
     files = [f if isinstance(f, (Path, FileSlice)) else Path(f) for f in files]
     # Split oversized splittable documents into slices that cover the whole file
     # before packing, so content past _FILE_CHAR_CAP is extracted instead of
@@ -2124,6 +2216,10 @@ def extract_corpus_parallel(
     # claude-cli shells out to a Claude Code session; parallel subprocesses conflict
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
+        max_concurrency = 1
+    # ACP providers own subscription-backed agent sessions; keep calls serial
+    # by default to avoid concurrent sessions and rate-limit bursts.
+    if backend == "acp" and os.environ.get("GRAPHIFY_ACP_PARALLEL", "").strip() != "1":
         max_concurrency = 1
     def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
         # Persist each chunk's semantic results to the cache as soon as it
@@ -2358,6 +2454,7 @@ def _call_llm(
     exist in this module, so the LLM tiebreaker silently no-op'd on
     `ImportError` (F-038). Adding the function here re-enables it.
     """
+    backend = _normalize_backend(backend)
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}")
     cfg = BACKENDS[backend]
@@ -2366,7 +2463,7 @@ def _call_llm(
         ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "acp"):
         raise ValueError(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
@@ -2433,6 +2530,13 @@ def _call_llm(
                 cli_usage.get("output_tokens", 0),
             )
         return envelope.get("result", "")
+
+    if backend == "acp":
+        from graphify.acp import run_acp
+
+        response = run_acp(prompt, model=mdl, max_tokens=max_tokens)
+        _rec(response.input_tokens, response.output_tokens)
+        return response.text
 
 
     if backend == "bedrock":
@@ -2832,6 +2936,8 @@ def label_communities(
     if backend == "ollama" and os.environ.get("GRAPHIFY_OLLAMA_PARALLEL", "").strip() != "1":
         max_concurrency = 1
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
+        max_concurrency = 1
+    if backend == "acp" and os.environ.get("GRAPHIFY_ACP_PARALLEL", "").strip() != "1":
         max_concurrency = 1
     workers = max(1, min(max_concurrency, n_batches))
 

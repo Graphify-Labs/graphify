@@ -122,7 +122,7 @@
                       # The retry-cap tests exercise the OpenAI-compatible Ollama
                       # path, so include that optional extra in the test-only
                       # environment without pulling every runtime extra.
-                      graphifyy = ["dev" "ollama"];
+                      graphifyy = ["dev" "ollama" "acp"];
                     });
                 in
                   (old.passthru.tests or {})
@@ -164,6 +164,14 @@
         virtualenv = editablePythonSet.mkVirtualEnv "graphify-dev-env" workspace.deps.all;
 
         graphifyEnv = pythonSet.mkVirtualEnv "graphify-env" workspace.deps.default;
+        graphifyAcpEnv = pythonSet.mkVirtualEnv "graphify-acp-env" (workspace.deps.default
+          // {
+            graphifyy = ["acp"];
+          });
+        graphifyOpenaiEnv = pythonSet.mkVirtualEnv "graphify-openai-env" (workspace.deps.default
+          // {
+            graphifyy = ["openai"];
+          });
         graphifyFullEnv = pythonSet.mkVirtualEnv "graphify-full-env" (workspace.deps.default
           // {
             graphifyy = ["all"];
@@ -210,6 +218,14 @@
         graphifyFullPackage = mkGraphifyPackage {
           environment = graphifyFullEnv;
           suffix = "-full";
+        };
+        graphifyAcpPackage = mkGraphifyPackage {
+          environment = graphifyAcpEnv;
+          suffix = "-acp";
+        };
+        graphifyOpenaiPackage = mkGraphifyPackage {
+          environment = graphifyOpenaiEnv;
+          suffix = "-openai";
         };
 
         moduleSample = inputs.nixpkgs.lib.nixosSystem {
@@ -341,6 +357,8 @@
 
         packages = {
           default = graphifyPackage;
+          acp = graphifyAcpPackage;
+          openai = graphifyOpenaiPackage;
           full = graphifyFullPackage;
         };
 
@@ -349,7 +367,7 @@
           full-package = pkgs.runCommand "graphify-full-package-check" {} ''
             test -x ${graphifyFullPackage}/bin/graphify
             test -x ${graphifyFullPackage}/bin/graphify-mcp
-            ${graphifyFullEnv}/bin/python -c 'import anthropic, boto3, falkordb, mcp, neo4j, openai, psycopg'
+            ${graphifyFullEnv}/bin/python -c 'import acp, anthropic, boto3, falkordb, mcp, neo4j, openai, psycopg'
             touch $out
           '';
           nixos-module = pkgs.runCommand "graphify-nixos-module-check" {} ''

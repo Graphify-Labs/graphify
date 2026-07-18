@@ -2323,7 +2323,7 @@ def dispatch_command(cmd: str) -> None:
         # has an API key set.
         if len(sys.argv) < 3:
             print(
-                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
+                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama|acp] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
@@ -2762,6 +2762,27 @@ def dispatch_command(cmd: str) -> None:
                         print(
                             "error: backend 'claude-cli' requires the `claude` CLI on $PATH "
                             "(install Claude Code and run `claude` once to authenticate).",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                elif backend in ("acp", "codex-cli"):
+                    import shutil as _shutil
+                    if (
+                        backend == "codex-cli"
+                        and os.environ.get("GRAPHIFY_CODEX_BIN", "").strip()
+                        and not os.environ.get("GRAPHIFY_ACP_BIN", "").strip()
+                    ):
+                        print(
+                            "error: codex-cli now uses ACP; replace GRAPHIFY_CODEX_BIN "
+                            "with GRAPHIFY_ACP_BIN=codex-acp and set CODEX_PATH on the adapter if needed.",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                    allow_no_key = _shutil.which(os.environ.get("GRAPHIFY_ACP_BIN", "codex-acp")) is not None
+                    if not allow_no_key:
+                        print(
+                            f"error: backend '{backend}' requires an ACP adapter on PATH "
+                            "(normally codex-acp, configured with GRAPHIFY_ACP_BIN).",
                             file=sys.stderr,
                         )
                         sys.exit(1)
