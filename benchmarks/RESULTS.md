@@ -13,26 +13,26 @@ samples, run counts, RSS, disk, and acceptance checks are retained in
 
 | Graph | Backend | Ingest | 1% update | Cold reopen | Hot open | 20 neighbors | BFS d=4 | 5 paths |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 5k / 15k | NetworkX | 0.043s | 0.005s | 0.004s | n/a | 0.003ms | 1.48ms | 0.10ms |
-| 5k / 15k | Helix | 9.280s | 12.329s | 8.156s | 6.08ms | 1.16ms | 20.24ms | 1.13ms |
-| 20k / 60k | NetworkX | 0.160s | 0.029s | 0.019s | n/a | 0.004ms | 0.80ms | 0.11ms |
-| 20k / 60k | Helix | 62.556s | 78.470s | 34.546s | 7.15ms | 1.10ms | 9.01ms | 3.22ms |
+| 5k / 15k | NetworkX | 0.033s | 0.005s | 0.004s | n/a | 0.004ms | 1.53ms | 0.11ms |
+| 5k / 15k | Helix | 10.235s | 12.396s | 7.903s | 6.73ms | 1.14ms | 21.47ms | 1.11ms |
+| 20k / 60k | NetworkX | 0.221s | 0.023s | 0.020s | n/a | 0.003ms | 0.72ms | 0.10ms |
+| 20k / 60k | Helix | 67.224s | 82.233s | 33.462s | 8.12ms | 1.10ms | 9.18ms | 3.64ms |
 
 | Graph | Backend | Community | Node BTW | Edge BTW | GraphML export | Peak ingest RSS |
 |---|---|---:|---:|---:|---:|---:|
-| 5k / 15k | NetworkX | 1.011s Louvain | 0.752s | 0.985s | 0.124s | 10.6 MiB |
-| 5k / 15k | Helix | 0.098s Leiden | 0.094s | 0.310s | 0.605s | 360.0 MiB |
-| 20k / 60k | NetworkX | 11.129s Louvain | 4.775s | 7.557s | 0.587s | 39.2 MiB |
-| 20k / 60k | Helix | 1.149s Leiden | 0.483s | 1.487s | 2.700s | 1,293.8 MiB |
+| 5k / 15k | NetworkX | 1.160s Louvain | 0.807s | 1.014s | 0.121s | 10.5 MiB |
+| 5k / 15k | Helix | 0.096s Leiden | 0.098s | 0.304s | 0.594s | 384.4 MiB |
+| 20k / 60k | NetworkX | 11.867s Louvain | 4.834s | 6.679s | 0.533s | 39.8 MiB |
+| 20k / 60k | Helix | 1.130s Leiden | 0.474s | 1.406s | 2.621s | 1,158.4 MiB |
 
 | Graph | Active Helix generation | Active + rollback | Eight concurrent cold reopens |
 |---|---:|---:|---:|
-| 5k / 15k | 35.75 MiB | 72.25 MiB | 109.59s |
-| 20k / 60k | 142.48 MiB | 285.45 MiB | 431.70s |
+| 5k / 15k | 35.90 MiB | 72.31 MiB | 104.48s |
+| 20k / 60k | 148.00 MiB | 296.85 MiB | 416.96s |
 
 All published acceptance gates passed. At 20k/60k, Helix weighted Leiden was
-9.7x faster than NetworkX Louvain, sampled node betweenness was 9.9x faster,
-and sampled edge betweenness was 5.1x faster. The 200 MB storage gate applies
+10.5x faster than NetworkX Louvain, sampled node betweenness was 10.2x faster,
+and sampled edge betweenness was 4.8x faster. The 200 MB storage gate applies
 to the active generation immediately after ingest. The raw results separately
 retain the expected footprint after the 1% update creates a rollback generation.
 

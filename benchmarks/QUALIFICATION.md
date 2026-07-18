@@ -6,7 +6,7 @@ native payloads, malformed store paths, and unavailable required native APIs.
 
 ## Graphify acceptance
 
-- Complete macOS arm64 / Python 3.12 suite: **2,757 passed, 30 skipped**.
+- Complete macOS arm64 / Python 3.12 suite: **2,761 passed, 30 skipped**.
 - CI matrix: Linux Python 3.10, Linux Python 3.12, and macOS Python 3.12.
 - All four graph kinds, typed IDs, keyed multiedges, self-loops, hyperedges,
   atomic activation, retained rollback, corruption, writer exclusion,
@@ -41,13 +41,13 @@ Every published gate passed:
 
 | Graph | Ingest | Cold open | Peak RSS | Active store | Slowest gated hot op |
 |---|---:|---:|---:|---:|---:|
-| 5k / 15k | 9.28s | 8.16s | 360.0 MiB | 35.75 MiB | 20.24ms |
-| 20k / 60k | 62.56s | 34.55s | 1,293.8 MiB | 142.48 MiB | 9.01ms |
+| 5k / 15k | 10.23s | 7.90s | 384.4 MiB | 35.90 MiB | 21.47ms |
+| 20k / 60k | 67.22s | 33.46s | 1,158.4 MiB | 148.00 MiB | 9.18ms |
 
 At 20k/60k, weighted Leiden, sampled node centrality, and sampled edge
-centrality were respectively **9.7x**, **9.9x**, and **5.1x** faster than the
+centrality were respectively **10.5x**, **10.2x**, and **4.8x** faster than the
 NetworkX baseline. The raw results also report incremental update, GraphML
-export, concurrent cold readers, and the 285.45 MiB active-plus-rollback
+export, concurrent cold readers, and the 296.85 MiB active-plus-rollback
 footprint; the published 200 MB store gate applies to the active generation
 immediately after ingest.
 
