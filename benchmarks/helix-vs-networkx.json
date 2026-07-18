@@ -2,250 +2,250 @@
   "helix_revision": "0.2.0b1",
   "python": "3.12.13",
   "platform": "macOS-26.0-arm64-arm-64bit",
-  "pid": 43743,
+  "pid": 62300,
   "results": [
     {
       "nodes": 5000,
       "edges": 15000,
       "networkx": {
-        "ingest_seconds": 0.04318183398572728,
+        "ingest_seconds": 0.03288533299928531,
         "ingest_runs": 1,
-        "reopen_seconds": 0.004425708029884845,
+        "reopen_seconds": 0.003947374993003905,
         "reopen_samples_seconds": [
-          0.004687541979365051,
-          0.00405708298785612,
-          0.004425708029884845
+          0.004235000000335276,
+          0.003947374993003905,
+          0.003639875038061291
         ],
-        "neighbor_20_queries_seconds": 3.4170225262641907e-06,
+        "neighbor_20_queries_seconds": 3.7500285543501377e-06,
         "neighbor_samples_seconds": [
-          2.675002906471491e-05,
-          4.332978278398514e-06,
-          3.4170225262641907e-06,
-          3.3329706639051437e-06,
-          3.2090465538203716e-06
+          2.112501533702016e-05,
+          4.292000085115433e-06,
+          3.7500285543501377e-06,
+          3.4589902497828007e-06,
+          3.3339601941406727e-06
         ],
-        "bfs_seconds": 0.0014835839974693954,
+        "bfs_seconds": 0.0015317079960368574,
         "bfs_samples_seconds": [
-          0.0022548330016434193,
-          0.0014754580333828926,
-          0.010475832968950272,
-          0.0014835839974693954,
-          0.001458624959923327
+          0.002253792015835643,
+          0.0014166669570840895,
+          0.010830458020791411,
+          0.0015317079960368574,
+          0.0014612910454161465
         ],
-        "shortest_path_5_queries_seconds": 0.00010104099055752158,
+        "shortest_path_5_queries_seconds": 0.00010533398017287254,
         "shortest_path_samples_seconds": [
-          0.00036341603845357895,
-          0.00010508298873901367,
-          0.00010104099055752158,
-          9.833404328674078e-05,
-          9.825004963204265e-05
+          0.0004004579968750477,
+          0.00010533398017287254,
+          0.00010566698620095849,
+          0.00010345794726163149,
+          0.00010183302219957113
         ],
         "community_detection": "Louvain (production NetworkX comparator)",
-        "community_seconds": 1.0114954999880865,
+        "community_seconds": 1.1599089160445146,
         "community_samples_seconds": [
-          1.0114954999880865,
-          1.1148840000387281,
-          1.008338375017047
+          1.1545936249895021,
+          1.172805458016228,
+          1.1599089160445146
         ],
-        "node_betweenness_seconds": 0.7516751670045778,
+        "node_betweenness_seconds": 0.8074505419936031,
         "node_betweenness_samples_seconds": [
-          0.7516751670045778
+          0.8074505419936031
         ],
-        "edge_betweenness_seconds": 0.9846016250085086,
+        "edge_betweenness_seconds": 1.013889416004531,
         "edge_betweenness_samples_seconds": [
-          0.9846016250085086
+          1.013889416004531
         ],
         "betweenness_mode": "sampled (100 sources, seed 42)",
-        "incremental_1pct_seconds": 0.005232832976616919,
-        "graphml_export_seconds": 0.12398962501902133,
-        "peak_rss_delta_bytes": 11141120,
+        "incremental_1pct_seconds": 0.00482624996220693,
+        "graphml_export_seconds": 0.12113954202504829,
+        "peak_rss_delta_bytes": 10977280,
         "disk_bytes": 552403
       },
       "helix": {
-        "ingest_seconds": 9.279719665995799,
+        "ingest_seconds": 10.23476787499385,
         "ingest_runs": 1,
-        "reopen_seconds": 8.155927332991268,
+        "reopen_seconds": 7.90328316699015,
         "reopen_samples_seconds": [
-          8.155927332991268,
-          8.237213875050656,
-          8.131811500003096
+          7.90328316699015,
+          7.901121333998162,
+          7.975797249993775
         ],
-        "hot_open_seconds": 0.006076333054807037,
+        "hot_open_seconds": 0.0067324580159038305,
         "hot_open_samples_seconds": [
-          0.006076333054807037,
-          0.007685000018682331,
-          0.007183499983511865,
-          0.005517000041436404,
-          0.0055542500340379775
+          0.0073079169960692525,
+          0.00674633402377367,
+          0.006565083982422948,
+          0.0067324580159038305,
+          0.0064373749773949385
         ],
-        "neighbor_20_queries_seconds": 0.0011647090432234108,
+        "neighbor_20_queries_seconds": 0.001136625010985881,
         "neighbor_samples_seconds": [
-          0.00166395801352337,
-          0.0012004580348730087,
-          0.0011529159964993596,
-          0.0011647090432234108,
-          0.0011560419807210565
+          0.0013006660155951977,
+          0.0011425410048104823,
+          0.001136625010985881,
+          0.0011301249614916742,
+          0.001127834024373442
         ],
-        "bfs_seconds": 0.020241833000909537,
+        "bfs_seconds": 0.021473083994351327,
         "bfs_samples_seconds": [
-          0.02075166697613895,
-          0.020173750002868474,
-          0.020241833000909537,
-          0.02038025000365451,
-          0.020181582949589938
+          0.021949124988168478,
+          0.02130283397855237,
+          0.021473083994351327,
+          0.02127299999119714,
+          0.021573957987129688
         ],
-        "shortest_path_5_queries_seconds": 0.001126791990827769,
+        "shortest_path_5_queries_seconds": 0.0011103750439360738,
         "shortest_path_samples_seconds": [
-          0.0017885830020532012,
-          0.001126791990827769,
-          0.0011541249696165323,
-          0.001075624953955412,
-          0.0010919169872067869
+          0.0012764160055667162,
+          0.0011057500378228724,
+          0.001343499985523522,
+          0.0011103750439360738,
+          0.001093874976504594
         ],
         "community_detection": "weighted Leiden (Graphify production)",
-        "community_seconds": 0.09752366598695517,
+        "community_seconds": 0.0958139169961214,
         "community_samples_seconds": [
-          0.12477970903273672,
-          0.09752366598695517,
-          0.09293033397989348
+          0.1196419580373913,
+          0.0958139169961214,
+          0.09494041599100456
         ],
-        "node_betweenness_seconds": 0.0944057090091519,
+        "node_betweenness_seconds": 0.09757791698211804,
         "node_betweenness_samples_seconds": [
-          0.0944057090091519
+          0.09757791698211804
         ],
-        "edge_betweenness_seconds": 0.31044716702308506,
+        "edge_betweenness_seconds": 0.3038857920328155,
         "edge_betweenness_samples_seconds": [
-          0.31044716702308506
+          0.3038857920328155
         ],
         "betweenness_mode": "sampled (100 sources, seed 42)",
-        "incremental_1pct_seconds": 12.32861333398614,
-        "graphml_export_seconds": 0.6049744589836337,
-        "eight_concurrent_reopens_seconds": 109.58692020800663,
-        "peak_rss_delta_bytes": 377503744,
-        "disk_after_ingest_bytes": 37490530,
-        "disk_with_rollback_bytes": 75755606
+        "incremental_1pct_seconds": 12.396371292008553,
+        "graphml_export_seconds": 0.5939060830278322,
+        "eight_concurrent_reopens_seconds": 104.47627174999798,
+        "peak_rss_delta_bytes": 403095552,
+        "disk_after_ingest_bytes": 37648750,
+        "disk_with_rollback_bytes": 75823126
       }
     },
     {
       "nodes": 20000,
       "edges": 60000,
       "networkx": {
-        "ingest_seconds": 0.1604189170175232,
+        "ingest_seconds": 0.22148025000933558,
         "ingest_runs": 1,
-        "reopen_seconds": 0.01899229100672528,
+        "reopen_seconds": 0.019639333011582494,
         "reopen_samples_seconds": [
-          0.019312125048600137,
-          0.016399167012423277,
-          0.01899229100672528
+          0.06217583396937698,
+          0.017752083018422127,
+          0.019639333011582494
         ],
-        "neighbor_20_queries_seconds": 3.500026650726795e-06,
+        "neighbor_20_queries_seconds": 3.4580007195472717e-06,
         "neighbor_samples_seconds": [
-          0.0002993750385940075,
-          4.875008016824722e-06,
-          3.500026650726795e-06,
-          3.2919924706220627e-06,
+          2.1332991309463978e-05,
+          4.125002305954695e-06,
+          3.4580007195472717e-06,
+          3.4170225262641907e-06,
           3.3329706639051437e-06
         ],
-        "bfs_seconds": 0.0008037919760681689,
+        "bfs_seconds": 0.0007238329853862524,
         "bfs_samples_seconds": [
-          0.001899499970022589,
-          0.0007205000147223473,
-          0.0008037919760681689,
-          0.0009962919866666198,
-          0.0007437909953296185
+          0.0012884169700555503,
+          0.0007209169561974704,
+          0.0007238329853862524,
+          0.0006920000305399299,
+          0.0008667079964652658
         ],
-        "shortest_path_5_queries_seconds": 0.00010549998842179775,
+        "shortest_path_5_queries_seconds": 0.00010387500515207648,
         "shortest_path_samples_seconds": [
-          0.0002121249563060701,
-          0.00010549998842179775,
-          0.0001045420067384839,
-          0.00010425003711134195,
-          0.00010741699952632189
+          0.00017100002150982618,
+          0.0001057499903254211,
+          0.00010387500515207648,
+          0.00010245799785479903,
+          0.00010104099055752158
         ],
         "community_detection": "Louvain (production NetworkX comparator)",
-        "community_seconds": 11.129392542003188,
+        "community_seconds": 11.867353125009686,
         "community_samples_seconds": [
-          10.713967707997654,
-          11.129392542003188,
-          11.541460834036116
+          11.560900665994268,
+          11.891766708984505,
+          11.867353125009686
         ],
-        "node_betweenness_seconds": 4.775142166996375,
+        "node_betweenness_seconds": 4.834275000030175,
         "node_betweenness_samples_seconds": [
-          4.775142166996375
+          4.834275000030175
         ],
-        "edge_betweenness_seconds": 7.55684666702291,
+        "edge_betweenness_seconds": 6.679433915996924,
         "edge_betweenness_samples_seconds": [
-          7.55684666702291
+          6.679433915996924
         ],
         "betweenness_mode": "sampled (100 sources, seed 42)",
-        "incremental_1pct_seconds": 0.02930674998788163,
-        "graphml_export_seconds": 0.586895165964961,
-        "peak_rss_delta_bytes": 41123840,
+        "incremental_1pct_seconds": 0.023081667022779584,
+        "graphml_export_seconds": 0.5330923749716021,
+        "peak_rss_delta_bytes": 41680896,
         "disk_bytes": 2228559
       },
       "helix": {
-        "ingest_seconds": 62.55565808300162,
+        "ingest_seconds": 67.22394283302128,
         "ingest_runs": 1,
-        "reopen_seconds": 34.54557658301201,
+        "reopen_seconds": 33.462016582954675,
         "reopen_samples_seconds": [
-          33.366544499993324,
-          34.54557658301201,
-          34.6403649590211
+          33.462016582954675,
+          33.314495959028136,
+          33.83028070902219
         ],
-        "hot_open_seconds": 0.0071528329863213,
+        "hot_open_seconds": 0.008121834020130336,
         "hot_open_samples_seconds": [
-          0.010043582995422184,
-          0.0071528329863213,
-          0.006978707970120013,
-          0.006931082985829562,
-          0.0075413339654915035
+          0.01007737498730421,
+          0.008121834020130336,
+          0.008073208970017731,
+          0.008103833999484777,
+          0.0081775410217233
         ],
-        "neighbor_20_queries_seconds": 0.001095334009733051,
+        "neighbor_20_queries_seconds": 0.0010982499807141721,
         "neighbor_samples_seconds": [
-          0.0018675419851206243,
-          0.0011287499801255763,
-          0.001095334009733051,
-          0.0010892910067923367,
-          0.0010881249909289181
+          0.0012172909919172525,
+          0.0010982499807141721,
+          0.0010884999646805227,
+          0.0010837920126505196,
+          0.0013349170330911875
         ],
-        "bfs_seconds": 0.009011166985146701,
+        "bfs_seconds": 0.009175249957479537,
         "bfs_samples_seconds": [
-          0.009759833046700805,
-          0.008898458036128432,
-          0.008921833010390401,
-          0.009026875020936131,
-          0.009011166985146701
+          0.009558666963130236,
+          0.009165707975625992,
+          0.0096224169828929,
+          0.009175249957479537,
+          0.008984458982013166
         ],
-        "shortest_path_5_queries_seconds": 0.0032204589806497097,
+        "shortest_path_5_queries_seconds": 0.0036407079896889627,
         "shortest_path_samples_seconds": [
-          0.00426700001116842,
-          0.0032483749673701823,
-          0.0032204589806497097,
-          0.0032132919877767563,
-          0.003209541959222406
+          0.004157166986260563,
+          0.004089583992026746,
+          0.0036407079896889627,
+          0.0033341660164296627,
+          0.0031145840184763074
         ],
         "community_detection": "weighted Leiden (Graphify production)",
-        "community_seconds": 1.149219166021794,
+        "community_seconds": 1.1301493330392987,
         "community_samples_seconds": [
-          1.2698272909619845,
-          1.145668042008765,
-          1.149219166021794
+          1.1301493330392987,
+          1.169365875015501,
+          1.0390653340145946
         ],
-        "node_betweenness_seconds": 0.4826924999943003,
+        "node_betweenness_seconds": 0.474134249961935,
         "node_betweenness_samples_seconds": [
-          0.4826924999943003
+          0.474134249961935
         ],
-        "edge_betweenness_seconds": 1.487100999976974,
+        "edge_betweenness_seconds": 1.4058144160080701,
         "edge_betweenness_samples_seconds": [
-          1.487100999976974
+          1.4058144160080701
         ],
         "betweenness_mode": "sampled (100 sources, seed 42)",
-        "incremental_1pct_seconds": 78.46988574997522,
-        "graphml_export_seconds": 2.6996589999762364,
-        "eight_concurrent_reopens_seconds": 431.70042474998627,
-        "peak_rss_delta_bytes": 1356595200,
-        "disk_after_ingest_bytes": 149405524,
-        "disk_with_rollback_bytes": 299316926
+        "incremental_1pct_seconds": 82.23305533401435,
+        "graphml_export_seconds": 2.6206341669894755,
+        "eight_concurrent_reopens_seconds": 416.96419912501005,
+        "peak_rss_delta_bytes": 1214644224,
+        "disk_after_ingest_bytes": 155186067,
+        "disk_with_rollback_bytes": 311269425
       }
     }
   ],
@@ -254,126 +254,126 @@
     "checks": [
       {
         "name": "5000/15000 ingest seconds",
-        "actual": 9.279719665995799,
+        "actual": 10.23476787499385,
         "limit": 15.0,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "5000/15000 cold open seconds",
-        "actual": 8.155927332991268,
+        "actual": 7.90328316699015,
         "limit": 15.0,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "5000/15000 peak RSS bytes",
-        "actual": 377503744,
+        "actual": 403095552,
         "limit": 536870912,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "5000/15000 hot_open_seconds",
-        "actual": 0.006076333054807037,
+        "actual": 0.0067324580159038305,
         "limit": 0.05,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "5000/15000 neighbor_20_queries_seconds",
-        "actual": 0.0011647090432234108,
+        "actual": 0.001136625010985881,
         "limit": 0.05,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "5000/15000 bfs_seconds",
-        "actual": 0.020241833000909537,
+        "actual": 0.021473083994351327,
         "limit": 0.05,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "5000/15000 shortest_path_5_queries_seconds",
-        "actual": 0.001126791990827769,
+        "actual": 0.0011103750439360738,
         "limit": 0.05,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "20000/60000 ingest seconds",
-        "actual": 62.55565808300162,
+        "actual": 67.22394283302128,
         "limit": 90.0,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "20000/60000 cold open seconds",
-        "actual": 34.54557658301201,
+        "actual": 33.462016582954675,
         "limit": 60.0,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "20000/60000 peak RSS bytes",
-        "actual": 1356595200,
+        "actual": 1214644224,
         "limit": 1610612736,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "20000/60000 store bytes after ingest",
-        "actual": 149405524,
+        "actual": 155186067,
         "limit": 209715200,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "20000/60000 clustering speedup",
-        "actual": 9.68430815553604,
+        "actual": 10.500694711817365,
         "limit": 3.0,
         "comparison": ">=",
         "passed": true
       },
       {
         "name": "20000/60000 node centrality speedup",
-        "actual": 9.89272086691374,
+        "actual": 10.196004613499838,
         "limit": 3.0,
         "comparison": ">=",
         "passed": true
       },
       {
         "name": "20000/60000 edge centrality speedup",
-        "actual": 5.081596116968464,
+        "actual": 4.751291379529132,
         "limit": 3.0,
         "comparison": ">=",
         "passed": true
       },
       {
         "name": "20000/60000 hot_open_seconds",
-        "actual": 0.0071528329863213,
+        "actual": 0.008121834020130336,
         "limit": 0.1,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "20000/60000 neighbor_20_queries_seconds",
-        "actual": 0.001095334009733051,
+        "actual": 0.0010982499807141721,
         "limit": 0.1,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "20000/60000 bfs_seconds",
-        "actual": 0.009011166985146701,
+        "actual": 0.009175249957479537,
         "limit": 0.1,
         "comparison": "<=",
         "passed": true
       },
       {
         "name": "20000/60000 shortest_path_5_queries_seconds",
-        "actual": 0.0032204589806497097,
+        "actual": 0.0036407079896889627,
         "limit": 0.1,
         "comparison": "<=",
         "passed": true
