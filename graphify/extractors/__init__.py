@@ -13,6 +13,7 @@ from typing import Callable
 from graphify.extractors.apex import extract_apex
 from graphify.extractors.bash import extract_bash
 from graphify.extractors.blade import extract_blade
+from graphify.extractors.twig import extract_twig
 from graphify.extractors.dart import extract_dart
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm
 from graphify.extractors.elixir import extract_elixir
@@ -37,6 +38,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "apex": extract_apex,
     "bash": extract_bash,
     "blade": extract_blade,
+    "twig": extract_twig,
     "dart": extract_dart,
     "delphi_form": extract_delphi_form,
     "dm": extract_dm,
