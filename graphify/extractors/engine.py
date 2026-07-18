@@ -1156,6 +1156,15 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
                 name = c.child_by_field_name("name")
                 if name is not None:
                     _js_collect_pattern_idents(name, source, bound)
+            elif c.type == "for_in_statement":
+                # `for (const [a, b] of x)` / `for (const k in obj)`: the loop
+                # variable(s) sit in the `left` field directly, never wrapped in
+                # a variable_declarator, so the branch above misses them. A bare
+                # read of the loop var later on (`if (count >= 3)`) was then
+                # mistaken for a reference to a same-named module function.
+                left = c.child_by_field_name("left")
+                if left is not None:
+                    _js_collect_pattern_idents(left, source, bound)
             walk(c)
 
     body = func_node.child_by_field_name("body")
@@ -4374,9 +4383,48 @@ def _extract_generic(
     elif config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
         js_module_bound = _js_module_bound_names(root, source)
 
+        def _is_whole_exports_target(node) -> bool:
+            # `module.exports` or bare `exports` — the LHS that names the
+            # module's ENTIRE export surface, as opposed to `exports.NAME` /
+            # `module.exports.NAME` which assigns one named export and could
+            # legitimately hold a real dispatch/handler table.
+            if node.type == "identifier":
+                return _read_text(node, source) == "exports"
+            if node.type == "member_expression":
+                obj = node.child_by_field_name("object")
+                prop = node.child_by_field_name("property")
+                if obj is None or prop is None:
+                    return False
+                return (
+                    _read_text(obj, source) == "module"
+                    and _read_text(prop, source) == "exports"
+                )
+            return False
+
         def _scan_js_module_dispatch(n) -> None:
             if n.type in _JS_SCOPE_BOUNDARY:
                 return  # function / class bodies are walked separately
+            if n.type == "assignment_expression":
+                left = n.child_by_field_name("left")
+                right = n.child_by_field_name("right")
+                if (
+                    left is not None and right is not None
+                    and right.type == "object"
+                    and _is_whole_exports_target(left)
+                ):
+                    # `module.exports = { init, consolidate, stats }`: this object
+                    # lists the module's own already-defined functions purely to
+                    # export them — it is not a dispatch/handler-registry table.
+                    # Every plain CommonJS module hit this and manufactured a
+                    # bogus indirect_call edge for each exported function. Skip
+                    # dispatch-scanning the object itself but keep walking its
+                    # children so a genuine nested table under a named property
+                    # (`module.exports = { routes: { get: a, post: b } }`) is
+                    # still found.
+                    _scan_js_module_dispatch(left)
+                    for c in right.children:
+                        _scan_js_module_dispatch(c)
+                    return
             if n.type in ("object", "array"):
                 for ident in _js_dispatch_value_idents(n):
                     _emit_indirect_ref(ident, file_nid, js_module_bound, "collection")
