@@ -53,9 +53,12 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     """Add or replace one project's active Helix generation."""
     source = _project_store(source_path)
     with HelixEmbeddedStore(source, read_only=True) as store:
-        loaded = store.load()
-    source_generation = loaded.generation
-    graph, state = _load_global()
+        source_generation = store.active_generation
+    if DEFAULT_GLOBAL_STORE.is_dir():
+        with HelixEmbeddedStore(DEFAULT_GLOBAL_STORE, read_only=True) as store:
+            state = store.read_state()
+    else:
+        state = new_state(build={"kind": "global-aggregate"})
     repos = _repos(state)
     existing = repos.get(repo_tag, {})
     if (
@@ -69,6 +72,10 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             "skipped": True,
         }
 
+    with HelixEmbeddedStore(source, read_only=True) as store:
+        loaded = store.load_generation(source_generation)
+    graph, state = _load_global()
+    repos = _repos(state)
     removed = prune_repo_from_graph(graph, repo_tag)
     prefixed = prefix_graph_for_global(GraphBuildData.from_native(loaded.graph), repo_tag)
 
@@ -116,10 +123,15 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
 
 
 def global_remove(repo_tag: str) -> int:
-    graph, state = _load_global()
+    if not DEFAULT_GLOBAL_STORE.is_dir():
+        raise KeyError(f"repo '{repo_tag}' not in global graph")
+    with HelixEmbeddedStore(DEFAULT_GLOBAL_STORE, read_only=True) as store:
+        state = store.read_state()
     repos = _repos(state)
     if repo_tag not in repos:
         raise KeyError(f"repo '{repo_tag}' not in global graph")
+    graph, state = _load_global()
+    repos = _repos(state)
     removed = prune_repo_from_graph(graph, repo_tag)
     del repos[repo_tag]
     _save_global(graph, state)
@@ -127,7 +139,10 @@ def global_remove(repo_tag: str) -> int:
 
 
 def global_list() -> dict:
-    _, state = _load_global()
+    if not DEFAULT_GLOBAL_STORE.is_dir():
+        return {}
+    with HelixEmbeddedStore(DEFAULT_GLOBAL_STORE, read_only=True) as store:
+        state = store.read_state()
     return dict(_repos(state))
 
 

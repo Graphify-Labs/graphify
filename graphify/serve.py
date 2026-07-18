@@ -231,10 +231,13 @@ def _get_trigram_index(G: Any) -> dict:
     idx = cache.get("trigram_index")
     if idx is not None:
         return idx
-    ids = [node.id for node in G.nodes()]
+    records = G.nodes()
+    ids = [node.id for node in records]
     postings: dict[str, array] = {}
-    for i, nid in enumerate(ids):
-        for g in _trigrams(_node_search_text(node_attributes(G, nid), str(nid))):
+    for i, node in enumerate(records):
+        nid = node.id
+        attributes = graphify_attributes(node.attributes)
+        for g in _trigrams(_node_search_text(attributes, str(nid))):
             bucket = postings.get(g)
             if bucket is None:
                 bucket = array("i")

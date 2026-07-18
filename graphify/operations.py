@@ -8,7 +8,6 @@ from pathlib import Path
 from .analyze import god_nodes, surprising_connections, suggest_questions
 from .cluster import cluster, score_all
 from .helix.persistence import DEFAULT_PROJECT_STORE, HelixEmbeddedStore
-from .helix.model import GraphBuildData
 from .helix.state import (
     communities_from_state,
     community_records,
@@ -22,7 +21,8 @@ def recluster(store_path: str | Path = DEFAULT_PROJECT_STORE) -> dict[int, list]
     with HelixEmbeddedStore(store_path) as store:
         loaded = store.load()
         graph = loaded.graph
-        state = copy.deepcopy(dict(loaded.state))
+        previous_state = dict(loaded.state)
+        state = copy.deepcopy(previous_state)
         communities = cluster(graph)
         cohesion = score_all(graph, communities)
         previous_labels = labels_from_state(state)
@@ -38,7 +38,9 @@ def recluster(store_path: str | Path = DEFAULT_PROJECT_STORE) -> dict[int, list]
             cohesion=cohesion,
             naming_source="preserved" if previous_labels else "generated",
         )
-        store.save_generation(GraphBuildData.from_native(graph), state)
+        store.replace_state(
+            state, previous_state=previous_state, snapshot=loaded
+        )
     return communities
 
 
@@ -47,7 +49,8 @@ def reanalyze(store_path: str | Path = DEFAULT_PROJECT_STORE) -> dict:
     with HelixEmbeddedStore(store_path) as store:
         loaded = store.load()
         graph = loaded.graph
-        state = copy.deepcopy(dict(loaded.state))
+        previous_state = dict(loaded.state)
+        state = copy.deepcopy(previous_state)
         communities = communities_from_state(state)
         labels = labels_from_state(state)
         analysis = state.get("analysis", {})
@@ -60,7 +63,9 @@ def reanalyze(store_path: str | Path = DEFAULT_PROJECT_STORE) -> dict:
             "report_inputs": report_inputs,
         }
         state["analysis"] = refreshed
-        store.save_generation(GraphBuildData.from_native(graph), state)
+        store.replace_state(
+            state, previous_state=previous_state, snapshot=loaded
+        )
     return refreshed
 
 
@@ -80,7 +85,8 @@ def relabel(
     with HelixEmbeddedStore(store_path) as store:
         loaded = store.load()
         graph = loaded.graph
-        state = copy.deepcopy(dict(loaded.state))
+        previous_state = dict(loaded.state)
+        state = copy.deepcopy(previous_state)
         communities = communities_from_state(state)
         previous = labels_from_state(state)
         selected = backend or detect_backend()
@@ -130,7 +136,9 @@ def relabel(
             cohesion=cohesion,
             naming_source=selected or "native-hub",
         )
-        store.save_generation(GraphBuildData.from_native(graph), state)
+        store.replace_state(
+            state, previous_state=previous_state, snapshot=loaded
+        )
     return labels
 
 

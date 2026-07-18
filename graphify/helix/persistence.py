@@ -42,7 +42,7 @@ _NATIVE_WEIGHT = "graphify_weight"
 _WRITER_LOCK_FILE = ".graphify-writer.lock"
 _WRITER_LOCK_TIMEOUT_SECONDS = 30.0
 _WRITE_CHUNK_SIZE = 1_000
-_STATE_WRITE_CHUNK_SIZE = 128
+_STATE_WRITE_CHUNK_SIZE = 64
 DEFAULT_MAX_NODES = 1_000_000
 DEFAULT_MAX_EDGES = 5_000_000
 DEFAULT_PROJECT_STORE = Path("graphify-out/graph.helix")
@@ -52,6 +52,21 @@ _STATE_TYPE = "$graphify_state_type"
 _STATE_KIND = "state_kind"
 _STATE_KEY = "state_key"
 _STATE_PAYLOAD = "payload"
+_STATE_REVISION = "state_revision"
+_ACTIVE_STATE_REVISION = "active_state_revision"
+_CHECKSUM_MODE = "checksum_mode"
+_SPLIT_CHECKSUM_MODE = "topology-state-v1"
+_TOPOLOGY_CHECKSUM = "topology_checksum"
+_STATE_KINDS = ("section", "community", "file", "cache")
+_STATE_REVISION_KEYS = {
+    kind: f"active_{kind}_revision" for kind in _STATE_KINDS
+}
+_STATE_CHECKSUM_KEYS = {
+    kind: f"{kind}_state_checksum" for kind in _STATE_KINDS
+}
+_STATE_COUNT_KEYS = {
+    kind: f"{kind}_state_count" for kind in _STATE_KINDS
+}
 
 
 class _StoreLock:
@@ -274,6 +289,81 @@ def _checksum(payload: dict[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def _generation_checksum(topology_checksum: str, state_checksum: str) -> str:
+    """Bind independently verified topology and state into one generation hash."""
+    return _checksum({
+        _TOPOLOGY_CHECKSUM: topology_checksum,
+        "state_checksum": state_checksum,
+    })
+
+
+def _state_revision(metadata: dict[str, Any], kind: str) -> str | None:
+    revision = metadata.get(_STATE_REVISION_KEYS[kind])
+    if not isinstance(revision, str):
+        revision = metadata.get(_ACTIVE_STATE_REVISION)
+    return revision if isinstance(revision, str) else None
+
+
+def _state_category_checksum(
+    records: list[tuple[str, str, Any, int]],
+) -> str:
+    return _checksum({
+        "records": [
+            {"kind": kind, "key": key, "payload": payload, "order": order}
+            for kind, key, payload, order in records
+        ]
+    })
+
+
+def _combined_state_checksum(checksums: dict[str, str]) -> str:
+    return _checksum({"categories": checksums})
+
+
+def _state_category_value(
+    state: dict[str, Any], kind: str, generation: str
+) -> Any:
+    if kind == "community":
+        return state.get("communities", [])
+    incremental = state.get("incremental", {})
+    if not isinstance(incremental, dict):
+        incremental = {}
+    if kind == "file":
+        return incremental.get("files", {})
+    if kind == "cache":
+        return incremental.get("extraction_cache", {})
+
+    sections: dict[str, Any] = {}
+    for key, value in state.items():
+        if key == "communities":
+            if isinstance(value, list) and not value:
+                sections[key] = []
+            continue
+        if key == "incremental" and isinstance(value, dict):
+            metadata = {
+                name: item
+                for name, item in value.items()
+                if name not in {"files", "extraction_cache"}
+            }
+            metadata["last_successful_generation"] = generation
+            if "files" in value and not value.get("files"):
+                metadata["files"] = {}
+            if "extraction_cache" in value and not value.get("extraction_cache"):
+                metadata["extraction_cache"] = {}
+            sections[key] = metadata
+            continue
+        if key == "build" and isinstance(value, dict):
+            build = dict(value)
+            build["generation"] = generation
+            sections[key] = build
+            continue
+        sections[key] = value
+    sections.setdefault("build", {"generation": generation})
+    sections.setdefault(
+        "incremental", {"last_successful_generation": generation}
+    )
+    return sections
+
+
 def _properties(row: Any, context: str) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise RuntimeError(f"embedded Helix {context} row is not a mapping")
@@ -363,6 +453,7 @@ class HelixEmbeddedStore:
                 self._ensure_indexes()
                 self._migrate_previous_schema()
                 self._cleanup_inactive_generations()
+                self._cleanup_inactive_state_revisions()
             except Exception:
                 try:
                     self._client.close()
@@ -402,6 +493,7 @@ class HelixEmbeddedStore:
         meta = self._metadata(generation)
         version = meta.get("schema_version")
         if version == _SCHEMA_VERSION:
+            self._migrate_state_revision_schema(generation, meta)
             return
         if version != 5:
             raise RuntimeError(
@@ -453,11 +545,7 @@ class HelixEmbeddedStore:
             edges.append((order, edge))
         nodes.sort(key=lambda item: item[0])
         edges.sort(key=lambda item: item[0])
-        state = self._state_from_rows(
-            _rows(result, "state"), meta.get("state_record_count")
-        )
-        if meta.get("state_checksum") != _checksum(state):
-            raise RuntimeError("legacy Helix durable state failed checksum verification")
+        state = self._verified_state_from_rows(_rows(result, "state"), meta)
         payload = {
             "directed": bool(meta.get("directed")),
             "multigraph": multigraph,
@@ -469,6 +557,83 @@ class HelixEmbeddedStore:
         if state:
             payload[_DURABLE_STATE] = state
         self._save_data(payload, activate=True)
+
+    def _migrate_state_revision_schema(
+        self, generation: str, meta: dict[str, Any]
+    ) -> None:
+        """Upgrade an early schema-v6 generation to revisioned native state."""
+        if (
+            meta.get(_CHECKSUM_MODE) == _SPLIT_CHECKSUM_MODE
+            and isinstance(meta.get(_ACTIVE_STATE_REVISION), str)
+            and isinstance(meta.get(_TOPOLOGY_CHECKSUM), str)
+            and all(
+                isinstance(meta.get(key), str)
+                for key in (
+                    *_STATE_REVISION_KEYS.values(),
+                    *_STATE_CHECKSUM_KEYS.values(),
+                )
+            )
+            and all(
+                isinstance(meta.get(key), int)
+                for key in _STATE_COUNT_KEYS.values()
+            )
+        ):
+            return
+
+        # This is the only compatibility read that reconstructs topology in
+        # Python. It runs once for stores created before state revisions existed;
+        # every newly written generation records the split checksums directly.
+        payload = self._read_generation_data(generation)
+        payload.pop(_DURABLE_STATE, None)
+        topology_checksum = _checksum(payload)
+        # Preserve the original row ordering in category checksums. Early v6
+        # stores used one global order, while current stores use a local order
+        # per category; both layouts reconstruct the same durable state.
+        records = self._state_records_from_rows(
+            self._read_state_rows(generation, metadata=meta)
+        )
+        category_records = {
+            kind: [record for record in records if record[0] == kind]
+            for kind in _STATE_KINDS
+        }
+        category_checksums = {
+            kind: _state_category_checksum(category_records[kind])
+            for kind in _STATE_KINDS
+        }
+        state_checksum = _combined_state_checksum(category_checksums)
+        revision = generation
+
+        state_predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
+        state_traversal = self._helix.g().n_with_label_where(
+            _STATE_LABEL, state_predicate
+        ).set_property(_STATE_REVISION, revision)
+        meta_traversal = self._helix.g().n_with_label_where(
+            _META_LABEL, state_predicate
+        )
+        updates = {
+            _ACTIVE_STATE_REVISION: revision,
+            _CHECKSUM_MODE: _SPLIT_CHECKSUM_MODE,
+            _TOPOLOGY_CHECKSUM: topology_checksum,
+            "state_checksum": state_checksum,
+            "checksum": _generation_checksum(topology_checksum, state_checksum),
+            **{key: revision for key in _STATE_REVISION_KEYS.values()},
+            **{
+                _STATE_CHECKSUM_KEYS[kind]: category_checksums[kind]
+                for kind in _STATE_KINDS
+            },
+            **{
+                _STATE_COUNT_KEYS[kind]: len(category_records[kind])
+                for kind in _STATE_KINDS
+            },
+        }
+        for key, value in updates.items():
+            meta_traversal = meta_traversal.set_property(key, value)
+        self._query(
+            self._helix.write_batch()
+            .var_as("state_revision", state_traversal)
+            .var_as("metadata_revision", meta_traversal)
+            .returning(["state_revision", "metadata_revision"])
+        )
 
     def save(self, graph: GraphBuildData, *, state: dict[str, Any] | None = None) -> None:
         self.save_data(graph.to_node_link(state=state))
@@ -587,7 +752,7 @@ class HelixEmbeddedStore:
                 _encode_state_value(state), "durable graph state"
             )
         extras = _json_value(raw_extras, "node-link top-level metadata")
-        canonical_payload = {
+        canonical_topology = {
             "directed": directed,
             "multigraph": multigraph,
             "graph": graph_attrs,
@@ -595,8 +760,17 @@ class HelixEmbeddedStore:
             "links": canonical_edges,
             **extras,
         }
-        if encoded_state is not None:
-            canonical_payload[_DURABLE_STATE] = encoded_state
+        topology_checksum = _checksum(canonical_topology)
+        state_records = self._state_records(encoded_state)
+        category_records = {
+            kind: [record for record in state_records if record[0] == kind]
+            for kind in _STATE_KINDS
+        }
+        category_checksums = {
+            kind: _state_category_checksum(category_records[kind])
+            for kind in _STATE_KINDS
+        }
+        state_checksum = _combined_state_checksum(category_checksums)
         manifest = {
             "schema_version": _SCHEMA_VERSION,
             "directed": directed,
@@ -605,9 +779,21 @@ class HelixEmbeddedStore:
             "extras": extras,
             "node_count": len(nodes),
             "edge_count": len(edges),
-            "state_record_count": len(self._state_records(encoded_state)),
-            "state_checksum": _checksum(encoded_state or {}),
-            "checksum": _checksum(canonical_payload),
+            "state_record_count": len(state_records),
+            "state_checksum": state_checksum,
+            _ACTIVE_STATE_REVISION: generation,
+            _CHECKSUM_MODE: _SPLIT_CHECKSUM_MODE,
+            _TOPOLOGY_CHECKSUM: topology_checksum,
+            **{key: generation for key in _STATE_REVISION_KEYS.values()},
+            **{
+                _STATE_CHECKSUM_KEYS[kind]: category_checksums[kind]
+                for kind in _STATE_KINDS
+            },
+            **{
+                _STATE_COUNT_KEYS[kind]: len(category_records[kind])
+                for kind in _STATE_KINDS
+            },
+            "checksum": _generation_checksum(topology_checksum, state_checksum),
         }
 
         previous_generation = self._active_generation(required=False)
@@ -665,15 +851,39 @@ class HelixEmbeddedStore:
             _encode_state_value(encoded), "durable graph state"
         )
         records = self._state_records(encoded_state)
+        category_records = {
+            kind: [record for record in records if record[0] == kind]
+            for kind in _STATE_KINDS
+        }
+        category_checksums = {
+            kind: _state_category_checksum(category_records[kind])
+            for kind in _STATE_KINDS
+        }
         previous_generation = self._active_generation(required=False)
         try:
-            payload = self._read_generation_data(generation)
-            payload[_DURABLE_STATE] = encoded_state
-            self._write_state_records(generation, records)
+            meta = self._metadata(generation)
+            topology_checksum = meta.get(_TOPOLOGY_CHECKSUM)
+            if not isinstance(topology_checksum, str):
+                raise RuntimeError("embedded Helix metadata has no topology checksum")
+            self._write_state_records(generation, records, generation)
+            written = self._state_records_from_rows(
+                self._read_state_rows(generation, revision=generation)
+            )
+            state_checksum = _combined_state_checksum(category_checksums)
+            if written != records:
+                raise RuntimeError("embedded Helix staged state failed checksum verification")
             updates = {
                 "state_record_count": len(records),
-                "state_checksum": _checksum(encoded_state),
-                "checksum": _checksum(payload),
+                "state_checksum": state_checksum,
+                "checksum": _generation_checksum(topology_checksum, state_checksum),
+                **{
+                    _STATE_CHECKSUM_KEYS[kind]: category_checksums[kind]
+                    for kind in _STATE_KINDS
+                },
+                **{
+                    _STATE_COUNT_KEYS[kind]: len(category_records[kind])
+                    for kind in _STATE_KINDS
+                },
             }
             traversal = self._helix.g().n_with_label_where(
                 _META_LABEL,
@@ -687,7 +897,6 @@ class HelixEmbeddedStore:
                 .returning(["finalize"])
             )
             self._read_generation_data(generation)
-            self.native_graph(generation)
             self._activate_generation(
                 generation,
                 create=previous_generation is None,
@@ -698,6 +907,139 @@ class HelixEmbeddedStore:
             raise
         self._cleanup_inactive_generations()
         return self.load_generation(generation)
+
+    def replace_state(
+        self,
+        state: dict[str, Any],
+        *,
+        previous_state: dict[str, Any] | None = None,
+        snapshot: LoadedGraph | None = None,
+    ) -> None:
+        """Atomically replace only changed native-state categories."""
+        if self._read_only:
+            raise RuntimeError("cannot write through a read-only embedded Helix store")
+        if snapshot is not None:
+            if snapshot.store_path != self.path:
+                raise ValueError("native snapshot belongs to a different Helix store")
+            generation = snapshot.generation
+            meta = dict(snapshot.metadata)
+        else:
+            generation = self.active_generation
+            meta = self._metadata(generation)
+        topology_checksum = meta.get(_TOPOLOGY_CHECKSUM)
+        if not isinstance(topology_checksum, str):
+            raise RuntimeError("embedded Helix metadata has invalid state revision fields")
+
+        current = previous_state if previous_state is not None else self.read_state()
+        for value in (current, state):
+            if not isinstance(value.get("build", {}), dict) or not isinstance(
+                value.get("incremental", {}), dict
+            ):
+                raise TypeError("durable build and incremental state must be mappings")
+        changed_kinds = [
+            kind
+            for kind in _STATE_KINDS
+            if _state_category_value(current, kind, generation)
+            != _state_category_value(state, kind, generation)
+        ]
+        if not changed_kinds:
+            return
+
+        revision = uuid.uuid4().hex
+        records_by_kind = {
+            kind: self._state_records_for_kind(state, generation, kind)
+            for kind in changed_kinds
+        }
+        changed_records = [
+            record
+            for kind in changed_kinds
+            for record in records_by_kind[kind]
+        ]
+        category_checksums: dict[str, str] = {}
+        category_counts: dict[str, int] = {}
+        for kind in _STATE_KINDS:
+            if kind in records_by_kind:
+                category_checksums[kind] = _state_category_checksum(
+                    records_by_kind[kind]
+                )
+                category_counts[kind] = len(records_by_kind[kind])
+                continue
+            checksum = meta.get(_STATE_CHECKSUM_KEYS[kind])
+            count = meta.get(_STATE_COUNT_KEYS[kind])
+            if not isinstance(checksum, str) or not isinstance(count, int):
+                raise RuntimeError(
+                    "embedded Helix metadata has invalid state category fields"
+                )
+            category_checksums[kind] = checksum
+            category_counts[kind] = count
+        state_checksum = _combined_state_checksum(category_checksums)
+        state_record_count = sum(category_counts.values())
+        try:
+            traversal = self._helix.g().n_with_label_where(
+                _META_LABEL,
+                self._helix.SourcePredicate.eq(_GENERATION, generation),
+            )
+            updates = {
+                "state_record_count": state_record_count,
+                "state_checksum": state_checksum,
+                "checksum": _generation_checksum(topology_checksum, state_checksum),
+                **{
+                    _STATE_REVISION_KEYS[kind]: revision
+                    for kind in changed_kinds
+                },
+                **{
+                    _STATE_CHECKSUM_KEYS[kind]: category_checksums[kind]
+                    for kind in changed_kinds
+                },
+                **{
+                    _STATE_COUNT_KEYS[kind]: category_counts[kind]
+                    for kind in changed_kinds
+                },
+            }
+            for key, value in updates.items():
+                traversal = traversal.set_property(key, value)
+            transaction_size = len(changed_records) + len(changed_kinds) + 1
+            atomic_write = transaction_size <= _STATE_WRITE_CHUNK_SIZE
+            batch = self._helix.write_batch()
+            if atomic_write:
+                for index, record in enumerate(changed_records):
+                    batch = batch.var_as(
+                        f"new_state_{index}",
+                        self._helix.g().add_n(
+                            _STATE_LABEL,
+                            self._state_record_properties(
+                                generation, revision, record
+                            ),
+                        ),
+                    )
+            else:
+                self._write_state_records(generation, changed_records, revision)
+            batch = batch.var_as("activate_state", traversal)
+            returned = ["activate_state"]
+            for index, kind in enumerate(changed_kinds):
+                old_revision = _state_revision(meta, kind)
+                if old_revision is None:
+                    continue
+                variable = f"drop_old_state_{index}"
+                predicate = self._helix.SourcePredicate.and_((
+                    self._helix.SourcePredicate.eq(_GENERATION, generation),
+                    self._helix.SourcePredicate.eq(_STATE_REVISION, old_revision),
+                    self._helix.SourcePredicate.eq(_STATE_KIND, kind),
+                ))
+                batch = batch.var_as(
+                    variable,
+                    self._helix.g()
+                    .n_with_label_where(_STATE_LABEL, predicate)
+                    .drop(),
+                )
+                returned.append(variable)
+            self._query(
+                batch.returning(returned)
+            )
+        except Exception:
+            for kind in changed_kinds:
+                self._drop_state_revision(generation, revision, kind=kind)
+            raise
 
     @staticmethod
     def _storage_key(generation: str, external_key: str) -> str:
@@ -757,7 +1099,34 @@ class HelixEmbeddedStore:
                 continue
             records.append(("section", section, payload, order))
             order += 1
-        return records
+        kind_order = {kind: 0 for kind in _STATE_KINDS}
+        normalized: list[tuple[str, str, Any, int]] = []
+        for kind, key, payload, _ in records:
+            normalized.append((kind, key, payload, kind_order[kind]))
+            kind_order[kind] += 1
+        kind_rank = {kind: index for index, kind in enumerate(_STATE_KINDS)}
+        normalized.sort(key=lambda item: (kind_rank[item[0]], item[3]))
+        return normalized
+
+    def _state_records_for_kind(
+        self, state: dict[str, Any], generation: str, kind: str
+    ) -> list[tuple[str, str, Any, int]]:
+        value = _state_category_value(state, kind, generation)
+        if kind == "section":
+            partial = value
+        elif kind == "community":
+            partial = {"communities": value}
+        else:
+            partial = {"incremental": {
+                "files" if kind == "file" else "extraction_cache": value
+            }}
+        encoded = _json_value(
+            _encode_state_value(partial), f"durable {kind} state"
+        )
+        return [
+            record for record in self._state_records(encoded)
+            if record[0] == kind
+        ]
 
     def _stage_generation(
         self,
@@ -837,72 +1206,74 @@ class HelixEmbeddedStore:
                 )
             self._query(batch.returning([returned]))
 
-        self._write_state_records(generation, self._state_records(state))
+        self._write_state_records(generation, self._state_records(state), generation)
 
     def _write_state_records(
         self,
         generation: str,
         state_records: list[tuple[str, str, Any, int]],
+        revision: str,
     ) -> None:
-        # State rows carry nested cache/hash payloads and produce a substantially
-        # more complex planner expression than topology rows. Helix 0.2.0b1 can
-        # reject a thousand-variable state batch on real projects, so keep these
-        # transactions deliberately smaller while retaining bulk writes.
+        # State rows are independent native records. A fixed planner-safe batch
+        # size keeps transaction cost bounded without exception-driven retries.
         for offset in range(0, len(state_records), _STATE_WRITE_CHUNK_SIZE):
             self._write_state_chunk(
                 generation,
                 state_records[offset : offset + _STATE_WRITE_CHUNK_SIZE],
+                revision,
             )
 
     def _write_state_chunk(
         self,
         generation: str,
         records: list[tuple[str, str, Any, int]],
+        revision: str,
     ) -> None:
         batch = self._helix.write_batch()
         returned = ""
-        for local_index, (kind, key, payload, order) in enumerate(records):
+        for local_index, record in enumerate(records):
             returned = f"state_{local_index}"
-            properties = {
-                _GENERATION: generation,
-                _STATE_KIND: kind,
-                _STATE_KEY: key,
-                _STATE_PAYLOAD: "json:" + json.dumps(
-                    payload,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ),
-                _ORDER: order,
-            }
-            if kind == "community" and isinstance(payload, dict):
-                for name in (
-                    "id", "name", "naming_source", "signature", "cohesion",
-                ):
-                    if name in payload and payload[name] is not None:
-                        properties[name] = payload[name]
-            elif kind == "file" and isinstance(payload, dict):
-                properties["relative_path"] = key
-                for name in (
-                    "content_hash", "semantic_hash",
-                ):
-                    if name in payload:
-                        properties[name] = payload[name]
             batch = batch.var_as(
                 returned,
-                self._helix.g().add_n(_STATE_LABEL, properties),
+                self._helix.g().add_n(
+                    _STATE_LABEL,
+                    self._state_record_properties(generation, revision, record),
+                ),
             )
-        try:
-            self._query(batch.returning([returned]))
-        except Exception as exc:
-            # Helix 0.2.0b1's cascades planner can reject a complex multi-row
-            # insert before execution. Bisect only that known safe-to-retry
-            # planner failure; all storage/runtime errors remain fatal.
-            if len(records) <= 1 or "unsupported cascades plan" not in str(exc):
-                raise
-            midpoint = len(records) // 2
-            self._write_state_chunk(generation, records[:midpoint])
-            self._write_state_chunk(generation, records[midpoint:])
+        self._query(batch.returning([returned]))
+
+    @staticmethod
+    def _state_record_properties(
+        generation: str,
+        revision: str,
+        record: tuple[str, str, Any, int],
+    ) -> dict[str, Any]:
+        kind, key, payload, order = record
+        properties = {
+            _GENERATION: generation,
+            _STATE_REVISION: revision,
+            _STATE_KIND: kind,
+            _STATE_KEY: key,
+            _STATE_PAYLOAD: "json:" + json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ),
+            _ORDER: order,
+        }
+        if kind == "community" and isinstance(payload, dict):
+            for name in (
+                "id", "name", "naming_source", "signature", "cohesion",
+            ):
+                if name in payload and payload[name] is not None:
+                    properties[name] = payload[name]
+        elif kind == "file" and isinstance(payload, dict):
+            properties["relative_path"] = key
+            for name in ("content_hash", "semantic_hash"):
+                if name in payload:
+                    properties[name] = payload[name]
+        return properties
 
     def _node_ids_for_generation(self, generation: str) -> dict[str, int]:
         batch = (
@@ -1007,6 +1378,25 @@ class HelixEmbeddedStore:
         )
         self._query(batch)
 
+    def _drop_state_revision(
+        self, generation: str, revision: str, *, kind: str | None = None
+    ) -> None:
+        predicates = [
+            self._helix.SourcePredicate.eq(_GENERATION, generation),
+            self._helix.SourcePredicate.eq(_STATE_REVISION, revision),
+        ]
+        if kind is not None:
+            predicates.append(self._helix.SourcePredicate.eq(_STATE_KIND, kind))
+        predicate = self._helix.SourcePredicate.and_(predicates)
+        self._query(
+            self._helix.write_batch()
+            .var_as(
+                "drop_state_revision",
+                self._helix.g().n_with_label_where(_STATE_LABEL, predicate).drop(),
+            )
+            .returning(["drop_state_revision"])
+        )
+
     def _cleanup_inactive_generations(self) -> None:
         active = self._active_generation(required=False)
         retained = {active} if active is not None else set()
@@ -1029,6 +1419,37 @@ class HelixEmbeddedStore:
         for generation in generations:
             if generation not in retained:
                 self._drop_generation(generation)
+
+    def _cleanup_inactive_state_revisions(self) -> None:
+        batch = (
+            self._helix.read_batch()
+            .var_as("meta", self._helix.g().n_with_label(_META_LABEL).value_map())
+            .returning(["meta"])
+        )
+        for raw in _rows(self._query(batch), "meta"):
+            row = _properties(raw, "metadata")
+            generation = row.get(_GENERATION)
+            if not isinstance(generation, str):
+                continue
+            for kind in _STATE_KINDS:
+                revision = _state_revision(row, kind)
+                if revision is None:
+                    continue
+                predicate = self._helix.SourcePredicate.and_((
+                    self._helix.SourcePredicate.eq(_GENERATION, generation),
+                    self._helix.SourcePredicate.eq(_STATE_KIND, kind),
+                    self._helix.SourcePredicate.neq(_STATE_REVISION, revision),
+                ))
+                self._query(
+                    self._helix.write_batch()
+                    .var_as(
+                        "drop_inactive_state",
+                        self._helix.g()
+                        .n_with_label_where(_STATE_LABEL, predicate)
+                        .drop(),
+                    )
+                    .returning(["drop_inactive_state"])
+                )
 
     def _control_properties(self, *, required: bool = True) -> dict[str, Any] | None:
         batch = (
@@ -1091,7 +1512,40 @@ class HelixEmbeddedStore:
             _rows(result, "state"),
         )
 
-    def _read_state_rows(self, generation: str) -> list[Any]:
+    def _read_state_rows(
+        self,
+        generation: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        revision: str | None = None,
+    ) -> list[Any]:
+        generation_predicate = self._helix.SourcePredicate.eq(
+            _GENERATION, generation
+        )
+        if revision is not None:
+            predicate = self._helix.SourcePredicate.and_((
+                generation_predicate,
+                self._helix.SourcePredicate.eq(_STATE_REVISION, revision),
+            ))
+        else:
+            meta = metadata or self._metadata(generation)
+            kind_predicates = []
+            for kind in _STATE_KINDS:
+                selected_revision = _state_revision(meta, kind)
+                if selected_revision is None:
+                    predicate = generation_predicate
+                    break
+                kind_predicates.append(self._helix.SourcePredicate.and_((
+                    self._helix.SourcePredicate.eq(_STATE_KIND, kind),
+                    self._helix.SourcePredicate.eq(
+                        _STATE_REVISION, selected_revision
+                    ),
+                )))
+            else:
+                predicate = self._helix.SourcePredicate.and_((
+                    generation_predicate,
+                    self._helix.SourcePredicate.or_(kind_predicates),
+                ))
         batch = (
             self._helix.read_batch()
             .var_as(
@@ -1099,7 +1553,7 @@ class HelixEmbeddedStore:
                 self._helix.g()
                 .n_with_label_where(
                     _STATE_LABEL,
-                    self._helix.SourcePredicate.eq(_GENERATION, generation),
+                    predicate,
                 )
                 .value_map(),
             )
@@ -1108,17 +1562,11 @@ class HelixEmbeddedStore:
         return _rows(self._query(batch), "state")
 
     @staticmethod
-    def _state_from_rows(rows: list[Any], expected_count: Any) -> dict[str, Any]:
-        if not isinstance(expected_count, int) or isinstance(expected_count, bool):
-            raise RuntimeError("embedded Helix metadata has an invalid state record count")
-        if len(rows) != expected_count:
-            raise RuntimeError(
-                "embedded Helix durable state failed count verification: "
-                f"expected {expected_count}, read {len(rows)}"
-            )
-
-        ordered: list[tuple[int, str, str, Any]] = []
-        seen_orders: set[int] = set()
+    def _state_records_from_rows(
+        rows: list[Any],
+    ) -> list[tuple[str, str, Any, int]]:
+        ordered: list[tuple[str, str, Any, int]] = []
+        seen_orders: set[tuple[str, int]] = set()
         for raw in rows:
             row = _properties(raw, "durable state")
             kind = row.get(_STATE_KIND)
@@ -1134,9 +1582,10 @@ class HelixEmbeddedStore:
                 raise RuntimeError(
                     "embedded Helix durable state record is missing schema fields"
                 )
-            if order in seen_orders:
+            order_key = (kind, order)
+            if order_key in seen_orders:
                 raise RuntimeError("embedded Helix durable state has duplicate ordering")
-            seen_orders.add(order)
+            seen_orders.add(order_key)
             payload = row[_STATE_PAYLOAD]
             if isinstance(payload, str) and payload.startswith("json:"):
                 try:
@@ -1145,14 +1594,28 @@ class HelixEmbeddedStore:
                     raise RuntimeError(
                         "embedded Helix durable state has invalid encoded payload"
                     ) from exc
-            ordered.append((order, kind, key, payload))
-        ordered.sort(key=lambda item: item[0])
+            ordered.append((kind, key, payload, order))
+        kind_rank = {kind: index for index, kind in enumerate(_STATE_KINDS)}
+        ordered.sort(key=lambda item: (kind_rank[item[0]], item[3]))
+        return ordered
+
+    @staticmethod
+    def _state_from_rows(rows: list[Any], expected_count: Any) -> dict[str, Any]:
+        if not isinstance(expected_count, int) or isinstance(expected_count, bool):
+            raise RuntimeError("embedded Helix metadata has an invalid state record count")
+        if len(rows) != expected_count:
+            raise RuntimeError(
+                "embedded Helix durable state failed count verification: "
+                f"expected {expected_count}, read {len(rows)}"
+            )
+
+        ordered = HelixEmbeddedStore._state_records_from_rows(rows)
 
         state: dict[str, Any] = {}
         community_records: list[Any] = []
         file_records: dict[str, Any] = {}
         cache_records: dict[str, Any] = {}
-        for _, kind, key, payload in ordered:
+        for kind, key, payload, _ in ordered:
             if kind == "section":
                 if key in state:
                     raise RuntimeError(
@@ -1196,6 +1659,41 @@ class HelixEmbeddedStore:
             incremental["extraction_cache"] = cache_records
         return state
 
+    @staticmethod
+    def _verified_state_from_rows(
+        rows: list[Any], metadata: dict[str, Any]
+    ) -> dict[str, Any]:
+        state = HelixEmbeddedStore._state_from_rows(
+            rows, metadata.get("state_record_count")
+        )
+        has_category_checksums = all(
+            isinstance(metadata.get(_STATE_CHECKSUM_KEYS[kind]), str)
+            and isinstance(metadata.get(_STATE_COUNT_KEYS[kind]), int)
+            for kind in _STATE_KINDS
+        )
+        if has_category_checksums:
+            records = HelixEmbeddedStore._state_records_from_rows(rows)
+            checksums: dict[str, str] = {}
+            for kind in _STATE_KINDS:
+                category = [record for record in records if record[0] == kind]
+                expected_count = metadata[_STATE_COUNT_KEYS[kind]]
+                if len(category) != expected_count:
+                    raise RuntimeError(
+                        "embedded Helix durable state category failed count verification"
+                    )
+                checksum = _state_category_checksum(category)
+                if checksum != metadata[_STATE_CHECKSUM_KEYS[kind]]:
+                    raise RuntimeError(
+                        "embedded Helix durable state category failed checksum verification"
+                    )
+                checksums[kind] = checksum
+            actual_checksum = _combined_state_checksum(checksums)
+        else:
+            actual_checksum = _checksum(state)
+        if metadata.get("state_checksum") != actual_checksum:
+            raise RuntimeError("embedded Helix durable state failed checksum verification")
+        return state
+
     def read_data(self) -> dict[str, Any]:
         generation = self._active_generation()
         assert generation is not None
@@ -1211,11 +1709,9 @@ class HelixEmbeddedStore:
         generation = self.active_generation
         meta = self._metadata(generation)
         self._validate_metadata(meta)
-        state = self._state_from_rows(
-            self._read_state_rows(generation), meta.get("state_record_count")
+        state = self._verified_state_from_rows(
+            self._read_state_rows(generation, metadata=meta), meta
         )
-        if meta.get("state_checksum") != _checksum(state):
-            raise RuntimeError("embedded Helix durable state failed checksum verification")
         decoded = _decode_state_value(state)
         if not isinstance(decoded, dict):
             raise RuntimeError("embedded Helix generation contains invalid durable state")
@@ -1263,6 +1759,13 @@ class HelixEmbeddedStore:
                     "extras",
                     "node_count",
                     "edge_count",
+                    _ACTIVE_STATE_REVISION,
+                    *_STATE_REVISION_KEYS.values(),
+                    *_STATE_CHECKSUM_KEYS.values(),
+                    *_STATE_COUNT_KEYS.values(),
+                    _CHECKSUM_MODE,
+                    _TOPOLOGY_CHECKSUM,
+                    "state_checksum",
                     "checksum",
                 ),
             ),
@@ -1320,7 +1823,7 @@ class HelixEmbeddedStore:
         graph_attrs = meta.get("graph", {})
         if not isinstance(extras, dict) or not isinstance(graph_attrs, dict):
             raise RuntimeError("embedded Helix metadata contains invalid graph attributes")
-        payload = {
+        topology_payload = {
             "directed": bool(meta.get("directed", False)),
             "multigraph": multigraph,
             "graph": graph_attrs,
@@ -1328,11 +1831,10 @@ class HelixEmbeddedStore:
             "links": [row for _, row in edges_with_order],
             **extras,
         }
-        state = self._state_from_rows(
-            self._read_state_rows(generation), meta.get("state_record_count")
+        payload = dict(topology_payload)
+        state = self._verified_state_from_rows(
+            self._read_state_rows(generation, metadata=meta), meta
         )
-        if meta.get("state_checksum") != _checksum(state):
-            raise RuntimeError("embedded Helix durable state failed checksum verification")
         if state:
             payload[_DURABLE_STATE] = state
         expected_nodes = meta.get("node_count")
@@ -1344,7 +1846,22 @@ class HelixEmbeddedStore:
                 f"expected {expected_nodes}/{expected_edges}, "
                 f"read {len(nodes_with_order)}/{len(edges_with_order)}"
             )
-        actual_checksum = _checksum(payload)
+        if meta.get(_CHECKSUM_MODE) == _SPLIT_CHECKSUM_MODE:
+            topology_checksum = _checksum(topology_payload)
+            expected_topology_checksum = meta.get(_TOPOLOGY_CHECKSUM)
+            if expected_topology_checksum != topology_checksum:
+                raise RuntimeError(
+                    "embedded Helix topology failed checksum verification: "
+                    f"expected {expected_topology_checksum!r}, got {topology_checksum!r}"
+                )
+            state_checksum = meta.get("state_checksum")
+            if not isinstance(state_checksum, str):
+                raise RuntimeError(
+                    "embedded Helix metadata has no durable state checksum"
+                )
+            actual_checksum = _generation_checksum(topology_checksum, state_checksum)
+        else:
+            actual_checksum = _checksum(payload)
         if expected_checksum != actual_checksum:
             raise RuntimeError(
                 "embedded Helix graph failed checksum verification: "
@@ -1364,11 +1881,9 @@ class HelixEmbeddedStore:
         meta = self._metadata(generation)
         self._validate_metadata(meta)
         native = self.native_graph(generation, metadata=meta)
-        state = self._state_from_rows(
-            self._read_state_rows(generation), meta.get("state_record_count")
+        state = self._verified_state_from_rows(
+            self._read_state_rows(generation, metadata=meta), meta
         )
-        if meta.get("state_checksum") != _checksum(state):
-            raise RuntimeError("embedded Helix durable state failed checksum verification")
         decoded = _decode_state_value(state)
         if not isinstance(decoded, dict):
             raise RuntimeError("embedded Helix generation contains invalid durable state")
@@ -1403,11 +1918,12 @@ class HelixEmbeddedStore:
 
     def verify(self) -> dict[str, Any]:
         payload = self.read_data()
+        metadata = self._metadata(self.active_generation)
         return {
             "schema_version": _SCHEMA_VERSION,
             "nodes": len(payload["nodes"]),
             "edges": len(payload["links"]),
-            "checksum": _checksum(payload),
+            "checksum": metadata.get("checksum"),
         }
 
     def close(self) -> None:
@@ -1433,21 +1949,32 @@ class HelixEmbeddedStore:
 
 
 class HelixGraphReader:
-    """Retain one native snapshot for a read-only consumer's lifetime."""
+    """Retain one native graph while polling immutable embedded snapshots."""
 
     def __init__(self, path: str | Path = DEFAULT_PROJECT_STORE) -> None:
         self.path = Path(path)
-        self._generation: str | None = None
+        self._version: tuple[str | None, ...] | None = None
         self._graph: LoadedGraph | None = None
         self._lock = threading.RLock()
 
     def get(self) -> LoadedGraph:
         with self._lock:
+            # Helix embedded readers are immutable database snapshots. Reopen
+            # the lightweight handle to observe a writer's atomic pointer flip;
+            # retain the expensive native graph while its version is unchanged.
             with HelixEmbeddedStore(self.path, read_only=True) as store:
                 generation = store.active_generation
-                if self._graph is None or generation != self._generation:
-                    self._graph = store.load()
-                    self._generation = generation
+                metadata = store._metadata(generation)
+                version = (
+                    generation,
+                    *(
+                        _state_revision(metadata, kind)
+                        for kind in _STATE_KINDS
+                    ),
+                )
+                if self._graph is None or version != self._version:
+                    self._graph = store.load_generation(generation)
+                    self._version = version
             return self._graph
 
 

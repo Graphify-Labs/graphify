@@ -1,3 +1,4 @@
+import copy
 import threading
 
 import pytest
@@ -193,23 +194,122 @@ def test_large_incremental_state_is_written_in_planner_safe_batches(tmp_path):
     assert loaded.state["incremental"]["extraction_cache"] == extraction_cache
 
 
-def test_state_batch_bisects_only_known_planner_failure(tmp_path, monkeypatch):
-    with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
-        original_query = store._query
-        attempts = 0
+def test_large_cache_only_replacement_uses_chunked_native_revision(tmp_path):
+    files = {
+        f"src/module_{index}.py": {"content_hash": f"content-{index}"}
+        for index in range(130)
+    }
+    cache = {
+        f"ast:src/module_{index}.py": {"version": 1, "nodes": []}
+        for index in range(130)
+    }
+    state = new_state(incremental={"files": files, "extraction_cache": cache})
+    store_path = tmp_path / "graph.helix"
+    with HelixEmbeddedStore(store_path) as store:
+        store.save_generation(GraphBuildData(nodes=[NodeData("root")]), state)
+        before = store.load()
+        updated = copy.deepcopy(dict(before.state))
+        for value in updated["incremental"]["extraction_cache"].values():
+            value["version"] = 2
+        store.replace_state(
+            updated,
+            previous_state=dict(before.state),
+            snapshot=before,
+        )
+        after = store.load()
 
-        def planner_once(batch):
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                raise RuntimeError("unsupported cascades plan")
+    assert after.generation == before.generation
+    assert after.metadata["active_cache_revision"] != before.metadata[
+        "active_cache_revision"
+    ]
+    assert after.metadata["active_file_revision"] == before.metadata[
+        "active_file_revision"
+    ]
+    assert {
+        value["version"]
+        for value in after.state["incremental"]["extraction_cache"].values()
+    } == {2}
+
+
+def test_state_batch_uses_fixed_planner_safe_transactions(tmp_path):
+    with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
+        records = [("section", f"key-{index}", {"value": index}, index) for index in range(4)]
+        store._write_state_chunk("generation", records, "revision")
+        assert len(store._read_state_rows("generation", revision="revision")) == 4
+
+
+def test_state_replacement_keeps_native_topology_and_generation(tmp_path, monkeypatch):
+    store_path = tmp_path / "graph.helix"
+    graph = GraphBuildData(
+        nodes=[NodeData("a"), NodeData("b")],
+        edges=[EdgeData("a", "b", {"relation": "calls"})],
+    )
+    with HelixEmbeddedStore(store_path) as store:
+        store.save_generation(graph, new_state(analysis={"version": 1}))
+        before = store.load()
+        before_edge = before.graph.edges()[0].id
+        before_revision = before.metadata["active_section_revision"]
+        before_cache_revision = before.metadata["active_cache_revision"]
+        before_file_revision = before.metadata["active_file_revision"]
+
+        def topology_write_is_a_bug(*_args, **_kwargs):
+            raise AssertionError("state-only update attempted to rewrite topology")
+
+        monkeypatch.setattr(store, "_stage_generation", topology_write_is_a_bug)
+        store.replace_state(
+            new_state(analysis={"version": 2}),
+            previous_state=dict(before.state),
+        )
+        after = store.load()
+
+        assert after.generation == before.generation
+        assert after.graph.edges()[0].id == before_edge
+        assert after.state["analysis"] == {"version": 2}
+        assert after.metadata["active_section_revision"] != before_revision
+        assert after.metadata["active_cache_revision"] == before_cache_revision
+        assert after.metadata["active_file_revision"] == before_file_revision
+
+
+def test_failed_state_pointer_flip_leaves_previous_revision_active(tmp_path, monkeypatch):
+    store_path = tmp_path / "graph.helix"
+    with HelixEmbeddedStore(store_path) as store:
+        store.save_generation(
+            GraphBuildData(nodes=[NodeData("a")]),
+            new_state(analysis={"version": 1}),
+        )
+        previous_state = store.read_state()
+        original_query = store._query
+
+        def fail_activation(batch):
+            request = batch.to_query_request()
+            if "activate_state" in getattr(request.query, "returns", ()):
+                raise RuntimeError("simulated activation failure")
             return original_query(batch)
 
-        monkeypatch.setattr(store, "_query", planner_once)
-        records = [("section", f"key-{index}", {"value": index}, index) for index in range(4)]
-        store._write_state_chunk("generation", records)
-        assert len(store._read_state_rows("generation")) == 4
-        assert attempts == 4
+        monkeypatch.setattr(store, "_query", fail_activation)
+        with pytest.raises(RuntimeError, match="simulated activation failure"):
+            store.replace_state(
+                new_state(analysis={"version": 2}),
+                previous_state=previous_state,
+            )
+        monkeypatch.setattr(store, "_query", original_query)
+        assert store.load().state["analysis"] == {"version": 1}
+
+
+def test_reader_hot_reloads_state_revision_without_topology_activation(tmp_path):
+    store_path = tmp_path / "graph.helix"
+    with HelixEmbeddedStore(store_path) as store:
+        store.save_generation(
+            GraphBuildData(nodes=[NodeData("a")]),
+            new_state(analysis={"version": 1}),
+        )
+    reader = HelixGraphReader(store_path)
+    first = reader.get()
+    with HelixEmbeddedStore(store_path) as store:
+        store.replace_state(new_state(analysis={"version": 2}))
+    second = reader.get()
+    assert first.generation == second.generation
+    assert second.state["analysis"] == {"version": 2}
 
 
 def test_configured_ingestion_bounds_fail_before_activation(tmp_path):

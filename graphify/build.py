@@ -27,9 +27,16 @@ import re
 import sys
 import unicodedata
 from pathlib import Path
+from typing import Any
 from .ids import make_id, normalize_id as _normalize_id
 from .helix.access import all_edge_attributes, first_edge_attributes
-from .helix.model import EdgeData, GraphBuildData, NodeData, graphify_attributes
+from .helix.model import (
+    EdgeData,
+    GraphBuildData,
+    NodeData,
+    edge_attributes,
+    graphify_attributes,
+)
 from .helix.persistence import DEFAULT_PROJECT_STORE, graph_storage_exists, load_graph
 from .validate import validate_extraction
 
@@ -1072,6 +1079,7 @@ def build_merge(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
+    base_graph: Any | None = None,
 ) -> GraphBuildData:
     """Load the active Helix generation and merge new chunks into build data.
 
@@ -1083,27 +1091,32 @@ def build_merge(
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
     """
     graph_path = Path(graph_path if graph_path is not None else DEFAULT_PROJECT_STORE)
-    if graph_storage_exists(graph_path):
-        loaded = load_graph(graph_path)
-        existing = GraphBuildData.from_native(loaded.graph)
+    if base_graph is not None or graph_storage_exists(graph_path):
+        native = base_graph if base_graph is not None else load_graph(graph_path).graph
         existing_nodes = [
-            {"id": node.id, **dict(node.attributes)} for node in existing.nodes
+            {"id": node.id, **graphify_attributes(node.attributes)}
+            for node in native.nodes()
         ]
         existing_edges = [
             {
                 "source": edge.source,
                 "target": edge.target,
-                **dict(edge.attributes),
-                **({"key": edge.key} if existing.multigraph else {}),
+                **edge_attributes(edge),
+                **({"key": edge.graphify_key} if native.multigraph else {}),
             }
-            for edge in existing.edges
+            for edge in native.edges()
         ]
-        raw_hyperedges = existing.attributes.get("hyperedges", [])
+        graph_metadata = native.attributes.get("graph", {})
+        raw_hyperedges = (
+            graph_metadata.get("hyperedges", [])
+            if isinstance(graph_metadata, dict)
+            else []
+        )
         existing_hyperedges = list(raw_hyperedges) if isinstance(raw_hyperedges, list) else []
         if directed is None:
-            directed = existing.directed
+            directed = native.directed
         if multigraph is None:
-            multigraph = existing.multigraph
+            multigraph = native.multigraph
         had_graph = True
     else:
         existing_nodes = []
