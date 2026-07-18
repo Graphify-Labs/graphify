@@ -2536,22 +2536,23 @@ def dispatch_command(cmd: str) -> None:
                             file=sys.stderr,
                         )
                         sys.exit(1)
-                elif backend == "codex-cli":
+                elif backend in ("acp", "codex-cli"):
                     import shutil as _shutil
-                    allow_no_key = _shutil.which(os.environ.get("GRAPHIFY_CODEX_BIN", "codex")) is not None
-                    if not allow_no_key:
+                    if (
+                        backend == "codex-cli"
+                        and os.environ.get("GRAPHIFY_CODEX_BIN", "").strip()
+                        and not os.environ.get("GRAPHIFY_ACP_BIN", "").strip()
+                    ):
                         print(
-                            "error: backend 'codex-cli' requires the `codex` CLI on PATH "
-                            "(install Codex and run `codex login` to authenticate).",
+                            "error: codex-cli now uses ACP; replace GRAPHIFY_CODEX_BIN "
+                            "with GRAPHIFY_ACP_BIN=codex-acp and set CODEX_PATH on the adapter if needed.",
                             file=sys.stderr,
                         )
                         sys.exit(1)
-                elif backend == "acp":
-                    import shutil as _shutil
                     allow_no_key = _shutil.which(os.environ.get("GRAPHIFY_ACP_BIN", "codex-acp")) is not None
                     if not allow_no_key:
                         print(
-                            "error: backend 'acp' requires an ACP adapter on PATH "
+                            f"error: backend '{backend}' requires an ACP adapter on PATH "
                             "(normally codex-acp, configured with GRAPHIFY_ACP_BIN).",
                             file=sys.stderr,
                         )

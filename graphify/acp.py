@@ -37,6 +37,13 @@ def _json_object(value: str, variable: str) -> dict[str, Any]:
         raise ValueError(f"{variable} must contain a JSON object: {exc}") from exc
     if not isinstance(parsed, dict):
         raise ValueError(f"{variable} must contain a JSON object")
+    invalid = {
+        key: option
+        for key, option in parsed.items()
+        if not isinstance(key, str) or not isinstance(option, (str, bool))
+    }
+    if invalid:
+        raise ValueError(f"{variable} values must be strings or booleans")
     return parsed
 
 
@@ -71,13 +78,12 @@ class _GraphifyClient:
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        from acp.schema import AgentMessageChunk, UsageUpdate
-
-        if isinstance(update, AgentMessageChunk):
+        update_kind = str(getattr(update, "session_update", ""))
+        if update_kind == "agent_message_chunk":
             content = update.content
             if getattr(content, "type", None) == "text":
                 self.messages.append(content.text)
-        elif isinstance(update, UsageUpdate):
+        elif update_kind == "usage_update":
             self.usage = update
 
 
@@ -137,17 +143,12 @@ async def _run_acp(
         session_id = session.session_id
         advertised = _config_options(session)
         requested = dict(config)
+        if model:
+            requested["model"] = model
 
         # ACP v1 exposes provider settings after session/new.  Only send
         # settings the agent advertises; this keeps the client generic across
         # adapters while avoiding the legacy adapter-specific `-c` flags.
-        if model and "model" in advertised:
-            await asyncio.wait_for(
-                connection.set_config_option("model", session_id, model), timeout=timeout
-            )
-        elif model and getattr(session, "models", None) is not None:
-            await asyncio.wait_for(connection.set_session_model(model, session_id), timeout=timeout)
-
         for option, value in requested.items():
             if option in advertised:
                 await asyncio.wait_for(
@@ -157,7 +158,9 @@ async def _run_acp(
         if "mode" not in advertised:
             modes = _session_modes(session)
             if "read-only" in modes:
-                await asyncio.wait_for(connection.set_session_mode("read-only", session_id), timeout=timeout)
+                await asyncio.wait_for(
+                    connection.set_session_mode(session_id, "read-only"), timeout=timeout
+                )
 
         content: list[Any] = [text_block(prompt)]
         for image in images:
@@ -211,11 +214,13 @@ def run_acp(
     if not isinstance(args_value, list) or not all(isinstance(item, str) for item in args_value):
         raise ValueError("GRAPHIFY_ACP_ARGS_JSON must contain a JSON array of strings")
 
-    selected_model = (model or os.environ.get("GRAPHIFY_ACP_MODEL", "").strip()).strip()
+    selected_model = (
+        model
+        or os.environ.get("GRAPHIFY_ACP_MODEL", "").strip()
+        or os.environ.get("GRAPHIFY_CODEX_CLI_MODEL", "").strip()
+    ).strip()
     config = _json_object(os.environ.get("GRAPHIFY_ACP_CONFIG_JSON", ""), "GRAPHIFY_ACP_CONFIG_JSON")
     config.setdefault("mode", "read-only")
-    if os.environ.get("GRAPHIFY_ACP_REASONING_EFFORT", "").strip():
-        config.setdefault("reasoning_effort", os.environ["GRAPHIFY_ACP_REASONING_EFFORT"].strip())
 
     message = prompt
     if extraction:

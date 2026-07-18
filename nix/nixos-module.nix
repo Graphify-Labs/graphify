@@ -226,7 +226,7 @@
               description = "ACP adapter arguments encoded as JSON for the client.";
             };
             configOptions = mkOption {
-              type = types.attrsOf types.str;
+              type = types.attrsOf (types.oneOf [types.str types.bool]);
               default = {mode = "read-only";};
               description = "ACP session configuration options applied after session/new.";
             };
@@ -412,7 +412,7 @@
   baseEnvironment = instance: let
     pg = instance.source.postgresql;
     backend = instance.llm.backend;
-    acpBackend = backend == "acp";
+    acpBackend = builtins.elem backend ["acp" "codex-cli"];
     baseUrlVariable =
       if backend != null
       then backendBaseUrlVariables.${backend} or null
