@@ -168,6 +168,11 @@ async def _run_acp(
                 content.append(image_block(image.b64, image.media_type, uri=str(image.path)))
         response = await asyncio.wait_for(connection.prompt(session_id, content), timeout=timeout)
 
+        # The SDK may deliver the final session/update notification just after
+        # the prompt response future resolves. Let that callback run before
+        # collecting the streamed assistant text.
+        await asyncio.sleep(0)
+
         usage = getattr(response, "usage", None) or client.usage
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
