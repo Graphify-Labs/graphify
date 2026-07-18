@@ -412,7 +412,7 @@
   baseEnvironment = instance: let
     pg = instance.source.postgresql;
     backend = instance.llm.backend;
-    acpBackend = builtins.elem backend ["acp" "codex-cli"];
+    acpBackend = backend == "acp";
     baseUrlVariable =
       if backend != null
       then backendBaseUrlVariables.${backend} or null

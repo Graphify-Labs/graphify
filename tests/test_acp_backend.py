@@ -22,11 +22,11 @@ def test_extract_files_direct_dispatches_to_acp_without_an_api_key(tmp_path):
     assert call.called
 
 
-def test_legacy_codex_cli_spelling_routes_to_acp(tmp_path):
+def test_codex_cli_routes_through_the_authenticated_cli(tmp_path):
     source = tmp_path / "note.md"
     source.write_text("# Compatibility route\n")
     result = {"nodes": [], "edges": [], "hyperedges": []}
-    with patch("graphify.llm._call_acp", return_value=result) as call:
+    with patch("graphify.llm._call_codex_cli", return_value=result) as call:
         assert llm.extract_files_direct([source], backend="codex-cli", root=tmp_path) is result
     assert call.called
 
@@ -50,4 +50,4 @@ def test_call_acp_maps_usage_and_stop_reason():
 
 def test_acp_parallelism_is_serial_by_default(monkeypatch):
     monkeypatch.delenv("GRAPHIFY_ACP_PARALLEL", raising=False)
-    assert llm._normalize_backend("codex-cli") == "acp"
+    assert llm._normalize_backend("codex-cli") == "codex-cli"

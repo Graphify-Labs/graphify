@@ -2536,7 +2536,17 @@ def dispatch_command(cmd: str) -> None:
                             file=sys.stderr,
                         )
                         sys.exit(1)
-                elif backend in ("acp", "codex-cli"):
+                elif backend == "codex-cli":
+                    import shutil as _shutil
+                    allow_no_key = _shutil.which(os.environ.get("GRAPHIFY_CODEX_BIN", "codex")) is not None
+                    if not allow_no_key:
+                        print(
+                            "error: backend 'codex-cli' requires the `codex` CLI on PATH "
+                            "(install Codex and run `codex login` to authenticate).",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                elif backend == "acp":
                     import shutil as _shutil
                     allow_no_key = _shutil.which(os.environ.get("GRAPHIFY_ACP_BIN", "codex-acp")) is not None
                     if not allow_no_key:
