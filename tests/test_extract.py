@@ -2937,3 +2937,47 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
               "source_file": "store.py", "weight": 1.0}]
     _rewire_unique_stub_nodes(nodes, edges)
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
+
+
+def _file_node_ids(result):
+    return {n["id"] for n in result["nodes"] if str(n.get("label", "")).endswith((".py", ".js"))}
+
+
+def test_python_toplevel_call_gets_file_caller(tmp_path):
+    """#1972: a module-level call with no enclosing def must still produce a
+    calls edge, sourced from the file node instead of being dropped."""
+    f = tmp_path / "toplevel.py"
+    f.write_text("def tally():\n    return 1\n\ntally()\n")
+    result = extract([f], cache_root=tmp_path)
+    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
+    file_ids = _file_node_ids(result)
+    tally_id = next(n["id"] for n in result["nodes"] if n.get("label") == "tally()")
+    assert any(s in file_ids and t == tally_id for s, t in calls), \
+        f"top-level tally() not sourced from file node: {calls}"
+
+
+def test_js_toplevel_call_gets_file_caller(tmp_path):
+    """#1972: same fix covers JS/TS via the shared engine.py walk."""
+    f = tmp_path / "toplevel.js"
+    f.write_text("function tally(){ return 1; }\ntally();\n")
+    result = extract([f], cache_root=tmp_path)
+    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
+    file_ids = _file_node_ids(result)
+    tally_id = next(n["id"] for n in result["nodes"] if n.get("label") == "tally()")
+    assert any(s in file_ids and t == tally_id for s, t in calls), \
+        f"top-level tally() not sourced from file node: {calls}"
+
+
+def test_incontext_call_unaffected_by_toplevel_fix(tmp_path):
+    """#1972 regression guard: a call inside a function stays sourced from that
+    function, and the new file-root walk adds no duplicate edge."""
+    f = tmp_path / "incontext.py"
+    f.write_text("def tally():\n    return 1\n\ndef run():\n    tally()\n")
+    result = extract([f], cache_root=tmp_path)
+    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
+    file_ids = _file_node_ids(result)
+    run_id = next(n["id"] for n in result["nodes"] if n.get("label") == "run()")
+    tally_id = next(n["id"] for n in result["nodes"] if n.get("label") == "tally()")
+    assert (run_id, tally_id) in calls
+    assert calls.count((run_id, tally_id)) == 1  # no duplicate from file-root walk
+    assert not any(s in file_ids and t == tally_id for s, t in calls)  # file is not the caller

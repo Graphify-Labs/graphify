@@ -3840,6 +3840,12 @@ def _extract_generic(
         for body_id, (method_node, class_nid) in csharp_method_scopes.items()
     }
 
+    # #1972: during the top-level root walk, emit ONLY direct `calls` edges.
+    # Module-level indirect dispatch already has a dedicated pass below with
+    # correct module-scope shadow filtering, so a root-walk emission would be a
+    # duplicate carrying wrong (empty) shadow context.
+    _toplevel_calls_only = False
+
     def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
                                context: str) -> None:
         """Resolve a name that is referenced AS A VALUE to a real callable def and emit
@@ -3851,6 +3857,8 @@ def _extract_generic(
         string names an ATTRIBUTE and is never shadowed by a local, so that path passes
         the name straight through. ``loc_node`` supplies the source line.
         """
+        if _toplevel_calls_only:
+            return
         ref_nid = label_to_nid.get(ident_name)
         # Defer to the cross-file resolver when the name is not defined in this file
         # (`from .h import fn`), or resolves to an import-surfaced FOREIGN symbol whose
@@ -4401,7 +4409,7 @@ def _extract_generic(
                             _emit_indirect_ref(arg, caller_nid, enclosing_locals, "argument")
 
             # Helper function calls: config('foo.bar') → uses_config edge to "foo"
-            if (callee_name and callee_name in config.helper_fn_names):
+            if (not _toplevel_calls_only and callee_name and callee_name in config.helper_fn_names):
                 args_node = node.child_by_field_name("arguments")
                 first_key: str | None = None
                 if args_node:
@@ -4439,7 +4447,8 @@ def _extract_generic(
                             })
 
             # Service container bindings: $this->app->bind(Foo::class, Bar::class)
-            if (node.type == "member_call_expression"
+            if (not _toplevel_calls_only
+                    and node.type == "member_call_expression"
                     and callee_name
                     and callee_name in config.container_bind_methods):
                 args_node = node.child_by_field_name("arguments")
@@ -4477,7 +4486,7 @@ def _extract_generic(
                             })
 
         # Static property access: Foo::$bar → uses_static_prop edge
-        if node.type in config.static_prop_types:
+        if node.type in config.static_prop_types and not _toplevel_calls_only:
             scope_node = node.child_by_field_name("scope")
             if scope_node is None:
                 for child in node.children:
@@ -4504,7 +4513,8 @@ def _extract_generic(
                         })
 
         # PHP class constant access: Foo::BAR → references_constant edge
-        if config.ts_module == "tree_sitter_php" and node.type == "class_constant_access_expression":
+        if (config.ts_module == "tree_sitter_php" and not _toplevel_calls_only
+                and node.type == "class_constant_access_expression"):
             class_name = _php_class_const_scope(node)
             if class_name:
                 tgt_nid = label_to_nid_ci.get(class_name.lower())
@@ -4594,6 +4604,26 @@ def _extract_generic(
             caller_nid,
             receiver_types_by_body.get(id(body_node)),
         )
+
+    # Top-level / script-context calls have no enclosing definition, so they
+    # never entered function_bodies and got no caller at all (#1972). walk_calls
+    # already returns without descending at every config.function_boundary_types
+    # node, so walking from the file's root with file_nid as caller picks up
+    # calls outside every tracked def — it cannot double-emit anything already
+    # walked via the function_bodies loop above. During this walk we emit ONLY
+    # direct `calls` (via _toplevel_calls_only), because module-level indirect
+    # dispatch and references have their own dedicated passes.
+    #
+    # Java is skipped: it has no top-level executable statements, its field
+    # initializers are already walked via initializer_nodes with the owning
+    # class as caller, and a root walk would only defer them as file-attributed
+    # raw_calls that resurrect the ambiguous phantom stubs #1744 removes.
+    if config.ts_module != "tree_sitter_java":
+        _toplevel_calls_only = True
+        try:
+            walk_calls(root, file_nid, java_receiver_types.get(id(root)))
+        finally:
+            _toplevel_calls_only = False
 
     # #1356: walk property/field initializers (collected above). walk_calls
     # self-guards against re-entering function bodies and dedups via
