@@ -1,0 +1,66 @@
+[
+  {
+    "id": "auth-header-bug",
+    "title": "Fix auth module custom header loss",
+    "description": "The auth module drops custom headers in requests. Locate the bug and fix it so that custom headers are preserved through the authentication pipeline.",
+    "category": "bug_fix",
+    "difficulty": "medium",
+    "target_files": ["auth.py"],
+    "expected_changes": {
+      "files_modified": 1,
+      "insertions": 8,
+      "deletions": 3
+    },
+    "verification_script": "tests/test_auth_headers.py",
+    "tags": ["auth", "headers", "requests", "bugfix"],
+    "notes": "This requires understanding how headers flow through the auth system and where they get lost."
+  },
+  {
+    "id": "response-caching-bug",
+    "title": "Fix response caching expiration logic",
+    "description": "The response caching system doesn't properly invalidate expired cache entries. Fix the expiration check logic so stale cached responses are not returned.",
+    "category": "bug_fix",
+    "difficulty": "medium",
+    "target_files": ["transport.py"],
+    "expected_changes": {
+      "files_modified": 1,
+      "insertions": 4,
+      "deletions": 2
+    },
+    "verification_script": "tests/test_cache_expiration.py",
+    "tags": ["cache", "expiration", "timing", "bugfix"],
+    "notes": "Look for timestamp comparisons in the caching logic."
+  },
+  {
+    "id": "connection-leak",
+    "title": "Fix connection pool connection leak",
+    "description": "The connection pool leaks connections when exceptions occur during requests. Find where connections are not being released properly and fix it.",
+    "category": "bug_fix",
+    "difficulty": "hard",
+    "target_files": ["transport.py"],
+    "expected_changes": {
+      "files_modified": 1,
+      "insertions": 6,
+      "deletions": 1
+    },
+    "verification_script": "tests/test_connection_cleanup.py",
+    "tags": ["connections", "resources", "cleanup", "bugfix"],
+    "notes": "Requires understanding try/finally patterns and proper resource cleanup."
+  },
+  {
+    "id": "timeout-edge-case",
+    "title": "Fix timeout handling for async requests",
+    "description": "The async client doesn't properly handle timeouts when multiple requests are made concurrently. The first timeout cancels all pending requests instead of just the timed-out one.",
+    "category": "bug_fix",
+    "difficulty": "hard",
+    "target_files": ["client.py", "transport.py"],
+    "expected_changes": {
+      "files_modified": 2,
+      "insertions": 10,
+      "deletions": 5
+    },
+    "verification_script": "tests/test_async_timeout.py",
+    "tags": ["async", "timeout", "concurrency", "bugfix"],
+    "notes": "Complex because it involves async context and task cancellation."
+  }
+]

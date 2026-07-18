@@ -1,0 +1,50 @@
+[
+  {
+    "id": "data-flow-user-input",
+    "title": "Trace data flow: user input to storage",
+    "description": "Describe the complete data flow when a user makes an HTTP request: from input parsing through validation, processing, and finally to storage. List all major functions involved.",
+    "category": "architecture_qa",
+    "difficulty": "hard",
+    "target_files": ["api.py", "validator.py", "processor.py", "storage.py"],
+    "expected_answer_contains": ["parse", "validate", "process", "store", "CallGraph"],
+    "verification_script": "tests/test_architecture_qa1.py",
+    "tags": ["architecture", "data_flow", "understanding"],
+    "notes": "Tests whether the agent can trace a complex call path through multiple modules."
+  },
+  {
+    "id": "failure-cascade",
+    "title": "Analyze: What breaks if storage fails?",
+    "description": "If the storage module becomes unavailable, what parts of the system will stop working? Which operations will fail gracefully, and which will crash?",
+    "category": "architecture_qa",
+    "difficulty": "hard",
+    "target_files": ["storage.py", "api.py", "processor.py"],
+    "expected_answer_contains": ["dependency", "cascade", "error_handling", "fallback"],
+    "verification_script": "tests/test_architecture_qa2.py",
+    "tags": ["architecture", "resilience", "failure_analysis"],
+    "notes": "Tests understanding of dependencies and failure modes."
+  },
+  {
+    "id": "performance-bottleneck",
+    "title": "Identify performance bottleneck",
+    "description": "Which component is likely the performance bottleneck for bulk user uploads? Why? What would you optimize first?",
+    "category": "architecture_qa",
+    "difficulty": "medium",
+    "target_files": ["api.py", "validator.py", "storage.py"],
+    "expected_answer_contains": ["storage", "database", "query", "batch", "index"],
+    "verification_script": "tests/test_architecture_qa3.py",
+    "tags": ["architecture", "performance", "optimization"],
+    "notes": "Tests architectural thinking and system understanding."
+  },
+  {
+    "id": "auth-integration",
+    "title": "Explain auth integration points",
+    "description": "Where and how is authentication integrated into the system? What happens if an auth module is removed?",
+    "category": "architecture_qa",
+    "difficulty": "medium",
+    "target_files": ["api.py", "auth.py", "client.py"],
+    "expected_answer_contains": ["middleware", "decorator", "header", "token", "verify"],
+    "verification_script": "tests/test_architecture_qa4.py",
+    "tags": ["architecture", "security", "integration"],
+    "notes": "Tests understanding of cross-cutting concerns."
+  }
+]

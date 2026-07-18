@@ -12,8 +12,8 @@ from collections.abc import Iterable
 from pathlib import Path
 
 # Output directory name — override with GRAPHIFY_OUT env var for worktrees or
-# shared-output setups. Accepts a relative name ("graphify-out-feature") or an
-# absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
+# shared-output setups. Accepts a relative name ("graphify-out-feature") or
+# an absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 
@@ -28,7 +28,7 @@ from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 try:
     from importlib.metadata import version as _pkg_version
 
-    _EXTRACTOR_VERSION = _pkg_version("graphifyy")
+    _EXTRACTOR_VERSION = _pkg_version("graphify")  # Corrected typo from "graphifyy" to "graphify"
 except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
