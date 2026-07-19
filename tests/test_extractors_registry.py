@@ -42,3 +42,12 @@ def test_terraform_migrated():
 
     assert facade.extract_terraform is extract_terraform
     assert LANGUAGE_EXTRACTORS["terraform"] is extract_terraform
+
+
+def test_k8s_registered():
+    # extract_k8s is a NEW extractor (not a migration), but it obeys the same
+    # contract: one object, reachable identically via the facade and registry.
+    from graphify.extractors.k8s import extract_k8s
+
+    assert facade.extract_k8s is extract_k8s
+    assert LANGUAGE_EXTRACTORS["k8s"] is extract_k8s
