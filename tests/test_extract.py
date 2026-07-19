@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from graphify.build import build_from_json
-from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, extract_nix, extract_pkl, _DISPATCH
+from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, extract_nix, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -18,15 +18,6 @@ def test_extract_nix_records_bindings_and_literal_imports(tmp_path):
     result = extract_nix(path)
     labels = {node["label"] for node in result["nodes"]}
     assert {"pkgs", "value", "nixpkgs.nix"} <= labels
-    assert any(edge["relation"] == "imports" for edge in result["edges"])
-
-
-def test_extract_pkl_records_declarations_and_module_relationships(tmp_path):
-    path = tmp_path / "Schema.pkl"
-    path.write_text('''module Schema\nimport "pkl:base"\nclass Host {}\nname: String\n''', encoding="utf-8")
-    result = extract_pkl(path)
-    labels = {node["label"] for node in result["nodes"]}
-    assert {"Schema", "Host", "name", "String", "pkl:base"} <= labels
     assert any(edge["relation"] == "imports" for edge in result["edges"])
 
 

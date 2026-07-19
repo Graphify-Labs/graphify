@@ -442,6 +442,8 @@ def _reconcile_existing_graph(
     full_rebuild: bool,
     deleted_paths: set[str],
     deleted_source_identities: set[str],
+    external_source_identities: set[str],
+    external_rebuilt_source_identities: set[str],
 ) -> tuple[dict, dict]:
     """Merge fresh extraction with preserved graph entries and evict stale sources."""
     existing_graph_data: dict = {}
@@ -467,9 +469,11 @@ def _reconcile_existing_graph(
         current_sources = {
             source_paths.absolute_identity(str(path), project_root) for path in code_files
         }
+        current_sources.update(external_source_identities)
         rebuilt_source_identities = {
             source_paths.absolute_identity(str(path), project_root) for path in extract_targets
         }
+        rebuilt_source_identities.update(external_rebuilt_source_identities)
         node_evicted_source_identities = set(deleted_source_identities)
         hyperedge_evicted_source_identities = set(deleted_source_identities)
         # Deletion evicts edges regardless of tier; re-extraction only owns a
@@ -477,6 +481,42 @@ def _reconcile_existing_graph(
         edge_evicted_source_identities = set(deleted_source_identities)
         if not full_rebuild:
             node_evicted_source_identities.update(rebuilt_source_identities)
+
+        # External integrations own every source they submit on each run. Keep
+        # that ownership separate from the AST tier so a fresh fragment
+        # replaces its prior contribution without evicting semantic nodes.
+        node_evicted_source_identities.update(external_rebuilt_source_identities)
+        edge_evicted_source_identities.update(external_rebuilt_source_identities)
+        hyperedge_evicted_source_identities.update(external_rebuilt_source_identities)
+
+        # A source that disappeared from an external payload is deleted only
+        # when its file is gone. If it still exists, preserve it fail-closed so
+        # a temporarily incomplete integration cannot silently erase data.
+        external_missing_files: set[str] = set()
+        external_missing_nodes = 0
+        for node in existing.get("nodes", []):
+            if node.get("_origin") != "external":
+                continue
+            identity = source_paths.identity(node.get("source_file"))
+            if not identity or identity in external_source_identities:
+                continue
+            if not source_paths.in_watch_root(node.get("source_file")):
+                continue
+            if Path(identity).exists():
+                continue
+            normalized = source_paths.normalize(node.get("source_file"))
+            if normalized:
+                deleted_paths.add(normalized)
+                external_missing_files.add(identity)
+            node_evicted_source_identities.add(identity)
+            edge_evicted_source_identities.add(identity)
+            hyperedge_evicted_source_identities.add(identity)
+            external_missing_nodes += 1
+        if external_missing_nodes:
+            print(
+                f"[graphify watch] pruned {external_missing_nodes} node(s) from "
+                f"{len(external_missing_files)} removed external source(s)."
+            )
 
         # Reconcile every rebuild against the current watched corpus. Hook change
         # lists can contain only a rename destination, so explicit paths alone
@@ -562,7 +602,7 @@ def _reconcile_existing_graph(
             and edge.get("target") in all_ids
             and not source_paths.is_evicted(edge, edge_evicted_source_identities)
             and not (
-                edge.get("_origin") == "ast"
+                edge.get("_origin") in ("ast", "external")
                 and source_paths.is_evicted(edge, rebuilt_source_identities)
             )
         ]
@@ -797,6 +837,7 @@ def _rebuild_code(
     follow_symlinks: bool = False,
     force: bool = False,
     no_cluster: bool = False,
+    external_extractions: list[Path] | None = None,
     acquire_lock: bool = True,
     block_on_lock: bool = False,
 ) -> bool:
@@ -857,6 +898,7 @@ def _rebuild_code(
                 follow_symlinks=follow_symlinks,
                 force=force,
                 no_cluster=no_cluster,
+                external_extractions=external_extractions,
                 acquire_lock=False,
             )
             # Late-arrival drain: another hook may have queued work while we
@@ -874,6 +916,7 @@ def _rebuild_code(
                         follow_symlinks=follow_symlinks,
                         force=force,
                         no_cluster=no_cluster,
+                        external_extractions=external_extractions,
                         acquire_lock=False,
                     ) and ok
             return ok
@@ -883,6 +926,7 @@ def _rebuild_code(
     report_root = _report_root_label(watch_path)
     try:
         from graphify.extract import extract, _get_extractor
+        from graphify.external import load_extractions
         from graphify.detect import detect
         from graphify.build import build_from_json, _norm_source_file as _nsf
         from graphify.cluster import cluster, remap_communities_to_previous, score_all
@@ -901,6 +945,11 @@ def _rebuild_code(
             gitignore=_read_build_gitignore(out),
         )
         code_files = [Path(f) for f in detected['files']['code']]
+        external_result = load_extractions(external_extractions or [], root=watch_root)
+        external_source_identities = {
+            Path(os.path.abspath(watch_root / source)).as_posix()
+            for source in external_result.get("source_files", [])
+        }
 
         # Include document files that have AST extractors (e.g. .md, .mdx, .qmd)
         ast_doc_files: list[Path] = []
@@ -911,7 +960,7 @@ def _rebuild_code(
                 ast_doc_files.append(p)
 
         existing_graph = out / "graph.json"
-        if not code_files and not existing_graph.exists():
+        if not code_files and not external_result.get("source_files") and not existing_graph.exists():
             print("[graphify watch] No code files found - nothing to rebuild.")
             return False
 
@@ -1042,6 +1091,9 @@ def _rebuild_code(
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
         }
+        result.setdefault("nodes", []).extend(external_result.get("nodes", []))
+        result.setdefault("edges", []).extend(external_result.get("edges", []))
+        result.setdefault("hyperedges", []).extend(external_result.get("hyperedges", []))
         _rebase_relative_source_files(result, watch_root, project_root)
 
         # Preserve semantic nodes/edges from a previous full run.
@@ -1063,6 +1115,8 @@ def _rebuild_code(
             full_rebuild=changed_paths is None,
             deleted_paths=deleted_paths,
             deleted_source_identities=deleted_source_identities,
+            external_source_identities=external_source_identities,
+            external_rebuilt_source_identities=external_source_identities,
         )
 
         _relativize_source_files(result, project_root, scope=watch_root)

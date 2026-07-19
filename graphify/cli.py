@@ -1647,12 +1647,25 @@ def dispatch_command(cmd: str) -> None:
         no_cluster = False
         args = sys.argv[2:]
         watch_arg: str | None = None
-        for a in args:
+        external_extractions: list[Path] = []
+        i = 0
+        while i < len(args):
+            a = args[i]
             if a == "--force":
                 force = True
+                i += 1
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                i += 1
+                continue
+            if a == "--external-extraction" and i + 1 < len(args):
+                external_extractions.append(Path(args[i + 1]))
+                i += 2
+                continue
+            if a.startswith("--external-extraction="):
+                external_extractions.append(Path(a.split("=", 1)[1]))
+                i += 1
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -1661,6 +1674,7 @@ def dispatch_command(cmd: str) -> None:
                 print("error: update accepts at most one path argument", file=sys.stderr)
                 sys.exit(2)
             watch_arg = a
+            i += 1
 
         if watch_arg is not None:
             watch_path = Path(watch_arg)
@@ -1680,7 +1694,13 @@ def dispatch_command(cmd: str) -> None:
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
-        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        ok = _rebuild_code(
+            watch_path,
+            force=force,
+            no_cluster=no_cluster,
+            external_extractions=external_extractions,
+            block_on_lock=True,
+        )
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
@@ -2325,6 +2345,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
+                "[--external-extraction PATH ...] "
                 "[--no-gitignore] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
@@ -2347,6 +2368,7 @@ def dispatch_command(cmd: str) -> None:
         extract_mode: str | None = None
         out_dir: Path | None = None
         cli_postgres_dsn: str | None = None
+        external_extractions: list[Path] = []
         cli_cargo: bool = False
         cli_allow_partial: bool = False
         no_cluster = False
@@ -2412,6 +2434,10 @@ def dispatch_command(cmd: str) -> None:
                 out_dir = Path(args[i + 1]); i += 2
             elif a.startswith("--out="):
                 out_dir = Path(a.split("=", 1)[1]); i += 1
+            elif a == "--external-extraction" and i + 1 < len(args):
+                external_extractions.append(Path(args[i + 1])); i += 2
+            elif a.startswith("--external-extraction="):
+                external_extractions.append(Path(a.split("=", 1)[1])); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
             elif a == "--dedup-llm":
@@ -2499,6 +2525,12 @@ def dispatch_command(cmd: str) -> None:
         out_root = (out_dir.resolve() if out_dir else target)
         graphify_out = out_root / _GRAPHIFY_OUT
         graphify_out.mkdir(parents=True, exist_ok=True)
+        from graphify.external import load_extractions as _load_external_extractions
+        external_result = _load_external_extractions(external_extractions, root=target)
+        external_source_files = {
+            str((target / source).resolve())
+            for source in external_result.get("source_files", [])
+        }
         # Persist corpus-shaping options so later update/watch/hook rebuilds
         # use the same file set as the initial extraction (#1886).
         from graphify.watch import (
@@ -2584,6 +2616,7 @@ def dispatch_command(cmd: str) -> None:
             # graph's own sources are reconciled against the current corpus.
             _seen_files = {f for _fl in files_by_type.values() for f in _fl}
             _seen_files.update(detection.get("unclassified", []))
+            _seen_files.update(external_source_files)
             graph_stale_sources = _stale_graph_sources(
                 existing_graph_path, target, _seen_files
             )
@@ -2996,9 +3029,9 @@ def dispatch_command(cmd: str) -> None:
         # for symbols also referenced in docs). Hyperedges only come from the
         # semantic side.
         merged: dict = {
-            "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])),
-            "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])),
-            "hyperedges": list(sem_result.get("hyperedges", [])),
+            "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])) + list(external_result.get("nodes", [])),
+            "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])) + list(external_result.get("edges", [])),
+            "hyperedges": list(sem_result.get("hyperedges", [])) + list(external_result.get("hyperedges", [])),
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
         }

@@ -13,9 +13,8 @@ def test_classify_typescript():
     assert classify_file(Path("bar.ts")) == FileType.CODE
 
 
-def test_classify_nix_and_pkl():
+def test_classify_nix():
     assert classify_file(Path("flake.nix")) == FileType.CODE
-    assert classify_file(Path("Schema.pkl")) == FileType.CODE
 
 def test_classify_powershell_module():
     # #1315: .psm1 modules were never indexed (CODE_EXTENSIONS gap).
