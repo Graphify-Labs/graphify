@@ -442,6 +442,14 @@ def classify_file(path: Path) -> FileType | None:
     from graphify.manifest_ingest import is_package_manifest_path
     if is_package_manifest_path(path):
         return FileType.CODE
+    # Kubernetes / ArgoCD / External-Secrets manifests are deterministic YAML, so
+    # they take the AST path too. Sniffed by CONTENT (apiVersion + kind), never by
+    # extension: .yaml stays a DOC extension so ordinary YAML (CI configs, docs
+    # data) keeps going to the LLM path. Runs after _is_sensitive() in detect(),
+    # so a secrets.yaml is dropped before it can reach this branch.
+    from graphify.extractors.k8s import is_k8s_manifest_path
+    if is_k8s_manifest_path(path):
+        return FileType.CODE
     # Compound extensions must be checked before simple suffix lookup
     if path.name.lower().endswith(".blade.php"):
         return FileType.CODE

@@ -43,6 +43,7 @@ from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
 from graphify.extractors.go import extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
+from graphify.extractors.k8s import extract_k8s  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
@@ -3923,6 +3924,10 @@ _DISPATCH: dict[str, Any] = {
     ".tf": extract_terraform,
     ".tfvars": extract_terraform,
     ".hcl": extract_terraform,
+    # Only reached for YAML that detect.classify_file sniffed as a k8s manifest
+    # (apiVersion + kind); ordinary .yaml stays a document on the LLM path.
+    ".yaml": extract_k8s,
+    ".yml": extract_k8s,
     ".dm": extract_dm,
     ".dme": extract_dm,
     ".dmi": extract_dmi,
@@ -3952,6 +3957,8 @@ _EXTRA_FOR_EXTENSION = {
     ".hcl": "terraform",
     ".dm": "dm",
     ".dme": "dm",
+    ".yaml": "k8s",
+    ".yml": "k8s",
 }
 
 
