@@ -20,8 +20,9 @@ def _loaded(tmp_path):
 
 
 def test_native_reverse_traversal_and_relation_filter(tmp_path):
-    graph = _loaded(tmp_path).graph
-    assert resolve_seed(graph, "Foo") == "foo"
+    loaded = _loaded(tmp_path)
+    graph = loaded.graph
+    assert resolve_seed(graph, "Foo", node_query=loaded.query) == "foo"
     all_hits = affected_nodes(graph, "foo", relations={"calls", "imports"}, depth=2)
     assert {row.node_id for row in all_hits} == {"bar", "baz"}
     calls = affected_nodes(graph, "foo", relations={"calls"}, depth=2)

@@ -11,7 +11,7 @@ return): a string is an attribute name, never shadowed by a param/local, so a ge
 whose name collides with a same-named parameter STILL emits. ``test_..._not_shadowed_by_param``
 pins that — reusing the identifier shadow guard here would be a false NEGATIVE.
 """
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from tests.native_helpers import graph_from_build
 
 from graphify.affected import affected_nodes
@@ -77,7 +77,7 @@ def test_module_level_getattr_emits(tmp_path):
 
 def test_getattr_feeds_affected(tmp_path):
     r, nid = _extract(tmp_path, BASIC)
-    g = graph_from_build(build_from_json(r, directed=True))
+    g = graph_from_build(build_from_extraction(r, directed=True))
     affected = {h.node_id for h in affected_nodes(g, nid["handler"])}
     assert nid["dispatch"] in affected
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1682,7 +1682,7 @@ def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
     }
 
     extracted = extract([package_json, tsconfig], cache_root=tmp_path, parallel=False)
-    graph = build_from_json(extracted, directed=True)
+    graph = build_from_extraction(extracted, directed=True)
     node_labels = {node.id: node.attributes["label"] for node in graph.nodes}
     import_targets = {
         node_labels[edge.target]

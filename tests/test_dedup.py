@@ -183,7 +183,6 @@ def test_prefix_extension_symbols_not_merged():
     """Distinct symbols whose name is a strict prefix-extension of another must not
     be merged (#1201). getActiveSession / getActiveSessions score ~98.82 JW but are
     different functions; parseConfig / parseConfigFile likewise."""
-    from tests.native_helpers import native_graphs as nx
     from graphify.dedup import deduplicate_entities
 
     pairs = [

@@ -52,7 +52,7 @@ def test_validate_semantic_fragment_rejects_path_separator_in_id():
 
 
 def test_validate_semantic_fragment_accepts_unknown_file_type():
-    """An unknown/synonym file_type is NOT a validation failure: build_from_json
+    """An unknown/synonym file_type is NOT a validation failure: build_from_extraction
     coerces any value via _FILE_TYPE_SYNONYMS (unknown -> "concept", #840), so
     rejecting a whole chunk over it would be pure data loss. file_type carries no
     security risk, so it is left to build's coercion rather than gated here."""
