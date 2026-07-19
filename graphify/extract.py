@@ -43,6 +43,10 @@ from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
 from graphify.extractors.go import extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
+from graphify.extractors.n8n import (  # noqa: F401
+    extract_n8n_workflow,
+    is_n8n_workflow_path,
+)
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
@@ -4061,6 +4065,12 @@ def _get_extractor(path: Path) -> Any | None:
     # (servers, commands, packages, env vars) instead of opaque JSON keys.
     if is_mcp_config_path(path):
         return extract_mcp_config
+    # n8n workflow exports are data-shaped JSON that extract_json skips (#1224),
+    # but their `nodes`/`connections` pair is the actual program. Routed by
+    # content sniff before generic .json dispatch so the steps and the control
+    # flow between them land in the graph instead of nothing.
+    if is_n8n_workflow_path(path):
+        return extract_n8n_workflow
     # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) → a canonical
     # package node + depends_on edges, by filename before generic suffix dispatch
     # (#1377). apm.yml would otherwise be a .yml document handled by the LLM.
