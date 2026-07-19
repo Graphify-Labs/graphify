@@ -2239,6 +2239,22 @@ def test_markdown_fenced_heading_not_parsed():
     assert not any("Not A Heading" in l for l in labels), \
         f"fenced '## Not A Heading' was incorrectly parsed as a node: {labels}"
 
+
+def test_markdown_tilde_fenced_heading_not_parsed(tmp_path):
+    path = tmp_path / "tilde-fenced-heading.md"
+    path.write_text(
+        "# Real Heading\n\n"
+        "~~~python\n"
+        "# Not A Heading\n"
+        "~~~\n"
+    )
+
+    r = extract_markdown(path)
+    labels = _labels(r)
+
+    assert any("Real Heading" in label for label in labels)
+    assert not any("Not A Heading" in label for label in labels)
+
 def test_markdown_no_dangling_edges():
     r = extract_markdown(FIXTURES / "deploy_guide.md")
     node_ids = {n["id"] for n in r["nodes"]}
@@ -2288,6 +2304,21 @@ def test_markdown_link_skips_external_and_images(tmp_path):
     for e in refs:
         assert "example.com" not in e["target"]
         assert "logo" not in e["target"]
+
+
+def test_markdown_tilde_fenced_link_not_parsed(tmp_path):
+    path = tmp_path / "tilde-fenced-link.md"
+    path.write_text(
+        "# Real Heading\n\n"
+        "~~~markdown\n"
+        "[Not A Reference](./hidden.md)\n"
+        "~~~\n"
+    )
+
+    r = extract_markdown(path)
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+
+    assert not refs
 
 
 def test_markdown_link_edges_resolve_to_real_nodes(tmp_path):
