@@ -8,19 +8,24 @@ permissions:
 
 jobs:
   benchmark:
-    runs-on: macos-latest
-    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+      - name: Require the pinned public embedded wheel
+        run: python tools/check_helix_wheel.py
       - name: Install isolated benchmark dependencies
         run: |
           python -m pip install -e . --no-deps
-          python -m pip install -r requirements-runtime.txt \
-            -r benchmarks/requirements-networkx.txt
+          python -m pip install -r requirements-runtime.txt -r benchmarks/requirements-networkx.txt
       - name: Run isolated NetworkX behavioral parity
         env:
           PYTHONPATH: .
@@ -31,7 +36,7 @@ jobs:
         run: python benchmarks/helix_vs_networkx.py --out benchmark-result.json --check-gates
       - uses: actions/upload-artifact@v4
         with:
-          name: helix-vs-networkx-${{ github.sha }}
+          name: helix-vs-networkx-${{ matrix.os }}-${{ github.sha }}
           path: |
             benchmark-result.json
             parity-result.json
