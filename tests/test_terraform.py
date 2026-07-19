@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from graphify.extract import extract_terraform
 
 
@@ -132,7 +132,7 @@ resource "azurerm_network_interface" "nic" {
     assert rg_id in nic_ref_targets
 
     # And it survives a real merge: the edge is present (not dropped as dangling).
-    G = build_from_json(
+    G = build_from_extraction(
         {
             "nodes": r_defn["nodes"] + r_user["nodes"],
             "edges": r_defn["edges"] + r_user["edges"],

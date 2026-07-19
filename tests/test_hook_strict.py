@@ -15,10 +15,11 @@ import time
 import pytest
 
 import graphify.cli as cli
+from tests.native_helpers import make_loaded
 
 
 def _fixture(tmp_path, *, indexed=True, fresh=True):
-    """A project with graphify-out/graph.json + manifest and one source file.
+    """A project with graphify-out/graph.helix + manifest and one source file.
     ``fresh`` makes the graph newer than the source (not stale)."""
     src = tmp_path / "src"
     src.mkdir()
@@ -31,7 +32,7 @@ def _fixture(tmp_path, *, indexed=True, fresh=True):
         encoding="utf-8",
     )
     time.sleep(0.02)
-    (out / "graph.json").write_text('{"nodes":[],"links":[]}', encoding="utf-8")
+    make_loaded(out)
     if not fresh:
         time.sleep(0.02)
         f.write_text("def x():\n    return 2\n", encoding="utf-8")  # source now newer -> stale

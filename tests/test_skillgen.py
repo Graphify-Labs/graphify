@@ -285,7 +285,7 @@ def test_descriptions_are_unified():
 
 
 def test_windows_frontmatter_name_and_shell_and_extra():
-    """The Windows skill is explicit that the embedded runtime is unsupported."""
+    """The Windows skill requires the ordinary public native wheel."""
     core, _ = _platform_artifacts("windows")
     # Claude Code requires the frontmatter name to equal the install folder
     # (graphify); a `graphify-windows` name broke skill discovery (#1635).
@@ -294,8 +294,9 @@ def test_windows_frontmatter_name_and_shell_and_extra():
     assert "function Find-GraphifyPython" in core
     assert "## Troubleshooting" in core
     assert "### PowerShell 5.1: Vertical scrolling stops working" in core
-    assert "temporarily unsupported on Windows" in core
-    assert "compatibility graph libraries" in core
+    assert "native Windows x86_64" in core
+    assert "win_amd64" in core
+    assert "do not substitute WSL" in core
     assert core.index("## Troubleshooting") < core.index("## Honesty Rules")
 
 
@@ -495,7 +496,8 @@ def test_monoliths_document_atomic_activation_and_native_state():
     for key in ("aider", "devin"):
         body = gen.render(platforms[key])[0].content
 
-        assert "Atomic activation retains the previous generation for rollback" in body
+        assert "Atomic activation deletes inactive generations by default" in body
+        assert "--retain-rollback" in body
         assert "Build metadata, hashes, caches, and learning state are durable native state" in body
 
 

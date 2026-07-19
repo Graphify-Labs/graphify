@@ -51,11 +51,11 @@ def db():
 
 
 def test_push_to_falkordb_creates_expected_graph(db):
-    from graphify.build import build_from_json
+    from graphify.build import build_from_extraction
     from graphify.export import push_to_falkordb
 
     extraction = json.loads((FIXTURES / "extraction.json").read_text())
-    G = build_from_json(extraction)
+    G = build_from_extraction(extraction)
 
     result = push_to_falkordb(
         G, uri=f"{HOST}:{PORT}", graph_name=GRAPH_NAME
@@ -74,11 +74,11 @@ def test_push_to_falkordb_creates_expected_graph(db):
 
 def test_push_to_falkordb_is_idempotent(db):
     """MERGE-based push is safe to re-run - counts must not grow."""
-    from graphify.build import build_from_json
+    from graphify.build import build_from_extraction
     from graphify.export import push_to_falkordb
 
     extraction = json.loads((FIXTURES / "extraction.json").read_text())
-    G = build_from_json(extraction)
+    G = build_from_extraction(extraction)
 
     push_to_falkordb(G, uri=f"{HOST}:{PORT}", graph_name=GRAPH_NAME)
     push_to_falkordb(G, uri=f"{HOST}:{PORT}", graph_name=GRAPH_NAME)

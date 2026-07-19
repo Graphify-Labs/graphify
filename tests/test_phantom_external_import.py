@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from graphify.extract import _make_id, _resolve_js_import_target, extract
 
 
@@ -63,7 +63,7 @@ def test_no_phantom_edge_from_tsx_to_unrelated_python_file(tmp_path: Path):
     )
 
     result = extract([py, tsx], cache_root=tmp_path / "graphify-out")
-    G = build_from_json(result, root=str(tmp_path))
+    G = build_from_extraction(result, root=str(tmp_path))
 
     # Find the python file node.
     py_ids = [
@@ -105,7 +105,7 @@ def test_multiple_tsx_files_do_not_all_alias_onto_one_python_file(tmp_path: Path
 
     paths = list((tmp_path).rglob("*.py")) + list((tmp_path / "frontend").rglob("*.tsx"))
     result = extract(paths, cache_root=tmp_path / "graphify-out")
-    G = build_from_json(result, root=str(tmp_path))
+    G = build_from_extraction(result, root=str(tmp_path))
 
     py_ids = {
         node.id for node in G.nodes

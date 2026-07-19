@@ -4,7 +4,12 @@ import threading
 import pytest
 
 from graphify.helix.model import EdgeData, GraphBuildData, NodeData
-from graphify.helix.persistence import HelixEmbeddedStore, HelixGraphReader, _StoreLock
+from graphify.helix.persistence import (
+    HelixEmbeddedStore,
+    HelixGraphReader,
+    _public_store_rebuild_message,
+    _StoreLock,
+)
 from graphify.helix.state import community_records, new_state
 from tests.native_helpers import make_loaded
 
@@ -111,7 +116,7 @@ def test_interrupted_stage_leaves_previous_generation_active(tmp_path):
 
 def test_activation_retains_one_verified_rollback_generation(tmp_path):
     store_path = tmp_path / "graph.helix"
-    with HelixEmbeddedStore(store_path) as store:
+    with HelixEmbeddedStore(store_path, retain_rollback=True) as store:
         store.save_generation(GraphBuildData(nodes=[NodeData("first")]), new_state())
         first = store.active_generation
         store.save_generation(GraphBuildData(nodes=[NodeData("second")]), new_state())
@@ -121,6 +126,29 @@ def test_activation_retains_one_verified_rollback_generation(tmp_path):
         assert store.load_generation(second).graph.contains_node("second")
         with pytest.raises(RuntimeError, match="metadata is missing"):
             store.load_generation(first)
+
+
+def test_activation_prunes_old_generation_by_default(tmp_path):
+    store_path = tmp_path / "graph.helix"
+    with HelixEmbeddedStore(store_path) as store:
+        store.save_generation(GraphBuildData(nodes=[NodeData("first")]), new_state())
+        first = store.active_generation
+        store.save_generation(GraphBuildData(nodes=[NodeData("second")]), new_state())
+        assert store.load().graph.contains_node("second")
+        with pytest.raises(RuntimeError, match="metadata is missing"):
+            store.load_generation(first)
+        with pytest.raises(RuntimeError, match="no rollback generation"):
+            store.rollback()
+
+
+def test_explicitly_retained_generation_can_be_rolled_back(tmp_path):
+    store_path = tmp_path / "graph.helix"
+    with HelixEmbeddedStore(store_path, retain_rollback=True) as store:
+        store.save_generation(GraphBuildData(nodes=[NodeData("first")]), new_state())
+        store.save_generation(GraphBuildData(nodes=[NodeData("second")]), new_state())
+        rolled_back = store.rollback()
+        assert rolled_back.graph.contains_node("first")
+        assert store.load().graph.contains_node("first")
 
 
 def test_state_and_topology_reopen_from_the_same_generation(tmp_path):
@@ -333,6 +361,34 @@ def test_read_only_open_does_not_create_missing_store(tmp_path):
     with pytest.raises(FileNotFoundError):
         HelixEmbeddedStore(missing, read_only=True)
     assert not missing.exists()
+
+
+def test_native_store_supports_spaces_unicode_and_deep_paths(tmp_path):
+    store_path = (
+        tmp_path
+        / "native store with spaces"
+        / "gráph-数据"
+        / ("nested-" + "x" * 96)
+        / "graph.helix"
+    )
+    with HelixEmbeddedStore(store_path) as store:
+        store.save_generation(GraphBuildData(nodes=[NodeData("naïve-节点")]), new_state())
+    with HelixEmbeddedStore(store_path, read_only=True) as store:
+        assert store.load().graph.contains_node("naïve-节点")
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "Migration required: writer migration must complete before opening a reader",
+        "Index lifecycle unavailable for secondary: reader coordination unavailable",
+    ],
+)
+def test_public_runtime_format_failures_require_source_rebuild(tmp_path, detail):
+    message = _public_store_rebuild_message(RuntimeError(detail), tmp_path / "graph.helix")
+    assert message is not None
+    assert "move that graph.helix directory aside" in message
+    assert "graphify update from source" in message
 
 
 def test_competing_writers_are_rejected(tmp_path):

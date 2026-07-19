@@ -40,7 +40,7 @@ def _run_grep_tool(tool_input, cwd, *, graph: bool):
     """Feed a Grep-tool-shaped payload (pattern/path/glob, no command) to the guard."""
     if graph:
         (cwd / "graphify-out").mkdir(parents=True, exist_ok=True)
-        (cwd / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+        make_loaded(cwd / "graphify-out")
     stdin = json.dumps({"tool_name": "Grep", "tool_input": tool_input})
     return subprocess.run(
         [sys.executable, "-m", "graphify", "hook-guard", "search"],
@@ -177,7 +177,7 @@ def test_bash_non_search_with_stray_pattern_key_does_not_nudge(tmp_path):
     """A Bash tool_input carries `command`; the Grep-shape detection must not
     fire when a command is present but is not a search."""
     (tmp_path / "graphify-out").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+    make_loaded(tmp_path / "graphify-out")
     stdin = json.dumps({"tool_input": {"command": "ls -la", "pattern": "x"}})
     r = subprocess.run(
         [sys.executable, "-m", "graphify", "hook-guard", "search"],

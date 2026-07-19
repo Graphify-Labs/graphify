@@ -1,39 +1,112 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
-import gc
 import json
-import weakref
+from typing import Any
+
 import pytest
-from tests.native_helpers import graph_from_payload, native_graphs as nx, triangle, make_loaded
+from tests.native_helpers import triangle, make_loaded
+from graphify.helix.model import node_attributes
 
 from graphify.serve import (
     _communities_from_graph,
-    _score_nodes,
-    _score_query,
-    _compute_idf,
+    _score_nodes as _native_score_nodes,
+    _score_query as _native_score_query,
+    _compute_idf as _native_compute_idf,
     _EXACT_MATCH_BONUS,
     _SOURCE_MATCH_BONUS,
-    _pick_seeds,
-    _bfs,
-    _dfs,
-    _find_node,
-    _trigrams,
-    _node_search_text,
-    _get_trigram_index,
-    _trigram_candidates,
-    _filter_graph_by_context,
+    _pick_seeds as _native_pick_seeds,
+    _bfs as _native_bfs,
+    _dfs as _native_dfs,
+    _find_node as _native_find_node,
+    _filter_graph_by_context as _native_filter_graph_by_context,
     _infer_context_filters,
     _query_terms,
-    _query_graph_text,
+    _query_graph_text as _native_query_graph_text,
     _resolve_context_filters,
-    _subgraph_to_text,
+    _subgraph_to_text as _native_subgraph_to_text,
     _load_graph,
     _community_header,
     _search_tokens,
-    _runtime_cache,
 )
 
 
-def _edge_records(G, *pairs):
+def _graph(loaded):
+    return getattr(loaded, "graph", loaded)
+
+
+def _query(loaded):
+    query = getattr(loaded, "query", None)
+    assert query is not None, "query helpers must be tested through a real LoadedGraph"
+    return query
+
+
+def _score_nodes(loaded, terms):
+    return _native_score_nodes(_graph(loaded), terms, native_query=_query(loaded))
+
+
+def _score_query(loaded, terms, *, collect_per_term_seeds):
+    return _native_score_query(
+        _graph(loaded),
+        terms,
+        collect_per_term_seeds=collect_per_term_seeds,
+        native_query=_query(loaded),
+    )
+
+
+def _compute_idf(loaded, terms):
+    return _native_compute_idf(_graph(loaded), terms, _query(loaded))
+
+
+def _find_node(loaded, label):
+    return _native_find_node(_graph(loaded), label, native_query=_query(loaded))
+
+
+def _bfs(loaded, start_nodes, depth, context_filters=None):
+    return _native_bfs(
+        _graph(loaded),
+        start_nodes,
+        depth,
+        context_filters,
+        native_query=_query(loaded),
+    )
+
+
+def _dfs(loaded, start_nodes, depth, context_filters=None):
+    return _native_dfs(
+        _graph(loaded),
+        start_nodes,
+        depth,
+        context_filters,
+        native_query=_query(loaded),
+    )
+
+
+def _query_graph_text(loaded, question, **kwargs):
+    return _native_query_graph_text(
+        _graph(loaded), question, native_query=_query(loaded), **kwargs
+    )
+
+
+def _pick_seeds(scored, *args, G=None, **kwargs):
+    return _native_pick_seeds(
+        scored, *args, G=_graph(G) if G is not None else None, **kwargs
+    )
+
+
+def _filter_graph_by_context(loaded, context_filters):
+    _native_graph, filters = _native_filter_graph_by_context(
+        _graph(loaded), context_filters
+    )
+    return loaded, filters
+
+
+def _subgraph_to_text(loaded, nodes, edges, *args, **kwargs):
+    return _native_subgraph_to_text(
+        _graph(loaded), nodes, edges, *args, **kwargs
+    )
+
+
+def _edge_records(loaded, *pairs):
+    G = _graph(loaded)
     records = []
     for source, target in pairs:
         edge_ids = G.edges_between(source, target) or G.edges_between(target, source)
@@ -41,33 +114,32 @@ def _edge_records(G, *pairs):
     return records
 
 
-def _make_graph() -> nx.Graph:
-    G = nx.Graph()
-    G.add_node("n1", label="extract", source_file="extract.py", source_location="L10", community=0)
-    G.add_node("n2", label="cluster", source_file="cluster.py", source_location="L5", community=0)
-    G.add_node("n3", label="build", source_file="build.py", source_location="L1", community=1)
-    G.add_node("n4", label="report", source_file="report.py", source_location="L1", community=1)
-    G.add_node("n5", label="isolated", source_file="other.py", source_location="L1", community=2)
-    G.add_edge("n1", "n2", relation="calls", confidence="INFERRED", context="call")
-    G.add_edge("n2", "n3", relation="imports", confidence="EXTRACTED", context="import")
-    G.add_edge("n3", "n4", relation="uses", confidence="EXTRACTED")
-    return G
+def _make_graph() -> Any:
+    return make_loaded(
+        nodes=[
+            {"id": "n1", "label": "extract", "source_file": "extract.py", "source_location": "L10", "community": 0},
+            {"id": "n2", "label": "cluster", "source_file": "cluster.py", "source_location": "L5", "community": 0},
+            {"id": "n3", "label": "build", "source_file": "build.py", "source_location": "L1", "community": 1},
+            {"id": "n4", "label": "report", "source_file": "report.py", "source_location": "L1", "community": 1},
+            {"id": "n5", "label": "isolated", "source_file": "other.py", "source_location": "L1", "community": 2},
+        ],
+        edges=[
+            {"source": "n1", "target": "n2", "relation": "calls", "confidence": "INFERRED", "context": "call"},
+            {"source": "n2", "target": "n3", "relation": "imports", "confidence": "EXTRACTED", "context": "import"},
+            {"source": "n3", "target": "n4", "relation": "uses", "confidence": "EXTRACTED"},
+        ],
+    )
 
 
 def test_native_dfs_respects_depth(tmp_path):
-    graph = triangle(tmp_path).graph
+    graph = triangle(tmp_path)
     nodes, _ = _dfs(graph, ["a"], 0)
     assert nodes == {"a"}
 
 
-def test_runtime_cache_does_not_outlive_native_snapshot():
-    graph = graph_from_payload([{"id": "snapshot", "label": "Snapshot"}])
-    cache = _runtime_cache(graph)
-    cache["marker"] = True
-    reference = weakref.ref(graph)
-    del graph
-    gc.collect()
-    assert reference() is None
+def test_loaded_snapshot_has_no_python_runtime_cache():
+    loaded = make_loaded(nodes=[{"id": "snapshot", "label": "Snapshot"}])
+    assert not hasattr(loaded.graph, "_graphify_cache")
 
 
 # --- _score_nodes ---
@@ -107,19 +179,26 @@ def test_score_nodes_multiword_exact_label_outranks_superset():
     arbitrary node-id sort, and a wrong/disconnected endpoint was chosen. The
     full-query tier in _score_nodes must make the exact label win strictly.
     """
-    G = nx.Graph()
     # Reproduce the real graph: norm_label keeps punctuation (strip_diacritics +
     # lower, NOT tokenized), so the ':' survives. A tokenized query can never
     # equal that, which is exactly why the first-cut fix was a no-op for
     # punctuated labels. The exact node must still win via the label's tokenized
     # form.
-    def _add(nid, label, src):
-        G.add_node(nid, label=label, norm_label=label.lower(),
-                   source_file=src, community=0)
-
-    _add("exact", "UOCE: Dehumidifier Driver", "uoce_dehumidifier.yaml")
-    _add("super", "UOCE: Dehumidifier Driver State Machine", "uoce_dehumidifier.yaml")
-    _add("decoy", "Dehumidifier Driver Helper", "uoce_dehumidifier.yaml")
+    nodes = [
+        {
+            "id": nid,
+            "label": label,
+            "norm_label": label.lower(),
+            "source_file": "uoce_dehumidifier.yaml",
+            "community": 0,
+        }
+        for nid, label in (
+            ("exact", "UOCE: Dehumidifier Driver"),
+            ("super", "UOCE: Dehumidifier Driver State Machine"),
+            ("decoy", "Dehumidifier Driver Helper"),
+        )
+    ]
+    G = make_loaded(nodes=nodes)
 
     # CLI resolves endpoints as [t.lower() for t in label.split()].
     scored = _score_nodes(G, [t.lower() for t in "UOCE: Dehumidifier Driver".split()])
@@ -142,25 +221,23 @@ def test_score_nodes_coverage_lone_generic_exact_hit_loses_to_multi_term_match()
     (the realistic case) to pin that source-path hits do not count as
     coverage and hand the collision its exact tier back.
     """
-    G = nx.Graph()
-
-    def _add(nid, label, src):
-        G.add_node(nid, label=label, norm_label=label.lower(),
-                   source_file=src, community=0)
-
-    _add("target", "ClientLive.Index", "lib/clients_live/index.ex")
-    _add("form", "ClientLive.Form", "lib/clients_live/form.ex")
-    _add("show", "ClientLive.Show", "lib/clients_live/show.ex")
+    nodes = [
+        {"id": "target", "label": "ClientLive.Index", "norm_label": "clientlive.index", "source_file": "lib/clients_live/index.ex", "community": 0},
+        {"id": "form", "label": "ClientLive.Form", "norm_label": "clientlive.form", "source_file": "lib/clients_live/form.ex", "community": 0},
+        {"id": "show", "label": "ClientLive.Show", "norm_label": "clientlive.show", "source_file": "lib/clients_live/show.ex", "community": 0},
+    ]
     # Same-named tiny leaf functions: "list" == bare label fires the exact
     # tier. Placed in the target's own directory so their source paths also
     # substring-match the query term "clients": a path hit must not inflate
     # the coverage that multiplies the exact tier.
     for i in range(3):
-        _add(f"leaf{i}", "list()", f"lib/clients_live/helpers{i}.ex")
+        nodes.append({"id": f"leaf{i}", "label": "list()", "norm_label": "list()", "source_file": f"lib/clients_live/helpers{i}.ex", "community": 0})
     # Filler making "list" a common (low-IDF) token, as in a real graph where
     # list()/get()/new() style names are ubiquitous.
     for i in range(24):
-        _add(f"filler{i}", f"shopping list {i}", f"lib/filler{i}.ex")
+        label = f"shopping list {i}"
+        nodes.append({"id": f"filler{i}", "label": label, "norm_label": label, "source_file": f"lib/filler{i}.ex", "community": 0})
+    G = make_loaded(nodes=nodes)
 
     # The user pastes the real identifier plus context words; tokenization
     # yields 5 terms: clientlive, index, clients, list, columns.
@@ -195,8 +272,7 @@ def test_find_node_ignores_trailing_punctuation():
 
 
 def test_find_node_matches_full_punctuated_unicode_label():
-    G = nx.Graph()
-    G.add_node("n1", label="Skill /auditar — Auditoría inquisitiva de enlaces")
+    G = make_loaded(nodes=[{"id": "n1", "label": "Skill /auditar — Auditoría inquisitiva de enlaces"}])
 
     assert _find_node(G, "Skill /auditar — Auditoría inquisitiva de enlaces") == ["n1"]
 
@@ -204,11 +280,10 @@ def test_find_node_matches_full_punctuated_unicode_label():
 def test_find_node_matches_punctuated_file_label_exactly():
     # #1704: an exactly-typed punctuated file label must resolve through explain,
     # just like it does through path/query.
-    G = nx.Graph()
-    G.add_node("f1", label="blockStream.ts", norm_label="blockstream.ts",
-               source_file="lib/blockStream.ts", source_location="L1")
-    G.add_node("f2", label="blockStream.test.ts", norm_label="blockstream.test.ts",
-               source_file="lib/blockStream.test.ts", source_location="L1")
+    G = make_loaded(nodes=[
+        {"id": "f1", "label": "blockStream.ts", "norm_label": "blockstream.ts", "source_file": "lib/blockStream.ts", "source_location": "L1"},
+        {"id": "f2", "label": "blockStream.test.ts", "norm_label": "blockstream.test.ts", "source_file": "lib/blockStream.test.ts", "source_location": "L1"},
+    ])
     assert _find_node(G, "blockStream.ts")[0] == "f1"
     assert _find_node(G, "blockStream.test.ts")[0] == "f2"
 
@@ -219,95 +294,39 @@ def test_find_node_resolves_when_label_and_norm_label_diverge():
     # `norm_label` diverge, only the symmetric `norm_query == norm_label` match
     # resolves it. Here label tokenizes to "blockstream" but norm_label is
     # "blockstream.ts" — this fails without the norm_query path.
-    G = nx.Graph()
-    G.add_node("n1", label="BlockStream", norm_label="blockstream.ts",
-               source_file="lib/x.ts", source_location="L1")
+    G = make_loaded(nodes=[{"id": "n1", "label": "BlockStream", "norm_label": "blockstream.ts", "source_file": "lib/x.ts", "source_location": "L1"}])
     assert _find_node(G, "blockStream.ts") == ["n1"]
 
 
-# --- trigram candidate prefilter (the trigram index that shrinks the O(N) scan) ---
+# --- native predicate candidate selection ---
 
 
-def _force_full_scan(monkeypatch):
-    """Disable the prefilter so a call exercises the original full-node scan."""
-    monkeypatch.setattr("graphify.serve._trigram_candidates", lambda *a, **k: None)
-
-
-def _make_big_graph(n: int = 150) -> nx.Graph:
+def _make_big_graph(n: int = 150) -> Any:
     """A graph large enough that the selectivity guard lets the fast-path fire for
     rare terms and fall back for common ones. Most labels share the 'item'/'node'
     stem (common), plus a few distinctive rare labels and one punctuated label."""
-    G = nx.Graph()
-    for i in range(n):
-        G.add_node(f"id{i}", label=f"item node {i}", source_file=f"pkg/item_{i}.py")
-    G.add_node("rareA", label="ZebraQuokkaWidget", source_file="zoo/zqw.py")
-    G.add_node("rareB", label="MarmosetGadget handler", source_file="zoo/marmoset.py")
-    G.add_node("punct", label="Foo.Bar:Baz", source_file="pkg/foobar.py")
-    return G
+    nodes = [
+        {"id": f"id{i}", "label": f"item node {i}", "source_file": f"pkg/item_{i}.py"}
+        for i in range(n)
+    ]
+    nodes.extend([
+        {"id": "rareA", "label": "ZebraQuokkaWidget", "source_file": "zoo/zqw.py"},
+        {"id": "rareB", "label": "MarmosetGadget handler", "source_file": "zoo/marmoset.py"},
+        {"id": "punct", "label": "Foo.Bar:Baz", "source_file": "pkg/foobar.py"},
+    ])
+    return make_loaded(nodes=nodes)
 
 
-def test_trigrams_basic():
-    assert _trigrams("foobar") == {"foo", "oob", "oba", "bar"}
-    assert _trigrams("ab") == {"ab"}        # <3 chars -> whole string is the key
-    assert _trigrams("") == set()
-
-
-def test_node_search_text_includes_all_matched_fields():
+def test_native_candidates_find_rare_label_without_python_index():
     G = _make_big_graph()
-    text = _node_search_text(G.nodes["punct"], "punct")
-    # norm_label, tokenized label, nid, raw source, and tokenized source are all
-    # present, NUL-separated so trigrams can't span fields.
-    parts = text.split("\x00")
-    assert parts[0] == "foo.bar:baz"          # norm_label (punctuation kept)
-    assert parts[1] == "foo bar baz"          # label_tokens (tokenized)
-    assert parts[2] == "punct"                # nid
-    assert parts[3] == "pkg/foobar.py"        # source_file
-    assert parts[4] == "pkg foobar py"        # source_file tokens
+    candidates = _query(G).candidate_ids(["zebraquokkawidget"])
+    assert candidates == ["rareA"]
 
 
-def test_trigram_candidates_fast_path_fires_for_rare_term():
+def test_native_candidates_cover_common_and_short_terms():
     G = _make_big_graph()
-    cand = _trigram_candidates(G, ["zebraquokkawidget"])
-    assert cand is not None                   # selective -> fast-path used
-    assert "rareA" in cand
-    assert len(cand) < G.number_of_nodes()    # a real shrink, not the whole graph
-
-
-def test_trigram_candidates_falls_back_on_common_term():
-    G = _make_big_graph()
-    # 'item' is in the label of every one of the 150 'item node N' nodes -> the
-    # rarest trigram is still common -> guard returns None (full-scan fallback).
-    assert _trigram_candidates(G, ["item"]) is None
-
-
-def test_trigram_candidates_falls_back_on_short_token():
-    G = _make_big_graph()
-    assert _trigram_candidates(G, ["ab"]) is None   # <3 chars -> can't trigram-filter
-
-
-def test_score_nodes_prefilter_is_identical_to_full_scan(monkeypatch):
-    G = _make_big_graph()
-    queries = ["zebraquokkawidget", "marmosetgadget handler", "foo bar baz",
-               "item", "node 42", "nonexistentxyz"]
-    for q in queries:
-        terms = _query_terms(q)
-        fast = _score_nodes(G, terms)
-        _force_full_scan(monkeypatch)
-        full = _score_nodes(G, terms)
-        monkeypatch.undo()
-        assert fast == full, f"prefilter diverged from full scan for {q!r}"
-
-
-def test_find_node_prefilter_is_identical_to_full_scan(monkeypatch):
-    G = _make_big_graph()
-    # includes the punctuated label, exercised via its tokenized (label_tokens) form
-    for label in ["ZebraQuokkaWidget", "MarmosetGadget handler", "Foo Bar Baz",
-                  "item node 7", "missing"]:
-        fast = _find_node(G, label)
-        _force_full_scan(monkeypatch)
-        full = _find_node(G, label)
-        monkeypatch.undo()
-        assert fast == full, f"_find_node prefilter diverged (order!) for {label!r}"
+    assert len(_query(G).candidate_ids(["item"])) == 150
+    assert _query(G).candidate_ids(["ab"]) == []
 
 
 def test_find_node_label_tokens_branch_covered_by_index():
@@ -319,37 +338,18 @@ def test_find_node_label_tokens_branch_covered_by_index():
 
 
 def test_find_node_source_file_path_prefers_file_level_node():
-    G = _make_big_graph()
     source_file = "app/api/example/route.ts"
     # Insert the function node first to prove source-file lookup reorders the
     # file-level node ahead of other nodes from the same file.
-    G.add_node(
-        "example_route_get",
-        label="GET()",
-        source_file=source_file,
-        source_location="L42",
-    )
-    G.add_node(
-        "example_route",
-        label="route.ts",
-        source_file=source_file,
-        source_location="L1",
-    )
+    G = make_loaded(nodes=[
+        {"id": "example_route_get", "label": "GET()", "source_file": source_file, "source_location": "L42"},
+        {"id": "example_route", "label": "route.ts", "source_file": source_file, "source_location": "L1"},
+    ])
 
     matches = _find_node(G, source_file)
 
     assert matches[0] == "example_route"
     assert "example_route_get" in matches
-
-
-def test_trigram_index_cached_and_rebuilt_per_graph():
-    G = _make_big_graph()
-    idx1 = _get_trigram_index(G)
-    assert idx1 is _get_trigram_index(G)            # cached on the same graph object
-    G2 = _make_big_graph()
-    assert _get_trigram_index(G2) is not idx1       # a fresh graph rebuilds (reload safety)
-
-
 def test_query_terms_strips_search_punctuation():
     # "what" is a question stopword (dropped); punctuation is still stripped from "extract?".
     assert _query_terms("what calls extract?") == ["calls", "extract"]
@@ -385,12 +385,16 @@ def test_pick_seeds_german_query_seeds_content_node_not_heading_noise():
     """End-to-end for #1900: a German question over a graph with German
     heading-noise nodes must seed on the content noun, not on nodes that
     happen to contain 'die'/'wie'/'wird'."""
-    G = nx.DiGraph()
-    G.add_node("cfg", label="Die Konfiguration", source_file="docs/konfiguration.md")
-    G.add_node("sec", label="Wie wird gesichert", source_file="docs/sicherheit.md")
-    G.add_node("auth", label="Authentifizierung", source_file="src/auth.py")
-    G.add_node("helper", label="login_helper", source_file="src/auth.py")
-    G.add_edge("helper", "auth")
+    G = make_loaded(
+        kind="digraph",
+        nodes=[
+            {"id": "cfg", "label": "Die Konfiguration", "source_file": "docs/konfiguration.md"},
+            {"id": "sec", "label": "Wie wird gesichert", "source_file": "docs/sicherheit.md"},
+            {"id": "auth", "label": "Authentifizierung", "source_file": "src/auth.py"},
+            {"id": "helper", "label": "login_helper", "source_file": "src/auth.py"},
+        ],
+        edges=[{"source": "helper", "target": "auth"}],
+    )
 
     q = "Wie funktioniert die Authentifizierung?"
     terms = _query_terms(q)
@@ -424,8 +428,7 @@ def test_query_terms_filters_only_short_english_terms(monkeypatch):
 
 
 def test_query_graph_text_keeps_short_non_english_terms():
-    G = nx.Graph()
-    G.add_node("frontend", label="前端", source_file="docs/前端.md", source_location="L1", community=0)
+    G = make_loaded(nodes=[{"id": "frontend", "label": "前端", "source_file": "docs/前端.md", "source_location": "L1", "community": 0}])
     text = _query_graph_text(G, "前端", mode="bfs", depth=1)
     assert "No matching nodes found." not in text
     assert "NODE 前端" in text
@@ -524,10 +527,15 @@ def test_subgraph_to_text_annotates_node_with_learning_status():
     """An annotated node gets a `learning=<status>` suffix inside its NODE
     bracket; an un-annotated node gets none."""
     G = _make_graph()
-    _runtime_cache(G)["learning_overlay"] = {
+    overlay = {
         "n1": {"status": "preferred", "stale": False},
     }
-    text = _subgraph_to_text(G, {"n1", "n2"}, _edge_records(G, ("n1", "n2")))
+    text = _subgraph_to_text(
+        G,
+        {"n1", "n2"},
+        _edge_records(G, ("n1", "n2")),
+        learning_overlay=overlay,
+    )
     lines = {l.split()[1]: l for l in text.splitlines() if l.startswith("NODE ")}
     assert "learning=preferred]" in lines["extract"]
     assert "learning=" not in lines["cluster"]  # un-annotated node
@@ -535,8 +543,8 @@ def test_subgraph_to_text_annotates_node_with_learning_status():
 
 def test_subgraph_to_text_marks_stale_status():
     G = _make_graph()
-    _runtime_cache(G)["learning_overlay"] = {"n1": {"status": "contested", "stale": True}}
-    text = _subgraph_to_text(G, {"n1"}, [])
+    overlay = {"n1": {"status": "contested", "stale": True}}
+    text = _subgraph_to_text(G, {"n1"}, [], learning_overlay=overlay)
     assert "learning=contested:stale]" in text
 
 
@@ -551,10 +559,16 @@ def test_subgraph_to_text_learning_suffix_counts_against_budget():
     assert "truncated" not in _subgraph_to_text(G, {"n1", "n2", "n3"}, [],
                                                 token_budget=budget)
     # ...but once every node carries a learning= suffix, the same budget overflows.
-    _runtime_cache(G)["learning_overlay"] = {
+    overlay = {
         n: {"status": "preferred", "stale": False} for n in ("n1", "n2", "n3")
     }
-    annotated = _subgraph_to_text(G, {"n1", "n2", "n3"}, [], token_budget=budget)
+    annotated = _subgraph_to_text(
+        G,
+        {"n1", "n2", "n3"},
+        [],
+        token_budget=budget,
+        learning_overlay=overlay,
+    )
     assert "learning=preferred" in annotated
     assert "truncated" in annotated
 
@@ -641,17 +655,20 @@ def test_load_graph_generation_changes_with_content(tmp_path):
 
 # --- IDF weighting tests (#897) ---
 
-def _make_noisy_graph() -> nx.Graph:
+def _make_noisy_graph() -> Any:
     """20 error-handler nodes + 1 rare identifier: FooBarService."""
-    G = nx.Graph()
+    nodes = []
+    edges = []
     for i in range(20):
-        G.add_node(f"err{i}", label=f"error_handler_{i}", source_file=f"err{i}.py", community=0)
+        nodes.append({"id": f"err{i}", "label": f"error_handler_{i}", "source_file": f"err{i}.py", "community": 0})
         if i > 0:
-            G.add_edge(f"err{i-1}", f"err{i}", relation="calls", confidence="EXTRACTED")
-    G.add_node("fbs", label="FooBarService", source_file="service.py", community=1)
-    G.add_node("fbs_dep", label="ServiceClient", source_file="client.py", community=1)
-    G.add_edge("fbs", "fbs_dep", relation="uses", confidence="EXTRACTED")
-    return G
+            edges.append({"source": f"err{i-1}", "target": f"err{i}", "relation": "calls", "confidence": "EXTRACTED"})
+    nodes.extend([
+        {"id": "fbs", "label": "FooBarService", "source_file": "service.py", "community": 1},
+        {"id": "fbs_dep", "label": "ServiceClient", "source_file": "client.py", "community": 1},
+    ])
+    edges.append({"source": "fbs", "target": "fbs_dep", "relation": "uses", "confidence": "EXTRACTED"})
+    return make_loaded(nodes=nodes, edges=edges)
 
 
 def test_idf_downweights_common_terms():
@@ -665,19 +682,10 @@ def test_idf_downweights_common_terms():
     )
 
 
-def test_idf_cached_on_graph():
-    """IDF results are cached per immutable native snapshot."""
+def test_idf_uses_native_counts_without_python_cache():
     G = _make_graph()
-    _score_nodes(G, ["extract"])
-    assert "extract" in _runtime_cache(G)["idf"]
-
-
-def test_idf_new_graph_starts_fresh():
-    """Two separate graph instances must not share an IDF cache."""
-    G1 = _make_graph()
-    G2 = _make_graph()
-    _score_nodes(G1, ["extract"])
-    assert "idf" not in _runtime_cache(G2)
+    assert _query(G).document_frequencies(["extract"]) == {"extract": 1}
+    assert not hasattr(_graph(G), "_graphify_cache")
 
 
 def test_idf_rare_term_gets_high_weight():
@@ -692,10 +700,10 @@ def test_idf_rare_term_gets_high_weight():
 def test_idf_common_term_gets_low_weight():
     """A term matching most nodes should get IDF < 1."""
     import math
-    G = nx.Graph()
-    # 'handle' in every node label
-    for i in range(20):
-        G.add_node(f"n{i}", label=f"handle_{i}", source_file=f"f{i}.py")
+    G = make_loaded(nodes=[
+        {"id": f"n{i}", "label": f"handle_{i}", "source_file": f"f{i}.py"}
+        for i in range(20)
+    ])
     idf = _compute_idf(G, ["handle"])
     assert idf["handle"] < 1.0
 
@@ -746,14 +754,18 @@ def test_pick_seeds_diversity_recovers_starved_term(monkeypatch):
     G/best_seed_by_term, the 20%-gap cutoff discards the relevant candidate
     entirely; with them, it is recovered as a guaranteed per-term seed.
     """
-    G = nx.DiGraph()
     # "unrelated" is an exact label match for the query term "unrelated" and
     # has no connection to the actually-relevant "target" node.
-    G.add_node("noise", label="unrelated", source_file="design_tokens.json")
     # "target" only substring-matches the query term "widget" via its label.
-    G.add_node("target", label="rate_limit_widget", source_file="src/widget.py")
-    G.add_node("other", label="something_else", source_file="src/other.py")
-    G.add_edge("other", "target")
+    G = make_loaded(
+        kind="digraph",
+        nodes=[
+            {"id": "noise", "label": "unrelated", "source_file": "design_tokens.json"},
+            {"id": "target", "label": "rate_limit_widget", "source_file": "src/widget.py"},
+            {"id": "other", "label": "something_else", "source_file": "src/other.py"},
+        ],
+        edges=[{"source": "other", "target": "target"}],
+    )
 
     terms = ["unrelated", "widget"]
     # `_score_query` does the combined scoring and the per-term singleton
@@ -777,10 +789,10 @@ def test_pick_seeds_dedups_homonymous_generic_labels():
     """Many nodes sharing one generic label (e.g. framework `GET` handlers)
     must contribute at most ONE seed, not consume every slot (#1766). A
     distinct, relevant label still gets its own seed."""
-    G = nx.DiGraph()
-    for i in range(5):
-        G.add_node(f"get{i}", label="GET", source_file=f"routes/r{i}.py")
-    G.add_node("um", label="users_model", source_file="models/users.py")
+    G = make_loaded(kind="digraph", nodes=[
+        *[{"id": f"get{i}", "label": "GET", "source_file": f"routes/r{i}.py"} for i in range(5)],
+        {"id": "um", "label": "users_model", "source_file": "models/users.py"},
+    ])
     # Score all the GET nodes above users_model so, pre-fix, they'd take every slot.
     scored = [(1000.0, f"get{i}") for i in range(5)] + [(900.0, "um")]
     seeds = _pick_seeds(scored, G=G)
@@ -792,10 +804,11 @@ def test_pick_seeds_dedups_homonymous_generic_labels():
 
 def test_pick_seeds_dedup_key_is_case_and_diacritic_normalized():
     """`GET`/`Get`/`get` are the same generic label and must dedup together."""
-    G = nx.DiGraph()
-    G.add_node("a", label="GET", source_file="a.py")
-    G.add_node("b", label="Get", source_file="b.py")
-    G.add_node("c", label="get", source_file="c.py")
+    G = make_loaded(kind="digraph", nodes=[
+        {"id": "a", "label": "GET", "source_file": "a.py"},
+        {"id": "b", "label": "Get", "source_file": "b.py"},
+        {"id": "c", "label": "get", "source_file": "c.py"},
+    ])
     scored = [(1000.0, "a"), (990.0, "b"), (980.0, "c")]
     seeds = _pick_seeds(scored, G=G)
     assert len(seeds) == 1, f"case-variant duplicates not collapsed: {seeds}"
@@ -804,11 +817,14 @@ def test_pick_seeds_dedup_key_is_case_and_diacritic_normalized():
 def test_pick_seeds_per_term_guarantee_does_not_reintroduce_generic_dupe(monkeypatch):
     """The per-term guarantee loop must honor the same per-label cap, so it can't
     add a second `GET` after dedup already seeded one (#1766)."""
-    G = nx.DiGraph()
-    for i in range(3):
-        G.add_node(f"get{i}", label="GET", source_file=f"r{i}.py")
-    G.add_node("um", label="users_model", source_file="users.py")
-    G.add_edge("um", "get0")
+    G = make_loaded(
+        kind="digraph",
+        nodes=[
+            *[{"id": f"get{i}", "label": "GET", "source_file": f"r{i}.py"} for i in range(3)],
+            {"id": "um", "label": "users_model", "source_file": "users.py"},
+        ],
+        edges=[{"source": "um", "target": "get0"}],
+    )
     terms = ["get", "users"]
     qs = _score_query(G, terms, collect_per_term_seeds=True)
     seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
@@ -821,10 +837,11 @@ def test_score_nodes_scores_identical_labels_equally():
     (shared by shortest_path / explain endpoint resolution): two nodes with the
     SAME label must receive the SAME score for a query, i.e. the fix lives in
     seed selection, not in the shared scorer (#1766 followup)."""
-    G = nx.DiGraph()
-    G.add_node("g1", label="GET", source_file="a.py")
-    G.add_node("g2", label="GET", source_file="b.py")
-    G.add_node("g3", label="GET", source_file="c.py")
+    G = make_loaded(kind="digraph", nodes=[
+        {"id": "g1", "label": "GET", "source_file": "a.py"},
+        {"id": "g2", "label": "GET", "source_file": "b.py"},
+        {"id": "g3", "label": "GET", "source_file": "c.py"},
+    ])
     by_id = {nid: s for s, nid in _score_nodes(G, ["get"])}
     assert by_id["g1"] == by_id["g2"] == by_id["g3"], (
         f"identical-label nodes scored differently: {by_id}"
@@ -853,14 +870,17 @@ def test_query_seeds_from_identifier_not_noise():
 
 
 def test_query_graph_text_parameter_type_context_filter_changes_traversal():
-    from graphify.serve import _query_graph_text
-
-    graph = nx.Graph()
-    graph.add_node("process", label="process", source_file="sample.cs", source_location="L20")
-    graph.add_node("payload", label="Payload", source_file="sample.cs", source_location="L5")
-    graph.add_node("other", label="PayloadFactory", source_file="sample.cs", source_location="L40")
-    graph.add_edge("process", "payload", relation="references", context="parameter_type", confidence="EXTRACTED")
-    graph.add_edge("process", "other", relation="calls", context="call", confidence="EXTRACTED")
+    graph = make_loaded(
+        nodes=[
+            {"id": "process", "label": "process", "source_file": "sample.cs", "source_location": "L20"},
+            {"id": "payload", "label": "Payload", "source_file": "sample.cs", "source_location": "L5"},
+            {"id": "other", "label": "PayloadFactory", "source_file": "sample.cs", "source_location": "L40"},
+        ],
+        edges=[
+            {"source": "process", "target": "payload", "relation": "references", "context": "parameter_type", "confidence": "EXTRACTED"},
+            {"source": "process", "target": "other", "relation": "calls", "context": "call", "confidence": "EXTRACTED"},
+        ],
+    )
 
     text = _query_graph_text(graph, "who accepts Payload", context_filters=["parameter_type"])
 
@@ -933,9 +953,10 @@ def test_query_terms_chinese_no_jieba_fallback(monkeypatch):
 
 def test_score_nodes_chinese_substring_match():
     """Searching for '路由' should match a node with label containing '路由'."""
-    G = nx.Graph()
-    G.add_node("n1", label="路由桥接核对表", source_file="doc.md", community=0)
-    G.add_node("n2", label="其他内容", source_file="doc.md", community=0)
+    G = make_loaded(nodes=[
+        {"id": "n1", "label": "路由桥接核对表", "source_file": "doc.md", "community": 0},
+        {"id": "n2", "label": "其他内容", "source_file": "doc.md", "community": 0},
+    ])
     scored = _score_nodes(G, ["路由"])
     nids = [nid for _, nid in scored]
     assert "n1" in nids
@@ -944,10 +965,13 @@ def test_score_nodes_chinese_substring_match():
 
 def test_query_text_chinese_finds_routing_nodes():
     """Full pipeline: '页面路由' should find nodes with '路由' in label."""
-    G = nx.Graph()
-    G.add_node("parent", label="页面路由规范", source_file="doc.md", source_location="L1", community=0)
-    G.add_node("child", label="路由桥接核对表", source_file="doc.md", source_location="L10", community=0)
-    G.add_edge("parent", "child", relation="contains", confidence="EXTRACTED")
+    G = make_loaded(
+        nodes=[
+            {"id": "parent", "label": "页面路由规范", "source_file": "doc.md", "source_location": "L1", "community": 0},
+            {"id": "child", "label": "路由桥接核对表", "source_file": "doc.md", "source_location": "L10", "community": 0},
+        ],
+        edges=[{"source": "parent", "target": "child", "relation": "contains", "confidence": "EXTRACTED"}],
+    )
     text = _query_graph_text(G, "页面路由", mode="bfs", depth=2)
     assert "No matching nodes found." not in text
     assert "路由" in text
@@ -980,7 +1004,7 @@ def test_community_header_sanitizes_name():
 # --- single-pass scoring refactor: reference-impl equality + one-traversal ---
 
 
-def _reference_best_seed_by_term(G: nx.Graph, terms: list[str]) -> dict[str, str]:
+def _reference_best_seed_by_term(G: Any, terms: list[str]) -> dict[str, str]:
     """Test-only oracle for the legacy per-term `_pick_seeds(terms=...)` loop.
 
     Re-creates what `_pick_seeds` did before the single-pass refactor: rescore
@@ -999,12 +1023,12 @@ def _reference_best_seed_by_term(G: nx.Graph, terms: list[str]) -> dict[str, str
             continue
         best_score = term_scored[0][0]
         tied = [nid for s, nid in term_scored if s == best_score]
-        best_nid = max(tied, key=lambda n: G.degree(n).degree) if len(tied) > 1 else term_scored[0][1]
+        best_nid = max(tied, key=lambda n: _graph(G).degree(n).degree) if len(tied) > 1 else term_scored[0][1]
         best[term] = best_nid
     return best
 
 
-def _make_random_scoring_graph(n: int, *, seed: int) -> nx.DiGraph:
+def _make_random_scoring_graph(n: int, *, seed: int) -> Any:
     """Reproducible broad-match DiGraph: short constructed labels + edge noise.
 
     Labels draw from a small syllable pool so tokens collide across nodes,
@@ -1021,15 +1045,20 @@ def _make_random_scoring_graph(n: int, *, seed: int) -> nx.DiGraph:
         "build", "report", "extract", "router", "config", "service",
         "handler", "token", "auth", "rate", "limit", "widget", "model",
     ]
-    G: nx.DiGraph = nx.DiGraph()
+    nodes = []
     for i in range(n):
         label = "_".join(rng.sample(syllables, rng.randint(1, 3)))
-        G.add_node(f"n{i}", label=label, source_file=f"src/{label[:8]}.py")
+        nodes.append({"id": f"n{i}", "label": label, "source_file": f"src/{label[:8]}.py"})
+    pairs: set[tuple[int, int]] = set()
     for _ in range(n * 2):
         a, b = rng.randrange(n), rng.randrange(n)
         if a != b:
-            G.add_edge(f"n{a}", f"n{b}", relation="calls", confidence="EXTRACTED")
-    return G
+            pairs.add((a, b))
+    edges = [
+        {"source": f"n{a}", "target": f"n{b}", "relation": "calls", "confidence": "EXTRACTED"}
+        for a, b in sorted(pairs)
+    ]
+    return make_loaded(nodes=nodes, edges=edges, kind="digraph")
 
 
 SYLLABLE_QUERIES = [
@@ -1085,11 +1114,13 @@ def test_pick_seeds_with_optimized_best_seed_matches_legacy_semantics(terms):
     for term, nid in ref_best.items():
         if nid in ref_seed_set:
             continue
-        nid_label = (G.nodes[nid].get("norm_label")
-                     or G.nodes[nid].get("label")
+        nid_data = node_attributes(_graph(G), nid)
+        nid_label = (nid_data.get("norm_label")
+                     or nid_data.get("label")
                      or nid)
         seeded_with_same_label = any(
-            (G.nodes[s].get("norm_label") or G.nodes[s].get("label") or s) == nid_label
+            (node_attributes(_graph(G), s).get("norm_label")
+             or node_attributes(_graph(G), s).get("label") or s) == nid_label
             for s in ref_seeds
         )
         assert seeded_with_same_label, (
@@ -1133,16 +1164,8 @@ def test_score_query_matches_legacy_across_random_deterministic_graphs():
         )
 
 
-def test_score_query_matches_legacy_under_full_scan_fallback(monkeypatch):
-    """When the trigram prefilter falls back to a full-graph scan, the
-    single-pass path still produces identical rankings and per-term winners.
-
-    Forces `_trigram_candidates` to return None so the combined iterates the
-    whole graph — mirroring per-token `_score_nodes([token])` which would also
-    full-scan when its own trigram search isn't selective."""
-    monkeypatch.setattr(
-        "graphify.serve._trigram_candidates", lambda G, needles: None
-    )
+def test_score_query_uses_native_candidate_predicates():
+    """Combined and singleton scoring share native bounded candidates."""
     terms = ["router", "service", "handler"]
     G = _make_random_scoring_graph(80, seed=19)
     ref_best = _reference_best_seed_by_term(G, terms)
@@ -1156,9 +1179,11 @@ def test_query_graph_text_makes_exactly_one_score_query_call(monkeypatch):
     regardless of how many tokens the query has — eliminating the legacy
     T+1-pass rescoring. `_score_nodes` must NOT be called from the query path
     (only path/explain still call it)."""
+    import graphify.serve as serve_mod
+
     G = _make_random_scoring_graph(60, seed=23)
-    original_sq = _score_query
-    original_sn = _score_nodes
+    original_sq = serve_mod._score_query
+    original_sn = serve_mod._score_nodes
 
     state = {"sq": 0, "sn": 0}
 
