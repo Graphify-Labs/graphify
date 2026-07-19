@@ -47,6 +47,13 @@ def is_url(path: str) -> bool:
     return any(path.startswith(p) for p in URL_PREFIXES)
 
 
+def _normalize_url(url: str) -> str:
+    """Add an HTTPS scheme to URLs that start with ``www.``."""
+    if url.startswith('www.'):
+        return f'https://{url}'
+    return url
+
+
 def download_audio(url: str, output_dir: Path) -> Path:
     """Download audio-only stream from a URL using yt-dlp.
 
@@ -54,6 +61,7 @@ def download_audio(url: str, output_dir: Path) -> Path:
     Uses cached file if already downloaded.
     """
     from graphify.security import validate_url
+    url = _normalize_url(url)
     validate_url(url)  # blocks private IPs, bad schemes before yt-dlp runs
     yt_dlp = _get_yt_dlp()
     output_dir.mkdir(parents=True, exist_ok=True)

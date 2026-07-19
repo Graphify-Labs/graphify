@@ -9,7 +9,9 @@ import pytest
 
 from graphify.transcribe import (
     VIDEO_EXTENSIONS,
+    _normalize_url,
     build_whisper_prompt,
+    is_url,
     transcribe,
     transcribe_all,
 )
@@ -25,6 +27,33 @@ def test_video_extensions_set():
     assert ".wav" in VIDEO_EXTENSIONS
     assert ".mov" in VIDEO_EXTENSIONS
     assert ".py" not in VIDEO_EXTENSIONS
+
+
+# ---------------------------------------------------------------------------
+# URL handling
+# ---------------------------------------------------------------------------
+
+def test_normalize_url_adds_https_to_www_url():
+    assert _normalize_url("www.youtube.com/watch?v=xyz") == "https://www.youtube.com/watch?v=xyz"
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.youtube.com/watch?v=xyz",
+    "http://www.youtube.com/watch?v=xyz",
+    "videos/lecture.mp4",
+])
+def test_normalize_url_preserves_other_inputs(url):
+    assert _normalize_url(url) == url
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("www.youtube.com/watch?v=xyz", True),
+    ("http://youtube.com/watch?v=xyz", True),
+    ("https://youtube.com/watch?v=xyz", True),
+    ("videos/lecture.mp4", False),
+])
+def test_is_url_preserves_prefix_detection(value, expected):
+    assert is_url(value) is expected
 
 
 # ---------------------------------------------------------------------------
