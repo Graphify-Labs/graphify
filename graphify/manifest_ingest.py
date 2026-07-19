@@ -226,17 +226,20 @@ def _parse_pom(text: str) -> dict | None:
     text = re.sub(r'\sxmlns="[^"]*"', '', text, count=1)
     root = ET.fromstring(text)
     aid = root.findtext("artifactId")
-    gid = root.findtext("groupId")
+    gid = root.findtext("groupId") or root.findtext("parent/groupId")
+    version = root.findtext("version") or root.findtext("parent/version")
     if not aid:
         return None
     name = f"{gid}:{aid}" if gid else aid
     deps: list[str] = []
-    for dep in root.findall(".//dependencies/dependency"):
+    project_deps = root.findall("dependencies/dependency")
+    profile_deps = root.findall("profiles/profile/dependencies/dependency")
+    for dep in project_deps + profile_deps:
         da = dep.findtext("artifactId")
         dg = dep.findtext("groupId")
         if da:
             deps.append(f"{dg}:{da}" if dg else da)
-    return {"name": name, "version": root.findtext("version"), "deps": deps}
+    return {"name": name, "version": version, "deps": deps}
 
 
 _PARSERS = {

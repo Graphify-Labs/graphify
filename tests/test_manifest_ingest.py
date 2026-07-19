@@ -75,6 +75,55 @@ def test_pom_parses_artifact_and_deps(tmp_path):
     assert any(e["target"] == "pkg_org_lib_core" for e in r["edges"])
 
 
+def test_pom_includes_only_top_level_dependencies(tmp_path):
+    p = _write(tmp_path / "pom.xml",
+               '<project><groupId>com.acme</groupId><artifactId>app</artifactId>'
+               '<dependencies><dependency><groupId>org.lib</groupId>'
+               '<artifactId>runtime</artifactId></dependency></dependencies></project>')
+    r = extract_package_manifest(p)
+    deps = {e["target"] for e in r["edges"] if e["relation"] == "depends_on"}
+    assert deps == {"pkg_org_lib_runtime"}
+
+
+def test_pom_excludes_dependency_management_and_plugin_dependencies(tmp_path):
+    p = _write(tmp_path / "pom.xml",
+               '<project><groupId>com.acme</groupId><artifactId>app</artifactId>'
+               '<dependencyManagement><dependencies><dependency><groupId>org.managed</groupId>'
+               '<artifactId>bom-entry</artifactId></dependency></dependencies></dependencyManagement>'
+               '<build><plugins><plugin><dependencies><dependency><groupId>org.plugin</groupId>'
+               '<artifactId>helper</artifactId></dependency></dependencies></plugin></plugins></build>'
+               '</project>')
+    r = extract_package_manifest(p)
+    deps = {e["target"] for e in r["edges"] if e["relation"] == "depends_on"}
+    assert deps == set()
+
+
+def test_pom_uses_parent_group_id_when_project_group_id_is_missing(tmp_path):
+    p = _write(tmp_path / "pom.xml",
+               '<project><parent><groupId>com.parent</groupId><artifactId>parent</artifactId>'
+               '<version>1.0</version></parent><artifactId>child</artifactId></project>')
+    r = extract_package_manifest(p)
+    assert _pkg_nodes(r)[0]["label"] == "com.parent:child"
+
+
+def test_pom_uses_parent_version_when_project_version_is_missing(tmp_path):
+    p = _write(tmp_path / "pom.xml",
+               '<project><parent><groupId>com.parent</groupId><artifactId>parent</artifactId>'
+               '<version>1.2.3</version></parent><artifactId>child</artifactId></project>')
+    r = extract_package_manifest(p)
+    assert _pkg_nodes(r)[0]["version"] == "1.2.3"
+
+
+def test_pom_includes_profile_dependencies(tmp_path):
+    p = _write(tmp_path / "pom.xml",
+               '<project><groupId>com.acme</groupId><artifactId>app</artifactId><profiles><profile>'
+               '<id>optional-feature</id><dependencies><dependency><groupId>org.profile</groupId>'
+               '<artifactId>feature</artifactId></dependency></dependencies></profile></profiles></project>')
+    r = extract_package_manifest(p)
+    deps = {e["target"] for e in r["edges"] if e["relation"] == "depends_on"}
+    assert deps == {"pkg_org_profile_feature"}
+
+
 # ── #1377: a package referenced by N manifests is ONE node ───────────────────
 
 def test_apm_dependency_collapses_to_single_canonical_node(tmp_path):
