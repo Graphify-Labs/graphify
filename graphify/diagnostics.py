@@ -159,7 +159,7 @@ def diagnose_extraction(
     extract_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Summarize same-endpoint edge-collapse risk for an extraction payload."""
-    from graphify.build import build_from_json
+    from graphify.build import build_from_extraction
 
     node_ids = _node_ids(extraction)
     raw_edges = _edge_list(extraction)
@@ -231,7 +231,7 @@ def diagnose_extraction(
     post_build_node_count: int | None = None
     try:
         graph_input = deepcopy(extraction)
-        graph = build_from_json(graph_input, directed=directed, root=root)
+        graph = build_from_extraction(graph_input, directed=directed, root=root)
         graph_type = graph.kind
         post_build_edge_count = graph.edge_count
         post_build_node_count = graph.node_count

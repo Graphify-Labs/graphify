@@ -15,7 +15,7 @@ from graphify.helix.model import graphify_attributes
 
 
 def _graphify_betweenness_options():
-    from helixdb import BetweennessOptions
+    from helixdb.graph import BetweennessOptions
 
     return BetweennessOptions(mode="auto", sample_count=100, seed=42, exact_through=1_000)
 

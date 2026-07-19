@@ -92,7 +92,7 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
         seen.add(dep_nid)
         # The edge targets the dependency's canonical package id. If that package's
         # own manifest is in the corpus, the edge resolves to its (single) node; if
-        # the dependency is external, build_from_json prunes the dangling edge. We
+        # the dependency is external, build_from_extraction prunes the dangling edge. We
         # deliberately do NOT emit a stub node — a stub with an empty source_file
         # would risk clobbering the real node's source_file under id-dedup.
         edges.append({

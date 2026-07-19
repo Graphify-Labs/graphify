@@ -2045,6 +2045,7 @@ def extract_corpus_parallel(
     max_retry_depth: int = 3,
     deep_mode: bool = False,
     cache: dict | None = None,
+    cache_root: Path | None = None,
 ) -> dict:
     """Extract a corpus in chunks, merging results.
 
@@ -2155,6 +2156,7 @@ def extract_corpus_parallel(
                 result.get("edges", []),
                 result.get("hyperedges", []),
                 root=root,
+                cache_root=cache_root,
                 merge_existing=True,
                 allowed_source_files=allowed,
                 mode="deep" if deep_mode else None,

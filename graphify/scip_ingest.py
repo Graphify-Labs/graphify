@@ -14,7 +14,7 @@ Entry point:
   extraction result format. All edges emitted are endpoint-safe — the
   function builds a symbol → node_id index in a first pass and either
   resolves relationship targets via that index or creates a stub
-  external node so `build_from_json()` will keep the edge.
+  external node so `build_from_extraction()` will keep the edge.
 
 Supported (simplified) JSON shape:
   documents[]: { relative_path, language, symbols[] }

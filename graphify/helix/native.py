@@ -1,22 +1,20 @@
-"""Contract and loader for Graphify's pinned Helix Python SDK + native payload."""
+"""Validated public-SDK boundary for Graphify's embedded Helix runtime."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-import importlib
 import importlib.metadata
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
+import helixdb
 
-HELIX_REPOSITORY = "https://github.com/HelixDB/helix-db"
-HELIX_PYTHON_VERSION = "0.2.0b1"
+
+HELIX_PACKAGE_INDEX = "https://pypi.org/project/helix-db/0.2.0b3/"
+HELIX_PYTHON_VERSION = "0.2.0b3"
 HELIX_EMBEDDED_DISTRIBUTION = "helix-db-embedded"
-HELIX_EMBEDDED_VERSION = "0.2.0b1"
-NATIVE_MODULE_NAME = "helixdb"
-NATIVE_PAYLOAD_NAME = "helixdb_uniffi"
+HELIX_EMBEDDED_VERSION = "0.2.0b3"
 _DATABASE_NAME = "graphify"
 
 
@@ -34,7 +32,6 @@ class NativeBackendInfo:
 @dataclass(frozen=True)
 class _NativeSurface:
     helixdb_attrs: frozenset[str]
-    uniffi_attrs: frozenset[str]
 
 
 _REQUIRED = _NativeSurface(
@@ -42,7 +39,6 @@ _REQUIRED = _NativeSurface(
         {
             "Client",
             "Disk",
-            "IndexSpec",
             "NodeRef",
             "ShortestPathDirection",
             "SourcePredicate",
@@ -57,49 +53,26 @@ _REQUIRED = _NativeSurface(
             "NativeGraph",
         }
     ),
-    uniffi_attrs=frozenset(
-        {
-            "HelixDb",
-            "NativeGraphLoadSpec",
-            "NativeGraphKind",
-            "NativeExternalId",
-            "NativeEdgeId",
-            "NativeTraversalDirection",
-            "NativeBetweennessOptions",
-            "NativeTraversalOptions",
-            "graph_from_query_response",
-        }
-    ),
 )
 
 
 @lru_cache(maxsize=1)
-def load_native_module() -> ModuleType:
-    """Load and validate the pinned Helix SDK plus embedded native payload."""
+def validate_native_backend() -> None:
+    """Validate the statically imported public SDK and matching embedded wheel."""
     try:
-        module = importlib.import_module(NATIVE_MODULE_NAME)
-    except Exception as exc:
-        raise NativeBackendUnavailable(
-            f"{NATIVE_MODULE_NAME} is required for embedded Helix storage: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
-
-    version = getattr(module, "__version__", None)
-    if version is None:
-        try:
-            version = importlib.metadata.version("helix-db")
-        except importlib.metadata.PackageNotFoundError:
-            version = None
+        version = importlib.metadata.version("helix-db")
+    except importlib.metadata.PackageNotFoundError:
+        version = None
     if version != HELIX_PYTHON_VERSION:
         raise NativeBackendUnavailable(
             "embedded Helix SDK version mismatch: "
             f"expected {HELIX_PYTHON_VERSION}, got {version!r}"
         )
 
-    missing = sorted(name for name in _REQUIRED.helixdb_attrs if not hasattr(module, name))
+    missing = sorted(name for name in _REQUIRED.helixdb_attrs if not hasattr(helixdb, name))
     if missing:
         raise NativeBackendUnavailable(
-            f"{NATIVE_MODULE_NAME} is missing required embedded SDK APIs: "
+            "helixdb is missing required public embedded SDK APIs: "
             f"{', '.join(missing)}"
         )
     try:
@@ -114,62 +87,40 @@ def load_native_module() -> ModuleType:
             "embedded Helix payload version mismatch: "
             f"expected {HELIX_EMBEDDED_VERSION}, got {embedded_version!r}"
         )
-    try:
-        payload = importlib.import_module(NATIVE_PAYLOAD_NAME)
-    except Exception as exc:
-        raise NativeBackendUnavailable(
-            "native embedded Helix payload is unavailable: "
-            f"{type(exc).__name__}: {exc}. "
-            f"Install {HELIX_EMBEDDED_DISTRIBUTION}=={HELIX_EMBEDDED_VERSION}."
-        ) from exc
-    native_missing = sorted(
-        name for name in _REQUIRED.uniffi_attrs if not hasattr(payload, name)
-    )
-    if native_missing:
-        raise NativeBackendUnavailable(
-            "native Helix payload does not implement graphify-native-graph: "
-            + ", ".join(native_missing)
-        )
-    return module
 
 
 def native_backend_info() -> NativeBackendInfo:
-    module = load_native_module()
-    version = getattr(module, "__version__", None)
-    if version is None:
-        version = importlib.metadata.version("helix-db")
+    validate_native_backend()
     return NativeBackendInfo(
-        module=module.__name__,
-        version=version,
+        module=helixdb.__name__,
+        version=importlib.metadata.version("helix-db"),
         embedded_version=importlib.metadata.version(HELIX_EMBEDDED_DISTRIBUTION),
     )
 
 
 def open_embedded_client(path: str | Path, *, read_only: bool = False) -> Any:
     """Open the official in-process, on-disk Helix client at ``path``."""
-    module = load_native_module()
+    validate_native_backend()
     root = Path(path)
     if read_only:
         if not root.is_dir():
             raise FileNotFoundError(f"embedded Helix store not found: {root}")
     else:
         root.mkdir(parents=True, exist_ok=True)
-    source = module.Disk(str(root.resolve()), _DATABASE_NAME)
+    source = helixdb.Disk(str(root.resolve()), _DATABASE_NAME)
     if read_only:
-        return module.Client.embedded_reader(source)
-    return module.Client.embedded(source)
+        return helixdb.Client.embedded_reader(source)
+    return helixdb.Client.embedded(source)
 
 
 __all__ = [
-    "HELIX_REPOSITORY",
+    "HELIX_PACKAGE_INDEX",
     "HELIX_PYTHON_VERSION",
     "HELIX_EMBEDDED_DISTRIBUTION",
     "HELIX_EMBEDDED_VERSION",
-    "NATIVE_MODULE_NAME",
-    "NATIVE_PAYLOAD_NAME",
     "NativeBackendInfo",
     "NativeBackendUnavailable",
-    "load_native_module",
     "native_backend_info",
     "open_embedded_client",
+    "validate_native_backend",
 ]

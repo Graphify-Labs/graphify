@@ -9,7 +9,6 @@ from .persistence import (
     HelixGraphReader,
     graph_storage_exists,
     load_graph,
-    load_graph_payload,
     persist_graph,
     persist_graph_data,
 )
@@ -26,7 +25,6 @@ __all__ = [
     "NodeData",
     "graph_storage_exists",
     "load_graph",
-    "load_graph_payload",
     "native_backend_info",
     "persist_graph",
     "persist_graph_data",

@@ -521,11 +521,6 @@ def _print_banner() -> None:
     if not sys.stdout.isatty():
         return
     try:
-        if sys.platform == "win32":
-            import ctypes
-            ctypes.windll.kernel32.SetConsoleMode(
-                ctypes.windll.kernel32.GetStdHandle(-11), 7
-            )
         A = "\033[38;5;214m"
         D = "\033[38;5;130m"
         R = "\033[0m"
