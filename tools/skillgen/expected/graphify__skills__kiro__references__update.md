@@ -12,7 +12,13 @@ import sys, json
 from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
 
-result = detect_incremental(Path('INPUT_PATH'))
+# kind='auto' compares code files against ast_hash and docs/papers/images
+# against semantic_hash. The default (kind='semantic') reports every code file
+# of an AST-built corpus as changed — code never gets a semantic_hash — turning
+# a 12-file delta into a full-corpus re-extraction (#2033); plain kind='ast'
+# would instead skip the semantic catch-up for docs an AST-only rebuild
+# downgraded (#2014). Per-type is the only mode that matches this pipeline.
+result = detect_incremental(Path('INPUT_PATH'), kind='auto')
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2, ensure_ascii=False))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
@@ -142,7 +148,18 @@ print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])
 # root= matches the build_merge call above so the manifest keys stay relative to
 # the scan root — portable across clones/machines, so --update keeps matching
 # cached files instead of missing every one after a move (#1417).
-save_manifest(incremental['files'], root='INPUT_PATH')
+# Two stamps, not one kind='both' pass (#2033): 'both' would forge a
+# semantic_hash for every file in the corpus, including docs this run never
+# semantically extracted, silently cancelling their future catch-up.
+# 1) kind='ast' over the full corpus: refreshes ast_hash; an untouched file
+#    keeps its semantic_hash, a changed one has it cleared.
+# 2) kind='semantic' over just the files the semantic pass covered this run —
+#    the changed docs/papers/images (and transcribed videos). On a code-only
+#    update that set is empty and the second stamp is skipped.
+save_manifest(incremental['files'], root='INPUT_PATH', kind='ast')
+sem_files = {t: incremental.get('new_files', {}).get(t, []) for t in ('document', 'paper', 'image', 'video')}
+if any(sem_files.values()):
+    save_manifest(sem_files, root='INPUT_PATH', kind='semantic')
 print('[graphify update] Manifest saved.')
 "
 ```

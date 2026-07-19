@@ -918,6 +918,29 @@ def _is_semantic_cache_scope_fix_line(line: str) -> bool:
     ) or stripped.startswith("saved = save_semantic_cache(")
 
 
+def _is_incremental_kind_fix_line(line: str) -> bool:
+    """Whether a line is part of the incremental-detection kind fix (#2033).
+
+    The monolith --update flow called ``detect_incremental(...)`` with the
+    default ``kind="semantic"``, so on an AST-built corpus — where code files
+    never receive a semantic_hash — every file reported as changed and a
+    12-file delta became a full-corpus re-extraction. The call now passes
+    ``kind='auto'`` (ast_hash for code, semantic_hash for docs/papers/images).
+    Both the old bare call (removed) and the new call (added) match on the
+    ``detect_incremental(`` clause with an ``import`` guard for the ``from
+    graphify.detect import ...`` line; the three explanatory comment lines
+    match verbatim so any rewording still trips the round-trip.
+    """
+    stripped = line.strip()
+    if "detect_incremental(" in stripped and "import" not in stripped:
+        return True
+    return stripped in (
+        "# kind='auto': ast_hash for code, semantic_hash for docs/papers/images. The",
+        "# semantic default would report every code file of an AST-built corpus as",
+        "# changed and re-extract the whole corpus (#2033).",
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -936,6 +959,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
+    _is_incremental_kind_fix_line,
 )
 
 
