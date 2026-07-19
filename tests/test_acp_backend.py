@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from graphify import llm
-from graphify.acp import AcpResult, _json_object, run_acp
+from graphify.acp import AcpResult, _child_environment, _json_object, run_acp
 
 
 def test_acp_backend_requires_no_api_key():
@@ -74,6 +74,38 @@ def test_acp_config_rejects_non_scalar_values():
         _json_object('{"nested": {"unsafe": true}}', "GRAPHIFY_ACP_CONFIG_JSON")
 
 
+def test_acp_child_environment_does_not_forward_secrets(monkeypatch):
+    monkeypatch.setenv("HOME", "/tmp/graphify-home")
+    monkeypatch.setenv("PATH", "/bin")
+    monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-openai")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret-github")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret-anthropic")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret-aws")
+    monkeypatch.setenv("ACP_PROVIDER_TOKEN", "explicit-provider-token")
+    monkeypatch.setenv("GRAPHIFY_CHILD_ENV_ALLOWLIST", "ACP_PROVIDER_TOKEN")
+
+    environment = _child_environment()
+
+    assert environment["HOME"] == "/tmp/graphify-home"
+    assert environment["CODEX_HOME"] == "/tmp/codex-home"
+    assert environment["ACP_PROVIDER_TOKEN"] == "explicit-provider-token"
+    for secret_name in (
+        "OPENAI_API_KEY",
+        "GITHUB_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+    ):
+        assert secret_name not in environment
+    assert environment["NO_BROWSER"] == "1"
+
+
+def test_acp_child_environment_rejects_invalid_allowlist_names(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_CHILD_ENV_ALLOWLIST", "VALID_NAME,NOT-VALID")
+    with pytest.raises(ValueError, match="invalid environment variable name"):
+        _child_environment()
+
+
 def test_official_sdk_transport_and_session_options(tmp_path, monkeypatch):
     config_log = tmp_path / "config.jsonl"
     fake_agent = Path(__file__).with_name("fake_acp_agent.py")
@@ -81,6 +113,7 @@ def test_official_sdk_transport_and_session_options(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_ACP_ARGS_JSON", json.dumps([str(fake_agent)]))
     monkeypatch.setenv("GRAPHIFY_ACP_CONFIG_JSON", '{"mode": "read-only"}')
     monkeypatch.setenv("GRAPHIFY_FAKE_ACP_CONFIG_LOG", str(config_log))
+    monkeypatch.setenv("GRAPHIFY_CHILD_ENV_ALLOWLIST", "GRAPHIFY_FAKE_ACP_CONFIG_LOG")
 
     result = run_acp("extract", model="gpt-test")
 

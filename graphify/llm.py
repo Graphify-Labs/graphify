@@ -2920,6 +2920,10 @@ def label_communities(
     written. Callers that want graceful degradation should use
     :func:`generate_community_labels`.
     """
+    # Keep the deprecated spelling on the same ACP transport and concurrency
+    # policy as corpus extraction. Without normalization here, community
+    # labeling could bypass ACP's default serial session guard.
+    backend = _normalize_backend(backend)
     labels = _placeholder_community_labels(communities)
     cap = len(communities) if max_communities is None else max_communities
     lines, labeled_cids = _community_label_lines(G, communities, gods, cap, top_k)

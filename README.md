@@ -600,6 +600,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_ACP_CONFIG_JSON` | JSON object of ACP session configuration options | optional — defaults to read-only mode |
 | `GRAPHIFY_ACP_MODEL` | Optional model selected through ACP session configuration | optional — adapter default |
 | `GRAPHIFY_ACP_PARALLEL` | Allow concurrent ACP extraction sessions | optional — default is serial |
+| `GRAPHIFY_CHILD_ENV_ALLOWLIST` | Comma-separated additional environment variable names forwarded to the ACP adapter | optional — unrelated parent secrets are not inherited |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
 | `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, ACP, and SDK backends (default: 600) | optional — also `--api-timeout` flag |

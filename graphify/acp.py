@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -26,6 +27,65 @@ class AcpResult:
     output_tokens: int = 0
     model: str = "acp"
     stop_reason: str = "end_turn"
+
+
+_ACP_CHILD_ENV_DEFAULTS = frozenset(
+    {
+        # Process plumbing and harmless terminal/runtime preferences.
+        "HOME",
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LANGUAGE",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "NO_BROWSER",
+        "TERM",
+        "TERM_PROGRAM",
+        "COLORTERM",
+        "CI",
+        "NO_COLOR",
+        # Standard user-data/config locations used by ACP adapters. CODEX_HOME
+        # is the provider-managed subscription location used by codex-acp.
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "CODEX_HOME",
+    }
+)
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _child_environment() -> dict[str, str]:
+    """Build the minimal environment inherited by an ACP adapter.
+
+    Repository text is untrusted input and ACP adapters may expose tools, so
+    inheriting the complete Graphify environment would unnecessarily expose
+    unrelated API keys and tokens. Provider-specific variables remain
+    possible through the explicit, comma-separated
+    ``GRAPHIFY_CHILD_ENV_ALLOWLIST`` contract.
+    """
+    names = set(_ACP_CHILD_ENV_DEFAULTS)
+    requested = os.environ.get("GRAPHIFY_CHILD_ENV_ALLOWLIST", "")
+    for raw_name in requested.split(","):
+        name = raw_name.strip()
+        if not name:
+            continue
+        if _ENV_NAME.fullmatch(name) is None:
+            raise ValueError(
+                "GRAPHIFY_CHILD_ENV_ALLOWLIST contains an invalid environment "
+                f"variable name: {name!r}"
+            )
+        names.add(name)
+
+    environment = {name: os.environ[name] for name in names if name in os.environ}
+    # This is an ACP client invariant, not an inherited caller preference.
+    environment["NO_BROWSER"] = "1"
+    return environment
 
 
 def _json_object(value: str, variable: str) -> dict[str, Any]:
@@ -118,8 +178,7 @@ async def _run_acp(
             "Set GRAPHIFY_ACP_BIN to the provider command."
         )
 
-    environment = os.environ.copy()
-    environment.setdefault("NO_BROWSER", "1")
+    environment = _child_environment()
     client = _GraphifyClient()
     async with spawn_agent_process(
         client,

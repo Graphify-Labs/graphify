@@ -412,6 +412,18 @@ def test_label_communities_forces_serial_for_ollama(monkeypatch):
     assert state["peak"] == 1, "ollama must be forced serial"
 
 
+def test_label_communities_forces_serial_for_codex_cli_alias(monkeypatch):
+    """The deprecated alias must inherit ACP's serial session policy."""
+    G, communities = _many_communities(8)
+    fake_batch, state = _peak_tracker()
+    monkeypatch.setattr("graphify.llm._label_batch_with_retry", fake_batch)
+    monkeypatch.delenv("GRAPHIFY_ACP_PARALLEL", raising=False)
+    monkeypatch.delenv("GRAPHIFY_CODEX_BIN", raising=False)
+    monkeypatch.delenv("GRAPHIFY_ACP_BIN", raising=False)
+    label_communities(G, communities, backend="codex-cli", batch_size=1, max_concurrency=8)
+    assert state["peak"] == 1, "codex-cli alias must inherit ACP's serial session policy"
+
+
 def test_label_communities_salvages_truncated_reply(monkeypatch):
     # #1690: a reply truncated mid-object (a stingy token budget or model
     # preamble) used to hard-fail the whole batch with `Expecting value: line 1
