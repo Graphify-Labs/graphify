@@ -180,6 +180,44 @@ def test_read_nudges_source_outside_custom_output_dir(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# read: wiki/ has no automatic regeneration (#2006) — nudge only when it
+# predates the current graph.json, stay silent when it's at least as fresh.
+# --------------------------------------------------------------------------- #
+def test_read_wiki_nudges_when_stale(tmp_path, monkeypatch):
+    out_dir = tmp_path / "graphify-out"
+    (out_dir / "wiki").mkdir(parents=True)
+    (out_dir / "wiki" / "index.md").write_text("stale wiki", encoding="utf-8")
+    (out_dir / "graph.json").write_text("{}", encoding="utf-8")
+    os.utime(out_dir / "wiki" / "index.md", (1_000_000, 1_000_000))
+    os.utime(out_dir / "graph.json", (2_000_000, 2_000_000))
+    out = _invoke("read", {"tool_input": {"file_path": "graphify-out/wiki/index.md"}},
+                  tmp_path, monkeypatch, graph=False)
+    assert "predates the current graph.json" in out, out
+    assert json.loads(out)["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+
+
+def test_read_wiki_silent_when_fresh(tmp_path, monkeypatch):
+    out_dir = tmp_path / "graphify-out"
+    (out_dir / "wiki").mkdir(parents=True)
+    (out_dir / "wiki" / "index.md").write_text("fresh wiki", encoding="utf-8")
+    (out_dir / "graph.json").write_text("{}", encoding="utf-8")
+    os.utime(out_dir / "graph.json", (1_000_000, 1_000_000))
+    os.utime(out_dir / "wiki" / "index.md", (2_000_000, 2_000_000))
+    out = _invoke("read", {"tool_input": {"file_path": "graphify-out/wiki/index.md"}},
+                  tmp_path, monkeypatch, graph=False)
+    assert out.strip() == "", out
+
+
+def test_read_wiki_silent_without_graph_json(tmp_path, monkeypatch):
+    out_dir = tmp_path / "graphify-out"
+    (out_dir / "wiki").mkdir(parents=True)
+    (out_dir / "wiki" / "index.md").write_text("wiki, no graph.json", encoding="utf-8")
+    out = _invoke("read", {"tool_input": {"file_path": "graphify-out/wiki/index.md"}},
+                  tmp_path, monkeypatch, graph=False)
+    assert out.strip() == "", out
+
+
+# --------------------------------------------------------------------------- #
 # fail-open: malformed / empty stdin never crashes or blocks
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("kind", ["search", "read"])
