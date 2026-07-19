@@ -128,6 +128,7 @@ Every system ran on the same harness with the same model and budgets, scored by 
 | Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
+| Nix *(alternative)* | 2.4+ (flakes enabled) | `nix --version` | [nixos.org](https://nixos.org/download/) |
 
 **macOS quick install (Homebrew):**
 ```bash
@@ -162,6 +163,87 @@ uv tool install graphifyy
 pipx install graphifyy
 pip install graphifyy  # may need PATH setup — see note below
 ```
+
+**Nix (flake):**
+
+Run directly without installing:
+```bash
+nix run github:caniko/graphify
+```
+
+To expose `graphify` as a package inside another flake, add it as an input and reference its default package:
+```nix
+{
+  inputs = {
+    graphify.url = "github:caniko/graphify";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  };
+
+  outputs = { nixpkgs, graphify, ... }: {
+    let
+      system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
+    in {
+      devShells.${system}.default = pkgs.mkShell {
+        buildInputs = [ graphify.packages.${system}.default ];
+      };
+    };
+  };
+}
+```
+
+The flake and GitHub Actions workflow are generated and checked by
+[simit](https://codeberg.org/caniko/simit). After changing the flake outputs,
+refresh the generated wiring and verify the same checks CI runs:
+
+```bash
+simit init flake --check --diff
+simit init ci --platform github --runtime nix --check --diff
+nix flake check --no-build
+nix build .#checks.x86_64-linux.pytest
+```
+
+Keep `simit.toml`, `nix/pre-commit.nix`, and `.github/workflows/ci.yaml` in
+sync; the workflow intentionally builds the named `pytest` check instead of
+duplicating a second Python dependency installation path.
+
+For a long-running NixOS deployment, import `graphify.nixosModules.default`.
+The module uses the full runtime package (including MCP, PostgreSQL, graph
+database exports, and every built-in LLM provider) while `packages.default`
+stays lean for interactive AST-only use. Each named instance owns independent
+state, source selection, extraction schedule, optional file watcher, HTTP MCP
+listener, and Neo4j/FalkorDB sinks:
+
+```nix
+{
+  imports = [inputs.graphify.nixosModules.default];
+
+  services.graphify = {
+    enable = true;
+    instances.database = {
+      source.postgresql = {
+        enable = true;
+        host = "/run/postgresql";
+        database = "app";
+        user = "graphify";
+        systemdService = "postgresql.service";
+      };
+      extraction.onCalendar = "daily";
+      server.enable = true; # loopback HTTP MCP on port 8080
+    };
+  };
+}
+```
+
+PostgreSQL is a read-only schema input, not Graphify's persistence backend;
+the resulting graph remains
+`/var/lib/graphify/<instance>/graphify-out/graph.json`. The reusable module
+does not create database roles or grants. Host policy must provision a role
+that can see the selected schema. Passwords, pgpass files, provider keys, MCP
+keys, and graph-database passwords have file-backed options and are loaded as
+systemd credentials instead of appearing on process command lines.
+
+---
 
 **Step 2 — register the skill with your AI assistant:**
 
@@ -254,6 +336,8 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
 | `anthropic` | Anthropic Claude API (`--backend claude`, uses `ANTHROPIC_API_KEY`) | `uv tool install "graphifyy[anthropic]"` |
 | `bedrock` | AWS Bedrock (uses IAM, no API key) | `uv tool install "graphifyy[bedrock]"` |
+| `acp` | Generic Agent Client Protocol provider (including provider-managed subscriptions; no Graphify API key) | install/configure an ACP adapter |
+| `codex-cli` | Deprecated alias for `acp`; uses the configured ACP adapter and Codex subscription | install/configure `codex-acp` |
 | `azure` | Azure OpenAI Service (`--backend azure`, uses `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) | `uv tool install "graphifyy[openai]"` |
 | `sql` | SQL schema extraction | `uv tool install "graphifyy[sql]"` |
 | `postgres` | Live PostgreSQL introspection (`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
@@ -509,9 +593,17 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `AZURE_OPENAI_API_VERSION` | Azure API version override | optional — default `2024-12-01-preview` |
 | `AZURE_OPENAI_DEPLOYMENT` or `GRAPHIFY_AZURE_MODEL` | Azure deployment name | optional — default `gpt-4o` |
 | `AWS_*` / `~/.aws/credentials` | AWS Bedrock — standard credential chain | `--backend bedrock` (no API key, uses IAM) |
+| `GRAPHIFY_CODEX_CLI_MODEL` | Deprecated fallback model override for the `codex-cli` alias | use `GRAPHIFY_ACP_MODEL` instead |
+| `GRAPHIFY_CODEX_BIN` | Unsupported legacy direct-CLI setting | migrate to `GRAPHIFY_ACP_BIN=codex-acp`; the adapter may use `CODEX_PATH` |
+| `GRAPHIFY_ACP_BIN` | ACP adapter command (normally `codex-acp`) | `--backend acp`; otherwise resolves `codex-acp` from `PATH` |
+| `GRAPHIFY_ACP_ARGS_JSON` | JSON array of ACP adapter arguments | optional — defaults to `[]` |
+| `GRAPHIFY_ACP_CONFIG_JSON` | JSON object of ACP session configuration options | optional — defaults to read-only mode |
+| `GRAPHIFY_ACP_MODEL` | Optional model selected through ACP session configuration | optional — adapter default |
+| `GRAPHIFY_ACP_PARALLEL` | Allow concurrent ACP extraction sessions | optional — default is serial |
+| `GRAPHIFY_CHILD_ENV_ALLOWLIST` | Comma-separated additional environment variable names forwarded to the ACP adapter | optional — unrelated parent secrets are not inherited |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
-| `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, and Anthropic SDK backends (default: 600) | optional — also `--api-timeout` flag |
+| `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, ACP, and SDK backends (default: 600) | optional — also `--api-timeout` flag |
 | `GRAPHIFY_MAX_RETRIES` | How many times to retry a rate-limited (429) request before giving up (default: 6; honors `Retry-After`) | optional — raise for strict per-org limits (e.g. kimi); `0` disables |
 | `GRAPHIFY_FORCE` | Force graph rebuild even with fewer nodes | optional — also `--force` flag |
 | `GRAPHIFY_GOOGLE_WORKSPACE` | Auto-enable Google Workspace export | optional — set to `1` |
@@ -701,7 +793,7 @@ graphify antigravity install       # .agents/rules + .agents/workflows (Google A
 graphify antigravity uninstall
 
 graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
-graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, or claude-cli
+graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, claude-cli, or acp
 graphify extract ./docs --backend gemini --model gemini-3.1-pro-preview
 graphify extract ./docs --backend ollama       # local Ollama (set OLLAMA_BASE_URL / OLLAMA_MODEL) - no API key needed for loopback
 OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_MODEL=my-model graphify extract ./docs --backend openai   # any OpenAI-compatible server (llama.cpp, vLLM, LM Studio)
@@ -710,6 +802,8 @@ GRAPHIFY_OLLAMA_NUM_CTX=32768 graphify extract ./docs --backend ollama   # overr
 GRAPHIFY_OLLAMA_KEEP_ALIVE=0 graphify extract ./docs --backend ollama    # unload model after each chunk (saves VRAM on small GPUs)
 graphify extract ./docs --backend bedrock      # AWS Bedrock via IAM - no API key, uses AWS credential chain
 graphify extract ./docs --backend claude-cli   # route through Claude Code CLI - no API key, uses your Claude subscription
+graphify extract ./docs --backend codex-cli    # deprecated alias for ACP; still uses the Codex subscription through codex-acp
+graphify extract ./docs --backend acp           # route through a generic ACP adapter, such as codex-acp
 graphify extract ./docs --backend azure        # Azure OpenAI (set AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)
 graphify extract ./docs --max-workers 16       # AST parallelism (also GRAPHIFY_MAX_WORKERS)
 graphify extract --postgres "postgresql://user:pass@host/db"   # introspect live PostgreSQL schema directly
@@ -720,7 +814,7 @@ graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow lo
 graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides via gws before extraction
 graphify extract ./src --no-gitignore          # include git-ignored source; still honor .graphifyignore
 graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
-graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
+graphify extract ./docs --no-cluster           # normalized unclustered graph, skip clustering
 graphify extract ./docs --timing               # print per-stage wall-clock timings to stderr (also works on cluster-only)
 graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
@@ -752,7 +846,7 @@ graphify --version                                    # print installed version
 graphify watch ./src
 graphify check-update ./src
 graphify update ./src
-graphify update ./src --no-cluster  # skip reclustering, write raw AST graph only
+graphify update ./src --no-cluster  # skip reclustering, write a normalized unclustered graph
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
 graphify cluster-only ./my-project
 graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph location

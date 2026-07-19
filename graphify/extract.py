@@ -44,8 +44,10 @@ from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa
 from graphify.extractors.go import extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
+from graphify.extractors.nix import extract_nix  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
+from graphify.extractors.pkl import extract_pkl  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
@@ -3486,7 +3488,14 @@ def _xaml_csharp_class_nodes(path: Path) -> dict[str, list[dict]]:
     except OSError:
         return classes
     for cs_path in cs_files:
-        if any(_is_noise_dir(part) for part in cs_path.parts):
+        # Check only project-relative components.  Absolute build sandboxes
+        # commonly mount sources below ``/build``; treating that ancestor as a
+        # project noise directory would hide every ViewModel from XAML linking.
+        try:
+            relative_parts = cs_path.relative_to(root).parts
+        except ValueError:
+            relative_parts = cs_path.parts
+        if any(_is_noise_dir(part) for part in relative_parts[:-1]):
             continue
         if patterns and _is_ignored(cs_path, root, patterns, _cache=ignore_cache):
             continue
@@ -3920,6 +3929,8 @@ _DISPATCH: dict[str, Any] = {
     ".sh": extract_bash,
     ".bash": extract_bash,
     ".json": extract_json,
+    ".nix": extract_nix,
+    ".pkl": extract_pkl,
     ".tf": extract_terraform,
     ".tfvars": extract_terraform,
     ".hcl": extract_terraform,
@@ -4409,7 +4420,10 @@ def extract(
     _empty_sources: list[str] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
-        if _res.get("nodes") or _res.get("error"):
+        # JSON data files are intentionally skipped by the structural extractor
+        # (#1224). They are not failed code extractions and must not repeatedly
+        # trigger the zero-node warning (#1666).
+        if _res.get("nodes") or _res.get("error") or _res.get("skipped"):
             continue
         if _get_extractor(_p) is not None:
             _empty_sources.append(str(_p))
@@ -5083,9 +5097,10 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         return bool(patterns and _is_ignored(p, ignore_root, patterns, _cache=ignore_cache))
 
     if not follow_symlinks:
-        # The old rglob filter rejected paths with a noise component anywhere,
-        # including components of target itself — preserve that.
-        if any(_is_noise_dir(part) for part in target.parts):
+        # Only reject if the target directory *itself* is a noise dir (e.g.
+        # node_modules passed directly).  Do NOT check ancestor path components
+        # — that would incorrectly exclude projects living inside .worktrees/.
+        if _is_noise_dir(target.name):
             return []
         # When negation (!) patterns exist, skip directory-level ignore pruning
         # so negated files inside ignored dirs can still be reached (same

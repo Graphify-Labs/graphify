@@ -1248,6 +1248,7 @@ export const GraphifyPlugin = async ({ directory }) => {
 };
 """
 _OPENCODE_PLUGIN_PATH = Path(".opencode") / "plugins" / "graphify.js"
+_OPENCODE_PLUGIN_ENTRY = Path("plugins") / "graphify.js"
 _OPENCODE_CONFIG_PATH = Path(".opencode") / "opencode.json"
 def _install_opencode_plugin(project_dir: Path) -> None:
     """Write graphify.js plugin and register it in opencode.json."""
@@ -1266,7 +1267,11 @@ def _install_opencode_plugin(project_dir: Path) -> None:
         config = {}
 
     plugins = config.setdefault("plugin", [])
-    entry = _OPENCODE_PLUGIN_PATH.as_posix()
+    entry = _OPENCODE_PLUGIN_ENTRY.as_posix()
+    # OpenCode resolves plugin entries relative to opencode.json. Older
+    # releases registered the project-relative path, causing a duplicated
+    # .opencode path during plugin loading.
+    plugins[:] = [plugin for plugin in plugins if plugin != _OPENCODE_PLUGIN_PATH.as_posix()]
     if entry not in plugins:
         plugins.append(entry)
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -1288,9 +1293,12 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     plugins = config.get("plugin", [])
-    entry = _OPENCODE_PLUGIN_PATH.as_posix()
-    if entry in plugins:
-        plugins.remove(entry)
+    entries = {
+        _OPENCODE_PLUGIN_PATH.as_posix(),
+        _OPENCODE_PLUGIN_ENTRY.as_posix(),
+    }
+    if any(plugin in entries for plugin in plugins):
+        plugins[:] = [plugin for plugin in plugins if plugin not in entries]
         if not plugins:
             config.pop("plugin")
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")

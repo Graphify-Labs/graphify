@@ -15,6 +15,18 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "agent-client-protocol"
+version = "0.11.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6c/93/396d02c91b387b2678f23081869ca47bd495fc6c78789022c683180cf5f1/agent_client_protocol-0.11.0.tar.gz", hash = "sha256:8920a3b27bdcc852fd7c73066f47ab53257dbfbe57b505e20a40c69f80a5391c", size = 87402, upload-time = "2026-07-05T17:07:56.803Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/48/a1367dded7765f5489f9840389949d5aeac53a73aeb1b4e6c0ab61e1617a/agent_client_protocol-0.11.0-py3-none-any.whl", hash = "sha256:2d8570cd4911f8af9fbab4808f7b05f09204a756f346c7409ecdcae3f37cdb2f", size = 68089, upload-time = "2026-07-05T17:07:55.518Z" },
+]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1090,7 +1102,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.6"
+version = "0.9.18"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1127,7 +1139,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+acp = [
+    { name = "agent-client-protocol" },
+]
 all = [
+    { name = "agent-client-protocol" },
     { name = "anthropic" },
     { name = "boto3" },
     { name = "falkordb" },
@@ -1141,6 +1157,7 @@ all = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "openai" },
     { name = "openpyxl" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pypdf" },
     { name = "python-docx" },
     { name = "starlette" },
@@ -1248,6 +1265,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.10.1,<0.12" },
+    { name = "agent-client-protocol", marker = "extra == 'all'", specifier = ">=0.10.1,<0.12" },
     { name = "anthropic", marker = "extra == 'all'" },
     { name = "anthropic", marker = "extra == 'anthropic'" },
     { name = "boto3", marker = "extra == 'all'" },
@@ -1280,6 +1299,7 @@ requires-dist = [
     { name = "openpyxl", marker = "extra == 'all'" },
     { name = "openpyxl", marker = "extra == 'google'" },
     { name = "openpyxl", marker = "extra == 'office'" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'all'" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'" },
     { name = "pypdf", marker = "extra == 'all'", specifier = ">=6.12.0" },
     { name = "pypdf", marker = "extra == 'pdf'", specifier = ">=6.12.0" },
@@ -1331,7 +1351,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.6.9" },
     { name = "yt-dlp", marker = "extra == 'video'", specifier = ">=2026.6.9" },
 ]
-provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "all"]
+provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "acp", "chinese", "sql", "pascal", "dm", "terraform", "all"]
 
 [package.metadata.requires-dev]
 dev = [

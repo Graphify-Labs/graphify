@@ -7,9 +7,27 @@ from pathlib import Path
 import pytest
 
 from graphify.build import build_from_json
-from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
+from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, extract_nix, extract_pkl, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_extract_nix_records_bindings_and_literal_imports(tmp_path):
+    path = tmp_path / "default.nix"
+    path.write_text('''{ inputs, ... }:\nlet\n  pkgs = import ./nixpkgs.nix;\n  value = "${pkgs}";\nin\n{ inherit value; }\n''', encoding="utf-8")
+    result = extract_nix(path)
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"pkgs", "value", "nixpkgs.nix"} <= labels
+    assert any(edge["relation"] == "imports" for edge in result["edges"])
+
+
+def test_extract_pkl_records_declarations_and_module_relationships(tmp_path):
+    path = tmp_path / "Schema.pkl"
+    path.write_text('''module Schema\nimport "pkl:base"\nclass Host {}\nname: String\n''', encoding="utf-8")
+    result = extract_pkl(path)
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"Schema", "Host", "name", "String", "pkl:base"} <= labels
+    assert any(edge["relation"] == "imports" for edge in result["edges"])
 
 
 def test_make_id_strips_dots_and_underscores():
@@ -382,7 +400,7 @@ def test_collect_files_from_dir():
 def test_collect_files_skips_hidden():
     files = collect_files(FIXTURES)
     for f in files:
-        assert not any(part.startswith(".") for part in f.parts)
+        assert not any(part.startswith(".") for part in f.relative_to(FIXTURES).parts)
 
 
 def test_collect_files_follows_symlinked_directory(tmp_path):
@@ -445,7 +463,7 @@ def _legacy_collect_files(target, *, root=None):
         results.extend(
             p for p in target.rglob(f"*{ext}")
             if p.suffix == ext
-            and not any(_is_noise_dir(part) for part in p.parts)
+            and not any(_is_noise_dir(part) for part in p.relative_to(target).parts)
             and not (patterns and _is_ignored(p, ignore_root, patterns))
         )
     return sorted(results)
@@ -1751,6 +1769,16 @@ def test_extract_json_top_level_array_skipped(tmp_path):
     result = extract_json(data)
     assert result["nodes"] == []
     assert result["edges"] == []
+
+
+def test_extract_json_data_file_does_not_trigger_zero_node_warning(tmp_path, capsys):
+    """Intentionally skipped data JSON must stay quiet in the aggregate pass."""
+    data = tmp_path / "records.json"
+    data.write_text(json.dumps([{"id": 1}, {"id": 2}]))
+
+    extract([data], cache_root=tmp_path / "out", parallel=False)
+
+    assert "zero nodes" not in capsys.readouterr().err
 
 
 def test_extract_json_config_by_filename_still_extracted(tmp_path):
