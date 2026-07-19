@@ -22,6 +22,34 @@ def _clear_backend_env(monkeypatch):
         monkeypatch.delenv(env_key, raising=False)
 
 
+def test_resolve_ollama_base_url_prefers_base_url(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "custom-base-url")
+    monkeypatch.setenv("OLLAMA_HOST", "ignored-host:11434")
+
+    assert llm._resolve_ollama_base_url("default-url") == "custom-base-url"
+
+
+def test_resolve_ollama_base_url_normalizes_host_without_scheme(monkeypatch):
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:11434")
+
+    assert llm._resolve_ollama_base_url("default-url") == "http://myhost:11434/v1"
+
+
+def test_resolve_ollama_base_url_preserves_normalized_host(monkeypatch):
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_HOST", "https://myhost:11434/v1")
+
+    assert llm._resolve_ollama_base_url("default-url") == "https://myhost:11434/v1"
+
+
+def test_resolve_ollama_base_url_returns_default_without_env(monkeypatch):
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+
+    assert llm._resolve_ollama_base_url("default-url") == "default-url"
+
+
 def test_gemini_accepts_gemini_api_key(monkeypatch):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")

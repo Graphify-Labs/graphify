@@ -56,6 +56,22 @@ def _get_tokenizer():
 # Cached at import time. None if tiktoken is unavailable; consumers must handle.
 _TOKENIZER = _get_tokenizer()
 
+
+def _resolve_ollama_base_url(default: str) -> str:
+    ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
+    if ollama_base_url is not None:
+        return ollama_base_url
+    ollama_host = os.environ.get("OLLAMA_HOST")
+    if ollama_host is None:
+        return default
+    if not ollama_host.startswith(("http://", "https://")):
+        ollama_host = f"http://{ollama_host}"
+    ollama_host = ollama_host.rstrip("/")
+    if not ollama_host.endswith("/v1"):
+        ollama_host = f"{ollama_host}/v1"
+    return ollama_host
+
+
 BACKENDS: dict[str, dict] = {
     "claude": {
         # ANTHROPIC_BASE_URL points the backend at any Anthropic-compatible
@@ -83,7 +99,7 @@ BACKENDS: dict[str, dict] = {
         "max_tokens": 16384,
     },
     "ollama": {
-        "base_url": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+        "base_url": _resolve_ollama_base_url("http://localhost:11434/v1"),
         "default_model": os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b"),
         "env_key": "OLLAMA_API_KEY",
         "pricing": {"input": 0.0, "output": 0.0},
@@ -1572,7 +1588,7 @@ def extract_files_direct(
         # Ollama ignores auth but the OpenAI client library requires a non-empty
         # string. Use a placeholder and surface a visible warning so this never
         # silently routes traffic without the user realising — see F-029.
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
+        ollama_url = _resolve_ollama_base_url(cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         print(
             "[graphify] WARNING: ollama backend selected with no OLLAMA_API_KEY set; "
@@ -2373,7 +2389,7 @@ def _call_llm(
     cfg = BACKENDS[backend]
     key = _get_backend_api_key(backend)
     if not key and backend == "ollama":
-        ollama_url = os.environ.get("OLLAMA_BASE_URL", cfg.get("base_url", ""))
+        ollama_url = _resolve_ollama_base_url(cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
     if not key and backend not in ("bedrock", "claude-cli"):
