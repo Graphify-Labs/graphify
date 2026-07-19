@@ -2557,6 +2557,7 @@ def dispatch_command(cmd: str) -> None:
             )
 
         if not has_path:
+            detection = {}
             code_files = []
             doc_files = []
             paper_files = []
@@ -2976,7 +2977,9 @@ def dispatch_command(cmd: str) -> None:
                         _live_hashes.add(_file_hash(_abs, target, cache_root=out_root))
                     except OSError:
                         pass
-            _prune_semantic_cache(out_root, _live_hashes)
+            # A pathless database extraction has no filesystem corpus to sweep.
+            if has_path:
+                _prune_semantic_cache(out_root, _live_hashes)
         except Exception as exc:
             print(f"[graphify extract] warning: could not prune semantic cache: {exc}", file=sys.stderr)
         stages.mark("semantic extract")
@@ -3055,6 +3058,15 @@ def dispatch_command(cmd: str) -> None:
             {f for _fl in files_by_type.values() for f in _fl}
             if has_path else None
         )
+
+        def _invalidate_file_manifest_for_db_graph() -> None:
+            if has_path:
+                return
+            try:
+                manifest_path.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"error: could not invalidate file manifest: {exc}", file=sys.stderr)
+                sys.exit(1)
 
         if no_cluster:
             # --no-cluster: dump the raw merged extraction as graph.json.
@@ -3140,6 +3152,7 @@ def dispatch_command(cmd: str) -> None:
                     )
                     sys.exit(1)
             _backup(graphify_out)
+            _invalidate_file_manifest_for_db_graph()
             from graphify.paths import write_json_atomic as _write_json_atomic
             _write_json_atomic(graph_json_path, merged, indent=2)
             stages.mark("write")
@@ -3159,7 +3172,8 @@ def dispatch_command(cmd: str) -> None:
                     f"est. cost: ${cost:.4f}"
                 )
             try:
-                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
+                if has_path:
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -3231,6 +3245,7 @@ def dispatch_command(cmd: str) -> None:
 
         from graphify.export import backup_if_protected as _backup
         _backup(graphify_out)
+        _invalidate_file_manifest_for_db_graph()
         # force=True bypasses the #479 shrink guard entirely. A full build
         # legitimately shrinks (fuzzy dedup collapse, deleted code) so it keeps
         # force=True — EXCEPT when this run's extraction was incomplete (an
@@ -3296,7 +3311,8 @@ def dispatch_command(cmd: str) -> None:
         from graphify.paths import write_json_atomic as _wja
         _wja(analysis_path, analysis, indent=2)
         try:
-            _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
+            if has_path:
+                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 
