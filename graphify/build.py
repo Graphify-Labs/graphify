@@ -767,6 +767,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # (unknown ext, e.g. a manifest) is never mistaken for a phantom.
                 if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam:
                     continue
+        # A file-level import or re-export cannot carry useful connectivity when
+        # both endpoints resolve to the same node.  This most often happens when
+        # the target is an unresolved bare module name (``builtins``, ``poseidon``)
+        # that the legacy-ID alias index above mistakes for the importing file's
+        # own old stem.  It also covers a nested module importing its parent file:
+        # at file-node granularity that relationship necessarily collapses.  Keep
+        # other self-edges, notably recursive ``calls``, because those are real
+        # program structure rather than import-resolution artifacts.
+        if src == tgt and _edge_rel in ("imports", "imports_from", "re_exports"):
+            continue
         # Preserve original edge direction - undirected graphs lose it otherwise,
         # causing display functions to show edges backwards.
         attrs["_src"] = src
