@@ -41,7 +41,7 @@ For a GitHub URL, clone it with `graphify clone <url> [--branch <branch>]`, then
 
 @@INSTALL@@
 
-The embedded runtime supports macOS and Linux. Windows is temporarily unsupported. Do not suggest Homebrew as a requirement.
+The embedded runtime supports macOS, Linux, and native Windows x86_64. Use the matching public package wheel; do not suggest Homebrew, WSL, source builds, or downloaded DLLs as requirements.
 
 ### Step 2 - Detect files
 
@@ -117,7 +117,7 @@ Use the production entry point:
 graphify extract INPUT_PATH
 ```
 
-This writes and activates `graphify-out/graph.helix`, then generates the report and requested presentation exports directly from the native snapshot. Activation is atomic and retains one rollback generation. A failed or partial build leaves the active generation unchanged.
+This writes and activates `graphify-out/graph.helix`, then generates the report and requested presentation exports directly from the native snapshot. Activation is atomic and deletes inactive generations by default; pass `--retain-rollback` to retain exactly one previous generation. A failed or partial build leaves the active generation unchanged.
 
 ### Step 4.5 - Graph health check (read-only integrity gate)
 

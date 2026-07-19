@@ -104,7 +104,7 @@ If the import succeeds, print nothing and move straight to Step 2.
 
 **In every subsequent block, run Python through the saved interpreter — `& (Get-Content graphify-out\.graphify_python)` in place of a bare `python3` — so every step uses the interpreter that actually has graphify.**
 
-The embedded runtime supports macOS and Linux. Windows is temporarily unsupported. Do not suggest Homebrew as a requirement.
+The embedded runtime supports macOS, Linux, and native Windows x86_64. Use the matching public package wheel; do not suggest Homebrew, WSL, source builds, or downloaded DLLs as requirements.
 
 ### Step 2 - Detect files
 
@@ -204,7 +204,7 @@ Use the production entry point:
 graphify extract INPUT_PATH
 ```
 
-This writes and activates `graphify-out/graph.helix`, then generates the report and requested presentation exports directly from the native snapshot. Activation is atomic and retains one rollback generation. A failed or partial build leaves the active generation unchanged.
+This writes and activates `graphify-out/graph.helix`, then generates the report and requested presentation exports directly from the native snapshot. Activation is atomic and deletes inactive generations by default; pass `--retain-rollback` to retain exactly one previous generation. A failed or partial build leaves the active generation unchanged.
 
 ### Step 4.5 - Graph health check (read-only integrity gate)
 
@@ -278,11 +278,11 @@ See `references/hooks.md` to wire graphify into a project's CLAUDE.md.
 
 ### Windows support
 
-The embedded Helix runtime is temporarily unsupported on Windows. Use macOS or Linux, including a Linux CI runner. Do not install compatibility graph libraries as a fallback.
+Use CPython 3.10 or 3.12 on native Windows x86_64 and install Graphify normally with pip or uv. The exact public `helix-db-embedded` version must provide a `win_amd64` wheel; do not substitute WSL, a source build, a downloaded DLL, or a compatibility graph library.
 
 ### PowerShell 5.1: Vertical scrolling stops working
 
-This former native-Windows workaround is no longer applicable while Windows is unsupported. Run Graphify in a supported macOS or Linux environment.
+Use Windows Terminal or PowerShell 7 when possible. Graphify does not patch terminal modes or load a helper DLL.
 
 ---
 
