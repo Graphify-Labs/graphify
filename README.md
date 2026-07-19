@@ -136,7 +136,7 @@ Every system ran on the same harness with the same model and budgets, scored by 
 brew install python@3.12 uv
 ```
 
-**Windows:** the embedded Helix runtime is temporarily unsupported. Use macOS or Linux (including a Linux CI runner).
+**Windows (PowerShell):** install Python from python.org, then run `py -m pip install graphifyy` or install `uv` and run `uv tool install graphifyy`. Native x86_64 Windows is part of the supported test matrix; installation requires the matching public `helix-db-embedded` wheel.
 
 **Ubuntu/Debian:**
 ```bash
@@ -185,6 +185,8 @@ print a `git add` hint for files that can be committed.
 Per-platform commands that support project-scoped installs accept the same flag,
 for example `graphify claude install --project` or `graphify codex install --project`.
 
+> **PowerShell note:** Use `graphify .` not `/graphify .` — the leading slash is a path separator in PowerShell.
+
 > **`graphify: command not found`?** `uv tool install` / `pipx install` put the `graphify` command in their tool bin dir (`~/.local/bin`). If your shell can't find it right after install — common on a fresh macOS + zsh setup — that dir isn't on your `PATH` yet: run `uv tool update-shell` (or `pipx ensurepath`), then open a new terminal. With plain `pip`, add `~/.local/bin` (Linux) or `~/Library/Python/3.x/bin` (Mac) to your PATH, or run `python -m graphify`.
 
 > **Running with `uvx` / `uv tool run` instead of installing?** Name the package, not the command: `uvx --from graphifyy graphify install`. Plain `uvx graphify …` fails (`No solution found … no versions of graphify`) because `uv tool run` reads the first word as a *package*, and the package is `graphifyy` — the `graphify` command lives inside it.
@@ -201,7 +203,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Platform | Install command |
 |----------|----------------|
 | Claude Code (Linux/Mac) | `graphify install` |
-| Claude Code (Windows) | Skill installation only; graph builds require a supported macOS or Linux runtime |
+| Claude Code (Windows) | `graphify install` (auto-detected) or `graphify install --platform windows`; native graph builds are supported |
 | CodeBuddy | `graphify install --platform codebuddy` |
 | Codex | `graphify install --platform codex` |
 | OpenCode | `graphify install --platform opencode` |
@@ -546,8 +548,8 @@ The PyPI package is `graphifyy`; `graphify` is only the command it provides. `uv
 **`python -m graphify` works but `graphify` command doesn't**
 Your shell's `PATH` doesn't include the bin directory the command was installed to. Prefer `uv tool install` / `pipx install` over plain `pip`, then run `uv tool update-shell` / `pipx ensurepath` and open a new terminal (see the install notes above).
 
-**Graphify is invoked from Windows**
-The embedded Helix runtime is temporarily unsupported on Windows. Build and query the graph on macOS or Linux.
+**Graphify fails to install on Windows**
+Windows is supported natively—WSL and downloaded-DLL workarounds are not required or accepted. If pip reports that no compatible `helix-db-embedded` distribution exists, the matching public `win_amd64` wheel has not reached PyPI yet; use the release whose matching public wheel is available.
 
 **Graph has fewer nodes after `--update` or rebuild**
 If a refactor deleted files, the old nodes linger. Pass `--force` (or set `GRAPHIFY_FORCE=1`) to overwrite even when the rebuild has fewer nodes.
