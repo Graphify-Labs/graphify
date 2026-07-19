@@ -1,10 +1,6 @@
 """Transient DTO construction and native incremental merge tests."""
 
-from graphify.build import build, build_from_json, build_merge, dedupe_edges, dedupe_nodes
-from graphify.helix.persistence import HelixEmbeddedStore
-from graphify.helix.state import new_state
-
-
+from graphify.build import build, build_from_extraction, build_merge, dedupe_edges, dedupe_nodes
 def _attrs(graph, node_id):
     return next(node.attributes for node in graph.nodes if node.id == node_id)
 
@@ -30,7 +26,7 @@ def test_dedupe_records_are_deterministic():
 
 
 def test_build_normalizes_attributes_weights_and_direction():
-    graph = build_from_json({
+    graph = build_from_extraction({
         "nodes": [
             {"id": "a", "label": "A", "source": "src\\a.py", "file_type": None, "_origin": "ast"},
             {"id": "b", "label": "B", "source_file": "src/b.py", "file_type": "code", "_origin": "ast"},
@@ -64,7 +60,7 @@ def test_build_merges_last_node_attributes_and_backfills_edge_source():
 
 
 def test_parallel_relations_and_self_loop_survive():
-    graph = build_from_json({
+    graph = build_from_extraction({
         "directed": True,
         "multigraph": True,
         "nodes": [{"id": "a"}, {"id": "b"}],
@@ -80,7 +76,7 @@ def test_parallel_relations_and_self_loop_survive():
 
 
 def test_hyperedges_prune_dangling_members():
-    graph = build_from_json({
+    graph = build_from_extraction({
         "nodes": [{"id": "a"}, {"id": "b"}],
         "edges": [],
         "hyperedges": [
@@ -95,23 +91,21 @@ def test_hyperedges_prune_dangling_members():
 
 def test_incremental_merge_replaces_changed_and_prunes_deleted(tmp_path):
     store_path = tmp_path / "graph.helix"
-    initial = build_from_json({
+    initial = build_from_extraction({
         "nodes": [
-            {"id": "a", "label": "Old", "source_file": "a.py"},
-            {"id": "stale", "label": "Stale", "source_file": "a.py"},
-            {"id": "b", "label": "B", "source_file": "b.py"},
+            {"id": "a", "label": "Old", "source_file": "a.py", "_origin": "ast"},
+            {"id": "stale", "label": "Stale", "source_file": "a.py", "_origin": "ast"},
+            {"id": "b", "label": "B", "source_file": "b.py", "_origin": "ast"},
         ],
         "edges": [
-            {"source": "a", "target": "b", "relation": "calls", "source_file": "a.py"},
-            {"source": "stale", "target": "b", "relation": "calls", "source_file": "a.py"},
+            {"source": "a", "target": "b", "relation": "calls", "source_file": "a.py", "_origin": "ast"},
+            {"source": "stale", "target": "b", "relation": "calls", "source_file": "a.py", "_origin": "ast"},
         ],
         "hyperedges": [{"id": "b-flow", "nodes": ["b"], "source_file": "b.py"}],
     }, directed=True)
-    with HelixEmbeddedStore(store_path) as store:
-        store.save_generation(initial, new_state())
     merged = build_merge([
-        {"nodes": [{"id": "a", "label": "New", "source_file": "a.py"}], "edges": []}
-    ], graph_path=store_path, prune_sources=["b.py"], directed=True, dedup=False)
+        {"nodes": [{"id": "a", "label": "New", "source_file": "a.py", "_origin": "ast"}], "edges": []}
+    ], graph_path=store_path, base_graph=initial, prune_sources=["b.py"], directed=True, dedup=False)
     assert {node.id for node in merged.nodes} == {"a"}
     assert _attrs(merged, "a")["label"] == "New"
     assert merged.edge_count == 0
@@ -119,7 +113,7 @@ def test_incremental_merge_replaces_changed_and_prunes_deleted(tmp_path):
 
 
 def test_typed_identifiers_remain_distinct():
-    graph = build_from_json({
+    graph = build_from_extraction({
         "nodes": [{"id": 1, "label": "integer"}, {"id": "1", "label": "string"}],
         "edges": [{"source": 1, "target": "1", "relation": "links"}],
     })

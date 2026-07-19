@@ -7,7 +7,7 @@ new local binding, not a reference -- so the shadow guard still holds: a param o
 named on the RHS is the local, not the module fn. The negatives pin that the false edges
 #1565 fixed do not come back.
 """
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from tests.native_helpers import graph_from_build
 
 from graphify.affected import affected_nodes
@@ -80,7 +80,7 @@ def test_module_level_assignment_emits_indirect_call(tmp_path):
 
 def test_assignment_feeds_affected(tmp_path):
     r, nid = _extract(tmp_path, ASSIGN_RETURN)
-    g = graph_from_build(build_from_json(r, directed=True))
+    g = graph_from_build(build_from_extraction(r, directed=True))
     affected = {h.node_id for h in affected_nodes(g, nid["handler"])}
     assert nid["bind"] in affected
 

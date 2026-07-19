@@ -938,7 +938,7 @@ def test_swift_no_dangling_edges():
 def test_swift_imports_survive_build():
     # #1327: `import Foundation` / `import UIKit` previously emitted edges to bare
     # module ids with no backing node, so build.py dropped 100% of Swift imports.
-    from graphify.build import build_from_json
+    from graphify.build import build_from_extraction
     r = extract_swift(FIXTURES / "sample.swift")
     import_edges = [e for e in r["edges"] if e["relation"] == "imports"]
     assert import_edges, "extractor should emit Swift import edges"
@@ -951,13 +951,13 @@ def test_swift_imports_survive_build():
     # No private bookkeeping key should leak into output edges.
     assert all("_import_label" not in e for e in r["edges"])
     # Edges must survive the build (which prunes edges with unknown endpoints).
-    G = build_from_json(r)
+    G = build_from_extraction(r)
     surviving = [
         (edge.source, edge.target)
         for edge in G.edges
         if edge.attributes.get("relation") == "imports"
     ]
-    assert surviving, "Swift import edges must survive build_from_json (#1327)"
+    assert surviving, "Swift import edges must survive build_from_extraction (#1327)"
 
 def test_swift_finds_actor():
     r = extract_swift(FIXTURES / "sample.swift")

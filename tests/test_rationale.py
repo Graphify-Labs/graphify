@@ -3,7 +3,7 @@ import textwrap
 from pathlib import Path
 import pytest
 from graphify.extract import extract_python
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 
 
 def _write_py(tmp_path: Path, code: str) -> Path:
@@ -179,7 +179,7 @@ def test_decorated_method_node_id_is_class_qualified(tmp_path):
     """Regression for #1050: @property / @staticmethod / @classmethod methods
     were emitted with a class-unqualified node id (e.g. ``file_baz``) while the
     rationale walker emitted the class-qualified id (``file_bar_baz``) as the
-    docstring's edge target. The mismatch caused ``build_from_json`` to drop
+    docstring's edge target. The mismatch caused ``build_from_extraction`` to drop
     the rationale_for edge as dangling, orphaning the docstring node.
     """
     path = _write_py(tmp_path, '''
@@ -240,9 +240,9 @@ def test_decorated_method_node_id_is_class_qualified(tmp_path):
             f"rationale_for edge targets missing node id {edge['target']!r}"
         )
 
-    # After build_from_json, each decorated-method docstring node must be
+    # After build_from_extraction, each decorated-method docstring node must be
     # connected (degree > 0), not an orphan dropped from the graph.
-    g = build_from_json(result)
+    g = build_from_extraction(result)
     built_node_ids = {node.id for node in g.nodes}
     for decorated_name in ("baz", "helper", "factory", "normal"):
         method_id = next(
@@ -260,7 +260,7 @@ def test_decorated_method_node_id_is_class_qualified(tmp_path):
             assert r_id in built_node_ids, f"rationale node {r_id} missing from graph"
             assert any(edge.source == r_id or edge.target == r_id for edge in g.edges), (
                 f"rationale node {r_id} for ``.{decorated_name}()`` is orphaned "
-                f"(degree 0) after build_from_json"
+                f"(degree 0) after build_from_extraction"
             )
 
 

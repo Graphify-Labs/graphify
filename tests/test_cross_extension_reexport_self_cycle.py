@@ -20,8 +20,9 @@ import json
 from pathlib import Path
 
 from graphify.build import build
-from graphify.export import to_json
 from graphify.extract import extract
+from graphify.helix.model import edge_attributes
+from tests.native_helpers import graph_from_build, graph_from_payload
 
 
 def _write(path: Path, text: str) -> Path:
@@ -97,8 +98,6 @@ def test_cross_ext_reexport_target_is_the_sibling_node(tmp_path: Path):
 
 
 def test_cross_ext_reexport_no_phantom_import_cycle(tmp_path: Path):
-    import networkx as nx
-
     from graphify.analyze import find_import_cycles
 
     mjs = _write(tmp_path / "foo.mjs", "export const N = 1;\n")
@@ -106,15 +105,12 @@ def test_cross_ext_reexport_no_phantom_import_cycle(tmp_path: Path):
 
     result = extract([mjs, ts], cache_root=tmp_path)
 
-    graph = nx.DiGraph()
-    for node in result["nodes"]:
-        graph.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
-    for edge in result["edges"]:
-        graph.add_edge(
-            edge["source"],
-            edge["target"],
-            **{k: v for k, v in edge.items() if k not in ("source", "target")},
-        )
+    node_ids = {node["id"] for node in result["nodes"]}
+    edges = [
+        edge for edge in result["edges"]
+        if edge.get("source") in node_ids and edge.get("target") in node_ids
+    ]
+    graph = graph_from_payload(result["nodes"], edges, kind="multidigraph")
     assert find_import_cycles(graph) == [], (
         "cross-extension re-export must not manufacture a file-level import cycle"
     )
@@ -169,8 +165,8 @@ def test_same_basename_three_colliding_siblings_reexport_selects_named_variant(
 # into graph.json breaks determinism across checkout locations and the
 # cross-machine merge/global-graph portability the codebase engineered for. The
 # following lock that the hint is stripped after disambiguation and never
-# reaches graph.json — on the raw-dump extract path AND the build path — and
-# that a persisted absolute hint from a pre-fix graph is dropped on the next
+# reaches the native store — on the raw extract path AND the build path — and
+# that a stale absolute hint from a pre-fix extraction is dropped on the next
 # build rather than carried forward.
 # --------------------------------------------------------------------------- #
 
@@ -205,30 +201,23 @@ def test_target_file_hint_stripped_even_without_a_collision(tmp_path: Path):
     )
 
 
-def test_graph_json_has_no_target_file_and_no_absolute_path(tmp_path: Path):
+def test_native_store_has_no_target_file_and_no_absolute_path(tmp_path: Path):
     mjs = _write(tmp_path / "foo.mjs", "export const N = 1;\n")
     ts = _write(tmp_path / "foo.ts", 'export { N } from "./foo.mjs";\n')
 
     result = extract([mjs, ts], cache_root=tmp_path)
     graph = build([result], root=tmp_path)
-    out = tmp_path / "graph.json"
-    to_json(graph, {}, str(out), force=True)
-
-    raw = out.read_text(encoding="utf-8")
-    data = json.loads(raw)
-    leaked = [link for link in data["links"] if "target_file" in link]
-    assert not leaked, f"absolute target_file persisted into graph.json links: {leaked}"
-    assert str(tmp_path.resolve()) not in raw, (
-        "graph.json leaked an absolute checkout path (source_file is relativized, "
-        "but the target_file hint was serialized verbatim)"
+    native = graph_from_build(graph)
+    attrs = [edge_attributes(edge) for edge in native.edges()]
+    leaked = [edge for edge in attrs if "target_file" in edge]
+    assert not leaked, f"absolute target_file persisted into native edges: {leaked}"
+    assert str(tmp_path.resolve()) not in json.dumps(attrs, ensure_ascii=False), (
+        "native edges leaked an absolute checkout path"
     )
 
 
-def test_graph_json_is_checkout_location_independent(tmp_path: Path):
-    """Building the byte-identical repo at two different absolute locations must
-    yield identical graph.json edges. A leaked absolute target_file differs by
-    its checkout prefix and would defeat the cross-machine merge/global-graph
-    portability the codebase is built around."""
+def test_native_edges_are_checkout_location_independent(tmp_path: Path):
+    """Byte-identical repos at different locations produce identical native edges."""
 
     def _links_built_at(dirname: str) -> list[dict]:
         d = tmp_path / dirname
@@ -237,9 +226,11 @@ def test_graph_json_is_checkout_location_independent(tmp_path: Path):
         ts = _write(d / "foo.ts", 'export { N } from "./foo.mjs";\n')
         result = extract([mjs, ts], cache_root=d)
         graph = build([result], root=d)
-        out = d / "graph.json"
-        to_json(graph, {}, str(out), force=True)
-        links = json.loads(out.read_text(encoding="utf-8"))["links"]
+        native = graph_from_build(graph)
+        links = [
+            {"source": edge.source, "target": edge.target, **edge_attributes(edge)}
+            for edge in native.edges()
+        ]
         return sorted(
             links,
             key=lambda link: (
@@ -250,16 +241,13 @@ def test_graph_json_is_checkout_location_independent(tmp_path: Path):
         )
 
     assert _links_built_at("loc_a") == _links_built_at("loc_bbbb_longer"), (
-        "graph.json edges differ across checkout locations — an absolute path leaked"
+        "native edges differ across checkout locations — an absolute path leaked"
     )
 
 
 def test_build_drops_persisted_target_file_from_a_pre_fix_graph(tmp_path: Path):
-    # A graph.json written by a pre-fix build carries an absolute target_file on
-    # its import edges. On the next (incremental) build those base edges are
-    # re-serialized through build(), which does NOT re-run disambiguation — so
-    # the serializer itself must drop the persisted absolute path rather than
-    # carry a foreign checkout prefix forward into the updated graph.
+    # A stale pre-fix extraction carries an absolute target_file on its import
+    # edges. The build DTO must drop it before native persistence.
     legacy_chunk = {
         "nodes": [
             {"id": "foo_ts_foo", "label": "foo.ts",
@@ -283,10 +271,11 @@ def test_build_drops_persisted_target_file_from_a_pre_fix_graph(tmp_path: Path):
 
     graph = build([legacy_chunk], root=tmp_path)
 
-    assert graph.number_of_edges() == 1, "the base import edge should survive the merge"
-    for _src, _tgt, data in graph.edges(data=True):
-        assert "target_file" not in data, (
-            f"build() carried a persisted absolute target_file into the graph: {data}"
+    assert graph.edge_count == 1, "the base import edge should survive the merge"
+    for edge in graph.edges:
+        assert "target_file" not in edge.attributes, (
+            "build() carried a persisted absolute target_file into the graph: "
+            f"{edge.attributes}"
         )
 
 

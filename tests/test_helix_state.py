@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 from graphify.helix import native
@@ -16,13 +14,17 @@ def test_community_state_round_trip():
     assert records[0]["clustering"]["algorithm"] == "helix-leiden"
 
 
-def test_native_loader_rejects_wrong_sdk_version(monkeypatch):
-    module = SimpleNamespace(__name__="helixdb", __version__="0.1.0")
-    monkeypatch.setattr(native.importlib, "import_module", lambda _: module)
-    native.load_native_module.cache_clear()
+def test_native_validator_rejects_wrong_sdk_version(monkeypatch):
+    original_version = native.importlib.metadata.version
+
+    def version(distribution):
+        return "0.1.0" if distribution == "helix-db" else original_version(distribution)
+
+    monkeypatch.setattr(native.importlib.metadata, "version", version)
+    native.validate_native_backend.cache_clear()
     with pytest.raises(native.NativeBackendUnavailable, match="version mismatch"):
-        native.load_native_module()
-    native.load_native_module.cache_clear()
+        native.validate_native_backend()
+    native.validate_native_backend.cache_clear()
 
 
 def test_current_generation_reopens_and_retains_semantic_edge_label(tmp_path):

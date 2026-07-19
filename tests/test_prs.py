@@ -6,8 +6,9 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
-import networkx as nx
 import pytest
+
+from tests.native_helpers import make_loaded
 
 from graphify.prs import (
     PRInfo,
@@ -154,46 +155,57 @@ class TestPathMatch:
 # ── compute_pr_impact ─────────────────────────────────────────────────────────
 
 class TestComputePrImpact:
-    def _make_graph(self) -> nx.Graph:
+    def _make_graph(self):
         """3 nodes across 2 communities, 2 distinct source files."""
-        G = nx.Graph()
-        G.add_node("n1", source_file="src/auth/api.py", community=0)
-        G.add_node("n2", source_file="src/auth/api.py", community=0)
-        G.add_node("n3", source_file="src/utils/helpers.py", community=1)
-        return G
+        return make_loaded(nodes=[
+            {"id": "n1", "source_file": "src/auth/api.py", "community": 0},
+            {"id": "n2", "source_file": "src/auth/api.py", "community": 0},
+            {"id": "n3", "source_file": "src/utils/helpers.py", "community": 1},
+        ])
 
     def test_matching_files_returns_correct_communities_and_count(self):
-        G = self._make_graph()
-        comms, nodes = compute_pr_impact(["src/auth/api.py"], G)
+        loaded = self._make_graph()
+        comms, nodes = compute_pr_impact(
+            ["src/auth/api.py"], loaded.graph, native_query=loaded.query
+        )
         assert comms == [0]
         assert nodes == 2
 
     def test_matching_both_files(self):
-        G = self._make_graph()
+        loaded = self._make_graph()
         comms, nodes = compute_pr_impact(
-            ["src/auth/api.py", "src/utils/helpers.py"], G
+            ["src/auth/api.py", "src/utils/helpers.py"],
+            loaded.graph,
+            native_query=loaded.query,
         )
         assert comms == [0, 1]
         assert nodes == 3
 
     def test_empty_files_returns_empty(self):
-        G = self._make_graph()
-        comms, nodes = compute_pr_impact([], G)
+        loaded = self._make_graph()
+        comms, nodes = compute_pr_impact(
+            [], loaded.graph, native_query=loaded.query
+        )
         assert comms == []
         assert nodes == 0
 
     def test_no_matching_files_returns_empty(self):
-        G = self._make_graph()
-        comms, nodes = compute_pr_impact(["docs/README.md"], G)
+        loaded = self._make_graph()
+        comms, nodes = compute_pr_impact(
+            ["docs/README.md"], loaded.graph, native_query=loaded.query
+        )
         assert comms == []
         assert nodes == 0
 
     def test_no_double_counting_when_basename_matches_multiple_paths(self):
         # "api.py" should NOT match both src/auth/api.py AND src/admin/api.py
-        G = nx.Graph()
-        G.add_node("a1", source_file="src/auth/api.py", community=0)
-        G.add_node("a2", source_file="src/admin/api.py", community=1)
-        comms, nodes = compute_pr_impact(["src/auth/api.py"], G)
+        loaded = make_loaded(nodes=[
+            {"id": "a1", "source_file": "src/auth/api.py", "community": 0},
+            {"id": "a2", "source_file": "src/admin/api.py", "community": 1},
+        ])
+        comms, nodes = compute_pr_impact(
+            ["src/auth/api.py"], loaded.graph, native_query=loaded.query
+        )
         # Only src/auth/api.py matches by exact path — not src/admin/api.py
         assert nodes == 1
         assert comms == [0]
@@ -201,10 +213,15 @@ class TestComputePrImpact:
     def test_no_double_counting_same_graph_file_matched_by_two_pr_files(self):
         # If PR diff lists both "api.py" and "src/auth/api.py", the graph node
         # for src/auth/api.py should only be counted once
-        G = nx.Graph()
-        G.add_node("n1", source_file="src/auth/api.py", community=0)
-        G.add_node("n2", source_file="src/auth/api.py", community=0)
-        comms, nodes = compute_pr_impact(["src/auth/api.py", "api.py"], G)
+        loaded = make_loaded(nodes=[
+            {"id": "n1", "source_file": "src/auth/api.py", "community": 0},
+            {"id": "n2", "source_file": "src/auth/api.py", "community": 0},
+        ])
+        comms, nodes = compute_pr_impact(
+            ["src/auth/api.py", "api.py"],
+            loaded.graph,
+            native_query=loaded.query,
+        )
         assert nodes == 2  # 2 nodes in that file, counted once
         assert comms == [0]
 
