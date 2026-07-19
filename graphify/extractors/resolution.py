@@ -642,7 +642,7 @@ def _disambiguate_colliding_node_ids(
         # No colliding ids to salt apart, but the transient `target_file` hint an
         # importer stamps on every resolved import (#1814) still has to be dropped
         # here — this early exit skips the edge loop below, so without it a
-        # non-colliding import would carry its absolute path into graph.json.
+        # non-colliding import would carry its absolute path into native storage.
         for edge in edges:
             edge.pop("target_file", None)
         return
@@ -686,7 +686,7 @@ def _disambiguate_colliding_node_ids(
         # target file, key the target salt by THAT file so the salt lands on the
         # correct sibling. Generalizes the #1475 C/ObjC header carve-out (below) to
         # every language and to re_exports. `pop` it as we consume it: this is the
-        # hint's only reader, and its absolute path must not persist into graph.json.
+        # hint's only reader, and its absolute path must not persist into Helix.
         target_file = edge.pop("target_file", None)
         if target_file and edge.get("relation") in ("imports", "imports_from", "re_exports"):
             target_edge_key = _source_key(str(target_file), root)

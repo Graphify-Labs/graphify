@@ -581,7 +581,7 @@ def deduplicate_entities(
     for edge in edges:
         e = dict(edge)
         # Tolerate "from"/"to" keys from LLM backends that don't follow the
-        # schema exactly — build_from_json normalises later but dedup runs
+        # schema exactly — build_from_extraction normalises later but dedup runs
         # first so bracket access would KeyError here (#803).
         # Use explicit key presence check (not `or`) so empty-string src/tgt
         # aren't silently replaced by the fallback key.

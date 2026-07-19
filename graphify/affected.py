@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Iterable
 import unicodedata
 
-from .helix.model import edge_attributes, graphify_attributes, node_attributes
+from .helix.model import edge_attributes, node_attributes
 from .helix.persistence import load_graph as load_helix_graph
 
 
@@ -95,18 +95,22 @@ def _prefer_file_node(
     return None
 
 
-def resolve_seed(graph: Any, query: str) -> Any | None:
+def resolve_seed(graph: Any, query: str, *, node_query: Any) -> Any | None:
+    """Resolve a seed from a bounded native predicate projection."""
     # A trailing path separator must not change a source-file match — serve's
     # _find_node tokenizes the path (which drops it), so strip it here for parity
     # (otherwise `affected "src/x.ts/"` returned None while `explain` resolved it).
     query = query.rstrip("/\\") or query
     if graph.contains_node(query):
         return query
+    if node_query is None:
+        raise RuntimeError("affected analysis requires the native Helix query interface")
     query_lower = _normalize_label(query)
+    candidate_ids = node_query.candidate_ids([query])
     exact_label_matches = [
-        node.id
-        for node in graph.nodes()
-        if (data := graphify_attributes(node.attributes)) is not None
+        node_id
+        for node_id in candidate_ids
+        if (data := node_attributes(graph, node_id)) is not None
         if _normalize_label(str(data.get("label", ""))) == query_lower
     ]
     if len(exact_label_matches) == 1:
@@ -116,17 +120,17 @@ def resolve_seed(graph: Any, query: str) -> Any | None:
     # contains pass. Match on the undecorated name before giving up.
     query_bare = _bare_name(query_lower)
     bare_name_matches = [
-        node.id
-        for node in graph.nodes()
-        if (data := graphify_attributes(node.attributes)) is not None
+        node_id
+        for node_id in candidate_ids
+        if (data := node_attributes(graph, node_id)) is not None
         if _bare_name(str(data.get("label", ""))) == query_bare
     ]
     if len(bare_name_matches) == 1:
         return bare_name_matches[0]
     exact_source_matches = [
-        node.id
-        for node in graph.nodes()
-        if (data := graphify_attributes(node.attributes)) is not None
+        node_id
+        for node_id in candidate_ids
+        if (data := node_attributes(graph, node_id)) is not None
         if _normalize_label(str(data.get("source_file", ""))) == query_lower
     ]
     if len(exact_source_matches) == 1:
@@ -136,9 +140,9 @@ def resolve_seed(graph: Any, query: str) -> Any | None:
         if preferred_file_node is not None:
             return preferred_file_node
     contains_matches = [
-        node.id
-        for node in graph.nodes()
-        if (data := graphify_attributes(node.attributes)) is not None
+        node_id
+        for node_id in candidate_ids
+        if (data := node_attributes(graph, node_id)) is not None
         if query_lower in _normalize_label(str(data.get("label", "")))
     ]
     if len(contains_matches) == 1:
@@ -153,7 +157,7 @@ def affected_nodes(
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
 ) -> list[AffectedHit]:
-    from helixdb import TraversalOptions
+    from helixdb.graph import TraversalOptions
 
     relation_list = tuple(dict.fromkeys(str(relation) for relation in relations))
 
@@ -203,11 +207,12 @@ def format_affected(
     graph: Any,
     query: str,
     *,
+    node_query: Any,
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
 ) -> str:
     relation_list = tuple(relations)
-    seed = resolve_seed(graph, query)
+    seed = resolve_seed(graph, query, node_query=node_query)
     if seed is None:
         return f"No unique node match for {query}"
 

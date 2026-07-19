@@ -2324,7 +2324,7 @@ def _extract_generic(
                 # Module-level import handlers (Swift) name a module, not a file
                 # path, so there is no pre-existing node to anchor the edge to.
                 # They return (id, label) pairs for which we materialize a
-                # `type=module` node; otherwise build_from_json prunes every such
+                # `type=module` node; otherwise build_from_extraction prunes every such
                 # import edge as a dangling/external reference. The same module
                 # imported from N files shares one id (file_type=code keeps
                 # build.py validation happy; `type=module` exempts it from

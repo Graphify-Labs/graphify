@@ -50,7 +50,7 @@ def _query_subgraph_tokens(G: Any, question: str, depth: int = 3) -> int:
     if not start_nodes:
         return 0
 
-    from helixdb import TraversalOptions
+    from helixdb.graph import TraversalOptions
 
     traversal = G.traverse(TraversalOptions(
         seeds=tuple(start_nodes), max_depth=depth, direction="both"

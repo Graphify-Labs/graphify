@@ -187,8 +187,8 @@ def _load_known_nodes(graph_path: Path) -> set[str] | None:
     Used to drop source nodes from lessons once the code they pointed at is gone
     (deleted/renamed) — a stale lesson shouldn't keep getting recommended. Both ids
     and labels are collected because `save-result` records source nodes by their
-    human-readable label (what an agent cites, e.g. ``build_from_json()``), while
-    graph nodes are keyed by id (e.g. ``module_build_from_json``). Matching on either
+    human-readable label (what an agent cites, e.g. ``build_from_extraction()``), while
+    graph nodes are keyed by id (e.g. ``module_build_from_extraction``). Matching on either
     keeps a still-present node and only drops one that survives under neither name —
     indexing ids alone silently dropped every label-form citation (the common case).
     """

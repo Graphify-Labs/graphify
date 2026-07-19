@@ -34,10 +34,8 @@ from .helix.model import (
     EdgeData,
     GraphBuildData,
     NodeData,
-    edge_attributes,
-    graphify_attributes,
 )
-from .helix.persistence import DEFAULT_PROJECT_STORE, graph_storage_exists, load_graph
+from .helix.persistence import DEFAULT_PROJECT_STORE
 from .validate import validate_extraction
 
 
@@ -291,7 +289,7 @@ def edge_datas(G, u: str, v: str) -> list[dict]:
 def dedupe_nodes(nodes: list[dict]) -> list[dict]:
     """Collapse nodes sharing an ``id``, last-writer-wins on attributes.
 
-    Mirrors what ``build_from_json``'s ``G.add_node`` does implicitly (idempotent;
+    Mirrors what ``build_from_extraction``'s ``G.add_node`` does implicitly (idempotent;
     a later node overwrites an earlier one's attributes). The ``--no-cluster``
     write path dumps the raw node list without building a graph, so same-id nodes
     — e.g. a Swift ``type=module`` anchor emitted once per importing file (#1327)
@@ -479,7 +477,7 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     return remap
 
 
-def build_from_json(
+def build_from_extraction(
     extraction: dict,
     *,
     directed: bool = False,
@@ -1002,7 +1000,7 @@ def build(
             combined["nodes"], combined["edges"], communities={},
             dedup_llm_backend=dedup_llm_backend,
         )
-    return build_from_json(
+    return build_from_extraction(
         combined, directed=directed, multigraph=multigraph, root=root
     )
 
@@ -1079,44 +1077,38 @@ def build_merge(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
-    base_graph: Any | None = None,
+    base_graph: GraphBuildData | None = None,
+    base_root: str | Path | None = None,
+    replace_origin_sources: dict[str, set[str]] | None = None,
 ) -> GraphBuildData:
-    """Load the active Helix generation and merge new chunks into build data.
+    """Merge extraction chunks into an explicit transient extraction DTO.
 
-    Re-extracted files REPLACE their prior contribution: any source_file present
-    in new_chunks is dropped from the loaded graph before merging, so a changed
-    file's stale nodes/edges don't accumulate. Files absent from new_chunks are
-    preserved unchanged; deleted files are removed via prune_sources.
-    Safe to call repeatedly.
+    Production updates rebuild this DTO from the durable extraction cache. This
+    helper accepts an explicit transient base only; it never projects an active
+    ``NativeGraph`` back into Python.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
     """
     graph_path = Path(graph_path if graph_path is not None else DEFAULT_PROJECT_STORE)
-    if base_graph is not None or graph_storage_exists(graph_path):
-        native = base_graph if base_graph is not None else load_graph(graph_path).graph
+    if base_graph is not None:
         existing_nodes = [
-            {"id": node.id, **graphify_attributes(node.attributes)}
-            for node in native.nodes()
+            {"id": node.id, **dict(node.attributes)}
+            for node in base_graph.nodes
         ]
         existing_edges = [
             {
                 "source": edge.source,
                 "target": edge.target,
-                **edge_attributes(edge),
-                **({"key": edge.graphify_key} if native.multigraph else {}),
+                **dict(edge.attributes),
+                **({"key": edge.key} if base_graph.multigraph else {}),
             }
-            for edge in native.edges()
+            for edge in base_graph.edges
         ]
-        graph_metadata = native.attributes.get("graph", {})
-        raw_hyperedges = (
-            graph_metadata.get("hyperedges", [])
-            if isinstance(graph_metadata, dict)
-            else []
-        )
+        raw_hyperedges = base_graph.attributes.get("hyperedges", [])
         existing_hyperedges = list(raw_hyperedges) if isinstance(raw_hyperedges, list) else []
         if directed is None:
-            directed = native.directed
+            directed = base_graph.directed
         if multigraph is None:
-            multigraph = native.multigraph
+            multigraph = base_graph.multigraph
         had_graph = True
     else:
         existing_nodes = []
@@ -1127,6 +1119,28 @@ def build_merge(
             directed = False
         if multigraph is None:
             multigraph = False
+
+    # Preserve source identity when invocation style changes (for example an
+    # absolute ``src`` build followed by a project-relative ``src`` update).
+    # The active generation's paths are relative to ``base_root``; fresh paths
+    # are relative to ``root``. Rebase only paths that fit under the new root.
+    old_root = Path(base_root).resolve() if base_root is not None else None
+    new_root = Path(root).resolve() if root is not None else None
+    if old_root is not None and new_root is not None and old_root != new_root:
+        def _rebase_source(item: dict) -> None:
+            source = item.get("source_file")
+            if not source:
+                return
+            source_path = Path(str(source))
+            absolute = source_path if source_path.is_absolute() else old_root / source_path
+            try:
+                item["source_file"] = absolute.resolve().relative_to(new_root).as_posix()
+            except (OSError, ValueError):
+                return
+
+        for item in [*existing_nodes, *existing_edges, *existing_hyperedges]:
+            if isinstance(item, dict):
+                _rebase_source(item)
 
     # Effective root for relativizing absolute source_file / prune paths back to the
     # stored relative source_file keys. When the caller passes root we use it;
@@ -1151,21 +1165,51 @@ def build_merge(
     # absolute win32 paths while the stored graph keeps relative posix (#1007).
     _replace_root = _eff_root
     new_sources: set[str] = set()
+    replaced_origins: dict[str, set[str]] = {}
+    for source, origins in (replace_origin_sources or {}).items():
+        identities = {source}
+        norm = _norm_source_file(source, _replace_root)
+        if norm:
+            identities.add(norm)
+        new_sources.update(identities)
+        for identity in identities:
+            replaced_origins.setdefault(identity, set()).update(origins)
     for ch in new_chunks:
-        for n in ch.get("nodes", []):
-            sf = n.get("source_file")
-            if not sf:
-                continue
-            new_sources.add(sf)
-            norm = _norm_source_file(sf, _replace_root)
-            if norm:
-                new_sources.add(norm)
+        for bucket in ("nodes", "edges", "hyperedges"):
+            for item in ch.get(bucket, []):
+                sf = item.get("source_file")
+                if not sf:
+                    continue
+                identities = {sf}
+                norm = _norm_source_file(sf, _replace_root)
+                if norm:
+                    identities.add(norm)
+                new_sources.update(identities)
+                origin = item.get("_origin")
+                if isinstance(origin, str) and origin:
+                    for identity in identities:
+                        replaced_origins.setdefault(identity, set()).add(origin)
     if new_sources:
         def _kept(item: dict) -> bool:
             sf = item.get("source_file")
-            return sf not in new_sources and _norm_source_file(sf, _replace_root) not in new_sources
+            norm = _norm_source_file(sf, _replace_root)
+            if sf not in new_sources and norm not in new_sources:
+                return True
+            origin = item.get("_origin")
+            if not isinstance(origin, str) or not origin:
+                return True
+            return (
+                origin not in replaced_origins.get(sf, set())
+                and origin not in replaced_origins.get(norm, set())
+            )
         existing_nodes = [n for n in existing_nodes if _kept(n)]
         existing_edges = [e for e in existing_edges if _kept(e)]
+    if prune_sources:
+        existing_nodes = [
+            node
+            for node in existing_nodes
+            if node.get("source_file") or node.get("_origin") != "ast"
+        ]
 
     base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
 
@@ -1238,8 +1282,16 @@ def build_merge(
                 continue
             sf = he.get("source_file")
             norm = _norm_source_file(sf, _eff_root)
-            if sf in new_sources or norm in new_sources:
-                continue  # re-extracted — replaced by the new chunk's version
+            origin = he.get("_origin")
+            if (
+                (sf in new_sources or norm in new_sources)
+                and isinstance(origin, str)
+                and (
+                    origin in replaced_origins.get(sf, set())
+                    or origin in replaced_origins.get(norm, set())
+                )
+            ):
+                continue  # this extraction tier was replaced
             if _prune_match(sf):
                 continue  # deleted — pruned
             carried.append(he)

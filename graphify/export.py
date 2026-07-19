@@ -21,7 +21,7 @@ from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: 
 
 def _portable_identity(value: Any) -> str:
     """Lossless string identity for formats without Helix typed IDs."""
-    from helixdb import external_id_to_json
+    from helixdb.graph import external_id_to_json
 
     return json.dumps(
         external_id_to_json(value), sort_keys=True, separators=(",", ":")
@@ -882,7 +882,7 @@ def to_svg(
     ax.set_facecolor("#1a1a2e")
     ax.axis("off")
 
-    from helixdb import LayoutOptions
+    from helixdb.graph import LayoutOptions
 
     pos = {
         point.node_id: (point.x, point.y)
