@@ -2510,6 +2510,7 @@ def dispatch_command(cmd: str) -> None:
         # use the same file set as the initial extraction (#1886).
         from graphify.watch import (
             _write_build_config as _write_build_cfg,
+            _read_build_excludes as _read_build_ex,
             _read_build_gitignore as _read_build_gi,
         )
         # #1971 persistence: an explicit --no-gitignore persists False; a later
@@ -2520,6 +2521,8 @@ def dispatch_command(cmd: str) -> None:
         # when the flag is set — None leaves the setting as-is, mirroring how
         # #1886 persists --exclude.
         _effective_gitignore = False if no_gitignore else _read_build_gi(graphify_out)
+        # An explicit list replaces the persisted one; omission reuses it.
+        _effective_excludes = cli_excludes or _read_build_ex(graphify_out)
         _write_build_cfg(
             graphify_out,
             excludes=cli_excludes or None,
@@ -2572,7 +2575,7 @@ def dispatch_command(cmd: str) -> None:
                 target,
                 manifest_path=str(manifest_path),
                 google_workspace=google_workspace or None,
-                extra_excludes=cli_excludes or None,
+                extra_excludes=_effective_excludes or None,
                 gitignore=_effective_gitignore,
             )
             files_by_type = detection.get("files", {})
@@ -2599,7 +2602,7 @@ def dispatch_command(cmd: str) -> None:
             detection = _detect(
                 target,
                 google_workspace=google_workspace or None,
-                extra_excludes=cli_excludes or None,
+                extra_excludes=_effective_excludes or None,
                 cache_root=out_root,
                 gitignore=_effective_gitignore,
             )

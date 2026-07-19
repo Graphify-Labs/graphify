@@ -107,3 +107,92 @@ def test_no_gitignore_setting_persists_across_flagless_extract(tmp_path):
     assert any(s.endswith("generated/Gen.py") for s in _sources()), (
         "flag-less re-extract clobbered the persisted --no-gitignore setting (#1971)"
     )
+
+
+def test_exclude_setting_persists_across_flagless_extract(tmp_path):
+    repo = tmp_path / "repo"
+    vendor = repo / "vendor"
+    vendor.mkdir(parents=True)
+    (repo / "app.py").write_text("def app():\n    return 1\n")
+    (vendor / "lib.py").write_text("def vendor():\n    return 2\n")
+
+    def _sources():
+        graph = json.loads((repo / "graphify-out" / "graph.json").read_text())
+        return {
+            Path(str(node.get("source_file", ""))).as_posix()
+            for node in graph["nodes"]
+        }
+
+    first = _run(
+        repo, "--exclude", "vendor", "--code-only", "--no-cluster"
+    )
+    assert first.returncode == 0, first.stderr
+    assert any(source.endswith("app.py") for source in _sources())
+    assert not any(source.endswith("vendor/lib.py") for source in _sources())
+
+    second = _run(repo, "--code-only", "--no-cluster")
+    assert second.returncode == 0, second.stderr
+    assert any(source.endswith("app.py") for source in _sources())
+    assert not any(source.endswith("vendor/lib.py") for source in _sources())
+
+
+def test_explicit_exclude_replaces_persisted_setting_with_custom_out(tmp_path):
+    repo = tmp_path / "repo"
+    vendor = repo / "vendor"
+    generated = repo / "generated"
+    vendor.mkdir(parents=True)
+    generated.mkdir()
+    (repo / "app.py").write_text("def app():\n    return 1\n")
+    (vendor / "lib.py").write_text("def vendor():\n    return 2\n")
+    (generated / "gen.py").write_text("def generated():\n    return 3\n")
+    out_root = tmp_path / "custom-output"
+
+    env = {key: value for key, value in os.environ.items() if key not in _KEY_VARS}
+    env["GRAPHIFY_OUT"] = "graphify-out"
+
+    def _run_extract(*extra: str):
+        return subprocess.run(
+            [
+                PYTHON,
+                "-m",
+                "graphify",
+                "extract",
+                ".",
+                "--out",
+                str(out_root),
+                "--code-only",
+                "--no-cluster",
+                *extra,
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    first = _run_extract("--exclude", "vendor")
+    assert first.returncode == 0, first.stderr
+
+    graph_out = out_root / "graphify-out"
+    def _sources():
+        graph = json.loads((graph_out / "graph.json").read_text())
+        return {
+            Path(str(node.get("source_file", ""))).as_posix()
+            for node in graph["nodes"]
+        }
+
+    persisted = _run_extract("--force")
+    assert persisted.returncode == 0, persisted.stderr
+    assert any(source.endswith("app.py") for source in _sources())
+    assert not any(source.endswith("vendor/lib.py") for source in _sources())
+    assert any(source.endswith("generated/gen.py") for source in _sources())
+
+    replacement = _run_extract("--exclude", "generated", "--force")
+    assert replacement.returncode == 0, replacement.stderr
+    sources = _sources()
+    assert any(source.endswith("app.py") for source in sources)
+    assert any(source.endswith("vendor/lib.py") for source in sources)
+    assert not any(source.endswith("generated/gen.py") for source in sources)
+    assert json.loads((graph_out / ".graphify_build.json").read_text()) == {
+        "excludes": ["generated"]
+    }
