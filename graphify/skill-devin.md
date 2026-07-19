@@ -887,7 +887,10 @@ import sys, json
 from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
 
-result = detect_incremental(Path('INPUT_PATH'))
+# kind='auto': ast_hash for code, semantic_hash for docs/papers/images. The
+# semantic default would report every code file of an AST-built corpus as
+# changed and re-extract the whole corpus (#2033).
+result = detect_incremental(Path('INPUT_PATH'), kind='auto')
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result))

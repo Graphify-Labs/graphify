@@ -1295,6 +1295,69 @@ def test_save_manifest_without_filter_unchanged_for_code(tmp_path):
     manifest = json.loads(Path(manifest_path).read_text())
     assert str(py) in manifest
     assert manifest[str(py)]["ast_hash"] != ""
+
+
+# Regression tests for #2033 - kind="auto" compares ast_hash for code and
+# semantic_hash for everything else, so the skill's --update runbook neither
+# re-extracts a whole AST-built corpus (code has no semantic_hash by design)
+# nor loses the semantic catch-up for docs downgraded by an AST-only rebuild.
+
+def test_detect_incremental_auto_code_with_ast_hash_only_is_unchanged(tmp_path):
+    """#2033: after an AST-only stamp (graphify update), an untouched code
+    file has ast_hash but no semantic_hash. kind="auto" must report it
+    unchanged — code never receives semantic extraction, so the missing
+    semantic_hash is not a pending obligation."""
+    py = tmp_path / "main.py"
+    py.write_text("print('hello')")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"code": [str(py)]}, manifest_path, root=tmp_path, kind="ast")
+
+    inc = detect_incremental(tmp_path, manifest_path, kind="auto")
+    assert inc["new_files"]["code"] == []
+    assert [Path(f).name for f in inc["unchanged_files"]["code"]] == ["main.py"]
+
+
+def test_detect_incremental_auto_doc_missing_semantic_hash_is_changed(tmp_path):
+    """#2033: an AST-only stamp clears/omits semantic_hash for a changed doc.
+    kind="auto" must still queue the doc for semantic re-extraction — that
+    catch-up is the whole point of semantic-hash bookkeeping (#2014)."""
+    doc = tmp_path / "notes.md"
+    doc.write_text("# Notes\n\nsome content")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"document": [str(doc)]}, manifest_path, root=tmp_path, kind="ast")
+
+    inc = detect_incremental(tmp_path, manifest_path, kind="auto")
+    assert [Path(f).name for f in inc["new_files"]["document"]] == ["notes.md"]
+
+
+def test_detect_incremental_auto_changed_code_is_changed(tmp_path):
+    """kind="auto" still reports a code file whose content changed since the
+    last ast stamp."""
+    py = tmp_path / "main.py"
+    py.write_text("print('hello')")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"code": [str(py)]}, manifest_path, root=tmp_path, kind="ast")
+
+    py.write_text("print('changed')")
+    os.utime(py, (os.path.getmtime(py) + 5, os.path.getmtime(py) + 5))
+
+    inc = detect_incremental(tmp_path, manifest_path, kind="auto")
+    assert [Path(f).name for f in inc["new_files"]["code"]] == ["main.py"]
+
+
+def test_detect_incremental_auto_doc_with_semantic_hash_is_unchanged(tmp_path):
+    """kind="auto" trusts a valid semantic_hash: an untouched doc stamped by
+    a real semantic pass is not re-queued."""
+    doc = tmp_path / "notes.md"
+    doc.write_text("# Notes\n\nsome content")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"document": [str(doc)]}, manifest_path, root=tmp_path, kind="both")
+
+    inc = detect_incremental(tmp_path, manifest_path, kind="auto")
+    assert inc["new_files"]["document"] == []
+    assert [Path(f).name for f in inc["unchanged_files"]["document"]] == ["notes.md"]
+
+
 # Regression tests for #945 - .gitignore fallback when no .graphifyignore exists
 
 def test_gitignore_fallback_when_no_graphifyignore(tmp_path):
