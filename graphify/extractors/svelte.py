@@ -28,6 +28,12 @@ SVELTE_COMPILER_VERSION = "5.56.6"
 SVELTE2TSX_VERSION = "0.7.58"
 TYPESCRIPT_VERSION = "5.9.3"
 SVELTE_AST_CACHE_MAX_ENTRIES = 256
+# Bound one Node request independently of the extraction-scoped fact context.
+# The bridge performs TypeScript binding analysis per author source; an
+# unbounded monorepo request can exceed the subprocess timeout and otherwise
+# degrade every Svelte file together. Smaller requests also isolate a genuinely
+# expensive or malformed source to one bounded group.
+SVELTE_AST_BRIDGE_BATCH_MAX_FILES = 32
 _BRIDGE_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
 
@@ -216,46 +222,50 @@ def parse_svelte_ast_batch(items: list[tuple[Path, str]]) -> dict[Path, dict[str
     if not missing:
         return output
 
-    request_files = [
-        {"id": str(index), "path": str(path.resolve()), "source": source}
-        for index, (path, source, _key) in enumerate(missing)
-    ]
-    try:
-        response = _invoke_svelte_bridge(
-            {"schema_version": SVELTE_AST_SCHEMA_VERSION, "files": request_files}
-        )
-    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-        for path, _source, key in missing:
-            fact = {
-                "diagnostics": [
-                    _diagnostic(
-                        "svelte_ast_unavailable",
-                        f"Svelte AST unavailable: {exc}",
-                    )
-                ]
-            }
+    for batch_start in range(0, len(missing), SVELTE_AST_BRIDGE_BATCH_MAX_FILES):
+        batch = missing[
+            batch_start:batch_start + SVELTE_AST_BRIDGE_BATCH_MAX_FILES
+        ]
+        request_files = [
+            {"id": str(index), "path": str(path.resolve()), "source": source}
+            for index, (path, source, _key) in enumerate(batch)
+        ]
+        try:
+            response = _invoke_svelte_bridge(
+                {"schema_version": SVELTE_AST_SCHEMA_VERSION, "files": request_files}
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            for path, _source, key in batch:
+                fact = {
+                    "diagnostics": [
+                        _diagnostic(
+                            "svelte_ast_unavailable",
+                            f"Svelte AST unavailable: {exc}",
+                        )
+                    ]
+                }
+                _cache_put(key, fact)
+                output[path] = fact
+            continue
+
+        by_id = {
+            str(item.get("id")): item
+            for item in response.get("files", [])
+            if isinstance(item, dict)
+        }
+        for index, (path, _source, key) in enumerate(batch):
+            fact = by_id.get(str(index))
+            if fact is None:
+                fact = {
+                    "diagnostics": [
+                        _diagnostic(
+                            "svelte_ast_missing_result",
+                            "Svelte AST bridge omitted this source from its response",
+                        )
+                    ]
+                }
             _cache_put(key, fact)
             output[path] = fact
-        return output
-
-    by_id = {
-        str(item.get("id")): item
-        for item in response.get("files", [])
-        if isinstance(item, dict)
-    }
-    for index, (path, _source, key) in enumerate(missing):
-        fact = by_id.get(str(index))
-        if fact is None:
-            fact = {
-                "diagnostics": [
-                    _diagnostic(
-                        "svelte_ast_missing_result",
-                        "Svelte AST bridge omitted this source from its response",
-                    )
-                ]
-            }
-        _cache_put(key, fact)
-        output[path] = fact
     return output
 
 

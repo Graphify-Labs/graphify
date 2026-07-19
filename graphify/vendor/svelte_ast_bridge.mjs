@@ -245353,9 +245353,6 @@ ${errors.map((error) => `  - ${error}`).join("\n")}`;
   }
 });
 
-// src/bridge.ts
-import { dirname } from "node:path";
-
 // node_modules/@jridgewell/sourcemap-codec/dist/sourcemap-codec.mjs
 var comma = ",".charCodeAt(0);
 var semicolon = ";".charCodeAt(0);
@@ -264454,23 +264451,20 @@ function blankRange(source2, node) {
   const blank = source2.slice(node.start, node.end).replace(/[^\r\n]/g, " ");
   return `${source2.slice(0, node.start)}${blank}${source2.slice(node.end)}`;
 }
-function compilerOptions(filename2) {
-  const defaults = {
+function compilerOptions() {
+  return {
     allowJs: true,
     checkJs: false,
     jsx: import_typescript.default.JsxEmit.Preserve,
     module: import_typescript.default.ModuleKind.ESNext,
     moduleResolution: import_typescript.default.ModuleResolutionKind.Bundler,
+    noLib: true,
     noEmit: true,
+    noResolve: true,
     skipLibCheck: true,
-    target: import_typescript.default.ScriptTarget.ES2022
+    target: import_typescript.default.ScriptTarget.ES2022,
+    types: []
   };
-  const configPath = import_typescript.default.findConfigFile(dirname(filename2), import_typescript.default.sys.fileExists, "tsconfig.json");
-  if (!configPath) return defaults;
-  const loaded = import_typescript.default.readConfigFile(configPath, import_typescript.default.sys.readFile);
-  if (loaded.error) return defaults;
-  const parsed = import_typescript.default.parseJsonConfigFileContent(loaded.config, import_typescript.default.sys, dirname(configPath));
-  return { ...defaults, ...parsed.options, noEmit: true };
 }
 function declarationName(declaration2) {
   if ("name" in declaration2 && declaration2.name) {
@@ -264486,7 +264480,7 @@ function buildBindingIndex(source2, filename2, transformedSource, identitySurfac
     version: VERSION
   });
   const virtualFilename = `${filename2}.${identitySurface}.tsx`;
-  const options = compilerOptions(filename2);
+  const options = compilerOptions();
   const defaultHost = import_typescript.default.createCompilerHost(options, true);
   const host = {
     ...defaultHost,

@@ -1,5 +1,3 @@
-import { dirname } from 'node:path';
-
 import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping';
 import type { Node as EstreeNode } from 'estree';
 import { walk } from 'estree-walker';
@@ -124,23 +122,26 @@ function blankRange(source: string, node: AST.Script | null): string {
   return `${source.slice(0, node.start)}${blank}${source.slice(node.end)}`;
 }
 
-function compilerOptions(filename: string): ts.CompilerOptions {
-  const defaults: ts.CompilerOptions = {
+function compilerOptions(): ts.CompilerOptions {
+  // The checker establishes lexical binding identity inside one transformed
+  // author source. Canonical module resolution is deliberately owned by the
+  // Python resolver, so loading the repository tsconfig, dependency graph, and
+  // default libraries here adds no facts. On large monorepos it also turns each
+  // Svelte file into a project-wide TypeScript program and can exhaust the
+  // bridge timeout before any facts are returned.
+  return {
     allowJs: true,
     checkJs: false,
     jsx: ts.JsxEmit.Preserve,
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
+    noLib: true,
     noEmit: true,
+    noResolve: true,
     skipLibCheck: true,
     target: ts.ScriptTarget.ES2022,
+    types: [],
   };
-  const configPath = ts.findConfigFile(dirname(filename), ts.sys.fileExists, 'tsconfig.json');
-  if (!configPath) return defaults;
-  const loaded = ts.readConfigFile(configPath, ts.sys.readFile);
-  if (loaded.error) return defaults;
-  const parsed = ts.parseJsonConfigFileContent(loaded.config, ts.sys, dirname(configPath));
-  return { ...defaults, ...parsed.options, noEmit: true };
 }
 
 function declarationName(declaration: ts.Declaration): ts.Node {
@@ -164,7 +165,7 @@ function buildBindingIndex(
     version: compilerVersion,
   });
   const virtualFilename = `${filename}.${identitySurface}.tsx`;
-  const options = compilerOptions(filename);
+  const options = compilerOptions();
   const defaultHost = ts.createCompilerHost(options, true);
   const host: ts.CompilerHost = {
     ...defaultHost,

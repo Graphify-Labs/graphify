@@ -14,6 +14,7 @@ import networkx as nx
 from graphify.build import build_from_json, build_merge
 from graphify.extract import _file_node_id, _make_id, extract, extract_svelte
 from graphify.extractors.svelte import (
+    SVELTE_AST_BRIDGE_BATCH_MAX_FILES,
     SVELTE_AST_CACHE_MAX_ENTRIES,
     clear_svelte_ast_cache,
     mask_svelte_script_facts,
@@ -648,7 +649,7 @@ def test_svelte_sources_are_parsed_in_one_cached_batch(tmp_path: Path, monkeypat
     assert calls == [3]
 
 
-def test_full_extract_owns_max_plus_one_svelte_facts_without_lru_reparse(
+def test_full_extract_owns_batched_max_plus_one_svelte_facts_without_lru_reparse(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -685,9 +686,14 @@ def test_full_extract_owns_max_plus_one_svelte_facts_without_lru_reparse(
     extract(components, cache_root=tmp_path, root=tmp_path, parallel=False)
     extract(components, cache_root=tmp_path, root=tmp_path, parallel=False)
 
-    # The first run is one compiler batch. The second reparses only the one
-    # deterministically evicted entry; neither resolver pass may invoke Node.
-    assert calls == [SVELTE_AST_CACHE_MAX_ENTRIES + 1, 1]
+    # Compiler requests are bounded, while the extraction context still owns
+    # every fact across LRU eviction. The second run reparses only the one
+    # deterministically evicted entry; resolver passes never invoke Node.
+    expected_first = [SVELTE_AST_BRIDGE_BATCH_MAX_FILES] * (
+        SVELTE_AST_CACHE_MAX_ENTRIES // SVELTE_AST_BRIDGE_BATCH_MAX_FILES
+    )
+    expected_first.append(1)
+    assert calls == [*expected_first, 1]
     assert svelte_ast_cache_info() == {
         "entries": SVELTE_AST_CACHE_MAX_ENTRIES,
         "max_entries": SVELTE_AST_CACHE_MAX_ENTRIES,
@@ -715,8 +721,60 @@ def test_full_extract_does_not_retry_degraded_svelte_facts_downstream(
 
     result = extract(components, cache_root=tmp_path, root=tmp_path, parallel=False)
 
-    assert calls == [SVELTE_AST_CACHE_MAX_ENTRIES + 1]
+    expected = [SVELTE_AST_BRIDGE_BATCH_MAX_FILES] * (
+        SVELTE_AST_CACHE_MAX_ENTRIES // SVELTE_AST_BRIDGE_BATCH_MAX_FILES
+    )
+    expected.append(1)
+    assert calls == expected
     assert result["edges"] == []
+
+
+def test_svelte_bridge_failure_is_isolated_to_one_bounded_batch(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from graphify.extractors import svelte as svelte_extractor
+
+    total = SVELTE_AST_BRIDGE_BATCH_MAX_FILES + 3
+    items = [
+        (tmp_path / f"Component{index}.svelte", f"<p>{index}</p>\n")
+        for index in range(total)
+    ]
+    calls: list[int] = []
+
+    def selectively_failing_invoke(request: dict) -> dict:
+        calls.append(len(request["files"]))
+        if len(calls) == 1:
+            raise RuntimeError("first batch unavailable")
+        return {
+            "schema_version": svelte_extractor.SVELTE_AST_SCHEMA_VERSION,
+            "compiler_version": svelte_extractor.SVELTE_COMPILER_VERSION,
+            "svelte2tsx_version": svelte_extractor.SVELTE2TSX_VERSION,
+            "typescript_version": svelte_extractor.TYPESCRIPT_VERSION,
+            "files": [
+                {"id": item["id"], "path": item["path"], "diagnostics": []}
+                for item in request["files"]
+            ],
+        }
+
+    clear_svelte_ast_cache()
+    monkeypatch.setattr(
+        svelte_extractor,
+        "_invoke_svelte_bridge",
+        selectively_failing_invoke,
+    )
+
+    result = parse_svelte_ast_batch(items)
+
+    assert calls == [SVELTE_AST_BRIDGE_BATCH_MAX_FILES, 3]
+    assert all(
+        result[path]["diagnostics"][0]["code"] == "svelte_ast_unavailable"
+        for path, _source in items[:SVELTE_AST_BRIDGE_BATCH_MAX_FILES]
+    )
+    assert all(
+        result[path]["diagnostics"] == []
+        for path, _source in items[SVELTE_AST_BRIDGE_BATCH_MAX_FILES:]
+    )
 
 
 def test_incremental_extract_reparses_only_changed_svelte_source(
