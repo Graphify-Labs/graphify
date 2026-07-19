@@ -76,6 +76,12 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
             */env\\ *) GRAPHIFY_PYTHON="${_SHEBANG#*/env }" ;;
             *)         GRAPHIFY_PYTHON="$_SHEBANG" ;;
         esac
+        # Drop interpreter flags: pipx writes shebangs like
+        # `#!/path/to/venv/bin/python -E`, and uv/venv launchers may add -s/-I.
+        # The flag makes the value fail the path allowlist below, which silently
+        # blanks a perfectly good interpreter and lets the last-resort probe pick
+        # an unrelated system python that may hold a stale graphify.
+        GRAPHIFY_PYTHON="${GRAPHIFY_PYTHON%% *}"
         # Allowlist: only keep characters valid in a filesystem path to prevent
         # injection if the shebang contains shell metacharacters.
         case "$GRAPHIFY_PYTHON" in

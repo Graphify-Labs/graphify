@@ -2,6 +2,7 @@
 import os
 import shutil
 import subprocess
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
@@ -589,3 +590,53 @@ def test_uninstall_removes_merge_driver_keeps_other_attrs(tmp_path):
     content = (repo / ".gitattributes").read_text(encoding="utf-8")
     assert "*.png binary" in content
     assert "merge=graphify" not in content
+
+
+def _run_python_detect(tmp_path: Path, launcher_shebang: str) -> str:
+    """Run the _PYTHON_DETECT snippet against a fake launcher and report its pick.
+
+    Isolates probe 3 (shebang parsing): the pinned-python placeholder is blanked
+    and the working directory holds no graphify-out/.graphify_python, so the only
+    interpreter the snippet can find is the one named by the fake launcher.
+    """
+    from graphify.hooks import _PYTHON_DETECT
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    launcher = bindir / "graphify"
+    launcher.write_text(launcher_shebang + '\nexit 0\n', encoding="utf-8", newline="\n")
+    launcher.chmod(0o755)
+
+    script = _PYTHON_DETECT.replace("__PINNED_PYTHON__", "")
+    script += 'printf "%s" "$GRAPHIFY_PYTHON"\n'
+    script_path = tmp_path / "detect.sh"
+    script_path.write_text(script, encoding="utf-8", newline="\n")
+
+    # The snippet shells out to head/tr/sed, so the standard bin dirs stay on
+    # PATH; only the graphify launcher is replaced by the fake one.
+    env = dict(os.environ, PATH=os.pathsep.join([str(bindir), "/usr/bin", "/bin"]))
+    res = subprocess.run(
+        ["/bin/sh", str(script_path)],
+        cwd=str(tmp_path), env=env, capture_output=True, text=True,
+    )
+    return res.stdout.strip()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang probe")
+def test_shebang_probe_strips_interpreter_flags(tmp_path):
+    """pipx writes `#!/path/to/venv/bin/python -E`.
+
+    The flag must be dropped before the path allowlist runs. Keeping it makes the
+    allowlist reject the whole value (space is not a path character), blanking a
+    working interpreter and letting the last-resort probe fall through to an
+    unrelated system python that may carry a stale graphify.
+    """
+    picked = _run_python_detect(tmp_path, f"#!{sys.executable} -E")
+    assert picked == sys.executable
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shebang probe")
+def test_shebang_probe_accepts_plain_interpreter(tmp_path):
+    """A flagless shebang must keep working exactly as before."""
+    picked = _run_python_detect(tmp_path, f"#!{sys.executable}")
+    assert picked == sys.executable
