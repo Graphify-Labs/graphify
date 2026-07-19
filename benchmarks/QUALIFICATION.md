@@ -1,13 +1,26 @@
-# Release qualification: Helix `0.2.0b1`
+# Release qualification: public Helix `0.2.0b3` (draft)
 
-Graphify is pinned to `helix-db==0.2.0b1` and
-`helix-db-embedded==0.2.0b1`. It rejects incompatible SDK versions, missing
-native payloads, malformed store paths, and unavailable required native APIs.
+Graphify is pinned to the matching public PyPI releases
+`helix-db==0.2.0b3` and `helix-db-embedded==0.2.0b3`. It uses ordinary public
+`helixdb` imports and rejects incompatible SDK versions, missing embedded
+payloads, malformed store paths, and unavailable required public APIs. No
+Helix source checkout, Git dependency, private wheel, locally compiled
+runtime, direct UniFFI import, dynamic native loader, or SDK monkeypatch is
+used.
+
+Native Windows x86_64 is a supported Graphify target. Qualification still
+requires a normal public `win_amd64` embedded wheel for the exact pinned
+version. Public b3 currently publishes macOS universal2 and Linux
+x86_64/aarch64 artifacts, but no Windows artifact, so the PR remains draft.
 
 ## Graphify acceptance
 
-- Complete macOS arm64 / Python 3.12 suite: **2,761 passed, 30 skipped**.
-- CI matrix: Linux Python 3.10, Linux Python 3.12, and macOS Python 3.12.
+- Complete local suite: **2,921 passed, 3 skipped**. The Python 3.12 clean
+  environment accounted for the same behavior surface after installing the
+  declared development group, including wheel-packaging tests.
+- CI matrix: Linux x86_64 on Python 3.10 and 3.12, Linux aarch64 on Python
+  3.12, macOS universal2 on Python 3.12, and native Windows x86_64 on Python
+  3.10 and 3.12.
 - All four graph kinds, typed IDs, keyed multiedges, self-loops, hyperedges,
   atomic activation, retained rollback, corruption, writer exclusion,
   concurrent readers, generation hot reload, and read-only enforcement: passed.
@@ -17,8 +30,8 @@ native payloads, malformed store paths, and unavailable required native APIs.
 - Generated skill check (134 artifacts), host coverage audit, schema singleton,
   monolith contract, and always-on contract: passed.
 - Ruff, scoped Pyright for the native integration surface, Bandit medium/high,
-  pip-audit strict, source compilation, package build, and `git diff --check`:
-  passed.
+  locked-runtime pip-audit, source compilation, package build, and
+  `git diff --check`: passed locally.
 - Wheel installation in a clean Python 3.12 environment: passed. The installed
   production dependency set contains neither NetworkX nor graspologic.
 - Installed-wheel CLI flow: build native store, query, and shortest path: passed.
@@ -29,7 +42,7 @@ the watch path emits one obsolete-format warning and requires a source rebuild.
 Obsidian's `.obsidian/graph.json` remains solely because that filename belongs
 to Obsidian's presentation configuration, not Graphify storage.
 
-## Benchmarks
+## Benchmark qualification
 
 The isolated benchmark comparator is the only environment that installs
 NetworkX. The deterministic parity corpus and full raw measurements are in
@@ -37,19 +50,34 @@ NetworkX. The deterministic parity corpus and full raw measurements are in
 [`helix-vs-networkx.json`](helix-vs-networkx.json); reproduction commands and
 interpreted results are in [`RESULTS.md`](RESULTS.md).
 
-Every published gate passed:
+The public b3 candidate **does not pass the release gates**:
 
-| Graph | Ingest | Cold open | Peak RSS | Active store | Slowest gated hot op |
+| Graph | Helix ingest | Helix cold open | Peak RSS (informational) | Active store | Slowest absolute hot op |
 |---|---:|---:|---:|---:|---:|
-| 5k / 15k | 10.23s | 7.90s | 384.4 MiB | 35.90 MiB | 21.47ms |
-| 20k / 60k | 67.22s | 33.46s | 1,158.4 MiB | 148.00 MiB | 9.18ms |
+| 5k / 15k | 10.14s | 1.46s | 343.3 MiB | 35.35 MiB | 27.40ms |
+| 20k / 60k | 40.67s | 6.45s | 993.5 MiB | 143.71 MiB | 12.17ms |
 
 At 20k/60k, weighted Leiden, sampled node centrality, and sampled edge
-centrality were respectively **10.5x**, **10.2x**, and **4.8x** faster than the
-NetworkX baseline. The raw results also report incremental update, GraphML
-export, concurrent cold readers, and the 296.85 MiB active-plus-rollback
-footprint; the published 200 MB store gate applies to the active generation
-immediately after ingest.
+centrality are respectively **9.30x**, **8.15x**, and **3.73x** faster than the
+current v8 NetworkX/JSON comparator, so the three native analytics gates pass.
+Absolute hot-operation limits also pass. Build, 1% update, cold-open, active
+and post-update storage, and relative warm-operation gates fail.
 
-Windows is temporarily unsupported by the pinned embedded runtime. Supported
-production targets are macOS universal and Linux x86_64/aarch64.
+Default retention deletes the inactive generation through public Helix
+operations, but b3 does not physically reclaim enough embedded-store space;
+the 20k/60k store grows from 143.71 MiB to 299.32 MiB after the 1% update.
+Graphify deliberately does not manipulate SST/WAL files or call private
+maintenance APIs. Peak RSS is reported but is non-blocking, as required.
+
+The Graphify engineers' `comfywerk`, `agent`, `backend`, `passport`, and
+`erpnext` corpora were not available in this checkout, so real-corpus and gold
+query qualification remains outstanding. Synthetic results are not a
+substitute for that gate.
+
+## Conclusion
+
+The integration is correct enough for a draft PR, but is not production-ready.
+It must remain draft until the exact public package pair provides a passing
+Windows wheel, all CI platforms pass without core skips, the engineers' real
+corpora and gold queries pass, and the failed public-package performance and
+disk-reclamation gates are resolved without hidden workarounds.

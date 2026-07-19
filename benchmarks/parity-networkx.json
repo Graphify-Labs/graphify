@@ -1,5 +1,5 @@
 {
-  "helix_revision": "0.2.0b1",
+  "helix_revision": "0.2.0b3",
   "networkx_version": "3.6.1",
   "checks": {
     "directed_path": true,
