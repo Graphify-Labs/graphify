@@ -878,7 +878,7 @@ def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, st
     A Swift ``import CoreKit`` names a module, not a file path, so — unlike the
     file-resolving JS/TS handlers — there is no existing node for the edge to
     point at. The returned ``(id, label)`` pairs let the extractor materialize a
-    ``type=module`` anchor node so the edge survives; without it ``build_from_json``
+    ``type=module`` anchor node so the edge survives; without it ``build_from_extraction``
     prunes every Swift import edge as a dangling/external reference (#1327).
     """
     modules: list[tuple[str, str]] = []
@@ -1200,7 +1200,7 @@ def extract_svelte(path: Path) -> dict:
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         # Source file node ID must match the one _extract_generic creates:
         # _make_id(str(path)) - single arg, no stem prefix. Otherwise the source
-        # endpoint is a phantom node and build_from_json drops the edge (#701).
+        # endpoint is a phantom node and build_from_extraction drops the edge (#701).
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
         for m in _re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
@@ -1227,7 +1227,7 @@ def extract_svelte(path: Path) -> dict:
                     stub_source_file = str(resolved_alias)
                 else:
                     # Bare/scoped import (node_modules) - use last segment;
-                    # build_from_json drops as external if no matching node exists.
+                    # build_from_extraction drops as external if no matching node exists.
                     module_name = raw.split("/")[-1]
                     if not module_name:
                         continue

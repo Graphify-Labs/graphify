@@ -111,6 +111,7 @@ def load_cached(
     prompt_file: str | Path | None = None,
     allow_legacy: bool = True,
     allow_partial: bool = False,
+    allow_stale: bool = False,
     *,
     cache: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
@@ -119,7 +120,10 @@ def load_cached(
         return None
     key = _cache_key(Path(path), Path(root), kind, prompt, prompt_file)
     entry = cache.get(key)
-    if not isinstance(entry, dict) or entry.get("content_hash") != file_hash(Path(path), Path(root)):
+    if not isinstance(entry, dict) or (
+        not allow_stale
+        and entry.get("content_hash") != file_hash(Path(path), Path(root))
+    ):
         return None
     if entry.get("partial") and not allow_partial:
         return None
@@ -180,6 +184,7 @@ def check_semantic_cache(
     mode: str | None = None,
     prompt: str | Path | None = None,
     prompt_file: str | Path | None = None,
+    allow_stale: bool = False,
 ) -> tuple[list[dict], list[dict], list[dict], list[str]]:
     kind = "semantic" if mode is None else f"semantic-{mode}"
     nodes: list[dict] = []
@@ -191,7 +196,13 @@ def check_semantic_cache(
         if not path.is_absolute():
             path = Path(root) / path
         result = load_cached(
-            path, root, kind=kind, prompt=prompt, prompt_file=prompt_file, cache=cache
+            path,
+            root,
+            kind=kind,
+            prompt=prompt,
+            prompt_file=prompt_file,
+            allow_stale=allow_stale,
+            cache=cache,
         )
         if result is None:
             uncached.append(raw)
@@ -207,6 +218,7 @@ def save_semantic_cache(
     edges: list[dict],
     hyperedges: list[dict] | None = None,
     root: Path = Path("."),
+    cache_root: Path | None = None,
     merge_existing: bool = False,
     allowed_source_files: Iterable[str | Path] | None = None,
     mode: str | None = None,
@@ -216,6 +228,7 @@ def save_semantic_cache(
     *,
     cache: dict[str, dict[str, Any]] | None = None,
 ) -> int:
+    del cache_root
     if cache is None:
         return 0
     kind = "semantic" if mode is None else f"semantic-{mode}"

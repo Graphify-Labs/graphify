@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,26 @@ _READ_NUDGE = json.dumps({
         "additionalContext": (
             "MANDATORY: orient with graphify-out/graph.helix before broad source reads. "
             "Use `graphify query`, `graphify explain`, or `graphify path`."
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
+_READ_NUDGE_STALE = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "additionalContext": (
+            "graphify-out/graph.helix may be stale for this file. Use `graphify query` "
+            "for orientation and run `graphify update`; reading the file is allowed."
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
+_READ_DENY = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            "graphify strict mode: run `graphify query <question>`, `graphify explain`, "
+            "or `graphify path` first, then retry this read. This blocks at most once "
+            "per session."
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -98,38 +120,180 @@ def _validate_store_or_exit(gp: Path) -> None:
         raise SystemExit(1) from exc
 
 
-def _run_hook_guard(kind: str) -> None:
-    from graphify.paths import out_path, GRAPHIFY_OUT_NAME
+def _hook_strict_enabled(flag: bool) -> bool:
+    value = os.environ.get("GRAPHIFY_HOOK_STRICT", "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return flag
+
+
+def _touch_query_stamp(graph_path: Path) -> None:
+    try:
+        from graphify.paths import write_text_atomic
+
+        stamp = graph_path.parent / "cache" / "last_query_stamp"
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        write_text_atomic(stamp, str(time.time()))
+    except Exception:
+        pass
+
+
+def _query_stamp_fresh() -> bool:
+    from graphify.paths import out_path
 
     try:
-        exists = out_path("graph.helix").is_dir()
+        ttl = float(os.environ.get("GRAPHIFY_HOOK_STRICT_TTL", "1800"))
+        return time.time() - out_path("cache", "last_query_stamp").stat().st_mtime < ttl
     except Exception:
-        exists = False
+        return False
+
+
+def _mark_session_denied(session_id: str) -> bool:
+    from graphify.paths import out_path
+
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
+    if not safe_id:
+        return False
+    try:
+        directory = out_path("cache", "hook_sessions")
+        directory.mkdir(parents=True, exist_ok=True)
+        fd = os.open(
+            str(directory / f"{safe_id}.denied"),
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o644,
+        )
+        os.close(fd)
+        return True
+    except (FileExistsError, OSError):
+        return False
+
+
+def _target_is_indexed(file_path: str, root: Path) -> bool:
+    from graphify.paths import out_path
+
+    if not file_path:
+        return True
+    try:
+        manifest_path = out_path("manifest.json")
+        if manifest_path.stat().st_size > 2_000_000:
+            return True
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict) or not manifest:
+            return True
+        path = Path(file_path)
+        relative: set[str] = {path.name}
+        try:
+            relative.add(path.resolve().relative_to(root).as_posix())
+        except (ValueError, OSError, RuntimeError):
+            pass
+        keys = {str(key).replace("\\", "/") for key in manifest}
+        absolute = str(path).replace("\\", "/")
+        return absolute in keys or any(
+            value and any(key == value or key.endswith("/" + value) for key in keys)
+            for value in relative
+        )
+    except Exception:
+        return True
+
+
+def _run_hook_guard(kind: str, strict: bool = False) -> None:
+    from graphify.paths import GRAPHIFY_OUT_NAME, out_path
+
     if kind == "gemini":
         payload: dict[str, Any] = {"decision": "allow"}
-        if exists:
-            payload["additionalContext"] = _GEMINI_NUDGE_TEXT
+        try:
+            if out_path("graph.helix").is_dir():
+                payload["additionalContext"] = _GEMINI_NUDGE_TEXT
+        except Exception:
+            pass
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         return
     try:
         data = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace"))
+        if not isinstance(data, dict):
+            return
         tool_input = data.get("tool_input", data)
-        if not isinstance(tool_input, dict) or not exists:
+        if not isinstance(tool_input, dict):
+            return
+        store_path = out_path("graph.helix")
+        if not store_path.is_dir():
             return
         if kind == "search":
             command = str(tool_input.get("command", ""))
-            if any(token in command for token in ("grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag ")):
+            is_grep_tool = not command and bool(tool_input.get("pattern"))
+            is_bash_search = any(
+                token in command
+                for token in ("grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag ")
+            )
+            if is_grep_tool or is_bash_search:
                 sys.stdout.write(_SEARCH_NUDGE)
-        elif kind == "read":
-            values = [
-                str(tool_input.get("file_path") or ""),
-                str(tool_input.get("pattern") or ""),
-                str(tool_input.get("path") or ""),
-            ]
-            joined = " ".join(values).lower().replace("\\", "/")
-            tails = [Path(value).suffix.lower() for value in values if value]
-            if GRAPHIFY_OUT_NAME.lower() + "/" not in joined and any(ext in _HOOK_SOURCE_EXTS for ext in tails):
-                sys.stdout.write(_READ_NUDGE)
+            return
+        if kind != "read":
+            return
+
+        values = [
+            str(tool_input.get("file_path") or ""),
+            str(tool_input.get("pattern") or ""),
+            str(tool_input.get("path") or ""),
+        ]
+        joined = " ".join(values).lower().replace("\\", "/")
+        tails = [Path(value).suffix.lower() for value in values if value]
+        if GRAPHIFY_OUT_NAME.lower() + "/" in joined or not any(
+            extension in _HOOK_SOURCE_EXTS for extension in tails
+        ):
+            return
+
+        root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+        try:
+            root = root.resolve()
+        except (OSError, RuntimeError):
+            pass
+        explicit = [
+            str(tool_input.get(name) or "")
+            for name in ("file_path", "path")
+            if tool_input.get(name)
+        ]
+        if explicit:
+            in_project = False
+            for value in explicit:
+                path = Path(value)
+                if not path.is_absolute():
+                    in_project = True
+                    break
+                try:
+                    path.resolve().relative_to(root)
+                    in_project = True
+                    break
+                except (ValueError, OSError, RuntimeError):
+                    continue
+            if not in_project:
+                return
+
+        graph_mtime = store_path.stat().st_mtime
+        file_path = str(tool_input.get("file_path") or "")
+        stale = False
+        if file_path:
+            try:
+                stale = Path(file_path).stat().st_mtime > graph_mtime
+            except OSError:
+                pass
+        if out_path("needs_update").exists():
+            stale = True
+        if stale:
+            sys.stdout.write(_READ_NUDGE_STALE)
+            return
+        if (
+            _hook_strict_enabled(strict)
+            and data.get("tool_name") in (None, "Read")
+            and not _query_stamp_fresh()
+            and _target_is_indexed(file_path, root)
+            and _mark_session_denied(str(data.get("session_id") or ""))
+        ):
+            sys.stdout.write(_READ_DENY)
+            return
+        sys.stdout.write(_READ_NUDGE)
     except Exception:
         return
 
@@ -193,6 +357,7 @@ def _query(args: list[str]) -> None:
     if not question:
         raise ValueError("query requires a question")
     loaded = _loaded(args)
+    _touch_query_stamp(loaded.store_path)
     budget = int(_option(args, "--budget") or 2000)
     mode = "dfs" if "--dfs" in args else "bfs"
     filters: list[str] = []
@@ -202,8 +367,18 @@ def _query(args: list[str]) -> None:
         elif value.startswith("--context="):
             filters.append(value.split("=", 1)[1])
     print(_query_graph_text(
-        loaded.graph, question, mode=mode, depth=3, token_budget=budget,
+        loaded.graph,
+        question,
+        native_query=loaded.query,
+        mode=mode,
+        depth=3,
+        token_budget=budget,
         context_filters=filters,
+        learning_overlay=(
+            dict(learning.get("nodes", {}))
+            if isinstance((learning := loaded.state.get("learning", {})), dict)
+            else {}
+        ),
     ))
 
 
@@ -214,9 +389,15 @@ def _path(args: list[str]) -> None:
     positional = [value for value in args if not value.startswith("-")]
     if len(positional) < 2:
         raise ValueError("path requires source and target")
-    graph = _loaded(args).graph
-    source_scores = _score_nodes(graph, _query_terms(positional[0]))
-    target_scores = _score_nodes(graph, _query_terms(positional[1]))
+    loaded = _loaded(args)
+    _touch_query_stamp(loaded.store_path)
+    graph = loaded.graph
+    source_scores = _score_nodes(
+        graph, _query_terms(positional[0]), native_query=loaded.query
+    )
+    target_scores = _score_nodes(
+        graph, _query_terms(positional[1]), native_query=loaded.query
+    )
     if not source_scores or not target_scores:
         raise ValueError("source or target did not resolve uniquely")
     source = _pick_scored_endpoint(graph, source_scores, positional[0])
@@ -265,8 +446,9 @@ def _explain(args: list[str]) -> None:
     if not query:
         raise ValueError("explain requires a node label or ID")
     loaded = _loaded(args)
+    _touch_query_stamp(loaded.store_path)
     graph = loaded.graph
-    matches = _find_node(graph, query)
+    matches = _find_node(graph, query, native_query=loaded.query)
     if len(matches) > 1:
         query_path = query.replace("\\", "/")
         file_matches = [
@@ -383,10 +565,13 @@ def _global(args: list[str]) -> None:
     if args[0] == "add" and len(args) >= 2:
         source = Path(args[1])
         tag = _option(args[2:], "--as") or source.resolve().name
-        print(global_add(source, tag))
+        print(global_add(source, tag, retain_rollback="--retain-rollback" in args))
         return
     if args[0] == "remove" and len(args) >= 2:
-        print(f"Removed {global_remove(args[1])} nodes.")
+        print(
+            f"Removed {global_remove(args[1], retain_rollback='--retain-rollback' in args)} "
+            "nodes."
+        )
         return
     if args[0] == "path":
         print(global_path())
@@ -395,7 +580,7 @@ def _global(args: list[str]) -> None:
 
 
 def _update_or_extract(cmd: str, args: list[str]) -> None:
-    from graphify.watch import _rebuild_code
+    from graphify.watch import _rebuild_code, _write_build_config
 
     target = Path(next((value for value in args if not value.startswith("-")), "."))
     force = "--force" in args
@@ -406,6 +591,13 @@ def _update_or_extract(cmd: str, args: list[str]) -> None:
     include_semantic = cmd == "extract" and "--code-only" not in args
     output_value = _option(args, "--out")
     output = Path(output_value) if output_value else None
+    if "--no-gitignore" in args:
+        config_root = output if output is not None else target
+        _write_build_config(
+            config_root / _GRAPHIFY_OUT,
+            excludes=None,
+            gitignore=False,
+        )
     if not _rebuild_code(
         target, output_root=output, changed_paths=changed, force=force, no_cluster=no_cluster,
         block_on_lock=True,
@@ -416,6 +608,7 @@ def _update_or_extract(cmd: str, args: list[str]) -> None:
         deep_mode=_option(args, "--mode") == "deep" or "--deep" in args,
         token_budget=int(_option(args, "--token-budget") or 60_000),
         max_concurrency=int(_option(args, "--max-concurrency") or 4),
+        retain_rollback="--retain-rollback" in args,
         raise_on_error=True,
     ):
         raise RuntimeError("graph rebuild failed")
@@ -519,6 +712,27 @@ def _cache_check(args: list[str]) -> None:
     print(f"Cache: {len(files) - len(uncached)} hit, {len(uncached)} miss")
 
 
+def _rollback(args: list[str]) -> None:
+    from graphify.helix.persistence import HelixEmbeddedStore
+    from graphify.security import validate_store_path
+
+    store_path = validate_store_path(_store_arg(args))
+    with HelixEmbeddedStore(store_path, retain_rollback=True) as store:
+        loaded = store.rollback()
+    print(f"Rolled back {store_path} to generation {loaded.generation}.")
+
+
+def _doctor(args: list[str]) -> None:
+    from graphify.helix.persistence import HelixEmbeddedStore
+    from graphify.security import validate_store_path
+
+    store_path = validate_store_path(_store_arg(args))
+    with HelixEmbeddedStore(store_path, read_only=True) as store:
+        result = store.verify() if "--deep" in args else store.verify_counts()
+    mode = "deep" if "--deep" in args else "counts"
+    print(f"Helix store OK ({mode}): {json.dumps(result, sort_keys=True)}")
+
+
 def dispatch_command(cmd: str) -> None:
     args = sys.argv[2:]
     try:
@@ -541,8 +755,10 @@ def dispatch_command(cmd: str) -> None:
             for index, value in enumerate(args):
                 if value == "--relation" and index + 1 < len(args):
                     relations.append(args[index + 1])
+            loaded = _loaded(args)
             print(format_affected(
-                _loaded(args).graph, query,
+                loaded.graph, query,
+                node_query=loaded.query,
                 relations=relations or DEFAULT_AFFECTED_RELATIONS,
                 depth=depth,
             ))
@@ -552,7 +768,11 @@ def dispatch_command(cmd: str) -> None:
             from graphify.watch import watch
 
             target = Path(next((value for value in args if not value.startswith("-")), "."))
-            watch(target, debounce=float(_option(args, "--debounce") or 3.0))
+            watch(
+                target,
+                debounce=float(_option(args, "--debounce") or 3.0),
+                retain_rollback="--retain-rollback" in args,
+            )
         elif cmd == "check-update":
             from graphify.watch import check_update
 
@@ -596,6 +816,10 @@ def dispatch_command(cmd: str) -> None:
             print_benchmark(run_benchmark(str(_store_arg(args))))
         elif cmd == "global":
             _global(args)
+        elif cmd == "rollback":
+            _rollback(args)
+        elif cmd == "doctor":
+            _doctor(args)
         elif cmd == "prs":
             from graphify.prs import cmd_prs
 
@@ -608,7 +832,10 @@ def dispatch_command(cmd: str) -> None:
         elif cmd == "hook-check":
             _run_hook_guard("search")
         elif cmd == "hook-guard":
-            _run_hook_guard(args[0] if args else "search")
+            _run_hook_guard(
+                args[0] if args else "search",
+                strict="--strict" in args[1:],
+            )
         elif cmd == "hook":
             from graphify import hooks
 

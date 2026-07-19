@@ -6,7 +6,7 @@ from graphify.helix.access import degree_map, node_attributes, node_ids
 
 
 def _partition(graph: Any, resolution: float = 1.0) -> dict[Any, int]:
-    from helixdb import LeidenOptions
+    from helixdb.graph import LeidenOptions
 
     result = graph.to_undirected().leiden(LeidenOptions(resolution=resolution))
     return {

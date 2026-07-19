@@ -253,6 +253,8 @@ def compute_pr_impact(
     files: list[str],
     G: Any,
     communities: dict[int, list[Any]] | None = None,
+    *,
+    native_query: Any,
 ) -> tuple[list[int], int]:
     """Return (communities_touched, nodes_affected) for a set of changed files.
 
@@ -267,7 +269,10 @@ def compute_pr_impact(
         for cid, members in (communities or {}).items()
         for node_id in members
     }
-    for node in G.nodes():
+    for node_id in native_query.candidate_ids(files):
+        node = G.node(node_id)
+        if node is None:
+            continue
         data = graphify_attributes(node.attributes)
         src = data.get("source_file") or ""
         if not src:
@@ -275,7 +280,7 @@ def compute_pr_impact(
         if src not in file_comms:
             file_comms[src] = set()
             file_count[src] = 0
-        c = membership.get(node.id, data.get("community"))
+        c = membership.get(node_id, data.get("community"))
         if c is not None:
             file_comms[src].add(int(c))
         file_count[src] += 1
@@ -343,9 +348,19 @@ def _load_graph_store(graph_path: Path) -> LoadedGraph | None:
         return None
 
 
-def build_community_labels(loaded: LoadedGraph, top_n: int = 4) -> dict[int, list[str]]:
+def build_community_labels(
+    loaded: LoadedGraph | dict[str, Any], top_n: int = 4
+) -> dict[int, list[str]]:
     """Return community IDs mapped to representative native node labels."""
     comm_labels: dict[int, list[str]] = defaultdict(list)
+    if isinstance(loaded, dict):
+        for node in loaded.get("nodes", []):
+            if not isinstance(node, dict) or node.get("community") is None:
+                continue
+            label = node.get("label") or node.get("id")
+            if label:
+                comm_labels[int(node["community"])].append(str(label))
+        return {cid: labels[:top_n] for cid, labels in comm_labels.items()}
     for record in loaded.state.get("communities", []):
         if not isinstance(record, dict) or not isinstance(record.get("id"), int):
             continue
@@ -367,28 +382,6 @@ def attach_graph_impact(
     if loaded is None:
         return {}
 
-    # Build file → {community, node_count} index
-    file_to_communities: dict[str, set[int]] = {}
-    file_to_nodes: dict[str, int] = {}
-    communities = {
-        record["id"]: list(record.get("members", []))
-        for record in loaded.state.get("communities", [])
-        if isinstance(record, dict) and isinstance(record.get("id"), int)
-    }
-    membership = {node: cid for cid, members in communities.items() for node in members}
-    for node in loaded.graph.nodes():
-        attrs = graphify_attributes(node.attributes)
-        src = attrs.get("source_file") or ""
-        if not src:
-            continue
-        comm = membership.get(node.id)
-        if src not in file_to_communities:
-            file_to_communities[src] = set()
-            file_to_nodes[src] = 0
-        if comm is not None:
-            file_to_communities[src].add(int(comm))
-        file_to_nodes[src] += 1
-
     # Fetch diffs concurrently — gh pr diff is the bottleneck (network I/O)
     actionable = [pr for pr in prs if pr.status != "WRONG-BASE"]
     workers = min(8, len(actionable)) if actionable else 1
@@ -405,17 +398,60 @@ def attach_graph_impact(
                 files = []
             pr.files_changed = files
 
-            comms: set[int] = set()
-            nodes = 0
-            matched: set[str] = set()
-            for f in files:
-                for gf, gcomms in file_to_communities.items():
-                    if gf not in matched and _path_match(gf, f):
-                        comms |= gcomms
-                        nodes += file_to_nodes.get(gf, 0)
-                        matched.add(gf)
-            pr.communities_touched = sorted(comms)
-            pr.nodes_affected = nodes
+    # Project only nodes matching changed paths through public Helix predicates.
+    # Chunk the OR terms so a PR touching many files cannot create an unbounded
+    # query plan, then use native point reads for exact path matching.
+    if loaded.query is None:
+        raise RuntimeError("PR impact requires the native Helix query interface")
+    changed_files = sorted({path for pr in actionable for path in pr.files_changed})
+    terms = list(dict.fromkeys(
+        value
+        for path in changed_files
+        for value in (path, Path(path).name)
+        if value
+    ))
+    candidate_ids: list[Any] = []
+    seen_candidates: set[Any] = set()
+    for offset in range(0, len(terms), 64):
+        for node_id in loaded.query.candidate_ids(terms[offset : offset + 64]):
+            if node_id not in seen_candidates:
+                seen_candidates.add(node_id)
+                candidate_ids.append(node_id)
+
+    file_to_communities: dict[str, set[int]] = {}
+    file_to_nodes: dict[str, int] = {}
+    communities = {
+        record["id"]: list(record.get("members", []))
+        for record in loaded.state.get("communities", [])
+        if isinstance(record, dict) and isinstance(record.get("id"), int)
+    }
+    membership = {node: cid for cid, members in communities.items() for node in members}
+    for node_id in candidate_ids:
+        node = loaded.graph.node(node_id)
+        if node is None:
+            continue
+        attrs = graphify_attributes(node.attributes)
+        src = str(attrs.get("source_file") or "")
+        if not src or not any(_path_match(src, path) for path in changed_files):
+            continue
+        comm = membership.get(node_id)
+        file_to_communities.setdefault(src, set())
+        file_to_nodes[src] = file_to_nodes.get(src, 0) + 1
+        if comm is not None:
+            file_to_communities[src].add(int(comm))
+
+    for pr in actionable:
+        comms: set[int] = set()
+        nodes = 0
+        matched: set[str] = set()
+        for path in pr.files_changed:
+            for graph_file, graph_communities in file_to_communities.items():
+                if graph_file not in matched and _path_match(graph_file, path):
+                    comms |= graph_communities
+                    nodes += file_to_nodes.get(graph_file, 0)
+                    matched.add(graph_file)
+        pr.communities_touched = sorted(comms)
+        pr.nodes_affected = nodes
 
     return build_community_labels(loaded)
 

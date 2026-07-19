@@ -19,7 +19,7 @@ GraphKind = Literal["graph", "digraph", "multigraph", "multidigraph"]
 
 def _identity_key(value: Any) -> str:
     import json
-    from helixdb import external_id_to_json
+    from helixdb.graph import external_id_to_json
 
     return json.dumps(external_id_to_json(value), sort_keys=True, separators=(",", ":"))
 
@@ -27,7 +27,7 @@ def _identity_key(value: Any) -> str:
 def import_identity(value: Any) -> Any:
     """Decode an explicit JSON-export identity, leaving ordinary IDs unchanged."""
     if isinstance(value, dict) and set(value) == {"__helix_external_id_v1"}:
-        from helixdb import external_id_from_json
+        from helixdb.graph import external_id_from_json
 
         return external_id_from_json(value)
     return value
@@ -35,7 +35,7 @@ def import_identity(value: Any) -> Any:
 
 def _export_identity(value: Any) -> Any:
     if isinstance(value, (bytes, tuple, frozenset)):
-        from helixdb import external_id_to_json
+        from helixdb.graph import external_id_to_json
 
         return external_id_to_json(value)
     return value
@@ -130,35 +130,6 @@ class GraphBuildData:
             extras={k: v for k, v in payload.items() if k not in reserved},
         )
 
-    @classmethod
-    def from_native(cls, graph: Any) -> "GraphBuildData":
-        kind: GraphKind = (
-            "multidigraph" if graph.directed and graph.multigraph else
-            "digraph" if graph.directed else
-            "multigraph" if graph.multigraph else
-            "graph"
-        )
-        nodes = [NodeData(node.id, graphify_attributes(node.attributes)) for node in graph.nodes()]
-        edges = [
-            EdgeData(
-                edge.source,
-                edge.target,
-                edge_attributes(edge),
-                edge.graphify_key if graph.multigraph else None,
-            )
-            for edge in graph.edges()
-        ]
-        metadata = dict(graph.attributes)
-        attrs = metadata.get("graph", {})
-        extras = metadata.get("extras", {})
-        return cls(
-            kind=kind,
-            nodes=nodes,
-            edges=edges,
-            attributes=dict(attrs) if isinstance(attrs, Mapping) else {},
-            extras=dict(extras) if isinstance(extras, Mapping) else {},
-        )
-
     def to_node_link(
         self,
         *,
@@ -197,6 +168,7 @@ class LoadedGraph:
     state: Mapping[str, Any]
     metadata: Mapping[str, Any]
     store_path: Path
+    query: Any | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "state", MappingProxyType(dict(self.state)))

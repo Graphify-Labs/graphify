@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 from typing import Iterable
 
-from .helix.model import LoadedGraph, graphify_attributes
+from .helix.model import LoadedGraph, node_attributes
 
 
 def changed_files(base: str, *, cwd: str | Path = ".") -> list[str]:
@@ -31,10 +31,13 @@ def analyze_impact(
     graph = loaded.graph
     requested = {Path(file).as_posix() for file in files}
     requested_names = {Path(file).name for file in requested}
+    if loaded.query is None:
+        raise RuntimeError("impact analysis requires the native Helix query interface")
+    candidates = loaded.query.candidate_ids(sorted(requested | requested_names))
     seeds = {
-        node.id
-        for node in graph.nodes()
-        if (attrs := graphify_attributes(node.attributes)) is not None
+        node_id
+        for node_id in candidates
+        if (attrs := node_attributes(graph, node_id)) is not None
         if (source := attrs.get("source_file"))
         and (
             Path(str(source)).as_posix() in requested
@@ -45,7 +48,7 @@ def analyze_impact(
     impacted = set(seeds)
     traversed: list[tuple] = []
     if seeds:
-        from helixdb import TraversalOptions
+        from helixdb.graph import TraversalOptions
 
         result = graph.traverse(TraversalOptions(
             seeds=tuple(sorted(seeds, key=repr)),
