@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible isolated Helix/NetworkX comparison for the acceptance sizes."""
+"""Reproducible Helix comparison against the current v8 NetworkX/JSON baseline."""
 
 from __future__ import annotations
 
@@ -9,16 +9,19 @@ import os
 from pathlib import Path
 import platform
 import random
-import resource
 import shutil
 import statistics
 import subprocess
 import sys
 import tempfile
 import time
-import pickle
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
+
+try:
+    import resource
+except ImportError:  # Native Windows has no resource module; RSS is informational.
+    resource = None
 
 from graphify.helix.model import EdgeData, GraphBuildData, NodeData
 from graphify.helix.persistence import HelixEmbeddedStore, HelixGraphReader
@@ -29,6 +32,8 @@ SIZES = ((5_000, 15_000), (20_000, 60_000))
 
 
 def _peak_rss_bytes() -> int:
+    if resource is None:
+        return 0
     value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return value if platform.system() == "Darwin" else value * 1024
 
@@ -78,8 +83,10 @@ def memory_only(backend: str, nodes: int, edges: int) -> int:
 
             before = _peak_rss_bytes()
             graph = topology(networkx.Graph, nodes, edges, 42)
-            with (root / "graph.pickle").open("wb") as stream:
-                pickle.dump(graph, stream, protocol=pickle.HIGHEST_PROTOCOL)
+            payload = networkx.node_link_data(graph, edges="links")
+            (root / "graph.json").write_text(
+                json.dumps(payload, indent=2), encoding="utf-8"
+            )
             return max(0, _peak_rss_bytes() - before)
         before = _peak_rss_bytes()
         graph = helix_topology(nodes, edges, 42)
@@ -129,17 +136,23 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
     import networkx as networkx  # benchmark-only dependency
 
     result: dict[str, Any] = {"nodes": nodes, "edges": edges}
-    nx_path = root / f"{nodes}-{edges}.networkx.pickle"
+    nx_path = root / f"{nodes}-{edges}.networkx.json"
+
+    def persist_networkx(graph: Any) -> None:
+        payload = networkx.node_link_data(graph, edges="links")
+        nx_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def networkx_ingest():
         graph = topology(networkx.Graph, nodes, edges, 42)
-        with nx_path.open("wb") as stream:
-            pickle.dump(graph, stream, protocol=pickle.HIGHEST_PROTOCOL)
+        persist_networkx(graph)
         return graph
 
     nx_graph, nx_ingest, _ = measure(networkx_ingest)
     _, nx_reopen, nx_reopen_samples = median_measure(
-        lambda: pickle.loads(nx_path.read_bytes()), 3
+        lambda: networkx.node_link_graph(
+            json.loads(nx_path.read_text(encoding="utf-8")), edges="links"
+        ),
+        3,
     )
     store_path = root / f"{nodes}-{edges}.helix"
 
@@ -166,8 +179,7 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
     def networkx_incremental():
         for index in range(update_count):
             nx_graph.nodes[index]["label"] = f"updated-node-{index}"
-        with nx_path.open("wb") as stream:
-            pickle.dump(nx_graph, stream, protocol=pickle.HIGHEST_PROTOCOL)
+        persist_networkx(nx_graph)
 
     _, nx_incremental, _ = measure(networkx_incremental)
 
@@ -309,7 +321,7 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
         "eight_concurrent_reopens_seconds": helix_concurrency,
         "peak_rss_delta_bytes": helix_memory,
         "disk_after_ingest_bytes": helix_ingest_disk,
-        "disk_with_rollback_bytes": directory_size(store_path),
+        "disk_after_update_bytes": directory_size(store_path),
     }
     return result
 
@@ -332,20 +344,35 @@ def acceptance_gates(results: list[dict[str, Any]]) -> dict[str, Any]:
         label = f"{row['nodes']}/{row['edges']}"
         helix = row["helix"]
         networkx = row["networkx"]
-        if row["nodes"] == 5_000:
-            check(f"{label} ingest seconds", helix["ingest_seconds"], 15.0)
-            check(f"{label} cold open seconds", helix["reopen_seconds"], 15.0)
-            check(f"{label} peak RSS bytes", helix["peak_rss_delta_bytes"], 512 * 1024**2)
-            hot_limit = 0.050
-        else:
-            check(f"{label} ingest seconds", helix["ingest_seconds"], 90.0)
-            check(f"{label} cold open seconds", helix["reopen_seconds"], 60.0)
-            check(f"{label} peak RSS bytes", helix["peak_rss_delta_bytes"], int(1.5 * 1024**3))
-            check(
-                f"{label} store bytes after ingest",
-                helix["disk_after_ingest_bytes"],
-                200 * 1024**2,
-            )
+        cold_limit = 0.5 if row["nodes"] == 5_000 else 3.0
+        hot_limit = 0.100 if row["nodes"] == 5_000 else 0.500
+        check(
+            f"{label} ingest vs v8",
+            helix["ingest_seconds"] / networkx["ingest_seconds"],
+            2.0,
+        )
+        check(
+            f"{label} 1% update vs v8",
+            helix["incremental_1pct_seconds"] / networkx["incremental_1pct_seconds"],
+            2.0,
+        )
+        check(f"{label} cold open seconds", helix["reopen_seconds"], cold_limit)
+        check(
+            f"{label} cold open vs v8",
+            helix["reopen_seconds"] / networkx["reopen_seconds"],
+            5.0,
+        )
+        check(
+            f"{label} active store vs v8",
+            helix["disk_after_ingest_bytes"] / networkx["disk_bytes"],
+            3.0,
+        )
+        check(
+            f"{label} post-update store vs v8",
+            helix["disk_after_update_bytes"] / networkx["disk_bytes"],
+            3.0,
+        )
+        if row["nodes"] == 20_000:
             check(
                 f"{label} clustering speedup",
                 networkx["community_seconds"] / helix["community_seconds"],
@@ -364,14 +391,18 @@ def acceptance_gates(results: list[dict[str, Any]]) -> dict[str, Any]:
                 3.0,
                 ">=",
             )
-            hot_limit = 0.100
-        for metric in (
-            "hot_open_seconds",
-            "neighbor_20_queries_seconds",
-            "bfs_seconds",
-            "shortest_path_5_queries_seconds",
+        check(f"{label} hot_open_seconds", helix["hot_open_seconds"], hot_limit)
+        for metric, baseline_metric in (
+            ("neighbor_20_queries_seconds", "neighbor_20_queries_seconds"),
+            ("bfs_seconds", "bfs_seconds"),
+            ("shortest_path_5_queries_seconds", "shortest_path_5_queries_seconds"),
         ):
             check(f"{label} {metric}", helix[metric], hot_limit)
+            check(
+                f"{label} {metric} vs v8",
+                helix[metric] / networkx[baseline_metric],
+                2.0,
+            )
     return {"passed": all(item["passed"] for item in checks), "checks": checks}
 
 
@@ -401,7 +432,7 @@ def main() -> None:
     try:
         results = [run_size(nodes, edges, root) for nodes, edges in SIZES]
         report = {
-            "helix_revision": "0.2.0b1",
+            "helix_revision": "0.2.0b3",
             "python": platform.python_version(),
             "platform": platform.platform(),
             "pid": os.getpid(),

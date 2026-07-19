@@ -1,59 +1,63 @@
 # Helix vs NetworkX benchmark
 
-Run on Python 3.12.13 and macOS arm64 with pinned Helix `0.2.0b1` and
-NetworkX 3.6.1. NetworkX was installed only in the isolated benchmark
-environment. Both backends use the same deterministic topology. Betweenness
-uses 100 sampled sources and seed 42 for both node and edge scores.
+Run on Python 3.12.13 and macOS arm64 with the matching public
+`helix-db==0.2.0b3` / `helix-db-embedded==0.2.0b3` pair and NetworkX 3.6.1.
+NetworkX was installed only in the isolated benchmark environment. Both
+backends use the same deterministic topology and sampled betweenness uses 100
+sources with seed 42. Peak RSS is reported but is not a release gate.
 
-Lower is better. Query, traversal, shortest-path, and community figures are
-medians (5 runs for hot operations, 3 for community detection); centrality,
-incremental update, export, and durable ingest are one expensive run. Exact
-samples, run counts, RSS, disk, and acceptance checks are retained in
+Lower is better. Exact samples and every acceptance check are retained in
 [`helix-vs-networkx.json`](helix-vs-networkx.json).
 
 | Graph | Backend | Ingest | 1% update | Cold reopen | Hot open | 20 neighbors | BFS d=4 | 5 paths |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 5k / 15k | NetworkX | 0.033s | 0.005s | 0.004s | n/a | 0.004ms | 1.53ms | 0.11ms |
-| 5k / 15k | Helix | 10.235s | 12.396s | 7.903s | 6.73ms | 1.14ms | 21.47ms | 1.11ms |
-| 20k / 60k | NetworkX | 0.221s | 0.023s | 0.020s | n/a | 0.003ms | 0.72ms | 0.10ms |
-| 20k / 60k | Helix | 67.224s | 82.233s | 33.462s | 8.12ms | 1.10ms | 9.18ms | 3.64ms |
+| 5k / 15k | NetworkX | 0.076s | 0.058s | 0.027s | n/a | 0.005ms | 1.97ms | 0.14ms |
+| 5k / 15k | Helix | 10.135s | 13.607s | 1.457s | 7.83ms | 1.62ms | 27.40ms | 1.45ms |
+| 20k / 60k | NetworkX | 0.378s | 0.254s | 0.152s | n/a | 0.005ms | 1.11ms | 0.14ms |
+| 20k / 60k | Helix | 40.671s | 63.572s | 6.454s | 10.02ms | 1.60ms | 12.17ms | 4.27ms |
 
 | Graph | Backend | Community | Node BTW | Edge BTW | GraphML export | Peak ingest RSS |
 |---|---|---:|---:|---:|---:|---:|
-| 5k / 15k | NetworkX | 1.160s Louvain | 0.807s | 1.014s | 0.121s | 10.5 MiB |
-| 5k / 15k | Helix | 0.096s Leiden | 0.098s | 0.304s | 0.594s | 384.4 MiB |
-| 20k / 60k | NetworkX | 11.867s Louvain | 4.834s | 6.679s | 0.533s | 39.8 MiB |
-| 20k / 60k | Helix | 1.130s Leiden | 0.474s | 1.406s | 2.621s | 1,158.4 MiB |
+| 5k / 15k | NetworkX | 1.300s Louvain | 0.854s | 1.100s | 0.226s | 24.3 MiB |
+| 5k / 15k | Helix | 0.121s Leiden | 0.121s | 0.394s | 0.747s | 343.3 MiB |
+| 20k / 60k | NetworkX | 13.141s Louvain | 4.988s | 6.920s | 0.683s | 97.5 MiB |
+| 20k / 60k | Helix | 1.414s Leiden | 0.612s | 1.853s | 3.246s | 993.5 MiB |
 
-| Graph | Active Helix generation | Active + rollback | Eight concurrent cold reopens |
-|---|---:|---:|---:|
-| 5k / 15k | 35.90 MiB | 72.31 MiB | 104.48s |
-| 20k / 60k | 148.00 MiB | 296.85 MiB | 416.96s |
+| Graph | NetworkX JSON | Active Helix store | Helix after default-retention update | Eight concurrent cold reopens |
+|---|---:|---:|---:|---:|
+| 5k / 15k | 1.37 MiB | 35.35 MiB | 73.69 MiB | 7.14s |
+| 20k / 60k | 5.58 MiB | 143.71 MiB | 299.32 MiB | 31.24s |
 
-All published acceptance gates passed. At 20k/60k, Helix weighted Leiden was
-10.5x faster than NetworkX Louvain, sampled node betweenness was 10.2x faster,
-and sampled edge betweenness was 4.8x faster. The 200 MB storage gate applies
-to the active generation immediately after ingest. The raw results separately
-retain the expected footprint after the 1% update creates a rollback generation.
+## Gate result
 
-NetworkX remained much faster and smaller for construction, persistence, cold
-load, and small hot adjacency operations. Graphify avoids repeated cold opens
-by retaining a native immutable snapshot for a long-running reader's lifetime;
-no compatibility graph, intermediate JSON graph, or alternate query path is
-used.
+This candidate **does not pass the release gates** and the PR must remain
+draft. Absolute hot-operation limits pass, and at 20k/60k native weighted
+Leiden, sampled node centrality, and sampled edge centrality are respectively
+9.30x, 8.15x, and 3.73x faster than the NetworkX comparator. Build, 1% update,
+cold-open, storage, and relative warm-operation gates fail.
+
+Public b3 substantially improves the earlier public b1 engine result, but it
+still does not reach the required 2x build/update or 3s cold-open limits.
+Increasing Graphify's public write-batch size from 1,000 to 5,000 records did
+not improve the remaining ingest time.
+
+Default retention logically deletes the inactive generation through public
+Helix operations, but the embedded store does not reclaim its physical space;
+the post-update store more than doubles. Graphify does not compact SST/WAL
+files or call private maintenance APIs, so disk reclamation remains a public
+package limitation.
 
 The behavioral parity result in [`parity-networkx.json`](parity-networkx.json)
 passes directed path, BFS, DFS, exact node and edge betweenness, Louvain on a
-golden graph, layout, subgraph, relabel, and conversion checks. Graphify's main
-suite separately covers all four graph kinds, typed IDs, keyed multiedges,
-self-loops, weighted Leiden, cycles, composition, exports, and persistence.
+golden graph, layout, relabeling, subgraph, and conversion checks.
 
-Reproduce in an isolated environment:
+Reproduce without Homebrew:
 
 ```bash
-python -m venv /tmp/graphify-networkx-benchmark
-/tmp/graphify-networkx-benchmark/bin/pip install -e . \
+python3.12 -m venv /tmp/graphify-networkx-benchmark
+/tmp/graphify-networkx-benchmark/bin/python -m pip install -e . \
   -r benchmarks/requirements-networkx.txt
 PYTHONPATH=. /tmp/graphify-networkx-benchmark/bin/python benchmarks/parity_networkx.py
-PYTHONPATH=. /tmp/graphify-networkx-benchmark/bin/python benchmarks/helix_vs_networkx.py --check-gates
+PYTHONPATH=. /tmp/graphify-networkx-benchmark/bin/python \
+  benchmarks/helix_vs_networkx.py --check-gates
 ```
