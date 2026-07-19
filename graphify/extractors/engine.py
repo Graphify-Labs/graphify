@@ -4617,7 +4617,7 @@ def _extract_generic(
     # Java is skipped: it has no top-level executable statements, its field
     # initializers are already walked via initializer_nodes with the owning
     # class as caller, and a root walk would only defer them as file-attributed
-    # raw_calls that resurrect the ambiguous phantom stubs #1744 removes.
+    # raw_calls that resurrect the ambiguous phantom stubs #1744 removed.
     if config.ts_module != "tree_sitter_java":
         _toplevel_calls_only = True
         try:
