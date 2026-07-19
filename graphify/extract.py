@@ -32,6 +32,7 @@ from graphify.extractors.base import (  # noqa: F401
 )
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
+from graphify.extractors.actionscript import extract_actionscript  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
 from graphify.extractors.csharp import (
     _resolve_cross_file_csharp_imports,
@@ -44,6 +45,7 @@ from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa
 from graphify.extractors.go import extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
+from graphify.extractors.mxml import extract_mxml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
@@ -3908,6 +3910,8 @@ _DISPATCH: dict[str, Any] = {
     ".mdx": extract_markdown,
     ".qmd": extract_markdown,
     ".skill": extract_markdown,
+    ".as": extract_actionscript,
+    ".mxml": extract_mxml,
     ".pas": extract_pascal,
     ".pp": extract_pascal,
     ".dpr": extract_pascal,
