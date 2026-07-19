@@ -27,7 +27,7 @@ Use native topology, analysis, confidence, and source locations to understand a 
 
 ## What You Must Do When Invoked
 
-If the native store exists, query it. If only an obsolete-format file exists, ignore it and rebuild from source. Windows is temporarily unsupported.
+If the native store exists, query it. If only an obsolete-format file exists, ignore it and rebuild from source. Native Windows x86_64 is supported through the matching public package wheel.
 
 ### Step 1 - Ensure graphify is installed
 
@@ -59,7 +59,7 @@ Transient DTOs are validated by the parent and committed with native state.
 
 ### Step 4 - Build graph, cluster, analyze, generate outputs
 
-Run `graphify extract INPUT_PATH`. Atomic activation retains the previous generation for rollback.
+Run `graphify extract INPUT_PATH`. Atomic activation deletes inactive generations by default; pass `--retain-rollback` to retain exactly one previous generation.
 
 ### Step 5 - Label communities
 

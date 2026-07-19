@@ -765,13 +765,13 @@ def _is_directed_fix_line(line: str) -> bool:
     """Whether a line is part of the ``--directed`` propagation fix (#1392).
 
     The monolith runbooks built every graph undirected, so a ``--directed`` run
-    silently collapsed reciprocal A<->B edges. Every ``build_from_json(...)`` call
+    silently collapsed reciprocal A<->B edges. Every ``build_from_extraction(...)`` call
     now threads ``directed=IS_DIRECTED`` and a prose line tells the agent to
     substitute it like ``INPUT_PATH``. Both the old bare call (removed) and the
     new threaded call (added) match here, plus the substitution instruction.
     """
     return (
-        "build_from_json(" in line and "import" not in line
+        "build_from_extraction(" in line and "import" not in line
     ) or "directed=IS_DIRECTED" in line or (
         "IS_DIRECTED" in line and "Substitute it everywhere" in line
     )
@@ -809,7 +809,7 @@ def _is_cache_unlink_fix_line(line: str) -> bool:
 def _is_zero_node_guard_fix_line(line: str) -> bool:
     """Whether a line is part of the zero-node / shrink-guard ordering fix (#1392).
 
-    Step 4 wrote GRAPH_REPORT.md, graph.json and the analysis sidecar *before*
+    Step 4 wrote graph outputs and the analysis sidecar *before*
     the zero-node guard, so an empty extraction clobbered a good graph; and the
     report was written even when ``to_json`` refused to shrink (#479). The guard
     now runs before any write and the report/analysis are gated on ``to_json``.
@@ -823,11 +823,11 @@ def _is_zero_node_guard_fix_line(line: str) -> bool:
         or s == "raise SystemExit(1)"
         or "to_json(G, communities," in line
         or s == "if not wrote:"
-        or "refused to shrink graphify-out/graph.json" in line
+        or "refused to shrink the active graph" in line
         or "Guard BEFORE any write" in line
         or "GRAPH_REPORT.md / analysis sidecar" in line
         or "Persist the graph first" in line
-        or "to_json refuses to shrink an existing graph.json" in line
+        or "persistence refuses to shrink an existing graph" in line
         or "report describing a graph we did not write" in line
     )
 
@@ -964,7 +964,7 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
         if marker not in body:
             problems.append(f"[{platform.key}] native monolith is missing {marker!r}")
     folded = body.casefold()
-    for removed in ("networkx", "graspologic", "graph.json", "build_from_json", "to_json("):
+    for removed in ("networkx", "graspologic", "graph.json", "to_json("):
         if removed in folded:
             problems.append(f"[{platform.key}] native monolith retains removed term {removed!r}")
     return problems

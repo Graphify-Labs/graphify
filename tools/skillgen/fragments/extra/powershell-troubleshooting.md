@@ -2,10 +2,10 @@
 
 ### Windows support
 
-The embedded Helix runtime is temporarily unsupported on Windows. Use macOS or Linux, including a Linux CI runner. Do not install compatibility graph libraries as a fallback.
+Use CPython 3.10 or 3.12 on native Windows x86_64 and install Graphify normally with pip or uv. The exact public `helix-db-embedded` version must provide a `win_amd64` wheel; do not substitute WSL, a source build, a downloaded DLL, or a compatibility graph library.
 
 ### PowerShell 5.1: Vertical scrolling stops working
 
-This former native-Windows workaround is no longer applicable while Windows is unsupported. Run Graphify in a supported macOS or Linux environment.
+Use Windows Terminal or PowerShell 7 when possible. Graphify does not patch terminal modes or load a helper DLL.
 
 ---
