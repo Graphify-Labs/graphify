@@ -371,7 +371,7 @@ def _query(args: list[str]) -> None:
         question,
         native_query=loaded.query,
         mode=mode,
-        depth=3,
+        depth=2,
         token_budget=budget,
         context_filters=filters,
         learning_overlay=(

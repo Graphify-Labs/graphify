@@ -1423,7 +1423,7 @@ def test_rebuild_code_does_not_update_root_marker_when_write_is_refused(tmp_path
 
         app.write_text("def after():\n    return 2\n", encoding="utf-8")
         monkeypatch.setattr(
-            "graphify.build.build_from_extraction",
+            "graphify.build.build_unclustered_extraction",
             lambda *args, **kwargs: GraphBuildData(),
         )
         assert watch_mod._rebuild_code(
@@ -1970,7 +1970,8 @@ def test_rebuild_code_incremental_preserves_concept_only_semantic_doc_nodes_and_
     )
 
 
-def test_rebuild_code_quick_scans_doc_without_semantic_nodes(tmp_path):
+@pytest.mark.parametrize("extension", [".md", ".mdx", ".qmd"])
+def test_rebuild_code_quick_scans_doc_without_semantic_nodes(tmp_path, extension):
     """#09b33b7 guard: a doc with NO semantic layer still gets the AST
     quick-scan so no-LLM corpora keep their heading structure — #1915's
     semantic-supersedes-AST rule must not regress the fallback."""
@@ -1979,7 +1980,9 @@ def test_rebuild_code_quick_scans_doc_without_semantic_nodes(tmp_path):
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     (corpus / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    (corpus / "notes.md").write_text("# Alpha\n\n## Beta\n", encoding="utf-8")
+    (corpus / f"notes{extension}").write_text(
+        "# Alpha\n\n## Beta\n", encoding="utf-8"
+    )
 
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
     graph_path = corpus / "graphify-out" / "graph.helix"
@@ -1991,6 +1994,29 @@ def test_rebuild_code_quick_scans_doc_without_semantic_nodes(tmp_path):
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
     ids = {n["id"] for n in _read_graph(graph_path)["nodes"]}
     assert {"notes", "notes_alpha", "notes_beta"} <= ids
+
+
+def test_rebuild_code_allows_detected_sources_that_produce_no_topology(tmp_path):
+    """A zero-node config input must not trip the live-topology shrink guard."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    (corpus / ".coderabbit.yml").write_text(
+        "reviews:\n  auto_review:\n    enabled: false\n", encoding="utf-8"
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.helix"
+    with HelixEmbeddedStore(graph_path, read_only=True) as store:
+        incremental = store.read_state()["incremental"]
+    assert ".coderabbit.yml" in incremental["files"]
+    assert ".coderabbit.yml" not in incremental["topology_sources"]
+    assert "app.py" in incremental["topology_sources"]
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    assert "run()" in {node["label"] for node in _read_graph(graph_path)["nodes"]}
 
 
 def test_rebuild_code_polluted_graph_self_heals_on_full_rebuild(tmp_path):
