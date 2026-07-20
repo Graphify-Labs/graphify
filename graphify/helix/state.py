@@ -15,7 +15,11 @@ def new_state(**overrides: Any) -> dict[str, Any]:
         "build": {},
         "communities": [],
         "analysis": {},
-        "incremental": {"files": {}, "extractor_state": {}},
+        "incremental": {
+            "files": {},
+            "extractor_state": {},
+            "topology_sources": [],
+        },
         "learning": {},
         "semantic": {"used": False},
     }

@@ -35,6 +35,27 @@ _WATCHED_EXTENSIONS = CODE_EXTENSIONS | DOC_EXTENSIONS | PAPER_EXTENSIONS | IMAG
 _CODE_EXTENSIONS = CODE_EXTENSIONS
 
 
+def _topology_sources(build_data) -> list[str]:
+    """Return normalized source files that contributed native topology."""
+    sources: set[str] = set()
+
+    def add(attributes) -> None:
+        source = attributes.get("source_file")
+        if source:
+            sources.add(str(source).replace("\\", "/"))
+
+    for node in build_data.nodes:
+        add(node.attributes)
+    for edge in build_data.edges:
+        add(edge.attributes)
+    hyperedges = build_data.attributes.get("hyperedges", [])
+    if isinstance(hyperedges, list):
+        for hyperedge in hyperedges:
+            if isinstance(hyperedge, dict):
+                add(hyperedge)
+    return sorted(sources)
+
+
 def _queue_pending(out_dir: Path, changed_paths: list[Path]) -> None:
     """Append an incremental change set for the active lock holder to drain."""
     if not changed_paths:
@@ -352,7 +373,7 @@ def _rebuild_code(
 
     try:
         from graphify.analyze import god_nodes, suggest_questions, surprising_connections
-        from graphify.build import build_from_extraction
+        from graphify.build import build_from_extraction, build_unclustered_extraction
         from graphify.cluster import cluster, score_all
         from graphify.cache import check_semantic_cache, save_semantic_cache
         from graphify.detect import detect
@@ -448,6 +469,7 @@ def _rebuild_code(
 
         previous_state = new_state()
         loaded = None
+        had_existing_generation = False
         existing_source_root = source_root
         marker = out / ".graphify_root"
         saved_root = Path(".")
@@ -467,12 +489,17 @@ def _rebuild_code(
                 # ordinary public writer so Helix can complete any required
                 # embedded-format migration before Graphify takes a snapshot.
                 with HelixEmbeddedStore(store_path) as existing_store:
-                    loaded = existing_store.load()
-                    previous_state = copy.deepcopy(dict(loaded.state))
+                    if no_cluster:
+                        previous_state = copy.deepcopy(existing_store.read_state())
+                        had_existing_generation = True
+                    else:
+                        loaded = existing_store.load()
+                        previous_state = copy.deepcopy(dict(loaded.state))
+                        had_existing_generation = True
             except RuntimeError as exc:
                 if "no active generation" not in str(exc):
                     raise
-            if loaded is not None:
+            if had_existing_generation:
                 stored_files = previous_state.get("incremental", {}).get("files", {})
                 stored_sources = (
                     [str(source) for source in stored_files]
@@ -547,7 +574,7 @@ def _rebuild_code(
                 if any(key.endswith(suffix) for suffix in deleted_suffixes):
                     del cache_state[key]
 
-        build_root = existing_source_root if loaded is not None else source_root
+        build_root = existing_source_root if had_existing_generation else source_root
 
         def cached_source_paths(kind_prefix: str) -> list[Path]:
             paths: dict[str, Path] = {}
@@ -707,20 +734,22 @@ def _rebuild_code(
             "input_tokens": ast_result.get("input_tokens", 0) + semantic_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + semantic_result.get("output_tokens", 0),
         }
-        build_data = build_from_extraction(result, root=build_root)
-        if loaded is not None:
-            previous_files = previous_state.get("incremental", {}).get("files", {})
+        build_data = (
+            build_unclustered_extraction(result, root=build_root)
+            if no_cluster
+            else build_from_extraction(result, root=build_root)
+        )
+        if had_existing_generation:
+            previous_topology_sources = previous_state.get("incremental", {}).get(
+                "topology_sources", []
+            )
             expected_sources = {
-                str(path).replace("\\", "/")
-                for path in previous_files
-                if isinstance(path, str)
-                and (build_root / path).is_file()
-            } if isinstance(previous_files, dict) else set()
-            candidate_sources = {
-                str(node.attributes.get("source_file", "")).replace("\\", "/")
-                for node in build_data.nodes
-                if node.attributes.get("source_file")
-            }
+                str(source).replace("\\", "/")
+                for source in previous_topology_sources
+                if isinstance(source, str)
+                and (build_root / source).is_file()
+            } if isinstance(previous_topology_sources, list) else set()
+            candidate_sources = set(_topology_sources(build_data))
             missing_live_sources = expected_sources - candidate_sources
             if missing_live_sources and not force:
                 sample = ", ".join(sorted(missing_live_sources)[:5])
@@ -757,9 +786,14 @@ def _rebuild_code(
                 communities = cluster(graph)
                 cohesion = score_all(graph, communities)
                 labels = _community_labels(graph, communities)
-            gods = god_nodes(graph)
-            surprises = surprising_connections(graph, communities)
-            questions = suggest_questions(graph, communities, labels)
+            if no_cluster:
+                gods = []
+                surprises = []
+                questions = []
+            else:
+                gods = god_nodes(graph)
+                surprises = surprising_connections(graph, communities)
+                questions = suggest_questions(graph, communities, labels)
             state = copy.deepcopy(previous_state)
             state["build"] = {
                 "helix_python_version": HELIX_PYTHON_VERSION,
@@ -791,8 +825,10 @@ def _rebuild_code(
                     )
                     for confidence in ("EXTRACTED", "INFERRED", "AMBIGUOUS")
                 },
-                "community_summaries": community_summaries(
-                    graph, communities, labels
+                "community_summaries": (
+                    []
+                    if no_cluster
+                    else community_summaries(graph, communities, labels)
                 ),
                 "report_inputs": {
                     "detection": detection,
@@ -817,6 +853,7 @@ def _rebuild_code(
                     "mode": "deep" if deep_mode else "semantic" if semantic_targets else "ast",
                     "backend": selected_backend if semantic_targets else None,
                 },
+                "topology_sources": _topology_sources(build_data),
                 "extraction_cache": cache_state,
             }
             state["semantic"] = {
@@ -833,8 +870,32 @@ def _rebuild_code(
         with HelixEmbeddedStore(
             store_path, retain_rollback=retain_rollback
         ) as store:
-            topology_unchanged = loaded is not None and store.topology_matches(build_data)
-            if topology_unchanged:
+            topology_unchanged = (
+                had_existing_generation and store.topology_matches(build_data)
+            )
+            if no_cluster:
+                (
+                    communities,
+                    cohesion,
+                    labels,
+                    gods,
+                    surprises,
+                    questions,
+                    state,
+                ) = analyze_generation(
+                    build_data, reuse_communities=topology_unchanged
+                )
+                if topology_unchanged:
+                    store.replace_state(
+                        state,
+                        previous_state=previous_state,
+                    )
+                    print("[graphify watch] No code-graph topology changes detected.")
+                else:
+                    store.save_generation(build_data, state)
+                graph_node_count = build_data.node_count
+                graph_edge_count = build_data.edge_count
+            elif topology_unchanged:
                 assert loaded is not None
                 graph = loaded.graph
                 (
@@ -866,6 +927,27 @@ def _rebuild_code(
                     ) = analyze_generation(graph)
                     activated = store.activate_staged(staged, state)
                     graph = activated.graph
+
+        if no_cluster:
+            # Reopen the activated store through the ordinary public reader and
+            # verify its generation counts before reporting success.
+            with HelixEmbeddedStore(store_path, read_only=True) as reopened:
+                reopened_counts = reopened.verify_counts()
+            if (
+                reopened_counts["nodes"] != graph_node_count
+                or reopened_counts["edges"] != graph_edge_count
+            ):
+                raise RuntimeError(
+                    "activated Helix generation failed reopen verification"
+                )
+            (out / ".graphify_root").write_text(_root_marker, encoding="utf-8")
+            (out / "needs_update").unlink(missing_ok=True)
+            print(
+                f"[graphify watch] Rebuilt (no clustering): {graph_node_count} nodes, "
+                f"{graph_edge_count} edges"
+            )
+            print(f"[graphify watch] graph.helix updated in {out}")
+            return True
 
         report = generate(
             graph, communities, cohesion, labels, gods, surprises, detection,
