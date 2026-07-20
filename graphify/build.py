@@ -324,6 +324,127 @@ def dedupe_edges(edges: list[dict]) -> list[dict]:
     return out
 
 
+def build_unclustered_extraction(
+    extraction: dict,
+    *,
+    root: str | Path | None = None,
+) -> GraphBuildData:
+    """Preserve the historical ``--no-cluster`` multigraph semantics.
+
+    The v8 fast path wrote the deduplicated extraction records directly and
+    consumers rehydrated them as an undirected multigraph. Rehydration also
+    created empty external/stdlib endpoint nodes for otherwise dangling import
+    edges. Building a simple graph here silently collapsed relation-distinct
+    parallel edges and discarded those endpoints, so keep the raw topology in
+    the transient DTO and let Helix persist it natively.
+    """
+    build_root = str(Path(root).resolve()) if root else None
+    raw_nodes = dedupe_nodes(list(extraction.get("nodes", [])))
+    raw_edges = dedupe_edges(
+        list(extraction.get("edges", extraction.get("links", [])))
+    )
+
+    node_attrs: dict[object, dict[str, Any]] = {}
+    for raw in raw_nodes:
+        if not isinstance(raw, dict) or "id" not in raw:
+            continue
+        node_id = raw["id"]
+        try:
+            hash(node_id)
+        except TypeError:
+            continue
+        attrs = {key: value for key, value in raw.items() if key != "id"}
+        if "source_file" in attrs:
+            attrs["source_file"] = _norm_source_file(
+                attrs["source_file"], build_root
+            )
+        node_attrs[node_id] = attrs
+
+    # Match the historical v8 multigraph loader's automatic per-pair integer keys. Explicit
+    # keys overwrite the same pair/key record, while unkeyed records receive
+    # the next unused integer for that undirected pair.
+    used_keys: dict[frozenset[object], set[object]] = {}
+    edge_by_identity: dict[tuple[frozenset[object], object], EdgeData] = {}
+    for raw in raw_edges:
+        if not isinstance(raw, dict):
+            continue
+        source = raw.get("source", raw.get("from"))
+        target = raw.get("target", raw.get("to"))
+        try:
+            hash(source)
+            hash(target)
+        except TypeError:
+            continue
+        if source is None or target is None:
+            continue
+        node_attrs.setdefault(source, {})
+        node_attrs.setdefault(target, {})
+        pair = frozenset((source, target))
+        pair_keys = used_keys.setdefault(pair, set())
+        if "key" in raw:
+            key = raw["key"]
+            try:
+                hash(key)
+            except TypeError:
+                continue
+        else:
+            key = len(pair_keys)
+            while key in pair_keys:
+                key += 1
+        pair_keys.add(key)
+        attrs = {
+            attr: value
+            for attr, value in raw.items()
+            if attr
+            not in {"source", "target", "from", "to", "key", "target_file"}
+        }
+        relation = attrs.get("relation")
+        if not isinstance(relation, str) or not relation:
+            attrs["relation"] = "related_to"
+        if "source_file" in attrs:
+            attrs["source_file"] = _norm_source_file(
+                attrs["source_file"], build_root
+            )
+        edge_by_identity[(pair, key)] = EdgeData(source, target, attrs, key)
+
+    raw_hyperedges = extraction.get("hyperedges", [])
+    hyperedges = []
+    if isinstance(raw_hyperedges, list):
+        for raw in raw_hyperedges:
+            if not isinstance(raw, dict):
+                hyperedges.append(raw)
+                continue
+            record = dict(raw)
+            if "source_file" in record:
+                record["source_file"] = _norm_source_file(
+                    record["source_file"], build_root
+                )
+            hyperedges.append(record)
+    graph_attributes = (
+        {"hyperedges": list(hyperedges)}
+        if hyperedges
+        else {}
+    )
+    reserved = {
+        "directed",
+        "multigraph",
+        "graph",
+        "nodes",
+        "edges",
+        "links",
+        "hyperedges",
+    }
+    return GraphBuildData(
+        kind="multigraph",
+        nodes=[NodeData(node_id, attrs) for node_id, attrs in node_attrs.items()],
+        edges=list(edge_by_identity.values()),
+        attributes=graph_attributes,
+        extras={
+            key: value for key, value in extraction.items() if key not in reserved
+        },
+    )
+
+
 def _old_file_stems(rel: Path) -> list[str]:
     """Pre-migration stem forms a semantic fragment may have used for ``rel``.
 

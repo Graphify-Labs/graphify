@@ -48,7 +48,8 @@ _SEARCH_TEXT = "search_text"
 _WRITER_LOCK_FILE = ".graphify-writer.lock"
 _WRITER_LOCK_TIMEOUT_SECONDS = 120.0
 _WRITE_CHUNK_SIZE = 1_000
-_STATE_WRITE_CHUNK_SIZE = 64
+_STAGED_EDGE_WRITE_CHUNK_SIZE = 2_000
+_STATE_WRITE_CHUNK_SIZE = 256
 DEFAULT_MAX_NODES = 1_000_000
 DEFAULT_MAX_EDGES = 5_000_000
 DEFAULT_PROJECT_STORE = Path("graphify-out/graph.helix")
@@ -1625,11 +1626,11 @@ class HelixEmbeddedStore:
                 "embedded Helix staged node count does not match the input graph"
             )
 
-        for offset in range(0, len(edges), _WRITE_CHUNK_SIZE):
+        for offset in range(0, len(edges), _STAGED_EDGE_WRITE_CHUNK_SIZE):
             batch = self._helix.write_batch()
             edge_returned = ""
             for local_index, (source, target, key, identity, relation, attrs) in enumerate(
-                edges[offset : offset + _WRITE_CHUNK_SIZE]
+                edges[offset : offset + _STAGED_EDGE_WRITE_CHUNK_SIZE]
             ):
                 index = offset + local_index
                 edge_returned = f"edge_{local_index}"
@@ -2336,22 +2337,45 @@ class HelixEmbeddedStore:
         return payload
 
     def _verify_generation_counts(self, generation: str) -> dict[str, Any]:
-        """Verify one staged generation without reconstructing it in Python."""
+        """Verify one staged generation with bounded native count projections."""
         metadata = self._metadata(generation)
         self._validate_metadata(metadata)
-        native = self.native_graph(generation, metadata=metadata)
-        state_rows = self._read_state_rows(generation, metadata=metadata)
-        expected_state = metadata.get("state_record_count")
-        if not isinstance(expected_state, int) or len(state_rows) != expected_state:
+        predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
+        counts = self._query(
+            self._helix.read_batch()
+            .var_as(
+                "nodes",
+                self._helix.g()
+                .n_with_label_where(_NODE_LABEL, predicate)
+                .count(),
+            )
+            .var_as("edges", self._helix.g().e_where(predicate).count())
+            .var_as(
+                "state_records",
+                self._helix.g()
+                .n_with_label_where(_STATE_LABEL, predicate)
+                .count(),
+            )
+            .returning(["nodes", "edges", "state_records"])
+        )
+        if not isinstance(counts, dict):
+            raise RuntimeError("embedded Helix count verification returned no result")
+        expected = {
+            "nodes": metadata.get("node_count"),
+            "edges": metadata.get("edge_count"),
+            "state_records": metadata.get("state_record_count"),
+        }
+        if any(
+            not isinstance(expected[name], int) or counts.get(name) != expected[name]
+            for name in expected
+        ):
             raise RuntimeError(
-                "embedded Helix durable state failed count verification: "
-                f"expected {expected_state!r}, read {len(state_rows)}"
+                "embedded Helix generation failed count verification: "
+                f"expected {expected!r}, read {counts!r}"
             )
         return {
             "schema_version": _SCHEMA_VERSION,
-            "nodes": native.node_count,
-            "edges": native.edge_count,
-            "state_records": len(state_rows),
+            **counts,
             "checksum": metadata.get("checksum"),
         }
 

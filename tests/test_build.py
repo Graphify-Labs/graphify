@@ -1,6 +1,15 @@
 """Transient DTO construction and native incremental merge tests."""
 
-from graphify.build import build, build_from_extraction, build_merge, dedupe_edges, dedupe_nodes
+from graphify.build import (
+    build,
+    build_from_extraction,
+    build_merge,
+    build_unclustered_extraction,
+    dedupe_edges,
+    dedupe_nodes,
+)
+
+
 def _attrs(graph, node_id):
     return next(node.attributes for node in graph.nodes if node.id == node_id)
 
@@ -73,6 +82,33 @@ def test_parallel_relations_and_self_loop_survive():
     assert graph.kind == "multidigraph"
     assert graph.edge_count == 3
     assert {edge.key for edge in graph.edges} == {"call", "use", "self"}
+
+
+def test_unclustered_build_preserves_parallel_and_external_edges():
+    graph = build_unclustered_extraction({
+        "nodes": [{"id": "a"}, {"id": "b"}],
+        "edges": [
+            {"source": "a", "target": "b", "relation": "calls"},
+            {"source": "a", "target": "b", "relation": "imports"},
+            {"source": "b", "target": "a", "relation": "calls"},
+            {"source": "a", "target": "external", "relation": "imports"},
+            {"source": "a", "target": "b", "relation": "calls"},
+        ],
+    })
+
+    assert graph.kind == "multigraph"
+    assert {node.id for node in graph.nodes} == {"a", "b", "external"}
+    assert graph.edge_count == 4
+    assert [edge.key for edge in graph.edges[:3]] == [0, 1, 2]
+    assert {
+        (edge.source, edge.target, edge.attributes["relation"])
+        for edge in graph.edges
+    } == {
+        ("a", "b", "calls"),
+        ("a", "b", "imports"),
+        ("b", "a", "calls"),
+        ("a", "external", "imports"),
+    }
 
 
 def test_hyperedges_prune_dangling_members():
