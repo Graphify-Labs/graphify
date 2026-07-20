@@ -19,13 +19,13 @@
 graphify-out/
 ├── graph.html       可交互图谱：可点节点、搜索、按社区过滤
 ├── GRAPH_REPORT.md  God nodes、意外连接、建议提问
-├── graph.json       持久化图谱：数周后仍可查询，无需重新读原始文件
+├── graph.helix       持久化图谱：数周后仍可查询，无需重新读原始文件
 └── cache/           SHA256 缓存：重复运行时只处理变更过的文件
 ```
 
 ## 工作原理
 
-graphify 分两轮执行。第一轮是确定性的 AST 提取，对代码文件做结构分析（类、函数、导入、调用图、docstring、解释性注释），这一轮不需要 LLM。第二轮会并行调用 Claude 子代理处理文档、论文和图片，从中提取概念、关系和设计动机。最后把两边结果合并到一个 NetworkX 图里，用 Leiden 社区发现算法做聚类，并导出成可交互 HTML、可查询 JSON，以及一份人类可读的审计报告。
+graphify 分两轮执行。第一轮是确定性的 AST 提取，对代码文件做结构分析（类、函数、导入、调用图、docstring、解释性注释），这一轮不需要 LLM。第二轮会并行调用 Claude 子代理处理文档、论文和图片，从中提取概念、关系和设计动机。最后把两边结果合并到一个 Helix 图里，用 Leiden 社区发现算法做聚类，并导出成可交互 HTML、可查询 JSON，以及一份人类可读的审计报告。
 
 **聚类是基于图拓扑完成的，不依赖 embeddings。** Leiden 按边密度发现社区。Claude 抽取出的语义相似边（`semantically_similar_to`，标记为 `INFERRED`）本来就存在于图中，所以会直接影响社区划分。图结构本身就是相似性信号，不需要额外的 embedding 步骤，也不需要向量数据库。
 
@@ -93,7 +93,7 @@ Codex 用户还需要在 `~/.codex/config.toml` 的 `[features]` 下打开 `mult
 
 常驻 hook 会优先暴露 `GRAPH_REPORT.md` —— 这是一页式总结，包含 god nodes、社区结构和意外连接。你的助手在搜索文件前会先读它，因此会按结构导航，而不是按关键字乱搜。这已经能覆盖大部分日常问题。
 
-`/graphify query`、`/graphify path` 和 `/graphify explain` 会更深入：它们会逐跳遍历底层 `graph.json`，追踪节点之间的精确路径，并展示边级别细节（关系类型、置信度、源位置）。当你想从图谱里精确回答某个问题，而不仅仅是获得整体感知时，就该用这些命令。
+`/graphify query`、`/graphify path` 和 `/graphify explain` 会更深入：它们会逐跳遍历底层 `graph.helix`，追踪节点之间的精确路径，并展示边级别细节（关系类型、置信度、源位置）。当你想从图谱里精确回答某个问题，而不仅仅是获得整体感知时，就该用这些命令。
 
 可以这样理解：常驻 hook 是先给助手一张地图，`/graphify` 这几个命令则是让它沿着地图精确导航。
 
@@ -204,7 +204,7 @@ graphify trae-cn uninstall
 | graphify 源码 + Transformer 论文 | 4 | **5.4x** | [`worked/mixed-corpus/`](worked/mixed-corpus/) |
 | httpx（合成 Python 库） | 6 | ~1x | [`worked/httpx/`](worked/httpx/) |
 
-Token 压缩效果会随着语料规模增大而更明显。6 个文件本来就塞得进上下文窗口，所以 graphify 在这种场景里的价值更多是结构清晰度，而不是 token 压缩。到了 52 个文件（代码 + 论文 + 图片）这种规模，就能做到 71x+。每个 `worked/` 目录里都带了原始输入和真实输出（`GRAPH_REPORT.md`、`graph.json`），你可以自己跑一遍核对数字。
+Token 压缩效果会随着语料规模增大而更明显。6 个文件本来就塞得进上下文窗口，所以 graphify 在这种场景里的价值更多是结构清晰度，而不是 token 压缩。到了 52 个文件（代码 + 论文 + 图片）这种规模，就能做到 71x+。每个 `worked/` 目录里都带了原始输入和真实输出（`GRAPH_REPORT.md`、`graph.helix`），你可以自己跑一遍核对数字。
 
 ## 隐私
 
@@ -212,7 +212,7 @@ graphify 会把文档、论文和图片的内容发送给你所用 AI 编码助�
 
 ## 技术栈
 
-NetworkX + Leiden（graspologic）+ tree-sitter + vis.js。语义提取由 Claude（Claude Code）、GPT-4（Codex）或你当前平台所运行的模型完成。不需要 Neo4j，不需要 server，整体是纯本地运行。
+Helix + Leiden（native Leiden）+ tree-sitter + vis.js。语义提取由 Claude（Claude Code）、GPT-4（Codex）或你当前平台所运行的模型完成。不需要 Neo4j，不需要 server，整体是纯本地运行。
 
 <details>
 <summary>贡献</summary>

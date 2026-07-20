@@ -1,0 +1,33 @@
+# Production dependencies. Keep synchronized with pyproject.toml.
+# Public Helix SDK and its matching embedded runtime.
+helix-db==0.2.0b3
+helix-db-embedded==0.2.0b3
+defusedxml>=0.7.1
+numpy>=1.21
+rapidfuzz>=3.0
+tree-sitter>=0.23.0,<0.26
+tree-sitter-python>=0.23,<0.26
+tree-sitter-javascript>=0.23,<0.26
+tree-sitter-typescript>=0.23,<0.25
+tree-sitter-go>=0.23,<0.26
+tree-sitter-rust>=0.23,<0.25
+tree-sitter-java>=0.23,<0.25
+tree-sitter-groovy>=0.1,<0.3
+tree-sitter-c>=0.23,<0.25
+tree-sitter-cpp>=0.23,<0.25
+tree-sitter-ruby>=0.23,<0.25
+tree-sitter-c-sharp>=0.23,<0.25
+tree-sitter-kotlin>=1.0,<2.0
+tree-sitter-scala>=0.23,<0.27
+tree-sitter-php>=0.23,<0.25
+tree-sitter-swift>=0.7,<0.9
+tree-sitter-lua>=0.2,<0.6
+tree-sitter-zig>=1.0,<2.0
+tree-sitter-powershell>=0.26,<0.28
+tree-sitter-elixir>=0.3,<0.5
+tree-sitter-objc>=3.0,<4.0
+tree-sitter-julia>=0.23,<0.25
+tree-sitter-verilog>=1.0,<2.0
+tree-sitter-fortran>=0.6,<0.8
+tree-sitter-bash>=0.23,<0.27
+tree-sitter-json>=0.23,<0.26

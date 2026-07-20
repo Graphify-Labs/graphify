@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from graphify.extract import extract
 
 
@@ -165,7 +165,7 @@ def test_cpp_godnode_guard_ambiguous_and_unknown_receiver(tmp_path: Path):
 
 
 def test_cpp_resolved_call_survives_build(tmp_path: Path):
-    # The receiver-typed call targets the header-declared method node; build_from_json
+    # The receiver-typed call targets the header-declared method node; build_from_extraction
     # must keep it. The cross-language INFERRED-call guard treats C/C++ as one family,
     # so a `.cpp` -> `.h`-declared-method edge is not pruned (#1547).
     base = tmp_path / "src"
@@ -174,10 +174,11 @@ def test_cpp_resolved_call_survives_build(tmp_path: Path):
     _write(base / "Main.cpp", '#include "Foo.h"\nint main() { Foo f; f.bar(); }\n')
     result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
 
-    g = build_from_json(result)
+    g = build_from_extraction(result)
     cross = [
-        d for _, _, d in g.edges(data=True)
-        if d.get("relation") == "calls" and d.get("confidence") == "INFERRED"
+        edge.attributes for edge in g.edges
+        if edge.attributes.get("relation") == "calls"
+        and edge.attributes.get("confidence") == "INFERRED"
     ]
     assert len(cross) >= 1
 
@@ -246,7 +247,7 @@ def test_objc_godnode_guard_ambiguous_selector(tmp_path: Path):
 
 def test_objc_resolved_calls_survive_build(tmp_path: Path):
     # The cross-file ObjC call must land on a real definition node so
-    # build_from_json keeps it (no dangling target pruned).
+    # build_from_extraction keeps it (no dangling target pruned).
     base = tmp_path / "src"
     _write(base / "Foo.h", "@interface Foo : NSObject\n- (void)doThing;\n@end\n")
     _write(base / "Foo.m", '#import "Foo.h"\n@implementation Foo\n- (void)doThing {}\n@end\n')
@@ -255,9 +256,10 @@ def test_objc_resolved_calls_survive_build(tmp_path: Path):
            '- (void)go {\n  Foo *f = [[Foo alloc] init];\n  [f doThing];\n}\n@end\n')
     result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
 
-    g = build_from_json(result)
+    g = build_from_extraction(result)
     cross = [
-        d for _, _, d in g.edges(data=True)
-        if d.get("relation") == "calls" and d.get("confidence") == "INFERRED"
+        edge.attributes for edge in g.edges
+        if edge.attributes.get("relation") == "calls"
+        and edge.attributes.get("confidence") == "INFERRED"
     ]
     assert len(cross) >= 1

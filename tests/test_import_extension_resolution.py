@@ -5,7 +5,7 @@ imports must resolve to the actual file's node id, not a phantom.
 Before #716, `_import_js` only rewrote `.js → .ts` and `.jsx → .tsx`. Every
 other shape (bare path, `.svelte → .svelte.ts`, `./foo` directory imports)
 produced an id like `..._foo` while the real file's node id was `..._foo_ts`,
-so `build_from_json` dropped the edge as external.
+so `build_from_extraction` dropped the edge as external.
 """
 
 from pathlib import Path

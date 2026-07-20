@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from graphify.extract import extract
 
 
@@ -75,7 +75,7 @@ def test_swift_cross_file_member_calls_have_correct_confidence_and_resolve(tmp_p
     # INFERRED; type-qualified static calls (SessionType.staticMethod(),
     # Singleton.shared.method()) name the receiver type explicitly in source, so
     # they are EXTRACTED, matching the Python qualified-class-method pass (#1533).
-    # All must land on real definition nodes so build_from_json keeps them.
+    # All must land on real definition nodes so build_from_extraction keeps them.
     files = _issue_fixture(tmp_path / "src")
     result = extract(files, cache_root=tmp_path / "cache")
 
@@ -102,10 +102,11 @@ def test_swift_cross_file_member_calls_have_correct_confidence_and_resolve(tmp_p
     assert seen_extracted == extracted_targets
 
     # Edges survive graph construction (no dangling targets pruned).
-    g = build_from_json(result)
+    g = build_from_extraction(result)
     surviving = sum(
-        1 for _, _, d in g.edges(data=True)
-        if d.get("relation") == "calls" and d.get("confidence") in ("INFERRED", "EXTRACTED")
+        1 for edge in g.edges
+        if edge.attributes.get("relation") == "calls"
+        and edge.attributes.get("confidence") in ("INFERRED", "EXTRACTED")
     )
     assert surviving >= 5
 

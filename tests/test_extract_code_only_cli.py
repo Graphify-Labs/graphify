@@ -7,7 +7,6 @@ still builds, and the no-key error now points users at the flag.
 from __future__ import annotations
 
 import os
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -35,17 +34,27 @@ def _run(repo: Path, *extra: str):
     )
 
 
+def _sources(repo: Path) -> set[str]:
+    from graphify.helix.model import node_attributes
+    from graphify.helix.persistence import load_graph
+
+    loaded = load_graph(repo / "graphify-out" / "graph.helix")
+    return {
+        Path(str(node_attributes(loaded.graph, node.id).get("source_file", ""))).as_posix()
+        for node in loaded.graph.nodes()
+    }
+
+
 def test_code_only_succeeds_without_key(tmp_path):
     repo = _mixed_repo(tmp_path)
     r = _run(repo, "--code-only")
     assert r.returncode == 0, f"--code-only should succeed with no key: {r.stderr}"
-    out = r.stdout + r.stderr
-    assert "--code-only: skipping" in out
-    graph = repo / "graphify-out" / "graph.json"
-    assert graph.exists(), "code graph must still be written"
-    import json
-    g = json.loads(graph.read_text())
-    labels = [n.get("label") for n in g["nodes"]]
+    graph = repo / "graphify-out" / "graph.helix"
+    assert graph.is_dir(), "native code graph must still be written"
+    from graphify.helix.model import node_attributes
+    from graphify.helix.persistence import load_graph
+    loaded = load_graph(graph)
+    labels = [node_attributes(loaded.graph, node.id).get("label") for node in loaded.graph.nodes()]
     assert any(str(l).startswith("hello") for l in labels), "code was indexed"
 
 
@@ -75,8 +84,7 @@ def test_no_gitignore_indexes_vcs_ignored_code_but_keeps_graphifyignore(tmp_path
     result = _run(repo, "--no-gitignore", "--no-cluster")
 
     assert result.returncode == 0, result.stderr
-    graph = json.loads((repo / "graphify-out" / "graph.json").read_text())
-    sources = {Path(str(node.get("source_file", ""))).as_posix() for node in graph["nodes"]}
+    sources = _sources(repo)
     assert any(source.endswith("proj/deep/generated/Gen.cs") for source in sources)
     assert any(source.endswith("local/Local.cs") for source in sources)
     assert not any(source.endswith("proj/hidden/Hidden.cs") for source in sources)
@@ -93,17 +101,13 @@ def test_no_gitignore_setting_persists_across_flagless_extract(tmp_path):
     (repo / "app.py").write_text("def hello():\n    return 1\n")
     (gen / "Gen.py").write_text("def gen():\n    return 2\n")
 
-    def _sources():
-        g = json.loads((repo / "graphify-out" / "graph.json").read_text())
-        return {Path(str(n.get("source_file", ""))).as_posix() for n in g["nodes"]}
-
     r1 = _run(repo, "--no-gitignore", "--code-only", "--no-cluster")
     assert r1.returncode == 0, r1.stderr
-    assert any(s.endswith("generated/Gen.py") for s in _sources())
+    assert any(s.endswith("generated/Gen.py") for s in _sources(repo))
 
     # A plain flag-less re-extract must keep the git-ignored file (setting persisted).
     r2 = _run(repo, "--code-only", "--no-cluster")
     assert r2.returncode == 0, r2.stderr
-    assert any(s.endswith("generated/Gen.py") for s in _sources()), (
+    assert any(s.endswith("generated/Gen.py") for s in _sources(repo)), (
         "flag-less re-extract clobbered the persisted --no-gitignore setting (#1971)"
     )

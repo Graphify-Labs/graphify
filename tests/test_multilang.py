@@ -431,18 +431,22 @@ def test_cache_hit_returns_same_result(tmp_path):
     dst = tmp_path / "sample.py"
     dst.write_bytes(src.read_bytes())
 
-    r1 = extract([dst])
-    r2 = extract([dst])
+    cache = {}
+    r1 = extract([dst], cache=cache, root=tmp_path)
+    r2 = extract([dst], cache=cache, root=tmp_path)
+    assert cache
+    assert r1 == r2
     assert len(r1["nodes"]) == len(r2["nodes"])
     assert len(r1["edges"]) == len(r2["edges"])
 
 def test_cache_miss_after_file_change(tmp_path):
     dst = tmp_path / "a.py"
     dst.write_text("def foo(): pass\n")
-    r1 = extract([dst])
+    cache = {}
+    r1 = extract([dst], cache=cache, root=tmp_path)
 
     dst.write_text("def foo(): pass\ndef bar(): pass\n")
-    r2 = extract([dst])
+    r2 = extract([dst], cache=cache, root=tmp_path)
     # bar() should appear in the second result
     labels2 = [n["label"] for n in r2["nodes"]]
     assert any("bar" in l for l in labels2)

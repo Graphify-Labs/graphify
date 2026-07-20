@@ -1,0 +1,131 @@
+{
+  "qualification_date": "2026-07-19",
+  "report_source": "helix_report.pdf (provided artifact)",
+  "method": {
+    "command": "graphify update <corpus> --no-cluster",
+    "llm_environment_removed": [
+      "ANTHROPIC_API_KEY",
+      "MOONSHOT_API_KEY",
+      "OLLAMA_API_KEY",
+      "GEMINI_API_KEY",
+      "GOOGLE_API_KEY",
+      "OPENAI_API_KEY",
+      "DEEPSEEK_API_KEY",
+      "AZURE_OPENAI_API_KEY",
+      "AWS_PROFILE",
+      "AWS_REGION",
+      "AWS_DEFAULT_REGION"
+    ],
+    "timing": "/usr/bin/time -lp",
+    "runs_sequential": true,
+    "peak_rss_blocking": false
+  },
+  "versions": {
+    "python": "3.12.13",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "helix_db": "0.2.0b3",
+    "helix_db_embedded": "0.2.0b3",
+    "graphify_v8_commit": "edec9eabeceeae6aa2375eddb3835efa1a32c0a3",
+    "candidate_base_commit": "17169c0ebcc2e64f54e2504ee2270e6a1cb1dc92"
+  },
+  "corpus": {
+    "name": "erpnext",
+    "repository": "frappe/erpnext",
+    "commit": "ea5c648ab04a2b30c5c238f6cb299c4237ff1c1e"
+  },
+  "topology": {
+    "v8_serialized_nodes": 24889,
+    "v8_serialized_edges": 59142,
+    "v8_loaded_nodes": 25443,
+    "v8_loaded_edges": 59142,
+    "helix_loaded_nodes": 25443,
+    "helix_loaded_edges": 59142,
+    "parity": true,
+    "note": "The v8 no-cluster payload relies on multigraph rehydration to create 554 external endpoint stubs. The candidate now preserves those stubs and every relation-distinct parallel edge natively."
+  },
+  "fresh_build": {
+    "v8_seconds": 41.30,
+    "helix_seconds": 99.15,
+    "helix_over_v8": 2.4007263922518165,
+    "limit": 2.0,
+    "passed": false,
+    "v8_peak_rss_bytes": 1050017792,
+    "helix_peak_rss_bytes": 1630797824
+  },
+  "immediate_update": {
+    "v8_seconds": 40.13,
+    "helix_seconds": 46.65,
+    "helix_over_v8": 1.162471966110142,
+    "limit": 2.0,
+    "passed": true,
+    "helix_topology_unchanged": true,
+    "helix_peak_rss_bytes": 2554691584
+  },
+  "cold_open": {
+    "v8_samples_seconds": [0.317707, 0.328374, 0.343941],
+    "helix_samples_seconds": [7.904627, 7.948525, 8.007312],
+    "v8_median_seconds": 0.328374,
+    "helix_median_seconds": 7.948525,
+    "helix_over_v8": 24.205707516429438,
+    "absolute_limit_seconds": 3.0,
+    "relative_limit": 5.0,
+    "passed": false
+  },
+  "active_store": {
+    "v8_bytes": 34901442,
+    "helix_bytes": 360832137,
+    "helix_over_v8": 10.338602542553973,
+    "limit": 3.0,
+    "passed": false,
+    "retain_rollback": false
+  },
+  "representative_query": {
+    "question": "payment entry reconciliation",
+    "depth": 2,
+    "token_budget": 500,
+    "v8_warm_samples_seconds": [
+      0.900777,
+      0.054018,
+      0.050583,
+      0.049234,
+      0.048877
+    ],
+    "helix_warm_samples_seconds": [
+      4.008484,
+      3.529874,
+      3.519547,
+      3.522045,
+      3.527935
+    ],
+    "v8_steady_median_seconds": 0.0499085,
+    "helix_steady_median_seconds": 3.52499,
+    "absolute_limit_seconds": 0.5,
+    "relative_limit": 2.0,
+    "passed": false,
+    "note": "This is an operational latency probe, not a gold-recall substitute."
+  },
+  "unavailable_report_inputs": {
+    "corpora": ["comfywerk", "agent", "backend", "passport"],
+    "gold_queries": "graphify-bench/queries/*.json",
+    "harnesses": ["bench_helix.py", "bench_inprocess.py"],
+    "raw_results": "helix_bench_results.json",
+    "searched_locations": [
+      "workspace repositories",
+      "provided downloads",
+      "temporary work directories",
+      "GitHub repository/code search",
+      "PR #1993 comments and reviews",
+      "PDF link annotations"
+    ],
+    "effect": "The report's exact five-corpus gold-recall table cannot be reproduced or claimed passing without these non-redistributed inputs."
+  },
+  "merge_ready": false,
+  "blocking_gates": [
+    "fresh build exceeds 2x v8",
+    "cold open exceeds both absolute and relative limits",
+    "active store exceeds 3x v8",
+    "steady query exceeds both absolute and relative limits",
+    "exact report corpora, gold queries, harnesses, and raw results are unavailable",
+    "public helix-db-embedded 0.2.0b3 has no win_amd64 wheel"
+  ]
+}

@@ -25,12 +25,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
-if TYPE_CHECKING:
-    import networkx as nx
-
-from graphify.paths import default_graph_json as _default_graph_json
+from graphify.helix.model import LoadedGraph, graphify_attributes
+from graphify.helix.persistence import DEFAULT_PROJECT_STORE, load_graph
 
 
 # ── ANSI colours ─────────────────────────────────────────────────────────────
@@ -73,7 +71,7 @@ class PRInfo:
     updated_at: datetime
     expected_base: str = "main"  # set by fetch_prs via _detect_default_branch
     worktree_path: str | None = None
-    # Graph impact — populated when graph.json exists
+    # Graph impact — populated when a Helix store exists
     communities_touched: list[int] = field(default_factory=list)
     nodes_affected: int = 0
     files_changed: list[str] = field(default_factory=list)
@@ -161,8 +159,10 @@ def _detect_default_branch(repo: str | None = None) -> str:
     if repo:
         args += ["--repo", repo]
     data = _gh(*args)
-    if data and data.get("defaultBranchRef", {}).get("name"):
-        return data["defaultBranchRef"]["name"]
+    if isinstance(data, dict):
+        branch = data.get("defaultBranchRef")
+        if isinstance(branch, dict) and isinstance(branch.get("name"), str):
+            return branch["name"]
     # Fall back to git symbolic-ref for the current repo
     try:
         result = subprocess.run(
@@ -240,7 +240,7 @@ def fetch_pr_files(number: int, repo: str | None = None) -> list[str]:
         return []
 
 
-# ── Graph-native impact (used by MCP tools — works on nx.Graph directly) ─────
+# ── Graph-native impact (used by MCP tools) ──────────────────────────────────
 
 def _path_match(graph_src: str, pr_file: str) -> bool:
     """True if graph_src and pr_file refer to the same file (path-boundary safe)."""
@@ -249,7 +249,13 @@ def _path_match(graph_src: str, pr_file: str) -> bool:
     return graph_src.endswith("/" + pr_file) or pr_file.endswith("/" + graph_src)
 
 
-def compute_pr_impact(files: list[str], G: "nx.Graph") -> tuple[list[int], int]:
+def compute_pr_impact(
+    files: list[str],
+    G: Any,
+    communities: dict[int, list[Any]] | None = None,
+    *,
+    native_query: Any,
+) -> tuple[list[int], int]:
     """Return (communities_touched, nodes_affected) for a set of changed files.
 
     Builds a file→(communities, count) index first so lookup is O(nodes + files)
@@ -258,14 +264,23 @@ def compute_pr_impact(files: list[str], G: "nx.Graph") -> tuple[list[int], int]:
     # Build index once
     file_comms: dict[str, set[int]] = {}
     file_count: dict[str, int] = {}
-    for _, data in G.nodes(data=True):
+    membership = {
+        node_id: cid
+        for cid, members in (communities or {}).items()
+        for node_id in members
+    }
+    for node_id in native_query.candidate_ids(files):
+        node = G.node(node_id)
+        if node is None:
+            continue
+        data = graphify_attributes(node.attributes)
         src = data.get("source_file") or ""
         if not src:
             continue
         if src not in file_comms:
             file_comms[src] = set()
             file_count[src] = 0
-        c = data.get("community")
+        c = membership.get(node_id, data.get("community"))
         if c is not None:
             file_comms[src].add(int(c))
         file_count[src] += 1
@@ -324,27 +339,38 @@ def fetch_worktrees() -> dict[str, str]:
 
 # ── Graph impact analysis ─────────────────────────────────────────────────────
 
-def _load_graph_json(graph_path: Path) -> dict | None:
+def _load_graph_store(graph_path: Path) -> LoadedGraph | None:
     if not graph_path.exists():
         return None
-    from graphify.security import check_graph_file_size_cap
     try:
-        check_graph_file_size_cap(graph_path)
-        return json.loads(graph_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, ValueError):
+        return load_graph(graph_path)
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
-def build_community_labels(data: dict, top_n: int = 4) -> dict[int, list[str]]:
-    """Return {community_id: [top_labels]} extracted from graph node data."""
+def build_community_labels(
+    loaded: LoadedGraph | dict[str, Any], top_n: int = 4
+) -> dict[int, list[str]]:
+    """Return community IDs mapped to representative native node labels."""
     comm_labels: dict[int, list[str]] = defaultdict(list)
-    for node in data.get("nodes", []):
-        c = node.get("community")
-        if c is None:
+    if isinstance(loaded, dict):
+        for node in loaded.get("nodes", []):
+            if not isinstance(node, dict) or node.get("community") is None:
+                continue
+            label = node.get("label") or node.get("id")
+            if label:
+                comm_labels[int(node["community"])].append(str(label))
+        return {cid: labels[:top_n] for cid, labels in comm_labels.items()}
+    for record in loaded.state.get("communities", []):
+        if not isinstance(record, dict) or not isinstance(record.get("id"), int):
             continue
-        label = node.get("label") or node.get("id") or ""
-        if label:
-            comm_labels[int(c)].append(label)
+        cid = record["id"]
+        for node_id in record.get("members", []):
+            node = loaded.graph.node(node_id)
+            if node is None:
+                continue
+            attrs = graphify_attributes(node.attributes)
+            comm_labels[cid].append(str(attrs.get("label") or node_id))
     return {c: labels[:top_n] for c, labels in comm_labels.items()}
 
 
@@ -352,24 +378,9 @@ def attach_graph_impact(
     prs: list[PRInfo], graph_path: Path, repo: str | None = None
 ) -> dict[int, list[str]]:
     """Fetch PR file lists concurrently, compute graph impact, return community labels."""
-    data = _load_graph_json(graph_path)
-    if not data:
+    loaded = _load_graph_store(graph_path)
+    if loaded is None:
         return {}
-
-    # Build file → {community, node_count} index
-    file_to_communities: dict[str, set[int]] = {}
-    file_to_nodes: dict[str, int] = {}
-    for node in data.get("nodes", []):
-        src = node.get("source_file") or ""
-        if not src:
-            continue
-        comm = node.get("community")
-        if src not in file_to_communities:
-            file_to_communities[src] = set()
-            file_to_nodes[src] = 0
-        if comm is not None:
-            file_to_communities[src].add(int(comm))
-        file_to_nodes[src] += 1
 
     # Fetch diffs concurrently — gh pr diff is the bottleneck (network I/O)
     actionable = [pr for pr in prs if pr.status != "WRONG-BASE"]
@@ -387,19 +398,62 @@ def attach_graph_impact(
                 files = []
             pr.files_changed = files
 
-            comms: set[int] = set()
-            nodes = 0
-            matched: set[str] = set()
-            for f in files:
-                for gf, gcomms in file_to_communities.items():
-                    if gf not in matched and _path_match(gf, f):
-                        comms |= gcomms
-                        nodes += file_to_nodes.get(gf, 0)
-                        matched.add(gf)
-            pr.communities_touched = sorted(comms)
-            pr.nodes_affected = nodes
+    # Project only nodes matching changed paths through public Helix predicates.
+    # Chunk the OR terms so a PR touching many files cannot create an unbounded
+    # query plan, then use native point reads for exact path matching.
+    if loaded.query is None:
+        raise RuntimeError("PR impact requires the native Helix query interface")
+    changed_files = sorted({path for pr in actionable for path in pr.files_changed})
+    terms = list(dict.fromkeys(
+        value
+        for path in changed_files
+        for value in (path, Path(path).name)
+        if value
+    ))
+    candidate_ids: list[Any] = []
+    seen_candidates: set[Any] = set()
+    for offset in range(0, len(terms), 64):
+        for node_id in loaded.query.candidate_ids(terms[offset : offset + 64]):
+            if node_id not in seen_candidates:
+                seen_candidates.add(node_id)
+                candidate_ids.append(node_id)
 
-    return build_community_labels(data)
+    file_to_communities: dict[str, set[int]] = {}
+    file_to_nodes: dict[str, int] = {}
+    communities = {
+        record["id"]: list(record.get("members", []))
+        for record in loaded.state.get("communities", [])
+        if isinstance(record, dict) and isinstance(record.get("id"), int)
+    }
+    membership = {node: cid for cid, members in communities.items() for node in members}
+    for node_id in candidate_ids:
+        node = loaded.graph.node(node_id)
+        if node is None:
+            continue
+        attrs = graphify_attributes(node.attributes)
+        src = str(attrs.get("source_file") or "")
+        if not src or not any(_path_match(src, path) for path in changed_files):
+            continue
+        comm = membership.get(node_id)
+        file_to_communities.setdefault(src, set())
+        file_to_nodes[src] = file_to_nodes.get(src, 0) + 1
+        if comm is not None:
+            file_to_communities[src].add(int(comm))
+
+    for pr in actionable:
+        comms: set[int] = set()
+        nodes = 0
+        matched: set[str] = set()
+        for path in pr.files_changed:
+            for graph_file, graph_communities in file_to_communities.items():
+                if graph_file not in matched and _path_match(graph_file, path):
+                    comms |= graph_communities
+                    nodes += file_to_nodes.get(graph_file, 0)
+                    matched.add(graph_file)
+        pr.communities_touched = sorted(comms)
+        pr.nodes_affected = nodes
+
+    return build_community_labels(loaded)
 
 
 # ── Dashboard rendering ───────────────────────────────────────────────────────
@@ -494,7 +548,7 @@ def render_conflicts(
 ) -> None:
     actionable = [p for p in prs if p.base_branch == base and p.communities_touched]
     if not actionable:
-        print(dim("\n  No graph impact data - run with a valid graph.json to detect conflicts.\n"))
+        print(dim("\n  No graph impact data - build a valid graph.helix store to detect conflicts.\n"))
         return
 
     # Build community → [PRs] map
@@ -686,7 +740,7 @@ def cmd_prs(argv: list[str]) -> None:
     do_conflicts = False
     show_wrong_base = False
     pr_number: int | None = None
-    graph_path = Path(_default_graph_json())
+    graph_path = DEFAULT_PROJECT_STORE
 
     i = 0
     while i < len(argv):

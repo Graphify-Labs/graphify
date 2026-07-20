@@ -5,7 +5,7 @@
 # `graphify merge-chunks` command — both ingest untrusted agent-written chunk
 # JSON, and validate_semantic_fragment() rejects malformed/oversized payloads and
 # crafted node/edge IDs before they touch the graph. The primary build/load paths
-# (build_from_json, load_graph_json) deliberately do NOT run this: they must keep
+# Build DTO assembly deliberately does not run this: it must keep
 # loading valid pre-existing graphs whose AST node IDs predate the stricter
 # semantic-ID charset.
 from __future__ import annotations
@@ -83,7 +83,7 @@ def validate_semantic_fragment(fragment: object) -> list[str]:
         _validate_semantic_id(errors, f"nodes[{i}].id", node.get("id"))
         # file_type is intentionally NOT rejected here. It carries no security
         # risk (it can't exhaust memory or escape a directory), and
-        # build_from_json already coerces every value via _FILE_TYPE_SYNONYMS
+        # build_from_extraction already coerces every value via _FILE_TYPE_SYNONYMS
         # (unknown -> "concept", #840). Rejecting a whole chunk over a synonym
         # like "markdown"/"tool"/"framework" that the loader would happily map is
         # pure data loss, so leave file_type normalization to build.

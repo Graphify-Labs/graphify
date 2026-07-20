@@ -870,7 +870,7 @@ def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, st
     A Swift ``import CoreKit`` names a module, not a file path, so — unlike the
     file-resolving JS/TS handlers — there is no existing node for the edge to
     point at. The returned ``(id, label)`` pairs let the extractor materialize a
-    ``type=module`` anchor node so the edge survives; without it ``build_from_json``
+    ``type=module`` anchor node so the edge survives; without it ``build_from_extraction``
     prunes every Swift import edge as a dangling/external reference (#1327).
     """
     modules: list[tuple[str, str]] = []
@@ -1192,7 +1192,7 @@ def extract_svelte(path: Path) -> dict:
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         # Source file node ID must match the one _extract_generic creates:
         # _make_id(str(path)) - single arg, no stem prefix. Otherwise the source
-        # endpoint is a phantom node and build_from_json drops the edge (#701).
+        # endpoint is a phantom node and build_from_extraction drops the edge (#701).
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
         for m in _re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
@@ -1219,7 +1219,7 @@ def extract_svelte(path: Path) -> dict:
                     stub_source_file = str(resolved_alias)
                 else:
                     # Bare/scoped import (node_modules) - use last segment;
-                    # build_from_json drops as external if no matching node exists.
+                    # build_from_extraction drops as external if no matching node exists.
                     module_name = raw.split("/")[-1]
                     if not module_name:
                         continue
@@ -2869,7 +2869,7 @@ register_language_resolver(
 # ── Pascal / Delphi extractor ─────────────────────────────────────────────────
 
 
-# Size cap for project XML files we parse with stdlib ElementTree.
+# Size cap for project XML files parsed with defusedxml.
 # Real .csproj/.fsproj/.vbproj/.lpk files are well under 2 MiB; anything
 # larger is either malformed or hostile.
 _PROJECT_XML_MAX_BYTES = 2 * 1024 * 1024
@@ -2878,7 +2878,7 @@ _PROJECT_XML_MAX_BYTES = 2 * 1024 * 1024
 def _project_xml_is_safe(src: bytes) -> bool:
     """Reject XML that declares DTDs or entities.
 
-    Stdlib ``xml.etree.ElementTree`` does not cap entity expansion, so a
+    XML parsing also has an explicit input cap, so a
     crafted project file could trigger a billion-laughs style DoS. External
     entity resolution is already disabled by pyexpat defaults, but rejecting
     ``<!DOCTYPE`` / ``<!ENTITY`` outright is defense in depth.
@@ -2911,7 +2911,7 @@ def extract_lazarus_package(path: Path) -> dict:
     - package --contains--> listed unit
     """
     try:
-        import xml.etree.ElementTree as ET
+        from defusedxml import ElementTree as ET
         src = path.read_bytes()
     except OSError as e:
         return {"nodes": [], "edges": [], "error": str(e)}
@@ -3016,7 +3016,7 @@ def extract_slnx(path: Path) -> dict:
     Project="..."/>`` children. Unlike .sln there are no GUIDs -- projects are
     identified by their path.
     """
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
 
     try:
         src = path.read_bytes()
@@ -3095,7 +3095,7 @@ def extract_slnx(path: Path) -> dict:
 
 def extract_csproj(path: Path) -> dict:
     """Extract packages, project refs, and target framework from a .csproj/.fsproj/.vbproj."""
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
 
     try:
         src = path.read_bytes()
@@ -3586,7 +3586,7 @@ def _xaml_communitytoolkit_members(vm_node: dict) -> tuple[dict[str, dict], list
 
 def extract_xaml(path: Path) -> dict:
     """Extract WPF/XAML structure, bindings, x:Class, and event handler references."""
-    import xml.etree.ElementTree as ET
+    from defusedxml import ElementTree as ET
 
     try:
         src = path.read_bytes()
@@ -4115,43 +4115,22 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     ProcessPoolExecutor.
 
     Args:
-        args: (index, path_str, root_str, cache_location_str) tuple. ``root``
-            anchors hash keys / node ids / the XAML boundary; ``cache_location``
-            is where the cache dir is written, decoupled per #1774. A legacy
-            3-tuple (no cache_location) is still accepted for back-compat.
+        args: ``(index, path_str, root_str)``. Cache lookup and persistence stay
+            in the parent process because the cache is part of Helix state.
 
     Returns:
         (index, result_dict) so results can be placed back in order.
     """
-    if len(args) == 4:
-        idx, path_str, root_str, cache_location_str = args
-    else:  # legacy 3-tuple: location == anchor
-        idx, path_str, root_str = args
-        cache_location_str = root_str
+    idx, path_str, root_str = args[:3]
     path = Path(path_str)
     root = Path(root_str)
-    cache_location = Path(cache_location_str)
     _raise_recursion_limit()
-    bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
-
-    # Check cache first (avoid re-extraction)
-    if not bypass_cache:
-        cached = load_cached(path, root, cache_root=cache_location)
-        if cached is not None:
-            return idx, cached
 
     extractor = _get_extractor(path)
     if extractor is None:
         return idx, {"nodes": [], "edges": []}
 
     result = _safe_extract_with_xaml_root(extractor, path, root)
-    # Never cache a zero-node result for an extractable file. Every supported
-    # source produces at least a file node, so an empty node list is anomalous
-    # (e.g. a transient batch/parallel hiccup). Caching it makes the empty
-    # byte-stable across runs and silently blinds affected/explain to and
-    # through the file (#1666); skipping the write lets a rerun self-heal.
-    if not bypass_cache and "error" not in result and result.get("nodes"):
-        save_cached(path, result, root, cache_root=cache_location)
     return idx, result
 
 
@@ -4161,7 +4140,7 @@ def _extract_parallel(
     root: Path,
     max_workers: int | None,
     total_files: int,
-    cache_location: Path | None = None,
+    cache: dict[str, dict[str, Any]] | None = None,
 ) -> bool:
     """Extract uncached files in parallel using ProcessPoolExecutor.
 
@@ -4198,11 +4177,9 @@ def _extract_parallel(
         max_workers = min(max_workers, 61)
     max_workers = max(max_workers, 1)
 
-    # root anchors hash keys / node ids / XAML boundary; cache_location is where
-    # the cache dir is written (defaults to root when not decoupled) (#1774).
     root_str = str(root)
-    cache_loc_str = str(cache_location if cache_location is not None else root)
-    work_items = [(idx, str(path), root_str, cache_loc_str) for idx, path in uncached_work]
+    work_items = [(idx, str(path), root_str) for idx, path in uncached_work]
+    paths_by_index = {idx: path for idx, path in uncached_work}
 
     done_count = 0
     _PROGRESS_INTERVAL = 100
@@ -4216,6 +4193,13 @@ def _extract_parallel(
                 try:
                     idx, result = future.result()
                     per_file[idx] = result
+                    path = paths_by_index[idx]
+                    if (
+                        path.suffix not in _JS_CACHE_BYPASS_SUFFIXES
+                        and "error" not in result
+                        and result.get("nodes")
+                    ):
+                        save_cached(path, result, root, cache=cache)
                 except Exception as exc:
                     pos = futures[future]
                     print(
@@ -4264,7 +4248,7 @@ def _extract_sequential(
     per_file: list[dict | None],
     root: Path,
     total_files: int,
-    cache_location: Path | None = None,
+    cache: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Extract uncached files sequentially (fallback for small batches)."""
     _PROGRESS_INTERVAL = 100
@@ -4287,7 +4271,7 @@ def _extract_sequential(
         result = _safe_extract_with_xaml_root(extractor, path, root)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666).
         if not bypass_cache and "error" not in result and result.get("nodes"):
-            save_cached(path, result, root, cache_root=cache_location)
+            save_cached(path, result, root, cache=cache)
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:
         # Consistent denominator with the intermediate lines (#1693).
@@ -4305,6 +4289,7 @@ def extract(
     root: Path | None = None,
     parallel: bool = True,
     max_workers: int | None = None,
+    cache: dict[str, dict[str, Any]] | None = None,
 ) -> dict:
     """Extract AST nodes and edges from a list of code files.
 
@@ -4319,14 +4304,13 @@ def extract(
             symbol resolution. Pass the SCAN root whenever the cache lives
             somewhere else (`--out`); without it the anchor falls back to
             cache_root and every scanned file reads as out-of-root (#1941).
-        cache_root: explicit root for graphify-out/cache/ (overrides the
-            inferred common path prefix). Pass Path('.') when running on a
-            subdirectory so the cache stays at ./graphify-out/cache/.
-            Anchors ids/source_file only as a fallback when `root` is unset.
+        cache_root: deprecated compatibility anchor. No filesystem cache is
+            read or written.
         parallel: if True and there are >= _PARALLEL_THRESHOLD uncached files,
             use ProcessPoolExecutor for multi-core extraction.
         max_workers: max subprocess count. Defaults to cpu_count (or the
             value of GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
+        cache: mutable extraction-cache mapping loaded from Helix state.
     """
     paths = [Path(p) for p in paths]
     anchor_root = Path(root) if root is not None else None
@@ -4363,13 +4347,6 @@ def extract(
         root = cache_root
     root = root.resolve()
 
-    # #1774: the cache is an OUTPUT, so when no explicit cache_root is given it is
-    # written under the current working directory — never `root` (the inferred
-    # common parent of the inputs), which would drop graphify-out/ inside a
-    # read-only or foreign corpus. `root` still anchors the content-hash keys,
-    # node ids, symbol resolution, and the XAML project-scan boundary; only the
-    # cache directory's location diverges from it.
-    cache_location = (cache_root if cache_root is not None else Path(".")).resolve()
     total = len(paths)
 
     # Phase 1: separate cached hits from uncached work
@@ -4382,7 +4359,7 @@ def extract(
             continue
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         if not bypass_cache:
-            cached = load_cached(path, root, cache_root=cache_location)
+            cached = load_cached(path, root, cache=cache)
             if cached is not None:
                 per_file[i] = cached
                 continue
@@ -4393,10 +4370,10 @@ def extract(
         ran_parallel = False
         if parallel and len(uncached_work) >= _PARALLEL_THRESHOLD:
             ran_parallel = _extract_parallel(
-                uncached_work, per_file, root, max_workers, total, cache_location
+                uncached_work, per_file, root, max_workers, total, cache
             )
         if not ran_parallel:
-            _extract_sequential(uncached_work, per_file, root, total, cache_location)
+            _extract_sequential(uncached_work, per_file, root, total, cache)
 
     # Fill any remaining None slots (shouldn't happen, but defensive)
     for i in range(total):
@@ -4500,7 +4477,7 @@ def extract(
     _merge_decl_def_classes(all_nodes, all_edges)
 
     # Remap file node IDs from absolute-path-derived to the canonical
-    # {parent_dir}_{stem} spec form so (a) graph.json edge endpoints are stable
+    # {parent_dir}_{stem} spec form so (a) native graph edge endpoints are stable
     # across machines (#502) and (b) AST file nodes match the IDs semantic
     # subagents generate (#1033). Resolve before relativizing so paths passed in
     # relative form still anchor to the (resolved) root.
@@ -4986,7 +4963,7 @@ def extract(
     # Relativize source_file fields so paths are portable across machines (#555).
     # A target OUTSIDE the scan root (an out-of-root ProjectReference/.sln/bash
     # `source`) can't be made relative to root; leaving it absolute leaked the
-    # scan path including the OS username into a committed graph.json (#1899).
+    # scan path including the OS username into a committed native graph (#1899).
     # Fall back to a walk-up relative form, or the bare basename when that would
     # still embed foreign path segments (a far-away or cross-drive target). When
     # the node's id was itself minted from the absolute path, remap it to a
@@ -5038,13 +5015,13 @@ def extract(
 
     # origin_file is an internal disambiguation hint (#1462): the colliding-id pass
     # above reads it to keep same-named cross-file stubs distinct, after which nothing
-    # consumes it. Drop it from the returned nodes so it never ships into graph.json as
+    # consumes it. Drop it from the returned nodes so it never ships into native graph as
     # an absolute, machine-specific path — the same "no absolute paths in output"
     # contract that relativizes source_file just above (#555, #932). The per-file AST
     # cache keeps its own copy, which is what the colliding-id pass reads on a cache hit.
     for n in all_nodes:
         n.pop("origin_file", None)
-        n.pop("_callable", None)  # internal indirect_call marker — never ships to graph.json
+        n.pop("_callable", None)  # internal indirect_call marker — never ships to native graph
 
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction

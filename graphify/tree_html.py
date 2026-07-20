@@ -569,11 +569,22 @@ def write_tree_html(
     # kept for CLI compatibility with the older signature; ignored now
     top_k_edges: int = 0,
 ) -> Path:
-    from graphify.security import check_graph_file_size_cap
-    check_graph_file_size_cap(graph_path)
-    graph = json.loads(graph_path.read_text(encoding="utf-8"))
-    tree = build_tree(graph, root=root, max_children=max_children,
-                      project_label=project_label)
+    from graphify.helix.model import graphify_attributes
+    from graphify.helix.persistence import load_graph
+    from graphify.security import validate_store_path
+
+    loaded = load_graph(validate_store_path(graph_path))
+    tree = build_tree(
+        {
+            "nodes": [
+                {"id": node.id, **graphify_attributes(node.attributes)}
+                for node in loaded.graph.nodes()
+            ]
+        },
+        root=root,
+        max_children=max_children,
+        project_label=project_label,
+    )
     title = f"{tree['name']} — graphify tree viewer"
     header = f"{tree['name']} — Knowledge Graph"
     html = emit_html(tree, title=title, header=header)

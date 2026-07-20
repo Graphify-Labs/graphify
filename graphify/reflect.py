@@ -17,7 +17,7 @@ to "preferred" once corroborated by enough distinct results; one save can't mint
 trusted lesson. When a graph is in hand, source nodes that no longer exist are dropped.
 
 It is deterministic: no LLM, stable sort orders, byte-stable output for a given input
-and a given ``now``. When a graph (`graph.json` + `.graphify_analysis.json`) is available
+and a given ``now``. When a Helix generation is available
 the lessons are also grouped by community label; without it they degrade to a single
 flat section.
 
@@ -39,11 +39,6 @@ from graphify.paths import GRAPHIFY_OUT_NAME
 
 _UNCATEGORIZED = "Uncategorized"
 
-# Derived experiential layer written alongside graph.json (a SIDECAR, kept
-# separate from the durable structural truth in graph.json — no learning_*
-# fields are ever stamped into the graph itself). Read-surface annotations are
-# merged in at display time from this file.
-LEARNING_SIDECAR_NAME = ".graphify_learning.json"
 _LEARNING_SCHEMA_VERSION = 1
 _PROVENANCE_CAP = 5  # most-recent (question, date, outcome) entries per node
 
@@ -159,52 +154,30 @@ def load_memory_docs(memory_dir: Path) -> list[dict[str, Any]]:
 # --- graph / community lookup (optional) ---------------------------------------
 
 
-def _load_node_community(graph_path: Path, analysis_path: Path,
-                         labels_path: Path) -> dict[str, str] | None:
+def _load_node_community(graph_path: Path) -> dict[str, str] | None:
     """Build a lookup from node id AND node label -> community label, or None if the
     graph isn't available.
 
-    Mirrors how `graphify export wiki` reads graph.json + .graphify_analysis.json +
-    .graphify_labels.json. Community membership in the analysis sidecar is keyed by
-    node id, but `save-result` cites nodes by label, so both are mapped — otherwise a
-    cited ``build_from_json()`` never finds its community and every lesson collapses
-    into Uncategorized. Best-effort: any missing/unparseable artifact disables grouping.
+    Community state and topology are read from the same active generation.
     """
-    if not graph_path.exists() or not analysis_path.exists():
-        return None
     try:
-        analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        from graphify.helix.model import graphify_attributes
+        from graphify.helix.persistence import load_graph
+
+        loaded = load_graph(graph_path)
+    except (OSError, RuntimeError, ValueError):
         return None
-    communities = analysis.get("communities", {})
-    if not communities:
-        return None
-    labels: dict[str, str] = {}
-    if labels_path.exists():
-        try:
-            labels = json.loads(labels_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            labels = {}
-    # id -> label from the graph, so a label-form citation resolves to a community too.
-    id_to_label: dict[str, str] = {}
-    try:
-        gdata = json.loads(graph_path.read_text(encoding="utf-8"))
-        for n in gdata.get("nodes", []):
-            if isinstance(n, dict) and n.get("id") is not None and n.get("label") is not None:
-                id_to_label[str(n["id"])] = str(n["label"])
-    except (OSError, ValueError):
-        id_to_label = {}
-    # Sorted cid iteration + setdefault makes any label collision resolve
-    # deterministically (smallest community id wins).
     node_community: dict[str, str] = {}
-    for cid in sorted(communities, key=str):
-        label = labels.get(str(cid)) or labels.get(cid) or f"Community {cid}"
-        for nid in communities[cid]:
-            nid = str(nid)
-            node_community.setdefault(nid, label)
-            nlabel = id_to_label.get(nid)
-            if nlabel is not None:
-                node_community.setdefault(nlabel, label)
+    for record in loaded.state.get("communities", []):
+        if not isinstance(record, dict) or not isinstance(record.get("id"), int):
+            continue
+        label = str(record.get("name") or f"Community {record['id']}")
+        for node_id in record.get("members", []):
+            node_community.setdefault(str(node_id), label)
+            node = loaded.graph.node(node_id)
+            if node is not None:
+                attrs = graphify_attributes(node.attributes)
+                node_community.setdefault(str(attrs.get("label", node_id)), label)
     return node_community
 
 
@@ -214,26 +187,24 @@ def _load_known_nodes(graph_path: Path) -> set[str] | None:
     Used to drop source nodes from lessons once the code they pointed at is gone
     (deleted/renamed) — a stale lesson shouldn't keep getting recommended. Both ids
     and labels are collected because `save-result` records source nodes by their
-    human-readable label (what an agent cites, e.g. ``build_from_json()``), while
-    graph nodes are keyed by id (e.g. ``module_build_from_json``). Matching on either
+    human-readable label (what an agent cites, e.g. ``build_from_extraction()``), while
+    graph nodes are keyed by id (e.g. ``module_build_from_extraction``). Matching on either
     keeps a still-present node and only drops one that survives under neither name —
     indexing ids alone silently dropped every label-form citation (the common case).
     """
     try:
-        data = json.loads(Path(graph_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    nodes = data.get("nodes")
-    if not isinstance(nodes, list):
+        from graphify.helix.model import graphify_attributes
+        from graphify.helix.persistence import load_graph
+
+        graph = load_graph(graph_path).graph
+    except (OSError, RuntimeError, ValueError):
         return None
     known: set[str] = set()
-    for n in nodes:
-        if not isinstance(n, dict):
-            continue
-        if n.get("id") is not None:
-            known.add(str(n["id"]))
-        if n.get("label") is not None:
-            known.add(str(n["label"]))
+    for node in graph.nodes():
+        known.add(str(node.id))
+        attrs = graphify_attributes(node.attributes)
+        if attrs.get("label") is not None:
+            known.add(str(attrs["label"]))
     return known or None
 
 
@@ -525,11 +496,9 @@ def render_lessons_md(agg: dict[str, Any]) -> str:
 
 
 def lessons_fresh(out_path: Path, memory_dir: Path,
-                  graph_path: Path | None = None,
-                  analysis_path: Path | None = None,
-                  labels_path: Path | None = None) -> bool:
+                  graph_path: Path | None = None) -> bool:
     """True if ``out_path`` exists and is at least as new as every input that
-    feeds it (the memory docs, and the graph/sidecars when one is used).
+    feeds it (the memory docs and native store when one is used).
 
     Lets ``graphify reflect --if-stale`` skip a redundant run — e.g. when the git
     post-commit hook just regenerated ``LESSONS.md`` and an agent then runs reflect
@@ -550,7 +519,7 @@ def lessons_fresh(out_path: Path, memory_dir: Path,
                 newest = max(newest, f.stat().st_mtime)
             except OSError:
                 pass
-    for input_path in (graph_path, analysis_path, labels_path):
+    for input_path in (graph_path,):
         if input_path is None:
             continue
         gp = Path(input_path)
@@ -563,8 +532,6 @@ def lessons_fresh(out_path: Path, memory_dir: Path,
 
 def reflect(memory_dir: Path, out_path: Path,
             graph_path: Path | None = None,
-            analysis_path: Path | None = None,
-            labels_path: Path | None = None,
             *,
             now: datetime | None = None,
             half_life_days: float = _DEFAULT_HALF_LIFE_DAYS,
@@ -581,11 +548,7 @@ def reflect(memory_dir: Path, out_path: Path,
     known_nodes = None
     if graph_path is not None:
         graph_path = Path(graph_path)
-        analysis_path = Path(analysis_path) if analysis_path else (
-            graph_path.parent / ".graphify_analysis.json")
-        labels_path = Path(labels_path) if labels_path else (
-            graph_path.parent / ".graphify_labels.json")
-        node_community = _load_node_community(graph_path, analysis_path, labels_path)
+        node_community = _load_node_community(graph_path)
         known_nodes = _load_known_nodes(graph_path)
 
     if now is None:
@@ -599,51 +562,43 @@ def reflect(memory_dir: Path, out_path: Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_lessons_md(agg), encoding="utf-8")
 
-    # Also project a derived experiential sidecar next to graph.json when a graph
-    # is in hand. Best-effort: a sidecar failure must never break LESSONS.md.
+    # Persist the experiential projection inside a new atomic Helix generation.
     if graph_path is not None:
-        try:
-            write_learning_sidecar(agg, Path(graph_path), now=now)
-        except Exception:
-            pass
+        write_learning_state(agg, Path(graph_path), now=now)
 
     return out_path, agg
 
 
-# --- work-memory overlay sidecar ------------------------------------------------
-#
-# A derived, experiential projection of the reflect aggregate, written next to
-# graph.json as ``.graphify_learning.json``. It carries which nodes have proven
-# preferred/tentative/contested, a code fingerprint for staleness detection, and
-# a short provenance trail. graph.json (durable structural truth) is never
-# touched — read surfaces merge this overlay in only at display time.
+# --- work-memory overlay -------------------------------------------------------
 
 
 def _build_id_label_maps(graph_path: Path) -> tuple[dict[str, str], dict[str, list[str]],
                                                     dict[str, dict[str, Any]]]:
-    """From graph.json build:
+    """From an active Helix generation build:
 
     - ``id_set``: id -> id (every node id, so an id-form citation resolves to itself)
     - ``label_to_ids``: label -> [ids] (so a label-form citation can be resolved,
       and ambiguity — one label, many ids — can be detected and skipped)
     - ``node_by_id``: id -> node dict (for source_file lookup)
 
-    Best-effort; an unreadable/garbage graph yields empty maps.
+    Best-effort; an unreadable store yields empty maps.
     """
     id_set: dict[str, str] = {}
     label_to_ids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict[str, Any]] = {}
     try:
-        data = json.loads(Path(graph_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        from graphify.helix.model import graphify_attributes
+        from graphify.helix.persistence import load_graph
+
+        graph = load_graph(graph_path).graph
+    except (OSError, RuntimeError, ValueError):
         return id_set, label_to_ids, node_by_id
-    for n in data.get("nodes", []):
-        if not isinstance(n, dict) or n.get("id") is None:
-            continue
-        nid = str(n["id"])
+    for node in graph.nodes():
+        attrs = graphify_attributes(node.attributes)
+        nid = str(node.id)
         id_set[nid] = nid
-        node_by_id[nid] = n
-        label = n.get("label")
+        node_by_id[nid] = {"id": node.id, **attrs}
+        label = attrs.get("label")
         if label is not None:
             label_to_ids.setdefault(str(label), []).append(nid)
     return id_set, label_to_ids, node_by_id
@@ -668,9 +623,8 @@ def _resolve_canonical_id(cited: str, id_set: dict[str, str],
 def _resolve_source_path(src: str, graph_path: Path) -> Path | None:
     """Locate a node's ``source_file`` on disk, returning an existing file or None.
 
-    ``source_file`` is stored relative to the PROJECT root, but graph.json may
-    live in ``<root>/graphify-out/`` (so its own dir is not the root) or directly
-    at the root (``extract --out .``). Resolve the root in the most-likely order
+    ``source_file`` is stored relative to the project root, while graph.helix
+    normally lives in ``<root>/graphify-out/``. Resolve roots in the most-likely order
     and return the first candidate where the file actually exists, so a defeated
     heuristic or a stale marker can never strand the file (every node would then
     look "changed"). The same search runs at write and read time, so the writer
@@ -678,8 +632,8 @@ def _resolve_source_path(src: str, graph_path: Path) -> Path | None:
 
     Order: the committed ``.graphify_root`` marker (#686/#1423 — authoritative for
     an absolute/elsewhere ``GRAPHIFY_OUT`` override); then the layout-appropriate
-    root *first* — graph.json's parent's parent for the ``graphify-out`` layout,
-    or graph.json's own dir for a flat layout — which avoids matching a same-named
+    root first — graph.helix's parent's parent for the standard layout,
+    or the store's parent for a flat layout — which avoids matching a same-named
     file one directory up; then the other of the two; then the cwd.
     """
     if not src:
@@ -821,24 +775,23 @@ def build_learning_overlay(agg: dict[str, Any], graph_path: Path,
     }
 
 
-def write_learning_sidecar(agg: dict[str, Any], graph_path: Path,
-                           *, now: datetime | None = None) -> Path:
-    """Write ``.graphify_learning.json`` next to ``graph_path`` deterministically.
+def write_learning_state(agg: dict[str, Any], graph_path: Path,
+                         *, now: datetime | None = None) -> Path:
+    """Atomically persist the learning projection with native topology."""
+    import copy
+    from graphify.helix.persistence import HelixEmbeddedStore
 
-    Sorted keys + indent=2 so re-runs on identical input (and a fixed ``now``)
-    are byte-identical. Returns the sidecar path.
-    """
     overlay = build_learning_overlay(agg, graph_path, now=now)
-    sidecar = Path(graph_path).parent / LEARNING_SIDECAR_NAME
-    sidecar.write_text(
-        json.dumps(overlay, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    return sidecar
+    with HelixEmbeddedStore(graph_path) as store:
+        previous_state = store.read_state()
+        state = copy.deepcopy(previous_state)
+        state["learning"] = overlay
+        store.replace_state(state, previous_state=previous_state)
+    return Path(graph_path)
 
 
 def load_learning_overlay(graph_path: Path) -> dict[str, dict[str, Any]]:
-    """Load the sidecar next to ``graph_path`` and return ``{node_id -> entry}``
+    """Load native learning state and return ``{node_id -> entry}``
     with a recomputed ``stale: bool`` per entry. Best-effort -> {} on any error.
 
     Staleness: recompute ``file_hash(source_file)`` and compare to the entry's
@@ -847,10 +800,11 @@ def load_learning_overlay(graph_path: Path) -> dict[str, dict[str, Any]]:
     direction). An entry with no stored fingerprint AND no current file is not
     marked stale (nothing to re-verify).
     """
-    sidecar = Path(graph_path).parent / LEARNING_SIDECAR_NAME
     try:
-        data = json.loads(sidecar.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        from graphify.helix.persistence import load_graph
+
+        data = dict(load_graph(graph_path).state.get("learning", {}))
+    except (OSError, RuntimeError, ValueError):
         return {}
     nodes = data.get("nodes")
     if not isinstance(nodes, dict):

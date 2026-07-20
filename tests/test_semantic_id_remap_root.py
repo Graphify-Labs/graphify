@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.build import _semantic_id_remap, build_from_json
+from graphify.build import _semantic_id_remap, build_from_extraction
 from graphify.extractors.base import _file_stem
 
 
@@ -28,7 +28,7 @@ def test_semantic_id_remap_root_equal_source_file_no_crash():
     assert "some_concept" not in remap
 
 
-def test_build_from_json_with_root_level_concept_node():
+def test_build_from_extraction_with_root_level_concept_node():
     root = "/proj"
     combined = {
         "nodes": [
@@ -39,8 +39,8 @@ def test_build_from_json_with_root_level_concept_node():
         ],
         "edges": [],
     }
-    G = build_from_json(combined, root=root)    # previously crashed here
-    assert G.number_of_nodes() == 2
+    G = build_from_extraction(combined, root=root)    # previously crashed here
+    assert G.node_count == 2
 
 
 def test_normal_semantic_remap_still_works():

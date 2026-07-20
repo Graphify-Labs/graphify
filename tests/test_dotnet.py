@@ -48,7 +48,7 @@ def test_sln_project_dependency():
 def test_sln_solution_folder_ids_are_relative(tmp_path):
     """Solution folders are virtual groupings, not files. Their node ids must be
     derived from the folder name only — never the resolved absolute scan path,
-    which would leak the local username into a committed graph.json (#1789)."""
+    which would leak the local username into a committed graph store (#1789)."""
     sln = tmp_path / "App.sln"
     sln.write_text(
         'Microsoft Visual Studio Solution File, Format Version 12.00\n'

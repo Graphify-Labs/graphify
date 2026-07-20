@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from graphify.extract import extract
 
 
@@ -24,7 +24,7 @@ def _import_edges(result: dict) -> list[dict]:
 
 
 def test_swift_import_resolves_to_module_node(tmp_path: Path):
-    # #1327: `import CoreKit` must anchor to a node, or build_from_json prunes
+    # #1327: `import CoreKit` must anchor to a node, or build_from_extraction prunes
     # the edge as a dangling/external reference.
     core = _write(tmp_path / "Sources/CoreKit/CoreKit.swift", "public struct CoreKit {}\n")
     feature = _write(
@@ -58,7 +58,7 @@ def test_swift_same_module_imported_twice_collapses_to_one_node(tmp_path: Path):
     result = extract([core, a, b], cache_root=tmp_path)
 
     # Each importing file contributes a module-node dict, but they must share a
-    # single id (NOT be split into path-qualified duplicates) so build_from_json
+    # single id (NOT be split into path-qualified duplicates) so build_from_extraction
     # collapses them into one shared node.
     core_modules = _module_nodes(result, "CoreKit")
     module_ids = {n["id"] for n in core_modules}
@@ -75,10 +75,12 @@ def test_swift_import_edges_survive_build(tmp_path: Path):
     b = _write(tmp_path / "Sources/BKit/BKit.swift", "import CoreKit\n")
 
     result = extract([core, a, b], cache_root=tmp_path)
-    G = build_from_json(result, directed=True)
+    G = build_from_extraction(result, directed=True)
 
     import_edges = [
-        (u, v) for u, v, d in G.edges(data=True) if d.get("relation") == "imports"
+        (edge.source, edge.target)
+        for edge in G.edges
+        if edge.attributes.get("relation") == "imports"
     ]
     assert len(import_edges) == 2
     # Both edges land on the same CoreKit module node.

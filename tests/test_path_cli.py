@@ -1,10 +1,8 @@
 """Regression tests for `graphify path` arrow direction (#849)."""
 from __future__ import annotations
-import json
-import networkx as nx
 import pytest
-from networkx.readwrite import json_graph
 import graphify.__main__ as mainmod
+from tests.native_helpers import make_loaded
 
 
 def _write_graph(tmp_path):
@@ -21,9 +19,11 @@ def _write_graph(tmp_path):
              "relation": "calls", "confidence": "EXTRACTED"},
         ],
     }
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(graph_data))
-    return p
+    return make_loaded(
+        tmp_path,
+        nodes=graph_data["nodes"],
+        edges=graph_data["links"],
+    ).store_path
 
 
 def _run(monkeypatch, graph_path, src, tgt, capsys):
@@ -76,9 +76,11 @@ def _write_misranking_graph(tmp_path):
              "relation": "mentions", "confidence": "EXTRACTED"},
         ],
     }
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(graph_data))
-    return p
+    return make_loaded(
+        tmp_path,
+        nodes=graph_data["nodes"],
+        edges=graph_data["links"],
+    ).store_path
 
 
 def test_endpoint_prefers_full_token_match(monkeypatch, tmp_path, capsys):

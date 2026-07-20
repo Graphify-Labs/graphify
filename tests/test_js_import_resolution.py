@@ -410,9 +410,8 @@ def test_ts_dynamic_import_does_not_create_phantom_cycle(tmp_path: Path):
     # `imports_from`. Otherwise two files that reference each other via one static
     # import + one dynamic import are reported as a phantom circular dependency.
     # Regression test for #1241.
-    import networkx as nx
-
     from graphify.analyze import find_import_cycles
+    from tests.native_helpers import graph_from_payload
 
     actions = _write(
         tmp_path / "actions.ts",
@@ -438,15 +437,7 @@ def test_ts_dynamic_import_does_not_create_phantom_cycle(tmp_path: Path):
     assert _has_edge(result, "modal.ts", "actions.ts", "imports_from")
 
     # End to end: the deferred import must not manufacture a file cycle.
-    graph = nx.DiGraph()
-    for node in result["nodes"]:
-        graph.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
-    for edge in result["edges"]:
-        graph.add_edge(
-            edge["source"],
-            edge["target"],
-            **{k: v for k, v in edge.items() if k not in ("source", "target")},
-        )
+    graph = graph_from_payload(result["nodes"], result["edges"], kind="digraph")
     assert find_import_cycles(graph) == []
 
 

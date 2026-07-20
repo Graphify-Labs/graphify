@@ -27,13 +27,13 @@ Sepenuhnya multimodal. Tambahkan kode, PDF, markdown, tangkapan layar, diagram, 
 graphify-out/
 ├── graph.html       graf interaktif — buka di browser mana saja
 ├── GRAPH_REPORT.md  node dewa, koneksi mengejutkan, pertanyaan yang disarankan
-├── graph.json       graf persisten — dapat dikueri berminggu-minggu kemudian
+├── graph.helix       graf persisten — dapat dikueri berminggu-minggu kemudian
 └── cache/           cache SHA256 — pengulangan hanya memproses file yang berubah
 ```
 
 ## Cara Kerja
 
-graphify bekerja dalam tiga tahap. Pertama, tahap AST deterministik mengekstrak struktur dari file kode tanpa LLM. Kemudian file video dan audio ditranskrip secara lokal dengan faster-whisper. Terakhir, sub-agen Claude berjalan secara paralel pada dokumen, makalah, gambar, dan transkripsi. Hasilnya digabungkan ke dalam graf NetworkX, dikelompokkan dengan Leiden, dan diekspor sebagai HTML interaktif, JSON yang dapat dikueri, dan laporan audit.
+graphify bekerja dalam tiga tahap. Pertama, tahap AST deterministik mengekstrak struktur dari file kode tanpa LLM. Kemudian file video dan audio ditranskrip secara lokal dengan faster-whisper. Terakhir, sub-agen Claude berjalan secara paralel pada dokumen, makalah, gambar, dan transkripsi. Hasilnya digabungkan ke dalam graf Helix, dikelompokkan dengan Leiden, dan diekspor sebagai HTML interaktif, JSON yang dapat dikueri, dan laporan audit.
 
 Setiap hubungan diberi label `EXTRACTED`, `INFERRED` (dengan skor kepercayaan), atau `AMBIGUOUS`.
 

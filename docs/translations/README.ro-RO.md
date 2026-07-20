@@ -27,13 +27,13 @@ Complet multimodal. Adăugați cod, PDF-uri, markdown, capturi de ecran, diagram
 graphify-out/
 ├── graph.html       graf interactiv — deschideți în orice browser
 ├── GRAPH_REPORT.md  noduri-zeu, conexiuni surprinzătoare, întrebări sugerate
-├── graph.json       graf persistent — interogabil săptămâni mai târziu
+├── graph.helix       graf persistent — interogabil săptămâni mai târziu
 └── cache/           cache SHA256 — rulările repetate procesează doar fișierele modificate
 ```
 
 ## Cum funcționează
 
-graphify lucrează în trei treceri. Mai întâi, o trecere AST deterministă extrage structura din fișierele de cod fără LLM. Apoi fișierele video și audio sunt transcrise local cu faster-whisper. În final, sub-agenții Claude rulează în paralel pe documente, lucrări, imagini și transcrieri. Rezultatele sunt îmbinate într-un graf NetworkX, grupate cu Leiden și exportate ca HTML interactiv, JSON interogabil și raport de audit.
+graphify lucrează în trei treceri. Mai întâi, o trecere AST deterministă extrage structura din fișierele de cod fără LLM. Apoi fișierele video și audio sunt transcrise local cu faster-whisper. În final, sub-agenții Claude rulează în paralel pe documente, lucrări, imagini și transcrieri. Rezultatele sunt îmbinate într-un graf Helix, grupate cu Leiden și exportate ca HTML interactiv, JSON interogabil și raport de audit.
 
 Fiecare relație este etichetată `EXTRACTED`, `INFERRED` (cu scor de încredere) sau `AMBIGUOUS`.
 

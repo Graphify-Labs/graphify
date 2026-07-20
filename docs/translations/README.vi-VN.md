@@ -27,13 +27,13 @@ Hoàn toàn đa phương thức. Thêm code, PDF, markdown, ảnh chụp màn h�
 graphify-out/
 ├── graph.html       đồ thị tương tác — mở trong bất kỳ trình duyệt nào
 ├── GRAPH_REPORT.md  nút thần, kết nối bất ngờ, câu hỏi được đề xuất
-├── graph.json       đồ thị liên tục — có thể truy vấn sau nhiều tuần
+├── graph.helix       đồ thị liên tục — có thể truy vấn sau nhiều tuần
 └── cache/           bộ nhớ đệm SHA256 — các lần chạy lại chỉ xử lý các tệp đã thay đổi
 ```
 
 ## Cách hoạt động
 
-graphify hoạt động theo ba lần duyệt. Đầu tiên, một lần duyệt AST xác định trích xuất cấu trúc từ các tệp code mà không cần LLM. Sau đó, các tệp video và âm thanh được phiên âm cục bộ bằng faster-whisper. Cuối cùng, các sub-agent Claude chạy song song trên các tài liệu, bài báo, hình ảnh và bản phiên âm. Kết quả được hợp nhất vào đồ thị NetworkX, phân cụm với Leiden và xuất dưới dạng HTML tương tác, JSON có thể truy vấn và báo cáo kiểm tra.
+graphify hoạt động theo ba lần duyệt. Đầu tiên, một lần duyệt AST xác định trích xuất cấu trúc từ các tệp code mà không cần LLM. Sau đó, các tệp video và âm thanh được phiên âm cục bộ bằng faster-whisper. Cuối cùng, các sub-agent Claude chạy song song trên các tài liệu, bài báo, hình ảnh và bản phiên âm. Kết quả được hợp nhất vào đồ thị Helix, phân cụm với Leiden và xuất dưới dạng HTML tương tác, JSON có thể truy vấn và báo cáo kiểm tra.
 
 Mỗi mối quan hệ được gắn nhãn `EXTRACTED`, `INFERRED` (với điểm tin cậy) hoặc `AMBIGUOUS`.
 

@@ -27,13 +27,13 @@ Tamamen çok modlu. Kod, PDF, markdown, ekran görüntüleri, diyagramlar, beyaz
 graphify-out/
 ├── graph.html       etkileşimli grafik — herhangi bir tarayıcıda açın
 ├── GRAPH_REPORT.md  tanrı düğümleri, şaşırtıcı bağlantılar, önerilen sorular
-├── graph.json       kalıcı grafik — haftalar sonra sorgulanabilir
+├── graph.helix       kalıcı grafik — haftalar sonra sorgulanabilir
 └── cache/           SHA256 önbelleği — tekrarlanan çalışmalar yalnızca değiştirilen dosyaları işler
 ```
 
 ## Nasıl çalışır
 
-graphify üç geçişte çalışır. Önce deterministik bir AST geçişi, LLM olmadan kod dosyalarından yapı çıkarır. Ardından video ve ses dosyaları faster-whisper ile yerel olarak transkribe edilir. Son olarak Claude alt ajanları belgeler, makaleler, görüntüler ve transkriptler üzerinde paralel olarak çalışır. Sonuçlar bir NetworkX grafiğinde birleştirilir, Leiden ile kümelenir ve etkileşimli HTML, sorgulanabilir JSON ve denetim raporu olarak dışa aktarılır.
+graphify üç geçişte çalışır. Önce deterministik bir AST geçişi, LLM olmadan kod dosyalarından yapı çıkarır. Ardından video ve ses dosyaları faster-whisper ile yerel olarak transkribe edilir. Son olarak Claude alt ajanları belgeler, makaleler, görüntüler ve transkriptler üzerinde paralel olarak çalışır. Sonuçlar bir Helix grafiğinde birleştirilir, Leiden ile kümelenir ve etkileşimli HTML, sorgulanabilir JSON ve denetim raporu olarak dışa aktarılır.
 
 Her ilişki `EXTRACTED`, `INFERRED` (güven puanıyla) veya `AMBIGUOUS` olarak etiketlenir.
 
