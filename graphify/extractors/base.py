@@ -1,6 +1,7 @@
 # DO NOT import from graphify.extract here — direction is extract.py → extractors/ only.
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from graphify.ids import make_id
@@ -30,6 +31,33 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
     "any", "all", "abs", "round", "next", "iter", "hash", "id", "repr",
     "callable", "getattr", "setattr", "hasattr", "delattr", "vars", "dir",
 })
+
+# Languages that allow quoting an operator as an identifier (R's
+# `%||%` <- function(a, b) ...) need it turned into an id-safe name before
+# `make_id` sees it. `make_id`/`normalize_id` replace every non-word run with
+# a single underscore, so an all-symbol name has no word characters left and
+# collapses to the empty string — `make_id(stem, "%||%")` then equals
+# `make_id(stem)`, i.e. the FILE node's own id, producing a same-file-vs-
+# operator self-loop instead of a distinct node. Shared here (not per-
+# language) because both the extractor that defines the operator and the
+# cross-file resolver that looks it up by name must agree on the same id.
+_OP_CHAR_NAMES: dict[str, str] = {
+    "%": "pct", "|": "pipe", "&": "amp", "/": "slash", "+": "plus",
+    "-": "minus", "*": "star", "^": "caret", "<": "lt", ">": "gt",
+    "=": "eq", "!": "bang", "~": "tilde", "?": "qmark", ":": "colon",
+    "@": "at", "$": "dollar",
+}
+
+
+def _symbol_safe_name(name: str) -> str:
+    """ASCII-transliterate an all-symbol identifier for id-building.
+
+    A name with at least one word character is returned unchanged — normal
+    identifiers don't need this and `make_id` handles them correctly already.
+    """
+    if re.sub(r"\W+", "", name, flags=re.UNICODE):
+        return name
+    return "".join(_OP_CHAR_NAMES.get(c, "x") for c in name) or "op"
 
 
 def _make_id(*parts: str) -> str:

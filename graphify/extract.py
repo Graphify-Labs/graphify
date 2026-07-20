@@ -46,6 +46,7 @@ from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
+from graphify.extractors.r import extract_r  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
@@ -115,6 +116,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_export_target,
     _resolve_java_type_references,
     _resolve_php_type_references,
+    _resolve_r_bare_calls,
     _resolve_js_import_path,
     _resolve_js_import_target,
     _resolve_js_module_path,
@@ -3894,6 +3896,7 @@ _DISPATCH: dict[str, Any] = {
     ".m": extract_objc,
     ".mm": extract_objc,
     ".jl": extract_julia,
+    ".r": extract_r,
     ".f": extract_fortran,
     ".F": extract_fortran,
     ".f90": extract_fortran,
@@ -4786,6 +4789,16 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
+
+    # Cross-file R call resolution (bare-name lookup — R has no import syntax
+    # that names its target file, so this isn't an "imports" resolver like the
+    # blocks above; see _resolve_r_bare_calls's docstring in resolution.py).
+    if any(p.suffix.lower() == ".r" for p in paths):
+        try:
+            _resolve_r_bare_calls(all_nodes, all_edges)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("R bare-call resolution failed, skipping: %s", exc)
 
     # Cross-file Java import resolution
     java_paths = [p for p in paths if p.suffix == ".java"]
