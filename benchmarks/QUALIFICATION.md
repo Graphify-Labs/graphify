@@ -15,9 +15,12 @@ x86_64/aarch64 artifacts, but no Windows artifact, so the PR remains draft.
 
 ## Graphify acceptance
 
-- Complete local suite: **2,921 passed, 3 skipped**. The Python 3.12 clean
+- Complete local suite: **2,925 passed, 3 skipped**. The Python 3.12 clean
   environment accounted for the same behavior surface after installing the
   declared development group, including wheel-packaging tests.
+- Complete Python 3.10 suite: **2,912 passed, 16 skipped**. The additional
+  skips are the expected Python-version-gated optional video coverage; no
+  Helix or retained core behavior was skipped.
 - CI matrix: Linux x86_64 on Python 3.10 and 3.12, Linux aarch64 on Python
   3.12, macOS universal2 on Python 3.12, and native Windows x86_64 on Python
   3.10 and 3.12.
@@ -47,32 +50,39 @@ to Obsidian's presentation configuration, not Graphify storage.
 The isolated benchmark comparator is the only environment that installs
 NetworkX. The deterministic parity corpus and full raw measurements are in
 [`parity-networkx.json`](parity-networkx.json) and
-[`helix-vs-networkx.json`](helix-vs-networkx.json); reproduction commands and
+[`helix-vs-networkx-2026-07-19.json`](helix-vs-networkx-2026-07-19.json); reproduction commands and
 interpreted results are in [`RESULTS.md`](RESULTS.md).
 
 The public b3 candidate **does not pass the release gates**:
 
 | Graph | Helix ingest | Helix cold open | Peak RSS (informational) | Active store | Slowest absolute hot op |
 |---|---:|---:|---:|---:|---:|
-| 5k / 15k | 10.14s | 1.46s | 343.3 MiB | 35.35 MiB | 27.40ms |
-| 20k / 60k | 40.67s | 6.45s | 993.5 MiB | 143.71 MiB | 12.17ms |
+| 5k / 15k | 8.17s | 1.07s | 232.3 MiB | 35.12 MiB | 20.57ms |
+| 20k / 60k | 32.55s | 4.88s | 647.1 MiB | 143.45 MiB | 8.93ms |
 
 At 20k/60k, weighted Leiden, sampled node centrality, and sampled edge
-centrality are respectively **9.30x**, **8.15x**, and **3.73x** faster than the
+centrality are respectively **9.76x**, **9.93x**, and **4.13x** faster than the
 current v8 NetworkX/JSON comparator, so the three native analytics gates pass.
 Absolute hot-operation limits also pass. Build, 1% update, cold-open, active
 and post-update storage, and relative warm-operation gates fail.
 
 Default retention deletes the inactive generation through public Helix
 operations, but b3 does not physically reclaim enough embedded-store space;
-the 20k/60k store grows from 143.71 MiB to 299.32 MiB after the 1% update.
+the 20k/60k store grows from 143.45 MiB to 298.80 MiB after the 1% update.
 Graphify deliberately does not manipulate SST/WAL files or call private
 maintenance APIs. Peak RSS is reported but is non-blocking, as required.
 
-The Graphify engineers' `comfywerk`, `agent`, `backend`, `passport`, and
-`erpnext` corpora were not available in this checkout, so real-corpus and gold
-query qualification remains outstanding. Synthetic results are not a
-substitute for that gate.
+The public ERPNext corpus was independently reproduced at commit
+`ea5c648ab04a2b30c5c238f6cb299c4237ff1c1e`. Helix now matches the loaded v8
+topology exactly at 25,443 nodes and 59,142 edges, but fresh build is 99.15s
+versus 41.30s, cold open is 7.95s versus 0.33s, active storage is 10.34x v8,
+and a representative steady query is 3.52s versus 0.05s. Raw measurements are
+in [`report-erpnext-2026-07-19.json`](report-erpnext-2026-07-19.json).
+
+The report's other four corpora, exact gold queries, harness scripts, and raw
+results were not distributed or attached. The five-corpus gold-recall table
+therefore remains outstanding; the public ERPNext and synthetic results are
+not a substitute for those missing inputs.
 
 ## Conclusion
 
