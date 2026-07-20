@@ -151,6 +151,29 @@ def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
     return p
 
 
+def _abs_identity(p: str | None, root: str | None = None) -> str | None:
+    """Return a form-insensitive absolute identity for a source_file.
+
+    prune/replace matching in build_merge otherwise compares raw strings against
+    ``_norm_source_file`` output, so a node whose source_file survived in a THIRD
+    form — absolute where prune_sources is relative, or vice versa, or a symlinked
+    root — slips past every equality check and its nodes/edges are never pruned
+    (silent survival of a deleted file's graph, #2012). Anchoring relative paths
+    at ``root`` and resolving both sides to a canonical absolute posix path gives
+    a fallback that matches regardless of which form each side happens to hold.
+    """
+    if not p:
+        return None
+    q = p.replace("\\", "/")
+    pp = Path(q)
+    if not pp.is_absolute() and root:
+        pp = Path(root) / q
+    try:
+        return pp.resolve().as_posix()
+    except OSError:
+        return pp.as_posix()
+
+
 def _infer_merge_root(graph_path: Path) -> str | None:
     """Best-effort scan root for relativizing paths in build_merge when the caller
     passes no ``root`` (#1571).
@@ -767,6 +790,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # (unknown ext, e.g. a manifest) is never mistaken for a phantom.
                 if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam:
                     continue
+        # A file-level import or re-export cannot carry useful connectivity when
+        # both endpoints resolve to the same node.  This most often happens when
+        # the target is an unresolved bare module name (``builtins``, ``poseidon``)
+        # that the legacy-ID alias index above mistakes for the importing file's
+        # own old stem.  It also covers a nested module importing its parent file:
+        # at file-node granularity that relationship necessarily collapses.  Keep
+        # other self-edges, notably recursive ``calls``, because those are real
+        # program structure rather than import-resolution artifacts.
+        if src == tgt and _edge_rel in ("imports", "imports_from", "re_exports"):
+            continue
         # Preserve original edge direction - undirected graphs lose it otherwise,
         # causing display functions to show edges backwards.
         attrs["_src"] = src
@@ -1028,6 +1061,7 @@ def build_merge(
     # handles symlinked roots and ".." / "./" segments so Path.relative_to()
     # succeeds even when the scan root is a symlink. (#1007, #1571)
     prune_set: set[str] = set()
+    prune_abs: set[str] = set()
     for p in (prune_sources or []):
         if not p:
             continue
@@ -1035,13 +1069,35 @@ def build_merge(
         norm = _norm_source_file(p, _eff_root)
         if norm:
             prune_set.add(norm)
+        a = _abs_identity(p, _eff_root)
+        if a:
+            prune_abs.add(a)
     # A file that was just re-extracted (present in new_chunks) is being REPLACED,
     # never deleted — so never prune it, even if the caller also lists it in
     # prune_sources. Otherwise its fresh, just-built nodes are silently removed
     # (data loss): common when an edit keeps a node's label and the caller follows
     # the old edit-workflow of passing the changed file in prune_sources (#1796).
-    # "replace" wins over a contradictory "delete" of the same source.
+    # "replace" wins over a contradictory "delete" of the same source. Applied in
+    # both string and absolute-identity space so the third-form fallback below
+    # can't resurrect the delete for a re-extracted file (#2012).
     prune_set -= new_sources
+    new_abs = {_abs_identity(s, _eff_root) for s in new_sources}
+    new_abs.discard(None)
+    prune_abs -= new_abs
+
+    def _prune_match(sf: "str | None") -> bool:
+        # Match a node/edge/hyperedge source_file against the prune set in a
+        # form-insensitive way: exact string, normalised-relative, then the
+        # absolute-identity fallback for the third-form case (#2012).
+        if not sf:
+            return False
+        if sf in prune_set:
+            return True
+        norm = _norm_source_file(sf, _eff_root)
+        if norm and norm in prune_set:
+            return True
+        a = _abs_identity(sf, _eff_root)
+        return bool(a) and a in prune_abs
 
     # Carry forward hyperedges from files that were neither re-extracted nor
     # deleted (#1574). build() only sees the new chunks' hyperedges, so without
@@ -1060,7 +1116,7 @@ def build_merge(
             norm = _norm_source_file(sf, _eff_root)
             if sf in new_sources or norm in new_sources:
                 continue  # re-extracted — replaced by the new chunk's version
-            if sf in prune_set or norm in prune_set:
+            if _prune_match(sf):
                 continue  # deleted — pruned
             carried.append(he)
         if carried:
@@ -1071,7 +1127,7 @@ def build_merge(
     if prune_sources:
         to_remove = [
             n for n, d in G.nodes(data=True)
-            if d.get("source_file") in prune_set
+            if _prune_match(d.get("source_file"))
         ]
         G.remove_nodes_from(to_remove)
         n_files = len(prune_sources)
@@ -1084,7 +1140,7 @@ def build_merge(
 
         edges_to_remove = [
             (u, v) for u, v, d in G.edges(data=True)
-            if d.get("source_file") in prune_set
+            if _prune_match(d.get("source_file"))
         ]
         if edges_to_remove:
             G.remove_edges_from(edges_to_remove)

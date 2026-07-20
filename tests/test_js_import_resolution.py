@@ -1458,3 +1458,132 @@ def test_alias_import_preserves_owned_same_line_symbol_edge(tmp_path, monkeypatc
 
     assert sorted(edge["target"] for edge in imports) == sorted([target_symbol, mirror_symbol])
     assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in imports)
+
+
+# --- #1983 (follow-up): alias re-exports THROUGH a barrel ---------------------
+# The candidates rewrite learns old->canonical symbol forms only from symbols a
+# file DEFINES. A barrel defines nothing, so a re-export/import that resolves to
+# the barrel synthesizes an absolute-prefixed target no rewrite ever learns:
+# the checkout path leaks into the id and the edge dangles.
+
+def _barrel_fixture(tmp_path):
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(tmp_path / "src/lib/utils.ts", "export function formatDate() { return 'ok' }\n")
+    _write(tmp_path / "src/lib/index.ts", "export { formatDate } from '@/lib/utils'\n")
+
+
+def test_alias_reexport_through_barrel_resolves_to_defining_symbol(tmp_path, monkeypatch):
+    _barrel_fixture(tmp_path)
+    _write(tmp_path / "src/barrel2.ts", "export { formatDate } from '@/lib'\n")
+
+    monkeypatch.chdir(tmp_path)
+    files = sorted(Path("src").rglob("*.ts"))
+    result = extract(files, cache_root=Path("."))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    defining_symbol = _make_id(_file_stem(Path("src/lib/utils.ts")), "formatDate")
+    barrel_reexports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(Path("src/barrel2.ts"))
+        and edge["relation"] == "re_exports"
+        and edge["target"] != _file_node_id(Path("src/lib/index.ts"))
+    ]
+
+    assert [edge["target"] for edge in barrel_reexports] == [defining_symbol]
+    assert all(edge["target"] in node_ids for edge in barrel_reexports)
+
+
+def test_alias_reexport_two_hop_barrel_chain_resolves(tmp_path, monkeypatch):
+    _barrel_fixture(tmp_path)
+    _write(tmp_path / "src/barrel2.ts", "export { formatDate } from '@/lib'\n")
+    _write(tmp_path / "src/barrel3.ts", "export { formatDate } from '@/barrel2'\n")
+
+    monkeypatch.chdir(tmp_path)
+    files = sorted(Path("src").rglob("*.ts"))
+    result = extract(files, cache_root=Path("."))
+
+    node_ids = {node["id"] for node in result["nodes"]}
+    defining_symbol = _make_id(_file_stem(Path("src/lib/utils.ts")), "formatDate")
+    barrel3_reexports = [
+        edge
+        for edge in result["edges"]
+        if edge["source"] == _file_node_id(Path("src/barrel3.ts"))
+        and edge["relation"] == "re_exports"
+        and edge["target"] != _file_node_id(Path("src/barrel2.ts"))
+    ]
+
+    assert [edge["target"] for edge in barrel3_reexports] == [defining_symbol]
+    assert all(edge["target"] in node_ids for edge in barrel3_reexports)
+
+
+def test_no_symbol_edge_target_contains_checkout_prefix(tmp_path, monkeypatch):
+    """No re_exports/imports target may embed the absolute checkout path —
+    the core complaint of #1983, which barrels still triggered after the
+    single-hop fix."""
+    _barrel_fixture(tmp_path)
+    _write(tmp_path / "src/barrel2.ts", "export { formatDate } from '@/lib'\n")
+    _write(
+        tmp_path / "src/consumer.ts",
+        "import { formatDate } from '@/lib'\nexport function useIt() { return formatDate() }\n",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    files = sorted(Path("src").rglob("*.ts"))
+    result = extract(files, cache_root=Path("."))
+
+    abs_prefix = _make_id(str(Path("src").resolve().parent))
+    offenders = [
+        (edge["relation"], edge["target"])
+        for edge in result["edges"]
+        if edge.get("relation") in ("re_exports", "imports")
+        and str(edge.get("target", "")).startswith(abs_prefix)
+    ]
+    assert offenders == [], f"checkout path leaked into edge targets: {offenders}"
+
+
+def test_ambiguous_barrel_reexport_chain_does_not_guess(tmp_path, monkeypatch):
+    """When a barrel re-exports the SAME local name from two different modules,
+    the barrel-chain resolver must NOT collapse an importer's edge onto one of
+    them by last-write-wins (#2034 follow-up). With the ambiguity guard the chain
+    leaves the import unresolved at the barrel symbol (dangling, dropped at build)
+    rather than fabricating a specific target; without it the chain repoints to
+    whichever module was learned last."""
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+    )
+    _write(tmp_path / "src/lib/a.ts", "export function dup() { return 'a' }\n")
+    _write(tmp_path / "src/lib/b.ts", "export function dup() { return 'b' }\n")
+    _write(tmp_path / "src/lib/index.ts",
+           "export { dup } from '@/lib/a'\nexport { dup } from '@/lib/b'\n")
+    _write(tmp_path / "src/consumer.ts",
+           "import { dup } from '@/lib'\nexport function useIt() { return dup() }\n")
+
+    monkeypatch.chdir(tmp_path)
+    result = extract(sorted(Path("src").rglob("*.ts")), cache_root=Path("."))
+
+    barrel_sym = _make_id(_file_stem(Path("src/lib/index.ts")), "dup")
+    consumer = _file_node_id(Path("src/consumer.ts"))
+    consumer_imports = [
+        e for e in result["edges"]
+        if e.get("source") == consumer and e.get("relation") == "imports"
+    ]
+    # The chain-produced import edge stays at the barrel symbol (unresolved) —
+    # proof the chain refused to guess. Without the fix it would be repointed to
+    # src_lib_a_dup / src_lib_b_dup (last-write-wins), so this edge would vanish.
+    assert any(e.get("target") == barrel_sym for e in consumer_imports), (
+        f"ambiguous barrel import was chain-resolved instead of left unresolved: "
+        f"{[e.get('target') for e in consumer_imports]}"
+    )
+    # Both legitimate barrel re-exports still resolve to their own module.
+    barrel = _file_node_id(Path("src/lib/index.ts"))
+    reexport_targets = {
+        e.get("target") for e in result["edges"]
+        if e.get("source") == barrel and e.get("relation") == "re_exports"
+    }
+    assert _make_id(_file_stem(Path("src/lib/a.ts")), "dup") in reexport_targets
+    assert _make_id(_file_stem(Path("src/lib/b.ts")), "dup") in reexport_targets

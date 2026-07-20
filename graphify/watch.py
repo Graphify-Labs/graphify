@@ -495,10 +495,31 @@ def _reconcile_existing_graph(
         _alive_cache: dict[str, bool] = {}
         for node in existing.get("nodes", []):
             source_file = node.get("source_file")
-            if not source_file or _get_extractor(Path(source_file)) is None:
-                continue
+            if not source_file or "://" in source_file:
+                continue  # sourceless stub or remote/virtual source: never evict
             identity = source_paths.identity(source_file)
             if not source_paths.in_watch_root(source_file):
+                continue
+            if _get_extractor(Path(source_file)) is None:
+                # Non-AST source (semantic doc/paper/image — .txt/.pdf/.png/...):
+                # never present in current_sources (built from AST-extractable
+                # code_files), so corpus absence is meaningless. Disk absence is
+                # the ONLY deletion evidence here — otherwise its semantic nodes
+                # are preserved forever and returned as authoritative even after
+                # the file is deleted (#2051). A present-but-unextractable file
+                # stays preserved (alive -> skip).
+                if identity:
+                    alive = _alive_cache.get(identity)
+                    if alive is None:
+                        alive = Path(identity).exists()
+                        _alive_cache[identity] = alive
+                    if not alive:
+                        normalized = source_paths.normalize(source_file)
+                        if normalized:
+                            deleted_paths.add(normalized)
+                        node_evicted_source_identities.add(identity)
+                        edge_evicted_source_identities.add(identity)
+                        hyperedge_evicted_source_identities.add(identity)
                 continue
             if identity not in current_sources:
                 if identity:
@@ -721,7 +742,17 @@ def _check_shrink(
     plain ``graphify update`` after deleting a function refresh the graph without
     ``--force`` (#1116 left stale nodes write-blocked even though build dropped them).
     """
-    if force or not existing_data or had_explicit_deletions:
+    if force or not existing_data:
+        return True
+    if had_explicit_deletions and rebuilt_sources is None:
+        # Legacy callers declare deletions but pass no rebuilt_sources, so the
+        # per-source accounting below can't run — keep the wholesale bypass for
+        # them. When rebuilt_sources IS given, deleted paths are folded into it
+        # (see call site), so genuine deletions still pass the _accounted check
+        # while an unexplained loss (a present-but-unextractable file wrongly
+        # routed to _add_deleted_source, or a dropped semantic node) is still
+        # caught rather than being waved through by the mere presence of any
+        # deletion in the change set (#2056).
         return True
     existing_nodes = existing_data.get("nodes", [])
     new_nodes = new_data.get("nodes", [])
@@ -941,23 +972,24 @@ def _rebuild_code(
                 )
                 # Semantic doc nodes lack the AST origin marker. Gate on the
                 # doc-shaped subset of the six-value file_type enum
-                # (document/concept/rationale/paper, matching build.py's
-                # canonical set minus code/image) rather than "document"
-                # alone: per the extraction spec, a doc full of named
+                # (document/concept/rationale/paper AND code) rather than
+                # "document" alone: per the extraction spec, a doc full of named
                 # concepts may be represented with ONLY concept/rationale
                 # nodes and no separate "document" node — that's still
                 # evidence of a semantic layer, not a marker-less AST node
-                # (#1954). The narrower pre-#1954 check under-recognized
-                # exactly that doc shape, letting it be re-quick-scanned
-                # every rebuild. A pre-#1865 graph whose AST nodes lack the
-                # ``_origin`` marker still isn't misread as semantic-backed,
-                # since "code" stays outside this set.
+                # (#1954). "code" is included too (#2014): the semantic pass
+                # legitimately mints code-typed nodes for symbols surfaced from
+                # WITHIN a doc (llm.py `_bind_node_evidence`), and it cannot be
+                # confused with a pre-#1865 marker-less AST code node — those are
+                # sourced from code files, which never intersect ast_doc_files
+                # below, whereas the AST quick-scan of a doc only ever mints
+                # "document" nodes (extractors/markdown.py). "image" stays out.
                 semantic_doc_identities: set[str] = set()
                 for node in prior.get("nodes", []):
                     if node.get("_origin") == "ast":
                         continue
                     if node.get("file_type") not in (
-                        "document", "concept", "rationale", "paper"
+                        "document", "concept", "rationale", "paper", "code"
                     ):
                         continue
                     identity = prior_paths.identity(node.get("source_file"))
@@ -1013,8 +1045,16 @@ def _rebuild_code(
                 )
                 if existing_in_root is not None:
                     # The path exists under the watched root but detect filtered
-                    # it out. Evict any stale nodes that still claim it.
-                    _add_deleted_source(existing_in_root)
+                    # it out of code_set (no AST extractor, excluded, or
+                    # sensitive). Existence is NOT deletion evidence (#2056): the
+                    # file may carry semantic (LLM) nodes an AST rebuild cannot
+                    # regenerate, and mis-routing it to _add_deleted_source both
+                    # evicts those nodes AND sets had_explicit_deletions, which
+                    # disables the shrink guard that would otherwise catch the
+                    # loss. Preserve it — a genuine deletion still evicts via the
+                    # branch below, the corpus sweep evicts a truly-gone non-AST
+                    # source, and a deliberate exclusion is purged by a full
+                    # re-extraction.
                     continue
 
                 deleted_in_root = next(

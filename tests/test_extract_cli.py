@@ -789,6 +789,116 @@ def test_extract_timing_flag_emits_stage_timings(monkeypatch, tmp_path, capsys):
     assert "graphify timing" not in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "postgres_args",
+    [["--postgres", "test-dsn"], ["--postgres=test-dsn"]],
+)
+@pytest.mark.parametrize("cluster_args", [[], ["--no-cluster"]])
+def test_pathless_postgres_extract_initializes_empty_detection(
+    monkeypatch, tmp_path, postgres_args, cluster_args
+):
+    calls = []
+
+    def _introspect(dsn):
+        calls.append(dsn)
+        return {
+            "nodes": [
+                {
+                    "id": "postgresql_users",
+                    "label": "users",
+                    "type": "table",
+                    "file_type": "code",
+                    "source_file": "postgresql:/localhost/test",
+                }
+            ],
+            "edges": [],
+        }
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def app():\n    return 1\n")
+    launcher = tmp_path / "launcher"
+    launcher.mkdir()
+    monkeypatch.chdir(launcher)
+    out_root = tmp_path / "output"
+    graph_path = out_root / "graphify-out" / "graph.json"
+    manifest = out_root / "graphify-out" / "manifest.json"
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.pg_introspect.introspect_postgres", _introspect)
+
+    def _run(argv):
+        monkeypatch.setattr(mainmod.sys, "argv", argv)
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            assert exc.code in (None, 0)
+
+    _run(
+        [
+            "graphify",
+            "extract",
+            str(corpus),
+            "--code-only",
+            "--no-cluster",
+            "--out",
+            str(out_root),
+        ]
+    )
+    assert manifest.exists()
+    assert "app.py" in _node_sources(graph_path)
+    manifest_content = manifest.read_text()
+    (out_root / "graphify-out" / ".graphify_semantic_marker").write_text(
+        '{"output_tokens": 1}'
+    )
+
+    cache_entry = (
+        out_root
+        / "graphify-out"
+        / "cache"
+        / "semantic"
+        / "deadbeef.json"
+    )
+    cache_entry.parent.mkdir(parents=True)
+    cache_entry.write_text('{"nodes": [], "edges": []}')
+    _run(
+        [
+            "graphify",
+            "extract",
+            *postgres_args,
+            *cluster_args,
+            "--out",
+            str(out_root),
+        ]
+    )
+    assert calls == ["test-dsn"]
+    assert cache_entry.exists()
+    assert not manifest.exists()
+    assert "postgresql:/localhost/test" in _node_sources(graph_path)
+    backups = [
+        path
+        for path in (out_root / "graphify-out").iterdir()
+        if path.is_dir() and (path / "manifest.json").exists()
+    ]
+    assert backups
+    assert backups[0].joinpath("manifest.json").read_text() == manifest_content
+
+    _run(
+        [
+            "graphify",
+            "extract",
+            str(corpus),
+            "--code-only",
+            "--no-cluster",
+            "--out",
+            str(out_root),
+        ]
+    )
+    final_sources = _node_sources(graph_path)
+    assert "app.py" in final_sources
+    assert "postgresql:/localhost/test" not in final_sources
+    assert manifest.exists()
+
+
 # ---------------------------------------------------------------------------
 # #1909: a newly-excluded file's nodes must be pruned from graph.json on the
 # next incremental extract even when the manifest never listed the file (the

@@ -851,6 +851,34 @@ def _is_manifest_root_fix_line(line: str) -> bool:
     return "save_manifest(" in line and "import" not in line
 
 
+def _is_manifest_stamp_fix_line(line: str) -> bool:
+    """Whether a line is part of the manifest over-stamping fix (#2015).
+
+    Step 9 stamped the whole detected corpus, so a semantic file whose chunk
+    failed (or was omitted) was marked done and never re-queued on the next
+    ``--update`` — its content lost forever. The manifest is now built with
+    ``cli._stamped_manifest_files`` (only files that actually produced output)
+    plus ``clear_semantic``/``scan_corpus``, mirroring the native
+    ``graphify extract`` path. The rooted ``save_manifest`` call itself is
+    covered by ``_is_manifest_root_fix_line``; these are the added helper import
+    and derivation lines, plus the single ``#2015`` explanatory comment.
+    """
+    stripped = line.strip()
+    return (
+        "_stamped_manifest_files" in stripped
+        or stripped.startswith((
+            "_corpus =",
+            "_manifest_files =",
+            "_sem_types =",
+            "_dispatched =",
+            "_stamped =",
+            "_cleared =",
+            "_scan =",
+        ))
+        or (stripped.startswith("#") and "#2015" in stripped)
+    )
+
+
 def _is_no_api_key_fix_line(line: str) -> bool:
     """Whether a line is part of the "no API key required" clarity (#1461).
 
@@ -931,6 +959,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_cache_unlink_fix_line,
     _is_zero_node_guard_fix_line,
     _is_manifest_root_fix_line,
+    _is_manifest_stamp_fix_line,
     _is_no_api_key_fix_line,
     _is_shebang_allowlist_fix_line,
     _is_obsidian_usage_comment_line,
