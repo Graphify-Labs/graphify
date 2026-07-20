@@ -85,6 +85,19 @@ def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
 
+def _load_query_seed_file(path: str) -> list[str]:
+    data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise ValueError("seed file must contain a JSON array")
+
+    seeds: list[str] = []
+    for item in data:
+        if not isinstance(item, str):
+            raise ValueError("seed file entries must be string node ids")
+        seeds.append(item)
+    return seeds
+
+
 def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
@@ -763,7 +776,11 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print(
+                "Usage: graphify query \"<question>\" [--dfs] [--context C] "
+                "[--budget N] [--seed-file path] [--graph path]",
+                file=sys.stderr,
+            )
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -775,6 +792,7 @@ def dispatch_command(cmd: str) -> None:
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
+        start_nodes: list[str] = []
         args = sys.argv[3:]
         i = 0
         while i < len(args):
@@ -801,8 +819,16 @@ def dispatch_command(cmd: str) -> None:
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
                 i += 2
+            elif args[i] == "--seed-file" and i + 1 < len(args):
+                try:
+                    start_nodes.extend(_load_query_seed_file(args[i + 1]))
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    print(f"error: could not load seed file: {exc}", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
             else:
                 i += 1
+        start_nodes = list(dict.fromkeys(node_id for node_id in start_nodes if node_id))
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -836,6 +862,13 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
+        if start_nodes:
+            missing = [node_id for node_id in start_nodes if node_id not in G]
+            if missing:
+                shown = ", ".join(sanitize_label(node_id) for node_id in missing[:5])
+                suffix = f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""
+                print(f"error: seed node id not found in graph: {shown}{suffix}", file=sys.stderr)
+                sys.exit(1)
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
@@ -846,6 +879,7 @@ def dispatch_command(cmd: str) -> None:
             depth=2,
             token_budget=budget,
             context_filters=context_filters,
+            start_nodes=start_nodes or None,
         )
         querylog.log_query(
             kind="query",
@@ -855,6 +889,7 @@ def dispatch_command(cmd: str) -> None:
             mode=_mode,
             depth=2,
             token_budget=budget,
+            seed_nodes=start_nodes or None,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )
         _touch_query_stamp(gp)

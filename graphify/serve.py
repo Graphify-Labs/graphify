@@ -866,16 +866,15 @@ def _query_graph_text(
     depth: int = 3,
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
+    start_nodes: list[str] | None = None,
 ) -> str:
     terms = _query_terms(question)
-    # One graph scoring pass produces both the combined ranking (used to drive
-    # the gap-based seed selection below) and the per-token singleton winners
-    # (used by _pick_seeds' per-term guarantee). Previously this was T+1 passes
-    # — one combined + one per query token — re-walking the whole graph each
-    # time; on a 100k-node, three-term benchmark ~71% of scoring time was
-    # spent in those redundant per-term passes.
-    qs = _score_query(G, terms, collect_per_term_seeds=True)
-    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    if start_nodes is None:
+        # One graph scoring pass produces both the combined ranking (used to
+        # drive the gap-based seed selection below) and the per-token singleton
+        # winners (used by _pick_seeds' per-term guarantee).
+        qs = _score_query(G, terms, collect_per_term_seeds=True)
+        start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
@@ -889,7 +888,7 @@ def _query_graph_text(
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget)
+    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
 
 
 def _find_node(G: nx.Graph, label: str) -> list[str]:

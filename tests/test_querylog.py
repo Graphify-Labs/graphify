@@ -167,6 +167,17 @@ def test_explicit_nodes_returned_takes_precedence(tmp_path, monkeypatch):
     assert rec["nodes_returned"] == 3
 
 
+def test_log_query_writes_seed_nodes(tmp_path, monkeypatch):
+    log_file = tmp_path / "q.log"
+    monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(log_file))
+    monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
+
+    log_query(kind="query", question="q", corpus="/g.json", seed_nodes=["n1", "n2"])
+
+    rec = json.loads(log_file.read_text())
+    assert rec["seed_nodes"] == ["n1", "n2"]
+
+
 def test_kind_mcp_query(tmp_path, monkeypatch):
     log_file = tmp_path / "q.log"
     monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(log_file))

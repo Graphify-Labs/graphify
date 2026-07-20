@@ -641,6 +641,8 @@ graphify-out/
 
 /graphify query "what connects attention to the optimizer?"
 /graphify query "..." --dfs --budget 1500
+/graphify query "..." --seed-file graphify-out/.graphify_reranked_nodes.json
+Seed files are JSON arrays of string node ids; their order becomes the traversal seed order.
 /graphify path "DigestAuth" "Response"
 /graphify explain "SwinTransformer"
 
