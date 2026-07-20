@@ -4,6 +4,31 @@ import pytest
 from graphify.__main__ import claude_install, claude_uninstall, _CLAUDE_MD_MARKER, _CLAUDE_MD_SECTION
 
 
+@pytest.fixture(autouse=True)
+def _sandbox_home(tmp_path, monkeypatch):
+    """Redirect the user home into tmp_path for every test in this file.
+
+    claude_uninstall() removes the USER-scope skill tree at
+    ~/.claude/skills/graphify (issue #1121), so any test that calls it without
+    home isolation deletes the developer's real installed skill. On machines
+    where that path is a symlink into a git checkout, an unsandboxed run
+    silently deletes tracked files (this happened: 2026-07-19, a nightly-audit
+    full-suite run emptied the live install through exactly that symlink).
+    HOME is patched too so subprocess-based helpers inherit the sandbox.
+
+    CLAUDE_CONFIG_DIR is also cleared: install.py's claude-platform
+    destination resolver checks that env var before Path.home(), so a
+    developer/CI environment with CLAUDE_CONFIG_DIR set would otherwise
+    bypass the sandbox above and hit the same real-deletion bug again.
+    """
+    home = tmp_path / "sandbox-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    return home
+
+
 # ---------------------------------------------------------------------------
 # install
 # ---------------------------------------------------------------------------
