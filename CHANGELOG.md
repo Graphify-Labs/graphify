@@ -5,6 +5,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 ## 0.9.22 (unreleased)
 
 - Fix: a node whose `source_file` is a URL/virtual scheme (`gdoc://`, `s3://`, `http://`, ...) is no longer evicted on the second `graphify update` (follow-up to #2051). The #2051 disk-absence sweep guarded such sources with a literal `"://"` check, but write-side path normalization collapses the double slash (`gdoc://x` becomes `gdoc:/x`), so the guard missed the node on the next run and dropped it into the disk-absence eviction branch. The scheme is now matched tolerantly (and a Windows drive letter like `C:/` is not misread as remote).
+- Fix: the installed `post-checkout` hook no longer rebuilds the graph on a branch switch that doesn't actually move HEAD, e.g. `git checkout -b <new-branch>` (#2060). Git still passes `BRANCH_SWITCH=1` for this case even though `PREV_HEAD`/`NEW_HEAD` are identical, so the hook launched a full rebuild for a switch with no underlying code change; since community detection isn't fully deterministic across runs, that rebuild produced pure reordering churn in `graph.json` that teams ended up discarding with `git stash`. The hook now exits early when `PREV_HEAD` equals `NEW_HEAD`.
 
 ## 0.9.21 (2026-07-20)
 

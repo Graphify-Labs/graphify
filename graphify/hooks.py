@@ -339,6 +339,14 @@ if [ "$BRANCH_SWITCH" != "1" ]; then
     exit 0
 fi
 
+# Skip when the checkout didn't move HEAD to a different commit (e.g.
+# `git checkout -b <new-branch>` off the current HEAD). No code actually
+# changed, so a rebuild only produces non-deterministic community-detection
+# reordering churn in graph.json (#2060).
+if [ "$PREV_HEAD" = "$NEW_HEAD" ]; then
+    exit 0
+fi
+
 # Only run if graphify-out/ exists (graph has been built before)
 if [ ! -d "graphify-out" ]; then
     exit 0
