@@ -45,6 +45,35 @@ def test_sln_project_dependency():
     assert "imports" in _relations(r)
 
 
+def test_sln_solution_folder_ids_are_relative(tmp_path):
+    """Solution folders are virtual groupings, not files. Their node ids must be
+    derived from the folder name only — never the resolved absolute scan path,
+    which would leak the local username into a committed graph.json (#1789)."""
+    sln = tmp_path / "App.sln"
+    sln.write_text(
+        'Microsoft Visual Studio Solution File, Format Version 12.00\n'
+        # a solution folder: type GUID 2150E333-... , name == path, no real file
+        'Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Plugins", "Plugins", '
+        '"{11111111-1111-1111-1111-111111111111}"\n'
+        'EndProject\n'
+        # a real project resolves to an absolute path as before
+        'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\\App.csproj", '
+        '"{22222222-2222-2222-2222-222222222222}"\n'
+        'EndProject\n',
+        encoding="utf-8",
+    )
+    r = extract_sln(sln)
+    assert "error" not in r
+    # The virtual solution folder must be keyed off its name, with no trace of the
+    # absolute scan path. (Real-file nodes — the .sln and .csproj — legitimately
+    # carry absolute ids here; the CLI's id-relativization pass remaps those, but
+    # never the virtual folder, which is why the leak had to be fixed at source.)
+    folder = next(n for n in r["nodes"] if n["label"] == "Plugins")
+    assert folder["id"] == "plugins"
+    assert folder["source_file"] == "Plugins"
+    assert str(tmp_path) not in folder["id"]
+
+
 # ── .slnx ────────────────────────────────────────────────────────────────────
 
 def test_slnx_extracts_projects():
@@ -95,6 +124,35 @@ def test_csproj_project_references():
     r = extract_csproj(FIXTURES / "sample.csproj")
     imports = [e for e in r["edges"] if e["relation"] == "imports"]
     assert len(imports) == 6  # 4 packages + 2 project refs
+
+
+def test_csproj_out_of_root_reference_id_is_portable(tmp_path):
+    """#1899: a ProjectReference to a project OUTSIDE the scan root must not leak
+    the absolute scan path (including the OS username) into the node id or
+    source_file. The out-of-root target gets a portable, `ext_`-namespaced id and
+    a walk-up relative source_file rather than the absolute-derived form."""
+    web = tmp_path / "WebApi"; web.mkdir()
+    core = tmp_path / "Core"; core.mkdir()
+    (core / "Core.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        '<TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>'
+    )
+    (web / "WebApi.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>'
+        '<ProjectReference Include="..\\Core\\Core.csproj" /></ItemGroup></Project>'
+    )
+    result = extract([web / "WebApi.csproj"], cache_root=web)
+    marker = str(tmp_path)
+    for n in result["nodes"]:
+        assert marker not in n["id"], f"absolute path leaked into id: {n}"
+        assert marker not in (n.get("source_file") or ""), f"leaked into source_file: {n}"
+    for e in result["edges"]:
+        for f in ("source", "target", "source_file"):
+            assert marker not in str(e.get(f, "")), f"leaked into edge {f}: {e}"
+    core_ref = [n for n in result["nodes"] if "core" in n["id"].lower()]
+    assert core_ref, "out-of-root Core reference node missing"
+    assert core_ref[0]["id"].startswith("ext_")
+    assert core_ref[0]["source_file"] == "../Core/Core.csproj"
 
 
 def test_csproj_target_framework():

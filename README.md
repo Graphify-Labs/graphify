@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://graphifylabs.ai"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/logo.png" width="300" height="140" alt="Graphify"/></a>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/logo.png" width="300" height="140" alt="Graphify"/></a>
 </p>
 
 <p align="center">
@@ -195,6 +195,8 @@ for example `graphify claude install --project` or `graphify codex install --pro
 > **Avoid `pip install` on Mac/Windows** if possible. The skill resolves Python at runtime from `graphify-out/.graphify_python`; if that points to a different environment than where `pip` installed the package, you'll get `ModuleNotFoundError: No module named 'graphify'`. `uv tool install` and `pipx install` isolate the package in their own env and avoid this entirely.
 
 > **Git hooks and uv tool / pipx:** `graphify hook install` embeds the current interpreter path directly into the hook scripts at install time, so the post-commit hook fires correctly even in GUI git clients and CI runners where `~/.local/bin` is not on PATH. If you reinstall or upgrade graphify, re-run `graphify hook install` to refresh the embedded path.
+
+> **Strict mode (Claude Code):** `graphify install --project --strict` makes the assistant actually use the graph. The default install *nudges* it to run `graphify query` before reading files; strict mode *blocks* the first raw source read of a session and redirects it to the graph, then reverts to the nudge (so it fires at most once per session and never gets stuck). Toggle at runtime with `GRAPHIFY_HOOK_STRICT=1`/`0`; the default install is unchanged (soft nudge).
 
 <details>
 <summary><b>Pick your platform</b> (20+ assistants, click to expand)</summary>
@@ -396,6 +398,8 @@ Create a `.graphifyignore` in your project root — same syntax as `.gitignore`,
 
 **`.gitignore` is respected automatically.** graphify reads the `.gitignore` in each directory. If a `.graphifyignore` is also present, the two are **merged** — `.graphifyignore` patterns are evaluated last, so they win on conflicts (including `!` negations). Adding a `.graphifyignore` only ever excludes more; it never re-includes a file your `.gitignore` already excluded. Subdirectory scoping works the same way as git — an ignore file only affects its own subtree.
 
+Pass `--no-gitignore` to `graphify extract` when git-ignored generated or transpiled code belongs in the graph. This disables `.gitignore` and `.git/info/exclude`; `.graphifyignore` still applies.
+
 ```
 # .graphifyignore
 node_modules/
@@ -513,9 +517,10 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_GOOGLE_WORKSPACE` | Auto-enable Google Workspace export | optional — set to `1` |
 | `GRAPHIFY_TRIAGE_BACKEND` | Backend for `graphify prs --triage` | optional — auto-detected from available keys |
 | `GRAPHIFY_TRIAGE_MODEL` | Model override for triage | optional — e.g. `claude-opus-4-7` |
-| `GRAPHIFY_QUERY_LOG` | Override query log path (default: `~/.cache/graphify-queries.log`) | optional — set to empty or `/dev/null` to silence |
-| `GRAPHIFY_QUERY_LOG_DISABLE` | Set to `1` to disable query logging entirely | optional |
-| `GRAPHIFY_QUERY_LOG_RESPONSES` | Set to `1` to also log full subgraph responses (off by default) | optional |
+| `GRAPHIFY_QUERY_LOG_ENABLE` | Set to `1` to turn on the local query log at `~/.cache/graphify-queries.log` (records each query/path/explain question + corpus path). Off by default — nothing is written unless you opt in (#1797) | optional |
+| `GRAPHIFY_QUERY_LOG` | Enable the query log and write it to this path instead of the default | optional — off unless this or `_ENABLE` is set |
+| `GRAPHIFY_QUERY_LOG_DISABLE` | Set to `1` to force the query log off (wins over the enable vars) | optional |
+| `GRAPHIFY_QUERY_LOG_RESPONSES` | When the log is enabled, also record full subgraph responses (off by default) | optional |
 | `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
 
@@ -551,6 +556,9 @@ PowerShell treats a leading `/` as a path separator. Use `graphify .` (no slash)
 
 **Graph has fewer nodes after `--update` or rebuild**
 If a refactor deleted files, the old nodes linger. Pass `--force` (or set `GRAPHIFY_FORCE=1`) to overwrite even when the rebuild has fewer nodes.
+
+**`extract` exits with "extraction was incomplete ... refusing to overwrite"**
+When an extraction pass crashes or a walk can't fully read the corpus, the run would be smaller than a complete one, so `graphify extract` refuses to overwrite a larger existing graph with the partial result (protecting your `graph.json`). Fix the underlying failure and re-run, or pass `--allow-partial` to overwrite anyway.
 
 **Graph has duplicate nodes for the same entity (ghost duplicates)**
 Ghost duplicates (same symbol appearing twice — once from AST extraction with a source location, once from semantic extraction without) are now automatically merged at build time. If you see this in a graph built before v0.8.33, run a full re-extract to clean up:
@@ -710,6 +718,7 @@ graphify extract ./docs --token-budget 30000   # smaller semantic chunks for loc
 graphify extract ./docs --max-concurrency 2    # fewer parallel LLM calls (useful for local inference)
 graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow local models (default 600s)
 graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides via gws before extraction
+graphify extract ./src --no-gitignore          # include git-ignored source; still honor .graphifyignore
 graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
 graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
 graphify extract ./docs --timing               # print per-stage wall-clock timings to stderr (also works on cluster-only)
@@ -770,13 +779,13 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 
 ---
 
-## Built on graphify: Penpax
+## graphify Enterprise
 
-[**Penpax**](https://graphifylabs.ai) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working life: meetings, browser history, emails, files, and code, updating continuously in the background.
+[**graphify Enterprise**](https://graphify.com) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working context: meetings, files, docs, and code, updating continuously in the background.
 
-Built for people whose work lives across hundreds of conversations and documents they can never fully reconstruct. No cloud, fully on-device.
+Built for people and teams whose work lives across hundreds of conversations and documents they can never fully reconstruct.
 
-**Free trial launching soon.** [Join the waitlist →](https://graphifylabs.ai)
+**Learn more at [graphify.com](https://graphify.com).** Free trial launching soon.
 
 ---
 
@@ -834,8 +843,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities and how to ad
 ---
 
 <p align="center">
-  <a href="https://star-history.com/#safishamsi/graphify&Date">
-    <img src="https://api.star-history.com/svg?repos=safishamsi/graphify&type=Date" alt="Star History Chart" width="370"/>
+  <a href="https://star-history.com/#Graphify-Labs/graphify&Date">
+    <img src="https://api.star-history.com/svg?repos=Graphify-Labs/graphify&type=Date" alt="Star History Chart" width="370"/>
   </a>
 </p>
 
@@ -844,8 +853,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities and how to ad
 ## Community and links
 
 <p align="center">
+  <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
   <a href="https://discord.gg/598Ad9zQZ"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
-  <a href="https://x.com/graphifyy"><img src="https://img.shields.io/badge/X-graphifyy-000000?logo=x&logoColor=white" alt="X"/></a>
+  <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
   <a href="https://safishamsi.gumroad.com/l/qetvlo"><img src="https://img.shields.io/badge/Book-The%20Memory%20Layer-2ea44f?style=flat&logo=gitbook&logoColor=white" alt="The Memory Layer"/></a>
 </p>

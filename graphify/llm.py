@@ -555,6 +555,128 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
     return "\n\n".join(parts)
 
 
+# ── Semantic evidence-binding ─────────────────────────────────────────────────
+# The semantic (LLM) extraction runs on documents/papers/images — code files are
+# handled by the deterministic AST engine and never reach the model. So a
+# ``file_type == "code"`` node here is a symbol the model surfaced from WITHIN a
+# document (a name in a fenced code block, an API referenced in a paper). Verify
+# that such a symbol actually occurs in the source bytes the model was shown; a
+# node the model asserts with no evidence in its source is a likely fabrication.
+# `_out_of_scope` (#1895) only rejects a node attributed to a real file that was
+# NOT dispatched; a fabricated symbol attributed to a file that WAS dispatched
+# slips through it. This closes that intra-file gap with a lenient substring
+# check and FLAGS (never drops) an unverifiable node with ``verification =
+# "unverified"``, surfaced by the caller (stderr), reported by the diagnostics,
+# and left on the node in graph.json.
+# Short tokens (len < 3) are ignored: they match too readily to be evidence and
+# their absence is not a reliable fabrication signal, so skipping them avoids
+# false positives.
+_LABEL_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# A dedicated node field — deliberately NOT the ``confidence`` key, whose
+# validated vocabulary ({EXTRACTED, INFERRED, AMBIGUOUS}, and only on edges)
+# this value does not belong to. Downstream (diagnostics) counts it.
+_VERIFICATION_FIELD = "verification"
+_UNVERIFIED_VALUE = "unverified"
+
+
+def _label_identifiers(label: str) -> list[str]:
+    """Identifier tokens from a node label, stripped of a trailing call/args
+    parenthesis (``foo()`` -> ``foo``, ``Cls.method(x)`` -> ``Cls``/``method``)."""
+    if not label:
+        return []
+    base = label.split("(", 1)[0]
+    return [t for t in _LABEL_IDENT_RE.findall(base) if len(t) >= 3]
+
+
+def _dispatched_source_text(units: "list[Path | FileSlice]", root: Path) -> dict[Path, str]:
+    """Map each dispatched text unit's resolved path to the (lower-cased, capped)
+    source bytes the model actually saw via :func:`_read_files`.
+
+    Slices of one file share a key, matching how ``_read_files`` reports a slice's
+    parent path as ``source_file`` — so a node attributed to that file is checked
+    against the union of the ranges dispatched in this call.
+    """
+    by_path: dict[Path, str] = {}
+    for u in units:
+        p = unit_path(u)
+        safe = _resolve_under_root(p, root)
+        if safe is None:
+            continue
+        try:
+            content = read_slice_text(u) if isinstance(u, FileSlice) else _file_to_text(safe)
+        except Exception:  # noqa: BLE001 — one unreadable file (e.g. a malformed PDF) must not disable binding for the whole chunk
+            continue
+        by_path[safe] = by_path.get(safe, "") + content[:_FILE_CHAR_CAP].lower()
+    return by_path
+
+
+def _bind_node_evidence(result: dict, text_units: "list[Path | FileSlice]", root: Path) -> int:
+    """Downgrade code-typed nodes whose symbol name has no evidence in the source
+    the model read, returning the number downgraded.
+
+    For every ``file_type == "code"`` node whose ``source_file`` resolves to one
+    of the (document/paper/image) files sent in THIS call, verify that at least
+    one identifier from its label OR id occurs in that file's source bytes. If
+    none does, set ``verification = "unverified"`` rather than dropping it.
+
+    Precision-first, to avoid false-positives on legitimately-derived names:
+      - Only ``code`` nodes are checked — code labels are verbatim symbol names,
+        whereas document/paper/concept labels are prose and would false-positive.
+      - Both the label AND the id are checked: the id (``stem_entityname``)
+        usually carries the verbatim symbol even when the label is prettified,
+        cutting false flags on human-readable labels.
+      - Nodes without a ``source_file``, and nodes attributed to a file not
+        dispatched in this call (left to #1895), are never touched.
+      - Verification is lenient: any identifier occurring as a substring
+        (case-insensitive) passes; a node is flagged only when NONE occur.
+      - A node with no checkable identifier (all short / non-ASCII) is left as-is.
+      - The action is a reversible flag, never a drop. A code symbol a document
+        only describes in prose (no verbatim occurrence) is legitimately
+        unverified — the model inferred it rather than read it.
+    """
+    nodes = result.get("nodes")
+    if not nodes:
+        return 0
+    # Perf: skip the (potentially expensive, e.g. PDF re-extraction) source read
+    # entirely when the result has no code-typed node with a source_file — the
+    # common case for a document/paper batch.
+    if not any(isinstance(n, dict) and n.get("file_type") == "code" and n.get("source_file")
+               for n in nodes):
+        return 0
+    source_by_path = _dispatched_source_text(text_units, root)
+    if not source_by_path:
+        return 0
+    downgraded = 0
+    for n in nodes:
+        if not isinstance(n, dict) or n.get("file_type") != "code":
+            continue
+        sf = n.get("source_file")
+        if not sf:
+            continue
+        p = Path(sf)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            key = p.resolve()
+        except (OSError, RuntimeError):
+            continue
+        src = source_by_path.get(key)
+        if src is None:
+            continue  # not dispatched in this call — #1895's out-of-scope domain
+        idents = _label_identifiers(str(n.get("label", ""))) + _label_identifiers(str(n.get("id", "")))
+        if not idents:
+            continue  # nothing checkable — do not flag
+        if any(ident.lower() in src for ident in idents):
+            continue  # symbol name is present in the source — verified
+        # No evidence. Flag only a node the model itself presented as solid
+        # (EXTRACTED/unset) — one it already hedged (INFERRED/AMBIGUOUS) needs no
+        # second flag. Idempotent: never overwrites an existing verification.
+        if n.get("confidence") in (None, "", "EXTRACTED") and not n.get(_VERIFICATION_FIELD):
+            n[_VERIFICATION_FIELD] = _UNVERIFIED_VALUE
+            downgraded += 1
+    return downgraded
+
+
 # ── Image (vision) handling ───────────────────────────────────────────────────
 # Raster image types a vision model can actually look at. `.svg` is intentionally
 # excluded: it is XML markup, so `_read_files` reads it as text (the model parses
@@ -1480,19 +1602,19 @@ def extract_files_direct(
     max_out = _resolve_max_tokens(cfg.get("max_tokens", 8192))
 
     if backend == "claude":
-        return _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "claude-cli":
-        return _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "bedrock":
-        return _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
-    if backend == "azure":
+        result = _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "claude-cli":
+        result = _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "bedrock":
+        result = _call_bedrock(mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
         if not endpoint:
             raise ValueError(
                 "Azure OpenAI backend requires AZURE_OPENAI_ENDPOINT to be set "
                 "(e.g. https://my-resource.openai.azure.com/)."
             )
-        return _call_azure(
+        result = _call_azure(
             key,
             endpoint,
             mdl,
@@ -1501,25 +1623,43 @@ def extract_files_direct(
             max_tokens=max_out,
             deep_mode=deep_mode,
         )
-    return _call_openai_compat(
-        cfg["base_url"],
-        key,
-        mdl,
-        user_msg,
-        temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
-        reasoning_effort=cfg.get("reasoning_effort"),
-        # Honour max_completion_tokens (gemini) or the older max_tokens key
-        # (ollama/deepseek/kimi/openai) -- most openai-compat configs define the
-        # latter, so reading only max_completion_tokens silently capped their
-        # output at the 8192 fallback and truncated deep-mode JSON (#1365).
-        max_completion_tokens=_resolve_max_tokens(
-            cfg.get("max_completion_tokens") or cfg.get("max_tokens", 8192)
-        ),
-        backend=backend,
-        deep_mode=deep_mode,
-        images=image_refs,
-        extra_body=cfg.get("extra_body"),
-    )
+    else:
+        result = _call_openai_compat(
+            cfg["base_url"],
+            key,
+            mdl,
+            user_msg,
+            temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
+            reasoning_effort=cfg.get("reasoning_effort"),
+            # Honour max_completion_tokens (gemini) or the older max_tokens key
+            # (ollama/deepseek/kimi/openai) -- most openai-compat configs define the
+            # latter, so reading only max_completion_tokens silently capped their
+            # output at the 8192 fallback and truncated deep-mode JSON (#1365).
+            max_completion_tokens=_resolve_max_tokens(
+                cfg.get("max_completion_tokens") or cfg.get("max_tokens", 8192)
+            ),
+            backend=backend,
+            deep_mode=deep_mode,
+            images=image_refs,
+            extra_body=cfg.get("extra_body"),
+        )
+
+    # Verify code-typed nodes against the source the model read and downgrade the
+    # confidence of any whose symbol name has no evidence there. Runs on the bytes
+    # the model actually saw (text_files, same cap as _read_files); images are
+    # excluded (binary, unverifiable). Best-effort — never abort extraction.
+    if isinstance(result, dict):
+        try:
+            _n_unverified = _bind_node_evidence(result, text_files, root)
+            if _n_unverified:
+                print(
+                    f"[graphify] {_n_unverified} semantic node(s) had no evidence in "
+                    "the source and were flagged verification=unverified",
+                    file=sys.stderr,
+                )
+        except Exception as _exc:  # noqa: BLE001 — evidence-binding is advisory
+            print(f"[graphify] evidence-binding skipped: {_exc}", file=sys.stderr)
+    return result
 
 
 def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
@@ -1636,6 +1776,69 @@ def _looks_like_context_exceeded(exc: BaseException) -> bool:
     return any(marker in msg for marker in _CONTEXT_EXCEEDED_MARKERS)
 
 
+def _mark_partial(result: dict) -> None:
+    """Tag every node/edge/hyperedge in a truncated chunk result with an internal
+    ``_partial`` marker.
+
+    A chunk whose LLM response was truncated (`finish_reason="length"`) and could
+    not be recovered by splitting yields a PARTIAL node set. Left unmarked, that
+    set is checkpointed and (via the final save) written to the content-hash
+    semantic cache as authoritative, so it is served forever until the file
+    content changes or ``--force``. The marker rides these item dicts up through
+    every chunk merge (which concatenate the same object references) so it reaches
+    ``save_semantic_cache`` on both the checkpoint and the final-save paths, which
+    stamp the entry ``partial: True``; ``load_cached`` then treats it as a miss.
+    """
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in result.get(bucket, []):
+            if isinstance(item, dict):
+                item["_partial"] = True
+
+
+def _chunk_partial_files(chunk) -> list[str]:
+    """Source paths covered by a chunk, for marking a chunk that truncated to an
+    EMPTY parse partial (#1950 gap): a mid-JSON cut yields zero items, so
+    ``_mark_partial`` has nothing to tag and the file it covered would be stamped
+    complete. Recording the chunk's own paths closes that. ``unit_path`` folds a
+    FileSlice back to its parent file so one truncated slice marks the whole doc."""
+    return sorted({str(unit_path(u)) for u in chunk})
+
+
+def _merged_partial_files(*results: dict) -> list[str]:
+    """Union of the ``_partial_files`` carried by each result (survives merges)."""
+    out: set[str] = set()
+    for r in results:
+        out.update(r.get("_partial_files", []) or [])
+    return sorted(out)
+
+
+def _partial_source_files(result: dict) -> list[str]:
+    """Source files known partial: those carrying a ``_partial`` item marker, plus
+    any recorded in ``_partial_files`` (a chunk that truncated to an empty parse
+    and so has no items to mark)."""
+    seen: set[str] = set(result.get("_partial_files", []) or [])
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in result.get(bucket, []):
+            if isinstance(item, dict) and item.get("_partial"):
+                sf = item.get("source_file")
+                if sf:
+                    seen.add(str(sf))
+    return sorted(seen)
+
+
+def _strip_partial_markers(result: dict) -> None:
+    """Remove the internal ``_partial`` marker from every item in ``result``.
+
+    Call this only AFTER the semantic cache has been saved (the save consumes the
+    marker to stamp affected entries ``partial: True``). Stripping it keeps the
+    internal flag out of the graph.json nodes/edges the corpus result feeds into.
+    """
+    for bucket in ("nodes", "edges", "hyperedges"):
+        for item in result.get(bucket, []):
+            if isinstance(item, dict):
+                item.pop("_partial", None)
+
+
 def _extract_with_adaptive_retry(
     chunk: list[Path],
     backend: str,
@@ -1695,6 +1898,7 @@ def _extract_with_adaptive_retry(
             "output_tokens": left.get("output_tokens", 0) + right.get("output_tokens", 0),
             "model": model,
             "finish_reason": "stop",
+            "_partial_files": _merged_partial_files(left, right),
         }
 
     def _split_lone_slice() -> "tuple[FileSlice, FileSlice] | None":
@@ -1753,6 +1957,7 @@ def _extract_with_adaptive_retry(
             "output_tokens": left.get("output_tokens", 0) + right.get("output_tokens", 0),
             "model": model,
             "finish_reason": "stop",
+            "_partial_files": _merged_partial_files(left, right),
         }
 
     if result.get("finish_reason") != "length":
@@ -1769,16 +1974,32 @@ def _extract_with_adaptive_retry(
             return _merge_two([halves[0]], [halves[1]])
         print(
             f"[graphify] single-file chunk {unit_path(chunk[0])} truncated at "
-            f"max_completion_tokens — partial result kept",
+            f"max_completion_tokens — partial result kept (not cached as complete)",
             file=sys.stderr,
+        )
+        # The node set is incomplete; mark it so it is not promoted to the
+        # semantic cache as authoritative and is re-dispatched next run. Also
+        # record the chunk's files so a truncation that parsed to nothing (an
+        # empty item set) still marks the file partial (#1950 empty-parse gap).
+        _mark_partial(result)
+        result["_partial_files"] = sorted(
+            set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
         )
         return result
 
     if _depth >= max_depth:
         print(
             f"[graphify] chunk of {len(chunk)} still truncated at recursion "
-            f"depth {_depth} (max {max_depth}) — partial result kept",
+            f"depth {_depth} (max {max_depth}) — partial result kept (not cached as complete)",
             file=sys.stderr,
+        )
+        # Conservative: this marks every file in the merged chunk partial, even
+        # ones that finished cleanly during recursion. Over-marking only costs a
+        # re-extraction next run; under-marking would serve a truncated file as
+        # complete, so err toward re-extraction.
+        _mark_partial(result)
+        result["_partial_files"] = sorted(
+            set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
         )
         return result
 
@@ -1807,6 +2028,7 @@ def _extract_with_adaptive_retry(
         # truncation warning; the merged result is no longer truncated as a
         # logical unit.
         "finish_reason": "stop",
+        "_partial_files": _merged_partial_files(left, right),
     }
 
 
@@ -1822,6 +2044,7 @@ def extract_corpus_parallel(
     max_concurrency: int = 4,
     max_retry_depth: int = 3,
     deep_mode: bool = False,
+    cache_root: "Path | None" = None,
 ) -> dict:
     """Extract a corpus in chunks, merging results.
 
@@ -1856,6 +2079,14 @@ def extract_corpus_parallel(
     Returns merged dict with nodes, edges, hyperedges, input_tokens,
     output_tokens. Failed chunks are logged to stderr and skipped — one bad
     chunk does not abort the run.
+
+    ``cache_root`` (when given) is where per-chunk checkpoint cache entries are
+    written, decoupled from ``root`` which anchors content-hash keys and
+    ``source_file`` resolution — the same split the AST cache uses (#1774).
+    With ``--out``, cli.py passes the corpus as ``root`` and the output
+    directory as ``cache_root`` so checkpoints land where the recovery read
+    looks, instead of creating an unwanted ``graphify-out/`` inside the
+    analyzed source tree (#1990).
 
     Accepts ``str`` paths as well as ``Path``; string entries are coerced up
     front so packing/slicing helpers can rely on ``Path`` semantics (#1386).
@@ -1903,7 +2134,7 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
-    def _checkpoint_chunk(result: dict) -> None:
+    def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
         # Persist each chunk's semantic results to the cache as soon as it
         # completes. Without this, the semantic cache is only written once, at
         # the very end of the run (in __main__), so a run interrupted partway
@@ -1914,12 +2145,36 @@ def extract_corpus_parallel(
             return
         try:
             from .cache import save_semantic_cache as _scs
+            # Scope the write to the files actually dispatched in this chunk
+            # (#1757). The model can attribute a node's source_file to another
+            # corpus file; without this bound, that stray node would clobber the
+            # other file's complete cache entry (or, with merge_existing, pollute
+            # it). Use unit_path so a FileSlice (one slice of an oversized doc)
+            # resolves to its parent file; a bare Path passes through. (#1870: the
+            # old `.rel` attribute does not exist on FileSlice, so every sliced
+            # chunk leaked the FileSlice object into the allowlist and the write
+            # raised TypeError, silently defeating the checkpoint.)
+            allowed = [unit_path(item) for item in chunk]
+            # Deep-mode results checkpoint into their own namespace
+            # (cache/semantic-deep/) so a deep run never overwrites standard
+            # entries — and a later standard run never serves deep ones (#1894).
             _scs(
                 result.get("nodes", []),
                 result.get("edges", []),
                 result.get("hyperedges", []),
                 root=root,
+                cache_root=cache_root,
                 merge_existing=True,
+                allowed_source_files=allowed,
+                mode="deep" if deep_mode else None,
+                # Stamp the entry with the prompt that produced it, so a release
+                # that changes _EXTRACTION_SYSTEM re-extracts instead of replaying
+                # this vintage forever (#1939).
+                prompt=_extraction_system(deep=deep_mode),
+                # A truncated/partial chunk must not be checkpointed as
+                # authoritative: pass the partial file set so its entry is
+                # stamped ``partial: True`` and re-dispatched next run.
+                partial_source_files=_partial_source_files(result) or None,
             )
         except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
             print(f"[graphify] incremental cache checkpoint failed: {_exc}", file=sys.stderr)
@@ -1936,7 +2191,7 @@ def extract_corpus_parallel(
                 continue
             assert result is not None
             _merge_into(merged, result)
-            _checkpoint_chunk(result)
+            _checkpoint_chunk(result, chunk)
             if callable(on_chunk_done):
                 on_chunk_done(idx, total, result)
     else:
@@ -1961,7 +2216,7 @@ def extract_corpus_parallel(
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
-                _checkpoint_chunk(result)
+                _checkpoint_chunk(result, chunks[idx])
                 if callable(on_chunk_done):
                     on_chunk_done(idx, total, result)
         for idx in sorted(results_by_idx):
@@ -1976,6 +2231,99 @@ def extract_corpus_parallel(
             " — see errors above. Partial results returned.",
             file=sys.stderr,
         )
+
+    # Dispatch/return reconciliation (#1890). A chunk can return a clean, non-empty
+    # response that simply omits some of the documents it was given; those docs then
+    # vanish from the graph with no node, no warning, and no cache/manifest stamp, so
+    # they are silently re-dispatched (and re-omitted) forever. Diff the files we
+    # dispatched against the source_files that actually came back and surface the gap.
+    dispatched = {unit_path(f) for chunk in chunks for f in chunk}
+
+    # Out-of-scope node filter (#1895). The #1757 cache guard already refuses
+    # to WRITE a cache entry for a node whose source_file is a real file that
+    # was not dispatched, but the node itself still flowed into the merged
+    # result and landed in graph.json. Mirror the #1757 condition here: resolve
+    # each source_file against root and drop the node only when it resolves to
+    # an existing file (.is_file()) outside the dispatched set — non-file
+    # source_files (concepts, model-invented anchors) pass through untouched.
+    # Runs BEFORE the #1890 covered/uncovered reconciliation so that diff
+    # reflects the post-filter graph.
+    def _resolve_against_root(value: "str | Path") -> Path:
+        p = Path(value)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            return p.resolve()
+        except (OSError, RuntimeError):
+            return p
+
+    _dispatched_resolved = {_resolve_against_root(p) for p in dispatched}
+
+    def _out_of_scope(item: dict) -> bool:
+        sf = item.get("source_file")
+        if not sf:
+            return False
+        p = _resolve_against_root(sf)
+        return p.is_file() and p not in _dispatched_resolved
+
+    dropped_ids: set = set()
+    dropped_files: set[str] = set()
+    kept_nodes: list[dict] = []
+    for n in merged.get("nodes", []):
+        if _out_of_scope(n):
+            if n.get("id") is not None:
+                dropped_ids.add(n.get("id"))
+            dropped_files.add(str(n.get("source_file")))
+            continue
+        kept_nodes.append(n)
+    dropped_node_count = len(merged.get("nodes", [])) - len(kept_nodes)
+    merged["out_of_scope_dropped"] = dropped_node_count
+    if dropped_node_count:
+        merged["nodes"] = kept_nodes
+        # Keep the graph consistent: an edge or hyperedge referencing a
+        # dropped node's id (or itself attributed to an undispatched real
+        # file) must not survive its endpoint.
+        merged["edges"] = [
+            e for e in merged.get("edges", [])
+            if not _out_of_scope(e)
+            and e.get("source") not in dropped_ids
+            and e.get("target") not in dropped_ids
+        ]
+        merged["hyperedges"] = [
+            h for h in merged.get("hyperedges", [])
+            if not _out_of_scope(h)
+            and not (dropped_ids & set(h.get("nodes", []) or []))
+        ]
+        shown = ", ".join(sorted(Path(f).name for f in dropped_files)[:5])
+        more = f" (+{len(dropped_files) - 5} more)" if len(dropped_files) > 5 else ""
+        print(
+            f"[graphify] WARNING: dropped {dropped_node_count} out-of-scope node(s) "
+            f"attributed to file(s) not dispatched for extraction: {shown}{more}. "
+            "The model mis-attributed them to another corpus file; they were "
+            "excluded from the graph (#1895).",
+            file=sys.stderr,
+        )
+
+    covered: set[Path] = set()
+    for n in merged.get("nodes", []):
+        sf = n.get("source_file")
+        if sf:
+            p = Path(sf)
+            covered.add(p if p.is_absolute() else (root / p))
+    uncovered = sorted(
+        p for p in dispatched
+        if p.resolve() not in {c.resolve() for c in covered}
+    )
+    merged["uncovered_files"] = [str(p) for p in uncovered]
+    if uncovered:
+        shown = ", ".join(p.name for p in uncovered[:5])
+        more = f" (+{len(uncovered) - 5} more)" if len(uncovered) > 5 else ""
+        print(
+            f"[graphify] WARNING: {len(uncovered)}/{len(dispatched)} dispatched file(s) "
+            f"produced no nodes and are absent from the graph: {shown}{more}. The model "
+            "returned a response but omitted them; a re-run will retry them.",
+            file=sys.stderr,
+        )
     return merged
 
 
@@ -1986,6 +2334,14 @@ def _merge_into(merged: dict, result: dict) -> None:
     merged["hyperedges"].extend(result.get("hyperedges", []))
     merged["input_tokens"] += result.get("input_tokens", 0)
     merged["output_tokens"] += result.get("output_tokens", 0)
+    # Carry forward files a chunk truncated to an empty parse (#1950): these have
+    # no items to ride the merge, so they'd otherwise be lost from the run-level
+    # partial set the manifest stamp consults.
+    incoming = result.get("_partial_files")
+    if incoming:
+        merged["_partial_files"] = sorted(
+            set(merged.get("_partial_files", []) or []) | set(incoming)
+        )
 
 
 def _call_llm(

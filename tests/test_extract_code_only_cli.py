@@ -7,6 +7,7 @@ still builds, and the no-key error now points users at the flag.
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -53,3 +54,56 @@ def test_mixed_repo_without_key_errors_and_points_at_code_only(tmp_path):
     r = _run(repo)  # no --code-only, no key
     assert r.returncode != 0, "mixed repo with no key should still error without the flag"
     assert "--code-only" in r.stderr, "the no-key error must point users at --code-only"
+
+
+def test_no_gitignore_indexes_vcs_ignored_code_but_keeps_graphifyignore(tmp_path):
+    repo = tmp_path / "repo"
+    generated = repo / "proj" / "deep" / "generated"
+    generated.mkdir(parents=True)
+    (repo / ".git" / "info").mkdir(parents=True)
+    (repo / ".git" / "info" / "exclude").write_text("local/\n")
+    (repo / "proj" / ".gitignore").write_text("generated/\n")
+    (repo / "proj" / ".graphifyignore").write_text("hidden/\n")
+    (generated / "Gen.cs").write_text("namespace N { public class Gen {} }\n")
+    local = repo / "local"
+    local.mkdir()
+    (local / "Local.cs").write_text("namespace N { public class Local {} }\n")
+    hidden = repo / "proj" / "hidden"
+    hidden.mkdir()
+    (hidden / "Hidden.cs").write_text("namespace N { public class Hidden {} }\n")
+
+    result = _run(repo, "--no-gitignore", "--no-cluster")
+
+    assert result.returncode == 0, result.stderr
+    graph = json.loads((repo / "graphify-out" / "graph.json").read_text())
+    sources = {Path(str(node.get("source_file", ""))).as_posix() for node in graph["nodes"]}
+    assert any(source.endswith("proj/deep/generated/Gen.cs") for source in sources)
+    assert any(source.endswith("local/Local.cs") for source in sources)
+    assert not any(source.endswith("proj/hidden/Hidden.cs") for source in sources)
+
+
+def test_no_gitignore_setting_persists_across_flagless_extract(tmp_path):
+    """#1971 persistence: once --no-gitignore is set, a later flag-less
+    `graphify extract` must NOT clobber it back to honoring .gitignore (which
+    would make the git-ignored code silently disappear again)."""
+    repo = tmp_path / "repo"
+    gen = repo / "generated"
+    gen.mkdir(parents=True)
+    (repo / ".gitignore").write_text("generated/\n")
+    (repo / "app.py").write_text("def hello():\n    return 1\n")
+    (gen / "Gen.py").write_text("def gen():\n    return 2\n")
+
+    def _sources():
+        g = json.loads((repo / "graphify-out" / "graph.json").read_text())
+        return {Path(str(n.get("source_file", ""))).as_posix() for n in g["nodes"]}
+
+    r1 = _run(repo, "--no-gitignore", "--code-only", "--no-cluster")
+    assert r1.returncode == 0, r1.stderr
+    assert any(s.endswith("generated/Gen.py") for s in _sources())
+
+    # A plain flag-less re-extract must keep the git-ignored file (setting persisted).
+    r2 = _run(repo, "--code-only", "--no-cluster")
+    assert r2.returncode == 0, r2.stderr
+    assert any(s.endswith("generated/Gen.py") for s in _sources()), (
+        "flag-less re-extract clobbered the persisted --no-gitignore setting (#1971)"
+    )

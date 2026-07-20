@@ -1,7 +1,7 @@
 """Tests for graphify/dedup.py entity deduplication pipeline."""
 from __future__ import annotations
 import pytest
-from graphify.dedup import deduplicate_entities, _entropy, _shingles
+from graphify.dedup import deduplicate_entities, _defines_id, _entropy, _shingles
 
 
 # ── entropy gate ─────────────────────────────────────────────────────────────
@@ -404,3 +404,150 @@ def test_same_id_same_source_file_no_warning(capsys):
     assert len(result_nodes) == 1
     captured = capsys.readouterr()
     assert "WARNING" not in captured.err
+
+
+# ── #1857: dedup summary log breakdown ────────────────────────────────────────
+
+def test_dedup_summary_prints_fuzzy_count_when_no_exact_merges(capsys):
+    """A fuzzy-only run must still report the fuzzy count (#1857).
+
+    Two long, high-entropy, non-code labels on different files. Pass 1 (exact,
+    same-file) finds nothing; Pass 2 (Jaro-Winkler cross-file) merges them.
+    Previously the fuzzy count was nested inside `if exact_merges`, so this
+    line printed as `Deduplicated 1 node(s).` with no breakdown.
+    """
+    nodes = [
+        {"id": "g1", "label": "GraphExtractor", "file_type": "concept", "source_file": "a.md"},
+        {"id": "g2", "label": "Graph Extractor", "file_type": "concept", "source_file": "b.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+    captured = capsys.readouterr()
+    assert "Deduplicated" in captured.out
+    assert "fuzzy" in captured.out
+    assert "exact" not in captured.out
+
+
+def test_dedup_summary_still_reports_exact_only(capsys):
+    """Non-regression: an exact-only run still prints `(N exact)` and no fuzzy."""
+    # Same file + same normalized label → Pass 1 exact merge.
+    nodes = [
+        {"id": "u1", "label": "User Service", "file_type": "concept", "source_file": "svc.md"},
+        {"id": "u2", "label": "user service", "file_type": "concept", "source_file": "svc.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+    captured = capsys.readouterr()
+    assert "exact" in captured.out
+    assert "fuzzy" not in captured.out
+
+
+# ── ID collisions: definition vs cross-reference ──────────────────────────────
+
+# The defining node and a doc that merely mentions the entity. Both mint the ID
+# encoded from the *defining* file's path, so they collide by construction.
+_DEFINING = {"id": "agents_make_batch_fixtures_make_batch_fixtures",
+             "label": "make-batch-fixtures agent", "file_type": "concept",
+             "source_file": "agents/make-batch-fixtures.md"}
+_REFERENCING = {"id": "agents_make_batch_fixtures_make_batch_fixtures",
+                "label": "make-batch-fixtures", "file_type": "concept",
+                "source_file": "available/diagnose-issue/SKILL.md"}
+
+
+@pytest.mark.parametrize("nodes", [
+    [_DEFINING, _REFERENCING],
+    [_REFERENCING, _DEFINING],
+], ids=["definition-first", "reference-first"])
+def test_defining_file_wins_over_referencing_file(nodes, capsys):
+    """The node whose source_file is the file its ID encodes survives, whichever
+    chunk order the nodes arrive in — the survivor must not depend on it."""
+    result_nodes, _ = deduplicate_entities(list(nodes), [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["source_file"] == "agents/make-batch-fixtures.md"
+    assert result_nodes[0]["label"] == "make-batch-fixtures agent"
+
+
+def test_reference_collision_is_silent(capsys):
+    """A cross-reference collapsing into the entity it references loses nothing —
+    edges are keyed by ID and rewire to the survivor — so it must not be reported."""
+    edges = _make_edges("agents_make_batch_fixtures_make_batch_fixtures", "other")
+    result_nodes, result_edges = deduplicate_entities(
+        [_DEFINING, _REFERENCING], edges, communities={})
+
+    assert len(result_nodes) == 1
+    assert len(result_edges) == 1
+    captured = capsys.readouterr()
+    assert "WARNING" not in captured.err
+    assert "note:" not in captured.err
+
+
+def test_absolute_source_path_still_defines_id(capsys):
+    """source_file is absolute in some pipelines and repo-relative in others; the
+    defining file is recognised either way."""
+    absolute = dict(_DEFINING, source_file="/home/u/proj/agents/make-batch-fixtures.md")
+    result_nodes, _ = deduplicate_entities([_REFERENCING, absolute], [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["label"] == "make-batch-fixtures agent"
+    assert "WARNING" not in capsys.readouterr().err
+
+
+def test_same_file_relabel_is_noted(capsys):
+    """Two labels for one ID from one file: the loser's label is discarded, which is
+    the one drop that used to be silent. It is a note, not a collision warning."""
+    nodes = [
+        {"id": "agents_make_batch_fixtures_make_batch_fixtures",
+         "label": "make-batch-fixtures agent", "file_type": "concept",
+         "source_file": "agents/make-batch-fixtures.md"},
+        {"id": "agents_make_batch_fixtures_make_batch_fixtures",
+         "label": "make-batch-fixtures helper agent", "file_type": "concept",
+         "source_file": "agents/make-batch-fixtures.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+
+    assert len(result_nodes) == 1
+    captured = capsys.readouterr()
+    assert "note:" in captured.err
+    assert "make-batch-fixtures helper agent" in captured.err
+    assert "WARNING" not in captured.err
+
+
+def test_collision_survivor_is_order_independent():
+    """#1851: definer + same-file relabel + cross-file reference. Across every
+    insertion order the SAME node (source_file AND label) must survive — the
+    definer heuristic alone left the label order-dependent among co-definers."""
+    import itertools
+    nid = "agents_make_batch_fixtures_make_batch_fixtures"
+    definer = {"id": nid, "label": "make-batch-fixtures agent",
+               "file_type": "concept", "source_file": "agents/make-batch-fixtures.md"}
+    relabel = {"id": nid, "label": "make-batch-fixtures helper agent",
+               "file_type": "concept", "source_file": "agents/make-batch-fixtures.md"}
+    xref = {"id": nid, "label": "make-batch-fixtures", "file_type": "concept",
+            "source_file": "available/diagnose-issue/SKILL.md"}
+    survivors = set()
+    for perm in itertools.permutations([definer, relabel, xref]):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        survivors.add((out[0]["source_file"], out[0]["label"]))
+    assert survivors == {("agents/make-batch-fixtures.md", "make-batch-fixtures agent")}, (
+        f"non-deterministic collision survivor: {survivors}"
+    )
+
+
+def test_bare_file_node_defines_its_own_id():
+    """A file-level semantic node whose id is exactly the slugified path (no
+    `_entity` suffix) must be recognised as defining its id (#1851 tweak)."""
+    assert _defines_id({"id": "agents_make_batch_fixtures",
+                        "source_file": "agents/make-batch-fixtures.md"})
+
+
+def test_defines_id_helper():
+    assert _defines_id(_DEFINING)
+    assert not _defines_id(_REFERENCING)
+    # Pre-#1504 IDs keyed off the bare filename stem.
+    assert _defines_id({"id": "readme_booking_service",
+                        "source_file": "module-a/README.md"})
+    # A path that is merely a string-prefix of the ID's path does not define it.
+    assert not _defines_id({"id": "agents_foo", "source_file": "agent/foo.md"})
+    assert not _defines_id({"id": "docs_intro_foo", "source_file": ""})

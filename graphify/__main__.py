@@ -1,6 +1,7 @@
 """graphify CLI - `graphify install` sets up the Claude Code skill."""
 
 from __future__ import annotations
+import errno
 import functools
 import json
 import os
@@ -173,7 +174,7 @@ def _check_skill_version(skill_dst: Path) -> None:
     except OSError:
         return
     if not skill_exists:
-        print("  warning: skill dir exists but SKILL.md is missing. Run 'graphify install' to repair.")
+        print("  warning: skill dir exists but SKILL.md is missing. Run 'graphify install' to repair.", file=sys.stderr)
         return
     # A progressive SKILL.md links to its references/ sidecar. If the body points
     # at references/ but the dir is gone (manual delete, partial upgrade), the
@@ -444,7 +445,42 @@ _CODEX_HOOK = {
 
 
 
+def _silence_broken_pipe() -> None:
+    """Handle a downstream reader that closed the pipe early. Redirect stdout to
+    devnull so the interpreter's shutdown flush does not raise a second time, then
+    exit 0 — the reader (head, `Select-Object -First N`, `sed q`) has what it needs."""
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+    except Exception:
+        pass
+    sys.exit(0)
+
+
 def main() -> None:
+    """Console entry point. Wraps the CLI so that when a downstream consumer closes
+    stdout early, graphify treats it as success instead of crashing with an
+    unhandled write-to-closed-pipe error and exit 255 — which made CI wrappers and
+    agent harnesses read a successful query as a command failure (#1807)."""
+    try:
+        _run_cli()
+        # Flush explicitly, inside the guard. Piped stdout is block-buffered, so a
+        # small fully-buffered output would otherwise only flush at interpreter
+        # shutdown — outside this try — where a reader that closed the pipe surfaces
+        # as a noisy "Exception ignored on flushing sys.stdout" and a nonzero exit.
+        sys.stdout.flush()
+    except BrokenPipeError:
+        _silence_broken_pipe()
+    except OSError as exc:
+        # Windows surfaces a write to a closed pipe as OSError(EINVAL) rather than
+        # BrokenPipeError; EPIPE is the POSIX form when it slips past the above.
+        if getattr(exc, "errno", None) in (errno.EPIPE, errno.EINVAL):
+            _silence_broken_pipe()
+        else:
+            raise
+
+
+def _run_cli() -> None:
     for _stream in (sys.stdout, sys.stderr):
         if _stream is not None and hasattr(_stream, "reconfigure"):
             try:
@@ -561,12 +597,15 @@ def main() -> None:
         print("                            proxy, gateways): set ANTHROPIC_BASE_URL and ANTHROPIC_MODEL")
         print("    --model M               override backend default model")
         print("    --mode deep             aggressive INFERRED-edge semantic extraction")
+        print("    --force                 full re-scan and re-dispatch: skip the incremental")
+        print("                            manifest gate and semantic cache reads (env: GRAPHIFY_FORCE=1)")
         print("    --max-workers N         AST extraction subprocess count (default: cpu_count)")
         print("    --token-budget N        per-chunk token cap for semantic extraction (default: 60000)")
         print("    --max-concurrency N     parallel semantic chunks in flight (default: 4; set 1 for local LLMs)")
         print("    --api-timeout S         per-request timeout in seconds for the LLM client (default: 600)")
         print("    --out DIR               output dir (default: <path>); writes <DIR>/graphify-out/")
         print("    --google-workspace      export .gdoc/.gsheet/.gslides shortcuts via gws before extraction")
+        print("    --no-gitignore         ignore .gitignore and .git/info/exclude (prioritizes .graphifyignore)")
         print("    --no-cluster            skip clustering, write raw extraction only")
         print("    --code-only             index code (local AST, no API key) and skip doc/paper/image files")
         print("    --postgres DSN          extract schema from a live PostgreSQL database")

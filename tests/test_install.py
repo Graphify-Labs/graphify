@@ -367,7 +367,7 @@ def test_claude_hook_is_shell_agnostic(tmp_path):
     _install_claude_hook(tmp_path)
     hooks = _json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]["PreToolUse"]
     matchers = {h["matcher"] for h in hooks}
-    assert {"Bash", "Read|Glob"} <= matchers
+    assert {"Bash|Grep", "Read|Glob"} <= matchers  # Grep in the search matcher: #1986
     for h in hooks:
         cmd = h["hooks"][0]["command"]
         for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):

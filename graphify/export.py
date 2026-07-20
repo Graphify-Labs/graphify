@@ -180,6 +180,55 @@ def _git_head() -> str | None:
         return None
 
 
+# Sentinel: an existing graph.json is present and non-empty but cannot be parsed
+# into a node count (corrupt, mid-write, or structurally wrong). The caller must
+# fail CLOSED on this — the same way to_json's #479 guard refuses to overwrite
+# such a file — because we cannot prove the new graph isn't a silent shrink.
+MALFORMED_GRAPH = object()
+
+
+def existing_graph_node_count(path: "str | Path"):
+    """Node count of an existing graph.json.
+
+    Returns:
+      - an ``int`` node count when the file parses;
+      - ``None`` when there is verifiably nothing to protect — absent, empty, or
+        over the size cap (matching how :func:`to_json` lets the new graph
+        replace an empty/oversized file);
+      - :data:`MALFORMED_GRAPH` when the file is present and non-empty but
+        unparseable — the caller must treat this as fail-closed (refuse to
+        overwrite), mirroring to_json's #479 handling of a corrupt/mid-write file.
+
+    The raw ``--no-cluster`` write path uses this to apply the same #479 shrink
+    guard that :func:`to_json` applies inline for the clustered path.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    from graphify.security import check_graph_file_size_cap
+    try:
+        check_graph_file_size_cap(p)
+    except Exception:
+        # Oversized: reading it to compare would be the DoS the cap guards against.
+        return None
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except Exception:
+        # Present but unreadable: fail closed if it has bytes, else nothing to lose.
+        try:
+            return MALFORMED_GRAPH if p.stat().st_size > 0 else None
+        except Exception:
+            return None
+    if not raw.strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return MALFORMED_GRAPH
+    nodes = data.get("nodes") if isinstance(data, dict) else None
+    return len(nodes) if isinstance(nodes, list) else MALFORMED_GRAPH
+
+
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
@@ -266,8 +315,9 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     commit = built_at_commit if built_at_commit is not None else _git_head()
     if commit:
         data["built_at_commit"] = commit
-    with open(output_path, "w", encoding="utf-8") as f:  # nosec
-        json.dump(data, f, indent=2)
+    from graphify.paths import write_json_atomic
+    # Atomic write: a crash/ENOSPC mid-write must not truncate a good graph.json.
+    write_json_atomic(output_path, data, indent=2)
     return True
 
 
@@ -690,6 +740,28 @@ def to_obsidian(
     }
     _owned_write(".obsidian/graph.json", json.dumps(graph_config, indent=2))
 
+    # #1896: prune notes for nodes that dropped out of the graph. Only files the
+    # manifest says graphify owns are candidates, and anything written or skipped
+    # this run is excluded — so a user's own note is never touched (foreign files
+    # land in _skipped, never _owned). Guard each path to stay inside the vault in
+    # case a corrupt/hostile manifest contains `../` entries.
+    stale = _owned - set(_written) - set(_skipped)
+    pruned = 0
+    for rel_name in sorted(stale):
+        target = (out / rel_name).resolve()
+        if out.resolve() not in target.parents:
+            continue
+        try:
+            target.unlink(missing_ok=True)
+            pruned += 1
+        except OSError:
+            pass
+    if pruned:
+        print(
+            f"[graphify] pruned {pruned} note(s) for nodes no longer in the graph",
+            file=sys.stderr,
+        )
+
     # Persist the manifest of files graphify owns, so a re-run can safely update its
     # own notes while still refusing to touch the user's. Warn (once, aggregated)
     # about anything skipped to avoid clobbering a pre-existing file.
@@ -911,16 +983,44 @@ def to_graphml(
     for _, _, attrs in H.edges(data=True):
         for k in [k for k in attrs if k.startswith("_")]:
             del attrs[k]
-    # nx.write_graphml raises ValueError on None attribute values; replace with "".
+    # nx.write_graphml only accepts scalar attribute values: None raises, and a
+    # dict/list value (e.g. a per-node `metadata` dict, or the graph-level
+    # `hyperedges` list set by attach_hyperedges()) raises
+    # "GraphML does not support type <class 'dict'/'list'> as data values" (#1831).
+    # Coerce None -> "" and non-scalars -> a JSON string, across all three scopes.
+    def _graphml_safe(val):
+        if val is None:
+            return ""
+        if isinstance(val, bool) or isinstance(val, (int, float, str)):
+            return val  # GraphML-native scalars pass through unchanged
+        try:
+            return json.dumps(val, default=str, sort_keys=True)
+        except (TypeError, ValueError):
+            return str(val)
+
+    for key, val in list(H.graph.items()):
+        H.graph[key] = _graphml_safe(val)
     for node_id in H.nodes():
         for key, val in list(H.nodes[node_id].items()):
-            if val is None:
-                H.nodes[node_id][key] = ""
+            H.nodes[node_id][key] = _graphml_safe(val)
     for u, v in H.edges():
         for key, val in list(H.edges[u, v].items()):
-            if val is None:
-                H.edges[u, v][key] = ""
-    nx.write_graphml(H, output_path)
+            H.edges[u, v][key] = _graphml_safe(val)
+
+    # Write atomically: a mid-serialization error otherwise leaves a 0-byte
+    # .graphml on disk that downstream tooling mistakes for a completed export
+    # (#1831). Write to a sibling temp file, then replace on success.
+    out = Path(output_path)
+    tmp = out.with_name(out.name + ".tmp")
+    try:
+        nx.write_graphml(H, str(tmp))
+        os.replace(str(tmp), str(out))
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def to_svg(
