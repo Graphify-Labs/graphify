@@ -490,6 +490,49 @@ def test_worktree_guard_runs_on_primary_skips_linked(tmp_path):
     assert "RAN" not in r_linked.stdout, "guard failed to skip the linked worktree"
 
 
+# ── #2060: `checkout -b` off the current HEAD must not trigger a rebuild ─────
+
+def test_checkout_script_has_same_head_guard():
+    """The post-checkout template must skip the rebuild when PREV_HEAD and
+    NEW_HEAD are identical (e.g. `git checkout -b <new-branch>`), since no
+    commit actually changed and community detection isn't fully deterministic
+    run-to-run -- the old behaviour produced pure reordering churn in
+    graph.json that teams had to `git stash` away (#2060)."""
+    assert 'if [ "$PREV_HEAD" = "$NEW_HEAD" ]; then' in _CHECKOUT_SCRIPT
+    # post-commit has no PREV_HEAD/NEW_HEAD concept; guard must not leak there.
+    assert 'if [ "$PREV_HEAD" = "$NEW_HEAD" ]; then' not in _HOOK_SCRIPT
+
+
+def _checkout_same_head_guard_snippet() -> str:
+    """Slice _CHECKOUT_SCRIPT up through the new same-head guard and append a
+    marker, mirroring the _worktree_guard_snippet() pattern above."""
+    marker = 'if [ "$PREV_HEAD" = "$NEW_HEAD" ]; then\n    exit 0\nfi\n'
+    idx = _CHECKOUT_SCRIPT.index(marker) + len(marker)
+    return _CHECKOUT_SCRIPT[:idx] + "echo RAN\n"
+
+
+def test_checkout_guard_skips_rebuild_when_head_unchanged():
+    """`checkout -b` off HEAD: PREV_HEAD == NEW_HEAD, BRANCH_SWITCH=1 -> the
+    guard must exit before reaching past it (#2060)."""
+    snippet = _checkout_same_head_guard_snippet()
+    result = subprocess.run(
+        ["sh", "-c", snippet, "sh", "deadbeef", "deadbeef", "1"],
+        capture_output=True, text=True,
+    )
+    assert "RAN" not in result.stdout
+
+
+def test_checkout_guard_runs_when_head_changed():
+    """A real branch switch (different commits) must still fall through past
+    the guard (#2060)."""
+    snippet = _checkout_same_head_guard_snippet()
+    result = subprocess.run(
+        ["sh", "-c", snippet, "sh", "aaaaaaa", "bbbbbbb", "1"],
+        capture_output=True, text=True,
+    )
+    assert "RAN" in result.stdout
+
+
 # ── #1907: duplicate keys in .git/config must not trigger spurious warnings ──
 
 def _append_duplicate_config_entries(repo: Path) -> None:
