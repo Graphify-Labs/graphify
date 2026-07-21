@@ -383,6 +383,7 @@ graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-r
 
 graphify hook install              # auto-rebuild on git commit
 graphify merge-graphs a.json b.json              # combine two graphs
+graphify cluster build             # cluster graph: link multiple repos with real cross-repo edges
 
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
@@ -433,6 +434,62 @@ graphify-out/cost.json        # local only
 2. Everyone pulls — their assistant reads the graph immediately.
 3. Run `graphify hook install` to auto-rebuild after each commit (AST only, no API cost). This also sets up a git merge driver so `graph.json` is never left with conflict markers — two devs committing in parallel get their graphs union-merged automatically.
 4. When docs or papers change, run `/graphify --update` to refresh those nodes.
+
+---
+
+## Cluster graphs (multi-repo)
+
+A **cluster graph** links several repos' graphs into one connected graph with real cross-repo edges — for ecosystems where the coupling lives in contracts a single-repo scan can't see: service A calls service B's HTTP API via an env-var URL, two repos share a database table, a wire-format type file is copy-mirrored between a client and a worker. (`merge-graphs` and `global` union graphs side by side; a cluster also *connects* them. For community detection on a single graph, see `cluster-only`.)
+
+A cluster is a directory with a `cluster.yaml` (or `cluster.json`) spec:
+
+```yaml
+schema_version: 1
+name: my-stack
+members:
+  - tag: web                                  # node-id namespace (web::...)
+    url: https://github.com/org/web           # identity — the spec is shareable
+    path: ../web                              # optional local hint
+  - tag: worker
+    url: https://github.com/org/worker        # no path: resolved per machine
+links:
+  - type: api_call                            # -> calls_api edge
+    name: ingest-api
+    from: {repo: web, file: src/lib/api-client.ts}
+    to:   {repo: worker, file: src/index.ts}
+  - type: shared_resource                     # -> hub node + uses edges
+    kind: db_table
+    name: events.pings
+    referents:
+      - {repo: web, label: pingSync}
+      - {repo: worker, file: src/sync.ts}
+  - type: mirrored_file                       # -> mirrors edge
+    from: {repo: web, file: src/types/payload.ts}
+    to:   {repo: worker, file: src/payload.ts}
+defaults:
+  on_missing: warn        # warn | create | error when a selector matches nothing
+```
+
+Node selectors are `{repo, file|label|id}` — `file` suffix-matches `source_file` (preferring the file node), `label` matches exactly then case-insensitively, `id` matches the member-local node id. You never write raw graph ids.
+
+Direction: `from` is the dependent side (`from` depends on / calls / copies `to`), matching how `imports` and `calls` edges point. So `graphify affected <changed-node>` seeded on a link's `to` side reports the `from` side — "I changed the worker's payload type; the web client is affected."
+
+Because members are identified by `url`, the spec commits cleanly and works on any machine: paths resolve via a gitignored `cluster.local.yaml` override (`graphify cluster locate <tag> <path>`), then the spec's `path` hint, then auto-discovery — scanning sibling directories for a checkout whose `origin` remote matches. A resolved checkout whose origin *doesn't* match the declared url gets a warning, so a same-named directory of the wrong repo can't sneak in.
+
+```bash
+graphify cluster init ~/clusters/my-stack --name my-stack
+graphify cluster add ../web && graphify cluster add ../worker
+# ...declare links in cluster.yaml, then:
+graphify cluster build
+cd ~/clusters/my-stack
+graphify query "how does a ping reach the database?"     # all existing commands work
+graphify affected "payload.ts"                            # impact traverses calls_api/mirrors across repos
+graphify path "api-client" "index.ts"
+```
+
+The build composes each member's `graphify-out/graph.json` under a `tag::` namespace, dedups external-library nodes by label across members (same behavior as the global graph), resolves the declared links into `EXTRACTED`-confidence edges, and writes a standard `graphify-out/graph.json` plus a `CLUSTER_REPORT.md` documenting every resolved/skipped link. Rebuilds are incremental-aware: unchanged members and spec skip the rebuild entirely. `graphify cluster check` dry-runs the whole thing (exit 1 on errors) — useful in CI to catch selector drift when a member repo refactors.
+
+Each member needs its own graph first (`graphify extract .` in that repo); `build` names exactly which members are missing one.
 
 ---
 
@@ -750,6 +807,14 @@ graphify global add graphify-out/graph.json --as myrepo   # register a project g
 graphify global remove myrepo                         # remove a project from the global graph
 graphify global list                                  # show all registered repos + node/edge counts
 graphify global path                                  # print path to the global graph file
+
+graphify cluster init ~/clusters/my-stack --name my-stack   # start a cluster (multi-repo linked graph)
+graphify cluster add ../frontend                      # add a member repo (url derived from its origin remote)
+graphify cluster add https://github.com/org/backend --as api  # or add by URL; path resolved per machine
+graphify cluster locate api ~/work/backend            # machine-local checkout override (cluster.local.yaml)
+graphify cluster build                                # compose member graphs + resolve declared links
+graphify cluster check                                # validate the spec + dry-run link resolution (CI-friendly)
+graphify cluster status                               # member resolution + staleness vs last build
 
 graphify prs                              # PR dashboard: CI, review, worktree, graph impact
 graphify prs 42                           # deep dive on PR #42

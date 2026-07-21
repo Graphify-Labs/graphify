@@ -27,6 +27,8 @@ Each stage is a single function in its own module. They communicate through plai
 | `security.py` | validation helpers | URL / path / label → validated or raises |
 | `validate.py` | `validate_extraction(data)` | extraction dict → raises on schema errors |
 | `serve.py` | `start_server(graph_path)` | graph file path → MCP stdio server |
+| `cluster_graph.py` | `build_cluster(cluster_dir)` | cluster.yaml + member graph.json files → one linked cross-repo graph (not community detection — that's `cluster.py`) |
+| `cluster_cli.py` | `cmd_cluster(argv)` | `graphify cluster <sub>` CLI for cluster_graph.py |
 | `watch.py` | `watch(root, flag_path)` | directory → writes flag file on change |
 | `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
 
