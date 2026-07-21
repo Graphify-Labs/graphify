@@ -97,6 +97,28 @@ def _option(args: list[str], *names: str) -> str | None:
     return None
 
 
+def _options(args: list[str], *names: str) -> list[str]:
+    values: list[str] = []
+    index = 0
+    while index < len(args):
+        value = args[index]
+        matched = False
+        for name in names:
+            if value == name and index + 1 < len(args):
+                values.append(args[index + 1])
+                index += 2
+                matched = True
+                break
+            if value.startswith(name + "="):
+                values.append(value.split("=", 1)[1])
+                index += 1
+                matched = True
+                break
+        if not matched:
+            index += 1
+    return values
+
+
 def _store_arg(args: list[str], *, default: str | Path | None = None) -> Path:
     value = _option(args, "--store", "--graph") or str(
         default or Path(_GRAPHIFY_OUT) / "graph.helix"
@@ -468,9 +490,9 @@ def _explain(args: list[str]) -> None:
     print(f"Source:    {attrs.get('source_file', '-')} {attrs.get('source_location', '')}".rstrip())
     print(f"Type:      {attrs.get('file_type', '-')}" )
     print(f"Degree:    {graph.degree(node_id).degree}")
-    learning = loaded.state.get("learning", {})
-    entries = learning.get("nodes", {}) if isinstance(learning, dict) else {}
-    entry = entries.get(str(node_id)) if isinstance(entries, dict) else None
+    from graphify.reflect import load_learning_overlay
+
+    entry = load_learning_overlay(loaded.store_path).get(str(node_id))
     if isinstance(entry, dict) and entry.get("status"):
         status = entry["status"]
         if status == "preferred":
@@ -485,6 +507,8 @@ def _explain(args: list[str]) -> None:
             )
         else:
             lesson = f"Lesson: {status} ({entry.get('uses', 0)} useful)"
+        if entry.get("stale"):
+            lesson += " [code changed since — re-verify]"
         print(lesson)
     print("Connections:")
     for edge_id in graph.incident_edge_ids(node_id):
@@ -582,6 +606,7 @@ def _global(args: list[str]) -> None:
 def _update_or_extract(cmd: str, args: list[str]) -> None:
     from graphify.watch import _rebuild_code, _write_build_config
 
+    timer = _StageTimer("--timing" in args)
     target = Path(next((value for value in args if not value.startswith("-")), "."))
     force = "--force" in args
     no_cluster = "--no-cluster" in args
@@ -589,29 +614,34 @@ def _update_or_extract(cmd: str, args: list[str]) -> None:
     if cmd == "update" and _option(args, "--changed"):
         changed = [Path(value) for value in str(_option(args, "--changed")).split(",")]
     include_semantic = cmd == "extract" and "--code-only" not in args
-    output_value = _option(args, "--out")
+    output_value = _option(args, "--out", "--output")
     output = Path(output_value) if output_value else None
-    if "--no-gitignore" in args:
+    explicit_excludes = _options(args, "--exclude")
+    if "--no-gitignore" in args or explicit_excludes:
         config_root = output if output is not None else target
         _write_build_config(
             config_root / _GRAPHIFY_OUT,
-            excludes=None,
-            gitignore=False,
+            excludes=explicit_excludes or None,
+            gitignore=False if "--no-gitignore" in args else None,
         )
-    if not _rebuild_code(
-        target, output_root=output, changed_paths=changed, force=force, no_cluster=no_cluster,
-        block_on_lock=True,
-        include_semantic=include_semantic,
-        code_only="--code-only" in args,
-        backend=_option(args, "--backend"),
-        model=_option(args, "--model"),
-        deep_mode=_option(args, "--mode") == "deep" or "--deep" in args,
-        token_budget=int(_option(args, "--token-budget") or 60_000),
-        max_concurrency=int(_option(args, "--max-concurrency") or 4),
-        retain_rollback="--retain-rollback" in args,
-        raise_on_error=True,
-    ):
-        raise RuntimeError("graph rebuild failed")
+    try:
+        if not _rebuild_code(
+            target, output_root=output, changed_paths=changed, force=force, no_cluster=no_cluster,
+            block_on_lock=True,
+            include_semantic=include_semantic,
+            code_only="--code-only" in args,
+            backend=_option(args, "--backend"),
+            model=_option(args, "--model"),
+            deep_mode=_option(args, "--mode") == "deep" or "--deep" in args,
+            token_budget=int(_option(args, "--token-budget") or 60_000),
+            max_concurrency=int(_option(args, "--max-concurrency") or 4),
+            retain_rollback="--retain-rollback" in args,
+            raise_on_error=True,
+            _timer=timer,
+        ):
+            raise RuntimeError("graph rebuild failed")
+    finally:
+        timer.total()
 
 
 def _save_result(args: list[str]) -> None:
@@ -648,7 +678,14 @@ def _reflect(args: list[str]) -> None:
     memory_dir = Path(_option(args, "--memory-dir") or Path(_GRAPHIFY_OUT) / "memory")
     output = Path(_option(args, "--out") or Path(_GRAPHIFY_OUT) / "reflections" / "LESSONS.md")
     store_value = _option(args, "--store", "--graph")
-    store = _store_arg(args) if store_value else None
+    candidate = _store_arg(args)
+    if store_value:
+        _validate_store_or_exit(candidate)
+        store = candidate
+    else:
+        # Preserve v8's automatic graph-aware reflection when the project's
+        # default graph exists, while still allowing a graph-less cold start.
+        store = candidate if candidate.is_dir() else None
     if "--if-stale" in args and lessons_fresh(output, memory_dir, store):
         print(f"Lessons already up to date -> {output}")
         return
@@ -681,6 +718,7 @@ def _tree(args: list[str]) -> None:
 def _cache_check(args: list[str]) -> None:
     from graphify.cache import check_semantic_cache
     from graphify.helix.persistence import load_graph
+    from graphify.llm import _extraction_system
 
     if not args or args[0].startswith("-"):
         raise ValueError("cache-check requires a newline-delimited file list")
@@ -693,12 +731,15 @@ def _cache_check(args: list[str]) -> None:
         value = loaded.state.get("incremental", {}).get("extraction_cache", {})
         if isinstance(value, dict):
             cache = value
+    mode = "deep" if "--deep" in args else _option(args, "--mode")
+    prompt_file = _option(args, "--prompt-file")
     nodes, edges, hyperedges, uncached = check_semantic_cache(
         files,
         cache,
         root=root,
-        mode="deep" if "--deep" in args else _option(args, "--mode"),
-        prompt_file=_option(args, "--prompt-file"),
+        mode=mode,
+        prompt=None if prompt_file else _extraction_system(deep=mode == "deep"),
+        prompt_file=prompt_file,
     )
     # These are transient extraction interchange files, never graph stores.
     out = root / _GRAPHIFY_OUT
@@ -710,6 +751,85 @@ def _cache_check(args: list[str]) -> None:
         )
     (out / ".graphify_uncached.txt").write_text("\n".join(uncached), encoding="utf-8")
     print(f"Cache: {len(files) - len(uncached)} hit, {len(uncached)} miss")
+
+
+def _merge_chunks(args: list[str]) -> None:
+    """Merge validated transient semantic DTO fragments.
+
+    These files are untrusted extraction results, not graph stores.  They are
+    validated before merging and the output is written atomically for the skill
+    workflow to consume before constructing a native generation.
+    """
+    import glob
+
+    from graphify.paths import write_json_atomic
+    from graphify.semantic_cleanup import load_validated_semantic_fragment
+
+    output_value = _option(args, "--out")
+    if output_value is None:
+        raise ValueError("merge-chunks requires --out <path>")
+    output = Path(output_value)
+    chunk_args: list[str] = []
+    index = 0
+    while index < len(args):
+        if args[index] == "--out":
+            index += 2
+            continue
+        if args[index].startswith("--out="):
+            index += 1
+            continue
+        chunk_args.append(args[index])
+        index += 1
+
+    chunk_files: list[str] = []
+    for value in chunk_args:
+        expanded = glob.glob(value)
+        chunk_files.extend(sorted(expanded) if expanded else [value])
+
+    merged: dict[str, Any] = {
+        "nodes": [], "edges": [], "hyperedges": [],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    seen_ids: set[str] = set()
+    valid_chunks = 0
+    for raw_path in chunk_files:
+        chunk, errors = load_validated_semantic_fragment(Path(raw_path))
+        if errors:
+            print(
+                f"[graphify merge-chunks] warning: skipping invalid chunk "
+                f"{raw_path}: {'; '.join(errors[:3])}",
+                file=sys.stderr,
+            )
+            continue
+        assert chunk is not None
+        valid_chunks += 1
+        for node in chunk.get("nodes", []):
+            node_id = str(node.get("id"))
+            if node_id not in seen_ids:
+                seen_ids.add(node_id)
+                merged["nodes"].append(node)
+        merged["edges"].extend(chunk.get("edges", []))
+        merged["hyperedges"].extend(chunk.get("hyperedges", []))
+        for token_key in ("input_tokens", "output_tokens"):
+            value = chunk.get(token_key, 0)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                merged[token_key] += value
+    if not valid_chunks:
+        raise ValueError(
+            f"no valid chunks to merge; refusing to write {output}"
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(output, merged, ensure_ascii=False)
+    summary = (
+        f"{valid_chunks} chunks"
+        if valid_chunks == len(chunk_files)
+        else f"{valid_chunks} of {len(chunk_files)} chunks"
+    )
+    print(
+        f"Merged {summary}: {len(merged['nodes'])} nodes, "
+        f"{len(merged['edges'])} edges, {merged['input_tokens']:,} in / "
+        f"{merged['output_tokens']:,} out tokens"
+    )
 
 
 def _rollback(args: list[str]) -> None:
@@ -762,6 +882,24 @@ def dispatch_command(cmd: str) -> None:
                 relations=relations or DEFAULT_AFFECTED_RELATIONS,
                 depth=depth,
             ))
+        elif cmd in {"god-nodes", "god_nodes"}:
+            from graphify.analyze import god_nodes
+            from graphify.security import sanitize_label
+
+            loaded = _loaded(args)
+            nodes = god_nodes(
+                loaded.graph,
+                top_n=int(_option(args, "--top") or 10),
+            )
+            if "--json" in args:
+                print(json.dumps(nodes, indent=2))
+            else:
+                print("God nodes (most connected):")
+                for rank, node in enumerate(nodes, 1):
+                    print(
+                        f"  {rank}. {sanitize_label(str(node['label']))} - "
+                        f"{node['degree']} edges"
+                    )
         elif cmd in {"extract", "update"}:
             _update_or_extract(cmd, args)
         elif cmd == "watch":
@@ -851,6 +989,8 @@ def dispatch_command(cmd: str) -> None:
                 raise ValueError("hook action must be install, uninstall, or status")
         elif cmd == "cache-check":
             _cache_check(args)
+        elif cmd == "merge-chunks":
+            _merge_chunks(args)
         elif cmd == "add":
             from graphify.ingest import ingest
 

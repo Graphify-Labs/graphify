@@ -88,7 +88,7 @@ def _write_graph(path: Path, payload: dict) -> None:
             if node.get("source_file")
             and node.get("_origin") != "ast"
             and node.get("file_type") in {
-                "concept", "rationale", "document", "requirement", "decision",
+                "code", "concept", "rationale", "document", "requirement", "decision",
             }
         ]
         semantic_edges = [
@@ -121,6 +121,32 @@ def _write_graph(path: Path, payload: dict) -> None:
                 prompt=_extraction_system(deep=False),
                 cache=cache,
             )
+            remote_nodes = [
+                item for item in semantic_nodes
+                if str(item.get("source_file", "")).startswith((
+                    "gdoc:/", "s3:/", "http:/", "https:/",
+                ))
+            ]
+            remote_ids = {item.get("id") for item in remote_nodes}
+            remote_edges = [
+                item for item in semantic_edges
+                if item.get("source") in remote_ids or item.get("target") in remote_ids
+            ]
+            remote_hyperedges = [
+                item for item in semantic_hyperedges
+                if any(member in remote_ids for member in item.get("nodes", []))
+            ]
+            if remote_nodes or remote_edges or remote_hyperedges:
+                cache["semantic-virtual:test-seed"] = {
+                    "content_hash": "virtual",
+                    "kind": "semantic-virtual",
+                    "partial": False,
+                    "result": {
+                        "nodes": remote_nodes,
+                        "edges": remote_edges,
+                        "hyperedges": remote_hyperedges,
+                    },
+                }
             refreshed.setdefault("semantic", {})["used"] = True
             refreshed["incremental"].setdefault("extractor_state", {})[
                 "mode"
@@ -1690,14 +1716,8 @@ def test_merge_changed_paths_dedupes_in_order():
     assert [p.as_posix() for p in merged] == ["a.py", "b.py", "c.py"]
 
 
-def test_rebuild_code_preserves_nodes_from_excluded_but_alive_file(tmp_path, capsys):
-    """Fail-closed eviction: a file that leaves the scan corpus (newly ignored)
-    but still exists on disk was EXCLUDED, not deleted — its nodes must survive
-    an incremental rebuild, with a loud message, instead of being silently
-    mass-evicted as stale sources (the docs/brainstorms incident: an upgrade
-    started honoring .gitignore and evicted 655 nodes whose files were present).
-    """
-    import json
+def test_rebuild_code_prunes_nodes_from_newly_excluded_file(tmp_path, capsys):
+    """A newly ignored file leaves the indexed corpus and is pruned explicitly."""
     from graphify.watch import _rebuild_code
 
     corpus = tmp_path / "corpus"
@@ -1718,15 +1738,12 @@ def test_rebuild_code_preserves_nodes_from_excluded_but_alive_file(tmp_path, cap
 
     assert _rebuild_code(corpus, changed_paths=[Path("auth.py")], acquire_lock=False) is True
     labels = {n["label"] for n in _read_graph(graph_path)["nodes"]}
-    assert "brainstorm.md" in labels, (
-        "nodes from an excluded-but-alive file must be preserved, not evicted"
-    )
-    assert "fail-closed: kept" in capsys.readouterr().out
+    assert "brainstorm.md" not in labels
+    assert "pruned native nodes" in capsys.readouterr().out
 
 
 def test_rebuild_code_still_evicts_when_excluded_file_is_also_deleted(tmp_path):
-    """The fail-closed preserve must not weaken true-deletion eviction: once the
-    excluded file is actually gone from disk, its nodes are evicted as before."""
+    """True deletion remains pruned when the source has also left the corpus."""
     import json
     from graphify.watch import _rebuild_code
 
@@ -2087,8 +2104,8 @@ def _seed_semantic_doc_graph_code_only(corpus):
         "# Overview\n\nIntro.\n\n## Setup\n\nSteps.\n\n## Usage\n\nMore.\n",
         encoding="utf-8",
     )
-    graph_path = corpus / "graphify-out" / "graph.json"
-    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_path = corpus / "graphify-out" / "graph.helix"
+    data = _read_graph(graph_path)
     code_node_id = next(
         n["id"] for n in data["nodes"] if n.get("source_file") == "app.py"
     )
@@ -2103,7 +2120,7 @@ def _seed_semantic_doc_graph_code_only(corpus):
         "relation": "implemented_by", "confidence": "INFERRED",
         "source_file": "guide.md",
     })
-    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    _write_graph(graph_path, data)
     return graph_path
 
 
@@ -2123,7 +2140,7 @@ def test_rebuild_code_code_only_semantic_doc_not_double_represented_on_full_rebu
 
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
 
-    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after = _read_graph(graph_path)
     after_ids = {n["id"] for n in after["nodes"]}
     assert _CODE_ONLY_GUIDE_IDS <= after_ids, (
         "code-typed semantic doc nodes dropped by a full rebuild (#2014)"
@@ -2151,8 +2168,8 @@ def test_rebuild_code_evicts_semantic_nodes_from_deleted_non_ast_source(tmp_path
     (corpus / "gone.txt").write_text("Rationale that will be deleted.\n", encoding="utf-8")
 
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
-    graph_path = corpus / "graphify-out" / "graph.json"
-    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_path = corpus / "graphify-out" / "graph.helix"
+    data = _read_graph(graph_path)
     # No LLM in tests, so inject the semantic layer these .txt files would carry.
     data["nodes"].extend([
         {"id": "kept_concept", "label": "Kept Concept", "file_type": "concept",
@@ -2160,13 +2177,13 @@ def test_rebuild_code_evicts_semantic_nodes_from_deleted_non_ast_source(tmp_path
         {"id": "gone_concept", "label": "Gone Concept", "file_type": "concept",
          "source_file": "gone.txt"},
     ])
-    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    _write_graph(graph_path, data)
 
     # Delete one non-AST source; the other stays.
     (corpus / "gone.txt").unlink()
 
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
-    after_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    after_ids = {n["id"] for n in _read_graph(graph_path)["nodes"]}
     assert "gone_concept" not in after_ids, (
         "semantic node from a deleted non-AST source must be evicted (#2051)"
     )
@@ -2199,19 +2216,19 @@ def test_rebuild_code_preserves_remote_source_across_repeated_updates(tmp_path):
     corpus.mkdir()
     (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
-    graph_path = corpus / "graphify-out" / "graph.json"
-    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_path = corpus / "graphify-out" / "graph.helix"
+    data = _read_graph(graph_path)
     data["nodes"].append(
         {"id": "remote_doc", "label": "Remote Spec", "file_type": "document",
          "source_file": "gdoc://team/spec"}
     )
-    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    _write_graph(graph_path, data)
 
     # Three consecutive full updates: the remote node must persist through every
     # one, even after its stored source_file is normalized to the collapsed form.
     for i in range(3):
         assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
-        after = json.loads(graph_path.read_text(encoding="utf-8"))
+        after = _read_graph(graph_path)
         ids = {n["id"] for n in after["nodes"]}
         assert "remote_doc" in ids, f"remote-source node evicted on update #{i + 1} (#2051 follow-up)"
 
@@ -2232,13 +2249,13 @@ def test_rebuild_code_incremental_preserves_present_non_ast_source(tmp_path):
     (corpus / "spec.txt").write_text("A spec with a semantic layer.\n", encoding="utf-8")
 
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
-    graph_path = corpus / "graphify-out" / "graph.json"
-    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph_path = corpus / "graphify-out" / "graph.helix"
+    data = _read_graph(graph_path)
     data["nodes"].append(
         {"id": "spec_concept", "label": "Spec Concept", "file_type": "concept",
          "source_file": "spec.txt"}
     )
-    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    _write_graph(graph_path, data)
 
     # spec.txt is present but not AST-extractable; app.py is a real code change.
     assert _rebuild_code(
@@ -2246,7 +2263,7 @@ def test_rebuild_code_incremental_preserves_present_non_ast_source(tmp_path):
         no_cluster=True, acquire_lock=False,
     ) is True
 
-    after_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    after_ids = {n["id"] for n in _read_graph(graph_path)["nodes"]}
     assert "spec_concept" in after_ids, (
         "present-but-unextractable file in change set wrongly evicted as deleted (#2056)"
     )

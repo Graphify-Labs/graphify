@@ -101,7 +101,10 @@ def resolve_seed(graph: Any, query: str, *, node_query: Any) -> Any | None:
     if node_query is None:
         raise RuntimeError("affected analysis requires the native Helix query interface")
     query_lower = _normalize_label(query)
-    candidate_ids = node_query.candidate_ids([query])
+    candidate_terms = [query]
+    if query_lower.endswith("()"):
+        candidate_terms.append(query[:-2])
+    candidate_ids = node_query.candidate_ids(candidate_terms)
     exact_label_matches = [
         node_id
         for node_id in candidate_ids

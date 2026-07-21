@@ -35,10 +35,14 @@ def _run(repo: Path, *extra: str):
 
 
 def _sources(repo: Path) -> set[str]:
+    return _sources_from_store(repo / "graphify-out" / "graph.helix")
+
+
+def _sources_from_store(store: Path) -> set[str]:
     from graphify.helix.model import node_attributes
     from graphify.helix.persistence import load_graph
 
-    loaded = load_graph(repo / "graphify-out" / "graph.helix")
+    loaded = load_graph(store)
     return {
         Path(str(node_attributes(loaded.graph, node.id).get("source_file", ""))).as_posix()
         for node in loaded.graph.nodes()
@@ -86,7 +90,7 @@ def test_output_flag_is_alias_of_out(tmp_path):
 
     r = _run_relative_out(repo, "--code-only", "--no-cluster", "--output", str(custom))
     assert r.returncode == 0, r.stderr
-    assert (custom / "graphify-out" / "graph.json").exists(), "--output was ignored (#2004)"
+    assert (custom / "graphify-out" / "graph.helix").is_dir(), "--output was ignored (#2004)"
     assert not (repo / "graphify-out").exists(), "output must not go to the default dir"
 
 
@@ -97,7 +101,7 @@ def test_output_flag_inline_form(tmp_path):
     custom = tmp_path / "out2"
     r = _run_relative_out(repo, "--code-only", "--no-cluster", f"--output={custom}")
     assert r.returncode == 0, r.stderr
-    assert (custom / "graphify-out" / "graph.json").exists()
+    assert (custom / "graphify-out" / "graph.helix").is_dir()
 
 
 def test_no_gitignore_indexes_vcs_ignored_code_but_keeps_graphifyignore(tmp_path):
@@ -156,11 +160,7 @@ def test_exclude_setting_persists_across_flagless_extract(tmp_path):
     (vendor / "lib.py").write_text("def vendor():\n    return 2\n")
 
     def _sources():
-        graph = json.loads((repo / "graphify-out" / "graph.json").read_text())
-        return {
-            Path(str(node.get("source_file", ""))).as_posix()
-            for node in graph["nodes"]
-        }
+        return _sources_from_store(repo / "graphify-out" / "graph.helix")
 
     first = _run(
         repo, "--exclude", "vendor", "--code-only", "--no-cluster"
@@ -214,11 +214,7 @@ def test_explicit_exclude_replaces_persisted_setting_with_custom_out(tmp_path):
 
     graph_out = out_root / "graphify-out"
     def _sources():
-        graph = json.loads((graph_out / "graph.json").read_text())
-        return {
-            Path(str(node.get("source_file", ""))).as_posix()
-            for node in graph["nodes"]
-        }
+        return _sources_from_store(graph_out / "graph.helix")
 
     persisted = _run_extract("--force")
     assert persisted.returncode == 0, persisted.stderr
@@ -232,6 +228,7 @@ def test_explicit_exclude_replaces_persisted_setting_with_custom_out(tmp_path):
     assert any(source.endswith("app.py") for source in sources)
     assert any(source.endswith("vendor/lib.py") for source in sources)
     assert not any(source.endswith("generated/gen.py") for source in sources)
+    import json
     assert json.loads((graph_out / ".graphify_build.json").read_text()) == {
         "excludes": ["generated"]
     }
