@@ -550,6 +550,17 @@ The CLI is installed but its bin directory isn't on your shell's `PATH`. Pick th
 **`uvx graphify …` or `uv tool run graphify …` fails to resolve `graphify`**
 The PyPI package is `graphifyy`; `graphify` is only the command it provides. `uv tool run` treats the first word as a *package name*, so it looks for a package called `graphify` and reports `No solution found … no versions of graphify`. Name the package explicitly: `uvx --from graphifyy graphify install` (same as `uv tool run --from graphifyy graphify install`). Or `uv tool install graphifyy` once and then call `graphify` directly.
 
+**`uv run --with graphifyy python -m graphify` silently runs an older install**
+`uv run` uses your *system* Python, so if an older `graphifyy` also lives there (e.g. a past `pip install graphifyy`), Python can find that copy first on `sys.path` and `--with graphifyy` won't override it. It runs with no error, but you get the *old* version's behavior — e.g. env overrides like `OPENAI_BASE_URL` are silently ignored, so requests hit the default endpoint and fail with a 401 that looks like a bad key. The fingerprint is a `warning: skill is from graphify <newer>, package is <older>` line — that means a different install was loaded, not just a stale skill. Check which copy actually loaded:
+```bash
+python -c "import graphify; print(graphify.__file__)"
+```
+Then run the installed command directly (it uses the uv-managed copy), or drop the stale system copy:
+```bash
+uvx --from graphifyy graphify extract . --backend openai   # names the package explicitly
+pip uninstall graphifyy                                    # or remove the old system install
+```
+
 **`python -m graphify` works but `graphify` command doesn't**
 Your shell's `PATH` doesn't include the bin directory the command was installed to. Prefer `uv tool install` / `pipx install` over plain `pip`, then run `uv tool update-shell` / `pipx ensurepath` and open a new terminal (see the install notes above).
 
