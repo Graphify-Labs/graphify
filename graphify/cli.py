@@ -1993,38 +1993,24 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         import networkx as _nx
         from networkx.readwrite import json_graph as _jg
-        from graphify.build import prefix_graph_for_global as _prefix, distinct_repo_tags as _repo_tags
+        from graphify.build import (
+            prefix_graph_for_global as _prefix,
+            distinct_repo_tags as _repo_tags,
+            load_graph_json as _load_graph,
+        )
         graphs = []
         for gp in graph_paths:
             if not gp.exists():
                 print(f"error: not found: {gp}", file=sys.stderr)
                 sys.exit(1)
-            _enforce_graph_size_cap_or_exit(gp)
-            data = json.loads(gp.read_text(encoding="utf-8"))
-            # Normalize edges/links key before loading — graphify writes "links"
-            # via node_link_data but older runs may have used "edges" (#738).
-            if "links" not in data and "edges" in data:
-                data = dict(data, links=data["edges"])
+            # load_graph_json enforces the size cap, normalizes the legacy
+            # "edges" key (#738), and coerces directed/multi inputs to a plain
+            # undirected Graph so nx.compose never sees mixed types (#1606).
             try:
-                G = _jg.node_link_graph(data, edges="links")
-            except TypeError:
-                G = _jg.node_link_graph(data)
-            graphs.append(G)
-        # nx.compose requires all graphs to be the same type.  When input graphs
-        # come from different sources (e.g. an AST-only run vs a full LLM run) one
-        # may be a MultiGraph and another a Graph.  Normalise everything to Graph
-        # (the graphify default) by converting MultiGraphs with nx.Graph().
-        def _to_simple(g: "_nx.Graph") -> "_nx.Graph":
-            # nx.compose requires every graph to be the same type. Inputs may
-            # disagree on BOTH axes — directed vs undirected, and multi vs simple
-            # — because per-repo graph.json files are written by different extract
-            # paths at different times. Normalise everything to a plain undirected
-            # Graph (the merged cross-repo view is undirected anyway), which covers
-            # DiGraph / MultiGraph / MultiDiGraph. Without this a directed input
-            # crashed compose with "All graphs must be directed or undirected" (#1606).
-            if type(g) is not _nx.Graph:
-                return _nx.Graph(g)
-            return g
+                graphs.append(_load_graph(gp))
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(1)
         # Unique repo tag per graph. The bare `graphify-out/..` dir name is not
         # unique across inputs (src/graphify-out and frontend/src/graphify-out both
         # → "src"), which collides same-stem node ids and silently merges unrelated
@@ -2035,8 +2021,7 @@ def dispatch_command(cmd: str) -> None:
             print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
         merged = _nx.Graph()
         for G, repo_tag in zip(graphs, repo_tags):
-            prefixed = _to_simple(_prefix(G, repo_tag))
-            merged = _nx.compose(merged, prefixed)
+            merged = _nx.compose(merged, _prefix(G, repo_tag))
         try:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:

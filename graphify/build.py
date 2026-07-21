@@ -1297,3 +1297,59 @@ def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
     to_remove = [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
     G.remove_nodes_from(to_remove)
     return len(to_remove)
+
+
+def load_graph_json(path: Path) -> nx.Graph:
+    """Load a persisted graph.json into a plain undirected ``nx.Graph``.
+
+    Shared by merge-graphs, the global graph, and cluster graphs. Applies the
+    graph-file size cap, normalizes the legacy ``edges`` key to ``links``
+    (#738), and coerces DiGraph/MultiGraph/MultiDiGraph inputs to a simple
+    Graph so ``nx.compose`` never sees mixed types (#1606).
+    """
+    from networkx.readwrite import json_graph as _jg
+    from .security import check_graph_file_size_cap
+
+    check_graph_file_size_cap(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if "links" not in data and "edges" in data:
+        data = dict(data, links=data["edges"])
+    try:
+        G = _jg.node_link_graph(data, edges="links")
+    except TypeError:
+        G = _jg.node_link_graph(data)
+    if type(G) is not nx.Graph:
+        G = nx.Graph(G)
+    return G
+
+
+def merge_prefixed_into(G: nx.Graph, prefixed: nx.Graph) -> int:
+    """Merge a repo_tag::-prefixed graph into G in-place. Returns nodes added.
+
+    External-library nodes (no ``source_file``) are deduplicated by label
+    against G's existing externals, with incident edges rewired onto the
+    shared node instead of dropped — the one place cross-repo identity is
+    established. Self-loops introduced by the rewiring are skipped.
+    """
+    external_labels = {
+        d.get("label", ""): n
+        for n, d in G.nodes(data=True)
+        if not d.get("source_file") and d.get("label")
+    }
+    # Map each deduplicated external onto the existing node so that edges
+    # incident to it can be rewired instead of dropped.
+    remap = {}
+    for node, data in prefixed.nodes(data=True):
+        if not data.get("source_file") and data.get("label") in external_labels:
+            remap[node] = external_labels[data["label"]]
+
+    for node, data in prefixed.nodes(data=True):
+        if node not in remap:
+            G.add_node(node, **data)
+    for u, v, data in prefixed.edges(data=True):
+        u = remap.get(u, u)
+        v = remap.get(v, v)
+        if u != v:  # don't introduce self-loops via remapping
+            G.add_edge(u, v, **data)
+
+    return prefixed.number_of_nodes() - len(remap)
