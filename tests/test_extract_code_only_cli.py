@@ -56,6 +56,19 @@ def test_mixed_repo_without_key_errors_and_points_at_code_only(tmp_path):
     assert "--code-only" in r.stderr, "the no-key error must point users at --code-only"
 
 
+def test_extract_usage_advertises_code_only(tmp_path):
+    """#2071: --code-only must be discoverable in the extract usage text, not only
+    by triggering the no-key error. `graphify extract` with no path prints usage."""
+    r = subprocess.run(
+        [PYTHON, "-m", "graphify", "extract"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert r.returncode != 0
+    assert "--code-only" in r.stdout + r.stderr, (
+        "extract usage must advertise --code-only (#2071)"
+    )
+
+
 def _run_relative_out(repo: Path, *extra: str):
     """Like _run but with a RELATIVE GRAPHIFY_OUT so --out/--output controls the
     parent dir (an absolute GRAPHIFY_OUT would override the flag)."""
