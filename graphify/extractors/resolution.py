@@ -796,7 +796,7 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None) -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
@@ -816,6 +816,11 @@ def _apply_symbol_resolution_facts(
         # the id-disambiguation salt is keyed by the TARGET, not the importer (#1814).
         if target_file is not None:
             edge["target_file"] = target_file
+        # The local name this import bound in the importing file, when it differs
+        # from the target's own name (`from pkg import mod as alias`) -- lets the
+        # cross-file member-call resolver match `alias.func()` (#2082).
+        if local_alias is not None:
+            edge["local_alias"] = local_alias
         edges.append(edge)
 
     for declaration in facts.declarations:
@@ -962,7 +967,7 @@ def _apply_symbol_resolution_facts(
         )
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
-    for from_path, to_path, line in facts.module_imports:
+    for from_path, to_path, line, local_name in facts.module_imports:
         try:
             from_rel = from_path.relative_to(root)
             to_rel = to_path.relative_to(root)
@@ -970,7 +975,10 @@ def _apply_symbol_resolution_facts(
             continue
         source_id = _make_id(_file_stem(from_rel))
         target_id = _make_id(_file_stem(to_rel))
-        add_edge(source_id, target_id, "imports_from", "submodule_import", line, from_path)
+        add_edge(
+            source_id, target_id, "imports_from", "submodule_import", line, from_path,
+            local_alias=local_name if local_name != to_path.stem else None,
+        )
 
     for use_fact in facts.uses:
         file_path = use_fact.file_path.resolve()
@@ -1717,7 +1725,7 @@ def _collect_python_symbol_resolution_facts(
                     sub_pkg = pkg_dir / imported_name / "__init__.py"
                     submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
                     if submodule is not None:
-                        facts.module_imports.append((path, submodule, line))
+                        facts.module_imports.append((path, submodule, line, local_name))
                         continue
                 facts.imports.append(
                     _SymbolImportFact(path, local_name, target_path, imported_name, line)

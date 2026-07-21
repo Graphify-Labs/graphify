@@ -802,6 +802,11 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # dropping it here as well keeps a pre-fix graph's stale absolute hint
         # from surviving an incremental build_merge, which re-serializes base
         # edges through here without re-running disambiguation.
+        # `local_alias` is the same shape of transient hint (#2082): it exists only
+        # for the module arm of _resolve_python_member_calls to match an aliased
+        # import receiver, and extract() already drops it once that pass has run.
+        # Dropping it here too covers a stale pre-fix graph re-serialized through
+        # an incremental build_merge, same rationale as target_file above.
         # Sanitize numeric edge fields (#1960): an explicit ``"weight": null`` in
         # the extraction JSON survives ``.get("weight", 1.0)`` (the key is present,
         # so the default never applies) and reaches Louvain/Leiden as None,
@@ -811,7 +816,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # strings, NaN/inf, negatives — while numeric strings coerce cleanly.
         # Repair (not drop) the key so graph.json round-trips a clean value and a
         # cluster-only/--update reload never re-ingests the null.
-        attrs = {k: v for k, v in edge.items() if k not in ("source", "target", "target_file")}
+        attrs = {k: v for k, v in edge.items() if k not in ("source", "target", "target_file", "local_alias")}
         for _num_key in ("weight", "confidence_score"):
             if _num_key in attrs:
                 try:
