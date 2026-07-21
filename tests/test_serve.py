@@ -599,6 +599,32 @@ def test_load_graph_missing_file(tmp_path):
         _load_graph(str(graphify_dir / "nonexistent.json"))
 
 
+def test_load_graph_corrupted_json_prints_recovery_message(tmp_path, capsys):
+    """json.JSONDecodeError is a ValueError subclass, so its except clause
+    must be checked before the bare (ValueError, FileNotFoundError) clause,
+    or the corrupted-graph recovery hint is unreachable (#2005)."""
+    p = tmp_path / "graph.json"
+    p.write_text("{not valid json")
+    with pytest.raises(SystemExit):
+        _load_graph(str(p))
+    err = capsys.readouterr().err
+    assert "graph.json is corrupted" in err
+    assert "Re-run /graphify to rebuild" in err
+
+
+def test_load_graph_generic_value_error_message_unchanged(tmp_path, capsys):
+    """A non-decode ValueError (e.g. a non-.json path) must still print the
+    generic error, not the corrupted-graph hint — pins the except-clause
+    order from #2005 so a future refactor can't collapse them back."""
+    p = tmp_path / "graph.txt"
+    p.write_text("not a graph")
+    with pytest.raises(SystemExit):
+        _load_graph(str(p))
+    err = capsys.readouterr().err
+    assert "must be a .json file" in err
+    assert "corrupted" not in err
+
+
 def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path, capsys):
     # #F4: oversized graph.json must fail fast (SystemExit) with a clear error.
     G = _make_graph()

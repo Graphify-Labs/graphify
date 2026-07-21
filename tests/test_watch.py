@@ -2074,6 +2074,47 @@ def test_rebuild_code_evicts_semantic_nodes_from_deleted_non_ast_source(tmp_path
     )
 
 
+def test_rebuild_code_preserves_remote_source_across_repeated_updates(tmp_path):
+    """#2051 follow-up: a node whose source_file is a URL/virtual scheme
+    (gdoc://, s3://, http://) must survive REPEATED `graphify update`s. Path
+    normalization on the write side collapses the double slash (`gdoc://x` ->
+    `gdoc:/x`), so a literal `"://"` guard matched on the first update but missed
+    on the second, dropping the node into the disk-absence eviction branch
+    (Path('gdoc:/x').exists() is False) — a data-loss regression from the #2051
+    disk-absence sweep. The scheme is now matched with a regex tolerant of the
+    collapse."""
+    from graphify.watch import _rebuild_code, _is_remote_source
+
+    # unit-level: the guard tolerates the slash collapse and rejects local paths
+    assert _is_remote_source("gdoc://abc")
+    assert _is_remote_source("gdoc:/abc")        # collapsed form
+    assert _is_remote_source("s3://bucket/key")
+    assert _is_remote_source("https://example.com/doc")
+    assert not _is_remote_source("src/app.py")
+    assert not _is_remote_source("notes.txt")
+    assert not _is_remote_source("C:/Users/x/a.py")  # Windows drive != scheme
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["nodes"].append(
+        {"id": "remote_doc", "label": "Remote Spec", "file_type": "document",
+         "source_file": "gdoc://team/spec"}
+    )
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # Three consecutive full updates: the remote node must persist through every
+    # one, even after its stored source_file is normalized to the collapsed form.
+    for i in range(3):
+        assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+        after = json.loads(graph_path.read_text(encoding="utf-8"))
+        ids = {n["id"] for n in after["nodes"]}
+        assert "remote_doc" in ids, f"remote-source node evicted on update #{i + 1} (#2051 follow-up)"
+
+
 # ── #2056: present-but-unextractable files in a change set are not deletions ───
 
 def test_rebuild_code_incremental_preserves_present_non_ast_source(tmp_path):

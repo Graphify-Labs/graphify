@@ -5199,7 +5199,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             dp = Path(dirpath)
             dirnames[:] = [
                 d for d in dirnames
-                if not _is_noise_dir(d)
+                if not _is_noise_dir(d, dp)  # pass parent so "env"/"*_env" is marker-gated (#2058)
                 and (has_negation or not _ignored(dp / d))
             ]
             for fname in filenames:
@@ -5220,7 +5220,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         dp = Path(dirpath)
         dirnames[:] = [
             d for d in dirnames
-            if not _is_noise_dir(d)
+            if not _is_noise_dir(d, dp)  # pass parent so "env"/"*_env" is marker-gated (#2058)
             and (not (dp / d).is_symlink() or _resolves_under_root(dp / d, containment_root))
         ]
         for fname in filenames:

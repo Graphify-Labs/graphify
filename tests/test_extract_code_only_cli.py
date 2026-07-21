@@ -56,6 +56,41 @@ def test_mixed_repo_without_key_errors_and_points_at_code_only(tmp_path):
     assert "--code-only" in r.stderr, "the no-key error must point users at --code-only"
 
 
+def _run_relative_out(repo: Path, *extra: str):
+    """Like _run but with a RELATIVE GRAPHIFY_OUT so --out/--output controls the
+    parent dir (an absolute GRAPHIFY_OUT would override the flag)."""
+    env = {k: v for k, v in os.environ.items() if k not in _KEY_VARS}
+    env["GRAPHIFY_OUT"] = "graphify-out"
+    return subprocess.run(
+        [PYTHON, "-m", "graphify", "extract", ".", *extra],
+        cwd=repo, capture_output=True, text=True, env=env,
+    )
+
+
+def test_output_flag_is_alias_of_out(tmp_path):
+    """#2004 part 3: `--output DIR` was silently ignored on extract (output went
+    to the default `<path>/graphify-out/`). It is now an alias of `--out`."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("def hello():\n    return 1\n")
+    custom = tmp_path / "elsewhere"
+
+    r = _run_relative_out(repo, "--code-only", "--no-cluster", "--output", str(custom))
+    assert r.returncode == 0, r.stderr
+    assert (custom / "graphify-out" / "graph.json").exists(), "--output was ignored (#2004)"
+    assert not (repo / "graphify-out").exists(), "output must not go to the default dir"
+
+
+def test_output_flag_inline_form(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("def hello():\n    return 1\n")
+    custom = tmp_path / "out2"
+    r = _run_relative_out(repo, "--code-only", "--no-cluster", f"--output={custom}")
+    assert r.returncode == 0, r.stderr
+    assert (custom / "graphify-out" / "graph.json").exists()
+
+
 def test_no_gitignore_indexes_vcs_ignored_code_but_keeps_graphifyignore(tmp_path):
     repo = tmp_path / "repo"
     generated = repo / "proj" / "deep" / "generated"

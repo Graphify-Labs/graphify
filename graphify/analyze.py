@@ -64,11 +64,12 @@ def _is_file_node(G: nx.Graph, node_id: str) -> bool:
     label = attrs.get("label", "")
     if not label:
         return False
-    # File-level hub: label matches the actual source filename (not just any label ending in .py)
+    # File-level hub: label matches the actual source filename — bare basename OR
+    # the directory-qualified form the #2032 disambiguation pass may assign.
     source_file = attrs.get("source_file", "")
     if source_file:
-        from pathlib import Path as _Path
-        if label == _Path(source_file).name:
+        from graphify.build import _is_file_node_label
+        if _is_file_node_label(label, source_file):
             return True
     # Method stub: AST extractor labels methods as '.method_name()'
     if label.startswith(".") and label.endswith("()"):

@@ -28,6 +28,8 @@ Type `/graphify` in your AI coding assistant and it maps your entire project (co
 - **Every edge is explained.** Each connection is tagged `EXTRACTED` (explicit in the source) or `INFERRED` (resolved by graphify), so you can tell what was read directly from what was inferred.
 - **Not a vector index.** No embeddings, no vector store: a real graph you traverse. Ask a question, trace the path between two things, or explain one concept.
 
+> Want this always-on, updating in the background across your code, docs, and meetings rather than only on demand? That is what we are building at **[graphify.com](https://graphify.com)**. You can join the waitlist there.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="graphify's interactive graph.html showing the FastAPI codebase as a force-directed knowledge graph with a legend of detected communities" width="900">
 </p>
@@ -785,7 +787,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 
 Built for people and teams whose work lives across hundreds of conversations and documents they can never fully reconstruct.
 
-**Learn more at [graphify.com](https://graphify.com).** Free trial launching soon.
+**[Join the waitlist at graphify.com](https://graphify.com).** Free trial launching soon.
 
 ---
 

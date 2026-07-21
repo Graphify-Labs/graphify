@@ -919,6 +919,61 @@ def dispatch_command(cmd: str) -> None:
                 depth=depth,
             )
         )
+    elif cmd in ("god-nodes", "god_nodes"):
+        # god_nodes has long been an analyzer (analyze.py), an MCP tool, and a
+        # README-advertised capability, but never a CLI subcommand — `graphify
+        # god_nodes` fell through to "unknown command" (#2004). Wire it as a
+        # read-only graph query, mirroring `affected`.
+        from graphify.affected import load_graph
+        from graphify.analyze import god_nodes as _god_nodes
+        from graphify.security import sanitize_label as _sanitize_label
+        graph_path = _default_graph_path()
+        top_n = 10
+        as_json = "--json" in sys.argv
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]
+                i += 2
+            elif args[i].startswith("--graph="):
+                graph_path = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--top" and i + 1 < len(args):
+                try:
+                    top_n = int(args[i + 1])
+                except ValueError:
+                    print("error: --top must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--top="):
+                try:
+                    top_n = int(args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --top must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+            else:
+                i += 1
+        gp = Path(graph_path).resolve()
+        if not gp.exists():
+            print(f"error: graph file not found: {gp}", file=sys.stderr)
+            sys.exit(1)
+        if not gp.suffix == ".json":
+            print("error: graph file must be a .json file", file=sys.stderr)
+            sys.exit(1)
+        try:
+            G = load_graph(gp)
+        except Exception as exc:
+            print(f"error: could not load graph: {exc}", file=sys.stderr)
+            sys.exit(1)
+        gods = _god_nodes(G, top_n=top_n)
+        if as_json:
+            print(json.dumps(gods, indent=2))
+        else:
+            print("God nodes (most connected):")
+            for rank, n in enumerate(gods, 1):
+                print(f"  {rank}. {_sanitize_label(str(n['label']))} - {n['degree']} edges")
     elif cmd == "save-result":
         # graphify save-result --question Q --answer A [--type T] [--nodes N1 N2 ...]
         #                      [--outcome useful|dead_end|corrected] [--correction TEXT]
@@ -2331,7 +2386,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
-                "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
+                "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
@@ -2415,9 +2470,12 @@ def dispatch_command(cmd: str) -> None:
                 extract_mode = args[i + 1]; i += 2
             elif a.startswith("--mode="):
                 extract_mode = a.split("=", 1)[1]; i += 1
-            elif a == "--out" and i + 1 < len(args):
+            elif a in ("--out", "--output") and i + 1 < len(args):
+                # --output is an alias of --out (#2004): it was silently dropped
+                # before, and `graphify tree` already documents --output, so the
+                # mistake is natural. (--output= does not startswith --out=.)
                 out_dir = Path(args[i + 1]); i += 2
-            elif a.startswith("--out="):
+            elif a.startswith(("--out=", "--output=")):
                 out_dir = Path(a.split("=", 1)[1]); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
@@ -3120,6 +3178,11 @@ def dispatch_command(cmd: str) -> None:
 
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
+            # Disambiguate colliding-basename file-node labels (#2032). This raw
+            # --no-cluster path bypasses build_from_json (where the clustered path
+            # gets this), so apply it directly on the merged node list.
+            from graphify.build import disambiguate_file_labels_in_nodes as _disamb_labels
+            _disamb_labels(merged["nodes"])
             # Backfill source_file from endpoint nodes — this raw path bypasses
             # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
             _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}

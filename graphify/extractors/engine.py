@@ -2371,7 +2371,19 @@ def _extract_generic(
                 metadata = {"is_nested_type": True}
             add_node(class_nid, class_name, line, metadata=metadata)
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
-            add_edge(file_nid, class_nid, "contains", line)
+            # A nested class/object/trait is contained by its ENCLOSING type, not
+            # the file (#2040). parent_class_nid is threaded down the walk for
+            # every language and is always a real class-like node (never a
+            # namespace — namespace handlers pass it through unchanged), so it is
+            # a valid edge source. The `!= class_nid` guard avoids a self-loop
+            # when same-name nesting (`class Foo: class Foo`) collides ids, since
+            # class ids omit the enclosing type name. Top-level types (parent
+            # None) still source from the file, keeping the containment tree
+            # connected: file -> Outer -> Inner.
+            if parent_class_nid and parent_class_nid != class_nid:
+                add_edge(parent_class_nid, class_nid, "contains", line)
+            else:
+                add_edge(file_nid, class_nid, "contains", line)
 
             # TS/JS decorators on the class and its members (@Component, @Injectable,
             # @Input, @Inject, @Entity, …). Decorators live only in class subtrees.

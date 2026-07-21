@@ -430,6 +430,21 @@ class _StoredSourcePaths:
             item["source_file"] = identity
 
 
+# A source_file that is a URL/virtual scheme (gdoc://, s3://, http://, ...) rather
+# than a filesystem path: its on-disk existence is meaningless, so it must never be
+# evicted by the disk-absence sweep. Matched with a regex, NOT a literal "://",
+# because path normalization on the write side (Path.as_posix) collapses the double
+# slash to one — a stored "gdoc://x" reads back as "gdoc:/x" on the next update, and
+# a literal "://" check would then miss it and wrongly evict the node (#2051 follow-up).
+# The scheme is required to be 2+ chars so a Windows drive letter (C:/...) is not
+# misread as a remote source.
+_REMOTE_SOURCE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]+://?")
+
+
+def _is_remote_source(source_file: str) -> bool:
+    return bool(_REMOTE_SOURCE_RE.match(source_file))
+
+
 def _reconcile_existing_graph(
     existing_graph: Path,
     result: dict,
@@ -495,7 +510,7 @@ def _reconcile_existing_graph(
         _alive_cache: dict[str, bool] = {}
         for node in existing.get("nodes", []):
             source_file = node.get("source_file")
-            if not source_file or "://" in source_file:
+            if not source_file or _is_remote_source(source_file):
                 continue  # sourceless stub or remote/virtual source: never evict
             identity = source_paths.identity(source_file)
             if not source_paths.in_watch_root(source_file):

@@ -652,7 +652,7 @@ def xlsx_extract_structure(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def convert_office_file(path: Path, out_dir: Path) -> Path | None:
+def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -> Path | None:
     """Convert a .docx or .xlsx to a markdown sidecar in out_dir.
 
     Returns the path of the converted .md file, or None if conversion failed
@@ -671,14 +671,30 @@ def convert_office_file(path: Path, out_dir: Path) -> Path | None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     # Use a stable name derived from the original path to avoid collisions.
-    # Normalize the resolved path to NFC before hashing: on macOS (HFS+/APFS)
-    # os.walk/rglob return filenames in NFD, while Python string literals and
-    # directly-constructed Path objects are NFC, so the same source file would
-    # otherwise hash to different sidecar names across runs — causing --update
-    # to treat every Office file as new and re-extract it (#1226).
+    # Hash the path RELATIVE to the scan root, not the absolute path: the
+    # absolute form salts the name with the checkout location, so the same
+    # tracked .xlsx in two clones/worktrees emits two differently-named,
+    # byte-identical sidecars — unbounded duplicates when graphify-out/ is
+    # committed, each ingested as a distinct source doc (#2059). The relative
+    # path still disambiguates same-stem files in different directories.
+    # Normalize to NFC before hashing: on macOS (HFS+/APFS) os.walk/rglob return
+    # filenames in NFD, while Python string literals and directly-constructed
+    # Path objects are NFC, so the same source file would otherwise hash to
+    # different sidecar names across runs — making --update treat every Office
+    # file as new and re-extract it (#1226).
     import hashlib
     import unicodedata
-    normalized_path = unicodedata.normalize("NFC", str(path.resolve()))
+    if root is None:
+        # Default layout: out_dir is <root>/<graphify-out>/converted.
+        root = out_dir.parent.parent
+    try:
+        key = path.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (ValueError, OSError):
+        # Not under the scan root (custom GRAPHIFY_OUT layouts, --include
+        # sources, direct API callers): keep the previous absolute form rather
+        # than guessing, so behavior is unchanged for those cases.
+        key = str(path.resolve())
+    normalized_path = unicodedata.normalize("NFC", key)
     name_hash = hashlib.sha256(normalized_path.encode()).hexdigest()[:8]
     out_path = out_dir / f"{path.stem}_{name_hash}.md"
     # Skip re-writing only when the sidecar is present AND at least as new as the
@@ -718,7 +734,7 @@ def count_words(path: Path) -> int:
 
 # Directory names to always skip - venvs, caches, build artifacts, deps
 _SKIP_DIRS = {
-    "venv", ".venv", "env", ".env",
+    "venv", ".venv",  # "env"/".env"/"*_env" are gated on venv markers below (#2058)
     "node_modules", "__pycache__", ".git",
     "dist", "build", "target", "out",
     "site-packages", "lib64",
@@ -753,10 +769,39 @@ _SKIP_FILES = {
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
 
 
+def _has_venv_markers(d: "Path") -> bool:
+    """True only when *d* has actual virtualenv/conda structure on disk.
+
+    ``env``/``.env``/``*_env`` is a real source-directory convention (UVM/ASIC
+    verification trees, and others), so pruning it by name alone silently drops
+    legitimate source with no trace (#2058). Prune it only on real evidence: a
+    ``pyvenv.cfg``, an ``activate`` script, a ``lib/python*`` tree, or conda's
+    ``conda-meta/`` (``conda create -p ./env`` writes no pyvenv.cfg).
+    """
+    try:
+        if (d / "pyvenv.cfg").is_file():
+            return True
+        if (d / "bin" / "activate").is_file() or (d / "Scripts" / "activate").is_file():
+            return True
+        if next(d.glob("lib/python*"), None) is not None:
+            return True
+        if (d / "conda-meta").is_dir():
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     """Return True if this directory name looks like a venv, cache, or dep dir."""
     if part in _SKIP_DIRS:
         return True
+    if part in ("env", ".env") or part.endswith("_env"):
+        # Ambiguous: a real venv OR a real source dir. Prune only on actual venv
+        # evidence, mirroring the "snapshots" gating (#1666/#2058).
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        return _has_venv_markers(parent / part)
     if part == "snapshots":
         # Prune only when it looks like an actual JS/Vitest snapshot dir.
         if parent is None:
@@ -770,8 +815,9 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         except OSError:
             pass
         return False
-    # Catch *_venv, *_repo/site-packages patterns
-    if part.endswith("_venv") or part.endswith("_env"):
+    # Catch *_venv (unambiguous — "venv" is always a virtualenv signal). "*_env"
+    # is gated on markers above (#2058), not pruned by name.
+    if part.endswith("_venv"):
         return True
     if part.endswith(".egg-info"):
         return True
@@ -1218,6 +1264,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     # of silently vanishing from the graph (#1922). Directory-level entries keep
     # this bounded — a pruned `data/` is one entry, not one per contained file.
     ignored: list[str] = []
+    pruned_noise: list[str] = []
     ignore_patterns = _load_graphifyignore(root, gitignore=gitignore)
     ignore_cache: dict[Path, bool] = {}  # shared across all _is_ignored calls in this scan
     # CLI --exclude patterns are anchored at the scan root and appended last
@@ -1292,6 +1339,10 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 kept_dirs: list[str] = []
                 for d in dirnames:
                     if _is_noise_dir(d, dp):
+                        # Record pruned-as-noise dirs so a wrongly-pruned real
+                        # source dir is at least traceable in the output rather
+                        # than vanishing silently (#2058).
+                        pruned_noise.append(str(dp / d) + os.sep)
                         continue
                     if _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache):
                         ignored.append(str(dp / d) + os.sep)
@@ -1353,7 +1404,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     )
                     continue
                 try:
-                    md_path = convert_google_workspace_file(p, converted_dir, xlsx_to_markdown=xlsx_to_markdown)
+                    md_path = convert_google_workspace_file(p, converted_dir, xlsx_to_markdown=xlsx_to_markdown, root=root)
                 except Exception as exc:
                     skipped_sensitive.append(str(p) + f" [Google Workspace export failed: {exc}]")
                     continue
@@ -1367,7 +1418,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 continue
             # Office files: convert to markdown sidecar so subagents can read them
             if p.suffix.lower() in OFFICE_EXTENSIONS:
-                md_path = convert_office_file(p, converted_dir)
+                md_path = convert_office_file(p, converted_dir, root=root)
                 if md_path:
                     if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
                         continue
@@ -1411,6 +1462,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         "unclassified": sorted(unclassified),
         "walk_errors": walk_errors,
         "ignored": sorted(ignored),
+        "pruned_noise_dirs": sorted(pruned_noise),
         "graphifyignore_patterns": len(ignore_patterns),
         "scan_root": str(root.resolve()),
     }
