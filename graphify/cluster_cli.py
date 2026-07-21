@@ -1,0 +1,317 @@
+"""CLI for cluster graphs (multi-repo): `graphify cluster <subcommand>`.
+
+Delegated from cli.dispatch_command in the same style as `graphify prs`.
+For community detection on a single graph, see `cluster-only` / `--no-cluster`.
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+from .cluster_graph import (
+    ClusterMember,
+    ClusterSpec,
+    ClusterSpecError,
+    build_cluster,
+    check_cluster,
+    cluster_out_dir,
+    find_spec_file,
+    load_local_config,
+    load_spec,
+    member_graph_path,
+    normalize_git_url,
+    origin_url,
+    resolve_all_members,
+    save_local_config,
+    save_spec,
+)
+
+USAGE = """\
+Usage: graphify cluster <subcommand>
+
+Manage cluster graphs: link multiple repos' graphs into one connected graph.
+(For community detection on a single graph, see `graphify cluster-only`.)
+
+Subcommands:
+  init [DIR] --name NAME       create a cluster spec skeleton
+  add <repo-path-or-url> [--as TAG] [--dir DIR]
+                               add a member repo to the spec
+  remove <TAG> [--dir DIR]     remove a member from the spec
+  locate <TAG> <PATH> [--dir DIR]
+                               record a machine-local checkout path override
+  build [--dir DIR] [--force] [--no-links]
+                               compose member graphs + resolve declared links
+  check [--dir DIR]            validate spec and dry-run link resolution
+  status [--dir DIR]           members, resolution, staleness vs last build
+
+The cluster graph is written to <DIR>/graphify-out/graph.json, so query/path/
+explain/affected/export all work from inside the cluster directory (or via
+--graph). Declare cross-repo links in cluster.yaml; see README for the format.
+"""
+
+
+def _fail(msg: str) -> None:
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _parse_dir(args: list[str]) -> tuple[Path, list[str]]:
+    """Pop --dir DIR (default: cwd) from args."""
+    rest: list[str] = []
+    cluster_dir = Path(".")
+    i = 0
+    while i < len(args):
+        if args[i] == "--dir" and i + 1 < len(args):
+            cluster_dir = Path(args[i + 1])
+            i += 2
+        elif args[i].startswith("--dir="):
+            cluster_dir = Path(args[i].split("=", 1)[1])
+            i += 1
+        else:
+            rest.append(args[i])
+            i += 1
+    return cluster_dir, rest
+
+
+def _looks_like_url(s: str) -> bool:
+    return "://" in s or (s.startswith("git@") and ":" in s)
+
+
+def _cmd_init(args: list[str]) -> None:
+    cluster_dir, rest = _parse_dir(args)
+    name = ""
+    positional: list[str] = []
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--name" and i + 1 < len(rest):
+            name = rest[i + 1]
+            i += 2
+        elif rest[i].startswith("--name="):
+            name = rest[i].split("=", 1)[1]
+            i += 1
+        else:
+            positional.append(rest[i])
+            i += 1
+    if positional:
+        cluster_dir = Path(positional[0])
+    cluster_dir.mkdir(parents=True, exist_ok=True)
+    if find_spec_file(cluster_dir):
+        _fail(f"a cluster spec already exists in {cluster_dir}")
+    spec = ClusterSpec(name=name or cluster_dir.resolve().name)
+    target = save_spec(spec, cluster_dir)
+
+    # Keep machine-local files and build output out of a committed cluster dir.
+    gitignore = cluster_dir / ".gitignore"
+    wanted = ["cluster.local.*", "graphify-out/"]
+    existing = gitignore.read_text(encoding="utf-8").splitlines() if gitignore.is_file() else []
+    missing = [w for w in wanted if w not in existing]
+    if missing:
+        from .paths import write_text_atomic
+        write_text_atomic(gitignore, "\n".join(existing + missing) + "\n")
+
+    print(f"Initialized cluster '{spec.name}' at {target}")
+    print("Next: graphify cluster add <repo-path> [--as TAG]")
+
+
+def _cmd_add(args: list[str]) -> None:
+    cluster_dir, rest = _parse_dir(args)
+    tag = ""
+    positional = []
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--as" and i + 1 < len(rest):
+            tag = rest[i + 1]
+            i += 2
+        elif rest[i].startswith("--as="):
+            tag = rest[i].split("=", 1)[1]
+            i += 1
+        else:
+            positional.append(rest[i])
+            i += 1
+    if len(positional) != 1:
+        _fail("usage: graphify cluster add <repo-path-or-url> [--as TAG] [--dir DIR]")
+    target = positional[0]
+
+    spec = load_spec(cluster_dir)
+    if _looks_like_url(target):
+        url, path = target, ""
+        default_tag = normalize_git_url(url).rstrip("/").rsplit("/", 1)[-1]
+    else:
+        repo_dir = Path(target).expanduser()
+        if not repo_dir.is_dir():
+            _fail(f"not a directory: {repo_dir}")
+        url = origin_url(repo_dir) or ""
+        path = str(repo_dir)
+        default_tag = repo_dir.resolve().name
+        if not url:
+            print(
+                f"warning: {repo_dir} has no origin remote; this member will only "
+                f"resolve via its recorded path",
+                file=sys.stderr,
+            )
+    tag = tag or default_tag
+    if tag in spec.tags():
+        _fail(f"member tag '{tag}' already exists (use --as to pick another)")
+
+    spec.members.append(ClusterMember(tag=tag, url=url, path=path))
+    try:
+        save_spec(spec, cluster_dir)
+        load_spec(cluster_dir)  # re-validate (tag charset etc.) before reporting success
+    except ClusterSpecError as exc:
+        _fail(str(exc))
+    print(f"Added member '{tag}'" + (f" ({url})" if url else ""))
+
+
+def _cmd_remove(args: list[str]) -> None:
+    cluster_dir, rest = _parse_dir(args)
+    if len(rest) != 1:
+        _fail("usage: graphify cluster remove <TAG> [--dir DIR]")
+    tag = rest[0]
+    spec = load_spec(cluster_dir)
+    if tag not in spec.tags():
+        _fail(f"no member with tag '{tag}'")
+    referencing = [
+        i for i, l in enumerate(spec.links)
+        for sel in ([l.from_, l.to] if l.from_ else []) + l.referents
+        if sel and sel["repo"] == tag
+    ]
+    if referencing:
+        _fail(
+            f"member '{tag}' is referenced by links {sorted(set(referencing))}; "
+            f"remove or update those links first"
+        )
+    spec.members = [m for m in spec.members if m.tag != tag]
+    save_spec(spec, cluster_dir)
+    print(f"Removed member '{tag}'")
+
+
+def _cmd_locate(args: list[str]) -> None:
+    cluster_dir, rest = _parse_dir(args)
+    if len(rest) != 2:
+        _fail("usage: graphify cluster locate <TAG> <PATH> [--dir DIR]")
+    tag, path_str = rest
+    spec = load_spec(cluster_dir)
+    if tag not in spec.tags():
+        _fail(f"no member with tag '{tag}'")
+    path = Path(path_str).expanduser()
+    if not path.is_dir():
+        _fail(f"not a directory: {path}")
+    member = next(m for m in spec.members if m.tag == tag)
+    if member.url:
+        found = origin_url(path)
+        if found and normalize_git_url(found) != normalize_git_url(member.url):
+            print(
+                f"warning: {path} has origin {found!r}, but the spec declares "
+                f"{member.url!r} for '{tag}'",
+                file=sys.stderr,
+            )
+    cfg = load_local_config(cluster_dir)
+    cfg.setdefault("paths", {})[tag] = str(path.resolve())
+    target = save_local_config(cluster_dir, cfg)
+    print(f"Recorded {tag} -> {path.resolve()} in {target.name}")
+
+
+def _cmd_build(args: list[str]) -> None:
+    cluster_dir, rest = _parse_dir(args)
+    force = "--force" in rest
+    no_links = "--no-links" in rest
+    unknown = [a for a in rest if a not in ("--force", "--no-links")]
+    if unknown:
+        _fail(f"unknown arguments: {' '.join(unknown)}")
+    summary = build_cluster(cluster_dir, force=force, no_links=no_links)
+    if summary["skipped"]:
+        print(f"Cluster '{summary['name']}' unchanged; skipped (use --force to rebuild)")
+        return
+    report = summary["links"]
+    members = summary["members"]
+    print(
+        f"Cluster '{summary['name']}': {len(members)} members -> "
+        f"{summary['nodes']} nodes, {summary['edges']} edges"
+    )
+    print(f"  links: {report.edges_added} edges, {report.hubs_added} shared-resource hubs")
+    if report.nodes_created:
+        print(f"  created {len(report.nodes_created)} concept nodes (on_missing: create)")
+    print(f"Written to: {summary['out']}")
+    print(f"Query it with: cd {cluster_dir} && graphify query \"...\"")
+
+
+def _cmd_check(args: list[str]) -> None:
+    cluster_dir, rest = _parse_dir(args)
+    if rest:
+        _fail(f"unknown arguments: {' '.join(rest)}")
+    report, errors = check_cluster(cluster_dir)
+    for r in report.resolved:
+        print(f"  ok: {r}")
+    for w in report.warnings:
+        print(f"  warning: {w}")
+    for e in errors:
+        print(f"  error: {e}", file=sys.stderr)
+    if errors:
+        sys.exit(1)
+    print(f"Spec OK: {report.edges_added} edges, {report.hubs_added} hubs would be created")
+
+
+def _cmd_status(args: list[str]) -> None:
+    cluster_dir, rest = _parse_dir(args)
+    if rest:
+        _fail(f"unknown arguments: {' '.join(rest)}")
+    spec = load_spec(cluster_dir)
+    local_cfg = load_local_config(cluster_dir)
+    resolved, warnings, errors = resolve_all_members(spec, cluster_dir, local_cfg)
+
+    manifest = {}
+    manifest_path = cluster_out_dir(cluster_dir) / "cluster-manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    built = manifest.get("members") or {}
+
+    print(f"Cluster '{spec.name}' ({len(spec.members)} members, {len(spec.links)} links)")
+    from .cluster_graph import _file_hash
+    for member in spec.members:
+        path = resolved.get(member.tag)
+        if path is None:
+            print(f"  {member.tag}: UNRESOLVED" + (f" ({member.url})" if member.url else ""))
+            continue
+        gp = member_graph_path(member, path)
+        if not gp.is_file():
+            state = "no graph (run graphify extract there)"
+        elif member.tag not in built:
+            state = "not in last build"
+        elif built[member.tag].get("source_hash") != _file_hash(gp):
+            state = "stale (graph changed since last build)"
+        else:
+            state = f"ok ({built[member.tag].get('node_count', '?')} nodes)"
+        print(f"  {member.tag}: {path} — {state}")
+    for w in warnings:
+        print(f"  warning: {w}", file=sys.stderr)
+    for e in errors:
+        print(f"  error: {e}", file=sys.stderr)
+    if manifest:
+        print(f"Last build: {manifest.get('built_at', '?')} — "
+              f"{manifest.get('node_count', '?')} nodes, {manifest.get('edge_count', '?')} edges")
+    sys.exit(1 if errors else 0)
+
+
+def cmd_cluster(argv: list[str]) -> None:
+    sub = argv[0] if argv else ""
+    handlers = {
+        "init": _cmd_init,
+        "add": _cmd_add,
+        "remove": _cmd_remove,
+        "locate": _cmd_locate,
+        "build": _cmd_build,
+        "check": _cmd_check,
+        "status": _cmd_status,
+    }
+    handler = handlers.get(sub)
+    if handler is None:
+        print(USAGE, file=sys.stderr)
+        sys.exit(0 if sub in ("", "help", "--help", "-h") else 1)
+    try:
+        handler(argv[1:])
+    except ClusterSpecError as exc:
+        _fail(str(exc))

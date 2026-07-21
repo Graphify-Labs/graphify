@@ -22,6 +22,12 @@ DEFAULT_AFFECTED_RELATIONS = (
     "uses",
     "mixes_in",
     "embeds",
+    # Cross-repo relations added by `graphify cluster` link resolution: a
+    # change on one side of a declared contract affects the other repo.
+    # (`depends_on` is deliberately NOT here — it predates clusters and
+    # including it would change single-repo affected behavior.)
+    "calls_api",
+    "mirrors",
 )
 
 

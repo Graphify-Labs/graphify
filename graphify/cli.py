@@ -744,6 +744,11 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "prs":
         from graphify.prs import cmd_prs
         cmd_prs(sys.argv[2:])
+    elif cmd == "cluster":
+        # Cluster graphs (multi-repo). Community detection on a single graph
+        # is `cluster-only`, not this.
+        from graphify.cluster_cli import cmd_cluster
+        cmd_cluster(sys.argv[2:])
     elif cmd == "hook":
         from graphify.hooks import (
             install as hook_install,
