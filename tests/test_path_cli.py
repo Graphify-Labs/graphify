@@ -1,6 +1,9 @@
 """Regression tests for `graphify path` arrow direction (#849)."""
 from __future__ import annotations
 import json
+import os
+import subprocess
+import sys
 import networkx as nx
 import pytest
 from networkx.readwrite import json_graph
@@ -103,3 +106,51 @@ def test_endpoint_falls_back_to_score_head(monkeypatch, tmp_path, capsys):
         mainmod.main()
     assert exc_info.value.code == 0
     assert "No path found" in capsys.readouterr().out
+
+
+def _write_diamond_graph(tmp_path):
+    """Five equal-length routes Alpha->Bravo (one via each Mid node), so the
+    shortest-path tiebreak is exercised. graph.json omits ``directed``/``multigraph``
+    and uses ``edges`` — exactly what ``graphify extract`` writes — so ``path`` loads
+    it as a MultiDiGraph, the condition under which the chosen route was
+    hash-seed-dependent (#2074)."""
+    graph_data = {
+        "nodes": [{"id": "A", "label": "Alpha"}, {"id": "B", "label": "Bravo"}]
+        + [{"id": f"m{i}", "label": f"Mid{i}"} for i in range(1, 6)],
+        "edges": [
+            {"source": "A", "target": f"m{i}", "relation": "calls",
+             "confidence": "EXTRACTED"} for i in range(1, 6)
+        ] + [
+            {"source": f"m{i}", "target": "B", "relation": "calls",
+             "confidence": "EXTRACTED"} for i in range(1, 6)
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    return p
+
+
+def _path_route(graph_path, seed):
+    """Run `graphify path Alpha Bravo` in a fresh process at a fixed hash seed and
+    return just the rendered route line."""
+    env = {**os.environ, "PYTHONHASHSEED": str(seed)}
+    r = subprocess.run(
+        [sys.executable, "-m", "graphify", "path", "Alpha", "Bravo",
+         "--graph", str(graph_path)],
+        capture_output=True, text=True, env=env,
+    )
+    for line in r.stdout.splitlines():
+        if "-->" in line or "<--" in line:
+            return line.strip()
+    return r.stdout.strip()
+
+
+def test_path_is_deterministic_across_hash_seeds(tmp_path):
+    """#2074: identical `graphify path` calls on an unchanged graph must return the
+    same route. Five equal-length routes exist; nx.shortest_path tie-broke by
+    hash-shuffled adjacency order, so the route changed between processes."""
+    p = _write_diamond_graph(tmp_path)
+    routes = {_path_route(p, s) for s in range(12)}
+    assert len(routes) == 1, f"route varies across hash seeds: {sorted(routes)}"
+    # Deterministic canonical pick = smallest intermediate node id (m1 -> Mid1).
+    assert "Mid1" in next(iter(routes)), routes

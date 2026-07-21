@@ -1130,7 +1130,17 @@ def dispatch_command(cmd: str) -> None:
                         file=sys.stderr,
                     )
         try:
-            path_nodes = _nx.shortest_path(G.to_undirected(as_view=True), src_nid, tgt_nid)
+            # Deterministic route: among equal-length shortest paths, pick the
+            # canonical one (lexicographically smallest by node-id sequence) so
+            # identical calls on an unchanged graph always return the same path.
+            # nx.shortest_path alone tie-breaks by adjacency-iteration order, which
+            # Python's per-process hash randomization shuffles — same graph.json,
+            # a different equal-length route each run (#2074).
+            path_nodes = min(
+                _nx.all_shortest_paths(
+                    G.to_undirected(as_view=True), src_nid, tgt_nid),
+                key=lambda p: [str(n) for n in p],
+            )
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
             print(f"No path found between '{source_label}' and '{target_label}'.")
             sys.exit(0)
