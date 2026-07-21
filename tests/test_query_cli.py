@@ -48,3 +48,52 @@ def test_query_cli_heuristic_context_filter(monkeypatch, tmp_path, capsys):
     assert "Context: call (heuristic)" in out
     assert "cluster" in out
     assert "build" not in out
+
+
+def test_query_dfs_flag(monkeypatch, tmp_path):
+    """The public CLI must forward ``--dfs`` to the native traversal."""
+    graph_path = _write_graph(tmp_path)
+    seen = {}
+
+    def _query(graph, question, **kwargs):
+        seen.update(question=question, **kwargs)
+        return "ok"
+
+    monkeypatch.setattr("graphify.serve._query_graph_text", _query)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "extract", "--dfs", "--graph", str(graph_path)],
+    )
+
+    mainmod.main()
+
+    assert seen["question"] == "extract"
+    assert seen["mode"] == "dfs"
+
+
+def test_query_budget_flag(monkeypatch, tmp_path):
+    """The public CLI must pass the requested token budget to native query."""
+    graph_path = _write_graph(tmp_path)
+    seen = {}
+
+    def _query(graph, question, **kwargs):
+        seen.update(question=question, **kwargs)
+        return "ok"
+
+    monkeypatch.setattr("graphify.serve._query_graph_text", _query)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        [
+            "graphify", "query", "extract", "--budget", "500",
+            "--graph", str(graph_path),
+        ],
+    )
+
+    mainmod.main()
+
+    assert seen["question"] == "extract"
+    assert seen["token_budget"] == 500

@@ -45,6 +45,14 @@ def _semantic_result(paths, **kwargs):
     }
 
 
+def _node_sources(store: Path) -> set[str]:
+    graph = load_graph(store).graph
+    return {
+        str(node_attributes(graph, node.id).get("source_file", ""))
+        for node in graph.nodes()
+    }
+
+
 def test_code_only_extract_creates_only_native_store(monkeypatch, tmp_path: Path) -> None:
     project = _corpus(tmp_path, docs=False)
     output = tmp_path / "output"
@@ -57,6 +65,137 @@ def test_code_only_extract_creates_only_native_store(monkeypatch, tmp_path: Path
     assert loaded.state["build"]["source_root"] == str(project.resolve())
     assert not (output / "graphify-out" / "graph.json").exists()
     assert not (project / "graphify-out").exists()
+
+
+@pytest.mark.parametrize(
+    "postgres_args",
+    [["--postgres", "test-dsn"], ["--postgres=test-dsn"]],
+)
+@pytest.mark.parametrize("cluster_args", [[], ["--no-cluster"]])
+def test_pathless_postgres_extract_initializes_empty_detection(
+    monkeypatch, tmp_path, postgres_args, cluster_args
+):
+    """A pathless database extraction replaces, then yields to, a file corpus."""
+    calls = []
+
+    def _introspect(dsn):
+        calls.append(dsn)
+        return {
+            "nodes": [
+                {
+                    "id": "postgresql_users",
+                    "label": "users",
+                    "type": "table",
+                    "file_type": "code",
+                    "source_file": "postgresql:/localhost/test",
+                }
+            ],
+            "edges": [],
+        }
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def app():\n    return 1\n")
+    launcher = tmp_path / "launcher"
+    launcher.mkdir()
+    monkeypatch.chdir(launcher)
+    output = tmp_path / "output"
+    store = output / "graphify-out" / "graph.helix"
+    monkeypatch.setattr("graphify.pg_introspect.introspect_postgres", _introspect)
+
+    _run(
+        monkeypatch,
+        [
+            "graphify", "extract", str(corpus), "--code-only", "--no-cluster",
+            "--out", str(output),
+        ],
+    )
+    assert "app.py" in _node_sources(store)
+
+    _run(
+        monkeypatch,
+        ["graphify", "extract", *postgres_args, *cluster_args, "--out", str(output)],
+    )
+    assert calls == ["test-dsn"]
+    assert _node_sources(store) == {"postgresql:/localhost/test"}
+    assert load_graph(store).state["incremental"]["files"] == {}
+
+    _run(
+        monkeypatch,
+        [
+            "graphify", "extract", str(corpus), "--code-only", "--no-cluster",
+            "--out", str(output),
+        ],
+    )
+    final_sources = _node_sources(store)
+    assert "app.py" in final_sources
+    assert "postgresql:/localhost/test" not in final_sources
+
+
+def test_postgres_extraction_with_source_survives_incremental_update(
+    monkeypatch, tmp_path
+):
+    """A mixed source/database corpus retains its database DTO on update."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    source = corpus / "app.py"
+    source.write_text("def app():\n    return 1\n")
+    output = tmp_path / "output"
+    store = output / "graphify-out" / "graph.helix"
+    monkeypatch.setattr(
+        "graphify.pg_introspect.introspect_postgres",
+        lambda _dsn: {
+            "nodes": [
+                {
+                    "id": "postgresql_users",
+                    "label": "users",
+                    "file_type": "code",
+                    "source_file": "postgresql:/localhost/test",
+                }
+            ],
+            "edges": [],
+        },
+    )
+
+    _run(
+        monkeypatch,
+        [
+            "graphify", "extract", str(corpus), "--code-only", "--no-cluster",
+            "--postgres", "test-dsn", "--out", str(output),
+        ],
+    )
+    assert {"app.py", "postgresql:/localhost/test"} <= _node_sources(store)
+
+    source.write_text("def app():\n    return 2\n")
+    _run(
+        monkeypatch,
+        [
+            "graphify", "update", str(corpus), "--no-cluster",
+            "--changed", "app.py", "--out", str(output),
+        ],
+    )
+    assert {"app.py", "postgresql:/localhost/test"} <= _node_sources(store)
+
+
+def test_postgres_cli_reports_connection_error(monkeypatch, tmp_path, capsys):
+    """Database failures use the normal CLI error path rather than a traceback."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "graphify.pg_introspect.introspect_postgres",
+        lambda _dsn: (_ for _ in ()).throw(ConnectionError("database unavailable")),
+    )
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", "--postgres", "test-dsn", "--no-cluster"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 1
+    assert "error: database unavailable" in capsys.readouterr().err
 
 
 def test_semantic_extract_persists_cache_and_tokens(monkeypatch, tmp_path: Path) -> None:

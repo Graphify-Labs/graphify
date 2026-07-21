@@ -1716,8 +1716,12 @@ def test_merge_changed_paths_dedupes_in_order():
     assert [p.as_posix() for p in merged] == ["a.py", "b.py", "c.py"]
 
 
-def test_rebuild_code_prunes_nodes_from_newly_excluded_file(tmp_path, capsys):
-    """A newly ignored file leaves the indexed corpus and is pruned explicitly."""
+def test_rebuild_code_preserves_nodes_from_excluded_but_alive_file(tmp_path, capsys):
+    """A newly ignored but existing source is preserved fail-closed.
+
+    Detector and ignore-rule changes must not silently mass-delete live source
+    topology.  A user can deliberately accept the new boundary with ``--force``.
+    """
     from graphify.watch import _rebuild_code
 
     corpus = tmp_path / "corpus"
@@ -1738,8 +1742,8 @@ def test_rebuild_code_prunes_nodes_from_newly_excluded_file(tmp_path, capsys):
 
     assert _rebuild_code(corpus, changed_paths=[Path("auth.py")], acquire_lock=False) is True
     labels = {n["label"] for n in _read_graph(graph_path)["nodes"]}
-    assert "brainstorm.md" not in labels
-    assert "pruned native nodes" in capsys.readouterr().out
+    assert "brainstorm.md" in labels
+    assert "fail-closed: kept" in capsys.readouterr().out
 
 
 def test_rebuild_code_still_evicts_when_excluded_file_is_also_deleted(tmp_path):

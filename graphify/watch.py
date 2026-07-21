@@ -309,6 +309,9 @@ def _rebuild_code(
     token_budget: int = 60_000,
     max_concurrency: int = 4,
     retain_rollback: bool = False,
+    external_extraction: dict | None = None,
+    external_kind: str | None = None,
+    prune_excluded: bool = False,
     raise_on_error: bool = False,
     _root_marker: str | None = None,
     _timer=None,
@@ -367,6 +370,9 @@ def _rebuild_code(
                     token_budget=token_budget,
                     max_concurrency=max_concurrency,
                     retain_rollback=retain_rollback,
+                    external_extraction=external_extraction,
+                    external_kind=external_kind,
+                    prune_excluded=prune_excluded,
                     raise_on_error=raise_on_error,
                     _root_marker=_root_marker,
                     _timer=_timer,
@@ -385,7 +391,11 @@ def _rebuild_code(
     try:
         from graphify.analyze import god_nodes, suggest_questions, surprising_connections
         from graphify.build import build_from_extraction, build_unclustered_extraction
-        from graphify.cluster import cluster, score_all
+        from graphify.cluster import (
+            cluster,
+            remap_communities_to_previous,
+            score_all,
+        )
         from graphify.cache import check_semantic_cache, save_semantic_cache
         from graphify.detect import detect
         from graphify.export import to_html
@@ -541,9 +551,14 @@ def _rebuild_code(
                     elif absolute not in current_absolute:
                         excluded_sources.add(str(source).replace("\\", "/"))
                 if excluded_sources:
+                    action = (
+                        "pruned native nodes from"
+                        if prune_excluded
+                        else "fail-closed: kept native nodes from"
+                    )
                     print(
-                        "[graphify watch] pruned native nodes from "
-                        f"{len(excluded_sources)} newly excluded source file(s)."
+                        f"[graphify watch] {action} {len(excluded_sources)} "
+                        "excluded-but-existing source file(s)."
                     )
 
         semantic_backed_sources: set[str] = set()
@@ -582,7 +597,11 @@ def _rebuild_code(
             cache_state = {}
         if force or os.environ.get("GRAPHIFY_FORCE", "").strip() == "1":
             cache_state.clear()
-        pruned_sources = deleted_sources | excluded_sources
+        # Watch/update preserve a live source fail-closed when detector or ignore
+        # behavior changes. An explicit full ``extract`` opts into adopting the
+        # newly detected corpus boundary, while deletion and ``--force`` remain
+        # explicit removal signals for incremental callers.
+        pruned_sources = deleted_sources | (excluded_sources if prune_excluded else set())
         if pruned_sources:
             deleted_suffixes = {":" + source.replace("\\", "/") for source in pruned_sources}
             for key in list(cache_state):
@@ -638,7 +657,13 @@ def _rebuild_code(
                             result[bucket].append(dict(item))
             return result
 
-        if not extract_targets and not semantic_targets and not pruned_sources and not store_path.is_dir():
+        if (
+            not extract_targets
+            and not semantic_targets
+            and not pruned_sources
+            and external_extraction is None
+            and not store_path.is_dir()
+        ):
             print("[graphify watch] No supported source files found - nothing to rebuild.")
             return False
 
@@ -760,16 +785,46 @@ def _rebuild_code(
         virtual_semantic = cached_virtual_semantic()
         for bucket in ("nodes", "edges", "hyperedges"):
             semantic_result[bucket].extend(virtual_semantic[bucket])
+        external_extractions = copy.deepcopy(
+            previous_state.get("incremental", {}).get(
+                "external_extractions", {}
+            )
+        )
+        if not isinstance(external_extractions, dict):
+            external_extractions = {}
+        if external_extraction is not None:
+            external_extractions[external_kind or "external"] = copy.deepcopy(
+                external_extraction
+            )
+        external_results = [
+            value
+            for value in external_extractions.values()
+            if isinstance(value, dict)
+        ]
         current_files = list({
             os.fspath(Path(os.path.abspath(path))): Path(os.path.abspath(path))
             for path in [*current_files, *ast_build_files, *semantic_build_files]
             if Path(path).is_file()
         }.values())
         result = {
-            "nodes": [*ast_result.get("nodes", []), *semantic_result.get("nodes", [])],
-            "edges": [*ast_result.get("edges", []), *semantic_result.get("edges", [])],
+            "nodes": [
+                *ast_result.get("nodes", []),
+                *semantic_result.get("nodes", []),
+                *(item for value in external_results for item in value.get("nodes", [])),
+            ],
+            "edges": [
+                *ast_result.get("edges", []),
+                *semantic_result.get("edges", []),
+                *(item for value in external_results for item in value.get("edges", [])),
+            ],
             "hyperedges": [
-                *ast_result.get("hyperedges", []), *semantic_result.get("hyperedges", [])
+                *ast_result.get("hyperedges", []),
+                *semantic_result.get("hyperedges", []),
+                *(
+                    item
+                    for value in external_results
+                    for item in value.get("hyperedges", [])
+                ),
             ],
             "input_tokens": ast_result.get("input_tokens", 0) + semantic_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + semantic_result.get("output_tokens", 0),
@@ -792,7 +847,10 @@ def _rebuild_code(
                 for source in previous_topology_sources
                 if isinstance(source, str)
                 and (build_root / source).is_file()
-                and str(source).replace("\\", "/") not in excluded_sources
+                and (
+                    not prune_excluded
+                    or str(source).replace("\\", "/") not in excluded_sources
+                )
             } if isinstance(previous_topology_sources, list) else set()
             candidate_sources = set(_topology_sources(build_data))
             missing_live_sources = expected_sources - candidate_sources
@@ -829,6 +887,17 @@ def _rebuild_code(
                 }
             else:
                 communities = cluster(graph)
+                previous_membership = {
+                    member: community_id
+                    for community_id, members in communities_from_state(
+                        previous_state
+                    ).items()
+                    for member in members
+                }
+                if previous_membership:
+                    communities = remap_communities_to_previous(
+                        communities, previous_membership
+                    )
                 cohesion = score_all(graph, communities)
                 labels = _community_labels(graph, communities)
             if no_cluster:
@@ -900,6 +969,7 @@ def _rebuild_code(
                 },
                 "topology_sources": _topology_sources(build_data),
                 "extraction_cache": cache_state,
+                "external_extractions": external_extractions,
             }
             state["semantic"] = {
                 "used": bool(semantic_targets)

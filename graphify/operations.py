@@ -6,7 +6,7 @@ import copy
 from pathlib import Path
 
 from .analyze import god_nodes, surprising_connections, suggest_questions
-from .cluster import cluster, score_all
+from .cluster import cluster, remap_communities_to_previous, score_all
 from .helix.persistence import DEFAULT_PROJECT_STORE, HelixEmbeddedStore
 from .helix.state import (
     communities_from_state,
@@ -24,6 +24,15 @@ def recluster(store_path: str | Path = DEFAULT_PROJECT_STORE) -> dict[int, list]
         previous_state = dict(loaded.state)
         state = copy.deepcopy(previous_state)
         communities = cluster(graph)
+        previous_membership = {
+            member: community_id
+            for community_id, members in communities_from_state(state).items()
+            for member in members
+        }
+        if previous_membership:
+            communities = remap_communities_to_previous(
+                communities, previous_membership
+            )
         cohesion = score_all(graph, communities)
         previous_labels = labels_from_state(state)
         labels = {
