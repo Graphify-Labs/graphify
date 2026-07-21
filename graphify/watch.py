@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -33,6 +34,14 @@ from graphify.detect import (  # noqa: E402
 
 _WATCHED_EXTENSIONS = CODE_EXTENSIONS | DOC_EXTENSIONS | PAPER_EXTENSIONS | IMAGE_EXTENSIONS
 _CODE_EXTENSIONS = CODE_EXTENSIONS
+
+
+_REMOTE_SOURCE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]+://?")
+
+
+def _is_remote_source(source_file: str) -> bool:
+    """Return whether source_file is a URL/virtual scheme, not a local path."""
+    return bool(_REMOTE_SOURCE_RE.match(source_file))
 
 
 def _topology_sources(build_data) -> list[str]:
@@ -302,6 +311,7 @@ def _rebuild_code(
     retain_rollback: bool = False,
     raise_on_error: bool = False,
     _root_marker: str | None = None,
+    _timer=None,
 ) -> bool:
     """Extract source and atomically activate topology, analysis, and state.
 
@@ -359,6 +369,7 @@ def _rebuild_code(
                     retain_rollback=retain_rollback,
                     raise_on_error=raise_on_error,
                     _root_marker=_root_marker,
+                    _timer=_timer,
                 )
 
             result = run_inner(first_paths)
@@ -400,6 +411,8 @@ def _rebuild_code(
             extra_excludes=_read_build_excludes(out) or None,
             gitignore=_read_build_gitignore(out),
         )
+        if _timer is not None:
+            _timer.mark("detect")
         files_by_type = detected.get("files", {})
         code_files = [Path(item) for item in files_by_type.get("code", [])]
         semantic_files = [
@@ -407,6 +420,7 @@ def _rebuild_code(
             for kind in ("document", "paper", "image")
             for item in files_by_type.get(kind, [])
         ]
+        detected_files = [*code_files, *semantic_files]
         quick_document_files = [
             path
             for path in semantic_files
@@ -421,7 +435,7 @@ def _rebuild_code(
         current_files = [*code_files, *semantic_files]
         current_absolute = {
             identity
-            for path in current_files
+            for path in detected_files
             for identity in (
                 Path(os.path.abspath(path)),
                 path.resolve(),
@@ -444,6 +458,7 @@ def _rebuild_code(
             return candidates[0] if candidates[0].is_relative_to(watch_path) else candidates[1]
 
         deleted_sources: set[str] = set()
+        excluded_sources: set[str] = set()
         if changed_paths is not None:
             requested = [resolve_changed(Path(path)) for path in changed_paths]
             extract_targets = [
@@ -512,7 +527,6 @@ def _rebuild_code(
                         source.startswith(marker_prefix) for source in stored_sources
                     ):
                         existing_source_root = watch_path
-                excluded_alive: set[str] = set()
                 for source in stored_sources:
                     source_path = Path(str(source))
                     absolute = (
@@ -525,11 +539,11 @@ def _rebuild_code(
                     if not absolute.exists():
                         deleted_sources.add(str(source).replace("\\", "/"))
                     elif absolute not in current_absolute:
-                        excluded_alive.add(str(source))
-                if excluded_alive:
+                        excluded_sources.add(str(source).replace("\\", "/"))
+                if excluded_sources:
                     print(
-                        "[graphify watch] fail-closed: kept native nodes from "
-                        f"{len(excluded_alive)} excluded-but-existing source file(s)."
+                        "[graphify watch] pruned native nodes from "
+                        f"{len(excluded_sources)} newly excluded source file(s)."
                     )
 
         semantic_backed_sources: set[str] = set()
@@ -568,8 +582,9 @@ def _rebuild_code(
             cache_state = {}
         if force or os.environ.get("GRAPHIFY_FORCE", "").strip() == "1":
             cache_state.clear()
-        if deleted_sources:
-            deleted_suffixes = {":" + source.replace("\\", "/") for source in deleted_sources}
+        pruned_sources = deleted_sources | excluded_sources
+        if pruned_sources:
+            deleted_suffixes = {":" + source.replace("\\", "/") for source in pruned_sources}
             for key in list(cache_state):
                 if any(key.endswith(suffix) for suffix in deleted_suffixes):
                     del cache_state[key]
@@ -601,7 +616,29 @@ def _rebuild_code(
                             paths[os.fspath(absolute)] = absolute
             return list(paths.values())
 
-        if not extract_targets and not semantic_targets and not deleted_sources and not store_path.is_dir():
+        def cached_virtual_semantic() -> dict[str, list[dict]]:
+            """Reuse durable extraction DTOs whose sources are virtual URLs."""
+            result: dict[str, list[dict]] = {
+                "nodes": [], "edges": [], "hyperedges": [],
+            }
+            for entry in cache_state.values():
+                if not isinstance(entry, dict) or not str(entry.get("kind", "")).startswith(
+                    "semantic"
+                ):
+                    continue
+                cached_result = entry.get("result", {})
+                if not isinstance(cached_result, dict):
+                    continue
+                for bucket in result:
+                    for item in cached_result.get(bucket, []):
+                        if (
+                            isinstance(item, dict)
+                            and _is_remote_source(str(item.get("source_file", "")))
+                        ):
+                            result[bucket].append(dict(item))
+            return result
+
+        if not extract_targets and not semantic_targets and not pruned_sources and not store_path.is_dir():
             print("[graphify watch] No supported source files found - nothing to rebuild.")
             return False
 
@@ -720,6 +757,9 @@ def _rebuild_code(
                 "input_tokens": fresh.get("input_tokens", 0),
                 "output_tokens": fresh.get("output_tokens", 0),
             }
+        virtual_semantic = cached_virtual_semantic()
+        for bucket in ("nodes", "edges", "hyperedges"):
+            semantic_result[bucket].extend(virtual_semantic[bucket])
         current_files = list({
             os.fspath(Path(os.path.abspath(path))): Path(os.path.abspath(path))
             for path in [*current_files, *ast_build_files, *semantic_build_files]
@@ -734,11 +774,15 @@ def _rebuild_code(
             "input_tokens": ast_result.get("input_tokens", 0) + semantic_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + semantic_result.get("output_tokens", 0),
         }
+        if _timer is not None:
+            _timer.mark("extract")
         build_data = (
             build_unclustered_extraction(result, root=build_root)
             if no_cluster
             else build_from_extraction(result, root=build_root)
         )
+        if _timer is not None:
+            _timer.mark("build")
         if had_existing_generation:
             previous_topology_sources = previous_state.get("incremental", {}).get(
                 "topology_sources", []
@@ -748,6 +792,7 @@ def _rebuild_code(
                 for source in previous_topology_sources
                 if isinstance(source, str)
                 and (build_root / source).is_file()
+                and str(source).replace("\\", "/") not in excluded_sources
             } if isinstance(previous_topology_sources, list) else set()
             candidate_sources = set(_topology_sources(build_data))
             missing_live_sources = expected_sources - candidate_sources
@@ -927,6 +972,8 @@ def _rebuild_code(
                     ) = analyze_generation(graph)
                     activated = store.activate_staged(staged, state)
                     graph = activated.graph
+        if _timer is not None:
+            _timer.mark("activate")
 
         if no_cluster:
             # Reopen the activated store through the ordinary public reader and

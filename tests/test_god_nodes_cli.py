@@ -9,25 +9,23 @@ from __future__ import annotations
 
 import json
 
-import networkx as nx
 import pytest
-from networkx.readwrite import json_graph
 
 import graphify.__main__ as mainmod
+from tests.native_helpers import make_loaded
 
 
 def _write_graph(tmp_path):
-    g = nx.DiGraph()
-    # A high-degree real entity (not a file/concept node): label != basename.
-    g.add_node("hub", label="Auth", file_type="code", source_file="auth.py", source_location="L1")
-    g.add_node("f", label="auth.py", file_type="code", source_file="auth.py", source_location=None)
+    nodes = [
+        {"id": "hub", "label": "Auth", "file_type": "code", "source_file": "auth.py", "source_location": "L1"},
+        {"id": "f", "label": "auth.py", "file_type": "code", "source_file": "auth.py", "source_location": None},
+    ]
+    edges = []
     for i in range(4):
-        g.add_node(f"caller{i}", label=f"c{i}()", file_type="code", source_file=f"m{i}.py", source_location="L1")
-        g.add_edge(f"caller{i}", "hub", relation="calls", confidence="EXTRACTED")
-    g.add_edge("f", "hub", relation="contains", confidence="EXTRACTED")
-    gp = tmp_path / "graph.json"
-    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
-    return gp
+        nodes.append({"id": f"caller{i}", "label": f"c{i}()", "file_type": "code", "source_file": f"m{i}.py", "source_location": "L1"})
+        edges.append({"source": f"caller{i}", "target": "hub", "relation": "calls", "confidence": "EXTRACTED"})
+    edges.append({"source": "f", "target": "hub", "relation": "contains", "confidence": "EXTRACTED"})
+    return make_loaded(tmp_path, nodes=nodes, edges=edges, kind="digraph").store_path
 
 
 def _run(monkeypatch, argv):
@@ -71,6 +69,6 @@ def test_god_nodes_cli_json(monkeypatch, tmp_path, capsys):
 
 def test_god_nodes_cli_missing_graph_errors(monkeypatch, tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
-        _run(monkeypatch, ["graphify", "god-nodes", "--graph", str(tmp_path / "nope.json")])
+        _run(monkeypatch, ["graphify", "god-nodes", "--store", str(tmp_path / "nope.helix")])
     assert exc.value.code == 1
-    assert "graph file not found" in capsys.readouterr().err
+    assert "not found" in capsys.readouterr().err

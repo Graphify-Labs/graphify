@@ -231,13 +231,24 @@ def _file_label_reassignments(items: "list[tuple]") -> dict:
     return out
 
 
-def _disambiguate_file_node_labels(G: "nx.Graph") -> None:
-    """Relabel colliding-basename file nodes on a graph (#2032). Ids/edges are
-    never changed — only display labels. Idempotent (labels derive from
-    source_file, not the current possibly-qualified label)."""
-    items = [(nid, a.get("label"), a.get("source_file")) for nid, a in G.nodes(data=True)]
-    for nid, new_label in _file_label_reassignments(items).items():
-        G.nodes[nid]["label"] = new_label
+def _disambiguate_file_node_labels(graph: GraphBuildData) -> None:
+    """Relabel colliding-basename file nodes on transient native build data."""
+    items = [
+        (node.id, node.attributes.get("label"), node.attributes.get("source_file"))
+        for node in graph.nodes
+    ]
+    replacements = _file_label_reassignments(items)
+    if not replacements:
+        return
+    graph.nodes = [
+        NodeData(
+            node.id,
+            {**dict(node.attributes), "label": replacements[node.id]}
+            if node.id in replacements
+            else node.attributes,
+        )
+        for node in graph.nodes
+    ]
 
 
 def disambiguate_file_labels_in_nodes(nodes: "list") -> None:
@@ -951,6 +962,12 @@ def build_from_extraction(
                 if not math.isfinite(_num_val) or _num_val < 0:
                     _num_val = 1.0
                 attrs[_num_key] = _num_val
+        if "confidence_score" not in attrs:
+            attrs["confidence_score"] = {
+                "EXTRACTED": 1.0,
+                "INFERRED": 0.5,
+                "AMBIGUOUS": 0.2,
+            }.get(str(attrs.get("confidence", "EXTRACTED")), 1.0)
         # Backfill source_file from the endpoint nodes (every node carries one).
         # Semantic/LLM edges occasionally omit it, which downstream validation
         # flags and leaves query results with no file reference (#1279).

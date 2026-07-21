@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from graphify.extract import extract
 
 
@@ -22,12 +22,12 @@ def _import_self_loops(result: dict) -> list[dict]:
 
 
 def _built_import_self_loops(result: dict) -> list[tuple[str, str, dict]]:
-    graph = build_from_json(result, directed=True)
+    graph = build_from_extraction(result, directed=True)
     return [
-        (source, target, data)
-        for source, target, data in graph.edges(data=True)
-        if source == target
-        and data.get("relation") in {"imports", "imports_from", "re_exports"}
+        (edge.source, edge.target, dict(edge.attributes))
+        for edge in graph.edges
+        if edge.source == edge.target
+        and edge.attributes.get("relation") in {"imports", "imports_from", "re_exports"}
     ]
 
 
@@ -101,7 +101,11 @@ def test_recursive_call_self_loop_is_preserved() -> None:
         ],
     }
 
-    graph = build_from_json(result, directed=True)
+    graph = build_from_extraction(result, directed=True)
 
-    assert graph.has_edge("module_recurse", "module_recurse")
-    assert graph["module_recurse"]["module_recurse"]["relation"] == "calls"
+    assert any(
+        edge.source == "module_recurse"
+        and edge.target == "module_recurse"
+        and edge.attributes.get("relation") == "calls"
+        for edge in graph.edges
+    )

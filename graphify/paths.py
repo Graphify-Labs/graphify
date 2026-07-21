@@ -297,3 +297,12 @@ def out_path(*parts: str) -> Path:
 def default_graph_store() -> str:
     """Default embedded Helix store under the configured output directory."""
     return str(out_path("graph.helix"))
+
+
+def project_graph_store(
+    root: str | Path = Path("."), output_dir: str | Path | None = None
+) -> Path:
+    """Resolve a project's native store for hooks and other project workflows."""
+    output = Path(GRAPHIFY_OUT if output_dir is None else output_dir)
+    base = output if output.is_absolute() else Path(root) / output
+    return base / "graph.helix"
