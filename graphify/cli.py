@@ -603,11 +603,179 @@ def _global(args: list[str]) -> None:
     raise ValueError("usage: graphify global add <project|graph.helix> [--as TAG] | remove TAG | list | path")
 
 
+def _first_positional(args: list[str], *, value_options: set[str]) -> str | None:
+    """Return the first positional argument without mistaking option values for it."""
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value in value_options:
+            index += 2
+            continue
+        if value.startswith("-"):
+            index += 1
+            continue
+        return value
+    return None
+
+
+def _activate_external_only(
+    result: dict,
+    *,
+    output_root: Path,
+    no_cluster: bool,
+    retain_rollback: bool,
+    source_name: str,
+) -> None:
+    """Replace the active store with one transient external extraction DTO."""
+    from graphify.analyze import god_nodes, suggest_questions, surprising_connections
+    from graphify.build import build_from_extraction, build_unclustered_extraction
+    from graphify.cluster import cluster, score_all
+    from graphify.helix.native import HELIX_PYTHON_VERSION
+    from graphify.helix.persistence import HelixEmbeddedStore
+    from graphify.helix.state import community_records, community_summaries, new_state
+    from graphify.report import generate
+    from graphify.watch import _community_labels, _topology_sources, _warn_obsolete_store
+
+    out = output_root.resolve() / _GRAPHIFY_OUT
+    out.mkdir(parents=True, exist_ok=True)
+    _warn_obsolete_store(out)
+    store_path = out / "graph.helix"
+    build_data = (
+        build_unclustered_extraction(result, root=output_root)
+        if no_cluster
+        else build_from_extraction(result, root=output_root)
+    )
+
+    def durable_state(graph, communities, cohesion, labels, analysis):
+        state = new_state()
+        state["build"] = {
+            "helix_python_version": HELIX_PYTHON_VERSION,
+            "node_count": graph.node_count,
+            "edge_count": graph.edge_count,
+            "directed": graph.directed,
+            "multigraph": graph.multigraph,
+            "semantic": False,
+            "source_root": source_name,
+            "source_commit": None,
+        }
+        state["communities"] = community_records(
+            communities,
+            labels=labels,
+            cohesion=cohesion,
+            naming_source="generated",
+        )
+        state["analysis"] = analysis
+        state["incremental"] = {
+            "files": {},
+            "extractor_state": {"mode": "postgres"},
+            "topology_sources": _topology_sources(build_data),
+            "extraction_cache": {},
+            # Database-only extraction replaces the corpus. It is intentionally
+            # not carried into a later filesystem extraction unless the caller
+            # explicitly supplies --postgres again.
+            "external_extractions": {},
+        }
+        state["semantic"] = {
+            "used": False,
+            "backend": None,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+        return state
+
+    with HelixEmbeddedStore(
+        store_path, retain_rollback=retain_rollback
+    ) as store:
+        if no_cluster:
+            state = durable_state(build_data, {}, {}, {}, {})
+            store.save_generation(build_data, state)
+            node_count = build_data.node_count
+            edge_count = build_data.edge_count
+        else:
+            with store.staged_graph(build_data) as staged:
+                graph = staged.graph
+                communities = cluster(graph)
+                cohesion = score_all(graph, communities)
+                labels = _community_labels(graph, communities)
+                gods = god_nodes(graph)
+                surprises = surprising_connections(graph, communities)
+                questions = suggest_questions(graph, communities, labels)
+                analysis = {
+                    "god_nodes": gods,
+                    "surprises": surprises,
+                    "suggested_questions": questions,
+                    "confidence_counts": {
+                        confidence: sum(
+                            1
+                            for edge in build_data.edges
+                            if str(edge.attributes.get("confidence", "EXTRACTED"))
+                            == confidence
+                        )
+                        for confidence in ("EXTRACTED", "INFERRED", "AMBIGUOUS")
+                    },
+                    "community_summaries": community_summaries(
+                        graph, communities, labels
+                    ),
+                    "report_inputs": {
+                        "detection": {
+                            "total_files": 0,
+                            "total_words": 0,
+                            "warning": "PostgreSQL schema introspection; no filesystem corpus.",
+                        },
+                        "tokens": {"input": 0, "output": 0},
+                        "source": source_name,
+                    },
+                }
+                state = durable_state(
+                    graph, communities, cohesion, labels, analysis
+                )
+                activated = store.activate_staged(staged, state)
+                graph = activated.graph
+                report = generate(
+                    graph,
+                    communities,
+                    cohesion,
+                    labels,
+                    gods,
+                    surprises,
+                    analysis["report_inputs"]["detection"],
+                    {"input": 0, "output": 0},
+                    source_name,
+                    suggested_questions=questions,
+                )
+                (out / "GRAPH_REPORT.md").write_text(report, encoding="utf-8")
+                node_count = graph.node_count
+                edge_count = graph.edge_count
+
+    with HelixEmbeddedStore(store_path, read_only=True) as reopened:
+        counts = reopened.verify_counts()
+    if counts["nodes"] != node_count or counts["edges"] != edge_count:
+        raise RuntimeError("activated PostgreSQL Helix generation failed verification")
+    # A database-only graph has no filesystem extraction root.  Leaving a root
+    # marker here would make the next explicit source extraction resolve its
+    # cached paths against the command's old working directory.
+    (out / ".graphify_root").unlink(missing_ok=True)
+    print(
+        f"[graphify extract] PostgreSQL: {node_count} nodes, {edge_count} edges -> "
+        f"{store_path}"
+    )
+
+
 def _update_or_extract(cmd: str, args: list[str]) -> None:
     from graphify.watch import _rebuild_code, _write_build_config
 
     timer = _StageTimer("--timing" in args)
-    target = Path(next((value for value in args if not value.startswith("-")), "."))
+    postgres_dsn = _option(args, "--postgres")
+    positional = _first_positional(
+        args,
+        value_options={
+            "--backend", "--model", "--mode", "--out", "--output",
+            "--exclude", "--token-budget", "--max-concurrency", "--changed",
+            "--postgres", "--max-workers", "--api-timeout", "--resolution",
+            "--exclude-hubs", "--as",
+        },
+    )
+    target = Path(positional or ".")
     force = "--force" in args
     no_cluster = "--no-cluster" in args
     changed: list[Path] | None = None
@@ -625,6 +793,26 @@ def _update_or_extract(cmd: str, args: list[str]) -> None:
             gitignore=False if "--no-gitignore" in args else None,
         )
     try:
+        external_extraction = None
+        if postgres_dsn is not None:
+            if cmd != "extract":
+                raise ValueError("--postgres is supported by graphify extract only")
+            from graphify.pg_introspect import introspect_postgres
+
+            print("[graphify extract] introspecting PostgreSQL schema...")
+            try:
+                external_extraction = introspect_postgres(postgres_dsn)
+            except (ConnectionError, ImportError) as exc:
+                raise RuntimeError(str(exc)) from exc
+            if positional is None:
+                _activate_external_only(
+                    external_extraction,
+                    output_root=output or Path.cwd(),
+                    no_cluster=no_cluster,
+                    retain_rollback="--retain-rollback" in args,
+                    source_name="PostgreSQL schema",
+                )
+                return
         if not _rebuild_code(
             target, output_root=output, changed_paths=changed, force=force, no_cluster=no_cluster,
             block_on_lock=True,
@@ -636,6 +824,9 @@ def _update_or_extract(cmd: str, args: list[str]) -> None:
             token_budget=int(_option(args, "--token-budget") or 60_000),
             max_concurrency=int(_option(args, "--max-concurrency") or 4),
             retain_rollback="--retain-rollback" in args,
+            external_extraction=external_extraction,
+            external_kind="postgres" if external_extraction is not None else None,
+            prune_excluded=cmd == "extract",
             raise_on_error=True,
             _timer=timer,
         ):
@@ -919,6 +1110,7 @@ def dispatch_command(cmd: str) -> None:
             from graphify.operations import recluster, reanalyze
 
             store = _store_arg(args, default=Path(args[0]) / _GRAPHIFY_OUT / "graph.helix" if args and not args[0].startswith("-") else None)
+            _validate_store_or_exit(store)
             recluster(store)
             reanalyze(store)
             print(f"Reclustered {store}.")
