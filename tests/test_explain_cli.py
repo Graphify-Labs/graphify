@@ -150,3 +150,89 @@ def test_explain_connection_shows_call_site_line(monkeypatch, tmp_path, capsys):
     assert "apollo.py:L90" not in caller_line  # never the caller's def line
     # The queried node's own header still shows its def line (correct).
     assert "state.py" in out and "L56" in out
+
+
+# --- #2009: high-degree nodes must not silently hide the cut connections ------
+
+def _write_high_degree_graph(tmp_path, n_callers=30, files=None):
+    """A node with n_callers callers, spread across `files` (default: 3
+    files, so counts land above 1 per file and truncation kicks in — the
+    CLI shows the top 20 by neighbor degree, cutting the rest)."""
+    files = files or ["app/handlers/email.py", "app/jobs/retry.py", "lib/workers/queue.py"]
+    nodes = [{"id": "hub", "label": "hub()",
+              "source_file": "lib/hub.py", "community": 0}]
+    links = []
+    for i in range(n_callers):
+        fpath = files[i % len(files)]
+        nid = f"caller_{i}"
+        nodes.append({"id": nid, "label": f"caller_{i}()",
+                       "source_file": fpath, "community": 0})
+        links.append({"source": nid, "target": "hub", "relation": "calls",
+                       "confidence": "EXTRACTED", "source_file": fpath,
+                       "source_location": f"L{10 + i}"})
+    graph_data = {"directed": False, "multigraph": False, "graph": {},
+                  "nodes": nodes, "links": links}
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    return p
+
+
+def test_explain_truncation_notice_present_for_high_degree_node(monkeypatch, tmp_path, capsys):
+    """Baseline: the cut count is still announced (pre-existing behavior)."""
+    p = _write_high_degree_graph(tmp_path, n_callers=30)
+    out = _run(monkeypatch, p, "hub", capsys)
+    assert "Connections (30):" in out
+    assert "... and 10 more" in out
+
+
+def test_explain_groups_cut_callers_by_file_instead_of_dropping_them(monkeypatch, tmp_path, capsys):
+    """#2009: past the top-20 cutoff, the remaining callers must still be
+    accounted for — grouped by file with counts — instead of vanishing
+    behind a bare '... and N more'. No caller may be lost silently: the
+    per-file counts in the aggregation must sum back to the cut total."""
+    p = _write_high_degree_graph(
+        tmp_path, n_callers=30,
+        files=["app/handlers/email.py", "app/jobs/retry.py", "lib/workers/queue.py"],
+    )
+    out = _run(monkeypatch, p, "hub", capsys)
+    assert "Grouped by file:" in out
+    assert "<-- lib/workers/queue.py: 4 connections" in out
+    assert "<-- app/handlers/email.py: 3 connections" in out
+    assert "<-- app/jobs/retry.py: 3 connections" in out
+    # No silent loss: the aggregated counts must sum to the announced cut.
+    grouped_lines = [
+        l for l in out.splitlines() if l.strip().startswith(("<--", "-->")) and "connection" in l
+    ]
+    total = sum(int(l.rsplit(":", 1)[1].split()[0]) for l in grouped_lines)
+    assert total == 10  # 30 connections - 20 shown = 10 cut, all accounted for
+
+
+def test_explain_no_grouping_section_when_under_cutoff(monkeypatch, tmp_path, capsys):
+    """Regression guard: nodes at or below the 20-connection cutoff keep the
+    pre-#2009 output byte-for-byte (no new section, no behavior change)."""
+    p = _write_high_degree_graph(tmp_path, n_callers=5)
+    out = _run(monkeypatch, p, "hub", capsys)
+    assert "Grouped by file:" not in out
+    assert "more" not in out
+
+
+def test_explain_grouping_boundary_at_exactly_21_vs_20_connections(monkeypatch, tmp_path, capsys):
+    """Pin the exact `> 20` cutoff itself. The other #2009 tests use 30 and 5
+    connections, both comfortably clear of the edge — nothing here fails if a
+    future refactor shifts the boundary by one. One node at exactly 21
+    connections (one past the cutoff) must show the grouped section with
+    exactly one grouped entry; one node at exactly 20 (at the cutoff, not
+    past it) must show neither."""
+    p21 = _write_high_degree_graph(tmp_path, n_callers=21, files=["lib/only.py"])
+    out21 = _run(monkeypatch, p21, "hub", capsys)
+    assert "Grouped by file:" in out21
+    assert "<-- lib/only.py: 1 connection" in out21
+    grouped_lines21 = [
+        l for l in out21.splitlines() if l.strip().startswith(("<--", "-->")) and "connection" in l
+    ]
+    assert len(grouped_lines21) == 1  # exactly one grouped entry, not zero, not more
+
+    p20 = _write_high_degree_graph(tmp_path, n_callers=20, files=["lib/only.py"])
+    out20 = _run(monkeypatch, p20, "hub", capsys)
+    assert "Grouped by file:" not in out20
+    assert "more" not in out20
