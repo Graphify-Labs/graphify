@@ -858,6 +858,26 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     return output
 
 
+def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) -> str:
+    """Render pre-built lines under the same ~3-chars/token budget rule as
+    _subgraph_to_text; over-budget output is cut at a line boundary with a count and a
+    narrowing hint instead of flooding the caller's context window."""
+    output = "\n".join(lines)
+    char_budget = token_budget * 3
+    if len(output) <= char_budget:
+        return output
+    cut_at = output[:char_budget].rfind("\n")
+    cut_at = cut_at if cut_at > 0 else char_budget
+    kept = output[:cut_at]
+    cut_count = len(lines) - kept.count("\n") - 1
+    return (
+        kept
+        + f"\n... (truncated — {cut_count} more lines cut by ~{token_budget}-token budget. "
+        + narrow_hint
+        + ")"
+    )
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1136,6 +1156,7 @@ def _build_server(graph_path: str):
                     "properties": {
                         "label": {"type": "string"},
                         "relation_filter": {"type": "string", "description": "Optional: filter by relation type"},
+                        "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
                     },
                     "required": ["label"],
                 },
@@ -1145,7 +1166,10 @@ def _build_server(graph_path: str):
                 description="Get all nodes in a community by community ID.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"community_id": {"type": "integer", "description": "Community ID (0-indexed by size)"}},
+                    "properties": {
+                        "community_id": {"type": "integer", "description": "Community ID (0-indexed by size)"},
+                        "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
+                    },
                     "required": ["community_id"],
                 },
             ),
@@ -1306,7 +1330,10 @@ def _build_server(graph_path: str):
                 f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
                 f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]"
             )
-        return "\n".join(lines)
+        budget = int(arguments.get("token_budget", 2000))
+        return _cut_lines_to_budget(
+            lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"
+        )
 
     def _tool_get_community(arguments: dict) -> str:
         cid = int(arguments["community_id"])
@@ -1322,7 +1349,10 @@ def _build_server(graph_path: str):
                 f"  {sanitize_label(d.get('label', n))} "
                 f"[{sanitize_label(str(d.get('source_file', '')))}]"
             )
-        return "\n".join(lines)
+        budget = int(arguments.get("token_budget", 2000))
+        return _cut_lines_to_budget(
+            lines, budget, "Raise token_budget or use get_node for specific members"
+        )
 
     def _tool_god_nodes(arguments: dict) -> str:
         from graphify.analyze import god_nodes as _god_nodes
