@@ -78,6 +78,48 @@ _STATE_COUNT_KEYS = {
 _SEARCH_TOKEN_RE = re.compile(r"\w+")
 
 
+@dataclass(frozen=True)
+class _PreparedNode:
+    encoded_id: str
+    identity: dict[str, Any]
+    attributes: dict[str, Any]
+    search: dict[str, str]
+    order: int
+
+
+@dataclass(frozen=True)
+class _PreparedEdge:
+    source: str
+    target: str
+    identity: dict[str, Any]
+    relation: str
+    attributes: dict[str, Any]
+    order: int
+
+    @property
+    def shape(self) -> tuple[str, bool, bool]:
+        context = self.attributes.get("context")
+        weight = self.attributes.get("weight")
+        return (
+            self.relation,
+            isinstance(context, str) and bool(context),
+            isinstance(weight, (int, float))
+            and not isinstance(weight, bool)
+            and math.isfinite(float(weight)),
+        )
+
+
+@dataclass(frozen=True)
+class _PreparedTopology:
+    directed: bool
+    multigraph: bool
+    graph_attributes: dict[str, Any]
+    extras: dict[str, Any]
+    nodes: list[_PreparedNode]
+    edges: list[_PreparedEdge]
+    checksum: str
+
+
 def _close_public_client(client: Any) -> None:
     """Close the synchronous public SDK outside an active asyncio loop.
 
@@ -379,6 +421,99 @@ class _TopologyStreamChecksum:
         return f"sha256:{self._digest.hexdigest()}"
 
 
+def _prepare_topology(
+    graph: GraphBuildData,
+    *,
+    max_nodes: int,
+    max_edges: int,
+) -> _PreparedTopology:
+    """Validate one construction DTO without materializing node-link copies."""
+    if len(graph.nodes) > max_nodes or len(graph.edges) > max_edges:
+        raise ValueError(
+            "graph exceeds configured embedded ingestion bounds: "
+            f"{len(graph.nodes)}/{len(graph.edges)} > {max_nodes}/{max_edges}"
+        )
+    graph_attributes = _json_value(dict(graph.attributes), "graph metadata")
+    extras = _json_value(dict(graph.extras), "graph top-level metadata")
+    if not isinstance(graph_attributes, dict) or not isinstance(extras, dict):
+        raise TypeError("graph metadata and top-level extras must be mappings")
+
+    checksum = _TopologyStreamChecksum(
+        directed=graph.directed,
+        multigraph=graph.multigraph,
+        graph=graph_attributes,
+        extras=extras,
+    )
+    node_ids: set[str] = set()
+    nodes: list[_PreparedNode] = []
+    for order, node in enumerate(graph.nodes):
+        node_id = import_identity(node.id)
+        encoded_id = _encode_key(node_id)
+        if encoded_id in node_ids:
+            raise ValueError(f"duplicate graph node identifier at nodes[{order}]")
+        node_ids.add(encoded_id)
+        attributes = _json_value(
+            dict(node.attributes), f"graph nodes[{order}] attributes"
+        )
+        if not isinstance(attributes, dict):
+            raise TypeError(f"graph nodes[{order}] attributes must be a mapping")
+        nodes.append(_PreparedNode(
+            encoded_id=encoded_id,
+            identity=_tagged_key(node_id),
+            attributes=attributes,
+            search=_search_properties(node_id, attributes),
+            order=order,
+        ))
+        checksum.node({"id": node_id, **attributes})
+
+    edges: list[_PreparedEdge] = []
+    for order, edge in enumerate(graph.edges):
+        source = import_identity(edge.source)
+        target = import_identity(edge.target)
+        encoded_source = _encode_key(source)
+        encoded_target = _encode_key(target)
+        if encoded_source not in node_ids or encoded_target not in node_ids:
+            raise ValueError(f"graph edges[{order}] references a missing node")
+        key = import_identity(edge.key) if graph.multigraph else None
+        attributes = _json_value(
+            dict(edge.attributes), f"graph edges[{order}] attributes"
+        )
+        if not isinstance(attributes, dict):
+            raise TypeError(f"graph edges[{order}] attributes must be a mapping")
+        relation = attributes.pop("relation", "related_to")
+        if not isinstance(relation, str) or not relation:
+            raise TypeError(
+                f"graph edges[{order}] relation must be a non-empty string"
+            )
+        edges.append(_PreparedEdge(
+            source=encoded_source,
+            target=encoded_target,
+            identity=_tagged_key(key),
+            relation=relation,
+            attributes=attributes,
+            order=order,
+        ))
+        canonical = {
+            "source": source,
+            "target": target,
+            "relation": relation,
+            **attributes,
+        }
+        if graph.multigraph:
+            canonical["key"] = key
+        checksum.edge(canonical)
+
+    return _PreparedTopology(
+        directed=graph.directed,
+        multigraph=graph.multigraph,
+        graph_attributes=graph_attributes,
+        extras=extras,
+        nodes=nodes,
+        edges=edges,
+        checksum=checksum.hexdigest(),
+    )
+
+
 def _state_revision(metadata: dict[str, Any], kind: str) -> str | None:
     revision = metadata.get(_STATE_REVISION_KEYS[kind])
     if not isinstance(revision, str):
@@ -464,18 +599,6 @@ def _rows(result: Any, name: str) -> list[Any]:
     if not isinstance(value, list):
         raise RuntimeError(f"embedded Helix query variable {name!r} is not a list")
     return value
-
-
-def _returned_node_id(result: Any, name: str) -> int:
-    """Read the public SDK's minimal add-node receipt."""
-    rows = _rows(result, name)
-    if len(rows) != 1 or not isinstance(rows[0], dict):
-        raise RuntimeError(f"embedded Helix write receipt {name!r} is invalid")
-    current = rows[0].get("current")
-    node_id = current.get("node") if isinstance(current, dict) else None
-    if not isinstance(node_id, int) or isinstance(node_id, bool):
-        raise RuntimeError(f"embedded Helix write receipt {name!r} has no node ID")
-    return node_id
 
 
 class HelixNodeQuery:
@@ -696,10 +819,16 @@ class HelixEmbeddedStore:
                     raise RuntimeError(message) from exc
                 raise
 
-    def _query(self, batch: Any) -> Any:
+    def _query(
+        self,
+        batch: Any,
+        *,
+        params: Any | None = None,
+        values: dict[str, Any] | None = None,
+    ) -> Any:
         if self._closed:
             raise RuntimeError("embedded Helix store is closed")
-        return self._client.query(batch.to_query_request())
+        return self._client.query(batch.to_query_request(params, values))
 
     def _validate_active_schema(self) -> None:
         """Reject stores written by an obsolete Graphify Helix schema.
@@ -719,7 +848,7 @@ class HelixEmbeddedStore:
             )
 
     def save(self, graph: GraphBuildData, *, state: dict[str, Any] | None = None) -> None:
-        self.save_data(graph.to_node_link(state=state))
+        self._save_graph(graph, state=state, activate=True)
 
     def save_generation(self, graph: GraphBuildData, state: dict[str, Any]) -> None:
         """Atomically stage topology and every durable Graphify record together."""
@@ -733,7 +862,12 @@ class HelixEmbeddedStore:
         expected = self._metadata(generation).get(_TOPOLOGY_CHECKSUM)
         if not isinstance(expected, str):
             return False
-        return expected == _checksum(graph.to_node_link())
+        prepared = _prepare_topology(
+            graph,
+            max_nodes=self._max_nodes,
+            max_edges=self._max_edges,
+        )
+        return expected == prepared.checksum
 
     def save_data(self, payload: dict[str, Any]) -> None:
         """Stage, verify, and atomically activate a durable graph generation."""
@@ -744,102 +878,32 @@ class HelixEmbeddedStore:
             raise RuntimeError("cannot write through a read-only embedded Helix store")
         if not isinstance(payload, dict):
             raise TypeError("node-link graph payload must be a mapping")
+        raw_state = payload.get(_DURABLE_STATE)
+        graph = GraphBuildData.from_node_link(payload)
+        return self._save_graph(graph, state=raw_state, activate=activate)
 
-        directed = bool(payload.get("directed", False))
-        multigraph = bool(payload.get("multigraph", False))
-        graph_attrs = _json_value(payload.get("graph", {}), "graph metadata")
-        if not isinstance(graph_attrs, dict):
-            raise TypeError("node-link graph metadata must be a mapping")
-
-        raw_nodes = payload.get("nodes", [])
-        if not isinstance(raw_nodes, list):
-            raise TypeError("node-link nodes must be a list")
-        nodes: list[
-            tuple[str, dict[str, Any], dict[str, Any], dict[str, str]]
-        ] = []
-        node_variables: dict[str, str] = {}
-        canonical_nodes: list[dict[str, Any]] = []
-        for index, row in enumerate(raw_nodes):
-            if not isinstance(row, dict) or "id" not in row:
-                raise TypeError(f"node-link nodes[{index}] must be a mapping with an id")
-            attrs = dict(row)
-            node_id = import_identity(attrs.pop("id"))
-            encoded_id = _encode_key(node_id)
-            if encoded_id in node_variables:
-                raise ValueError(f"duplicate graph node identifier at nodes[{index}]")
-            attrs = _json_value(attrs, f"node-link nodes[{index}] attributes")
-            variable = f"node_{index}"
-            node_variables[encoded_id] = variable
-            nodes.append((
-                encoded_id,
-                _tagged_key(node_id),
-                attrs,
-                _search_properties(node_id, attrs),
-            ))
-            canonical_nodes.append({"id": node_id, **attrs})
-
-        raw_edges = payload.get("links", payload.get("edges", []))
-        if not isinstance(raw_edges, list):
-            raise TypeError("node-link links must be a list")
-        if len(raw_nodes) > self._max_nodes or len(raw_edges) > self._max_edges:
-            raise ValueError(
-                "graph exceeds configured embedded ingestion bounds: "
-                f"{len(raw_nodes)}/{len(raw_edges)} > "
-                f"{self._max_nodes}/{self._max_edges}"
-            )
-        edges: list[
-            tuple[str, str, str, dict[str, Any], str, dict[str, Any]]
-        ] = []
-        canonical_edges: list[dict[str, Any]] = []
-        for index, row in enumerate(raw_edges):
-            if not isinstance(row, dict) or "source" not in row or "target" not in row:
-                raise TypeError(
-                    f"node-link links[{index}] must contain source and target"
-                )
-            attrs = dict(row)
-            source = import_identity(attrs.pop("source"))
-            target = import_identity(attrs.pop("target"))
-            encoded_source = _encode_key(source)
-            encoded_target = _encode_key(target)
-            if encoded_source not in node_variables or encoded_target not in node_variables:
-                raise ValueError(f"node-link links[{index}] references a missing node")
-            key = import_identity(attrs.pop("key", None)) if multigraph else None
-            attrs = _json_value(attrs, f"node-link links[{index}] attributes")
-            encoded_edge_key = _encode_key(key)
-            relation = attrs.pop("relation", "related_to")
-            if not isinstance(relation, str) or not relation:
-                raise TypeError(
-                    f"node-link links[{index}] relation must be a non-empty string"
-                )
-            edges.append((
-                encoded_source,
-                encoded_target,
-                encoded_edge_key,
-                _tagged_key(key),
-                relation,
-                attrs,
-            ))
-            canonical = {
-                "source": source,
-                "target": target,
-                "relation": relation,
-                **attrs,
-            }
-            if multigraph:
-                canonical["key"] = key
-            canonical_edges.append(canonical)
-
-        reserved = {"directed", "multigraph", "graph", "nodes", "links", "edges"}
-        raw_extras = {key: value for key, value in payload.items() if key not in reserved}
-        raw_state = raw_extras.pop(_DURABLE_STATE, None)
+    def _save_graph(
+        self,
+        graph: GraphBuildData,
+        *,
+        state: dict[str, Any] | None,
+        activate: bool,
+    ) -> str:
+        if self._read_only:
+            raise RuntimeError("cannot write through a read-only embedded Helix store")
+        prepared = _prepare_topology(
+            graph,
+            max_nodes=self._max_nodes,
+            max_edges=self._max_edges,
+        )
         generation = uuid.uuid4().hex
         encoded_state: dict[str, Any] | None = None
-        if raw_state is not None:
-            if not isinstance(raw_state, dict):
+        if state is not None:
+            if not isinstance(state, dict):
                 raise TypeError("durable graph state must be a mapping")
-            state = copy.deepcopy(raw_state)
-            build_state = state.setdefault("build", {})
-            incremental_state = state.setdefault("incremental", {})
+            durable_state = copy.deepcopy(state)
+            build_state = durable_state.setdefault("build", {})
+            incremental_state = durable_state.setdefault("incremental", {})
             if not isinstance(build_state, dict) or not isinstance(
                 incremental_state, dict
             ):
@@ -849,18 +913,8 @@ class HelixEmbeddedStore:
             build_state["generation"] = generation
             incremental_state["last_successful_generation"] = generation
             encoded_state = _json_value(
-                _encode_state_value(state), "durable graph state"
+                _encode_state_value(durable_state), "durable graph state"
             )
-        extras = _json_value(raw_extras, "node-link top-level metadata")
-        canonical_topology = {
-            "directed": directed,
-            "multigraph": multigraph,
-            "graph": graph_attrs,
-            "nodes": canonical_nodes,
-            "links": canonical_edges,
-            **extras,
-        }
-        topology_checksum = _checksum(canonical_topology)
         state_records = self._state_records(encoded_state)
         category_records = {
             kind: [record for record in state_records if record[0] == kind]
@@ -873,17 +927,17 @@ class HelixEmbeddedStore:
         state_checksum = _combined_state_checksum(category_checksums)
         manifest = {
             "schema_version": _SCHEMA_VERSION,
-            "directed": directed,
-            "multigraph": multigraph,
-            "graph": graph_attrs,
-            "extras": extras,
-            "node_count": len(nodes),
-            "edge_count": len(edges),
+            "directed": prepared.directed,
+            "multigraph": prepared.multigraph,
+            "graph": prepared.graph_attributes,
+            "extras": prepared.extras,
+            "node_count": len(prepared.nodes),
+            "edge_count": len(prepared.edges),
             "state_record_count": len(state_records),
             "state_checksum": state_checksum,
             _ACTIVE_STATE_REVISION: generation,
-            _CHECKSUM_MODE: _SPLIT_CHECKSUM_MODE,
-            _TOPOLOGY_CHECKSUM: topology_checksum,
+            _CHECKSUM_MODE: _STREAM_CHECKSUM_MODE,
+            _TOPOLOGY_CHECKSUM: prepared.checksum,
             **{key: generation for key in _STATE_REVISION_KEYS.values()},
             **{
                 _STATE_CHECKSUM_KEYS[kind]: category_checksums[kind]
@@ -893,13 +947,13 @@ class HelixEmbeddedStore:
                 _STATE_COUNT_KEYS[kind]: len(category_records[kind])
                 for kind in _STATE_KINDS
             },
-            "checksum": _generation_checksum(topology_checksum, state_checksum),
+            "checksum": _generation_checksum(prepared.checksum, state_checksum),
         }
 
         previous_generation = self._active_generation(required=False)
         try:
             self._stage_generation(
-                generation, manifest, nodes, edges, encoded_state
+                generation, manifest, prepared.nodes, prepared.edges, encoded_state
             )
             self._verify_generation_counts(generation)
             if activate:
@@ -1265,7 +1319,7 @@ class HelixEmbeddedStore:
     @contextmanager
     def staged_graph(self, graph: GraphBuildData):
         """Yield one inactive native snapshot that can be finalized in place."""
-        generation = self._save_data(graph.to_node_link(), activate=False)
+        generation = self._save_graph(graph, state=None, activate=False)
         staged = self.load_generation(generation, attach_query=False)
         try:
             yield staged
@@ -1576,93 +1630,128 @@ class HelixEmbeddedStore:
         self,
         generation: str,
         manifest: dict[str, Any],
-        nodes: list[
-            tuple[str, dict[str, Any], dict[str, Any], dict[str, str]]
-        ],
-        edges: list[
-            tuple[str, str, str, dict[str, Any], str, dict[str, Any]]
-        ],
+        nodes: list[_PreparedNode],
+        edges: list[_PreparedEdge],
         state: dict[str, Any] | None,
     ) -> None:
         metadata = {**manifest, _GENERATION: generation}
         self._query(
             self._helix.write_batch()
             .var_as("meta", self._helix.g().add_n(_META_LABEL, metadata))
-            .returning(["meta"])
         )
 
-        node_ids: dict[str, int] = {}
+        row_params = self._helix.define_params({
+            "rows": self._helix.param.array(self._helix.param.object())
+        })
+        node_body = self._helix.write_batch().var_as(
+            "node",
+            self._helix.g().add_n(
+                _NODE_LABEL,
+                {
+                    _GENERATION: generation,
+                    _STORAGE_KEY: self._helix.PropertyInput.param(_STORAGE_KEY),
+                    _EXTERNAL_KEY: self._helix.PropertyInput.param(_EXTERNAL_KEY),
+                    _ATTRS: self._helix.PropertyInput.param(_ATTRS),
+                    _ORDER: self._helix.PropertyInput.param(_ORDER),
+                    _SEARCH_LABEL: self._helix.PropertyInput.param(_SEARCH_LABEL),
+                    _SEARCH_TEXT: self._helix.PropertyInput.param(_SEARCH_TEXT),
+                },
+            ),
+        )
+        node_batch = self._helix.write_batch().for_each_param("rows", node_body)
         for offset in range(0, len(nodes), _WRITE_CHUNK_SIZE):
-            batch = self._helix.write_batch()
-            returned: list[str] = []
-            encoded_ids: list[str] = []
-            for local_index, (encoded_id, identity, attrs, search) in enumerate(
-                nodes[offset : offset + _WRITE_CHUNK_SIZE]
-            ):
-                index = offset + local_index
-                variable = f"node_{local_index}"
-                returned.append(variable)
-                encoded_ids.append(encoded_id)
-                batch = batch.var_as(
-                    variable,
-                    self._helix.g().add_n(
-                        _NODE_LABEL,
-                        {
-                            _GENERATION: generation,
-                            _STORAGE_KEY: self._storage_key(generation, encoded_id),
-                            _EXTERNAL_KEY: identity,
-                            _ATTRS: attrs,
-                            _ORDER: index,
-                            **search,
-                        },
-                    ),
+            rows = [
+                {
+                    _STORAGE_KEY: self._storage_key(generation, node.encoded_id),
+                    _EXTERNAL_KEY: node.identity,
+                    _ATTRS: node.attributes,
+                    _ORDER: node.order,
+                    **node.search,
+                }
+                for node in nodes[offset : offset + _WRITE_CHUNK_SIZE]
+            ]
+            self._query(
+                node_batch,
+                params=row_params,
+                values={"rows": rows},
+            )
+
+        node_ids: dict[str, int] = {}
+        if nodes:
+            predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
+            result = self._query(
+                self._helix.read_batch()
+                .var_as(
+                    "nodes",
+                    self._helix.g()
+                    .n_with_label_where(_NODE_LABEL, predicate)
+                    .value_map(["$id", _STORAGE_KEY]),
                 )
-            result = self._query(batch.returning(returned))
-            for encoded_id, variable in zip(encoded_ids, returned):
-                node_ids[encoded_id] = _returned_node_id(result, variable)
+                .returning(["nodes"])
+            )
+            for raw in _rows(result, "nodes"):
+                row = _properties(raw, "staged node identity")
+                storage_key = row.get(_STORAGE_KEY)
+                node_id = row.get("$id")
+                if isinstance(storage_key, str) and isinstance(node_id, int):
+                    node_ids[storage_key] = node_id
 
         if len(node_ids) != len(nodes):
             raise RuntimeError(
                 "embedded Helix staged node count does not match the input graph"
             )
 
-        for offset in range(0, len(edges), _STAGED_EDGE_WRITE_CHUNK_SIZE):
-            batch = self._helix.write_batch()
-            edge_returned = ""
-            for local_index, (source, target, key, identity, relation, attrs) in enumerate(
-                edges[offset : offset + _STAGED_EDGE_WRITE_CHUNK_SIZE]
-            ):
-                index = offset + local_index
-                edge_returned = f"edge_{local_index}"
-                batch = batch.var_as(
-                    edge_returned,
-                    self._helix.g()
-                    .n(self._helix.NodeRef.ids([node_ids[source]]))
-                    .add_e(
-                        relation,
-                        self._helix.NodeRef.ids([node_ids[target]]),
-                        {
-                            _GENERATION: generation,
-                            _EDGE_KEY: identity,
-                            _ATTRS: attrs,
-                            _ORDER: index,
-                            **(
-                                {_EDGE_CONTEXT: attrs["context"]}
-                                if isinstance(attrs.get("context"), str)
-                                and attrs["context"]
-                                else {}
-                            ),
-                            **(
-                                {_NATIVE_WEIGHT: float(attrs["weight"])}
-                                if isinstance(attrs.get("weight"), (int, float))
-                                and not isinstance(attrs.get("weight"), bool)
-                                and math.isfinite(float(attrs["weight"]))
-                                else {}
-                            ),
-                        },
-                    ),
+        groups: dict[tuple[str, bool, bool], list[_PreparedEdge]] = {}
+        for edge in edges:
+            groups.setdefault(edge.shape, []).append(edge)
+        for (relation, has_context, has_weight), group in groups.items():
+            properties = {
+                _GENERATION: generation,
+                _EDGE_KEY: self._helix.PropertyInput.param(_EDGE_KEY),
+                _ATTRS: self._helix.PropertyInput.param(_ATTRS),
+                _ORDER: self._helix.PropertyInput.param(_ORDER),
+            }
+            if has_context:
+                properties[_EDGE_CONTEXT] = self._helix.PropertyInput.param(
+                    _EDGE_CONTEXT
                 )
-            self._query(batch.returning([edge_returned]))
+            if has_weight:
+                properties[_NATIVE_WEIGHT] = self._helix.PropertyInput.param(
+                    _NATIVE_WEIGHT
+                )
+            edge_body = self._helix.write_batch().var_as(
+                "edge",
+                self._helix.g()
+                .n(self._helix.NodeRef.param("source"))
+                .add_e(
+                    relation,
+                    self._helix.NodeRef.param("target"),
+                    properties,
+                ),
+            )
+            edge_batch = self._helix.write_batch().for_each_param(
+                "rows", edge_body
+            )
+            for offset in range(0, len(group), _STAGED_EDGE_WRITE_CHUNK_SIZE):
+                rows = []
+                for edge in group[offset : offset + _STAGED_EDGE_WRITE_CHUNK_SIZE]:
+                    row = {
+                        "source": [node_ids[self._storage_key(generation, edge.source)]],
+                        "target": [node_ids[self._storage_key(generation, edge.target)]],
+                        _EDGE_KEY: edge.identity,
+                        _ATTRS: edge.attributes,
+                        _ORDER: edge.order,
+                    }
+                    if has_context:
+                        row[_EDGE_CONTEXT] = edge.attributes["context"]
+                    if has_weight:
+                        row[_NATIVE_WEIGHT] = float(edge.attributes["weight"])
+                    rows.append(row)
+                self._query(
+                    edge_batch,
+                    params=row_params,
+                    values={"rows": rows},
+                )
 
         self._write_state_records(generation, self._state_records(state), generation)
 
