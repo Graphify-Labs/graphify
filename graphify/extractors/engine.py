@@ -3075,12 +3075,12 @@ def _extract_generic(
                 type_table[prop_name] = prop_type
             return
 
+        # type_definition covers plain aliases (`type Alias = List[Int]`),
+        # `opaque type`, and match types — the right-hand side sits under the
+        # same `type` field a val/var annotation uses, so the walk is shared.
         if (config.ts_module == "tree_sitter_scala"
                 and t in ("val_definition", "var_definition", "type_definition")
                 and parent_class_nid):
-            # type_definition covers plain aliases (`type Alias = List[Int]`),
-            # `opaque type`, and match types — the right-hand side sits under the
-            # same `type` field a val/var annotation uses, so the walk is shared.
             type_node = node.child_by_field_name("type")
             if type_node is not None:
                 line = node.start_point[0] + 1
