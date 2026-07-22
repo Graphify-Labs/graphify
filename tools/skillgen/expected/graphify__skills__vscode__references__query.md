@@ -45,22 +45,40 @@ print(f'vocab: {len(vocab)} tokens')
 "
 ```
 
-2. Read `graphify-out/.vocab.txt`. Then for the user's question, select **up to 12 tokens from this exact list** that semantically match the query intent. Hard constraints:
+2. Before expanding vocabulary, preserve exact identifier anchors from the original
+   question:
+   - Keep inline-code spans and identifier-shaped tokens verbatim when they contain an
+     internal case transition or an identifier separator such as `_`, `.`, `::`, or
+     `/` (for example, `CheckoutMatchingResult`, `process_request`, or
+     `pkg.module.Handler`).
+   - Preserve only identifiers that the user actually supplied. Never invent an exact
+     identifier from model memory.
+   - Keep their original spelling and order. Do not lowercase or split them, and do not
+     count them against the 12-token vocabulary-expansion limit.
+   - Deduplicate repeated exact identifiers while keeping their first occurrence.
+
+3. Read `graphify-out/.vocab.txt`. Then for the user's question, select **up to 12 tokens from this exact list** that semantically match the query intent. Hard constraints:
    - You MUST pick only tokens present in the vocabulary file. Do NOT invent tokens.
    - If a query concept has no plausible token in the vocab, skip it — do not substitute a near-synonym from training memory.
-   - If **no** vocab tokens match the query at all, output an empty list and tell the user the corpus has no relevant vocabulary for this question. Do not fabricate a search.
    - Translate cross-language: Russian "аутентификация" → look for `auth`, `credential`, `token`, `security` IFF present in vocab.
    - Morphology: "handlers" maps to `handler` IFF present; "todos" maps to `todo` IFF present.
 
-3. Print the selection explicitly to the user before running the query, so the expansion is auditable:
+4. Print both selections explicitly before running the query, so the expansion is
+   auditable:
 ```
+Exact identifiers preserved (N): [IdentifierOne, package.symbol]
 Query expanded to (from graph vocab, N tokens): [token1, token2, ...]
 ```
-If the list is empty, say so plainly and stop — do not proceed to traversal.
+An empty vocabulary-token list is valid when at least one exact identifier was
+preserved. If both lists are empty, say plainly that the corpus has no relevant
+vocabulary for this question and stop; do not fabricate a search.
 
 ### Step 1 — Traversal
 
-Build the **expanded query string** by joining the selected tokens with spaces. Use this string as `QUESTION` below — NOT the original user question. (The original question is preserved only for `save-result` at the end.)
+Build the **expanded query string** by joining the preserved exact identifiers first,
+followed by the selected vocabulary tokens. Use this string as `QUESTION` below, not
+the full original prose. The original question remains the source of the exact
+identifiers and is preserved for `save-result` at the end.
 
 Prefer the CLI when it is installed:
 ```bash
