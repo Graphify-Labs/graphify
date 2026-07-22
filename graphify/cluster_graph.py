@@ -550,18 +550,36 @@ def resolve_selector(
                  or _norm_source_file(d["source_file"]).endswith("/" + rel))
         ]
         if len(matches) > 1:
-            # Prefer the file-level node: its label is the file's basename
-            # (see tests/test_file_node_id_spec.py).
+            # Prefer the file-level node. Two signals, strongest first:
+            # 1. The file-node ID spec (#1504): the node's local_id equals
+            #    normalize_id(<path minus extension>) — deterministic and holds
+            #    for both AST and LLM extractions regardless of labeling.
+            # 2. Label == the file's basename (AST file nodes; LLM graphs may
+            #    relabel file nodes descriptively, so this is the fallback).
             by_id = dict(candidates)
-
-            def _is_file_node(n: str) -> bool:
-                label = by_id[n].get("label") or ""
+            stem = rel.rsplit(".", 1)[0] if "." in rel.rsplit("/", 1)[-1] else rel
+            spec_ids = {normalize_id(stem)}
+            # A shorter selector path (suffix match) can't reproduce the full
+            # repo-relative id, so also accept any matched node whose own
+            # source_file round-trips to its local_id.
+            for n in matches:
                 sf = _norm_source_file(by_id[n].get("source_file", ""))
-                return bool(label) and (sf == label or sf.endswith("/" + label))
+                base = sf.rsplit("/", 1)[-1]
+                sf_stem = sf.rsplit(".", 1)[0] if "." in base else sf
+                if by_id[n].get("local_id") == normalize_id(sf_stem):
+                    spec_ids.add(by_id[n]["local_id"])
+            id_nodes = [n for n in matches if by_id[n].get("local_id") in spec_ids]
+            if len(id_nodes) == 1:
+                matches = id_nodes
+            else:
+                def _label_is_basename(n: str) -> bool:
+                    label = by_id[n].get("label") or ""
+                    sf = _norm_source_file(by_id[n].get("source_file", ""))
+                    return bool(label) and (sf == label or sf.endswith("/" + label))
 
-            file_nodes = [n for n in matches if _is_file_node(n)]
-            if len(file_nodes) == 1:
-                matches = file_nodes
+                file_nodes = [n for n in matches if _label_is_basename(n)]
+                if len(file_nodes) == 1:
+                    matches = file_nodes
     else:
         want = sel["label"]
         matches = [n for n, d in candidates if d.get("label") == want]

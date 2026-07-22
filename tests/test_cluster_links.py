@@ -83,6 +83,30 @@ def test_file_selector_prefers_file_node(linked_cluster):
     assert node == "web::lib_cube_client"
 
 
+def test_file_selector_prefers_file_node_in_llm_labeled_graph(tmp_path):
+    """LLM extractions relabel file nodes descriptively ("PR Summary Generator"),
+    so the basename-label heuristic fails; the file-node ID spec (#1504 —
+    local_id == normalize_id(path minus extension)) must still disambiguate."""
+    make_member(tmp_path, "plugin", [
+        _node("scripts_generate_pr_summary", label="PR Summary Generator",
+              source_file="scripts/generate-pr-summary.js"),
+        _node("scripts_generate_pr_summary_buildprompt", label="buildPrompt",
+              source_file="scripts/generate-pr-summary.js"),
+        _node("scripts_generate_pr_summary_callclaudeapi", label="callClaudeApi",
+              source_file="scripts/generate-pr-summary.js"),
+    ])
+    cluster = tmp_path / "cluster"
+    write_cluster(cluster, [{"tag": "plugin", "path": "../plugin"}])
+    G, _spec = _compose(cluster)
+    nodes_by_repo = {}
+    for n, d in G.nodes(data=True):
+        nodes_by_repo.setdefault(d.get("repo", ""), []).append((n, d))
+    node = resolve_selector(
+        nodes_by_repo, {"repo": "plugin", "file": "scripts/generate-pr-summary.js"}
+    )
+    assert node == "plugin::scripts_generate_pr_summary"
+
+
 def test_label_selector_exact_then_normalized(linked_cluster):
     write_cluster(linked_cluster, [
         {"tag": "web", "path": "../web"},
