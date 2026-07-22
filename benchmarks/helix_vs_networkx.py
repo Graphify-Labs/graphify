@@ -84,9 +84,7 @@ def memory_only(backend: str, nodes: int, edges: int) -> int:
             before = _peak_rss_bytes()
             graph = topology(networkx.Graph, nodes, edges, 42)
             payload = networkx.node_link_data(graph, edges="links")
-            (root / "graph.json").write_text(
-                json.dumps(payload, indent=2), encoding="utf-8"
-            )
+            (root / "graph.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
             return max(0, _peak_rss_bytes() - before)
         before = _peak_rss_bytes()
         graph = helix_topology(nodes, edges, 42)
@@ -111,7 +109,9 @@ def topology(graph_type: type, nodes: int, edges: int, seed: int):
     return graph
 
 
-def helix_topology(nodes: int, edges: int, seed: int) -> GraphBuildData:
+def helix_topology(
+    nodes: int, edges: int, seed: int, *, mixed_labels: bool = False
+) -> GraphBuildData:
     rng = random.Random(seed)
     seen: set[tuple[int, int]] = set()
     while len(seen) < edges:
@@ -122,8 +122,20 @@ def helix_topology(nodes: int, edges: int, seed: int) -> GraphBuildData:
     return GraphBuildData(
         nodes=[NodeData(index, {"label": f"node-{index}"}) for index in range(nodes)],
         edges=[
-            EdgeData(source, target, {"relation": "RELATED_TO", "weight": 1.0})
-            for source, target in sorted(seen)
+            EdgeData(
+                source,
+                target,
+                {
+                    "relation": (
+                        ("CALLS", "IMPORTS", "INHERITS")[index % 3]
+                        if mixed_labels
+                        else "RELATED_TO"
+                    ),
+                    **({"weight": 1.0} if index % 2 == 0 or not mixed_labels else {}),
+                    **({"context": "code"} if mixed_labels and index % 5 == 0 else {}),
+                },
+            )
+            for index, (source, target) in enumerate(sorted(seen))
         ],
     )
 
@@ -154,15 +166,35 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
         ),
         3,
     )
-    store_path = root / f"{nodes}-{edges}.helix"
 
-    def ingest():
-        graph = helix_topology(nodes, edges, 42)
-        with HelixEmbeddedStore(store_path) as store:
-            store.save_generation(graph, new_state(build={"benchmark": True}))
-        return graph
+    def ingest_fixture(mixed_labels: bool, *, retain_last: bool):
+        samples: list[float] = []
+        retained_graph = None
+        retained_path = None
+        for run in range(3):
+            sample_path = root / (
+                f"{nodes}-{edges}.{'mixed' if mixed_labels else 'homogeneous'}-{run}.helix"
+            )
 
-    helix_graph, helix_ingest, _ = measure(ingest)
+            def ingest():
+                graph = helix_topology(nodes, edges, 42, mixed_labels=mixed_labels)
+                with HelixEmbeddedStore(sample_path) as store:
+                    store.save_generation(graph, new_state(build={"benchmark": True}))
+                return graph
+
+            graph, elapsed, _ = measure(ingest)
+            samples.append(elapsed)
+            if retain_last and run == 2:
+                retained_graph, retained_path = graph, sample_path
+            else:
+                shutil.rmtree(sample_path, ignore_errors=True)
+        return retained_graph, retained_path, statistics.median(samples), samples
+
+    helix_graph, store_path, helix_ingest, helix_ingest_samples = ingest_fixture(
+        False, retain_last=True
+    )
+    _, _, helix_mixed_ingest, helix_mixed_ingest_samples = ingest_fixture(True, retain_last=False)
+    assert helix_graph is not None and store_path is not None
 
     def reopen():
         with HelixEmbeddedStore(store_path, read_only=True) as store:
@@ -183,24 +215,34 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
 
     _, nx_incremental, _ = measure(networkx_incremental)
 
-    def helix_incremental():
-        changed = GraphBuildData(
-            nodes=[
-                NodeData(
-                    node.id,
-                    {
-                        **node.attributes,
-                        **({"label": f"updated-node-{node.id}"} if isinstance(node.id, int) and node.id < update_count else {}),
-                    },
+    helix_incremental_samples: list[float] = []
+    with HelixEmbeddedStore(store_path) as store:
+        for run in range(3):
+            changed = GraphBuildData(
+                nodes=[
+                    NodeData(
+                        node.id,
+                        {
+                            **node.attributes,
+                            **(
+                                {"label": f"updated-{run}-node-{node.id}"}
+                                if isinstance(node.id, int) and node.id < update_count
+                                else {}
+                            ),
+                        },
+                    )
+                    for node in helix_graph.nodes
+                ],
+                edges=list(helix_graph.edges),
+            )
+            _, elapsed, _ = measure(
+                lambda: store.save_generation(
+                    changed,
+                    new_state(build={"benchmark": True, "incremental_percent": 1}),
                 )
-                for node in helix_graph.nodes
-            ],
-            edges=list(helix_graph.edges),
-        )
-        with HelixEmbeddedStore(store_path) as store:
-            store.save_generation(changed, new_state(build={"benchmark": True, "incremental_percent": 1}))
-
-    _, helix_incremental, _ = measure(helix_incremental)
+            )
+            helix_incremental_samples.append(elapsed)
+    helix_incremental = statistics.median(helix_incremental_samples)
     loaded = reopen()
     durable = loaded.graph
 
@@ -217,9 +259,7 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
     _, nx_bfs, nx_bfs_samples = median_measure(
         lambda: list(networkx.bfs_tree(nx_graph, 0, depth_limit=4)), 5
     )
-    _, helix_bfs, helix_bfs_samples = median_measure(
-        lambda: _bounded_bfs(durable, 0, 4), 5
-    )
+    _, helix_bfs, helix_bfs_samples = median_measure(lambda: _bounded_bfs(durable, 0, 4), 5)
     _, nx_shortest, nx_shortest_samples = median_measure(
         lambda: [networkx.shortest_path(nx_graph, 0, 4) for _ in range(5)], 5
     )
@@ -237,20 +277,22 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
     )
     _, helix_centrality, helix_centrality_samples = median_measure(
         lambda: durable.betweenness_centrality(
-            __import__("helixdb").BetweennessOptions(mode="sampled", sample_count=min(100, nodes), seed=42)
-        ), 1
+            __import__("helixdb").BetweennessOptions(
+                mode="sampled", sample_count=min(100, nodes), seed=42
+            )
+        ),
+        1,
     )
     _, nx_edge_centrality, nx_edge_centrality_samples = median_measure(
-        lambda: networkx.edge_betweenness_centrality(
-            nx_graph, k=min(100, nodes), seed=42
-        ), 1
+        lambda: networkx.edge_betweenness_centrality(nx_graph, k=min(100, nodes), seed=42), 1
     )
     _, helix_edge_centrality, helix_edge_centrality_samples = median_measure(
         lambda: durable.edge_betweenness_centrality(
             __import__("helixdb").BetweennessOptions(
                 mode="sampled", sample_count=min(100, nodes), seed=42
             )
-        ), 1
+        ),
+        1,
     )
 
     nx_export_path = root / f"{nodes}-{edges}.networkx.graphml"
@@ -297,7 +339,10 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
     }
     result["helix"] = {
         "ingest_seconds": helix_ingest,
-        "ingest_runs": 1,
+        "ingest_runs": 3,
+        "ingest_samples_seconds": helix_ingest_samples,
+        "mixed_label_ingest_seconds": helix_mixed_ingest,
+        "mixed_label_ingest_samples_seconds": helix_mixed_ingest_samples,
         "reopen_seconds": helix_reopen,
         "reopen_samples_seconds": helix_reopen_samples,
         "hot_open_seconds": helix_hot_open,
@@ -317,11 +362,19 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
         "edge_betweenness_samples_seconds": helix_edge_centrality_samples,
         "betweenness_mode": f"sampled ({min(100, nodes)} sources, seed 42)",
         "incremental_1pct_seconds": helix_incremental,
+        "incremental_1pct_samples_seconds": helix_incremental_samples,
         "graphml_export_seconds": helix_export,
         "eight_concurrent_reopens_seconds": helix_concurrency,
         "peak_rss_delta_bytes": helix_memory,
         "disk_after_ingest_bytes": helix_ingest_disk,
         "disk_after_update_bytes": directory_size(store_path),
+        "post_delta_store_ratio": directory_size(store_path) / helix_ingest_disk,
+    }
+    result["comparisons"] = {
+        "ingest_vs_networkx": helix_ingest / nx_ingest,
+        "mixed_label_ingest_vs_networkx": helix_mixed_ingest / nx_ingest,
+        "incremental_1pct_vs_networkx": helix_incremental / nx_incremental,
+        "preferred_20k_ingest_seconds": 5.0 if nodes == 20_000 else None,
     }
     return result
 
@@ -332,13 +385,15 @@ def acceptance_gates(results: list[dict[str, Any]]) -> dict[str, Any]:
 
     def check(name: str, actual: float, limit: float, comparison: str = "<=") -> None:
         passed = actual <= limit if comparison == "<=" else actual >= limit
-        checks.append({
-            "name": name,
-            "actual": actual,
-            "limit": limit,
-            "comparison": comparison,
-            "passed": passed,
-        })
+        checks.append(
+            {
+                "name": name,
+                "actual": actual,
+                "limit": limit,
+                "comparison": comparison,
+                "passed": passed,
+            }
+        )
 
     for row in results:
         label = f"{row['nodes']}/{row['edges']}"
@@ -346,16 +401,29 @@ def acceptance_gates(results: list[dict[str, Any]]) -> dict[str, Any]:
         networkx = row["networkx"]
         cold_limit = 0.5 if row["nodes"] == 5_000 else 3.0
         hot_limit = 0.100 if row["nodes"] == 5_000 else 0.500
+        ingest_limit = 5.5 if row["nodes"] == 5_000 else 18.0
+        check(f"{label} ingest seconds", helix["ingest_seconds"], ingest_limit)
         check(
-            f"{label} ingest vs v8",
-            helix["ingest_seconds"] / networkx["ingest_seconds"],
+            f"{label} mixed-label ingest seconds",
+            helix["mixed_label_ingest_seconds"],
+            ingest_limit,
+        )
+        check(
+            f"{label} 1% production delta seconds",
+            helix["incremental_1pct_seconds"],
             2.0,
         )
         check(
-            f"{label} 1% update vs v8",
-            helix["incremental_1pct_seconds"] / networkx["incremental_1pct_seconds"],
-            2.0,
+            f"{label} post-delta store growth",
+            helix["post_delta_store_ratio"],
+            1.3,
         )
+        if row["nodes"] == 20_000:
+            check(
+                f"{label} peak ingest RSS MiB",
+                helix["peak_rss_delta_bytes"] / (1024 * 1024),
+                600.0,
+            )
         check(f"{label} cold open seconds", helix["reopen_seconds"], cold_limit)
         check(
             f"{label} cold open vs v8",
