@@ -81,8 +81,106 @@ _GEMINI_NUDGE_TEXT = (
 )
 
 
+def _hook_cluster_line() -> str:
+    """Member-of-cluster line for hook nudges, or ''. Never raises.
+
+    Reads graphify-out/cluster-ref.json (written by `graphify cluster build`)
+    via the stdlib-only cluster_ref module — the hook path must stay light.
+    """
+    try:
+        from graphify.cluster_ref import load_cluster_ref
+        from graphify.paths import GRAPHIFY_OUT
+
+        ref = load_cluster_ref(Path(GRAPHIFY_OUT))
+        if not ref:
+            return ""
+        return (
+            f" This repo is member '{ref['self_tag']}' of cluster "
+            f"'{ref['cluster_name']}' ({ref.get('member_count', '?')} members); "
+            f"for cross-repo questions add --cluster to graphify "
+            f"query/path/explain/affected."
+        )
+    except Exception:
+        return ""
+
+
+def _nudge_with_cluster(nudge_json: str) -> str:
+    """Append the cluster line to a pre-serialized nudge payload, or return it as-is."""
+    line = _hook_cluster_line()
+    if not line:
+        return nudge_json
+    try:
+        payload = json.loads(nudge_json)
+        payload["hookSpecificOutput"]["additionalContext"] += line
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    except Exception:
+        return nudge_json
+
+
 def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
+
+
+def _resolve_cluster_graph_or_exit() -> str:
+    """--cluster: member marker -> local cluster dir -> its graph.json.
+
+    Every failure mode exits 1 with an actionable message — the user asked
+    for the cluster explicitly, so unlike the passive hints this is loud.
+    """
+    from graphify.cluster_ref import load_cluster_ref, unresolvable_message
+
+    out_dir = Path(_GRAPHIFY_OUT)
+    ref = load_cluster_ref(out_dir)
+    if ref is None:
+        if (out_dir / "cluster-ref.json").is_file():
+            print(
+                f"error: {out_dir}/cluster-ref.json is unreadable; re-run "
+                f"'graphify cluster build' in the cluster to rewrite it",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"error: no cluster-ref.json in {out_dir}/ — this repo is not a "
+                f"known cluster member (or run this from the repo root); "
+                f"'graphify cluster build' writes the marker",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+    from graphify.cluster_ref import resolve_cluster_dir
+
+    member_root = out_dir.resolve().parent
+    cluster_dir = resolve_cluster_dir(ref, member_root)
+    if cluster_dir is None:
+        print(f"error: {unresolvable_message(ref)}", file=sys.stderr)
+        sys.exit(1)
+    from graphify.cluster_graph import cluster_out_dir
+
+    cluster_graph = cluster_out_dir(cluster_dir) / "graph.json"
+    if not cluster_graph.is_file():
+        print(
+            f"error: cluster '{ref['cluster_name']}' found at {cluster_dir} but has "
+            f"no built graph; run 'graphify cluster build' in {cluster_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return str(cluster_graph)
+
+
+def _maybe_cluster_hint(graph_path: "Path | str") -> str:
+    """One-line member-of-cluster hint for no-match failures, or ''.
+
+    Only fires when querying the DEFAULT graph (a hint on an explicit
+    --graph/--cluster run would be noise or wrong). Never raises.
+    """
+    try:
+        if Path(graph_path).resolve() != Path(_default_graph_path()).resolve():
+            return ""
+        from graphify.cluster_ref import cluster_hint_line, load_cluster_ref
+
+        ref = load_cluster_ref(Path(_GRAPHIFY_OUT))
+        return cluster_hint_line(ref) if ref else ""
+    except Exception:
+        return ""
 
 
 def _stamped_manifest_files(
@@ -427,7 +525,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         payload = {"decision": "allow"}
         try:
             if out_path("graph.json").is_file():
-                payload["additionalContext"] = _GEMINI_NUDGE_TEXT
+                payload["additionalContext"] = _GEMINI_NUDGE_TEXT + _hook_cluster_line()
         except Exception:
             pass
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
@@ -456,7 +554,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             is_bash_search = any(tok in cmd_str for tok in (
                 "grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag "))
             if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
-                sys.stdout.write(_SEARCH_NUDGE)
+                sys.stdout.write(_nudge_with_cluster(_SEARCH_NUDGE))
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
             j = " ".join(vals).lower().replace("\\", "/")
@@ -768,7 +866,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path] [--cluster]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -779,6 +877,8 @@ def dispatch_command(cmd: str) -> None:
         use_dfs = "--dfs" in sys.argv
         budget = 2000
         graph_path = _default_graph_path()
+        graph_given = False
+        use_cluster = False
         context_filters: list[str] = []
         args = sys.argv[3:]
         i = 0
@@ -805,9 +905,18 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                graph_given = True
                 i += 2
+            elif args[i] == "--cluster":
+                use_cluster = True
+                i += 1
             else:
                 i += 1
+        if use_cluster and graph_given:
+            print("error: --graph and --cluster are mutually exclusive", file=sys.stderr)
+            sys.exit(1)
+        if use_cluster:
+            graph_path = _resolve_cluster_graph_or_exit()
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -881,11 +990,13 @@ def dispatch_command(cmd: str) -> None:
         print(_result)
     elif cmd == "affected":
         if len(sys.argv) < 3:
-            print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path] [--cluster]", file=sys.stderr)
             sys.exit(1)
         from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
         query = sys.argv[2]
         graph_path = _default_graph_path()
+        graph_given = False
+        use_cluster = False
         depth = 2
         relations: list[str] = []
         args = sys.argv[3:]
@@ -893,9 +1004,14 @@ def dispatch_command(cmd: str) -> None:
         while i < len(args):
             if args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                graph_given = True
                 i += 2
             elif args[i].startswith("--graph="):
                 graph_path = args[i].split("=", 1)[1]
+                graph_given = True
+                i += 1
+            elif args[i] == "--cluster":
+                use_cluster = True
                 i += 1
             elif args[i] == "--depth" and i + 1 < len(args):
                 try:
@@ -919,6 +1035,11 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             else:
                 i += 1
+        if use_cluster and graph_given:
+            print("error: --graph and --cluster are mutually exclusive", file=sys.stderr)
+            sys.exit(1)
+        if use_cluster:
+            graph_path = _resolve_cluster_graph_or_exit()
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -931,14 +1052,17 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
-        print(
-            format_affected(
-                graph,
-                query,
-                relations=relations or DEFAULT_AFFECTED_RELATIONS,
-                depth=depth,
-            )
+        out = format_affected(
+            graph,
+            query,
+            relations=relations or DEFAULT_AFFECTED_RELATIONS,
+            depth=depth,
         )
+        if out.startswith("No unique node match") or out.rstrip().endswith("No affected nodes found."):
+            hint = _maybe_cluster_hint(gp)
+            if hint:
+                out = f"{out.rstrip()}\n{hint}"
+        print(out)
     elif cmd in ("god-nodes", "god_nodes"):
         # god_nodes has long been an analyzer (analyze.py), an MCP tool, and a
         # README-advertised capability, but never a CLI subcommand — `graphify
@@ -1085,7 +1209,7 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "path":
         if len(sys.argv) < 4:
             print(
-                'Usage: graphify path "<source>" "<target>" [--graph path]',
+                'Usage: graphify path "<source>" "<target>" [--graph path] [--cluster]',
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1096,10 +1220,20 @@ def dispatch_command(cmd: str) -> None:
         source_label = sys.argv[2]
         target_label = sys.argv[3]
         graph_path = _default_graph_path()
+        graph_given = False
+        use_cluster = False
         args = sys.argv[4:]
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                graph_given = True
+            elif a == "--cluster":
+                use_cluster = True
+        if use_cluster and graph_given:
+            print("error: --graph and --cluster are mutually exclusive", file=sys.stderr)
+            sys.exit(1)
+        if use_cluster:
+            graph_path = _resolve_cluster_graph_or_exit()
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1121,11 +1255,16 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw)
         src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
+        _hint = _maybe_cluster_hint(gp)
         if not src_scored:
             print(f"No node matching '{source_label}' found.", file=sys.stderr)
+            if _hint:
+                print(_hint, file=sys.stderr)
             sys.exit(1)
         if not tgt_scored:
             print(f"No node matching '{target_label}' found.", file=sys.stderr)
+            if _hint:
+                print(_hint, file=sys.stderr)
             sys.exit(1)
         src_nid = _pick_scored_endpoint(G, src_scored, source_label)
         tgt_nid = _pick_scored_endpoint(G, tgt_scored, target_label)
@@ -1166,6 +1305,8 @@ def dispatch_command(cmd: str) -> None:
             path_nodes = _nx.shortest_path(_und, src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
             print(f"No path found between '{source_label}' and '{target_label}'.")
+            if _hint:
+                print(_hint)
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
@@ -1204,17 +1345,27 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: graphify explain "<node>" [--graph path] [--cluster]', file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _find_node
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
+        graph_given = False
+        use_cluster = False
         args = sys.argv[3:]
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                graph_given = True
+            elif a == "--cluster":
+                use_cluster = True
+        if use_cluster and graph_given:
+            print("error: --graph and --cluster are mutually exclusive", file=sys.stderr)
+            sys.exit(1)
+        if use_cluster:
+            graph_path = _resolve_cluster_graph_or_exit()
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1232,6 +1383,9 @@ def dispatch_command(cmd: str) -> None:
         matches = _find_node(G, label)
         if not matches:
             print(f"No node matching '{label}' found.")
+            hint = _maybe_cluster_hint(gp)
+            if hint:
+                print(hint)
             sys.exit(0)
         nid = matches[0]
         d = G.nodes[nid]
