@@ -137,6 +137,30 @@ def test_build_calls_dedup():
     assert G.number_of_nodes() == 1
 
 
+def test_build_dedup_preserves_semantic_attributes():
+    """The default build path must not discard semantic enrichment (#2091)."""
+    from graphify.build import build
+    ast = {
+        "nodes": [{"id": "src_auth_login", "label": "login", "file_type": "code",
+                   "source_file": "src/auth.py", "_origin": "ast",
+                   "source_location": "L42"}],
+        "edges": [],
+    }
+    semantic = {
+        "nodes": [{"id": "src_auth_login", "label": "User login handler",
+                   "file_type": "code", "source_file": "src/auth.py",
+                   "summary": "Authenticates a user.", "confidence_score": 0.9}],
+        "edges": [],
+    }
+
+    node = dict(build([ast, semantic], directed=True, dedup=True).nodes["src_auth_login"])
+
+    assert node["label"] == "login"
+    assert node["source_location"] == "L42"
+    assert node["summary"] == "Authenticates a user."
+    assert node["confidence_score"] == 0.9
+
+
 # --- #878: fuzzy dedup false merges on short/variant labels ---
 
 def test_dedup_does_not_merge_numeric_variants(tmp_path):
@@ -469,14 +493,15 @@ def test_defining_file_wins_over_referencing_file(nodes, capsys):
 
 
 def test_reference_collision_is_silent(capsys):
-    """A cross-reference collapsing into the entity it references loses nothing —
-    edges are keyed by ID and rewire to the survivor — so it must not be reported."""
+    """A cross-reference rewires silently without importing foreign-file metadata."""
     edges = _make_edges("agents_make_batch_fixtures_make_batch_fixtures", "other")
+    referencing = dict(_REFERENCING, summary="Reference-local description.")
     result_nodes, result_edges = deduplicate_entities(
-        [_DEFINING, _REFERENCING], edges, communities={})
+        [_DEFINING, referencing], edges, communities={})
 
     assert len(result_nodes) == 1
     assert len(result_edges) == 1
+    assert "summary" not in result_nodes[0]
     captured = capsys.readouterr()
     assert "WARNING" not in captured.err
     assert "note:" not in captured.err
@@ -511,6 +536,56 @@ def test_same_file_relabel_is_noted(capsys):
     assert "note:" in captured.err
     assert "make-batch-fixtures helper agent" in captured.err
     assert "WARNING" not in captured.err
+
+
+@pytest.mark.parametrize("nodes", [
+    [
+        {"id": "src_auth_login", "label": "login", "file_type": "code",
+         "source_file": "src/auth.py", "_origin": "ast", "source_location": "L42"},
+        {"id": "src_auth_login", "label": "User login handler", "file_type": "code",
+         "source_file": "src/auth.py", "summary": "Authenticates a user.",
+         "confidence_score": 0.9},
+    ],
+    [
+        {"id": "src_auth_login", "label": "User login handler", "file_type": "code",
+         "source_file": "src/auth.py", "summary": "Authenticates a user.",
+         "confidence_score": 0.9},
+        {"id": "src_auth_login", "label": "login", "file_type": "code",
+         "source_file": "src/auth.py", "_origin": "ast", "source_location": "L42"},
+    ],
+], ids=["ast-first", "semantic-first"])
+def test_same_id_same_entity_retains_complementary_attributes(nodes):
+    """Exact-ID dedup combines AST precision with semantic enrichment (#2091)."""
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0] == {
+        "id": "src_auth_login",
+        "label": "login",
+        "file_type": "code",
+        "source_file": "src/auth.py",
+        "_origin": "ast",
+        "source_location": "L42",
+        "summary": "Authenticates a user.",
+        "confidence_score": 0.9,
+    }
+
+
+def test_cross_file_id_collision_does_not_mix_attributes(capsys):
+    """Two files that both mint one ID remain isolated despite exact-ID dedup."""
+    nodes = [
+        {"id": "pkg_service_run", "label": "run", "file_type": "code",
+         "source_file": "pkg/service.py", "source_location": "L10"},
+        {"id": "pkg_service_run", "label": "run helper", "file_type": "code",
+         "source_file": "pkg_service.py", "summary": "Different function."},
+    ]
+
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["source_file"] == "pkg/service.py"
+    assert "summary" not in result_nodes[0]
+    assert "WARNING" in capsys.readouterr().err
 
 
 def test_collision_survivor_is_order_independent():

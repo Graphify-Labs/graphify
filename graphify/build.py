@@ -952,10 +952,11 @@ def build(
         ambiguous pairs in the 75–92 Jaro-Winkler score zone.
     root: if given, absolute source_file paths are made relative to root (#932).
 
-    Extractions are merged in order. For nodes with the same ID, the last
-    extraction's attributes win (NetworkX add_node overwrites). Pass AST
-    results before semantic results so semantic labels take precedence, or
-    reverse the order if you prefer AST source_location precision to win.
+    With dedup disabled, extractions are merged in order and the last node's
+    attributes win (NetworkX add_node overwrites). With dedup enabled, nodes
+    sharing an ID use a deterministic survivor and retain missing attributes
+    from duplicate records of the same source entity. Genuine cross-file ID
+    collisions remain isolated and are reported.
     """
     from graphify.dedup import deduplicate_entities
     combined: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}

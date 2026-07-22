@@ -244,14 +244,35 @@ def _collision_rank(node: dict) -> tuple:
     )
 
 
+def _same_source_entity(survivor: dict, duplicate: dict) -> bool:
+    """True when exact-ID records came from the same source file.
+
+    Exact IDs can also collide across files through references or slugged-path
+    ambiguity (#1504).  Keep those records isolated rather than importing
+    attributes whose provenance belongs to another file.
+    """
+    keep_file = survivor.get("source_file") or ""
+    lose_file = duplicate.get("source_file") or ""
+    return keep_file == lose_file
+
+
+def _merge_missing_attributes(survivor: dict, duplicate: dict) -> dict:
+    """Keep survivor values while retaining non-conflicting duplicate data."""
+    merged = dict(survivor)
+    for key, value in duplicate.items():
+        merged.setdefault(key, value)
+    return merged
+
+
 def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
     """Report an ID collision in proportion to what dropping the loser actually costs.
 
-    Cross-reference to a defining node: same entity, edges are keyed by ID and rewire
-    to the survivor — nothing is lost, so say nothing. Same file, different labels: the
-    extractor emitted two labels for one entity and one is discarded — note it. Two
-    files that both encode this ID: they are distinct entities and one is genuinely
-    lost — warn, and point at the extraction split that keeps them apart (#1504).
+    Cross-reference to a defining node: the structural entity and its edges survive;
+    foreign-file attributes stay isolated, so no collision warning is needed. Same
+    file, different labels: the extractor emitted two labels for one entity and one is
+    discarded — note it. Two files that both encode this ID: they are distinct entities
+    and one is genuinely lost — warn, and point at the extraction split that keeps them
+    apart (#1504).
     """
     keep_file = survivor.get("source_file") or ""
     keep_label = survivor.get("label") or ""
@@ -316,8 +337,9 @@ def deduplicate_entities(
     # Pre-deduplicate: one node per ID. The survivor is the node that *defines* the
     # ID (its source_file is the file the ID encodes), not merely the first seen —
     # otherwise chunk order decides whether an entity keeps its own attributes or a
-    # passing cross-reference's. Warnings are then emitted for what is actually lost
-    # (#1504); a same-entity merge costs nothing and stays quiet.
+    # passing cross-reference's. Missing attributes from same-source records are
+    # retained so AST structure and semantic enrichment can coexist (#2091).
+    # Genuine cross-file ID collisions stay isolated and are reported below (#1504).
     seen_ids: dict[str, dict] = {}
     dropped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
@@ -331,9 +353,15 @@ def deduplicate_entities(
             # Smallest-ranked node wins; the min over a total order is independent
             # of the order nodes arrive in, so the survivor no longer depends on
             # chunk ordering (#1851).
-            seen_ids[nid] = node
+            seen_ids[nid] = (
+                _merge_missing_attributes(node, incumbent)
+                if _same_source_entity(node, incumbent)
+                else node
+            )
             dropped[nid].append(incumbent)
         else:
+            if _same_source_entity(incumbent, node):
+                seen_ids[nid] = _merge_missing_attributes(incumbent, node)
             dropped[nid].append(node)
 
     for nid, losers in dropped.items():
