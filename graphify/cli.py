@@ -729,6 +729,7 @@ def _activate_external_only(
                 state = durable_state(
                     graph, communities, cohesion, labels, analysis
                 )
+                del graph
                 activated = store.activate_staged(staged, state)
                 graph = activated.graph
                 report = generate(

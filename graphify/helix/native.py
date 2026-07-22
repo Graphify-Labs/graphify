@@ -18,6 +18,14 @@ HELIX_EMBEDDED_DISTRIBUTION = "helix-db-embedded"
 HELIX_EMBEDDED_VERSION = "0.2.0b3"
 _DATABASE_NAME = "graphify"
 _ID_LEASE_SIZE = 100_000
+_CACHE_DISABLED = helixdb.EmbeddedCacheConfig(
+    vector_memory_bytes=1,
+    mode=helixdb.VectorMemoryOnly(),
+)
+_READ_CACHE = helixdb.EmbeddedCacheConfig(
+    vector_memory_bytes=1,
+    mode=helixdb.MemoryCache(),
+)
 
 
 class NativeBackendUnavailable(RuntimeError):
@@ -51,6 +59,9 @@ _REQUIRED = _NativeSurface(
             "GraphMetadataSelection",
             "IdentitySelection",
             "GraphEdgeId",
+            "EmbeddedCacheConfig",
+            "VectorMemoryOnly",
+            "MemoryCache",
             "LeidenOptions",
             "NativeGraph",
         }
@@ -67,15 +78,13 @@ def validate_native_backend() -> None:
         version = None
     if version != HELIX_PYTHON_VERSION:
         raise NativeBackendUnavailable(
-            "embedded Helix SDK version mismatch: "
-            f"expected {HELIX_PYTHON_VERSION}, got {version!r}"
+            f"embedded Helix SDK version mismatch: expected {HELIX_PYTHON_VERSION}, got {version!r}"
         )
 
     missing = sorted(name for name in _REQUIRED.helixdb_attrs if not hasattr(helixdb, name))
     if missing:
         raise NativeBackendUnavailable(
-            "helixdb is missing required public embedded SDK APIs: "
-            f"{', '.join(missing)}"
+            f"helixdb is missing required public embedded SDK APIs: {', '.join(missing)}"
         )
     try:
         embedded_version = importlib.metadata.version(HELIX_EMBEDDED_DISTRIBUTION)
@@ -100,7 +109,12 @@ def native_backend_info() -> NativeBackendInfo:
     )
 
 
-def open_embedded_client(path: str | Path, *, read_only: bool = False) -> Any:
+def open_embedded_client(
+    path: str | Path,
+    *,
+    read_only: bool = False,
+    disable_cache: bool = False,
+) -> Any:
     """Open the official in-process, on-disk Helix client at ``path``."""
     validate_native_backend()
     root = Path(path)
@@ -110,12 +124,17 @@ def open_embedded_client(path: str | Path, *, read_only: bool = False) -> Any:
     else:
         root.mkdir(parents=True, exist_ok=True)
     source = helixdb.Disk(str(root.resolve()), _DATABASE_NAME)
+    cache = _CACHE_DISABLED if disable_cache else _READ_CACHE
     if read_only:
-        return helixdb.Client.embedded_reader(source)
+        return helixdb.Client.embedded_reader(source, cache=cache)
     if "id_lease_size" in inspect.signature(helixdb.Client.embedded).parameters:
         embedded: Any = helixdb.Client.embedded
-        return embedded(source, id_lease_size=_ID_LEASE_SIZE)
-    return helixdb.Client.embedded(source)
+        return embedded(
+            source,
+            cache=cache,
+            id_lease_size=_ID_LEASE_SIZE,
+        )
+    return helixdb.Client.embedded(source, cache=cache)
 
 
 __all__ = [

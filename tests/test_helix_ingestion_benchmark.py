@@ -16,8 +16,8 @@ def _result(nodes: int, edges: int) -> dict:
             "shortest_path_5_queries_seconds": 1.0,
         },
         "helix": {
-            "ingest_seconds": 5.0 if nodes == 5_000 else 17.0,
-            "mixed_label_ingest_seconds": 5.0 if nodes == 5_000 else 17.0,
+            "ingest_seconds": 2.9 if nodes == 5_000 else 4.9,
+            "mixed_label_ingest_seconds": 2.9 if nodes == 5_000 else 4.9,
             "incremental_1pct_seconds": 1.9,
             "post_delta_store_ratio": 1.2,
             "peak_rss_delta_bytes": 599 * 1024 * 1024,
@@ -49,7 +49,7 @@ def test_ingestion_acceptance_uses_absolute_gates_and_keeps_other_gates() -> Non
     assert "20000/60000 clustering speedup" in names
     assert not any("ingest vs v8" in name or "update vs v8" in name for name in names)
 
-    results[1]["helix"]["ingest_seconds"] = 18.01
+    results[1]["helix"]["ingest_seconds"] = 5.01
     rejected = acceptance_gates(results)
 
     assert not rejected["passed"]

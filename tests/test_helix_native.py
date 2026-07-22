@@ -5,8 +5,11 @@ import pytest
 
 from graphify.helix.model import EdgeData, GraphBuildData, NodeData
 from graphify.helix.persistence import (
+    _BUFFERED_WRITE_CONCURRENCY,
+    _changed_buckets,
     HelixEmbeddedStore,
     HelixGraphReader,
+    _prepare_topology,
     _public_store_rebuild_message,
     _StoreLock,
 )
@@ -45,6 +48,60 @@ def test_typed_identities_do_not_collide(tmp_path):
     assert {repr(node.id) for node in loaded.graph.nodes()} == {repr(value) for value in identities}
 
 
+@pytest.mark.parametrize("weight", [True, "1.0", float("inf"), float("nan")])
+def test_invalid_native_weights_fail_before_persistence(tmp_path, weight):
+    graph = GraphBuildData(
+        nodes=[NodeData("a"), NodeData("b")],
+        edges=[EdgeData("a", "b", {"weight": weight})],
+    )
+    with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
+        with pytest.raises(TypeError, match="weight must be finite numeric"):
+            store.save_generation(graph, new_state())
+        assert store._active_generation(required=False) is None
+
+
+def test_missing_edge_endpoint_fails_before_persistence(tmp_path):
+    graph = GraphBuildData(
+        nodes=[NodeData("a")],
+        edges=[EdgeData("a", "missing")],
+    )
+    with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
+        with pytest.raises(ValueError, match="references a missing node"):
+            store.save_generation(graph, new_state())
+        assert store._active_generation(required=False) is None
+
+
+def test_topology_hashes_are_order_independent_and_bucket_local():
+    first = GraphBuildData(
+        kind="digraph",
+        nodes=[NodeData("c"), NodeData("a"), NodeData("b")],
+        edges=[EdgeData("b", "c"), EdgeData("a", "b")],
+    )
+    reordered = GraphBuildData(
+        kind="digraph",
+        nodes=list(reversed(first.nodes)),
+        edges=list(reversed(first.edges)),
+    )
+    changed = GraphBuildData(
+        kind="digraph",
+        nodes=[NodeData("a"), NodeData("b", {"changed": True}), NodeData("c")],
+        edges=list(reordered.edges),
+    )
+    prepared = _prepare_topology(first, max_nodes=10, max_edges=10)
+    reordered_prepared = _prepare_topology(reordered, max_nodes=10, max_edges=10)
+    changed_prepared = _prepare_topology(changed, max_nodes=10, max_edges=10)
+
+    assert prepared.checksum == reordered_prepared.checksum
+    assert prepared.node_bucket_hashes == reordered_prepared.node_bucket_hashes
+    assert prepared.edge_bucket_hashes == reordered_prepared.edge_bucket_hashes
+    changed_node_buckets = _changed_buckets(
+        prepared.node_bucket_hashes, changed_prepared.node_bucket_hashes
+    )
+    assert changed_node_buckets is not None
+    assert len(changed_node_buckets) == 1
+    assert not _changed_buckets(prepared.edge_bucket_hashes, changed_prepared.edge_bucket_hashes)
+
+
 def test_semantic_labels_drive_native_filtering(tmp_path):
     from helixdb import TraversalOptions
 
@@ -56,11 +113,9 @@ def test_semantic_labels_drive_native_filtering(tmp_path):
             {"source": "b", "target": "c", "relation": "imports"},
         ],
     ).graph
-    result = graph.traverse(TraversalOptions(
-        seeds=("a",), max_depth=3, allowed_labels=("calls",)
-    ))
+    result = graph.traverse(TraversalOptions(seeds=("a",), max_depth=3, allowed_labels=("calls",)))
     assert tuple(visit.node_id for visit in result.visits) == ("a", "b")
-    assert "relation" not in graph.edges()[0].attributes["attrs"]
+    assert "relation" not in graph.edges()[0].attributes.get("attrs", {})
 
 
 def test_native_algorithms_and_transforms(tmp_path):
@@ -94,10 +149,14 @@ def test_stage_analysis_and_state_activate_same_generation(tmp_path):
     with HelixEmbeddedStore(store_path) as store:
         with store.staged_graph(build) as staged:
             assert store._active_generation(required=False) is None
+            proposed = staged.graph
             state = new_state(communities=community_records({0: ["a", "b"]}))
             active = store.activate_staged(staged, state)
             assert active.generation == active.state["build"]["generation"]
             assert active.generation == active.state["incremental"]["last_successful_generation"]
+            assert active.graph is proposed
+            with pytest.raises(RuntimeError, match="already been activated"):
+                _ = staged.graph
     with HelixEmbeddedStore(store_path, read_only=True) as store:
         assert store.verify()["nodes"] == 2
 
@@ -154,15 +213,17 @@ def test_explicitly_retained_generation_can_be_rolled_back(tmp_path):
 def test_state_and_topology_reopen_from_the_same_generation(tmp_path):
     store_path = tmp_path / "graph.helix"
     state = new_state(
-        communities=[{
-            "id": 0,
-            "members": [b"a"],
-            "name": "Typed",
-            "naming_source": "test",
-            "signature": "sha256:test",
-            "cohesion": 1.0,
-            "clustering": {"algorithm": "helix-leiden"},
-        }],
+        communities=[
+            {
+                "id": 0,
+                "members": [b"a"],
+                "name": "Typed",
+                "naming_source": "test",
+                "signature": "sha256:test",
+                "cohesion": 1.0,
+                "clustering": {"algorithm": "helix-leiden"},
+            }
+        ],
         analysis={"god_nodes": [b"a"]},
         incremental={
             "files": {
@@ -208,11 +269,13 @@ def test_large_incremental_state_is_written_in_planner_safe_batches(tmp_path):
         }
         for index in range(350)
     }
-    state = new_state(incremental={
-        "files": files,
-        "extractor_state": {"mode": "ast"},
-        "extraction_cache": extraction_cache,
-    })
+    state = new_state(
+        incremental={
+            "files": files,
+            "extractor_state": {"mode": "ast"},
+            "extraction_cache": extraction_cache,
+        }
+    )
     store_path = tmp_path / "graph.helix"
     with HelixEmbeddedStore(store_path) as store:
         store.save_generation(GraphBuildData(nodes=[NodeData("root")]), state)
@@ -223,14 +286,8 @@ def test_large_incremental_state_is_written_in_planner_safe_batches(tmp_path):
 
 
 def test_large_cache_only_replacement_uses_chunked_native_revision(tmp_path):
-    files = {
-        f"src/module_{index}.py": {"content_hash": f"content-{index}"}
-        for index in range(130)
-    }
-    cache = {
-        f"ast:src/module_{index}.py": {"version": 1, "nodes": []}
-        for index in range(130)
-    }
+    files = {f"src/module_{index}.py": {"content_hash": f"content-{index}"} for index in range(130)}
+    cache = {f"ast:src/module_{index}.py": {"version": 1, "nodes": []} for index in range(130)}
     state = new_state(incremental={"files": files, "extraction_cache": cache})
     store_path = tmp_path / "graph.helix"
     with HelixEmbeddedStore(store_path) as store:
@@ -247,15 +304,10 @@ def test_large_cache_only_replacement_uses_chunked_native_revision(tmp_path):
         after = store.load()
 
     assert after.generation == before.generation
-    assert after.metadata["active_cache_revision"] != before.metadata[
-        "active_cache_revision"
-    ]
-    assert after.metadata["active_file_revision"] == before.metadata[
-        "active_file_revision"
-    ]
+    assert after.metadata["active_cache_revision"] != before.metadata["active_cache_revision"]
+    assert after.metadata["active_file_revision"] == before.metadata["active_file_revision"]
     assert {
-        value["version"]
-        for value in after.state["incremental"]["extraction_cache"].values()
+        value["version"] for value in after.state["incremental"]["extraction_cache"].values()
     } == {2}
 
 
@@ -308,11 +360,11 @@ def test_failed_state_pointer_flip_leaves_previous_revision_active(tmp_path, mon
         previous_state = store.read_state()
         original_query = store._query
 
-        def fail_activation(batch):
-            request = batch.to_query_request()
-            if "activate_state" in getattr(request.query, "returns", ()):
+        def fail_activation(batch, **kwargs):
+            request = batch.to_query_request(kwargs.get("params"), kwargs.get("values"))
+            if "activate_state" in request.to_json_string():
                 raise RuntimeError("simulated activation failure")
-            return original_query(batch)
+            return original_query(batch, **kwargs)
 
         monkeypatch.setattr(store, "_query", fail_activation)
         with pytest.raises(RuntimeError, match="simulated activation failure"):
@@ -343,10 +395,84 @@ def test_reader_hot_reloads_state_revision_without_topology_activation(tmp_path)
 def test_configured_ingestion_bounds_fail_before_activation(tmp_path):
     with HelixEmbeddedStore(tmp_path / "graph.helix", max_nodes=1) as store:
         with pytest.raises(ValueError, match="ingestion bounds"):
-            store.save_generation(
-                GraphBuildData(nodes=[NodeData("a"), NodeData("b")]), new_state()
-            )
+            store.save_generation(GraphBuildData(nodes=[NodeData("a"), NodeData("b")]), new_state())
         assert store._active_generation(required=False) is None
+
+
+def test_fresh_writer_opens_native_database_on_a_background_thread(tmp_path, monkeypatch):
+    from graphify.helix import persistence
+
+    opened_on: list[int | None] = []
+
+    class Client:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+
+    def open_client(_path, *, read_only=False, disable_cache=False):
+        assert not read_only
+        assert disable_cache
+        opened_on.append(threading.current_thread().ident)
+        return client
+
+    monkeypatch.setattr(persistence, "open_embedded_client", open_client)
+    store = HelixEmbeddedStore(tmp_path / "graph.helix")
+    assert store._open_future is not None
+    store._open_future.result(timeout=1)
+    assert opened_on != [threading.current_thread().ident]
+    assert store._client is None
+    store.close()
+    assert client.closed
+
+
+def test_background_open_failure_releases_writer_lock(tmp_path, monkeypatch):
+    from graphify.helix import persistence
+
+    def fail_open(_path, *, read_only=False, disable_cache=False):
+        assert not read_only
+        assert disable_cache
+        raise RuntimeError("simulated native open failure")
+
+    monkeypatch.setattr(persistence, "open_embedded_client", fail_open)
+    path = tmp_path / "graph.helix"
+    store = HelixEmbeddedStore(path)
+    with pytest.raises(RuntimeError, match="simulated native open failure"):
+        store._ensure_client()
+    assert store._closed
+
+    lock = _StoreLock(path / ".graphify-writer.lock", shared=False, timeout=0.1)
+    lock.acquire()
+    lock.release()
+
+
+def test_full_write_uses_buffered_staging_and_one_durable_publication_fence(tmp_path, monkeypatch):
+    graph = GraphBuildData(
+        nodes=[NodeData("a"), NodeData("b")],
+        edges=[EdgeData("a", "b", {"relation": "calls"})],
+    )
+    observed: list[bool | None] = []
+    with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
+        original_query = store._query
+
+        def observe(batch, **kwargs):
+            observed.append(kwargs.get("await_durability"))
+            return original_query(batch, **kwargs)
+
+        monkeypatch.setattr(store, "_query", observe)
+
+        def count_scan_is_a_bug(*_args, **_kwargs):
+            raise AssertionError("full write performed a pre-publication count scan")
+
+        monkeypatch.setattr(store, "_verify_generation_counts", count_scan_is_a_bug)
+        store.save_generation(graph, new_state())
+
+    explicit = [value for value in observed if value is not None]
+    assert explicit.count(True) == 1
+    assert explicit[-1] is True
+    assert all(value is False for value in explicit[:-1])
 
 
 def test_read_only_enforcement(tmp_path):
@@ -451,17 +577,38 @@ def test_existing_reader_keeps_previous_snapshot_during_writer_activation(tmp_pa
         assert reader.load().graph.contains_node("new")
 
 
+def test_snapshot_load_retries_a_changed_read_view(tmp_path, monkeypatch):
+    store_path = tmp_path / "graph.helix"
+    with HelixEmbeddedStore(store_path) as store:
+        store.save_generation(GraphBuildData(nodes=[NodeData("a")]), new_state())
+        original_metadata = store._metadata
+        attempts = 0
+
+        def metadata(generation, *, client=None):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("Request read view changed during execution; retry the request")
+            return original_metadata(generation, client=client)
+
+        monkeypatch.setattr(store, "_metadata", metadata)
+        assert store.load().graph.contains_node("a")
+        assert attempts == 2
+
+
 def test_checksum_mismatch_is_rejected(tmp_path):
     store_path = tmp_path / "graph.helix"
     with HelixEmbeddedStore(store_path) as store:
         store.save_generation(GraphBuildData(nodes=[NodeData("a")]), new_state())
         generation = store.active_generation
-        traversal = store._helix.g().n_with_label_where(
-            "GraphifyMeta",
-            store._helix.SourcePredicate.eq("graphify_generation", generation),
-        ).set_property("checksum", "sha256:corrupt")
-        store._query(
-            store._helix.write_batch().var_as("corrupt", traversal).returning(["corrupt"])
+        traversal = (
+            store._helix.g()
+            .n_with_label_where(
+                "GraphifyMeta",
+                store._helix.SourcePredicate.eq("graphify_generation", generation),
+            )
+            .set_property("checksum", "sha256:corrupt")
         )
+        store._query(store._helix.write_batch().var_as("corrupt", traversal).returning(["corrupt"]))
         with pytest.raises(RuntimeError, match="checksum verification"):
             store.verify()

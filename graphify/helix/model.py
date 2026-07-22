@@ -88,10 +88,13 @@ class GraphBuildData:
         directed = bool(payload.get("directed", False))
         multigraph = bool(payload.get("multigraph", False))
         kind: GraphKind = (
-            "multidigraph" if directed and multigraph else
-            "digraph" if directed else
-            "multigraph" if multigraph else
-            "graph"
+            "multidigraph"
+            if directed and multigraph
+            else "digraph"
+            if directed
+            else "multigraph"
+            if multigraph
+            else "graph"
         )
         raw_nodes = payload.get("nodes", [])
         raw_edges = payload.get("links", payload.get("edges", []))
@@ -115,12 +118,14 @@ class GraphBuildData:
             source, target = import_identity(raw["source"]), import_identity(raw["target"])
             if _identity_key(source) not in seen or _identity_key(target) not in seen:
                 raise ValueError(f"links[{index}] references a missing node")
-            edges.append(EdgeData(
-                source,
-                target,
-                {k: v for k, v in raw.items() if k not in {"source", "target", "key"}},
-                import_identity(raw.get("key")) if multigraph else None,
-            ))
+            edges.append(
+                EdgeData(
+                    source,
+                    target,
+                    {k: v for k, v in raw.items() if k not in {"source", "target", "key"}},
+                    import_identity(raw.get("key")) if multigraph else None,
+                )
+            )
         reserved = {"directed", "multigraph", "graph", "nodes", "links", "edges", "graphify_state"}
         return cls(
             kind=kind,
@@ -161,7 +166,7 @@ class GraphBuildData:
 
 @dataclass(frozen=True)
 class LoadedGraph:
-    """One native graph snapshot and durable state from the same generation."""
+    """One immutable native topology and durable state from the same generation."""
 
     graph: Any
     generation: str
@@ -190,7 +195,10 @@ def node_attributes(graph: Any, node_id: Any) -> dict[str, Any]:
 
 def edge_attributes(edge: Any) -> dict[str, Any]:
     """Project a native semantic label into a transient/output attribute DTO."""
-    attributes = graphify_attributes(edge.attributes)
+    nested = edge.attributes.get("attrs")
+    attributes = dict(nested) if isinstance(nested, Mapping) else {}
+    if edge.weight is not None:
+        attributes.setdefault("weight", edge.weight)
     attributes.setdefault("relation", edge.label)
     return attributes
 
@@ -207,7 +215,14 @@ def edge_records(graph: Any, edge_ids: Iterable[Any] | None = None) -> tuple[Any
 
 
 __all__ = [
-    "EdgeData", "GraphBuildData", "GraphKind", "LoadedGraph", "NodeData",
-    "edge_attributes", "edge_records", "graphify_attributes", "import_identity",
+    "EdgeData",
+    "GraphBuildData",
+    "GraphKind",
+    "LoadedGraph",
+    "NodeData",
+    "edge_attributes",
+    "edge_records",
+    "graphify_attributes",
+    "import_identity",
     "node_attributes",
 ]

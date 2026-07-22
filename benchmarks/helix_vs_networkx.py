@@ -401,7 +401,7 @@ def acceptance_gates(results: list[dict[str, Any]]) -> dict[str, Any]:
         networkx = row["networkx"]
         cold_limit = 0.5 if row["nodes"] == 5_000 else 3.0
         hot_limit = 0.100 if row["nodes"] == 5_000 else 0.500
-        ingest_limit = 5.5 if row["nodes"] == 5_000 else 18.0
+        ingest_limit = 3.0 if row["nodes"] == 5_000 else 5.0
         check(f"{label} ingest seconds", helix["ingest_seconds"], ingest_limit)
         check(
             f"{label} mixed-label ingest seconds",

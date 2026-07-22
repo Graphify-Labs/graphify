@@ -1040,6 +1040,7 @@ def _rebuild_code(
                         questions,
                         state,
                     ) = analyze_generation(graph)
+                    del graph
                     activated = store.activate_staged(staged, state)
                     graph = activated.graph
         if _timer is not None:
