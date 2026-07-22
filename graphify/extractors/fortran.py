@@ -2,18 +2,68 @@
 from __future__ import annotations
 
 
+import re
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id, _read_text
 
 
 _FORTRAN_CPP_EXTS = {".F", ".F90", ".F95", ".F03", ".F08"}
 
-def _cpp_preprocess(path: Path) -> bytes:
-    """Run cpp -w -P on a capital-F Fortran file and return preprocessed bytes.
+# cpp (run WITHOUT -P) emits linemarkers `# <lineno> "<file>" [flags]` to resync
+# line numbering after it blanks directive lines, drops inactive #ifdef blocks,
+# and expands macros. We consume them to map a preprocessed line back to the
+# original source line. cpp escapes `\` and `"` inside the quoted filename.
+_LINEMARKER = re.compile(rb'^#\s+(\d+)\s+"((?:[^"\\]|\\.)*)"')
 
-    Falls back to raw file bytes if cpp is not available. Capital-F extensions
-    conventionally require C preprocessor expansion (#ifdef MPI, #define REAL8, etc.)
-    before parsing.
+
+def _decode_marker_path(raw: bytes) -> str:
+    """Decode a cpp linemarker filename, undoing cpp's `\\` and `"` escaping."""
+    return raw.decode("utf-8", "replace").replace('\\"', '"').replace("\\\\", "\\")
+
+
+def _strip_linemarkers(out: bytes, path: Path) -> tuple[bytes, list[int]]:
+    """Split cpp output into (source_without_markers, line_map).
+
+    Each `# <n> "<file>"` linemarker sets the original line of the *next* output
+    line; every other line is real source and is kept verbatim (blank lines
+    included) so the returned buffer's row numbering stays in lockstep with
+    line_map. line_map[i] is the 1-based original source line for output row i,
+    or 0 for a synthetic (`<built-in>`) or included region the caller should not
+    trust. Blanked-out directive lines are preserved as empty lines so tree-sitter
+    row positions never drift.
+    """
+    target = str(path.resolve())
+    content: list[bytes] = []
+    line_map: list[int] = []
+    cur = 1
+    in_target = True
+    for raw in out.split(b"\n"):
+        m = _LINEMARKER.match(raw)
+        if m is not None:
+            cur = int(m.group(1))
+            in_target = _decode_marker_path(m.group(2)) == target
+            continue
+        content.append(raw)
+        line_map.append(cur if in_target else 0)
+        cur += 1
+    return b"\n".join(content), line_map
+
+
+def _cpp_preprocess(path: Path) -> tuple[bytes, list[int] | None]:
+    """Run cpp on a capital-F Fortran file, returning (source, line_map).
+
+    line_map[i] is the 1-based original source line for the i-th (0-based) line of
+    the returned bytes, so a symbol's `source_location` survives the preprocessor's
+    line renumbering (#2092). Returns (raw_bytes, None) — meaning "no remapping,
+    line N is line N" — when cpp is unavailable or fails, matching the raw-bytes
+    fallback used for lowercase .f90 files. Capital-F extensions conventionally
+    require C preprocessor expansion (#ifdef MPI, #define REAL8, etc.) before parsing.
+
+    We run WITHOUT `-P`: `-P` suppresses the linemarkers, and because cpp blanks
+    directive lines, drops inactive #ifdef blocks, and collapses blank runs, its
+    output line numbers then no longer match the source and there is nothing left to
+    map them back — so every symbol was reported at the wrong line (#2092). Keeping
+    the linemarkers lets us translate each location back to the original file.
 
     Security (F-007): we pass `-nostdinc` and `-I /dev/null` so a malicious
     source file containing `#include "/home/victim/.ssh/id_rsa"` (or any other
@@ -25,21 +75,21 @@ def _cpp_preprocess(path: Path) -> bytes:
     import shutil
     import subprocess
     if not shutil.which("cpp"):
-        return path.read_bytes()
+        return path.read_bytes(), None
     try:
         # Pass an absolute path so a corpus file named like "-I/etc/x.F90" cannot
         # be parsed by cpp as an option (cpp does not accept a "--" end-of-options
         # terminator). An absolute path always begins with "/".
         result = subprocess.run(
-            ["cpp", "-w", "-P", "-nostdinc", "-I", "/dev/null", str(path.resolve())],
+            ["cpp", "-w", "-nostdinc", "-I", "/dev/null", str(path.resolve())],
             capture_output=True,
             timeout=30,
         )
         if result.returncode == 0 and result.stdout:
-            return result.stdout
+            return _strip_linemarkers(result.stdout, path)
     except Exception:
         pass
-    return path.read_bytes()
+    return path.read_bytes(), None
 
 def extract_fortran(path: Path) -> dict:
     """Extract programs, modules, subroutines, functions, use statements, and calls from Fortran files.
@@ -56,7 +106,10 @@ def extract_fortran(path: Path) -> dict:
     try:
         language = Language(tsfortran.language())
         parser = Parser(language)
-        source = _cpp_preprocess(path) if path.suffix in _FORTRAN_CPP_EXTS else path.read_bytes()
+        if path.suffix in _FORTRAN_CPP_EXTS:
+            source, line_map = _cpp_preprocess(path)
+        else:
+            source, line_map = path.read_bytes(), None
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -69,6 +122,19 @@ def extract_fortran(path: Path) -> dict:
     seen_ids: set[str] = set()
     scope_bodies: list[tuple[str, object]] = []
 
+    def _orig_line(line: int) -> int:
+        """Translate a 1-based preprocessed line to its original source line (#2092).
+
+        No-op when the source was not preprocessed (line_map is None); falls back to
+        the preprocessed line for rows outside the map or in an untrusted region.
+        """
+        if line_map is None:
+            return line
+        idx = line - 1
+        if 0 <= idx < len(line_map) and line_map[idx] >= 1:
+            return line_map[idx]
+        return line
+
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
@@ -77,7 +143,7 @@ def extract_fortran(path: Path) -> dict:
                 "label": label,
                 "file_type": "code",
                 "source_file": str_path,
-                "source_location": f"L{line}",
+                "source_location": f"L{_orig_line(line)}",
             })
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
@@ -89,7 +155,7 @@ def extract_fortran(path: Path) -> dict:
             "relation": relation,
             "confidence": confidence,
             "source_file": str_path,
-            "source_location": f"L{line}",
+            "source_location": f"L{_orig_line(line)}",
             "weight": weight,
         }
         if context:

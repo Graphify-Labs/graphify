@@ -25,8 +25,13 @@ def test_cpp_preprocess_passes_absolute_path(tmp_path, monkeypatch):
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/cpp")
     monkeypatch.setattr("subprocess.run", fake_run)
 
-    out = extract._cpp_preprocess(f)
-    assert out == b"preprocessed"
-    last_arg = captured["argv"][-1]
+    source, line_map = extract._cpp_preprocess(f)
+    assert source == b"preprocessed"
+    # #2092: cpp now runs without -P and returns a preprocessed→original line map
+    # alongside the bytes; the single content line maps to source line 1.
+    assert line_map == [1]
+    argv = captured["argv"]
+    assert "-P" not in argv, "-P renumbers lines with no way back (#2092)"
+    last_arg = argv[-1]
     assert last_arg.startswith("/"), f"path arg must be absolute, got {last_arg!r}"
     assert not last_arg.startswith("-"), "path arg must never look like an option"
