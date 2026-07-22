@@ -434,7 +434,7 @@ def _shebang_file_type(path: Path) -> FileType | None:
     return None
 
 
-def classify_file(path: Path) -> FileType | None:
+def classify_file(path: Path, *, html_as_code: bool = False) -> FileType | None:
     # Package manifests (apm.yml, pyproject.toml, go.mod, pom.xml) are parsed
     # deterministically, so route them to the AST path (CODE) rather than the LLM
     # document path — otherwise apm.yml (a .yml "document") would be LLM-extracted
@@ -448,6 +448,16 @@ def classify_file(path: Path) -> FileType | None:
     ext = path.suffix.lower()
     if not ext:
         return _shebang_file_type(path)
+    # Opt-in (#1230): .html is DOCUMENT by default (semantic/LLM path, see below)
+    # because most .html is a template/report, not application logic. Projects
+    # that DO treat their .html as code (e.g. Angular component templates with
+    # meaningful embedded <script> logic) can pass --html-as-code to route it
+    # through the local AST path instead — see extract_html(). Checked before the
+    # CODE_EXTENSIONS/DOC_EXTENSIONS membership below and before the
+    # _looks_like_paper() sniff (an explicit opt-in should not be second-guessed
+    # by the paper heuristic, which exists for prose formats, not markup).
+    if html_as_code and ext == ".html":
+        return FileType.CODE
     if ext in CODE_EXTENSIONS:
         return FileType.CODE
     if ext in PAPER_EXTENSIONS:
@@ -1235,7 +1245,7 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
     return True
 
 
-def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
+def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True, html_as_code: bool = False) -> dict:
     root = root.resolve()
     if follow_symlinks is None:
         follow_symlinks = False
@@ -1386,7 +1396,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
             continue
-        ftype = classify_file(p)
+        ftype = classify_file(p, html_as_code=html_as_code)
         if not ftype:
             # Considered but unclassifiable: an extension not in any supported set,
             # or an extensionless, non-shebang file (Dockerfile, Gemfile, Makefile,
@@ -1748,6 +1758,7 @@ def detect_incremental(
     kind: str = "semantic",
     extra_excludes: list[str] | None = None,
     gitignore: bool = True,
+    html_as_code: bool = False,
 ) -> dict:
     """Like detect(), but returns only new or modified files since the last run.
 
@@ -1777,6 +1788,7 @@ def detect_incremental(
         google_workspace=google_workspace,
         extra_excludes=extra_excludes,
         gitignore=gitignore,
+        html_as_code=html_as_code,
     )
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
     # re-anchored to the absolute form the rest of this function compares

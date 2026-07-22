@@ -2442,7 +2442,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
-                "[--no-gitignore] [--code-only] "
+                "[--no-gitignore] [--code-only] [--html-as-code] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -2471,6 +2471,7 @@ def dispatch_command(cmd: str) -> None:
         google_workspace = False
         global_merge = False
         code_only = False
+        html_as_code = False
         no_gitignore = False
         global_repo_tag: str | None = None
         # Performance/tuning knobs (issue #792). None means "use library default".
@@ -2538,6 +2539,8 @@ def dispatch_command(cmd: str) -> None:
                 dedup_llm = True; i += 1
             elif a == "--code-only":
                 code_only = True; i += 1
+            elif a == "--html-as-code":
+                html_as_code = True; i += 1
             elif a == "--google-workspace":
                 google_workspace = True; i += 1
             elif a == "--no-gitignore":
@@ -2625,6 +2628,7 @@ def dispatch_command(cmd: str) -> None:
             _write_build_config as _write_build_cfg,
             _read_build_excludes as _read_build_ex,
             _read_build_gitignore as _read_build_gi,
+            _read_build_html_as_code as _read_build_hac,
         )
         # #1971 persistence: an explicit --no-gitignore persists False; a later
         # flag-less `graphify extract` must NOT clobber it back to True, which
@@ -2636,10 +2640,16 @@ def dispatch_command(cmd: str) -> None:
         _effective_gitignore = False if no_gitignore else _read_build_gi(graphify_out)
         # An explicit list replaces the persisted one; omission reuses it.
         _effective_excludes = cli_excludes or _read_build_ex(graphify_out)
+        # Same persistence contract as gitignore: --html-as-code opts .html into
+        # the code path for THIS run and every later update/watch/hook rebuild
+        # (#1230), until a later run explicitly omits the flag on a build whose
+        # config never set it either.
+        _effective_html_as_code = True if html_as_code else _read_build_hac(graphify_out)
         _write_build_cfg(
             graphify_out,
             excludes=cli_excludes or None,
             gitignore=False if no_gitignore else None,
+            html_as_code=True if html_as_code else None,
         )
 
         stages = _StageTimer(cli_timing)
@@ -2691,6 +2701,7 @@ def dispatch_command(cmd: str) -> None:
                 google_workspace=google_workspace or None,
                 extra_excludes=_effective_excludes or None,
                 gitignore=_effective_gitignore,
+                html_as_code=_effective_html_as_code,
             )
             files_by_type = detection.get("files", {})
             new_by_type = detection.get("new_files", {})
@@ -2719,6 +2730,7 @@ def dispatch_command(cmd: str) -> None:
                 extra_excludes=_effective_excludes or None,
                 cache_root=out_root,
                 gitignore=_effective_gitignore,
+                html_as_code=_effective_html_as_code,
             )
             files_by_type = detection.get("files", {})
             code_files = [Path(p) for p in files_by_type.get("code", [])]

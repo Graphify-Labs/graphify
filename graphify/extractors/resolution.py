@@ -560,6 +560,64 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     out.append(_blank(src[pos:]))
     return "".join(out), lang
 
+
+# ── .html host + embedded <script> JS (opt-in, --html-as-code, #1230) ─────────
+#
+# Same shape as the <script> half of _VUE_SCRIPT_RE: an open tag (attrs may
+# hold a quoted '>' inside src="...?x=1>2"-style values, hence the alternation
+# instead of a bare [^>]*), a body, a close tag.
+_HTML_SCRIPT_RE = re.compile(
+    r"""(<script\b(?:"[^"]*"|'[^']*'|[^>"'])*>)([\s\S]*?)(</script\s*>)""",
+    re.IGNORECASE,
+)
+
+_HTML_SCRIPT_TYPE_RE = re.compile(r"""\btype\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))""", re.IGNORECASE)
+_HTML_SCRIPT_SRC_RE = re.compile(r"""\bsrc\s*=""", re.IGNORECASE)
+
+# type="" values that mean "this is executable JS". Absent type defaults to JS
+# per the HTML spec. Anything else (application/json, text/template,
+# application/ld+json, ...) is data or a client-side template, not JS, and
+# must not be fed to the tree-sitter JS grammar.
+_HTML_SCRIPT_JS_TYPES = frozenset({
+    "", "text/javascript", "application/javascript", "application/x-javascript",
+    "text/ecmascript", "application/ecmascript", "module",
+})
+
+
+def _html_mask_non_script(src: str) -> str:
+    """Blank everything outside inline, JS-typed ``<script>`` bodies.
+
+    Mirrors :func:`_vue_mask_non_script`: markup/attrs/style become spaces so
+    the JS grammar sees only script bodies, while preserved ``\\r``/``\\n``
+    keep line numbers accurate in the *host* .html file. A ``<script
+    src="...">`` (external file — no local JS to parse) and a ``<script
+    type="...">`` naming a non-JS MIME (``application/json``,
+    ``text/template``, ...) are both blanked along with the surrounding
+    markup: their content is not local JS and parsing it as such would only
+    produce noise (a stray ERROR node at best, a wrong node at worst).
+    """
+    def _blank(s: str) -> str:
+        return re.sub(r"[^\r\n]", " ", s)
+
+    out: list[str] = []
+    pos = 0
+    for m in _HTML_SCRIPT_RE.finditer(src):
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+        out.append(_blank(src[pos:m.start()]))
+        out.append(_blank(open_tag))
+        type_m = _HTML_SCRIPT_TYPE_RE.search(open_tag)
+        script_type = (type_m.group(1) or type_m.group(2) or type_m.group(3) or "").strip().lower() if type_m else ""
+        is_external = bool(_HTML_SCRIPT_SRC_RE.search(open_tag))
+        if is_external or script_type not in _HTML_SCRIPT_JS_TYPES:
+            out.append(_blank(body))
+        else:
+            out.append(body)
+        out.append(_blank(close_tag))
+        pos = m.end()
+    out.append(_blank(src[pos:]))
+    return "".join(out)
+
+
 def _source_key(source_file: str, root: Path) -> str:
     if not source_file:
         return ""
