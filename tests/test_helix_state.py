@@ -3,7 +3,12 @@ import pytest
 from graphify.helix import native
 from graphify.helix.model import GraphBuildData, NodeData
 from graphify.helix.persistence import HelixEmbeddedStore
-from graphify.helix.state import community_records, communities_from_state, labels_from_state, new_state
+from graphify.helix.state import (
+    community_records,
+    communities_from_state,
+    labels_from_state,
+    new_state,
+)
 
 
 def test_community_state_round_trip():
@@ -25,6 +30,38 @@ def test_native_validator_rejects_wrong_sdk_version(monkeypatch):
     with pytest.raises(native.NativeBackendUnavailable, match="version mismatch"):
         native.validate_native_backend()
     native.validate_native_backend.cache_clear()
+
+
+def test_embedded_graph_store_disables_fresh_write_caches_and_bounds_read_caches(
+    tmp_path, monkeypatch
+):
+    calls = []
+    sentinel = object()
+
+    def embedded(_cls, source, *, cache=None, id_lease_size=None):
+        calls.append(("writer", source, cache, id_lease_size))
+        return sentinel
+
+    def embedded_reader(_cls, source, *, cache=None):
+        calls.append(("reader", source, cache, None))
+        return sentinel
+
+    monkeypatch.setattr(native.helixdb.Client, "embedded", classmethod(embedded))
+    monkeypatch.setattr(
+        native.helixdb.Client,
+        "embedded_reader",
+        classmethod(embedded_reader),
+    )
+
+    assert native.open_embedded_client(tmp_path / "writer", disable_cache=True) is sentinel
+    reader_path = tmp_path / "reader"
+    reader_path.mkdir()
+    assert native.open_embedded_client(reader_path, read_only=True) is sentinel
+
+    assert [kind for kind, *_ in calls] == ["writer", "reader"]
+    assert all(cache.vector_memory_bytes == 1 for _, _, cache, _ in calls)
+    assert isinstance(calls[0][2].mode, native.helixdb.VectorMemoryOnly)
+    assert isinstance(calls[1][2].mode, native.helixdb.MemoryCache)
 
 
 def test_current_generation_reopens_and_retains_semantic_edge_label(tmp_path):

@@ -1,7 +1,14 @@
+import threading
+
 import pytest
 
 from graphify.helix.model import EdgeData, GraphBuildData, NodeData
-from graphify.helix.persistence import HelixEmbeddedStore
+from graphify.helix.persistence import (
+    _BUFFERED_WRITE_CONCURRENCY,
+    _STAGED_EDGE_WRITE_CHUNK_SIZE,
+    _WRITE_CHUNK_SIZE,
+    HelixEmbeddedStore,
+)
 from graphify.helix.state import new_state
 
 
@@ -20,18 +27,12 @@ def _graph(size: int) -> GraphBuildData:
     )
 
 
-def _enable_delta(store, monkeypatch) -> None:
-    monkeypatch.setattr(store._helix, "NativeGraphBuilder", object(), raising=False)
-    monkeypatch.setattr(store, "_validate_proposed_native_graph", lambda _prepared: None)
-
-
 def test_small_delta_adds_updates_and_deletes_topology_in_place(tmp_path, monkeypatch):
     initial = _graph(200)
     store_path = tmp_path / "graph.helix"
     with HelixEmbeddedStore(store_path) as store:
         store.save_generation(initial, new_state())
         generation = store.active_generation
-        _enable_delta(store, monkeypatch)
 
         nodes = list(initial.nodes[:-1])
         nodes[7] = NodeData("n7", {"value": 700})
@@ -87,7 +88,6 @@ def test_delta_threshold_and_rollback_retention_fall_back_to_generations(tmp_pat
     with HelixEmbeddedStore(tmp_path / "threshold.helix") as store:
         store.save_generation(initial, new_state())
         before = store.active_generation
-        _enable_delta(store, monkeypatch)
         changed = list(initial.nodes)
         for index in range(3):
             changed[index] = NodeData(f"n{index}", {"value": index + 100})
@@ -97,7 +97,6 @@ def test_delta_threshold_and_rollback_retention_fall_back_to_generations(tmp_pat
     with HelixEmbeddedStore(tmp_path / "rollback.helix", retain_rollback=True) as store:
         store.save_generation(initial, new_state())
         before = store.active_generation
-        _enable_delta(store, monkeypatch)
         changed = list(initial.nodes)
         changed[0] = NodeData("n0", {"value": 100})
         store.save_generation(GraphBuildData(nodes=changed), new_state())
@@ -110,7 +109,6 @@ def test_failed_delta_transaction_keeps_old_topology_and_state(tmp_path, monkeyp
     with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
         store.save_generation(initial, new_state(analysis={"version": 1}))
         generation = store.active_generation
-        _enable_delta(store, monkeypatch)
         original_query = store._query
 
         def fail_publication(batch, **kwargs):
@@ -165,7 +163,6 @@ def test_lost_delta_response_recognizes_committed_publication(tmp_path, monkeypa
     graph = _graph(100)
     with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
         store.save_generation(graph, new_state(analysis={"version": 1}))
-        _enable_delta(store, monkeypatch)
         original_query = store._query
         response_lost = False
 
@@ -209,7 +206,6 @@ def test_old_and_new_loaded_graphs_keep_coherent_reader_snapshots(tmp_path, monk
     store_path = tmp_path / "graph.helix"
     with HelixEmbeddedStore(store_path) as writer:
         writer.save_generation(initial, new_state(analysis={"version": 1}))
-        _enable_delta(writer, monkeypatch)
         with HelixEmbeddedStore(store_path, read_only=True) as reader:
             old = reader.load()
             changed = _graph(100)
@@ -235,9 +231,15 @@ def test_clustered_delta_analyzes_native_builder_graph_before_publication(tmp_pa
     with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
         store.save_generation(initial, new_state())
         generation = store.active_generation
-        marker = object()
-        _enable_delta(store, monkeypatch)
-        monkeypatch.setattr(store, "_validate_proposed_native_graph", lambda _prepared: marker)
+        original_validate = store._validate_proposed_native_graph
+        proposals = []
+
+        def validate(prepared):
+            proposal = original_validate(prepared)
+            proposals.append(proposal)
+            return proposal
+
+        monkeypatch.setattr(store, "_validate_proposed_native_graph", validate)
 
         def full_stage_is_a_bug(*_args, **_kwargs):
             raise AssertionError("small clustered delta staged a full generation")
@@ -246,11 +248,33 @@ def test_clustered_delta_analyzes_native_builder_graph_before_publication(tmp_pa
         changed = _graph(100)
         changed.nodes[4] = NodeData("n4", {"value": 404})
         with store.staged_graph(changed) as staged:
-            assert staged.graph is marker
+            assert staged.graph is proposals[0]
             activated = store.activate_staged(staged, new_state())
 
         assert activated.generation == generation
+        assert activated.graph is proposals[0]
         assert activated.graph.node("n4").attributes["attrs"]["value"] == 404
+
+
+def test_direct_delta_validates_proposed_native_graph_before_publication(tmp_path, monkeypatch):
+    initial = _graph(100)
+    with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
+        store.save_generation(initial, new_state())
+        original_validate = store._validate_proposed_native_graph
+        validations = 0
+
+        def validate(prepared):
+            nonlocal validations
+            validations += 1
+            return original_validate(prepared)
+
+        monkeypatch.setattr(store, "_validate_proposed_native_graph", validate)
+        changed = _graph(100)
+        changed.nodes[4] = NodeData("n4", {"value": 404})
+        store.save_generation(changed, new_state())
+
+        assert validations == 1
+        assert store.load().graph.node("n4").attributes["attrs"]["value"] == 404
 
 
 def test_unchanged_clustered_topology_reuses_active_native_graph(tmp_path, monkeypatch):
@@ -283,13 +307,25 @@ def test_full_writer_keeps_parameter_pages_bounded_and_groups_edge_shapes(tmp_pa
         for index in range(2_001)
     ]
     observed: list[int] = []
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
     with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
         original_query = store._query
 
         def observe(batch, **kwargs):
+            nonlocal active, max_active
             values = kwargs.get("values")
             if isinstance(values, dict) and isinstance(values.get("rows"), list):
-                observed.append(len(values["rows"]))
+                with lock:
+                    observed.append(len(values["rows"]))
+                    active += 1
+                    max_active = max(max_active, active)
+                try:
+                    return original_query(batch, **kwargs)
+                finally:
+                    with lock:
+                        active -= 1
             return original_query(batch, **kwargs)
 
         monkeypatch.setattr(store, "_query", observe)
@@ -299,9 +335,11 @@ def test_full_writer_keeps_parameter_pages_bounded_and_groups_edge_shapes(tmp_pa
         )
 
     assert observed
-    assert max(observed) <= 1_000
-    assert observed.count(1_000) >= 3
+    assert max(observed) <= _WRITE_CHUNK_SIZE
+    assert observed.count(_WRITE_CHUNK_SIZE) >= 1
+    assert observed.count(_STAGED_EDGE_WRITE_CHUNK_SIZE) >= 2
     assert 1 in observed
+    assert 1 < max_active <= _BUFFERED_WRITE_CONCURRENCY
 
 
 def test_multigraph_duplicate_stable_edge_identity_is_rejected(tmp_path):
@@ -356,7 +394,6 @@ def test_undirected_multigraph_delta_preserves_parallel_and_self_loop_identities
     with HelixEmbeddedStore(tmp_path / "graph.helix") as store:
         store.save_generation(initial, new_state())
         generation = store.active_generation
-        _enable_delta(store, monkeypatch)
         changed = GraphBuildData(
             kind="multigraph",
             nodes=nodes,
