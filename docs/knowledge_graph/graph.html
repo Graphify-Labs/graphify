@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>graphify — module map</title>
+<style>
+  :root {
+    --bg: #f4f2ec;
+    --bg-elev: #ffffff;
+    --ink: #1a1c1a;
+    --ink-dim: #5c6259;
+    --border: #d9d5c9;
+    --border-soft: #e7e3d7;
+    --accent: #c47f2b;
+    --accent-ink: #3a2a12;
+    --edge: #b9b4a4;
+    --edge-dim: #ded9cb;
+    --shadow: 0 8px 24px rgba(30, 28, 20, 0.10);
+
+    --c-pipeline: #2f8f7c;
+    --c-cli: #c47f2b;
+    --c-serving: #3f6fb0;
+    --c-ingestion: #8a5bb0;
+    --c-install: #b3405a;
+    --c-io: #5c8a3a;
+    --c-utils: #767a70;
+
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, Menlo, monospace;
+    --font-sans: -apple-system, "Segoe UI", system-ui, "Helvetica Neue", sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12140f;
+      --bg-elev: #1a1d16;
+      --ink: #ece8dc;
+      --ink-dim: #a5a794;
+      --border: #34372c;
+      --border-soft: #262920;
+      --accent: #e3a24d;
+      --accent-ink: #2b1c08;
+      --edge: #4a4c3f;
+      --edge-dim: #2b2d24;
+      --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+
+      --c-pipeline: #4db89f;
+      --c-cli: #e3a24d;
+      --c-serving: #7ea3e0;
+      --c-ingestion: #b78ee0;
+      --c-install: #e07189;
+      --c-io: #8fc466;
+      --c-utils: #9a9d8f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12140f; --bg-elev: #1a1d16; --ink: #ece8dc; --ink-dim: #a5a794;
+    --border: #34372c; --border-soft: #262920; --accent: #e3a24d; --accent-ink: #2b1c08;
+    --edge: #4a4c3f; --edge-dim: #2b2d24; --shadow: 0 8px 28px rgba(0,0,0,0.45);
+    --c-pipeline: #4db89f; --c-cli: #e3a24d; --c-serving: #7ea3e0; --c-ingestion: #b78ee0;
+    --c-install: #e07189; --c-io: #8fc466; --c-utils: #9a9d8f;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f2ec; --bg-elev: #ffffff; --ink: #1a1c1a; --ink-dim: #5c6259;
+    --border: #d9d5c9; --border-soft: #e7e3d7; --accent: #c47f2b; --accent-ink: #3a2a12;
+    --edge: #b9b4a4; --edge-dim: #ded9cb; --shadow: 0 8px 24px rgba(30,28,20,0.10);
+    --c-pipeline: #2f8f7c; --c-cli: #c47f2b; --c-serving: #3f6fb0; --c-ingestion: #8a5bb0;
+    --c-install: #b3405a; --c-io: #5c8a3a; --c-utils: #767a70;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    overflow: hidden;
+  }
+
+  .app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elev);
+    z-index: 5;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+  .brand .mark {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .brand h1 { font-size: 15px; font-weight: 600; margin: 0; color: var(--ink); }
+  .brand .sub { font-size: 12px; color: var(--ink-dim); }
+
+  .stats {
+    display: flex; gap: 16px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .stats b { color: var(--ink); font-weight: 600; }
+
+  .search-wrap { flex: 1; max-width: 340px; margin-left: auto; position: relative; }
+  #search {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 7px 10px 7px 30px;
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    outline: none;
+  }
+  #search:focus { border-color: var(--accent); }
+  .search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); opacity: 0.5; }
+
+  .hint {
+    font-size: 11.5px; color: var(--ink-dim); white-space: nowrap;
+  }
+  .hint kbd {
+    font-family: var(--font-mono); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 3px; padding: 1px 5px; font-size: 10.5px;
+  }
+
+  main { position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+
+  .legend {
+    position: absolute; left: 16px; bottom: 16px;
+    background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; box-shadow: var(--shadow); font-size: 12px; min-width: 168px;
+  }
+  .legend h2 {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-dim);
+    margin: 0 0 8px 0; font-weight: 600;
+  }
+  .legend-row {
+    display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 5px; cursor: pointer;
+    user-select: none;
+  }
+  .legend-row:hover { background: var(--border-soft); }
+  .legend-row.off { opacity: 0.35; }
+  .legend-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .legend-label { color: var(--ink); }
+  .legend-count { margin-left: auto; color: var(--ink-dim); font-family: var(--font-mono); font-size: 11px; }
+
+  .panel {
+    position: absolute; right: 16px; top: 16px; bottom: 16px; width: 320px;
+    background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden;
+    transform: translateX(0); transition: transform 0.18s ease;
+  }
+  .panel.hidden { transform: translateX(calc(100% + 24px)); }
+  .panel-head {
+    padding: 14px 16px 12px 16px; border-bottom: 1px solid var(--border-soft);
+  }
+  .panel-eyebrow {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em; font-weight: 600;
+  }
+  .panel-title { font-family: var(--font-mono); font-size: 16px; font-weight: 700; margin: 4px 0 2px 0; word-break: break-word; }
+  .panel-file { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-dim); }
+  .panel-body { padding: 14px 16px; overflow-y: auto; flex: 1; }
+  .panel-body p { font-size: 13px; line-height: 1.55; color: var(--ink); margin: 0 0 14px 0; }
+  .panel-section-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-dim);
+    font-weight: 600; margin-bottom: 6px;
+  }
+  .neighbor-group { margin-bottom: 12px; }
+  .neighbor-list { display: flex; flex-direction: column; gap: 3px; }
+  .neighbor-btn {
+    display: flex; align-items: center; gap: 7px; text-align: left; background: none; border: none;
+    color: var(--ink); font-family: var(--font-mono); font-size: 12px; padding: 4px 6px; border-radius: 5px;
+    cursor: pointer; width: 100%;
+  }
+  .neighbor-btn:hover { background: var(--border-soft); }
+  .neighbor-btn .legend-dot { width: 7px; height: 7px; }
+  .panel-close {
+    background: none; border: none; color: var(--ink-dim); cursor: pointer; font-size: 18px;
+    position: absolute; right: 10px; top: 10px; line-height: 1; padding: 4px;
+  }
+  .panel-close:hover { color: var(--ink); }
+  .panel-empty {
+    padding: 20px 16px; color: var(--ink-dim); font-size: 13px; line-height: 1.6;
+  }
+
+  .theme-toggle {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 7px;
+    padding: 6px 10px; color: var(--ink-dim); font-size: 12px; cursor: pointer; font-family: var(--font-sans);
+  }
+  .theme-toggle:hover { color: var(--ink); border-color: var(--ink-dim); }
+
+  ::-webkit-scrollbar { width: 9px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .panel { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <span class="mark">graphify</span>
+      <h1>module map</h1>
+      <span class="sub">graphify/*.py internal import graph</span>
+    </div>
+    <div class="stats">
+      <span><b id="stat-nodes">0</b> modules</span>
+      <span><b id="stat-edges">0</b> imports</span>
+      <span><b id="stat-hub">—</b> most-connected</span>
+    </div>
+    <div class="search-wrap">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.6" y2="16.6"/></svg>
+      <input id="search" type="text" placeholder="Find a module…" autocomplete="off" />
+    </div>
+    <button class="theme-toggle" id="theme-toggle" type="button">Theme</button>
+  </header>
+  <main>
+    <canvas id="graph"></canvas>
+    <div class="legend" id="legend">
+      <h2>Subsystem</h2>
+      <div id="legend-rows"></div>
+      <div class="hint" style="margin-top:9px;">Drag to pan · scroll to zoom<br />Click a module for detail</div>
+    </div>
+    <aside class="panel hidden" id="panel">
+      <button class="panel-close" id="panel-close" aria-label="Close">×</button>
+      <div class="panel-head">
+        <div class="panel-eyebrow" id="panel-eyebrow" style="color:var(--accent);">Subsystem</div>
+        <div class="panel-title" id="panel-title">—</div>
+        <div class="panel-file" id="panel-file">—</div>
+      </div>
+      <div class="panel-body" id="panel-body"></div>
+    </aside>
+  </main>
+</div>
+
+<script>
+/* ---------------------------------------------------------------------
+   Data: graphify/*.py internal import graph.
+   Hand-verified from static grep of `from graphify.X import` across the
+   package plus five research passes over the source (see
+   CODEBASE_OVERVIEW.md / TECHNICAL_REFERENCE.md for full citations).
+   Edge = "A imports from B". Node size ~ total degree (fan-in + fan-out).
+--------------------------------------------------------------------- */
+
+const CATEGORIES = {
+  pipeline:  { label: "Pipeline core",        color: "var(--c-pipeline)" },
+  cli:       { label: "CLI / orchestration",  color: "var(--c-cli)" },
+  serving:   { label: "Serving & live modes", color: "var(--c-serving)" },
+  ingestion: { label: "Ingestion",            color: "var(--c-ingestion)" },
+  install:   { label: "Install / skill dist.",color: "var(--c-install)" },
+  io:        { label: "Extractors & exporters", color: "var(--c-io)" },
+  utils:     { label: "Utilities",            color: "var(--c-utils)" },
+};
+
+const NODES = [
+  { id: "detect", cat: "pipeline", file: "graphify/detect.py", loc: 1871, desc: "Corpus file discovery/classification for the `extract` command. Owns CODE_EXTENSIONS and gitignore/.graphifyignore handling." },
+  { id: "extract", cat: "pipeline", file: "graphify/extract.py", loc: 5320, desc: "AST extraction orchestrator: the _DISPATCH table, ~20 config-driven extract_<lang> wrappers, and the corpus-wide deferred call-resolution pass." },
+  { id: "build", cat: "pipeline", file: "graphify/build.py", loc: 1293, desc: "Merges extraction dicts into a networkx.Graph. ID disambiguation, dedup, incremental merge (build_merge), legacy-ID migration." },
+  { id: "cluster", cat: "pipeline", file: "graphify/cluster.py", loc: 320, desc: "Leiden community detection, cohesion scoring, and stable community-ID remapping across rebuilds." },
+  { id: "analyze", cat: "pipeline", file: "graphify/analyze.py", loc: 741, desc: "Independent analysis functions: god_nodes, surprising_connections, suggest_questions, graph_diff, find_import_cycles. No single analyze() entry point." },
+  { id: "report", cat: "pipeline", file: "graphify/report.py", loc: 110, desc: "Renders GRAPH_REPORT.md text from graph + all analysis artifacts via generate()." },
+  { id: "export", cat: "pipeline", file: "graphify/export.py", loc: 1093, desc: "One to_*/push_to_* function per output format (json, obsidian, canvas, graphml, svg, cypher). No unary export()." },
+  { id: "validate", cat: "pipeline", file: "graphify/validate.py", loc: 96, desc: "Extraction-dict schema enforcement — warns, doesn't hard-fail. Called from build_from_json()." },
+
+  { id: "__main__", cat: "cli", file: "graphify/__main__.py", loc: 716, desc: "Process entry point: argv parsing, help text, skill version-staleness check, hands off to install.py then cli.py." },
+  { id: "cli", cat: "cli", file: "graphify/cli.py", loc: 3685, desc: "The command dispatcher — one long if/elif chain over ~30 subcommands with per-branch lazy imports. Highest fan-out module in the codebase." },
+
+  { id: "serve", cat: "serving", file: "graphify/serve.py", loc: 1999, desc: "MCP server (stdio + Streamable HTTP), the query scoring/BFS-DFS traversal engine, and MCP resources. Powers both `graphify query` and graphify-mcp." },
+  { id: "watch", cat: "serving", file: "graphify/watch.py", loc: 1496, desc: "watchdog-based filesystem watcher: debounce, incremental AST-only rebuild, per-repo advisory lock." },
+  { id: "hooks", cat: "serving", file: "graphify/hooks.py", loc: 690, desc: "Git post-commit / post-checkout hook install, plus a registered git merge driver for graph.json." },
+  { id: "affected", cat: "serving", file: "graphify/affected.py", loc: 220, desc: "Reverse-dependency traversal — resolves a seed node then walks in-edges to answer \"what depends on X\"." },
+  { id: "querylog", cat: "serving", file: "graphify/querylog.py", loc: 80, desc: "Opt-in, append-only JSONL query logger. Disabled by default; wrapped so it can never raise." },
+
+  { id: "ingest", cat: "ingestion", file: "graphify/ingest.py", loc: 353, desc: "URL → corpus markdown file (tweets, arxiv, webpages, PDFs, images). All network I/O routed through security.safe_fetch*." },
+  { id: "mcp_ingest", cat: "ingestion", file: "graphify/mcp_ingest.py", loc: 386, desc: "Extractor (not a fetcher) for .mcp.json-style files → graph nodes. Never reads env-var values, only keys." },
+  { id: "scip_ingest", cat: "ingestion", file: "graphify/scip_ingest.py", loc: 363, desc: "SCIP (Source Code Intelligence Protocol) index ingestion." },
+  { id: "manifest_ingest", cat: "ingestion", file: "graphify/manifest_ingest.py", loc: 90, desc: "Manifest-based ingestion helper." },
+  { id: "transcribe", cat: "ingestion", file: "graphify/transcribe.py", loc: 353, desc: "Local audio/video transcription via faster-whisper — nothing leaves the machine." },
+  { id: "google_workspace", cat: "ingestion", file: "graphify/google_workspace.py", loc: 140, desc: ".gdoc / .gsheet / .gslides shortcut export via the gws helper before extraction." },
+
+  { id: "install", cat: "install", file: "graphify/install.py", loc: 2204, desc: "The 20+-platform \"install as skill\" system. Table-driven for most platforms (_PLATFORM_CONFIG), bespoke functions for Claude Code, Cursor, OpenCode, Kilo, Kiro, Antigravity, Devin, CodeBuddy, Amp." },
+
+  { id: "extractors_engine", cat: "io", file: "graphify/extractors/engine.py", loc: 4581, desc: "Shared generic tree-sitter walker _extract_generic(), used by every config-driven language extractor. No classes — free functions parameterized by LanguageConfig." },
+  { id: "extractors_base", cat: "io", file: "graphify/extractors/base.py", loc: 90, desc: "Shared extractor helpers (_make_id, _file_stem, _read_text, builtin-noise blocklist). Enforces the one-way import boundary from extract.py." },
+  { id: "extractors_resolution", cat: "io", file: "graphify/extractors/resolution.py", loc: 2617, desc: "The wired-in symbol resolution subsystem: JS/TS module paths, Python relative imports, Java/PHP/Pascal/C# type-reference arbitration." },
+  { id: "extractors_models", cat: "io", file: "graphify/extractors/models.py", loc: 120, desc: "LanguageConfig dataclass — the strategy object injected into _extract_generic — plus symbol-resolution fact dataclasses." },
+  { id: "extractors_langs", cat: "io", file: "graphify/extractors/{go,rust,blade,zig,elixir,dart,...}.py", loc: null, desc: "25 bespoke, self-contained per-language AST walkers (own two-pass walk()/walk_calls()), covering languages not yet riding the shared engine." },
+  { id: "exporters_html", cat: "io", file: "graphify/exporters/html.py", loc: 560, desc: "to_html() — the interactive vis.js graph.html, with a community-aggregated fallback above a node-count limit." },
+  { id: "exporters_graphdb", cat: "io", file: "graphify/exporters/graphdb.py", loc: 173, desc: "push_to_neo4j() and push_to_falkordb() — near-identical parameterized-Cypher live DB pushes." },
+  { id: "exporters_base", cat: "io", file: "graphify/exporters/base.py", loc: 14, desc: "COMMUNITY_COLORS palette only — split out purely to avoid a circular import." },
+  { id: "callflow_html", cat: "io", file: "graphify/callflow_html.py", loc: 2022, desc: "Mermaid-based architecture / call-flow HTML doc generator, bilingual EN/中文." },
+  { id: "tree_html", cat: "io", file: "graphify/tree_html.py", loc: 585, desc: "D3 v7 collapsible filesystem-tree HTML view. Reachable via `graphify tree`, not `export`." },
+  { id: "wiki", cat: "io", file: "graphify/wiki.py", loc: 337, desc: "Wikipedia-style markdown wiki: one article per community, one per god-node, cross-linked." },
+
+  { id: "paths", cat: "utils", file: "graphify/paths.py", loc: 304, desc: "graphify-out/ path resolution, atomic writes, test-path classification, call-site disambiguation. The most widely-imported utility module." },
+  { id: "ids", cat: "utils", file: "graphify/ids.py", loc: 50, desc: "Single canonical node-ID normalization — normalize_id()/make_id() — written to stop ID drift across independent producers (#811, #550, #1033, #1104)." },
+  { id: "security", cat: "utils", file: "graphify/security.py", loc: 460, desc: "SSRF guards, path-traversal checks, size caps, label/metadata sanitization. Every external input passes through here first." },
+  { id: "cache", cat: "utils", file: "graphify/cache.py", loc: 1040, desc: "Two-tier extraction cache: versioned AST cache, unversioned semantic/LLM cache with prompt-fingerprint invalidation." },
+  { id: "resolver_registry", cat: "utils", file: "graphify/resolver_registry.py", loc: 85, desc: "Plugin registry for per-language cross-file resolution passes (LanguageResolver, register(), run_language_resolvers())." },
+  { id: "symbol_resolution", cat: "utils", file: "graphify/symbol_resolution.py", loc: 554, desc: "Deterministic Python/Bash import-alias-guided call resolution. Flagged: appears unused in production — only its own test imports it." },
+  { id: "ruby_resolution", cat: "utils", file: "graphify/ruby_resolution.py", loc: 90, desc: "Ruby cross-file member-call resolver, registered as a LanguageResolver plugin." },
+  { id: "pascal_resolution", cat: "utils", file: "graphify/pascal_resolution.py", loc: 60, desc: "Pascal/Delphi cross-file resolver for calls to inherited ancestor methods in a different file." },
+  { id: "global_graph", cat: "utils", file: "graphify/global_graph.py", loc: 184, desc: "Cross-repo merged graph at ~/.graphify/global-graph.json — repo-tag ID prefixing, shared-library dedup." },
+  { id: "dedup", cat: "utils", file: "graphify/dedup.py", loc: 669, desc: "Near-duplicate node detection via MinHash." },
+  { id: "_minhash", cat: "utils", file: "graphify/_minhash.py", loc: 60, desc: "MinHash signature primitives used by dedup.py." },
+  { id: "diagnostics", cat: "utils", file: "graphify/diagnostics.py", loc: 406, desc: "`diagnose multigraph` — same-endpoint edge collapse risk reporting." },
+  { id: "reflect", cat: "utils", file: "graphify/reflect.py", loc: 882, desc: "Aggregates graphify-out/memory/*.md outcomes into a deterministic LESSONS.md." },
+  { id: "prs", cat: "utils", file: "graphify/prs.py", loc: 761, desc: "PR-related subcommands: list/impact/triage." },
+  { id: "benchmark", cat: "utils", file: "graphify/benchmark.py", loc: 160, desc: "Token-reduction measurement vs. naive full-corpus reading. Uses its own simplified BFS, not serve.py's real query path." },
+  { id: "llm", cat: "utils", file: "graphify/llm.py", loc: 2994, desc: "LLM backend abstraction (Claude/OpenAI/Gemini/Ollama/Azure/Bedrock/Kimi/DeepSeek), semantic extraction, community labeling." },
+  { id: "manifest", cat: "utils", file: "graphify/manifest.py", loc: 70, desc: "Tracks which files have been stamped/processed across incremental runs." },
+  { id: "file_slice", cat: "utils", file: "graphify/file_slice.py", loc: 90, desc: "LLM context slicing for large files during semantic extraction." },
+  { id: "semantic_cleanup", cat: "utils", file: "graphify/semantic_cleanup.py", loc: 336, desc: "Post-processes LLM-produced semantic nodes/edges before merge." },
+  { id: "multigraph_compat", cat: "utils", file: "graphify/multigraph_compat.py", loc: 60, desc: "Multigraph → simple-graph compatibility shim." },
+  { id: "cargo_introspect", cat: "utils", file: "graphify/cargo_introspect.py", loc: 90, desc: "Extracts crate→crate dependencies from Cargo.toml (`--cargo` flag)." },
+  { id: "pg_introspect", cat: "utils", file: "graphify/pg_introspect.py", loc: 90, desc: "Extracts schema from a live PostgreSQL database (`--postgres` flag)." },
+];
+
+const EDGES = [
+  ["__main__","cli"], ["__main__","install"], ["__main__","paths"],
+  ["cli","paths"], ["cli","affected"], ["cli","analyze"], ["cli","benchmark"], ["cli","build"],
+  ["cli","cache"], ["cli","callflow_html"], ["cli","cargo_introspect"], ["cli","cluster"],
+  ["cli","detect"], ["cli","diagnostics"], ["cli","export"], ["cli","extract"], ["cli","global_graph"],
+  ["cli","hooks"], ["cli","ingest"], ["cli","llm"], ["cli","pg_introspect"], ["cli","prs"],
+  ["cli","reflect"], ["cli","report"], ["cli","security"], ["cli","semantic_cleanup"], ["cli","serve"],
+  ["cli","tree_html"], ["cli","watch"], ["cli","wiki"], ["cli","install"],
+  ["analyze","build"], ["analyze","detect"],
+  ["benchmark","build"], ["benchmark","paths"], ["benchmark","serve"],
+  ["cache","paths"],
+  ["callflow_html","paths"],
+  ["dedup","_minhash"],
+  ["detect","google_workspace"], ["detect","paths"],
+  ["export","analyze"], ["export","build"], ["export","exporters_base"], ["export","exporters_graphdb"],
+  ["export","exporters_html"], ["export","security"],
+  ["extract","extractors_engine"], ["extract","extractors_base"], ["extract","extractors_resolution"],
+  ["extract","extractors_models"], ["extract","extractors_langs"], ["extract","paths"], ["extract","security"],
+  ["extract","resolver_registry"], ["extract","ruby_resolution"], ["extract","pascal_resolution"],
+  ["global_graph","build"],
+  ["hooks","watch"],
+  ["ingest","security"],
+  ["install","paths"],
+  ["llm","file_slice"],
+  ["manifest","detect"],
+  ["manifest_ingest","ids"],
+  ["mcp_ingest","extractors_base"], ["mcp_ingest","ids"], ["mcp_ingest","security"],
+  ["pg_introspect","extract"],
+  ["prs","paths"],
+  ["reflect","ingest"], ["reflect","paths"],
+  ["scip_ingest","security"],
+  ["security","paths"],
+  ["serve","build"], ["serve","paths"], ["serve","security"],
+  ["symbol_resolution","extractors_base"], ["symbol_resolution","ids"], ["symbol_resolution","paths"], ["symbol_resolution","security"],
+  ["transcribe","paths"],
+  ["watch","detect"], ["watch","paths"], ["watch","extract"], ["watch","build"], ["watch","cluster"],
+  ["watch","analyze"], ["watch","report"], ["watch","export"],
+  ["wiki","build"],
+  ["build","validate"],
+  ["extractors_engine","extractors_models"], ["extractors_resolution","extractors_models"],
+  ["extractors_base","ids"],
+];
+
+/* ---------------------------------------------------------------------
+   Force-directed layout (self-contained, no dependencies)
+--------------------------------------------------------------------- */
+
+const byId = new Map(NODES.map(n => [n.id, n]));
+const degree = new Map(NODES.map(n => [n.id, 0]));
+EDGES.forEach(([a, b]) => {
+  degree.set(a, (degree.get(a) || 0) + 1);
+  degree.set(b, (degree.get(b) || 0) + 1);
+});
+const neighbors = new Map(NODES.map(n => [n.id, new Set()]));
+EDGES.forEach(([a, b]) => { neighbors.get(a).add(b); neighbors.get(b).add(a); });
+
+const canvas = document.getElementById("graph");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+function resize() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  W = rect.width; H = rect.height;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener("resize", resize);
+
+// seed positions on a circle by category cluster
+const catList = Object.keys(CATEGORIES);
+NODES.forEach((n, i) => {
+  const catIdx = catList.indexOf(n.cat);
+  const catAngle = (catIdx / catList.length) * Math.PI * 2;
+  const withinCat = NODES.filter(m => m.cat === n.cat);
+  const idxInCat = withinCat.indexOf(n);
+  const r = 90 + (idxInCat / Math.max(1, withinCat.length)) * 140;
+  n.x = Math.cos(catAngle) * r + (Math.random() - 0.5) * 40;
+  n.y = Math.sin(catAngle) * r + (Math.random() - 0.5) * 40;
+  n.vx = 0; n.vy = 0;
+  n.r = 5 + Math.min(16, Math.sqrt(degree.get(n.id) || 1) * 3.4);
+});
+
+let camX = 0, camY = 0, zoom = 1;
+let dragNode = null, dragCam = false, lastMouse = null, moved = false;
+let selected = null, hovered = null, categoryOff = new Set();
+let query = "";
+
+function simulateStep() {
+  const REPULSE = 2600, SPRING = 0.02, SPRING_LEN = 95, CENTER = 0.0026, DAMP = 0.86;
+  for (let i = 0; i < NODES.length; i++) {
+    const a = NODES[i];
+    let fx = -a.x * CENTER, fy = -a.y * CENTER;
+    for (let j = 0; j < NODES.length; j++) {
+      if (i === j) continue;
+      const b = NODES[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let d2 = dx * dx + dy * dy + 0.01;
+      let d = Math.sqrt(d2);
+      const f = REPULSE / d2;
+      fx += (dx / d) * f; fy += (dy / d) * f;
+    }
+    a.fx = fx; a.fy = fy;
+  }
+  EDGES.forEach(([id1, id2]) => {
+    const a = byId.get(id1), b = byId.get(id2);
+    let dx = b.x - a.x, dy = b.y - a.y;
+    let d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+    const f = (d - SPRING_LEN) * SPRING;
+    const fx = (dx / d) * f, fy = (dy / d) * f;
+    a.fx += fx; a.fy += fy;
+    b.fx -= fx; b.fy -= fy;
+  });
+  NODES.forEach(n => {
+    if (n === dragNode) return;
+    n.vx = (n.vx + n.fx) * DAMP;
+    n.vy = (n.vy + n.fy) * DAMP;
+    n.x += n.vx * 0.16;
+    n.y += n.vy * 0.16;
+  });
+}
+
+let settleFrames = 0;
+const MAX_SETTLE = 260;
+
+function worldToScreen(x, y) {
+  return [W / 2 + camX + x * zoom, H / 2 + camY + y * zoom];
+}
+function screenToWorld(sx, sy) {
+  return [(sx - W / 2 - camX) / zoom, (sy - H / 2 - camY) / zoom];
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function nodeVisible(n) {
+  if (categoryOff.has(n.cat)) return false;
+  if (!query) return true;
+  return n.id.toLowerCase().includes(query) || (n.file || "").toLowerCase().includes(query);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  const bg = cssVar("--bg");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  const edgeColor = cssVar("--edge");
+  const edgeDim = cssVar("--edge-dim");
+  const accent = cssVar("--accent");
+  const inkDim = cssVar("--ink-dim");
+  const ink = cssVar("--ink");
+  const bgElev = cssVar("--bg-elev");
+
+  const activeSet = selected ? new Set([selected.id, ...neighbors.get(selected.id)]) : null;
+  const hoverSet = hovered ? new Set([hovered.id, ...neighbors.get(hovered.id)]) : null;
+
+  // edges
+  EDGES.forEach(([id1, id2]) => {
+    const a = byId.get(id1), b = byId.get(id2);
+    if (!nodeVisible(a) || !nodeVisible(b)) return;
+    const [ax, ay] = worldToScreen(a.x, a.y);
+    const [bx, by] = worldToScreen(b.x, b.y);
+    let isActive = activeSet && activeSet.has(id1) && activeSet.has(id2);
+    let isHover = hoverSet && hoverSet.has(id1) && hoverSet.has(id2);
+    ctx.strokeStyle = isActive || isHover ? accent : (activeSet ? edgeDim : edgeColor);
+    ctx.lineWidth = isActive || isHover ? 1.6 : 0.9;
+    ctx.globalAlpha = activeSet && !isActive ? 0.28 : 0.85;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+
+    // arrowhead
+    const angle = Math.atan2(by - ay, bx - ax);
+    const bn = b.r * zoom + 3;
+    const tipx = bx - Math.cos(angle) * bn, tipy = by - Math.sin(angle) * bn;
+    ctx.beginPath();
+    ctx.moveTo(tipx, tipy);
+    ctx.lineTo(tipx - 6 * Math.cos(angle - 0.4), tipy - 6 * Math.sin(angle - 0.4));
+    ctx.lineTo(tipx - 6 * Math.cos(angle + 0.4), tipy - 6 * Math.sin(angle + 0.4));
+    ctx.closePath();
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+
+  // nodes
+  NODES.forEach(n => {
+    if (!nodeVisible(n)) return;
+    const [x, y] = worldToScreen(n.x, n.y);
+    const r = n.r * zoom;
+    const isSel = selected === n;
+    const isHov = hovered === n;
+    const dim = activeSet && !activeSet.has(n.id);
+    ctx.globalAlpha = dim ? 0.25 : 1;
+
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = cssVar("--c-" + n.cat);
+    ctx.fill();
+    if (isSel || isHov) {
+      ctx.lineWidth = 2.4;
+      ctx.strokeStyle = accent;
+      ctx.stroke();
+    } else {
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = bg;
+      ctx.stroke();
+    }
+
+    if (zoom > 0.55 || isSel || isHov) {
+      ctx.globalAlpha = dim ? 0.4 : 1;
+      ctx.font = (isSel || isHov ? "600 " : "500 ") + Math.max(10, Math.min(12.5, 11 * zoom)) + "px " + cssVar("--font-mono");
+      ctx.fillStyle = ink;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(n.id, x, y + r + 4);
+    }
+    ctx.globalAlpha = 1;
+  });
+
+  if (settleFrames < MAX_SETTLE) {
+    simulateStep();
+    settleFrames++;
+  }
+  requestAnimationFrame(draw);
+}
+
+/* ---------------------------------------------------------------------
+   Interaction
+--------------------------------------------------------------------- */
+
+function nodeAt(sx, sy) {
+  let best = null, bestD = Infinity;
+  for (const n of NODES) {
+    if (!nodeVisible(n)) continue;
+    const [x, y] = worldToScreen(n.x, n.y);
+    const d = Math.hypot(x - sx, y - sy);
+    if (d < Math.max(9, n.r * zoom) + 3 && d < bestD) { best = n; bestD = d; }
+  }
+  return best;
+}
+
+canvas.addEventListener("mousedown", e => {
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const n = nodeAt(sx, sy);
+  moved = false;
+  if (n) { dragNode = n; n.vx = 0; n.vy = 0; }
+  else { dragCam = true; canvas.classList.add("dragging"); }
+  lastMouse = [e.clientX, e.clientY];
+});
+window.addEventListener("mousemove", e => {
+  if (!lastMouse) {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const n = nodeAt(sx, sy);
+    if (n !== hovered) { hovered = n; canvas.style.cursor = n ? "pointer" : "grab"; }
+    return;
+  }
+  const dx = e.clientX - lastMouse[0], dy = e.clientY - lastMouse[1];
+  if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
+  if (dragNode) {
+    const [wx, wy] = screenToWorld(e.clientX - canvas.getBoundingClientRect().left, e.clientY - canvas.getBoundingClientRect().top);
+    dragNode.x = wx; dragNode.y = wy;
+    settleFrames = Math.min(settleFrames, MAX_SETTLE - 40);
+  } else if (dragCam) {
+    camX += dx; camY += dy;
+  }
+  lastMouse = [e.clientX, e.clientY];
+});
+window.addEventListener("mouseup", e => {
+  if (dragNode && !moved) selectNode(dragNode);
+  else if (dragCam && !moved) {
+    const rect = canvas.getBoundingClientRect();
+    const n = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
+    if (n) selectNode(n); else deselect();
+  }
+  dragNode = null; dragCam = false; lastMouse = null;
+  canvas.classList.remove("dragging");
+});
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const [wx, wy] = screenToWorld(sx, sy);
+  const factor = Math.exp(-e.deltaY * 0.0011);
+  zoom = Math.max(0.25, Math.min(3.2, zoom * factor));
+  camX = sx - W / 2 - wx * zoom;
+  camY = sy - H / 2 - wy * zoom;
+}, { passive: false });
+
+/* ---------------------------------------------------------------------
+   Panel + legend
+--------------------------------------------------------------------- */
+
+const panel = document.getElementById("panel");
+const panelTitle = document.getElementById("panel-title");
+const panelFile = document.getElementById("panel-file");
+const panelEyebrow = document.getElementById("panel-eyebrow");
+const panelBody = document.getElementById("panel-body");
+
+function dot(cat) {
+  return `<span class="legend-dot" style="background:var(--c-${cat})"></span>`;
+}
+
+function selectNode(n) {
+  selected = n;
+  panel.classList.remove("hidden");
+  panelEyebrow.textContent = CATEGORIES[n.cat].label;
+  panelEyebrow.style.color = `var(--c-${n.cat})`;
+  panelTitle.textContent = n.id;
+  panelFile.textContent = n.file + (n.loc ? `  ·  ${n.loc} lines` : "");
+  const deg = degree.get(n.id) || 0;
+  const inNbrs = EDGES.filter(([a, b]) => b === n.id).map(([a]) => a);
+  const outNbrs = EDGES.filter(([a, b]) => a === n.id).map(([, b]) => b);
+  panelBody.innerHTML = `
+    <p>${n.desc}</p>
+    <div class="panel-section-label">Degree: ${deg} connection${deg === 1 ? "" : "s"}</div>
+    ${outNbrs.length ? `<div class="neighbor-group">
+      <div class="panel-section-label">Imports (${outNbrs.length})</div>
+      <div class="neighbor-list">${outNbrs.map(id => `<button class="neighbor-btn" data-id="${id}">${dot(byId.get(id).cat)}${id}</button>`).join("")}</div>
+    </div>` : ""}
+    ${inNbrs.length ? `<div class="neighbor-group">
+      <div class="panel-section-label">Imported by (${inNbrs.length})</div>
+      <div class="neighbor-list">${inNbrs.map(id => `<button class="neighbor-btn" data-id="${id}">${dot(byId.get(id).cat)}${id}</button>`).join("")}</div>
+    </div>` : ""}
+  `;
+  panelBody.querySelectorAll(".neighbor-btn").forEach(btn => {
+    btn.addEventListener("click", () => selectNode(byId.get(btn.dataset.id)));
+  });
+}
+function deselect() {
+  selected = null;
+  panel.classList.add("hidden");
+}
+document.getElementById("panel-close").addEventListener("click", deselect);
+
+const legendRows = document.getElementById("legend-rows");
+Object.entries(CATEGORIES).forEach(([key, meta]) => {
+  const count = NODES.filter(n => n.cat === key).length;
+  const row = document.createElement("div");
+  row.className = "legend-row";
+  row.dataset.cat = key;
+  row.innerHTML = `<span class="legend-dot" style="background:var(--c-${key})"></span><span class="legend-label">${meta.label}</span><span class="legend-count">${count}</span>`;
+  row.addEventListener("click", () => {
+    if (categoryOff.has(key)) categoryOff.delete(key); else categoryOff.add(key);
+    row.classList.toggle("off", categoryOff.has(key));
+  });
+  legendRows.appendChild(row);
+});
+
+document.getElementById("search").addEventListener("input", e => {
+  query = e.target.value.trim().toLowerCase();
+});
+
+/* ---------------------------------------------------------------------
+   Theme toggle
+--------------------------------------------------------------------- */
+const root = document.documentElement;
+const themeBtn = document.getElementById("theme-toggle");
+function currentTheme() {
+  return root.getAttribute("data-theme") ||
+    (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+}
+themeBtn.addEventListener("click", () => {
+  root.setAttribute("data-theme", currentTheme() === "dark" ? "light" : "dark");
+});
+
+/* ---------------------------------------------------------------------
+   Stats + boot
+--------------------------------------------------------------------- */
+document.getElementById("stat-nodes").textContent = NODES.length;
+document.getElementById("stat-edges").textContent = EDGES.length;
+const hub = [...degree.entries()].sort((a, b) => b[1] - a[1])[0];
+document.getElementById("stat-hub").textContent = hub[0] + " (" + hub[1] + ")";
+
+resize();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
