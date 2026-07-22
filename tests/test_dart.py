@@ -6,6 +6,12 @@ from pathlib import Path
 
 from graphify.extract import extract_dart, _make_id, _file_stem
 
+try:
+    import tree_sitter_dart  # noqa: F401
+    _HAS_TS_DART = True
+except ImportError:
+    _HAS_TS_DART = False
+
 
 class TestDart(unittest.TestCase):
     def setUp(self):
@@ -634,6 +640,201 @@ class TestDart(unittest.TestCase):
         )
         self.assertIsNotNone(nav_edge)
         self.assertEqual(nav_edge["target"], "route_home_id_123_type_auth")
+
+
+class TestDartLineAnchors(unittest.TestCase):
+    """Anchor behavior of the two extraction paths.
+
+    The tree-sitter path stamps ``source_location: L{n}`` on every symbol
+    defined in the file (external references stay None); the regex fallback
+    is anchor-less by design and must keep working without the grammar.
+    """
+
+    CODE = textwrap.dedent("""\
+    import 'package:flutter/material.dart';
+
+    class OrderList extends StatelessWidget with Searchable {
+      final String title;
+
+      void refresh(BuildContext context) {
+        context.go('/orders');
+      }
+    }
+
+    extension OrderListExt on OrderList {}
+    typedef Handler = OrderCallback;
+
+    void main() {}
+    """)
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_path = Path(self.temp_dir.name)
+        self.file_path = self.temp_path / "order_list.dart"
+        self.file_path.write_text(self.CODE, encoding="utf-8")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _node(self, result, label):
+        node = next((n for n in result["nodes"] if n["label"] == label), None)
+        self.assertIsNotNone(node, f"node {label!r} missing")
+        return node
+
+    @unittest.skipUnless(_HAS_TS_DART, "tree-sitter-dart not installed")
+    def test_tree_sitter_stamps_line_anchors(self):
+        result = extract_dart(self.file_path)
+
+        expected = {
+            "order_list.dart": "L1",
+            "OrderList": "L3",
+            "title": "L4",
+            "refresh": "L6",
+            "OrderListExt": "L11",
+            "Handler": "L12",
+            "main": "L14",
+        }
+        for label, loc in expected.items():
+            self.assertEqual(self._node(result, label)["source_location"], loc, label)
+
+        # External references are not defined here: no anchor, no source_file
+        for label in ("StatelessWidget", "Searchable", "OrderCallback"):
+            node = self._node(result, label)
+            self.assertIsNone(node["source_location"], label)
+            self.assertIsNone(node["source_file"], label)
+
+        # Edges carry the reference site's line
+        order_list = self._node(result, "OrderList")
+        inherits = next(
+            e for e in result["edges"]
+            if e["source"] == order_list["id"] and e["relation"] == "inherits"
+        )
+        self.assertEqual(inherits["source_location"], "L3")
+
+    @unittest.skipUnless(_HAS_TS_DART, "tree-sitter-dart not installed")
+    def test_tree_sitter_part_of_redirect_keeps_anchors(self):
+        parent = self.temp_path / "orders_lib.dart"
+        parent.write_text("library orders_lib;\npart 'order_part.dart';", encoding="utf-8")
+        child = self.temp_path / "order_part.dart"
+        child.write_text(
+            "part of 'orders_lib.dart';\n\nclass PartClass {}\n", encoding="utf-8"
+        )
+
+        result = extract_dart(child)
+        self.assertIsNone(
+            next((n for n in result["nodes"] if n["label"] == "order_part.dart"), None)
+        )
+        part_class = self._node(result, "PartClass")
+        self.assertEqual(part_class["source_location"], "L3")
+        defines = next(
+            e for e in result["edges"]
+            if e["target"] == part_class["id"] and e["relation"] == "defines"
+        )
+        self.assertEqual(defines["source"], _make_id(str(parent.resolve())))
+
+    def test_regex_fallback_extracts_without_anchors(self):
+        from graphify.extractors.dart import _extract_dart_regex
+
+        result = _extract_dart_regex(self.file_path)
+        for label in ("OrderList", "refresh", "OrderListExt", "Handler", "main"):
+            self._node(result, label)
+        self.assertTrue(all(n["source_location"] is None for n in result["nodes"]))
+
+
+class TestDartLanguageFeatures(unittest.TestCase):
+    """Dart-specific constructs on the tree-sitter path: the extension family,
+    named/optional parameters, factory and named constructors, and generators."""
+
+    CODE = textwrap.dedent("""\
+    extension NumX on int {
+      int get doubled => this * 2;
+    }
+    extension on List<String> {
+      void logAll() {}
+    }
+    extension MapX<K, V> on Map<K, V> {}
+
+    class Order {
+      final String id;
+      Order({required this.id});
+      Order.empty() : id = '';
+      factory Order.fromJson(Map<String, dynamic> json) => Order(id: '1');
+    }
+
+    Future<Order> fetchOrder({
+      required String id,
+      String? region,
+      int retries = 3,
+    }) async {
+      return Order(id: id);
+    }
+
+    void positional([int count = 1, String? tag]) {}
+
+    Stream<int> ticker() async* { yield 1; }
+    """)
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_path = Path(self.temp_dir.name)
+        self.file_path = self.temp_path / "order_ext.dart"
+        self.file_path.write_text(self.CODE, encoding="utf-8")
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    @unittest.skipUnless(_HAS_TS_DART, "tree-sitter-dart not installed")
+    def test_extension_family(self):
+        result = extract_dart(self.file_path)
+        labels = {n["label"]: n for n in result["nodes"]}
+
+        # Named, anonymous, and generic extensions — all anchored
+        self.assertEqual(labels["NumX"]["source_location"], "L1")
+        self.assertEqual(labels["Extension on List"]["source_location"], "L4")
+        self.assertEqual(labels["MapX"]["source_location"], "L7")
+        # Extension-body method
+        self.assertEqual(labels["logAll"]["source_location"], "L5")
+        # extends edges point at the extended type
+        numx_extends = next(
+            e for e in result["edges"]
+            if e["source"] == labels["NumX"]["id"] and e["relation"] == "extends"
+        )
+        self.assertEqual(numx_extends["target"], "int")
+
+    @unittest.skipUnless(_HAS_TS_DART, "tree-sitter-dart not installed")
+    def test_named_and_optional_parameters(self):
+        result = extract_dart(self.file_path)
+        labels = {n["label"] for n in result["nodes"]}
+
+        # The functions themselves extract with anchors
+        by_label = {n["label"]: n for n in result["nodes"]}
+        self.assertEqual(by_label["fetchOrder"]["source_location"], "L16")
+        self.assertEqual(by_label["positional"]["source_location"], "L24")
+        self.assertEqual(by_label["ticker"]["source_location"], "L26")
+
+        # Multi-line named parameters must not phantom-match as variables
+        # (`required String id,` sits at the indent the variable regex scans)
+        for param in ("region", "retries", "count", "tag"):
+            self.assertNotIn(param, labels, f"parameter {param!r} leaked as a variable node")
+        # ...and no garbage multi-line type labels either
+        self.assertFalse(
+            [l for l in labels if "\n" in l], "node label containing a newline"
+        )
+
+    @unittest.skipUnless(_HAS_TS_DART, "tree-sitter-dart not installed")
+    def test_constructors_and_generators(self):
+        result = extract_dart(self.file_path)
+        by_label = {n["label"]: n for n in result["nodes"]}
+
+        self.assertEqual(by_label["Order"]["source_location"], "L9")
+        # Factory named constructor keeps the member name; the plain and
+        # named (non-factory) constructors don't become function nodes
+        self.assertEqual(by_label["fromJson"]["source_location"], "L13")
+        self.assertNotIn("empty", by_label)
+        # Class field survives, anchored
+        self.assertEqual(by_label["id"]["source_location"], "L10")
+        # async* generator extracts like any function
+        self.assertIn("ticker", by_label)
 
 
 if __name__ == "__main__":
