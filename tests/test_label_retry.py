@@ -144,3 +144,28 @@ def test_a_batch_that_never_parses_still_raises(monkeypatch):
             [1, 2, 3], ["Community 1: a", "Community 2: b", "Community 3: c"],
             backend="gemini", model=None,
         )
+
+
+def test_label_batch_retry_keeps_a_safe_output_token_floor(monkeypatch):
+    """Split retries must not starve small batches of output tokens (#2086)."""
+    token_budgets: list[int] = []
+    monkeypatch.delenv("GRAPHIFY_MAX_OUTPUT_TOKENS", raising=False)
+
+    def fake_call_llm(prompt: str, **kwargs) -> str:
+        token_budgets.append(kwargs["max_tokens"])
+        cids = [int(m) for m in re.findall(r"Community (\d+):", prompt)]
+        if len(cids) > 1:
+            return "not json"
+        return json.dumps({str(cids[0]): f"Label {cids[0]}"})
+
+    monkeypatch.setattr(llm_mod, "_call_llm", fake_call_llm)
+
+    result = llm_mod._label_batch_with_retry(
+        [1, 2],
+        ["Community 1: auth", "Community 2: billing"],
+        backend="gemini",
+        model=None,
+    )
+
+    assert result == {1: "Label 1", 2: "Label 2"}
+    assert token_budgets == [512, 512, 512]
