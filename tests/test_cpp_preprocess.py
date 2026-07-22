@@ -25,7 +25,7 @@ def _capture_cpp_call(monkeypatch):
 
         class _Result:
             returncode = 0
-            stdout = b"preprocessed"
+            stdout = b'# 1 "<stdin>"\npreprocessed'
 
         return _Result()
 
@@ -43,19 +43,22 @@ def test_cpp_preprocess_feeds_stdin_and_passes_no_file_path(tmp_path, monkeypatc
     monkeypatch.chdir(tmp_path)
 
     captured = _capture_cpp_call(monkeypatch)
-    out = extract._cpp_preprocess(Path("-Ietc.F90"))
 
-    assert out == b"preprocessed"
+    source, line_map = extract._cpp_preprocess(Path("-Ietc.F90"))
+    assert source == b"preprocessed"
+    assert line_map == [1]
     argv = captured["argv"]
-    assert argv == ["cpp", "-w", "-P", "-nostdinc", "-I", "/dev/null"]
-    # No source path in argv at all — it goes through stdin.
+    assert "-P" not in argv, "-P suppresses linemarkers needed to map source locations"
+    assert argv == ["cpp", "-w", "-nostdinc", "-I", "/dev/null"]
+    # Keep stdin delivery: adding a filename would re-open the include-read and
+    # option-injection risks this test guards against.
     assert captured["input"] is not None
     assert b"program x" in captured["input"]
 
 
 def _read_secret_from(source_file: Path) -> bool:
     """True if _cpp_preprocess leaked the sentinel secret into its output."""
-    out = extract._cpp_preprocess(source_file)
+    out, _line_map = extract._cpp_preprocess(source_file)
     return b"TOP_SECRET_SENTINEL" in out
 
 
@@ -76,7 +79,6 @@ def test_relative_traversal_include_cannot_escape_the_corpus(tmp_path):
     secret.write_text("TOP_SECRET_SENTINEL=abc123\n")
     src = tmp_path / "corpus" / "evil_rel.F90"
     src.parent.mkdir(parents=True)
-    # ../secret.txt escapes corpus/ up to tmp_path/secret.txt
     src.write_text('program evil\n#include "../secret.txt"\nend program evil\n')
 
     assert not _read_secret_from(src), "traversing #include escaped the corpus"
@@ -84,8 +86,6 @@ def test_relative_traversal_include_cannot_escape_the_corpus(tmp_path):
 
 @pytest.mark.skipif(shutil.which("cpp") is None, reason="cpp not available")
 def test_same_directory_include_also_stripped(tmp_path):
-    # Even a same-directory include is stripped (blunt but safe); its contents
-    # must not appear in the output.
     (tmp_path / "sensitive.inc").write_text("TOP_SECRET_SENTINEL=inline\n")
     src = tmp_path / "evil_same.F90"
     src.write_text('program evil\n#include "sensitive.inc"\nend program evil\n')
@@ -95,8 +95,7 @@ def test_same_directory_include_also_stripped(tmp_path):
 
 @pytest.mark.skipif(shutil.which("cpp") is None, reason="cpp not available")
 def test_macro_expansion_still_works(tmp_path):
-    """The reason capital-F files need cpp — #define/#ifdef — must still work
-    after the include hardening."""
+    """Macro expansion remains available after include hardening."""
     src = tmp_path / "macros.F90"
     src.write_text(
         "#define GREET hello_world\n"
@@ -105,12 +104,8 @@ def test_macro_expansion_still_works(tmp_path):
         "end program GREET\n"
         "#endif\n"
     )
-    out = extract._cpp_preprocess(src)
+    out, _line_map = extract._cpp_preprocess(src)
     if b"#define GREET" in out:
-        # Host cpp is not a functional GNU-style preprocessor over this input
-        # (e.g. the macOS clang `cpp` wrapper); _cpp_preprocess fell back to the
-        # sanitized raw bytes. Security still holds (covered above); macro
-        # fidelity is only available where cpp actually runs (Linux/CI).
         pytest.skip("host cpp did not preprocess the input")
     assert b"hello_world" in out
-    assert b"GREET" not in out  # the macro was expanded, not left verbatim
+    assert b"GREET" not in out
