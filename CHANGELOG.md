@@ -8,6 +8,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Feat: `get_neighbors` and `get_community` (MCP) now honor a `token_budget` (default 2000) instead of rendering unbounded, so one call on a god node or large community can't flood the client's context (#2069, thanks @ojmucianski). Truncation is announced at the top of the output (matching `query`), with a line count and a narrowing hint.
 - Docs: `--code-only` is now surfaced in the `extract` usage text and README (#2071, thanks @HerenderKumar); documented as an `extract` flag rather than a `/graphify` skill flag.
 - Docs: README troubleshooting note for an older `graphifyy` in system site-packages shadowing `uv run --with graphifyy`, which silently runs the old version (#1540, thanks @HerenderKumar).
+- Fix: same-ID node dedup now gap-fills the survivor from the loser instead of discarding the loser's dict wholesale (#2091). On the default `dedup=True` path the pre-dedup collapse kept one whole node and dropped the other, so in the AST↔semantic reconciliation case (where `_semantic_id_remap` forces the AST node and the LLM node onto one ID) the LLM's `summary`/`confidence_score`/`references` were silently lost even though the docstring promised a key-wise union. The survivor still wins every genuine key conflict (label, source_file), so `_collision_rank` ordering and the collision reporting are unchanged; only attributes the survivor lacked are now carried over.
 
 ## 0.9.23 (2026-07-21)
 

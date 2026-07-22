@@ -326,14 +326,25 @@ def deduplicate_entities(
             continue
         incumbent = seen_ids.get(nid)
         if incumbent is None:
-            seen_ids[nid] = node
+            seen_ids[nid] = dict(node)
         elif _collision_rank(node) < _collision_rank(incumbent):
             # Smallest-ranked node wins; the min over a total order is independent
             # of the order nodes arrive in, so the survivor no longer depends on
-            # chunk ordering (#1851).
-            seen_ids[nid] = node
+            # chunk ordering (#1851). Gap-fill from the loser so a same-ID merge
+            # keeps attributes the survivor lacks (summary, confidence_score,
+            # references) rather than discarding the loser's dict wholesale — the
+            # AST↔semantic reconciliation case, where the LLM's contribution would
+            # otherwise be silently lost (#2091). Conflicting keys still resolve to
+            # the survivor's value, so _collision_rank ordering and _report_id_collision
+            # bookkeeping are unchanged.
+            merged = dict(node)
+            for k, v in incumbent.items():
+                merged.setdefault(k, v)
+            seen_ids[nid] = merged
             dropped[nid].append(incumbent)
         else:
+            for k, v in node.items():
+                incumbent.setdefault(k, v)
             dropped[nid].append(node)
 
     for nid, losers in dropped.items():

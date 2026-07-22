@@ -551,3 +551,50 @@ def test_defines_id_helper():
     # A path that is merely a string-prefix of the ID's path does not define it.
     assert not _defines_id({"id": "agents_foo", "source_file": "agent/foo.md"})
     assert not _defines_id({"id": "docs_intro_foo", "source_file": ""})
+
+
+# ── #2091: same-ID merge gap-fills attributes instead of discarding them ───────
+
+def test_same_id_merge_gap_fills_survivor_from_loser():
+    """AST↔semantic reconciliation: the AST node and the LLM node share an ID so
+    they collapse. The survivor must keep the loser's disjoint attributes
+    (summary, confidence_score) rather than dropping them wholesale (#2091)."""
+    ast = {"id": "src_auth_login", "label": "login", "file_type": "code",
+           "source_file": "src/auth.py", "_origin": "ast", "source_location": "L42"}
+    sem = {"id": "src_auth_login", "label": "User login handler", "file_type": "code",
+           "source_file": "src/auth.py", "summary": "Authenticates a user.",
+           "confidence_score": 0.9}
+    for order in ([ast, sem], [sem, ast]):
+        out, _ = deduplicate_entities([dict(n) for n in order], [], communities={})
+        assert len(out) == 1
+        node = out[0]
+        # Survivor wins on conflicting keys (shorter, more canonical label).
+        assert node["label"] == "login"
+        assert node["source_location"] == "L42"
+        # ...but the loser's disjoint attributes are preserved, not discarded.
+        assert node["summary"] == "Authenticates a user."
+        assert node["confidence_score"] == 0.9
+        assert node["_origin"] == "ast"
+
+
+def test_same_id_merge_does_not_overwrite_survivor_on_conflict():
+    """Gap-fill only fills keys the survivor lacks; a key present on both keeps the
+    survivor's value, so _collision_rank ordering semantics are unchanged (#2091)."""
+    winner = {"id": "src_mod_thing", "label": "thing", "file_type": "code",
+              "source_file": "src/mod.py", "summary": "canonical summary"}
+    loser = {"id": "src_mod_thing", "label": "thing helper", "file_type": "code",
+             "source_file": "src/mod.py", "summary": "stale summary"}
+    out, _ = deduplicate_entities([winner, loser], [], communities={})
+    assert len(out) == 1
+    assert out[0]["summary"] == "canonical summary"
+
+
+def test_same_id_merge_does_not_mutate_input_nodes():
+    """The gap-fill copies before merging, so caller-owned node dicts are untouched
+    (a mutated survivor would be reported into the LLM cache under the wrong keys)."""
+    ast = {"id": "src_auth_login", "label": "login", "source_file": "src/auth.py"}
+    sem = {"id": "src_auth_login", "label": "User login handler",
+           "source_file": "src/auth.py", "summary": "Authenticates a user."}
+    deduplicate_entities([ast, sem], [], communities={})
+    assert "summary" not in ast
+    assert set(sem) == {"id", "label", "source_file", "summary"}
