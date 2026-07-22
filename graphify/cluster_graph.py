@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -402,8 +403,6 @@ def origin_url(repo_dir: Path) -> str | None:
 
 
 def _expand(path_str: str, cluster_dir: Path) -> Path:
-    import os
-
     p = Path(path_str).expanduser()
     if not p.is_absolute():
         p = Path(cluster_dir) / p
@@ -720,7 +719,6 @@ def _file_hash(path: Path) -> str:
 
 def cluster_out_dir(cluster_dir: Path) -> Path:
     from .paths import GRAPHIFY_OUT
-    import os
 
     out = Path(GRAPHIFY_OUT)
     return out if os.path.isabs(GRAPHIFY_OUT) else Path(cluster_dir) / out
@@ -784,11 +782,75 @@ def _render_report(spec: ClusterSpec, stats: dict, report: LinkReport, built_at:
     return "\n".join(lines) + "\n"
 
 
-def build_cluster(cluster_dir: Path, *, force: bool = False, no_links: bool = False) -> dict:
+def write_member_refs(
+    spec: ClusterSpec,
+    resolved: dict[str, Path],
+    cluster_dir: Path,
+    built_at: str,
+    *,
+    only_missing: bool = False,
+) -> int:
+    """Write a portable cluster-ref.json into each resolved member's graphify-out.
+
+    The marker is committable (graphify-out/ travels with the member repo), so
+    it carries no absolute paths — only the cluster's git URL, the member
+    roster, and a machine-derived relative ``dir_hint`` that fails soft on
+    other machines. ``only_missing`` (the skipped-rebuild path) backfills
+    markers for freshly cloned members without churning existing files.
+    A member whose ``graph`` field points outside graphify-out/ still gets its
+    marker in graphify-out/ — that is where member-side readers look.
+    Failures are warnings, never build errors. Returns the count written.
+    """
+    from .cluster_ref import CLUSTER_REF_NAME, CLUSTER_REF_VERSION
+    from .paths import GRAPHIFY_OUT_NAME, write_json_atomic
+
+    roster = [{"tag": m.tag, "url": m.url} for m in spec.members]
+    cluster_url = origin_url(cluster_dir) or ""
+    written = 0
+    for member in spec.members:
+        repo_dir = resolved.get(member.tag)
+        if repo_dir is None:
+            continue
+        out_dir = Path(repo_dir) / GRAPHIFY_OUT_NAME
+        target = out_dir / CLUSTER_REF_NAME
+        if only_missing and target.is_file():
+            continue
+        try:
+            dir_hint = os.path.relpath(Path(cluster_dir).resolve(), Path(repo_dir).resolve())
+        except ValueError:  # Windows cross-drive
+            dir_hint = ""
+        ref = {
+            "version": CLUSTER_REF_VERSION,
+            "cluster_name": spec.name,
+            "cluster_url": cluster_url,
+            "self_tag": member.tag,
+            "member_count": len(spec.members),
+            "members": roster,
+            "built_at": built_at,
+            "dir_hint": dir_hint,
+        }
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            write_json_atomic(target, ref, indent=2)
+            written += 1
+        except OSError as exc:
+            print(
+                f"[graphify cluster] warning: could not write {CLUSTER_REF_NAME} "
+                f"for member '{member.tag}' ({exc}); build continues",
+                file=sys.stderr,
+            )
+    return written
+
+
+def build_cluster(
+    cluster_dir: Path, *, force: bool = False, no_links: bool = False, write_refs: bool = True
+) -> dict:
     """Compose member graphs and resolve links; write graph.json + manifest + report.
 
+    Also writes a cluster-ref.json back-reference into each member's
+    graphify-out/ (see write_member_refs) unless ``write_refs`` is False.
     Returns a summary dict: {name, nodes, edges, members, links: LinkReport,
-    skipped, out}.
+    skipped, refs_written, out}.
     """
     from networkx.readwrite import json_graph as _jg
     from .paths import write_json_atomic, write_text_atomic
@@ -819,12 +881,21 @@ def build_cluster(cluster_dir: Path, *, force: bool = False, no_links: bool = Fa
             manifest = {}
         prior = {t: m.get("source_hash", "") for t, m in (manifest.get("members") or {}).items()}
         if manifest.get("spec_hash") == spec_hash and prior == member_hashes:
+            # Backfill markers for members that don't have one yet (e.g. a
+            # freshly cloned checkout) without churning existing files.
+            refs = 0
+            if write_refs:
+                refs = write_member_refs(
+                    spec, resolved, cluster_dir,
+                    manifest.get("built_at", ""), only_missing=True,
+                )
             return {
                 "name": spec.name,
                 "skipped": True,
                 "out": str(graph_path),
                 "nodes": manifest.get("node_count", 0),
                 "edges": manifest.get("edge_count", 0),
+                "refs_written": refs,
             }
 
     G, stats = compose_members(spec, resolved)
@@ -868,6 +939,8 @@ def build_cluster(cluster_dir: Path, *, force: bool = False, no_links: bool = Fa
     write_json_atomic(manifest_path, manifest, indent=2)
     write_text_atomic(out_dir / "CLUSTER_REPORT.md", _render_report(spec, stats, report, built_at))
 
+    refs = write_member_refs(spec, resolved, cluster_dir, built_at) if write_refs else 0
+
     return {
         "name": spec.name,
         "skipped": False,
@@ -876,6 +949,7 @@ def build_cluster(cluster_dir: Path, *, force: bool = False, no_links: bool = Fa
         "edges": G.number_of_edges(),
         "members": stats,
         "links": report,
+        "refs_written": refs,
     }
 
 

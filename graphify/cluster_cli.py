@@ -23,6 +23,7 @@ from .cluster_graph import (
     normalize_git_url,
     origin_url,
     resolve_all_members,
+    resolve_member_path,
     save_local_config,
     save_spec,
 )
@@ -40,8 +41,10 @@ Subcommands:
   remove <TAG> [--dir DIR]     remove a member from the spec
   locate <TAG> <PATH> [--dir DIR]
                                record a machine-local checkout path override
-  build [--dir DIR] [--force] [--no-links]
+  build [--dir DIR] [--force] [--no-links] [--no-refs]
                                compose member graphs + resolve declared links
+                               (writes a cluster-ref.json back-reference into
+                               each member's graphify-out/ unless --no-refs)
   check [--dir DIR]            validate spec and dry-run link resolution
   status [--dir DIR]           members, resolution, staleness vs last build
 
@@ -181,9 +184,30 @@ def _cmd_remove(args: list[str]) -> None:
             f"member '{tag}' is referenced by links {sorted(set(referencing))}; "
             f"remove or update those links first"
         )
+    # Resolve before mutating the spec so the member's back-reference marker
+    # can be cleaned up too; marker cleanup never blocks the removal.
+    member = next(m for m in spec.members if m.tag == tag)
+    resolved_path, _warnings = resolve_member_path(member, cluster_dir, load_local_config(cluster_dir))
     spec.members = [m for m in spec.members if m.tag != tag]
     save_spec(spec, cluster_dir)
     print(f"Removed member '{tag}'")
+    if resolved_path is not None:
+        from .cluster_ref import CLUSTER_REF_NAME
+        from .paths import GRAPHIFY_OUT_NAME
+
+        marker = resolved_path / GRAPHIFY_OUT_NAME / CLUSTER_REF_NAME
+        try:
+            if marker.is_file():
+                marker.unlink()
+                print(f"  also removed its {CLUSTER_REF_NAME} marker")
+        except OSError as exc:
+            print(f"  note: could not remove {marker}: {exc}", file=sys.stderr)
+    else:
+        print(
+            f"  note: could not resolve '{tag}' locally; its cluster-ref.json "
+            f"(if any) was left in place",
+            file=sys.stderr,
+        )
 
 
 def _cmd_locate(args: list[str]) -> None:
@@ -216,12 +240,15 @@ def _cmd_build(args: list[str]) -> None:
     cluster_dir, rest = _parse_dir(args)
     force = "--force" in rest
     no_links = "--no-links" in rest
-    unknown = [a for a in rest if a not in ("--force", "--no-links")]
+    no_refs = "--no-refs" in rest
+    unknown = [a for a in rest if a not in ("--force", "--no-links", "--no-refs")]
     if unknown:
         _fail(f"unknown arguments: {' '.join(unknown)}")
-    summary = build_cluster(cluster_dir, force=force, no_links=no_links)
+    summary = build_cluster(cluster_dir, force=force, no_links=no_links, write_refs=not no_refs)
     if summary["skipped"]:
         print(f"Cluster '{summary['name']}' unchanged; skipped (use --force to rebuild)")
+        if summary.get("refs_written"):
+            print(f"  cluster-refs: backfilled {summary['refs_written']} member marker(s)")
         return
     report = summary["links"]
     members = summary["members"]
@@ -232,6 +259,8 @@ def _cmd_build(args: list[str]) -> None:
     print(f"  links: {report.edges_added} edges, {report.hubs_added} shared-resource hubs")
     if report.nodes_created:
         print(f"  created {len(report.nodes_created)} concept nodes (on_missing: create)")
+    if not no_refs:
+        print(f"  cluster-refs: wrote {summary.get('refs_written', 0)} member marker(s)")
     print(f"Written to: {summary['out']}")
     print(f"Query it with: cd {cluster_dir} && graphify query \"...\"")
 
