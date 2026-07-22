@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import importlib.metadata
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ HELIX_PYTHON_VERSION = "0.2.0b3"
 HELIX_EMBEDDED_DISTRIBUTION = "helix-db-embedded"
 HELIX_EMBEDDED_VERSION = "0.2.0b3"
 _DATABASE_NAME = "graphify"
+_ID_LEASE_SIZE = 100_000
 
 
 class NativeBackendUnavailable(RuntimeError):
@@ -110,6 +112,9 @@ def open_embedded_client(path: str | Path, *, read_only: bool = False) -> Any:
     source = helixdb.Disk(str(root.resolve()), _DATABASE_NAME)
     if read_only:
         return helixdb.Client.embedded_reader(source)
+    if "id_lease_size" in inspect.signature(helixdb.Client.embedded).parameters:
+        embedded: Any = helixdb.Client.embedded
+        return embedded(source, id_lease_size=_ID_LEASE_SIZE)
     return helixdb.Client.embedded(source)
 
 

@@ -26,7 +26,7 @@ from .model import GraphBuildData, LoadedGraph, import_identity
 from .native import open_embedded_client, validate_native_backend
 
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 _NODE_LABEL = "GraphifyNode"
 _META_LABEL = "GraphifyMeta"
 _CONTROL_LABEL = "GraphifyControl"
@@ -43,13 +43,20 @@ _LEGACY_TARGET_KEY = "target_key"
 _EDGE_KEY = "edge_key"
 _NATIVE_WEIGHT = "graphify_weight"
 _EDGE_CONTEXT = "graphify_context"
+_RECORD_HASH = "record_hash"
+_EDGE_IDENTITY = "edge_identity"
+_TOPOLOGY_REVISION = "topology_revision"
+_NODE_PAGE_HASHES = "node_page_hashes"
+_EDGE_PAGE_HASHES = "edge_page_hashes"
 _SEARCH_LABEL = "search_label"
 _SEARCH_TEXT = "search_text"
 _WRITER_LOCK_FILE = ".graphify-writer.lock"
 _WRITER_LOCK_TIMEOUT_SECONDS = 120.0
 _WRITE_CHUNK_SIZE = 1_000
-_STAGED_EDGE_WRITE_CHUNK_SIZE = 2_000
+_STAGED_EDGE_WRITE_CHUNK_SIZE = 1_000
 _STATE_WRITE_CHUNK_SIZE = 256
+_DELTA_MAX_MUTATIONS = 2_000
+_DELTA_MAX_RATIO = 0.10
 DEFAULT_MAX_NODES = 1_000_000
 DEFAULT_MAX_EDGES = 5_000_000
 DEFAULT_PROJECT_STORE = Path("graphify-out/graph.helix")
@@ -66,50 +73,42 @@ _SPLIT_CHECKSUM_MODE = "topology-state-v1"
 _STREAM_CHECKSUM_MODE = "topology-stream-v1"
 _TOPOLOGY_CHECKSUM = "topology_checksum"
 _STATE_KINDS = ("section", "community", "file", "cache")
-_STATE_REVISION_KEYS = {
-    kind: f"active_{kind}_revision" for kind in _STATE_KINDS
-}
-_STATE_CHECKSUM_KEYS = {
-    kind: f"{kind}_state_checksum" for kind in _STATE_KINDS
-}
-_STATE_COUNT_KEYS = {
-    kind: f"{kind}_state_count" for kind in _STATE_KINDS
-}
+_STATE_REVISION_KEYS = {kind: f"active_{kind}_revision" for kind in _STATE_KINDS}
+_STATE_CHECKSUM_KEYS = {kind: f"{kind}_state_checksum" for kind in _STATE_KINDS}
+_STATE_COUNT_KEYS = {kind: f"{kind}_state_count" for kind in _STATE_KINDS}
 _SEARCH_TOKEN_RE = re.compile(r"\w+")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _PreparedNode:
     encoded_id: str
-    identity: dict[str, Any]
-    attributes: dict[str, Any]
-    search: dict[str, str]
+    external_id: Any
+    attributes: tuple[tuple[str, Any], ...]
+    search_label: str
+    search_text: str
     order: int
+    record_hash: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _PreparedEdge:
     source: str
     target: str
-    identity: dict[str, Any]
+    key: Any
     relation: str
-    attributes: dict[str, Any]
+    attributes: tuple[tuple[str, Any], ...]
+    context: str | None
+    weight: float | None
     order: int
+    stable_identity: str
+    record_hash: str
 
     @property
     def shape(self) -> tuple[str, bool, bool]:
-        context = self.attributes.get("context")
-        weight = self.attributes.get("weight")
-        return (
-            self.relation,
-            isinstance(context, str) and bool(context),
-            isinstance(weight, (int, float))
-            and not isinstance(weight, bool)
-            and math.isfinite(float(weight)),
-        )
+        return (self.relation, self.context is not None, self.weight is not None)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _PreparedTopology:
     directed: bool
     multigraph: bool
@@ -118,6 +117,60 @@ class _PreparedTopology:
     nodes: list[_PreparedNode]
     edges: list[_PreparedEdge]
     checksum: str
+    node_page_hashes: list[str]
+    edge_page_hashes: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedState:
+    encoded: dict[str, Any] | None
+    records: list[tuple[str, str, Any, int]]
+    category_records: dict[str, list[tuple[str, str, Any, int]]]
+    category_checksums: dict[str, str]
+    category_counts: dict[str, int]
+    checksum: str
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredNode:
+    internal_id: int
+    record_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredEdge:
+    internal_id: int
+    record_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TopologyDelta:
+    added_nodes: list[_PreparedNode]
+    updated_nodes: list[tuple[_StoredNode, _PreparedNode]]
+    dropped_nodes: list[_StoredNode]
+    added_edges: list[_PreparedEdge]
+    dropped_edges: list[_StoredEdge]
+
+    @property
+    def mutation_count(self) -> int:
+        return (
+            len(self.added_nodes)
+            + len(self.updated_nodes)
+            + len(self.dropped_nodes)
+            + len(self.added_edges)
+            + len(self.dropped_edges)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _StagedDeltaGraph:
+    graph: Any
+    generation: str
+    state: dict[str, Any]
+    metadata: dict[str, Any]
+    store_path: Path
+    prepared: _PreparedTopology
+    query: None = None
 
 
 def _close_public_client(client: Any) -> None:
@@ -271,8 +324,7 @@ def _encode_state_value(value: Any) -> Any:
         return {
             _STATE_TYPE: "mapping",
             "value": [
-                [_encode_state_value(key), _encode_state_value(item)]
-                for key, item in value.items()
+                [_encode_state_value(key), _encode_state_value(item)] for key, item in value.items()
             ],
         }
     return value
@@ -353,9 +405,7 @@ def _search_properties(node_id: Any, attrs: dict[str, Any]) -> dict[str, str]:
     tokenized_source = " ".join(part for part in _SEARCH_TOKEN_RE.findall(source))
     return {
         _SEARCH_LABEL: label,
-        _SEARCH_TEXT: "\0".join(
-            (label, tokenized_label, identity, source, tokenized_source)
-        ),
+        _SEARCH_TEXT: "\0".join((label, tokenized_label, identity, source, tokenized_source)),
     }
 
 
@@ -378,12 +428,56 @@ def _checksum(payload: dict[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def _record_hash(payload: dict[str, Any]) -> str:
+    """Return a compact comparison hash for one persisted topology record."""
+    return hashlib.blake2b(_checksum(payload).encode("ascii"), digest_size=16).hexdigest()
+
+
+def _edge_identity(
+    *,
+    directed: bool,
+    multigraph: bool,
+    source: str,
+    target: str,
+    key: dict[str, Any],
+    anonymous_ordinal: int | None = None,
+) -> str:
+    """Return a stable logical identity used only for delta comparison."""
+    if not directed and target < source:
+        source, target = target, source
+    payload: dict[str, Any] = {"source": source, "target": target}
+    if multigraph:
+        payload["key"] = key
+        if anonymous_ordinal is not None:
+            payload["anonymous_ordinal"] = anonymous_ordinal
+    return _record_hash(payload)
+
+
+def _page_hashes(record_hashes: list[str], page_size: int) -> list[str]:
+    return [
+        _record_hash({"records": record_hashes[offset : offset + page_size]})
+        for offset in range(0, len(record_hashes), page_size)
+    ]
+
+
+def _changed_pages(old: Any, new: list[str]) -> set[int] | None:
+    if not isinstance(old, list) or any(not isinstance(value, str) for value in old):
+        return None
+    return {
+        index
+        for index in range(max(len(old), len(new)))
+        if index >= len(old) or index >= len(new) or old[index] != new[index]
+    }
+
+
 def _generation_checksum(topology_checksum: str, state_checksum: str) -> str:
     """Bind independently verified topology and state into one generation hash."""
-    return _checksum({
-        _TOPOLOGY_CHECKSUM: topology_checksum,
-        "state_checksum": state_checksum,
-    })
+    return _checksum(
+        {
+            _TOPOLOGY_CHECKSUM: topology_checksum,
+            "state_checksum": state_checksum,
+        }
+    )
 
 
 class _TopologyStreamChecksum:
@@ -398,14 +492,16 @@ class _TopologyStreamChecksum:
         extras: dict[str, Any],
     ) -> None:
         self._digest = hashlib.sha256()
-        self._add({
-            "header": {
-                "directed": directed,
-                "multigraph": multigraph,
-                "graph": graph,
-                "extras": extras,
+        self._add(
+            {
+                "header": {
+                    "directed": directed,
+                    "multigraph": multigraph,
+                    "graph": graph,
+                    "extras": extras,
+                }
             }
-        })
+        )
 
     def _add(self, value: dict[str, Any]) -> None:
         self._digest.update(_checksum(value).encode("ascii"))
@@ -444,55 +540,108 @@ def _prepare_topology(
         graph=graph_attributes,
         extras=extras,
     )
-    node_ids: set[str] = set()
+    node_ids: dict[str, str] = {}
     nodes: list[_PreparedNode] = []
     for order, node in enumerate(graph.nodes):
         node_id = import_identity(node.id)
         encoded_id = _encode_key(node_id)
         if encoded_id in node_ids:
             raise ValueError(f"duplicate graph node identifier at nodes[{order}]")
-        node_ids.add(encoded_id)
-        attributes = _json_value(
-            dict(node.attributes), f"graph nodes[{order}] attributes"
-        )
+        node_ids[encoded_id] = encoded_id
+        attributes = _json_value(dict(node.attributes), f"graph nodes[{order}] attributes")
         if not isinstance(attributes, dict):
             raise TypeError(f"graph nodes[{order}] attributes must be a mapping")
-        nodes.append(_PreparedNode(
-            encoded_id=encoded_id,
-            identity=_tagged_key(node_id),
-            attributes=attributes,
-            search=_search_properties(node_id, attributes),
-            order=order,
-        ))
+        search = _search_properties(node_id, attributes)
+        nodes.append(
+            _PreparedNode(
+                encoded_id=encoded_id,
+                external_id=node_id,
+                attributes=tuple(attributes.items()),
+                search_label=search[_SEARCH_LABEL],
+                search_text=search[_SEARCH_TEXT],
+                order=order,
+                record_hash=_record_hash(
+                    {
+                        "id": encoded_id,
+                        "attributes": attributes,
+                        "search": search,
+                        "order": order,
+                    }
+                ),
+            )
+        )
         checksum.node({"id": node_id, **attributes})
 
     edges: list[_PreparedEdge] = []
+    edge_identities: set[str] = set()
+    anonymous_edge_counts: dict[tuple[str, str], int] = {}
+    none_identity = _tagged_key(None)
     for order, edge in enumerate(graph.edges):
         source = import_identity(edge.source)
         target = import_identity(edge.target)
-        encoded_source = _encode_key(source)
-        encoded_target = _encode_key(target)
-        if encoded_source not in node_ids or encoded_target not in node_ids:
+        encoded_source = node_ids.get(_encode_key(source))
+        encoded_target = node_ids.get(_encode_key(target))
+        if encoded_source is None or encoded_target is None:
             raise ValueError(f"graph edges[{order}] references a missing node")
         key = import_identity(edge.key) if graph.multigraph else None
-        attributes = _json_value(
-            dict(edge.attributes), f"graph edges[{order}] attributes"
-        )
+        attributes = _json_value(dict(edge.attributes), f"graph edges[{order}] attributes")
         if not isinstance(attributes, dict):
             raise TypeError(f"graph edges[{order}] attributes must be a mapping")
         relation = attributes.pop("relation", "related_to")
         if not isinstance(relation, str) or not relation:
-            raise TypeError(
-                f"graph edges[{order}] relation must be a non-empty string"
+            raise TypeError(f"graph edges[{order}] relation must be a non-empty string")
+        identity = none_identity if key is None else _tagged_key(key)
+        context = attributes.get("context")
+        native_context = context if isinstance(context, str) and context else None
+        weight = attributes.get("weight")
+        native_weight = (
+            float(weight)
+            if isinstance(weight, (int, float))
+            and not isinstance(weight, bool)
+            and math.isfinite(float(weight))
+            else None
+        )
+        anonymous_ordinal = None
+        if graph.multigraph and key is None:
+            endpoint_pair = (
+                (encoded_source, encoded_target)
+                if graph.directed or encoded_source <= encoded_target
+                else (encoded_target, encoded_source)
             )
-        edges.append(_PreparedEdge(
+            anonymous_ordinal = anonymous_edge_counts.get(endpoint_pair, 0)
+            anonymous_edge_counts[endpoint_pair] = anonymous_ordinal + 1
+        stable_identity = _edge_identity(
+            directed=graph.directed,
+            multigraph=graph.multigraph,
             source=encoded_source,
             target=encoded_target,
-            identity=_tagged_key(key),
-            relation=relation,
-            attributes=attributes,
-            order=order,
-        ))
+            key=identity,
+            anonymous_ordinal=anonymous_ordinal,
+        )
+        if stable_identity in edge_identities:
+            raise ValueError(f"duplicate graph edge identity at edges[{order}]")
+        edge_identities.add(stable_identity)
+        edges.append(
+            _PreparedEdge(
+                source=encoded_source,
+                target=encoded_target,
+                key=key,
+                relation=relation,
+                attributes=tuple(attributes.items()),
+                context=native_context,
+                weight=native_weight,
+                order=order,
+                stable_identity=stable_identity,
+                record_hash=_record_hash(
+                    {
+                        "identity": stable_identity,
+                        "relation": relation,
+                        "attributes": attributes,
+                        "order": order,
+                    }
+                ),
+            )
+        )
         canonical = {
             "source": source,
             "target": target,
@@ -511,6 +660,11 @@ def _prepare_topology(
         nodes=nodes,
         edges=edges,
         checksum=checksum.hexdigest(),
+        node_page_hashes=_page_hashes([node.record_hash for node in nodes], _WRITE_CHUNK_SIZE),
+        edge_page_hashes=_page_hashes(
+            [edge.record_hash for edge in edges],
+            _STAGED_EDGE_WRITE_CHUNK_SIZE,
+        ),
     )
 
 
@@ -524,21 +678,21 @@ def _state_revision(metadata: dict[str, Any], kind: str) -> str | None:
 def _state_category_checksum(
     records: list[tuple[str, str, Any, int]],
 ) -> str:
-    return _checksum({
-        "records": [
-            {"kind": kind, "key": key, "payload": payload, "order": order}
-            for kind, key, payload, order in records
-        ]
-    })
+    return _checksum(
+        {
+            "records": [
+                {"kind": kind, "key": key, "payload": payload, "order": order}
+                for kind, key, payload, order in records
+            ]
+        }
+    )
 
 
 def _combined_state_checksum(checksums: dict[str, str]) -> str:
     return _checksum({"categories": checksums})
 
 
-def _state_category_value(
-    state: dict[str, Any], kind: str, generation: str
-) -> Any:
+def _state_category_value(state: dict[str, Any], kind: str, generation: str) -> Any:
     if kind == "community":
         return state.get("communities", [])
     incremental = state.get("incremental", {})
@@ -575,9 +729,7 @@ def _state_category_value(
             continue
         sections[key] = value
     sections.setdefault("build", {"generation": generation})
-    sections.setdefault(
-        "incremental", {"last_successful_generation": generation}
-    )
+    sections.setdefault("incremental", {"last_successful_generation": generation})
     return sections
 
 
@@ -610,11 +762,12 @@ class HelixNodeQuery:
         generation: str,
         *,
         max_candidates: int = 50_000,
+        client: Any | None = None,
     ) -> None:
         self.path = Path(path).expanduser().resolve()
         self.generation = generation
         self.max_candidates = max_candidates
-        self._client = open_embedded_client(self.path, read_only=True)
+        self._client = client or open_embedded_client(self.path, read_only=True)
         self._lock = threading.RLock()
         self._closed = False
 
@@ -625,21 +778,19 @@ class HelixNodeQuery:
             return self._client.query(batch.to_query_request())
 
     def _predicate(self, property_name: str, values: list[str]) -> Any | None:
-        normalized = list(dict.fromkeys(
-            value for raw in values
-            if (value := _normalize_search_text(raw))
-        ))
+        normalized = list(
+            dict.fromkeys(value for raw in values if (value := _normalize_search_text(raw)))
+        )
         if not normalized:
             return None
-        matches = [
-            SourcePredicate.contains(property_name, value)
-            for value in normalized
-        ]
+        matches = [SourcePredicate.contains(property_name, value) for value in normalized]
         match = matches[0] if len(matches) == 1 else SourcePredicate.or_(matches)
-        return SourcePredicate.and_((
-            SourcePredicate.eq(_GENERATION, self.generation),
-            match,
-        ))
+        return SourcePredicate.and_(
+            (
+                SourcePredicate.eq(_GENERATION, self.generation),
+                match,
+            )
+        )
 
     def candidate_ids(self, values: list[str]) -> list[Any]:
         """Return an order-stable, bounded superset from public predicates."""
@@ -667,10 +818,9 @@ class HelixNodeQuery:
 
     def document_frequencies(self, terms: list[str]) -> dict[str, int]:
         """Count label matches natively without reconstructing topology."""
-        normalized = list(dict.fromkeys(
-            value for raw in terms
-            if (value := _normalize_search_text(raw))
-        ))
+        normalized = list(
+            dict.fromkeys(value for raw in terms if (value := _normalize_search_text(raw)))
+        )
         if not normalized:
             return {}
         batch = read_batch()
@@ -678,19 +828,18 @@ class HelixNodeQuery:
         for index, term in enumerate(normalized):
             variable = f"count_{index}"
             variables.append(variable)
-            predicate = SourcePredicate.and_((
-                SourcePredicate.eq(_GENERATION, self.generation),
-                SourcePredicate.contains(_SEARCH_LABEL, term),
-            ))
+            predicate = SourcePredicate.and_(
+                (
+                    SourcePredicate.eq(_GENERATION, self.generation),
+                    SourcePredicate.contains(_SEARCH_LABEL, term),
+                )
+            )
             batch = batch.var_as(
                 variable,
                 g().n_with_label_where(_NODE_LABEL, predicate).count(),
             )
         result = self._query(batch.returning(variables))
-        return {
-            term: int(result.get(variable, 0))
-            for term, variable in zip(normalized, variables)
-        }
+        return {term: int(result.get(variable, 0)) for term, variable in zip(normalized, variables)}
 
     def traverse_ids(
         self,
@@ -703,29 +852,24 @@ class HelixNodeQuery:
         if not seeds:
             return []
         storage_keys = [
-            HelixEmbeddedStore._storage_key(self.generation, _encode_key(seed))
-            for seed in seeds
+            HelixEmbeddedStore._storage_key(self.generation, _encode_key(seed)) for seed in seeds
         ]
-        seed_predicate = SourcePredicate.and_((
-            SourcePredicate.eq(_GENERATION, self.generation),
-            SourcePredicate.is_in(_STORAGE_KEY, storage_keys),
-        ))
+        seed_predicate = SourcePredicate.and_(
+            (
+                SourcePredicate.eq(_GENERATION, self.generation),
+                SourcePredicate.is_in(_STORAGE_KEY, storage_keys),
+            )
+        )
         traversal = g().n_with_label_where(_NODE_LABEL, seed_predicate)
         if depth > 0 and contexts:
-            edge_predicate = SourcePredicate.and_((
-                SourcePredicate.eq(_GENERATION, self.generation),
-                SourcePredicate.is_in(_EDGE_CONTEXT, sorted(contexts)),
-            ))
-            step = (
-                SubTraversal.new()
-                .both_e()
-                .where(edge_predicate)
-                .other_n()
-                .dedup()
+            edge_predicate = SourcePredicate.and_(
+                (
+                    SourcePredicate.eq(_GENERATION, self.generation),
+                    SourcePredicate.is_in(_EDGE_CONTEXT, sorted(contexts)),
+                )
             )
-            traversal = traversal.repeat(
-                RepeatConfig.new(step).times(depth).emit_all()
-            )
+            step = SubTraversal.new().both_e().where(edge_predicate).other_n().dedup()
+            traversal = traversal.repeat(RepeatConfig.new(step).times(depth).emit_all())
         batch = (
             read_batch()
             .var_as(
@@ -747,11 +891,8 @@ class HelixNodeQuery:
             _close_public_client(self._client)
             self._closed = True
 
-    def __del__(self) -> None:
-        try:
-            self.close()
-        except Exception:
-            pass
+    # Deliberately no __del__: b3's async native close can re-enter while
+    # Python is garbage-collecting inside another embedded request.
 
 
 @dataclass
@@ -825,10 +966,14 @@ class HelixEmbeddedStore:
         *,
         params: Any | None = None,
         values: dict[str, Any] | None = None,
+        client: Any | None = None,
     ) -> Any:
         if self._closed:
             raise RuntimeError("embedded Helix store is closed")
-        return self._client.query(batch.to_query_request(params, values))
+        return (client or self._client).query(batch.to_query_request(params, values))
+
+    def _snapshot_query(self, batch: Any, client: Any | None) -> Any:
+        return self._query(batch) if client is None else self._query(batch, client=client)
 
     def _validate_active_schema(self) -> None:
         """Reject stores written by an obsolete Graphify Helix schema.
@@ -852,7 +997,16 @@ class HelixEmbeddedStore:
 
     def save_generation(self, graph: GraphBuildData, state: dict[str, Any]) -> None:
         """Atomically stage topology and every durable Graphify record together."""
-        self.save(graph, state=state)
+        if self._read_only:
+            raise RuntimeError("cannot write through a read-only embedded Helix store")
+        prepared = _prepare_topology(
+            graph,
+            max_nodes=self._max_nodes,
+            max_edges=self._max_edges,
+        )
+        if self._try_delta(prepared, state):
+            return
+        self._save_prepared_graph(prepared, state=state, activate=True)
 
     def topology_matches(self, graph: GraphBuildData) -> bool:
         """Return whether build data exactly matches the active native topology."""
@@ -896,35 +1050,17 @@ class HelixEmbeddedStore:
             max_nodes=self._max_nodes,
             max_edges=self._max_edges,
         )
+        return self._save_prepared_graph(prepared, state=state, activate=activate)
+
+    def _save_prepared_graph(
+        self,
+        prepared: _PreparedTopology,
+        *,
+        state: dict[str, Any] | None,
+        activate: bool,
+    ) -> str:
         generation = uuid.uuid4().hex
-        encoded_state: dict[str, Any] | None = None
-        if state is not None:
-            if not isinstance(state, dict):
-                raise TypeError("durable graph state must be a mapping")
-            durable_state = copy.deepcopy(state)
-            build_state = durable_state.setdefault("build", {})
-            incremental_state = durable_state.setdefault("incremental", {})
-            if not isinstance(build_state, dict) or not isinstance(
-                incremental_state, dict
-            ):
-                raise TypeError(
-                    "durable build and incremental state sections must be mappings"
-                )
-            build_state["generation"] = generation
-            incremental_state["last_successful_generation"] = generation
-            encoded_state = _json_value(
-                _encode_state_value(durable_state), "durable graph state"
-            )
-        state_records = self._state_records(encoded_state)
-        category_records = {
-            kind: [record for record in state_records if record[0] == kind]
-            for kind in _STATE_KINDS
-        }
-        category_checksums = {
-            kind: _state_category_checksum(category_records[kind])
-            for kind in _STATE_KINDS
-        }
-        state_checksum = _combined_state_checksum(category_checksums)
+        prepared_state = self._prepare_state(state, generation)
         manifest = {
             "schema_version": _SCHEMA_VERSION,
             "directed": prepared.directed,
@@ -933,27 +1069,34 @@ class HelixEmbeddedStore:
             "extras": prepared.extras,
             "node_count": len(prepared.nodes),
             "edge_count": len(prepared.edges),
-            "state_record_count": len(state_records),
-            "state_checksum": state_checksum,
+            "state_record_count": len(prepared_state.records),
+            "state_checksum": prepared_state.checksum,
             _ACTIVE_STATE_REVISION: generation,
             _CHECKSUM_MODE: _STREAM_CHECKSUM_MODE,
             _TOPOLOGY_CHECKSUM: prepared.checksum,
+            _TOPOLOGY_REVISION: generation,
+            _NODE_PAGE_HASHES: prepared.node_page_hashes,
+            _EDGE_PAGE_HASHES: prepared.edge_page_hashes,
             **{key: generation for key in _STATE_REVISION_KEYS.values()},
             **{
-                _STATE_CHECKSUM_KEYS[kind]: category_checksums[kind]
+                _STATE_CHECKSUM_KEYS[kind]: prepared_state.category_checksums[kind]
                 for kind in _STATE_KINDS
             },
             **{
-                _STATE_COUNT_KEYS[kind]: len(category_records[kind])
+                _STATE_COUNT_KEYS[kind]: prepared_state.category_counts[kind]
                 for kind in _STATE_KINDS
             },
-            "checksum": _generation_checksum(prepared.checksum, state_checksum),
+            "checksum": _generation_checksum(prepared.checksum, prepared_state.checksum),
         }
 
         previous_generation = self._active_generation(required=False)
         try:
             self._stage_generation(
-                generation, manifest, prepared.nodes, prepared.edges, encoded_state
+                generation,
+                manifest,
+                prepared.nodes,
+                prepared.edges,
+                prepared_state.encoded,
             )
             self._verify_generation_counts(generation)
             if activate:
@@ -974,6 +1117,478 @@ class HelixEmbeddedStore:
             self._cleanup_inactive_generations()
         return generation
 
+    def _try_delta(self, prepared: _PreparedTopology, state: dict[str, Any]) -> bool:
+        """Publish a small compatible topology/state change in one transaction."""
+        generation = self._active_generation(required=False)
+        if generation is None or self._retain_rollback:
+            return False
+        metadata = self._metadata(generation)
+        if (
+            metadata.get("directed") is not prepared.directed
+            or metadata.get("multigraph") is not prepared.multigraph
+            or metadata.get("graph") != prepared.graph_attributes
+            or metadata.get("extras") != prepared.extras
+        ):
+            return False
+
+        prepared_state = self._prepare_state(state, generation)
+        changed_state_kinds = [
+            kind
+            for kind in _STATE_KINDS
+            if metadata.get(_STATE_CHECKSUM_KEYS[kind]) != prepared_state.category_checksums[kind]
+            or metadata.get(_STATE_COUNT_KEYS[kind]) != prepared_state.category_counts[kind]
+        ]
+        topology_changed = metadata.get(_TOPOLOGY_CHECKSUM) != prepared.checksum
+        if not topology_changed and not changed_state_kinds:
+            return True
+
+        delta = _TopologyDelta([], [], [], [], [])
+        stored_nodes: dict[str, _StoredNode] = {}
+        if topology_changed:
+            candidate = self._topology_delta_candidate(generation, metadata, prepared)
+            if candidate is None:
+                return False
+            delta, stored_nodes = candidate
+
+        revision = uuid.uuid4().hex
+        try:
+            for kind in changed_state_kinds:
+                self._write_state_records(
+                    generation,
+                    prepared_state.category_records[kind],
+                    revision,
+                )
+            self._publish_delta(
+                generation,
+                prepared,
+                prepared_state,
+                metadata,
+                changed_state_kinds,
+                revision,
+                delta,
+                stored_nodes,
+            )
+        except Exception:
+            # A storage commit can succeed even if its response is lost. Trust
+            # the atomically published metadata before removing staged rows.
+            published = False
+            try:
+                current = self._metadata(generation)
+                published = current.get(_TOPOLOGY_CHECKSUM) == prepared.checksum and all(
+                    current.get(_STATE_REVISION_KEYS[kind]) == revision
+                    and current.get(_STATE_CHECKSUM_KEYS[kind])
+                    == prepared_state.category_checksums[kind]
+                    and current.get(_STATE_COUNT_KEYS[kind]) == prepared_state.category_counts[kind]
+                    for kind in changed_state_kinds
+                )
+            except Exception:
+                pass
+            if published:
+                self._cleanup_inactive_state_revisions()
+                return True
+            for kind in changed_state_kinds:
+                try:
+                    self._drop_state_revision(generation, revision, kind=kind)
+                except Exception:
+                    pass
+            raise
+        self._cleanup_inactive_state_revisions()
+        return True
+
+    def _topology_delta_candidate(
+        self,
+        generation: str,
+        metadata: dict[str, Any],
+        prepared: _PreparedTopology,
+    ) -> tuple[_TopologyDelta, dict[str, _StoredNode]] | None:
+        if not hasattr(self._helix, "NativeGraphBuilder"):
+            return None
+        changed_node_pages = _changed_pages(
+            metadata.get(_NODE_PAGE_HASHES), prepared.node_page_hashes
+        )
+        changed_edge_pages = _changed_pages(
+            metadata.get(_EDGE_PAGE_HASHES), prepared.edge_page_hashes
+        )
+        if changed_node_pages is None or changed_edge_pages is None:
+            return None
+        stored_nodes, stored_edges = self._stored_topology(
+            generation, changed_node_pages, changed_edge_pages
+        )
+        delta = self._topology_delta(
+            [
+                node
+                for node in prepared.nodes
+                if node.order // _WRITE_CHUNK_SIZE in changed_node_pages
+            ],
+            [
+                edge
+                for edge in prepared.edges
+                if edge.order // _STAGED_EDGE_WRITE_CHUNK_SIZE in changed_edge_pages
+            ],
+            stored_nodes,
+            stored_edges,
+        )
+        added_node_ids = {node.encoded_id for node in delta.added_nodes}
+        required_endpoint_ids = {
+            encoded_id
+            for edge in delta.added_edges
+            for encoded_id in (edge.source, edge.target)
+            if encoded_id not in added_node_ids and encoded_id not in stored_nodes
+        }
+        stored_nodes.update(self._stored_node_ids(generation, required_endpoint_ids))
+        old_size = metadata.get("node_count", 0) + metadata.get("edge_count", 0)
+        if (
+            delta.mutation_count > _DELTA_MAX_MUTATIONS
+            or delta.mutation_count / max(1, old_size) > _DELTA_MAX_RATIO
+        ):
+            return None
+        return delta, stored_nodes
+
+    def _stored_topology(
+        self,
+        generation: str,
+        node_pages: set[int],
+        edge_pages: set[int],
+    ) -> tuple[dict[str, _StoredNode], dict[str, _StoredEdge]]:
+        node_predicate = self._page_predicate(generation, node_pages, _WRITE_CHUNK_SIZE)
+        edge_predicate = self._page_predicate(generation, edge_pages, _STAGED_EDGE_WRITE_CHUNK_SIZE)
+        batch = self._helix.read_batch()
+        returned: list[str] = []
+        if node_pages:
+            returned.append("nodes")
+            batch = batch.var_as(
+                "nodes",
+                self._helix.g()
+                .n_with_label_where(_NODE_LABEL, node_predicate)
+                .value_map(["$id", _STORAGE_KEY, _RECORD_HASH]),
+            )
+        if edge_pages:
+            returned.append("edges")
+            batch = batch.var_as(
+                "edges",
+                self._helix.g()
+                .e_where(edge_predicate)
+                .value_map(["$id", _EDGE_IDENTITY, _RECORD_HASH]),
+            )
+        result = self._query(batch.returning(returned))
+        nodes: dict[str, _StoredNode] = {}
+        for raw in _rows(result, "nodes"):
+            row = _properties(raw, "delta node")
+            internal_id = row.get("$id")
+            storage_key = row.get(_STORAGE_KEY)
+            record_hash = row.get(_RECORD_HASH)
+            if (
+                not isinstance(internal_id, int)
+                or not isinstance(storage_key, str)
+                or not isinstance(record_hash, str)
+                or not storage_key.startswith(f"{generation}:")
+            ):
+                raise RuntimeError("embedded Helix delta node is missing schema fields")
+            external_key = storage_key[len(generation) + 1 :]
+            if external_key in nodes:
+                raise RuntimeError("embedded Helix delta nodes duplicate an identity")
+            nodes[external_key] = _StoredNode(internal_id, record_hash)
+
+        edges: dict[str, _StoredEdge] = {}
+        for raw in _rows(result, "edges"):
+            row = _properties(raw, "delta edge")
+            internal_id = row.get("$id")
+            identity = row.get(_EDGE_IDENTITY)
+            record_hash = row.get(_RECORD_HASH)
+            if (
+                not isinstance(internal_id, int)
+                or not isinstance(identity, str)
+                or not isinstance(record_hash, str)
+            ):
+                raise RuntimeError("embedded Helix delta edge is missing schema fields")
+            if identity in edges:
+                raise RuntimeError("embedded Helix delta edges duplicate an identity")
+            edges[identity] = _StoredEdge(internal_id, record_hash)
+        return nodes, edges
+
+    def _page_predicate(self, generation: str, pages: set[int], page_size: int) -> Any:
+        generation_predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
+        if not pages:
+            return self._helix.SourcePredicate.and_(
+                (
+                    generation_predicate,
+                    self._helix.SourcePredicate.eq(_ORDER, -1),
+                )
+            )
+        ranges = [
+            self._helix.SourcePredicate.and_(
+                (
+                    self._helix.SourcePredicate.gte(_ORDER, page * page_size),
+                    self._helix.SourcePredicate.lt(_ORDER, (page + 1) * page_size),
+                )
+            )
+            for page in sorted(pages)
+        ]
+        page_predicate = ranges[0] if len(ranges) == 1 else self._helix.SourcePredicate.or_(ranges)
+        return self._helix.SourcePredicate.and_((generation_predicate, page_predicate))
+
+    def _stored_node_ids(self, generation: str, encoded_ids: set[str]) -> dict[str, _StoredNode]:
+        if not encoded_ids:
+            return {}
+        storage_keys = [
+            self._storage_key(generation, encoded_id) for encoded_id in sorted(encoded_ids)
+        ]
+        predicate = self._helix.SourcePredicate.and_(
+            (
+                self._helix.SourcePredicate.eq(_GENERATION, generation),
+                self._helix.SourcePredicate.is_in(_STORAGE_KEY, storage_keys),
+            )
+        )
+        result = self._query(
+            self._helix.read_batch()
+            .var_as(
+                "nodes",
+                self._helix.g()
+                .n_with_label_where(_NODE_LABEL, predicate)
+                .value_map(["$id", _STORAGE_KEY]),
+            )
+            .returning(["nodes"])
+        )
+        stored: dict[str, _StoredNode] = {}
+        for raw in _rows(result, "nodes"):
+            row = _properties(raw, "delta edge endpoint")
+            internal_id = row.get("$id")
+            storage_key = row.get(_STORAGE_KEY)
+            if not isinstance(internal_id, int) or not isinstance(storage_key, str):
+                raise RuntimeError("embedded Helix delta endpoint is missing schema fields")
+            encoded_id = storage_key[len(generation) + 1 :]
+            stored[encoded_id] = _StoredNode(internal_id, "")
+        if stored.keys() != encoded_ids:
+            raise RuntimeError("embedded Helix delta edge endpoint is missing")
+        return stored
+
+    @staticmethod
+    def _topology_delta(
+        prepared_nodes: list[_PreparedNode],
+        prepared_edges: list[_PreparedEdge],
+        stored_nodes: dict[str, _StoredNode],
+        stored_edges: dict[str, _StoredEdge],
+    ) -> _TopologyDelta:
+        proposed_nodes = {node.encoded_id: node for node in prepared_nodes}
+        proposed_edges = {edge.stable_identity: edge for edge in prepared_edges}
+        changed_edges = {
+            identity
+            for identity in proposed_edges.keys() & stored_edges.keys()
+            if proposed_edges[identity].record_hash != stored_edges[identity].record_hash
+        }
+        return _TopologyDelta(
+            added_nodes=[
+                proposed_nodes[key] for key in proposed_nodes.keys() - stored_nodes.keys()
+            ],
+            updated_nodes=[
+                (stored_nodes[key], proposed_nodes[key])
+                for key in proposed_nodes.keys() & stored_nodes.keys()
+                if proposed_nodes[key].record_hash != stored_nodes[key].record_hash
+            ],
+            dropped_nodes=[
+                stored_nodes[key] for key in stored_nodes.keys() - proposed_nodes.keys()
+            ],
+            added_edges=[
+                proposed_edges[key]
+                for key in (proposed_edges.keys() - stored_edges.keys()) | changed_edges
+            ],
+            dropped_edges=[
+                stored_edges[key]
+                for key in (stored_edges.keys() - proposed_edges.keys()) | changed_edges
+            ],
+        )
+
+    def _validate_proposed_native_graph(self, prepared: _PreparedTopology) -> Any:
+        kind = (
+            "multidigraph"
+            if prepared.directed and prepared.multigraph
+            else "digraph"
+            if prepared.directed
+            else "multigraph"
+            if prepared.multigraph
+            else "graph"
+        )
+        builder = self._helix.NativeGraphBuilder(kind, len(prepared.nodes), len(prepared.edges))
+        for offset in range(0, len(prepared.nodes), _WRITE_CHUNK_SIZE):
+            builder.add_nodes(
+                [
+                    self._helix.GraphNode(
+                        node.external_id,
+                        _NODE_LABEL,
+                        {_ATTRS: dict(node.attributes), _ORDER: node.order},
+                    )
+                    for node in prepared.nodes[offset : offset + _WRITE_CHUNK_SIZE]
+                ]
+            )
+        edges = builder.begin_edges()
+        for offset in range(0, len(prepared.edges), _STAGED_EDGE_WRITE_CHUNK_SIZE):
+            edges.add_edges(
+                [
+                    self._helix.GraphEdge(
+                        self._helix.GraphEdgeId.original(edge.stable_identity),
+                        _decode_key(edge.source),
+                        _decode_key(edge.target),
+                        edge.key if prepared.multigraph else None,
+                        edge.relation,
+                        edge.weight,
+                        {_ATTRS: dict(edge.attributes), _ORDER: edge.order},
+                    )
+                    for edge in prepared.edges[offset : offset + _STAGED_EDGE_WRITE_CHUNK_SIZE]
+                ]
+            )
+        return edges.finish(prepared.graph_attributes)
+
+    def _publish_delta(
+        self,
+        generation: str,
+        prepared: _PreparedTopology,
+        prepared_state: _PreparedState,
+        metadata: dict[str, Any],
+        changed_state_kinds: list[str],
+        revision: str,
+        delta: _TopologyDelta,
+        stored_nodes: dict[str, _StoredNode],
+    ) -> None:
+        batch = self._helix.write_batch()
+        if delta.dropped_edges:
+            batch = batch.var_as(
+                "drop_delta_edges",
+                self._helix.g().drop_edge_by_id(
+                    self._helix.EdgeRef.ids(edge.internal_id for edge in delta.dropped_edges)
+                ),
+            )
+
+        added_node_variables: dict[str, str] = {}
+        for index, node in enumerate(delta.added_nodes):
+            variable = f"add_delta_node_{index}"
+            added_node_variables[node.encoded_id] = variable
+            batch = batch.var_as(
+                variable,
+                self._helix.g().add_n(
+                    _NODE_LABEL,
+                    self._node_properties(generation, node),
+                ),
+            )
+        for index, (stored, node) in enumerate(delta.updated_nodes):
+            traversal = self._helix.g().n(self._helix.NodeRef.id(stored.internal_id))
+            for key, value in self._node_properties(generation, node).items():
+                traversal = traversal.set_property(key, value)
+            batch = batch.var_as(f"update_delta_node_{index}", traversal)
+
+        if delta.dropped_nodes:
+            batch = batch.var_as(
+                "drop_delta_nodes",
+                self._helix.g()
+                .n(self._helix.NodeRef.ids(node.internal_id for node in delta.dropped_nodes))
+                .drop(),
+            )
+
+        for index, edge in enumerate(delta.added_edges):
+            source = self._delta_node_ref(edge.source, added_node_variables, stored_nodes)
+            target = self._delta_node_ref(edge.target, added_node_variables, stored_nodes)
+            batch = batch.var_as(
+                f"add_delta_edge_{index}",
+                self._helix.g()
+                .n(source)
+                .add_e(
+                    edge.relation,
+                    target,
+                    self._edge_properties(generation, edge),
+                ),
+            )
+
+        state_checksum = prepared_state.checksum
+        updates = {
+            "node_count": len(prepared.nodes),
+            "edge_count": len(prepared.edges),
+            "state_record_count": len(prepared_state.records),
+            "state_checksum": state_checksum,
+            _TOPOLOGY_CHECKSUM: prepared.checksum,
+            _NODE_PAGE_HASHES: prepared.node_page_hashes,
+            _EDGE_PAGE_HASHES: prepared.edge_page_hashes,
+            "checksum": _generation_checksum(prepared.checksum, state_checksum),
+            **{
+                _STATE_CHECKSUM_KEYS[kind]: prepared_state.category_checksums[kind]
+                for kind in changed_state_kinds
+            },
+            **{
+                _STATE_COUNT_KEYS[kind]: prepared_state.category_counts[kind]
+                for kind in changed_state_kinds
+            },
+            **{_STATE_REVISION_KEYS[kind]: revision for kind in changed_state_kinds},
+        }
+        if delta.mutation_count:
+            updates[_TOPOLOGY_REVISION] = revision
+        if changed_state_kinds:
+            updates[_ACTIVE_STATE_REVISION] = revision
+        elif not isinstance(metadata.get(_ACTIVE_STATE_REVISION), str):
+            updates[_ACTIVE_STATE_REVISION] = generation
+        traversal = self._helix.g().n_with_label_where(
+            _META_LABEL,
+            self._helix.SourcePredicate.eq(_GENERATION, generation),
+        )
+        for key, value in updates.items():
+            traversal = traversal.set_property(key, value)
+        batch = batch.var_as("publish_delta", traversal)
+        for index, kind in enumerate(changed_state_kinds):
+            old_revision = _state_revision(metadata, kind)
+            if old_revision is None:
+                continue
+            predicate = self._helix.SourcePredicate.and_(
+                (
+                    self._helix.SourcePredicate.eq(_GENERATION, generation),
+                    self._helix.SourcePredicate.eq(_STATE_KIND, kind),
+                    self._helix.SourcePredicate.eq(_STATE_REVISION, old_revision),
+                )
+            )
+            batch = batch.var_as(
+                f"drop_old_delta_state_{index}",
+                self._helix.g().n_with_label_where(_STATE_LABEL, predicate).drop(),
+            )
+        self._query(batch)
+
+    def _delta_node_ref(
+        self,
+        encoded_id: str,
+        added_node_variables: dict[str, str],
+        stored_nodes: dict[str, _StoredNode],
+    ) -> Any:
+        if encoded_id in added_node_variables:
+            return self._helix.NodeRef.var(added_node_variables[encoded_id])
+        stored = stored_nodes.get(encoded_id)
+        if stored is None:
+            raise RuntimeError("delta edge references a missing persisted node")
+        return self._helix.NodeRef.id(stored.internal_id)
+
+    @staticmethod
+    def _node_properties(generation: str, node: _PreparedNode) -> dict[str, Any]:
+        return {
+            _GENERATION: generation,
+            _STORAGE_KEY: HelixEmbeddedStore._storage_key(generation, node.encoded_id),
+            _EXTERNAL_KEY: _tagged_key(node.external_id),
+            _ATTRS: dict(node.attributes),
+            _ORDER: node.order,
+            _RECORD_HASH: node.record_hash,
+            _SEARCH_LABEL: node.search_label,
+            _SEARCH_TEXT: node.search_text,
+        }
+
+    @staticmethod
+    def _edge_properties(generation: str, edge: _PreparedEdge) -> dict[str, Any]:
+        properties = {
+            _GENERATION: generation,
+            _EDGE_KEY: _tagged_key(edge.key),
+            _ATTRS: dict(edge.attributes),
+            _ORDER: edge.order,
+            _EDGE_IDENTITY: edge.stable_identity,
+            _RECORD_HASH: edge.record_hash,
+        }
+        if edge.shape[1]:
+            properties[_EDGE_CONTEXT] = edge.context
+        if edge.shape[2]:
+            properties[_NATIVE_WEIGHT] = edge.weight
+        return properties
+
     @staticmethod
     def _global_identity(repo: str, node_id: Any, attrs: dict[str, Any]) -> str:
         """Return a stable aggregate ID, coalescing external nodes by label."""
@@ -984,9 +1599,7 @@ class HelixEmbeddedStore:
             return f"external::{digest}"
         return f"{repo}::{node_id}"
 
-    def _source_node_pages(
-        self, generation: str
-    ) -> Any:
+    def _source_node_pages(self, generation: str) -> Any:
         predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
         offset = 0
         while True:
@@ -996,17 +1609,17 @@ class HelixEmbeddedStore:
                 .order_by(_ORDER, self._helix.Order.ASC)
                 .skip(offset)
                 .limit(_WRITE_CHUNK_SIZE)
-                .project((
-                    self._helix.Projection.property(_EXTERNAL_KEY),
-                    self._helix.Projection.property(_ATTRS),
-                    self._helix.Projection.property(_ORDER),
-                ))
+                .project(
+                    (
+                        self._helix.Projection.property(_EXTERNAL_KEY),
+                        self._helix.Projection.property(_ATTRS),
+                        self._helix.Projection.property(_ORDER),
+                    )
+                )
             )
             rows = _rows(
                 self._query(
-                    self._helix.read_batch()
-                    .var_as("nodes", traversal)
-                    .returning(["nodes"])
+                    self._helix.read_batch().var_as("nodes", traversal).returning(["nodes"])
                 ),
                 "nodes",
             )
@@ -1017,9 +1630,7 @@ class HelixEmbeddedStore:
                 return
             offset += len(rows)
 
-    def _source_edge_pages(
-        self, generation: str
-    ) -> Any:
+    def _source_edge_pages(self, generation: str) -> Any:
         predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
         offset = 0
         while True:
@@ -1029,30 +1640,22 @@ class HelixEmbeddedStore:
                 .order_by(_ORDER, self._helix.Order.ASC)
                 .skip(offset)
                 .limit(_WRITE_CHUNK_SIZE)
-                .project((
-                    self._helix.Projection.from_endpoint(
-                        _EXTERNAL_KEY, "source_external_key"
-                    ),
-                    self._helix.Projection.to_endpoint(
-                        _EXTERNAL_KEY, "target_external_key"
-                    ),
-                    self._helix.Projection.from_endpoint(
-                        _ATTRS, "source_attrs"
-                    ),
-                    self._helix.Projection.to_endpoint(
-                        _ATTRS, "target_attrs"
-                    ),
-                    self._helix.Projection.property(_EDGE_KEY),
-                    self._helix.Projection.property(_ATTRS),
-                    self._helix.Projection.property("$label", "relation"),
-                    self._helix.Projection.property(_ORDER),
-                ))
+                .project(
+                    (
+                        self._helix.Projection.from_endpoint(_EXTERNAL_KEY, "source_external_key"),
+                        self._helix.Projection.to_endpoint(_EXTERNAL_KEY, "target_external_key"),
+                        self._helix.Projection.from_endpoint(_ATTRS, "source_attrs"),
+                        self._helix.Projection.to_endpoint(_ATTRS, "target_attrs"),
+                        self._helix.Projection.property(_EDGE_KEY),
+                        self._helix.Projection.property(_ATTRS),
+                        self._helix.Projection.property("$label", "relation"),
+                        self._helix.Projection.property(_ORDER),
+                    )
+                )
             )
             rows = _rows(
                 self._query(
-                    self._helix.read_batch()
-                    .var_as("edges", traversal)
-                    .returning(["edges"])
+                    self._helix.read_batch().var_as("edges", traversal).returning(["edges"])
                 ),
                 "edges",
             )
@@ -1072,6 +1675,7 @@ class HelixEmbeddedStore:
         returned: list[str] = []
         for local_index, (node_id, attrs, order) in enumerate(rows):
             encoded_id = _encode_key(node_id)
+            search = _search_properties(node_id, attrs)
             variable = f"node_{local_index}"
             returned.append(variable)
             batch = batch.var_as(
@@ -1084,7 +1688,15 @@ class HelixEmbeddedStore:
                         _EXTERNAL_KEY: _tagged_key(node_id),
                         _ATTRS: attrs,
                         _ORDER: order,
-                        **_search_properties(node_id, attrs),
+                        _RECORD_HASH: _record_hash(
+                            {
+                                "id": encoded_id,
+                                "attributes": attrs,
+                                "search": search,
+                                "order": order,
+                            }
+                        ),
+                        **search,
                     },
                 ),
             )
@@ -1104,45 +1716,64 @@ class HelixEmbeddedStore:
             edge_var = f"edge_{local_index}"
             source_key = self._storage_key(generation, _encode_key(source))
             target_key = self._storage_key(generation, _encode_key(target))
-            batch = batch.var_as(
-                source_var,
-                self._helix.g().n_with_label_where(
-                    _NODE_LABEL,
-                    self._helix.SourcePredicate.eq(_STORAGE_KEY, source_key),
-                ),
-            ).var_as(
-                target_var,
-                self._helix.g().n_with_label_where(
-                    _NODE_LABEL,
-                    self._helix.SourcePredicate.eq(_STORAGE_KEY, target_key),
-                ),
-            ).var_as(
-                edge_var,
-                self._helix.g()
-                .n(self._helix.NodeRef.var(source_var))
-                .add_e(
-                    relation,
-                    self._helix.NodeRef.var(target_var),
-                    {
-                        _GENERATION: generation,
-                        _EDGE_KEY: _tagged_key(None),
-                        _ATTRS: attrs,
-                        _ORDER: order,
-                        **(
-                            {_EDGE_CONTEXT: attrs["context"]}
-                            if isinstance(attrs.get("context"), str)
-                            and attrs["context"]
-                            else {}
-                        ),
-                        **(
-                            {_NATIVE_WEIGHT: float(attrs["weight"])}
-                            if isinstance(attrs.get("weight"), (int, float))
-                            and not isinstance(attrs.get("weight"), bool)
-                            and math.isfinite(float(attrs["weight"]))
-                            else {}
-                        ),
-                    },
-                ),
+            stable_identity = _edge_identity(
+                directed=False,
+                multigraph=False,
+                source=_encode_key(source),
+                target=_encode_key(target),
+                key=_tagged_key(None),
+            )
+            batch = (
+                batch.var_as(
+                    source_var,
+                    self._helix.g().n_with_label_where(
+                        _NODE_LABEL,
+                        self._helix.SourcePredicate.eq(_STORAGE_KEY, source_key),
+                    ),
+                )
+                .var_as(
+                    target_var,
+                    self._helix.g().n_with_label_where(
+                        _NODE_LABEL,
+                        self._helix.SourcePredicate.eq(_STORAGE_KEY, target_key),
+                    ),
+                )
+                .var_as(
+                    edge_var,
+                    self._helix.g()
+                    .n(self._helix.NodeRef.var(source_var))
+                    .add_e(
+                        relation,
+                        self._helix.NodeRef.var(target_var),
+                        {
+                            _GENERATION: generation,
+                            _EDGE_KEY: _tagged_key(None),
+                            _ATTRS: attrs,
+                            _ORDER: order,
+                            _EDGE_IDENTITY: stable_identity,
+                            _RECORD_HASH: _record_hash(
+                                {
+                                    "identity": stable_identity,
+                                    "relation": relation,
+                                    "attributes": attrs,
+                                    "order": order,
+                                }
+                            ),
+                            **(
+                                {_EDGE_CONTEXT: attrs["context"]}
+                                if isinstance(attrs.get("context"), str) and attrs["context"]
+                                else {}
+                            ),
+                            **(
+                                {_NATIVE_WEIGHT: float(attrs["weight"])}
+                                if isinstance(attrs.get("weight"), (int, float))
+                                and not isinstance(attrs.get("weight"), bool)
+                                and math.isfinite(float(attrs["weight"]))
+                                else {}
+                            ),
+                        },
+                    ),
+                )
             )
             returned.append(edge_var)
         if returned:
@@ -1163,9 +1794,7 @@ class HelixEmbeddedStore:
             raise RuntimeError("cannot write through a read-only embedded Helix store")
         generation = uuid.uuid4().hex
         previous_generation = self._active_generation(required=False)
-        checksum = _TopologyStreamChecksum(
-            directed=False, multigraph=False, graph={}, extras={}
-        )
+        checksum = _TopologyStreamChecksum(directed=False, multigraph=False, graph={}, extras={})
         external_ids: set[str] = set()
         node_count = 0
         edge_count = 0
@@ -1182,9 +1811,7 @@ class HelixEmbeddedStore:
                             old_id = _decode_identity(row.get(_EXTERNAL_KEY))
                             attrs = row.get(_ATTRS)
                             if not isinstance(attrs, dict):
-                                raise RuntimeError(
-                                    "aggregate source node has invalid attributes"
-                                )
+                                raise RuntimeError("aggregate source node has invalid attributes")
                             node_id = self._global_identity(repo, old_id, attrs)
                             if node_id.startswith("external::"):
                                 if node_id in external_ids:
@@ -1198,9 +1825,7 @@ class HelixEmbeddedStore:
                             node_count += 1
                         self._write_aggregate_nodes(generation, output)
                     for page in source._source_edge_pages(source_generation):
-                        output_edges: list[
-                            tuple[str, str, str, dict[str, Any], int]
-                        ] = []
+                        output_edges: list[tuple[str, str, str, dict[str, Any], int]] = []
                         for raw in page:
                             row = _properties(raw, "aggregate source edge")
                             source_attrs = row.get("source_attrs")
@@ -1216,43 +1841,37 @@ class HelixEmbeddedStore:
                                 raise RuntimeError(
                                     "aggregate source edge has invalid schema fields"
                                 )
-                            old_source = _decode_identity(
-                                row.get("source_external_key")
-                            )
-                            old_target = _decode_identity(
-                                row.get("target_external_key")
-                            )
-                            source_id = self._global_identity(
-                                repo, old_source, source_attrs
-                            )
-                            target_id = self._global_identity(
-                                repo, old_target, target_attrs
-                            )
+                            old_source = _decode_identity(row.get("source_external_key"))
+                            old_target = _decode_identity(row.get("target_external_key"))
+                            source_id = self._global_identity(repo, old_source, source_attrs)
+                            target_id = self._global_identity(repo, old_target, target_attrs)
                             if source_id == target_id:
                                 continue
                             projected_edge = dict(attrs)
-                            output_edges.append((
-                                source_id,
-                                target_id,
-                                relation,
-                                projected_edge,
-                                edge_count,
-                            ))
-                            checksum.edge({
-                                "source": source_id,
-                                "target": target_id,
-                                "relation": relation,
-                                **projected_edge,
-                            })
+                            output_edges.append(
+                                (
+                                    source_id,
+                                    target_id,
+                                    relation,
+                                    projected_edge,
+                                    edge_count,
+                                )
+                            )
+                            checksum.edge(
+                                {
+                                    "source": source_id,
+                                    "target": target_id,
+                                    "relation": relation,
+                                    **projected_edge,
+                                }
+                            )
                             edge_count += 1
                         self._write_aggregate_edges(generation, output_edges)
 
             encoded_state_value = copy.deepcopy(state)
             build_state = encoded_state_value.setdefault("build", {})
             incremental_state = encoded_state_value.setdefault("incremental", {})
-            if not isinstance(build_state, dict) or not isinstance(
-                incremental_state, dict
-            ):
+            if not isinstance(build_state, dict) or not isinstance(incremental_state, dict):
                 raise TypeError("durable build and incremental state must be mappings")
             build_state["generation"] = generation
             incremental_state["last_successful_generation"] = generation
@@ -1265,8 +1884,7 @@ class HelixEmbeddedStore:
                 for kind in _STATE_KINDS
             }
             category_checksums = {
-                kind: _state_category_checksum(category_records[kind])
-                for kind in _STATE_KINDS
+                kind: _state_category_checksum(category_records[kind]) for kind in _STATE_KINDS
             }
             state_checksum = _combined_state_checksum(category_checksums)
             topology_checksum = checksum.hexdigest()
@@ -1283,15 +1901,10 @@ class HelixEmbeddedStore:
                 _ACTIVE_STATE_REVISION: generation,
                 _CHECKSUM_MODE: _STREAM_CHECKSUM_MODE,
                 _TOPOLOGY_CHECKSUM: topology_checksum,
+                _TOPOLOGY_REVISION: generation,
                 **{key: generation for key in _STATE_REVISION_KEYS.values()},
-                **{
-                    _STATE_CHECKSUM_KEYS[kind]: category_checksums[kind]
-                    for kind in _STATE_KINDS
-                },
-                **{
-                    _STATE_COUNT_KEYS[kind]: len(category_records[kind])
-                    for kind in _STATE_KINDS
-                },
+                **{_STATE_CHECKSUM_KEYS[kind]: category_checksums[kind] for kind in _STATE_KINDS},
+                **{_STATE_COUNT_KEYS[kind]: len(category_records[kind]) for kind in _STATE_KINDS},
                 "checksum": _generation_checksum(topology_checksum, state_checksum),
                 _GENERATION: generation,
             }
@@ -1319,7 +1932,42 @@ class HelixEmbeddedStore:
     @contextmanager
     def staged_graph(self, graph: GraphBuildData):
         """Yield one inactive native snapshot that can be finalized in place."""
-        generation = self._save_graph(graph, state=None, activate=False)
+        prepared = _prepare_topology(
+            graph,
+            max_nodes=self._max_nodes,
+            max_edges=self._max_edges,
+        )
+        generation = self._active_generation(required=False)
+        if generation is not None and not self._retain_rollback:
+            metadata = self._metadata(generation)
+            compatible = (
+                metadata.get("directed") is prepared.directed
+                and metadata.get("multigraph") is prepared.multigraph
+                and metadata.get("graph") == prepared.graph_attributes
+                and metadata.get("extras") == prepared.extras
+            )
+            topology_changed = metadata.get(_TOPOLOGY_CHECKSUM) != prepared.checksum
+            delta_candidate = (
+                self._topology_delta_candidate(generation, metadata, prepared)
+                if compatible and topology_changed
+                else None
+            )
+            if compatible and (not topology_changed or delta_candidate is not None):
+                yield _StagedDeltaGraph(
+                    graph=(
+                        self._validate_proposed_native_graph(prepared)
+                        if topology_changed
+                        else self.native_graph(generation, metadata=metadata)
+                    ),
+                    generation=generation,
+                    state={},
+                    metadata=metadata,
+                    store_path=self.path,
+                    prepared=prepared,
+                )
+                return
+
+        generation = self._save_prepared_graph(prepared, state=None, activate=False)
         staged = self.load_generation(generation, attach_query=False)
         try:
             yield staged
@@ -1327,13 +1975,21 @@ class HelixEmbeddedStore:
             if self._active_generation(required=False) != generation:
                 self._drop_generation(generation)
 
-    def activate_staged(self, staged: LoadedGraph, state: dict[str, Any]) -> LoadedGraph:
+    def activate_staged(
+        self, staged: LoadedGraph | _StagedDeltaGraph, state: dict[str, Any]
+    ) -> LoadedGraph:
         """Attach durable state, verify, and activate an existing staged topology."""
         if self._read_only:
             raise RuntimeError("cannot activate through a read-only embedded Helix store")
         generation = staged.generation
         if staged.store_path != self.path:
             raise ValueError("staged graph belongs to a different embedded Helix store")
+        if isinstance(staged, _StagedDeltaGraph):
+            if self._active_generation() != generation:
+                raise RuntimeError("active generation changed during native delta analysis")
+            if not self._try_delta(staged.prepared, state):
+                raise RuntimeError("native delta became ineligible during analysis")
+            return self.load_generation(generation)
         if self._metadata(generation).get("state_record_count") != 0:
             raise RuntimeError("staged Helix generation has already been finalized")
 
@@ -1344,17 +2000,13 @@ class HelixEmbeddedStore:
             raise TypeError("durable build and incremental state must be mappings")
         build_state["generation"] = generation
         incremental_state["last_successful_generation"] = generation
-        encoded_state = _json_value(
-            _encode_state_value(encoded), "durable graph state"
-        )
+        encoded_state = _json_value(_encode_state_value(encoded), "durable graph state")
         records = self._state_records(encoded_state)
         category_records = {
-            kind: [record for record in records if record[0] == kind]
-            for kind in _STATE_KINDS
+            kind: [record for record in records if record[0] == kind] for kind in _STATE_KINDS
         }
         category_checksums = {
-            kind: _state_category_checksum(category_records[kind])
-            for kind in _STATE_KINDS
+            kind: _state_category_checksum(category_records[kind]) for kind in _STATE_KINDS
         }
         previous_generation = self._active_generation(required=False)
         try:
@@ -1373,14 +2025,8 @@ class HelixEmbeddedStore:
                 "state_record_count": len(records),
                 "state_checksum": state_checksum,
                 "checksum": _generation_checksum(topology_checksum, state_checksum),
-                **{
-                    _STATE_CHECKSUM_KEYS[kind]: category_checksums[kind]
-                    for kind in _STATE_KINDS
-                },
-                **{
-                    _STATE_COUNT_KEYS[kind]: len(category_records[kind])
-                    for kind in _STATE_KINDS
-                },
+                **{_STATE_CHECKSUM_KEYS[kind]: category_checksums[kind] for kind in _STATE_KINDS},
+                **{_STATE_COUNT_KEYS[kind]: len(category_records[kind]) for kind in _STATE_KINDS},
             }
             traversal = self._helix.g().n_with_label_where(
                 _META_LABEL,
@@ -1389,9 +2035,7 @@ class HelixEmbeddedStore:
             for key, value in updates.items():
                 traversal = traversal.set_property(key, value)
             self._query(
-                self._helix.write_batch()
-                .var_as("finalize", traversal)
-                .returning(["finalize"])
+                self._helix.write_batch().var_as("finalize", traversal).returning(["finalize"])
             )
             self._verify_generation_counts(generation)
             self._activate_generation(
@@ -1445,29 +2089,20 @@ class HelixEmbeddedStore:
 
         revision = uuid.uuid4().hex
         records_by_kind = {
-            kind: self._state_records_for_kind(state, generation, kind)
-            for kind in changed_kinds
+            kind: self._state_records_for_kind(state, generation, kind) for kind in changed_kinds
         }
-        changed_records = [
-            record
-            for kind in changed_kinds
-            for record in records_by_kind[kind]
-        ]
+        changed_records = [record for kind in changed_kinds for record in records_by_kind[kind]]
         category_checksums: dict[str, str] = {}
         category_counts: dict[str, int] = {}
         for kind in _STATE_KINDS:
             if kind in records_by_kind:
-                category_checksums[kind] = _state_category_checksum(
-                    records_by_kind[kind]
-                )
+                category_checksums[kind] = _state_category_checksum(records_by_kind[kind])
                 category_counts[kind] = len(records_by_kind[kind])
                 continue
             checksum = meta.get(_STATE_CHECKSUM_KEYS[kind])
             count = meta.get(_STATE_COUNT_KEYS[kind])
             if not isinstance(checksum, str) or not isinstance(count, int):
-                raise RuntimeError(
-                    "embedded Helix metadata has invalid state category fields"
-                )
+                raise RuntimeError("embedded Helix metadata has invalid state category fields")
             category_checksums[kind] = checksum
             category_counts[kind] = count
         state_checksum = _combined_state_checksum(category_checksums)
@@ -1481,18 +2116,9 @@ class HelixEmbeddedStore:
                 "state_record_count": state_record_count,
                 "state_checksum": state_checksum,
                 "checksum": _generation_checksum(topology_checksum, state_checksum),
-                **{
-                    _STATE_REVISION_KEYS[kind]: revision
-                    for kind in changed_kinds
-                },
-                **{
-                    _STATE_CHECKSUM_KEYS[kind]: category_checksums[kind]
-                    for kind in changed_kinds
-                },
-                **{
-                    _STATE_COUNT_KEYS[kind]: category_counts[kind]
-                    for kind in changed_kinds
-                },
+                **{_STATE_REVISION_KEYS[kind]: revision for kind in changed_kinds},
+                **{_STATE_CHECKSUM_KEYS[kind]: category_checksums[kind] for kind in changed_kinds},
+                **{_STATE_COUNT_KEYS[kind]: category_counts[kind] for kind in changed_kinds},
             }
             for key, value in updates.items():
                 traversal = traversal.set_property(key, value)
@@ -1505,9 +2131,7 @@ class HelixEmbeddedStore:
                         f"new_state_{index}",
                         self._helix.g().add_n(
                             _STATE_LABEL,
-                            self._state_record_properties(
-                                generation, revision, record
-                            ),
+                            self._state_record_properties(generation, revision, record),
                         ),
                     )
             else:
@@ -1519,21 +2143,19 @@ class HelixEmbeddedStore:
                 if old_revision is None:
                     continue
                 variable = f"drop_old_state_{index}"
-                predicate = self._helix.SourcePredicate.and_((
-                    self._helix.SourcePredicate.eq(_GENERATION, generation),
-                    self._helix.SourcePredicate.eq(_STATE_REVISION, old_revision),
-                    self._helix.SourcePredicate.eq(_STATE_KIND, kind),
-                ))
+                predicate = self._helix.SourcePredicate.and_(
+                    (
+                        self._helix.SourcePredicate.eq(_GENERATION, generation),
+                        self._helix.SourcePredicate.eq(_STATE_REVISION, old_revision),
+                        self._helix.SourcePredicate.eq(_STATE_KIND, kind),
+                    )
+                )
                 batch = batch.var_as(
                     variable,
-                    self._helix.g()
-                    .n_with_label_where(_STATE_LABEL, predicate)
-                    .drop(),
+                    self._helix.g().n_with_label_where(_STATE_LABEL, predicate).drop(),
                 )
                 returned.append(variable)
-            self._query(
-                batch.returning(returned)
-            )
+            self._query(batch.returning(returned))
         except Exception:
             for kind in changed_kinds:
                 self._drop_state_revision(generation, revision, kind=kind)
@@ -1566,9 +2188,7 @@ class HelixEmbeddedStore:
                     raise TypeError("incremental durable state files must be a mapping")
                 extraction_cache = payload.get("extraction_cache", {})
                 if not isinstance(extraction_cache, dict):
-                    raise TypeError(
-                        "incremental durable state extraction cache must be a mapping"
-                    )
+                    raise TypeError("incremental durable state extraction cache must be a mapping")
                 metadata = {
                     key: value
                     for key, value in payload.items()
@@ -1582,16 +2202,12 @@ class HelixEmbeddedStore:
                 order += 1
                 for path, file_state in files.items():
                     if not isinstance(path, str):
-                        raise TypeError(
-                            "incremental durable state file paths must be strings"
-                        )
+                        raise TypeError("incremental durable state file paths must be strings")
                     records.append(("file", path, file_state, order))
                     order += 1
                 for cache_key, cache_value in extraction_cache.items():
                     if not isinstance(cache_key, str):
-                        raise TypeError(
-                            "incremental durable extraction cache keys must be strings"
-                        )
+                        raise TypeError("incremental durable extraction cache keys must be strings")
                     records.append(("cache", cache_key, cache_value, order))
                     order += 1
                 continue
@@ -1606,6 +2222,35 @@ class HelixEmbeddedStore:
         normalized.sort(key=lambda item: (kind_rank[item[0]], item[3]))
         return normalized
 
+    def _prepare_state(self, state: dict[str, Any] | None, generation: str) -> _PreparedState:
+        encoded_state: dict[str, Any] | None = None
+        if state is not None:
+            if not isinstance(state, dict):
+                raise TypeError("durable graph state must be a mapping")
+            durable_state = copy.deepcopy(state)
+            build_state = durable_state.setdefault("build", {})
+            incremental_state = durable_state.setdefault("incremental", {})
+            if not isinstance(build_state, dict) or not isinstance(incremental_state, dict):
+                raise TypeError("durable build and incremental state sections must be mappings")
+            build_state["generation"] = generation
+            incremental_state["last_successful_generation"] = generation
+            encoded_state = _json_value(_encode_state_value(durable_state), "durable graph state")
+        records = self._state_records(encoded_state)
+        category_records = {
+            kind: [record for record in records if record[0] == kind] for kind in _STATE_KINDS
+        }
+        category_checksums = {
+            kind: _state_category_checksum(category_records[kind]) for kind in _STATE_KINDS
+        }
+        return _PreparedState(
+            encoded=encoded_state,
+            records=records,
+            category_records=category_records,
+            category_checksums=category_checksums,
+            category_counts={kind: len(category_records[kind]) for kind in _STATE_KINDS},
+            checksum=_combined_state_checksum(category_checksums),
+        )
+
     def _state_records_for_kind(
         self, state: dict[str, Any], generation: str, kind: str
     ) -> list[tuple[str, str, Any, int]]:
@@ -1615,16 +2260,9 @@ class HelixEmbeddedStore:
         elif kind == "community":
             partial = {"communities": value}
         else:
-            partial = {"incremental": {
-                "files" if kind == "file" else "extraction_cache": value
-            }}
-        encoded = _json_value(
-            _encode_state_value(partial), f"durable {kind} state"
-        )
-        return [
-            record for record in self._state_records(encoded)
-            if record[0] == kind
-        ]
+            partial = {"incremental": {"files" if kind == "file" else "extraction_cache": value}}
+        encoded = _json_value(_encode_state_value(partial), f"durable {kind} state")
+        return [record for record in self._state_records(encoded) if record[0] == kind]
 
     def _stage_generation(
         self,
@@ -1636,13 +2274,12 @@ class HelixEmbeddedStore:
     ) -> None:
         metadata = {**manifest, _GENERATION: generation}
         self._query(
-            self._helix.write_batch()
-            .var_as("meta", self._helix.g().add_n(_META_LABEL, metadata))
+            self._helix.write_batch().var_as("meta", self._helix.g().add_n(_META_LABEL, metadata))
         )
 
-        row_params = self._helix.define_params({
-            "rows": self._helix.param.array(self._helix.param.object())
-        })
+        row_params = self._helix.define_params(
+            {"rows": self._helix.param.array(self._helix.param.object())}
+        )
         node_body = self._helix.write_batch().var_as(
             "node",
             self._helix.g().add_n(
@@ -1655,6 +2292,7 @@ class HelixEmbeddedStore:
                     _ORDER: self._helix.PropertyInput.param(_ORDER),
                     _SEARCH_LABEL: self._helix.PropertyInput.param(_SEARCH_LABEL),
                     _SEARCH_TEXT: self._helix.PropertyInput.param(_SEARCH_TEXT),
+                    _RECORD_HASH: self._helix.PropertyInput.param(_RECORD_HASH),
                 },
             ),
         )
@@ -1663,10 +2301,12 @@ class HelixEmbeddedStore:
             rows = [
                 {
                     _STORAGE_KEY: self._storage_key(generation, node.encoded_id),
-                    _EXTERNAL_KEY: node.identity,
-                    _ATTRS: node.attributes,
+                    _EXTERNAL_KEY: _tagged_key(node.external_id),
+                    _ATTRS: dict(node.attributes),
                     _ORDER: node.order,
-                    **node.search,
+                    _RECORD_HASH: node.record_hash,
+                    _SEARCH_LABEL: node.search_label,
+                    _SEARCH_TEXT: node.search_text,
                 }
                 for node in nodes[offset : offset + _WRITE_CHUNK_SIZE]
             ]
@@ -1697,9 +2337,7 @@ class HelixEmbeddedStore:
                     node_ids[storage_key] = node_id
 
         if len(node_ids) != len(nodes):
-            raise RuntimeError(
-                "embedded Helix staged node count does not match the input graph"
-            )
+            raise RuntimeError("embedded Helix staged node count does not match the input graph")
 
         groups: dict[tuple[str, bool, bool], list[_PreparedEdge]] = {}
         for edge in edges:
@@ -1710,15 +2348,13 @@ class HelixEmbeddedStore:
                 _EDGE_KEY: self._helix.PropertyInput.param(_EDGE_KEY),
                 _ATTRS: self._helix.PropertyInput.param(_ATTRS),
                 _ORDER: self._helix.PropertyInput.param(_ORDER),
+                _EDGE_IDENTITY: self._helix.PropertyInput.param(_EDGE_IDENTITY),
+                _RECORD_HASH: self._helix.PropertyInput.param(_RECORD_HASH),
             }
             if has_context:
-                properties[_EDGE_CONTEXT] = self._helix.PropertyInput.param(
-                    _EDGE_CONTEXT
-                )
+                properties[_EDGE_CONTEXT] = self._helix.PropertyInput.param(_EDGE_CONTEXT)
             if has_weight:
-                properties[_NATIVE_WEIGHT] = self._helix.PropertyInput.param(
-                    _NATIVE_WEIGHT
-                )
+                properties[_NATIVE_WEIGHT] = self._helix.PropertyInput.param(_NATIVE_WEIGHT)
             edge_body = self._helix.write_batch().var_as(
                 "edge",
                 self._helix.g()
@@ -1729,23 +2365,23 @@ class HelixEmbeddedStore:
                     properties,
                 ),
             )
-            edge_batch = self._helix.write_batch().for_each_param(
-                "rows", edge_body
-            )
+            edge_batch = self._helix.write_batch().for_each_param("rows", edge_body)
             for offset in range(0, len(group), _STAGED_EDGE_WRITE_CHUNK_SIZE):
                 rows = []
                 for edge in group[offset : offset + _STAGED_EDGE_WRITE_CHUNK_SIZE]:
                     row = {
                         "source": [node_ids[self._storage_key(generation, edge.source)]],
                         "target": [node_ids[self._storage_key(generation, edge.target)]],
-                        _EDGE_KEY: edge.identity,
-                        _ATTRS: edge.attributes,
+                        _EDGE_KEY: _tagged_key(edge.key),
+                        _ATTRS: dict(edge.attributes),
                         _ORDER: edge.order,
+                        _EDGE_IDENTITY: edge.stable_identity,
+                        _RECORD_HASH: edge.record_hash,
                     }
                     if has_context:
-                        row[_EDGE_CONTEXT] = edge.attributes["context"]
+                        row[_EDGE_CONTEXT] = edge.context
                     if has_weight:
-                        row[_NATIVE_WEIGHT] = float(edge.attributes["weight"])
+                        row[_NATIVE_WEIGHT] = edge.weight
                     rows.append(row)
                 self._query(
                     edge_batch,
@@ -1801,7 +2437,8 @@ class HelixEmbeddedStore:
             _STATE_REVISION: revision,
             _STATE_KIND: kind,
             _STATE_KEY: key,
-            _STATE_PAYLOAD: "json:" + json.dumps(
+            _STATE_PAYLOAD: "json:"
+            + json.dumps(
                 payload,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -1811,7 +2448,11 @@ class HelixEmbeddedStore:
         }
         if kind == "community" and isinstance(payload, dict):
             for name in (
-                "id", "name", "naming_source", "signature", "cohesion",
+                "id",
+                "name",
+                "naming_source",
+                "signature",
+                "cohesion",
             ):
                 if name in payload and payload[name] is not None:
                     properties[name] = payload[name]
@@ -1822,7 +2463,7 @@ class HelixEmbeddedStore:
                     properties[name] = payload[name]
         return properties
 
-    def _active_generation(self, *, required: bool = True) -> str | None:
+    def _active_generation(self, *, required: bool = True, client: Any | None = None) -> str | None:
         batch = (
             self._helix.read_batch()
             .var_as(
@@ -1836,7 +2477,7 @@ class HelixEmbeddedStore:
             )
             .returning(["control"])
         )
-        rows = _rows(self._query(batch), "control")
+        rows = _rows(self._snapshot_query(batch, client), "control")
         if not rows:
             if required:
                 raise RuntimeError("embedded Helix graph has no active generation")
@@ -1862,10 +2503,14 @@ class HelixEmbeddedStore:
                 {_CONTROL_KEY: "active", _ACTIVE_GENERATION: generation},
             )
         else:
-            traversal = self._helix.g().n_with_label_where(
-                _CONTROL_LABEL,
-                self._helix.SourcePredicate.eq(_CONTROL_KEY, "active"),
-            ).set_property(_ACTIVE_GENERATION, generation)
+            traversal = (
+                self._helix.g()
+                .n_with_label_where(
+                    _CONTROL_LABEL,
+                    self._helix.SourcePredicate.eq(_CONTROL_KEY, "active"),
+                )
+                .set_property(_ACTIVE_GENERATION, generation)
+            )
             if retain_previous and previous is not None:
                 traversal = traversal.set_property(_PREVIOUS_GENERATION, previous)
             else:
@@ -1953,9 +2598,7 @@ class HelixEmbeddedStore:
         generations = {
             generation
             for raw in _rows(self._query(batch), "meta")
-            if isinstance(
-                generation := _properties(raw, "metadata").get(_GENERATION), str
-            )
+            if isinstance(generation := _properties(raw, "metadata").get(_GENERATION), str)
         }
         for generation in generations:
             if generation not in retained:
@@ -1976,23 +2619,25 @@ class HelixEmbeddedStore:
                 revision = _state_revision(row, kind)
                 if revision is None:
                     continue
-                predicate = self._helix.SourcePredicate.and_((
-                    self._helix.SourcePredicate.eq(_GENERATION, generation),
-                    self._helix.SourcePredicate.eq(_STATE_KIND, kind),
-                    self._helix.SourcePredicate.neq(_STATE_REVISION, revision),
-                ))
+                predicate = self._helix.SourcePredicate.and_(
+                    (
+                        self._helix.SourcePredicate.eq(_GENERATION, generation),
+                        self._helix.SourcePredicate.eq(_STATE_KIND, kind),
+                        self._helix.SourcePredicate.neq(_STATE_REVISION, revision),
+                    )
+                )
                 self._query(
                     self._helix.write_batch()
                     .var_as(
                         "drop_inactive_state",
-                        self._helix.g()
-                        .n_with_label_where(_STATE_LABEL, predicate)
-                        .drop(),
+                        self._helix.g().n_with_label_where(_STATE_LABEL, predicate).drop(),
                     )
                     .returning(["drop_inactive_state"])
                 )
 
-    def _control_properties(self, *, required: bool = True) -> dict[str, Any] | None:
+    def _control_properties(
+        self, *, required: bool = True, client: Any | None = None
+    ) -> dict[str, Any] | None:
         batch = (
             self._helix.read_batch()
             .var_as(
@@ -2006,7 +2651,7 @@ class HelixEmbeddedStore:
             )
             .returning(["control"])
         )
-        rows = _rows(self._query(batch), "control")
+        rows = _rows(self._snapshot_query(batch, client), "control")
         if not rows:
             if required:
                 raise RuntimeError("embedded Helix graph has no active generation")
@@ -2015,9 +2660,7 @@ class HelixEmbeddedStore:
             raise RuntimeError("embedded Helix graph has duplicated control rows")
         return _properties(rows[0], "control")
 
-    def _read_rows(
-        self, generation: str
-    ) -> tuple[dict[str, Any], list[Any], list[Any], list[Any]]:
+    def _read_rows(self, generation: str) -> tuple[dict[str, Any], list[Any], list[Any], list[Any]]:
         predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
         batch = (
             self._helix.read_batch()
@@ -2059,34 +2702,39 @@ class HelixEmbeddedStore:
         *,
         metadata: dict[str, Any] | None = None,
         revision: str | None = None,
+        client: Any | None = None,
     ) -> list[Any]:
-        generation_predicate = self._helix.SourcePredicate.eq(
-            _GENERATION, generation
-        )
+        generation_predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
         if revision is not None:
-            predicate = self._helix.SourcePredicate.and_((
-                generation_predicate,
-                self._helix.SourcePredicate.eq(_STATE_REVISION, revision),
-            ))
+            predicate = self._helix.SourcePredicate.and_(
+                (
+                    generation_predicate,
+                    self._helix.SourcePredicate.eq(_STATE_REVISION, revision),
+                )
+            )
         else:
-            meta = metadata or self._metadata(generation)
+            meta = metadata or self._metadata(generation, client=client)
             kind_predicates = []
             for kind in _STATE_KINDS:
                 selected_revision = _state_revision(meta, kind)
                 if selected_revision is None:
                     predicate = generation_predicate
                     break
-                kind_predicates.append(self._helix.SourcePredicate.and_((
-                    self._helix.SourcePredicate.eq(_STATE_KIND, kind),
-                    self._helix.SourcePredicate.eq(
-                        _STATE_REVISION, selected_revision
-                    ),
-                )))
+                kind_predicates.append(
+                    self._helix.SourcePredicate.and_(
+                        (
+                            self._helix.SourcePredicate.eq(_STATE_KIND, kind),
+                            self._helix.SourcePredicate.eq(_STATE_REVISION, selected_revision),
+                        )
+                    )
+                )
             else:
-                predicate = self._helix.SourcePredicate.and_((
-                    generation_predicate,
-                    self._helix.SourcePredicate.or_(kind_predicates),
-                ))
+                predicate = self._helix.SourcePredicate.and_(
+                    (
+                        generation_predicate,
+                        self._helix.SourcePredicate.or_(kind_predicates),
+                    )
+                )
         batch = (
             self._helix.read_batch()
             .var_as(
@@ -2100,7 +2748,7 @@ class HelixEmbeddedStore:
             )
             .returning(["state"])
         )
-        return _rows(self._query(batch), "state")
+        return _rows(self._snapshot_query(batch, client), "state")
 
     @staticmethod
     def _state_records_from_rows(
@@ -2120,9 +2768,7 @@ class HelixEmbeddedStore:
                 or isinstance(order, bool)
                 or _STATE_PAYLOAD not in row
             ):
-                raise RuntimeError(
-                    "embedded Helix durable state record is missing schema fields"
-                )
+                raise RuntimeError("embedded Helix durable state record is missing schema fields")
             order_key = (kind, order)
             if order_key in seen_orders:
                 raise RuntimeError("embedded Helix durable state has duplicate ordering")
@@ -2159,23 +2805,17 @@ class HelixEmbeddedStore:
         for kind, key, payload, _ in ordered:
             if kind == "section":
                 if key in state:
-                    raise RuntimeError(
-                        f"embedded Helix durable state duplicates section {key!r}"
-                    )
+                    raise RuntimeError(f"embedded Helix durable state duplicates section {key!r}")
                 state[key] = payload
             elif kind == "community":
                 community_records.append(payload)
             elif kind == "file":
                 if key in file_records:
-                    raise RuntimeError(
-                        f"embedded Helix durable state duplicates file {key!r}"
-                    )
+                    raise RuntimeError(f"embedded Helix durable state duplicates file {key!r}")
                 file_records[key] = payload
             else:
                 if key in cache_records:
-                    raise RuntimeError(
-                        f"embedded Helix durable state duplicates cache key {key!r}"
-                    )
+                    raise RuntimeError(f"embedded Helix durable state duplicates cache key {key!r}")
                 cache_records[key] = payload
 
         if community_records:
@@ -2187,9 +2827,7 @@ class HelixEmbeddedStore:
         if file_records:
             incremental = state.setdefault("incremental", {})
             if not isinstance(incremental, dict) or "files" in incremental:
-                raise RuntimeError(
-                    "embedded Helix durable state has invalid incremental records"
-                )
+                raise RuntimeError("embedded Helix durable state has invalid incremental records")
             incremental["files"] = file_records
         if cache_records:
             incremental = state.setdefault("incremental", {})
@@ -2201,12 +2839,8 @@ class HelixEmbeddedStore:
         return state
 
     @staticmethod
-    def _verified_state_from_rows(
-        rows: list[Any], metadata: dict[str, Any]
-    ) -> dict[str, Any]:
-        state = HelixEmbeddedStore._state_from_rows(
-            rows, metadata.get("state_record_count")
-        )
+    def _verified_state_from_rows(rows: list[Any], metadata: dict[str, Any]) -> dict[str, Any]:
+        state = HelixEmbeddedStore._state_from_rows(rows, metadata.get("state_record_count"))
         has_category_checksums = all(
             isinstance(metadata.get(_STATE_CHECKSUM_KEYS[kind]), str)
             and isinstance(metadata.get(_STATE_COUNT_KEYS[kind]), int)
@@ -2263,10 +2897,11 @@ class HelixEmbeddedStore:
         generation: str | None = None,
         *,
         metadata: dict[str, Any] | None = None,
+        client: Any | None = None,
     ) -> Any:
         """Load one immutable native snapshot of the active generation."""
         generation = generation or self.active_generation
-        meta = metadata or self._metadata(generation)
+        meta = metadata or self._metadata(generation, client=client)
         node_count = meta.get("node_count")
         edge_count = meta.get("edge_count")
         if (
@@ -2275,14 +2910,15 @@ class HelixEmbeddedStore:
             or node_count > self._max_nodes
             or edge_count > self._max_edges
         ):
-            raise RuntimeError(
-                "embedded Helix generation exceeds configured snapshot bounds"
-            )
+            raise RuntimeError("embedded Helix generation exceeds configured snapshot bounds")
         predicate = self._helix.SourcePredicate.eq(_GENERATION, generation)
         kind = (
-            "multidigraph" if bool(meta.get("directed")) and bool(meta.get("multigraph"))
-            else "digraph" if bool(meta.get("directed"))
-            else "multigraph" if bool(meta.get("multigraph"))
+            "multidigraph"
+            if bool(meta.get("directed")) and bool(meta.get("multigraph"))
+            else "digraph"
+            if bool(meta.get("directed"))
+            else "multigraph"
+            if bool(meta.get("multigraph"))
             else "graph"
         )
         selection = self._helix.GraphSelection(
@@ -2306,6 +2942,9 @@ class HelixEmbeddedStore:
                     *_STATE_COUNT_KEYS.values(),
                     _CHECKSUM_MODE,
                     _TOPOLOGY_CHECKSUM,
+                    _TOPOLOGY_REVISION,
+                    _NODE_PAGE_HASHES,
+                    _EDGE_PAGE_HASHES,
                     "state_checksum",
                     "checksum",
                 ),
@@ -2323,7 +2962,7 @@ class HelixEmbeddedStore:
             max_edges=self._max_edges,
             allow_full_scan=True,
         )
-        graph = self._client.graph(selection)
+        graph = (client or self._client).graph(selection)
         if graph.node_count != meta.get("node_count") or graph.edge_count != meta.get("edge_count"):
             raise RuntimeError("native Helix snapshot failed generation count verification")
         return graph
@@ -2388,7 +3027,8 @@ class HelixEmbeddedStore:
                 f"read {len(nodes_with_order)}/{len(edges_with_order)}"
             )
         if meta.get(_CHECKSUM_MODE) in {
-            _SPLIT_CHECKSUM_MODE, _STREAM_CHECKSUM_MODE,
+            _SPLIT_CHECKSUM_MODE,
+            _STREAM_CHECKSUM_MODE,
         }:
             if meta.get(_CHECKSUM_MODE) == _STREAM_CHECKSUM_MODE:
                 stream_checksum = _TopologyStreamChecksum(
@@ -2412,9 +3052,7 @@ class HelixEmbeddedStore:
                 )
             state_checksum = meta.get("state_checksum")
             if not isinstance(state_checksum, str):
-                raise RuntimeError(
-                    "embedded Helix metadata has no durable state checksum"
-                )
+                raise RuntimeError("embedded Helix metadata has no durable state checksum")
             actual_checksum = _generation_checksum(topology_checksum, state_checksum)
         else:
             actual_checksum = _checksum(payload)
@@ -2434,16 +3072,12 @@ class HelixEmbeddedStore:
             self._helix.read_batch()
             .var_as(
                 "nodes",
-                self._helix.g()
-                .n_with_label_where(_NODE_LABEL, predicate)
-                .count(),
+                self._helix.g().n_with_label_where(_NODE_LABEL, predicate).count(),
             )
             .var_as("edges", self._helix.g().e_where(predicate).count())
             .var_as(
                 "state_records",
-                self._helix.g()
-                .n_with_label_where(_STATE_LABEL, predicate)
-                .count(),
+                self._helix.g().n_with_label_where(_STATE_LABEL, predicate).count(),
             )
             .returning(["nodes", "edges", "state_records"])
         )
@@ -2476,30 +3110,43 @@ class HelixEmbeddedStore:
                 f"expected {_SCHEMA_VERSION}, got {meta.get('schema_version')!r}"
             )
 
-    def load_generation(
-        self, generation: str, *, attach_query: bool = True
-    ) -> LoadedGraph:
-        meta = self._metadata(generation)
-        self._validate_metadata(meta)
-        native = self.native_graph(generation, metadata=meta)
-        state = self._verified_state_from_rows(
-            self._read_state_rows(generation, metadata=meta), meta
-        )
-        decoded = _decode_state_value(state)
-        if not isinstance(decoded, dict):
-            raise RuntimeError("embedded Helix generation contains invalid durable state")
-        query = HelixNodeQuery(self.path, generation) if attach_query else None
-        return LoadedGraph(native, generation, decoded, meta, self.path, query)
+    def load_generation(self, generation: str | None, *, attach_query: bool = True) -> LoadedGraph:
+        snapshot_client = open_embedded_client(self.path, read_only=True) if attach_query else None
+        client = snapshot_client or self._client
+        try:
+            if generation is None:
+                generation = self._active_generation(client=client)
+                assert generation is not None
+            meta = self._metadata(generation, client=client)
+            self._validate_metadata(meta)
+            native = self.native_graph(generation, metadata=meta, client=client)
+            state = self._verified_state_from_rows(
+                self._read_state_rows(generation, metadata=meta, client=client),
+                meta,
+            )
+            decoded = _decode_state_value(state)
+            if not isinstance(decoded, dict):
+                raise RuntimeError("embedded Helix generation contains invalid durable state")
+            query = (
+                HelixNodeQuery(self.path, generation, client=snapshot_client)
+                if snapshot_client is not None
+                else None
+            )
+            return LoadedGraph(native, generation, decoded, meta, self.path, query)
+        except Exception:
+            if snapshot_client is not None:
+                _close_public_client(snapshot_client)
+            raise
 
     def load(self) -> LoadedGraph:
-        return self.load_generation(self.active_generation)
+        return self.load_generation(None)
 
     def checkpoint(self) -> None:
         # Embedded write queries await the storage commit; close() flushes the handle.
         if self._closed:
             raise RuntimeError("embedded Helix store is closed")
 
-    def _metadata(self, generation: str) -> dict[str, Any]:
+    def _metadata(self, generation: str, *, client: Any | None = None) -> dict[str, Any]:
         batch = (
             self._helix.read_batch()
             .var_as(
@@ -2513,7 +3160,7 @@ class HelixEmbeddedStore:
             )
             .returning(["meta"])
         )
-        rows = _rows(self._query(batch), "meta")
+        rows = _rows(self._snapshot_query(batch, client), "meta")
         if len(rows) != 1:
             raise RuntimeError("embedded Helix graph metadata is missing or duplicated")
         return _properties(rows[0], "metadata")
@@ -2574,17 +3221,24 @@ class HelixGraphReader:
                 metadata = store._metadata(generation)
                 version = (
                     generation,
-                    *(
-                        _state_revision(metadata, kind)
-                        for kind in _STATE_KINDS
-                    ),
+                    metadata.get(_TOPOLOGY_REVISION),
+                    *(_state_revision(metadata, kind) for kind in _STATE_KINDS),
                 )
                 if self._graph is None or version != self._version:
-                    if self._graph is not None and self._graph.query is not None:
-                        self._graph.query.close()
-                    self._graph = store.load_generation(generation)
-                    self._version = version
-            return self._graph
+                    candidate = store.load()
+                    candidate_version = (
+                        candidate.generation,
+                        candidate.metadata.get(_TOPOLOGY_REVISION),
+                        *(_state_revision(dict(candidate.metadata), kind) for kind in _STATE_KINDS),
+                    )
+                    if candidate_version != self._version:
+                        self._graph = candidate
+                        self._version = candidate_version
+                    elif candidate.query is not None:
+                        candidate.query.close()
+            graph = self._graph
+            assert graph is not None
+            return graph
 
     def close(self) -> None:
         with self._lock:
@@ -2593,11 +3247,8 @@ class HelixGraphReader:
             self._graph = None
             self._version = None
 
-    def __del__(self) -> None:
-        try:
-            self.close()
-        except Exception:
-            pass
+    # Deliberately no __del__; closing the owned query from cyclic GC has the
+    # same unsafe b3 re-entrancy as finalizing HelixNodeQuery directly.
 
 
 def persist_graph(

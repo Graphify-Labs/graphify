@@ -41,13 +41,13 @@ def _export_identity(value: Any) -> Any:
     return value
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class NodeData:
     id: Any
     attributes: Mapping[str, Any] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EdgeData:
     source: Any
     target: Any
