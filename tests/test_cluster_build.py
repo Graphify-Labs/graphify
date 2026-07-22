@@ -112,6 +112,50 @@ def test_rebuild_skips_when_unchanged_and_force_rebuilds(two_members):
     assert not forced["skipped"]
 
 
+def test_rebuild_when_link_mode_changes(two_members):
+    spec_path = two_members / "cluster.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["links"] = [{
+        "type": "api_call",
+        "from": {"repo": "alpha", "file": "src/app.ts"},
+        "to": {"repo": "beta", "file": "src/server.ts"},
+    }]
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+    linked = build_cluster(two_members)
+    assert not linked["skipped"]
+    assert any(
+        data.get("origin") == "cluster_spec"
+        for _u, _v, data in _load_out(two_members).edges(data=True)
+    )
+
+    unlinked = build_cluster(two_members, no_links=True)
+    assert not unlinked["skipped"]
+    assert not any(
+        data.get("origin") == "cluster_spec"
+        for _u, _v, data in _load_out(two_members).edges(data=True)
+    )
+    assert build_cluster(two_members, no_links=True)["skipped"]
+
+    relinked = build_cluster(two_members)
+    assert not relinked["skipped"]
+    assert any(
+        data.get("origin") == "cluster_spec"
+        for _u, _v, data in _load_out(two_members).edges(data=True)
+    )
+
+
+def test_legacy_manifest_without_link_mode_rebuilds(two_members):
+    build_cluster(two_members)
+    manifest_path = two_members / "graphify-out" / "cluster-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["links_enabled"] is True
+    del manifest["links_enabled"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert not build_cluster(two_members)["skipped"]
+
+
 def test_rebuild_after_member_change_is_idempotent(tmp_path, two_members):
     first = build_cluster(two_members)
     # Change a member graph: rebuild must pick it up and not duplicate anything.
@@ -150,6 +194,7 @@ def test_build_writes_manifest_and_report(two_members):
     manifest = json.loads((out / "cluster-manifest.json").read_text(encoding="utf-8"))
     assert set(manifest["members"]) == {"alpha", "beta"}
     assert manifest["members"]["alpha"]["source_hash"]
+    assert manifest["links_enabled"] is True
     report = (out / "CLUSTER_REPORT.md").read_text(encoding="utf-8")
     assert "test-cluster" in report and "alpha" in report
 

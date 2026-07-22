@@ -7,6 +7,7 @@ from graphify.cluster_graph import (
     AmbiguousSelectorError,
     ClusterSpecError,
     build_cluster,
+    check_cluster,
     load_spec,
     apply_spec_links,
     compose_members,
@@ -190,6 +191,70 @@ def test_mirrored_file_link(linked_cluster):
     data = G.get_edge_data("web::types_payload", "svc::payload")
     assert data["relation"] == "mirrors"
     assert data["direction"] == "both"
+
+
+def test_duplicate_direct_links_fail_check_and_build(linked_cluster):
+    write_cluster(linked_cluster, [
+        {"tag": "web", "path": "../web"},
+        {"tag": "svc", "path": "../svc"},
+    ], links=[
+        {
+            "type": "api_call",
+            "name": "first-contract",
+            "from": {"repo": "web", "file": "app/lib/cube/cube-client.ts"},
+            "to": {"repo": "svc", "file": "cube.js"},
+        },
+        {
+            "type": "references",
+            "name": "second-contract",
+            "from": {"repo": "web", "file": "app/lib/cube/cube-client.ts"},
+            "to": {"repo": "svc", "file": "cube.js"},
+        },
+    ])
+
+    report, errors = check_cluster(linked_cluster)
+    assert report.edges_added == 1
+    assert any("one relation per node pair" in error for error in errors)
+    assert any("first-contract" in error and "second-contract" in error for error in errors)
+    with pytest.raises(ClusterSpecError, match="one relation per node pair"):
+        build_cluster(linked_cluster)
+
+
+def test_repeated_shared_resource_referent_is_rejected(linked_cluster):
+    selector = {"repo": "svc", "label": "pingSync"}
+    write_cluster(linked_cluster, [
+        {"tag": "web", "path": "../web"},
+        {"tag": "svc", "path": "../svc"},
+    ], links=[{
+        "type": "shared_resource",
+        "kind": "table",
+        "name": "events",
+        "referents": [selector, selector],
+    }])
+
+    with pytest.raises(ClusterSpecError, match="one relation per node pair"):
+        build_cluster(linked_cluster)
+
+
+def test_declared_link_cannot_overwrite_existing_edge(tmp_path):
+    make_member(
+        tmp_path,
+        "web",
+        [
+            _node("client", label="client", source_file="client.py"),
+            _node("server", label="server", source_file="server.py"),
+        ],
+        edges=[("client", "server", {"relation": "calls"})],
+    )
+    cluster = tmp_path / "cluster"
+    write_cluster(cluster, [{"tag": "web", "path": "../web"}], links=[{
+        "type": "references",
+        "from": {"repo": "web", "id": "client"},
+        "to": {"repo": "web", "id": "server"},
+    }])
+
+    with pytest.raises(ClusterSpecError, match="existing relation 'calls'"):
+        build_cluster(cluster)
 
 
 def test_on_missing_warn_skips(linked_cluster, capsys):

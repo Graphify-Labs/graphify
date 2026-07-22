@@ -6,6 +6,7 @@ For community detection on a single graph, see `cluster-only` / `--no-cluster`.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from .cluster_graph import (
     resolve_member_path,
     save_local_config,
     save_spec,
+    validate_member_tag,
 )
 
 USAGE = """\
@@ -144,9 +146,20 @@ def _cmd_add(args: list[str]) -> None:
         repo_dir = Path(target).expanduser()
         if not repo_dir.is_dir():
             _fail(f"not a directory: {repo_dir}")
+        # Make the input independent of the invocation cwd without resolving
+        # symlinks; member path resolution deliberately preserves user-written
+        # symlinked checkout layouts.
+        repo_dir = Path(os.path.abspath(repo_dir))
         url = origin_url(repo_dir) or ""
-        path = str(repo_dir)
-        default_tag = repo_dir.resolve().name
+        try:
+            # abspath (not resolve) on BOTH sides: the hint is later re-joined
+            # against the unresolved cluster dir with normpath, so `..` hops
+            # computed against a symlink-resolved base would land in the wrong
+            # tree (e.g. macOS /tmp -> /private/tmp).
+            path = os.path.relpath(repo_dir, os.path.abspath(cluster_dir))
+        except ValueError:  # Windows cross-drive paths cannot be relative.
+            path = str(repo_dir)
+        default_tag = repo_dir.name
         if not url:
             print(
                 f"warning: {repo_dir} has no origin remote; this member will only "
@@ -156,13 +169,13 @@ def _cmd_add(args: list[str]) -> None:
     tag = tag or default_tag
     if tag in spec.tags():
         _fail(f"member tag '{tag}' already exists (use --as to pick another)")
-
-    spec.members.append(ClusterMember(tag=tag, url=url, path=path))
     try:
-        save_spec(spec, cluster_dir)
-        load_spec(cluster_dir)  # re-validate (tag charset etc.) before reporting success
+        validate_member_tag(tag, where=spec.spec_path.name if spec.spec_path else "cluster spec")
     except ClusterSpecError as exc:
         _fail(str(exc))
+
+    spec.members.append(ClusterMember(tag=tag, url=url, path=path))
+    save_spec(spec, cluster_dir)
     print(f"Added member '{tag}'" + (f" ({url})" if url else ""))
 
 

@@ -150,6 +150,19 @@ def _parse_selector(raw, *, where: str) -> dict:
     return {"repo": str(raw["repo"]), keys[0]: str(raw[keys[0]])}
 
 
+def validate_member_tag(tag: str, *, where: str = "cluster spec") -> None:
+    """Validate a member tag before it is persisted or used as a namespace."""
+    if not _TAG_RE.match(tag):
+        raise ClusterSpecError(
+            f"{where}: member tag {tag!r} is invalid "
+            f"(letters/digits/._- only, must not contain '::')"
+        )
+    if tag == CLUSTER_TAG:
+        raise ClusterSpecError(
+            f"{where}: member tag '{CLUSTER_TAG}' is reserved for synthetic hub nodes"
+        )
+
+
 def load_spec(cluster_dir: Path) -> ClusterSpec:
     cluster_dir = Path(cluster_dir)
     spec_path = find_spec_file(cluster_dir)
@@ -173,15 +186,7 @@ def load_spec(cluster_dir: Path) -> ClusterSpec:
         if not isinstance(m, dict) or not m.get("tag"):
             raise ClusterSpecError(f"{spec_path.name}: members[{i}] needs a 'tag'")
         tag = str(m["tag"])
-        if not _TAG_RE.match(tag):
-            raise ClusterSpecError(
-                f"{spec_path.name}: member tag {tag!r} is invalid "
-                f"(letters/digits/._- only, must not contain '::')"
-            )
-        if tag == CLUSTER_TAG:
-            raise ClusterSpecError(
-                f"{spec_path.name}: member tag '{CLUSTER_TAG}' is reserved for synthetic hub nodes"
-            )
+        validate_member_tag(tag, where=spec_path.name)
         if tag in seen_tags:
             raise ClusterSpecError(f"{spec_path.name}: duplicate member tag {tag!r}")
         seen_tags.add(tag)
@@ -629,6 +634,15 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
     for n, d in G.nodes(data=True):
         nodes_by_repo.setdefault(d.get("repo", ""), []).append((n, d))
 
+    # Cluster output is deliberately a simple Graph. Track every occupied pair
+    # (including dry-run additions) so a declared relation can never silently
+    # overwrite an existing or earlier relation on the same endpoints.
+    occupied_pairs: dict[tuple[str, str], str] = {}
+    for u, v, data in G.edges(data=True):
+        pair = (min(u, v), max(u, v))
+        relation = data.get("relation") or "unknown"
+        occupied_pairs[pair] = f"existing relation {relation!r}"
+
     def _resolve(link: ClusterLink, sel: dict, link_label: str) -> str | None:
         try:
             node = resolve_selector(nodes_by_repo, sel)
@@ -661,10 +675,22 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
             report.warnings.append(f"{link_label}: no node matches {desc}; link skipped")
         return None
 
-    def _add_edge(u: str, v: str, link: ClusterLink, relation: str) -> None:
+    def _add_edge(
+        u: str, v: str, link: ClusterLink, relation: str, link_label: str
+    ) -> bool:
         if u == v:
             report.warnings.append(f"link '{link.name or link.type}' resolved to a self-loop; skipped")
-            return
+            return False
+        pair = (min(u, v), max(u, v))
+        prior = occupied_pairs.get(pair)
+        if prior is not None:
+            report.errors.append(
+                f"{link_label}: cannot add relation {relation!r} between {u} and {v}; "
+                f"the pair already has {prior}. Simple cluster graphs allow only "
+                f"one relation per node pair"
+            )
+            return False
+        occupied_pairs[pair] = f"{link_label} relation {relation!r}"
         if not dry_run:
             attrs = {
                 "relation": relation,
@@ -684,6 +710,7 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
                 attrs["note"] = link.note
             G.add_edge(u, v, **attrs)
         report.edges_added += 1
+        return True
 
     for i, link in enumerate(spec.links):
         link_label = f"links[{i}] ({link.name or link.type})"
@@ -709,7 +736,7 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
                 )
             report.hubs_added += 1
             for node in resolved:
-                _add_edge(node, hub, link, "uses")
+                _add_edge(node, hub, link, "uses", link_label)
             report.resolved.append(
                 f"{link_label}: hub {hub} <- {len(resolved)}/{len(link.referents)} referents"
             )
@@ -719,8 +746,9 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
             tgt = _resolve(link, link.to, link_label)
             if src is None or tgt is None:
                 continue
-            _add_edge(src, tgt, link, DIRECT_LINK_RELATIONS[link.type])
-            report.resolved.append(f"{link_label}: {src} -[{DIRECT_LINK_RELATIONS[link.type]}]-> {tgt}")
+            relation = DIRECT_LINK_RELATIONS[link.type]
+            if _add_edge(src, tgt, link, relation, link_label):
+                report.resolved.append(f"{link_label}: {src} -[{relation}]-> {tgt}")
 
     return report
 
@@ -887,6 +915,7 @@ def build_cluster(
     manifest_path = _manifest_path(out_dir)
 
     spec_hash = _file_hash(spec.spec_path) if spec.spec_path else ""
+    links_enabled = not no_links
     member_hashes = {}
     for member in spec.members:
         gp = member_graph_path(member, resolved[member.tag])
@@ -898,7 +927,11 @@ def build_cluster(
         except Exception:
             manifest = {}
         prior = {t: m.get("source_hash", "") for t, m in (manifest.get("members") or {}).items()}
-        if manifest.get("spec_hash") == spec_hash and prior == member_hashes:
+        if (
+            manifest.get("spec_hash") == spec_hash
+            and prior == member_hashes
+            and manifest.get("links_enabled") == links_enabled
+        ):
             # Backfill markers for members that don't have one yet (e.g. a
             # freshly cloned checkout) without churning existing files.
             refs = 0
@@ -941,6 +974,7 @@ def build_cluster(
         "name": spec.name,
         "built_at": built_at,
         "spec_hash": spec_hash,
+        "links_enabled": links_enabled,
         "node_count": G.number_of_nodes(),
         "edge_count": G.number_of_edges(),
         "members": {

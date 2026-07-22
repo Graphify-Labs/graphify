@@ -489,6 +489,8 @@ graphify path "api-client" "index.ts"
 
 The build composes each member's `graphify-out/graph.json` under a `tag::` namespace, dedups external-library nodes by label across members (same behavior as the global graph), resolves the declared links into `EXTRACTED`-confidence edges, and writes a standard `graphify-out/graph.json` plus a `CLUSTER_REPORT.md` documenting every resolved/skipped link. Rebuilds are incremental-aware: unchanged members and spec skip the rebuild entirely. `graphify cluster check` dry-runs the whole thing (exit 1 on errors) — useful in CI to catch selector drift when a member repo refactors.
 
+Cluster graphs use the standard simple-graph format, so only one relation may connect a given node pair. `cluster check` and `cluster build` reject a declared link that would overwrite an existing or earlier relation; target a more specific node or model the shared contract as a `shared_resource` hub instead.
+
 Each member needs its own graph first (`graphify extract .` in that repo); `build` names exactly which members are missing one.
 
 **Member back-references.** `cluster build` also writes a portable `cluster-ref.json` into each member's `graphify-out/` (skip with `--no-refs`; `cluster remove` cleans it up). Since `graphify-out/` is committed, the marker travels with each member repo: it records the cluster's name and git URL, this member's tag, and the full member roster — no absolute paths. Inside a member repo:

@@ -4,7 +4,7 @@ import json
 import pytest
 
 from graphify.cluster_cli import cmd_cluster
-from graphify.cluster_graph import load_local_config, load_spec
+from graphify.cluster_graph import load_local_config, load_spec, resolve_member_path
 from tests.test_cluster_build import make_member, write_cluster, _node
 
 
@@ -62,6 +62,76 @@ def test_init_add_remove_flow(tmp_path, capsys):
 
     code, _out, _err = _run(["remove", "alpha", "--dir", str(cluster)], capsys)
     assert code == 0
+    assert load_spec(cluster).members == []
+
+
+def test_add_relative_path_with_separate_cluster_dir(tmp_path, monkeypatch, capsys):
+    invocation = tmp_path / "invocation"
+    repo = invocation / "repos" / "alpha"
+    _fake_checkout(repo, "https://github.com/org/alpha")
+    cluster = tmp_path / "clusters" / "demo"
+    write_cluster(cluster, [])
+    monkeypatch.chdir(invocation)
+
+    code, _out, err = _run(["add", "repos/alpha", "--dir", str(cluster)], capsys)
+    assert code == 0, err
+    member = load_spec(cluster).members[0]
+    resolved, warnings = resolve_member_path(member, cluster, {})
+    assert not warnings
+    assert resolved == repo.resolve()
+
+
+def test_add_via_symlinked_cluster_dir_stores_usable_hint(tmp_path, capsys):
+    """relpath must use the UNRESOLVED cluster dir. A hint computed against the
+    symlink-RESOLVED base carries that tree's `..` depth, but resolution later
+    re-joins it against the unresolved dir with normpath (which does not follow
+    symlinks) — with a symlink to a deeper real path, the hint climbs out of
+    the wrong tree entirely (e.g. macOS /tmp -> /private/tmp)."""
+    repo = tmp_path / "alpha"
+    _fake_checkout(repo, "https://github.com/org/alpha")
+    real_cluster = tmp_path / "d1" / "d2" / "cluster"
+    write_cluster(real_cluster, [])
+    (tmp_path / "s").symlink_to(tmp_path / "d1" / "d2")
+    linked_cluster = tmp_path / "s" / "cluster"
+
+    code, _out, err = _run(["add", str(repo), "--dir", str(linked_cluster)], capsys)
+    assert code == 0, err
+    member = load_spec(linked_cluster).members[0]
+    resolved, _warnings = resolve_member_path(member, linked_cluster, {})
+    assert resolved is not None and resolved.resolve() == repo.resolve()
+
+
+def test_add_relative_path_falls_back_to_absolute_across_drives(
+    tmp_path, monkeypatch, capsys
+):
+    repo = tmp_path / "alpha"
+    _fake_checkout(repo, "https://github.com/org/alpha")
+    cluster = tmp_path / "cluster"
+    write_cluster(cluster, [])
+
+    def _cross_drive(*_args):
+        raise ValueError
+
+    monkeypatch.setattr("graphify.cluster_cli.os.path.relpath", _cross_drive)
+
+    code, _out, err = _run(["add", str(repo), "--dir", str(cluster)], capsys)
+    assert code == 0, err
+    assert load_spec(cluster).members[0].path == str(repo.resolve())
+
+
+def test_add_invalid_tag_does_not_modify_spec(tmp_path, capsys):
+    repo = tmp_path / "alpha"
+    _fake_checkout(repo, "https://github.com/org/alpha")
+    cluster = tmp_path / "cluster"
+    write_cluster(cluster, [])
+    spec_path = cluster / "cluster.json"
+    before = spec_path.read_bytes()
+
+    code, _out, err = _run(
+        ["add", str(repo), "--as", "bad::tag", "--dir", str(cluster)], capsys
+    )
+    assert code == 1 and "invalid" in err
+    assert spec_path.read_bytes() == before
     assert load_spec(cluster).members == []
 
 
