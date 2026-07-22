@@ -1799,6 +1799,45 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                             add_node_fn(const_nid, const_name, line)
                             add_edge_fn(file_nid, const_nid, "contains", line)
                             const_found = True
+                            if value.type == "object":
+                                # Object-literal methods (repository-pattern exports:
+                                # `const repo = { findX(...) {...}, y: async () => {...} }`)
+                                # are callable members of the const, not inert data — without
+                                # this they get no node at all (the const's own node above is
+                                # the only thing created, and this whole branch returns True,
+                                # blocking the normal recursive descent from ever reaching
+                                # them). Mirrors the class-field-arrow-function handling below.
+                                for member in value.named_children:
+                                    member_name = None
+                                    member_value = None
+                                    member_line = None
+                                    if member.type == "method_definition":
+                                        name_field = member.child_by_field_name("name")
+                                        if name_field is not None:
+                                            member_name = _read_text(name_field, source)
+                                            member_value = member
+                                            member_line = member.start_point[0] + 1
+                                    elif member.type == "pair":
+                                        key = member.child_by_field_name("key")
+                                        val = member.child_by_field_name("value")
+                                        if (key is not None and val is not None
+                                                and val.type in _JS_FUNCTION_VALUE_TYPES):
+                                            member_name = _read_text(key, source)
+                                            member_value = val
+                                            member_line = member.start_point[0] + 1
+                                    if (member_name and member_value is not None
+                                            and normalize_id(member_name)):
+                                        member_nid = _make_id(const_nid, member_name)
+                                        add_node_fn(member_nid, f".{member_name}()", member_line)
+                                        add_edge_fn(const_nid, member_nid, "method", member_line)
+                                        if callable_def_nids is not None:
+                                            callable_def_nids.add(member_nid)
+                                        if local_bound_names is not None:
+                                            local_bound_names[member_nid] = _js_local_bound_names(
+                                                member_value, source)
+                                        member_body = member_value.child_by_field_name("body")
+                                        if member_body:
+                                            function_bodies.append((member_nid, member_body))
         if arrow_found:
             return True
         if const_found:
