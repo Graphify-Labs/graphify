@@ -491,6 +491,15 @@ The build composes each member's `graphify-out/graph.json` under a `tag::` names
 
 Each member needs its own graph first (`graphify extract .` in that repo); `build` names exactly which members are missing one.
 
+**Member back-references.** `cluster build` also writes a portable `cluster-ref.json` into each member's `graphify-out/` (skip with `--no-refs`; `cluster remove` cleans it up). Since `graphify-out/` is committed, the marker travels with each member repo: it records the cluster's name and git URL, this member's tag, and the full member roster — no absolute paths. Inside a member repo:
+
+- `graphify query/path/explain/affected --cluster` runs the command against the cluster graph (found via the marker; mutually exclusive with `--graph`).
+- When a lookup on the local graph comes up empty, the failure message notes the repo is a cluster member and suggests `--cluster` — so an assistant hitting "No node matching 'verifyJwt'" learns the answer may live one repo over.
+- If the cluster isn't available on a machine, `--cluster` fails safely with instructions: clone the marker's `cluster_url` and run `graphify cluster build` there (or how to create the cluster when no remote is recorded).
+- The search-nudge hook and the installed skill mention cluster membership too, so LLM assistants are aware without running anything.
+
+Note the asymmetry: member markers are committed and travel, while the **cluster directory's own `graphify-out/` stays gitignored** (each machine builds its own composed graph). A member that belongs to several clusters keeps the marker from whichever cluster built last.
+
 ---
 
 ## Using the graph directly
@@ -815,6 +824,8 @@ graphify cluster locate api ~/work/backend            # machine-local checkout o
 graphify cluster build                                # compose member graphs + resolve declared links
 graphify cluster check                                # validate the spec + dry-run link resolution (CI-friendly)
 graphify cluster status                               # member resolution + staleness vs last build
+graphify query "..." --cluster                        # from inside a member repo: query the cluster graph
+graphify path "A" "B" --cluster                       # (also explain/affected; uses graphify-out/cluster-ref.json)
 
 graphify prs                              # PR dashboard: CI, review, worktree, graph impact
 graphify prs 42                           # deep dive on PR #42

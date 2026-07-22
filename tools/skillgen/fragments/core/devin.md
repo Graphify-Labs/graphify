@@ -1051,6 +1051,8 @@ Then run Steps 5-9 as normal (label communities, generate viz, benchmark, clean 
 
 ## For /graphify query
 
+**Cluster member?** If `graphify-out/cluster-ref.json` exists, this repo is one member of a multi-repo cluster graph (the file names the cluster and every member). For cross-repo questions ("what calls this service?", "who else uses this table?"), add `--cluster` to `graphify query`/`path`/`explain`/`affected`, or run queries from the cluster directory itself. If the cluster isn't available on this machine those fail with instructions — tell the user this repo is part of the cluster named in the file and that cloning the marker's `cluster_url` and running `graphify cluster build` there brings the cluster graph down.
+
 Two traversal modes - choose based on the question:
 
 | Mode | Flag | Best for |

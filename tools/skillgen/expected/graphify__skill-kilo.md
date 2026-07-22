@@ -52,6 +52,8 @@ If the user invoked `/graphify --help` or `/graphify -h` (with no other argument
 
 **Fast path — existing graph:** Before doing anything else, check whether `graphify-out/graph.json` exists. The expected location is `graphify-out/graph.json` relative to the **current working directory** (i.e. the project root where you are running commands). If it exists AND the user's request is a natural-language question about the codebase (e.g. "How does X work?", "What calls Y?", "Trace the data flow through Z") and NOT an explicit rebuild command (`--update`, `--cluster-only`, or a bare path/URL that implies fresh extraction): **skip Steps 1–5 entirely and jump straight to `## For /graphify query`.** Run `graphify query "<question>"` immediately. Do not run detect. Do not check corpus size. Do not ask the user to narrow. The graph is already built — use it.
 
+**Cluster member?** If `graphify-out/cluster-ref.json` exists, this repo is one member of a multi-repo cluster graph (the file names the cluster and every member). For cross-repo questions ("what calls this service?", "who else uses this table?"), add `--cluster` to `graphify query`/`path`/`explain`/`affected`, or run queries from the cluster directory itself. If the cluster isn't available on this machine those fail with instructions — tell the user this repo is part of the cluster named in the file and that cloning the marker's `cluster_url` and running `graphify cluster build` there brings the cluster graph down.
+
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
 If the path argument starts with `https://github.com/` or `http://github.com/`, treat it as a GitHub URL - run Step 0 before anything else, then continue with the resolved local path.
