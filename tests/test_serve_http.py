@@ -7,6 +7,7 @@ unchanged and covered elsewhere.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,17 @@ def _graph_file(tmp_path: Path) -> str:
     p = tmp_path / "graph.json"
     p.write_text(json.dumps(SAMPLE_GRAPH), encoding="utf-8")
     return str(p)
+
+
+def _repository_graph(tmp_path: Path, name: str, node_count: int) -> Path:
+    graph_path = tmp_path / name / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True)
+    graph_path.write_text(json.dumps({
+        "directed": True,
+        "nodes": [{"id": f"{name}-{index}", "label": name, "community": 0} for index in range(node_count)],
+        "edges": [],
+    }), encoding="utf-8")
+    return graph_path
 
 
 def _client(app) -> TestClient:
@@ -200,31 +212,69 @@ def _call_tool(client, headers, name, arguments, rid) -> str:
     return resp.json()["result"]["content"][0]["text"]
 
 
-def test_project_path_is_optional_on_every_tool(tmp_path):
-    """Multi-project support is additive: every tool gains an optional
-    project_path, and none of them makes it required."""
+def test_graph_param_is_optional_on_every_tool(tmp_path):
+    """Every tool gains an optional graph param (but list_graphs is exempt since
+    it sets the graph, not queries one); none makes it required."""
     app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
     with _client(app) as client:
         headers = _init_session(client)
         resp = client.post("/mcp", headers=headers,
                             json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         for tool in resp.json()["result"]["tools"]:
+            if tool["name"] == "list_graphs":
+                continue
             props = tool["inputSchema"].get("properties", {})
-            assert "project_path" in props, f"{tool['name']} missing project_path"
-            assert "project_path" not in tool["inputSchema"].get("required", [])
+            assert "graph" in props, f"{tool['name']} missing graph param"
+            assert "graph" not in tool["inputSchema"].get("required", [])
 
 
-def test_project_path_routes_to_that_projects_graph(tmp_path):
-    """One running server answers against the default graph when project_path is
-    omitted, and against a project's own graph when it is supplied."""
-    proj = _project_with_graph(tmp_path, node_count=3)  # default graph has 2 nodes
-    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+def test_graph_param_routes_to_that_graph(tmp_path):
+    """A multi-graph server answers the default graph when graph param is omitted
+    and a specific graph when graph param is provided."""
+    alpha = _repository_graph(tmp_path, "alpha", 1)
+    beta = _repository_graph(tmp_path, "beta", 3)
+    registry = serve_mod.GraphRegistry.from_paths([alpha, beta])
+    app = serve_mod._build_http_app(registry=registry, json_response=True)
     with _client(app) as client:
         headers = _init_session(client)
-        assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=2)
-        assert "Nodes: 3" in _call_tool(client, headers, "graph_stats", {"project_path": proj}, rid=3)
-        # Falling back to the default afterwards still works (no state leak).
-        assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=4)
+        assert "Nodes: 1" in _call_tool(client, headers, "graph_stats", {"graph": "alpha"}, rid=2)
+        assert "Nodes: 3" in _call_tool(client, headers, "graph_stats", {"graph": "beta"}, rid=3)
+
+
+def test_use_graph_selection_is_isolated_per_http_session(tmp_path):
+    alpha = _repository_graph(tmp_path, "alpha", 1)
+    beta = _repository_graph(tmp_path, "beta", 3)
+    app = serve_mod._build_http_app(
+        registry=serve_mod.GraphRegistry.from_paths([alpha, beta]), json_response=True
+    )
+    with _client(app) as client:
+        first = _init_session(client)
+        second = _init_session(client)
+
+        assert "Switched to graph 'alpha'" in _call_tool(client, first, "use_graph", {"graph": "alpha"}, rid=2)
+        assert "Switched to graph 'beta'" in _call_tool(client, second, "use_graph", {"graph": "beta"}, rid=3)
+        assert "Nodes: 1" in _call_tool(client, first, "graph_stats", {}, rid=4)
+        assert "Nodes: 3" in _call_tool(client, second, "graph_stats", {}, rid=5)
+
+
+def test_mcp_v2_callbacks_keep_session_graph_selection(tmp_path):
+    """MCP 2.x supplies the session to callbacks instead of Server.request_context."""
+    from mcp.server import Server
+
+    if hasattr(Server, "request_context"):
+        pytest.skip("requires MCP 2.x")
+
+    alpha = _repository_graph(tmp_path, "alpha", 1)
+    beta = _repository_graph(tmp_path, "beta", 3)
+    app = serve_mod._build_http_app(
+        registry=serve_mod.GraphRegistry.from_paths([alpha, beta]), json_response=True
+    )
+    with _client(app) as client:
+        headers = _init_session(client)
+        assert "Switched to graph 'beta'" in _call_tool(
+            client, headers, "use_graph", {"graph": "beta"}, rid=2
+        )
+        assert "Nodes: 3" in _call_tool(client, headers, "graph_stats", {}, rid=3)
 
 
 @pytest.mark.parametrize(
@@ -251,46 +301,37 @@ def test_project_context_cache_is_lru_and_pins_default_graph(tmp_path, monkeypat
         return original_load(path)
 
     monkeypatch.setattr(serve_mod, "_load_graph", counting_load)
-    projects = [
-        _project_with_graph(tmp_path, node_count=i + 3, name=f"project-{i}")
-        for i in range(3)
-    ]
+    projects = [_project_with_graph(tmp_path, node_count=i + 3, name=f"project-{i}") for i in range(3)]
     default_graph = _graph_file(tmp_path)
     app = serve_mod._build_http_app(default_graph, json_response=True)
     with _client(app) as client:
         headers = _init_session(client)
         assert "Nodes: 3" in _call_tool(client, headers, "graph_stats", {"project_path": projects[0]}, rid=2)
         assert "Nodes: 4" in _call_tool(client, headers, "graph_stats", {"project_path": projects[1]}, rid=3)
-        # A cache hit promotes project-0 above project-1 in LRU recency.
         assert "Nodes: 3" in _call_tool(client, headers, "graph_stats", {"project_path": projects[0]}, rid=4)
         assert "Nodes: 5" in _call_tool(client, headers, "graph_stats", {"project_path": projects[2]}, rid=5)
-        # project-1, not the re-touched project-0, was evicted.
         assert "Nodes: 4" in _call_tool(client, headers, "graph_stats", {"project_path": projects[1]}, rid=6)
-        # The configured default graph stays warm even when project capacity is full.
         assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=7)
 
     first_graph = str((Path(projects[0]) / "graphify-out" / "graph.json").resolve())
     second_graph = str((Path(projects[1]) / "graphify-out" / "graph.json").resolve())
-    default_graph = str(Path(default_graph).resolve())
     assert loads[first_graph] == 1
     assert loads[second_graph] == 2
-    assert loads[default_graph] == 1
 
 
-def test_bad_project_path_errors_without_killing_server(tmp_path):
-    """A missing project graph is a tool error, not a process exit — the server
-    keeps serving the default graph."""
+def test_bad_graph_param_errors_without_killing_server(tmp_path):
+    """A bad graph name is a tool error, not a process exit — the server
+    keeps serving other graphs."""
     app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
     with _client(app) as client:
         headers = _init_session(client)
         bad = _call_tool(client, headers, "graph_stats",
-                         {"project_path": str(tmp_path / "does-not-exist")}, rid=2)
+                         {"graph": "does-not-exist"}, rid=2)
         assert "not found" in bad.lower()
         assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=3)
 
 
 def test_corrupt_project_graph_is_a_tool_error_without_killing_server(tmp_path):
-    """A CLI-style SystemExit from a client graph cannot stop the MCP server."""
     project = Path(_project_with_graph(tmp_path, node_count=3))
     (project / "graphify-out" / "graph.json").write_text("{not json", encoding="utf-8")
     app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
@@ -323,6 +364,18 @@ def test_session_timeout_zero_disables(tmp_path):
     app = serve_mod._build_http_app(_graph_file(tmp_path), session_timeout=0, json_response=True)
     with _client(app) as client:
         assert client.post("/mcp", headers=_MCP_HEADERS, json=_INIT_BODY).status_code == 200
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "::"])
+def test_serve_http_rejects_unauthenticated_non_loopback(host, monkeypatch):
+    monkeypatch.setitem(sys.modules, "uvicorn", object())
+    with pytest.raises(ValueError, match="requires --api-key"):
+        serve_mod.serve_http("ignored.json", host=host)
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+def test_validate_http_bind_allows_unauthenticated_loopback(host):
+    serve_mod._validate_http_bind(host, None)
 
 
 # --- CLI argument parsing -------------------------------------------------

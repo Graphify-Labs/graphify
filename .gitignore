@@ -14,6 +14,7 @@ build/
 *.egg
 .graphify/
 graphify-out/
+.worktrees/
 .graphify_*.json
 .graphify_python
 .claude/

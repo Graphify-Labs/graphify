@@ -505,14 +505,45 @@ The default `127.0.0.1` bind is loopback-only. Set `--host 0.0.0.0` **and** `--a
 
 ```bash
 docker build -t graphify .
-docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
-  /data/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+docker run -p 8080:8080 -e GRAPHIFY_API_KEY="$GRAPHIFY_API_KEY" -v "$(pwd):/data:ro" graphify --graphs-dir /data --transport http --host 0.0.0.0
 ```
 
 > **WSL / Linux note:** Ubuntu ships `python3`, not `python`. Use a venv to avoid conflicts:
 > ```bash
 > python3 -m venv .venv && .venv/bin/pip install "graphifyy[mcp]"
 > ```
+
+### Multi-graph MCP server
+
+Serve multiple repositories containing `graphify-out/graph.json` from one MCP endpoint. This is useful for multi-repo setups, monorepos with per-service graphs, or comparing codebases.
+
+```bash
+# Serve over stdio (the default transport).
+python -m graphify.serve --graphs-dir ..
+
+# Serve over HTTP. Remote HTTP requires a nonblank API key.
+python -m graphify.serve --graphs-dir .. --transport http --host 0.0.0.0 --port 8080 --api-key "$SECRET"
+```
+
+#### Docker Compose
+
+`docker-compose.multi.yml` serves two pre-built repository graphs over local
+HTTP. Each repository must contain `graphify-out/graph.json`.
+
+1. Edit the two `volumes` entries in `docker-compose.multi.yml` to point at
+   your repositories. Keep their matching `/repos/...` command arguments in
+   sync when adding or removing repositories. Mounts are read-only.
+2. Start the server with a non-empty API key:
+   ```bash
+   GRAPHIFY_API_KEY=your-secret docker compose -f docker-compose.multi.yml up --build
+   ```
+3. Configure your MCP client with `http://localhost:8080/mcp` and send
+   `Authorization: Bearer <GRAPHIFY_API_KEY>`.
+
+The Compose port binds to localhost only. Graphify reads the mounted graphs;
+it does not extract or modify either repository.
+
+Tools: same as single-graph (`query_graph`, `get_node`, `get_neighbors`, etc.) plus `list_graphs` and `use_graph`. Each tool accepts an optional `graph` parameter to target a specific graph, or use `use_graph` to set a session default.
 
 ---
 
@@ -685,7 +716,7 @@ graphify extract ./raw --code-only # index code only — local AST, no API key (
 /graphify ./raw --falkordb         # generate cypher.txt for FalkorDB
 /graphify ./raw --falkordb-push falkordb://localhost:6379
 /graphify ./raw --watch            # auto-sync as files change
-/graphify ./raw --mcp              # start MCP stdio server
+python -m graphify.serve ./raw/graphify-out/graph.json  # start MCP stdio server
 
 /graphify add https://arxiv.org/abs/1706.03762
 /graphify add <video-url>

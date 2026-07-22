@@ -1,0 +1,18 @@
+services:
+  graphify-mcp:
+    build: .
+    environment:
+      GRAPHIFY_API_KEY: ${GRAPHIFY_API_KEY:?GRAPHIFY_API_KEY must be set}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./repos:/repos:ro
+    command:
+      - "--graphs-dir"
+      - "/repos"
+      - "--transport"
+      - "http"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
