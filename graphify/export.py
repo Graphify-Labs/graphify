@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
+from graphify.paths import cap_filename_stem, filename_stem_limit
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
@@ -413,20 +414,14 @@ generate_html = to_html
 
 
 def _cap_filename(s: str, limit: int = 200) -> str:
-    """Cap a filename stem to ``limit`` UTF-8 bytes so it stays under the 255-byte
-    filesystem limit even after the ``.md`` extension and dedup suffix are added
-    (#1094). The cap is on BYTES, not chars, because a label of multibyte
-    characters (CJK, accented) can exceed 255 bytes well under 255 chars. When
-    truncation happens, an 8-char hash of the full label is appended so two
-    distinct labels sharing a long prefix produce distinct, deterministic
-    filenames instead of colliding."""
-    b = s.encode("utf-8")
-    if len(b) <= limit:
-        return s
-    digest = hashlib.sha1(s.encode("utf-8")).hexdigest()[:8]  # nosec - not security
-    keep = limit - 9  # "_" + 8 hex chars
-    truncated = b[:keep].decode("utf-8", "ignore")  # "ignore" drops a split trailing char
-    return f"{truncated}_{digest}"
+    """Cap a filename stem to ``limit`` UTF-8 bytes (#1094).
+
+    Callers derive ``limit`` from the target filesystem and reserve the extension
+    and dedup suffix. The cap is on bytes, not characters, so multibyte labels
+    remain within that budget. Truncated names retain a deterministic digest to
+    keep distinct long labels from colliding.
+    """
+    return cap_filename_stem(s, limit)
 
 
 def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
@@ -468,6 +463,8 @@ def to_obsidian(
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    node_name_limit = filename_stem_limit(out)
+    community_label_limit = filename_stem_limit(out, fixed_prefix="_COMMUNITY_")
 
     # #1506: when the export target is an existing Obsidian vault (a user pointed
     # --obsidian-dir at one), we must not clobber the user's own notes or their
@@ -497,7 +494,7 @@ def to_obsidian(
 
     # Map node_id → safe filename so wikilinks stay consistent.
     # Deduplicate: if two nodes produce the same filename, append a numeric suffix.
-    def safe_name(label: str) -> str:
+    def safe_name(label: str, *, limit: int = node_name_limit) -> str:
         cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
         # Strip trailing .md/.mdx/.markdown so "CLAUDE.md" doesn't become "CLAUDE.md.md"
         cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
@@ -508,7 +505,7 @@ def to_obsidian(
         # emit a "@.md"-style filename. (#1409)
         if not re.search(r"\w", cleaned, flags=re.UNICODE):
             return "unnamed"
-        return _cap_filename(cleaned)
+        return _cap_filename(cleaned, limit)
 
     node_filename = _dedup_node_filenames(G, safe_name)
 
@@ -625,7 +622,7 @@ def to_obsidian(
     community_filename: dict = {}
     used_community: set[str] = set()
     for cid in communities:
-        base = f"_COMMUNITY_{safe_name(_community_name(cid))}"
+        base = f"_COMMUNITY_{safe_name(_community_name(cid), limit=community_label_limit)}"
         candidate = base
         n = 1
         while candidate.lower() in used_community:
@@ -700,7 +697,7 @@ def to_obsidian(
         if cross:
             lines.append("## Connections to other communities")
             for other_cid, edge_count in sorted(cross.items(), key=lambda x: -x[1]):
-                other_fname = community_filename.get(other_cid) or f"_COMMUNITY_{safe_name(_community_name(other_cid))}"
+                other_fname = community_filename.get(other_cid) or f"_COMMUNITY_{safe_name(_community_name(other_cid), limit=community_label_limit)}"
                 lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[{other_fname}]]")
             lines.append("")
 
@@ -797,6 +794,7 @@ def to_canvas(
     """
     # Obsidian canvas color codes (cycle through for communities)
     CANVAS_COLORS = ["1", "2", "3", "4", "5", "6"]  # red, orange, yellow, green, cyan, purple
+    node_name_limit = filename_stem_limit(Path(output_path).parent)
 
     def safe_name(label: str) -> str:
         cleaned = re.sub(r'[\\/*?:"<>|#^[\]]', "", label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")).strip()
@@ -808,7 +806,7 @@ def to_canvas(
         # emit a "@.md"-style filename. (#1409)
         if not re.search(r"\w", cleaned, flags=re.UNICODE):
             return "unnamed"
-        return _cap_filename(cleaned)
+        return _cap_filename(cleaned, node_name_limit)
 
     # Build node_filenames if not provided (same dedup logic as to_obsidian)
     if node_filenames is None:

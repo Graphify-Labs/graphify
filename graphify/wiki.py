@@ -7,21 +7,22 @@ from urllib.parse import quote
 import networkx as nx
 
 from graphify.build import edge_data
+from graphify.paths import cap_filename_stem, filename_stem_limit
 
 
-def _safe_filename(name: str) -> str:
+def _safe_filename(name: str, limit: int = 200) -> str:
     """Make a label safe for use as a filename across platforms.
 
     Substitutes characters that Windows reserves in filenames
     (< > : " / \\ | ? *) and strips trailing dots/spaces, also reserved.
-    Falls back to 'unnamed' for empty results and caps length at 200
-    chars to stay well under common filesystem limits.
+    Falls back to 'unnamed' for empty results and caps the UTF-8 byte length to
+    the target filesystem's available stem budget.
     """
     import re
     s = name.replace("/", "-").replace(" ", "_").replace(":", "-")
     s = re.sub(r'[<>:"/\\|?*]', '_', s)
     s = s.strip('. ')
-    return s[:200] if s else 'unnamed'
+    return cap_filename_stem(s or 'unnamed', limit)
 
 
 def _md_link(label: str, resolver: dict[str, str]) -> str:
@@ -227,6 +228,7 @@ def to_wiki(
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    stem_limit = filename_stem_limit(out)
 
     if not communities:
         raise ValueError(
@@ -304,7 +306,7 @@ def to_wiki(
     community_slugs: dict[int, str] = {}
     for cid in communities:
         label = labels.get(cid, f"Community {cid}")
-        slug = _unique_slug(_safe_filename(label))
+        slug = _unique_slug(_safe_filename(label, stem_limit))
         community_slugs[cid] = slug
         resolver.setdefault(label, slug)
 
@@ -312,7 +314,7 @@ def to_wiki(
     for node_data in god_nodes_data:
         nid = node_data.get("id")
         if nid and nid in G:
-            slug = _unique_slug(_safe_filename(node_data['label']))
+            slug = _unique_slug(_safe_filename(node_data['label'], stem_limit))
             god_articles.append((nid, slug))
             resolver.setdefault(node_data['label'], slug)
 

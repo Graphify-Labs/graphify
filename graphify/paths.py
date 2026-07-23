@@ -17,6 +17,7 @@ flow) and every reader honours it.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import stat
@@ -24,6 +25,49 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+
+def cap_filename_stem(value: str, limit: int = 200) -> str:
+    """Cap a filename stem to ``limit`` UTF-8 bytes without losing uniqueness.
+
+    Truncated values retain an eight-character digest of the full input.  The
+    limit is byte-based because filesystem ``NAME_MAX`` applies to encoded path
+    components, not Python character counts.
+    """
+    encoded = value.encode("utf-8")
+    if len(encoded) <= limit:
+        return value
+    digest = hashlib.sha1(encoded).hexdigest()[:8]  # nosec - identity, not security
+    if limit <= len(digest):
+        return digest[:max(1, limit)]
+    keep = limit - len(digest) - 1
+    prefix = encoded[:keep].decode("utf-8", "ignore")
+    return f"{prefix}_{digest}"
+
+
+def filename_stem_limit(
+    directory: "str | Path",
+    *,
+    fixed_prefix: str = "",
+    extension: str = ".md",
+    preferred: int = 200,
+    fallback_name_max: int = 255,
+) -> int:
+    """Return a conservative stem-byte budget for ``directory``'s filesystem.
+
+    ``PC_NAME_MAX`` can be lower than 255 on encrypted filesystems such as
+    eCryptfs.  Reserve space for a fixed generated prefix, the extension, and a
+    practical ten-byte collision suffix (``_`` plus nine digits).  The existing
+    200-byte cap remains unchanged on conventional filesystems.
+    """
+    try:
+        name_max = int(os.pathconf(str(directory), "PC_NAME_MAX"))
+        if name_max <= 0:
+            name_max = fallback_name_max
+    except (AttributeError, OSError, TypeError, ValueError):
+        name_max = fallback_name_max
+    reserved = len(fixed_prefix.encode("utf-8")) + len(extension.encode("utf-8")) + 10
+    return max(9, min(preferred, name_max - reserved))
 
 
 def _atomic_replace(path: "str | Path", write_fn) -> None:
