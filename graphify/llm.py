@@ -1337,6 +1337,62 @@ def _claude_cli_envelope(stdout: str) -> dict:
     return envelope
 
 
+# A JSON Schema pinning the top-level shape graphify consumes. Passed to
+# `claude -p --json-schema` (structured output) so the CLI CONSTRAINS the model
+# to emit the object directly instead of relying on it CHOOSING to honour a
+# "raw JSON only" instruction in the prompt. Item internals stay loose so a
+# valid extraction is never rejected; the `result` envelope field still carries
+# the JSON string, so the parse path is unchanged. See #2076.
+_EXTRACTION_JSON_SCHEMA = json.dumps(
+    {
+        "type": "object",
+        "properties": {
+            "nodes": {"type": "array", "items": {"type": "object"}},
+            "edges": {"type": "array", "items": {"type": "object"}},
+            "hyperedges": {"type": "array", "items": {"type": "object"}},
+        },
+        "required": ["nodes", "edges"],
+    }
+)
+
+# Cache the `--json-schema` capability probe per resolved claude command so it
+# runs at most once per process (extract fans a chunk out per file/slice).
+_JSON_SCHEMA_SUPPORT: dict[str, bool] = {}
+
+
+def _claude_cli_supports_json_schema(claude_cmd: str) -> bool:
+    """Return True if this Claude Code CLI accepts ``--json-schema``.
+
+    Structured output (``--json-schema``) landed in newer Claude Code releases.
+    Probing ``claude --help`` for the flag is a direct capability check — more
+    reliable than guessing a version boundary — so graphify uses structured
+    output where it exists and falls back to the user-turn prompt on older CLIs
+    that predate it. Any probe failure is treated as "unsupported" (safe
+    fallback). Result is cached per resolved command.
+    """
+    import subprocess
+
+    cached = _JSON_SCHEMA_SUPPORT.get(claude_cmd)
+    if cached is not None:
+        return cached
+    try:
+        proc = subprocess.run(
+            [claude_cmd, "--help"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+            **_no_window_kwargs(),
+        )
+        supported = "--json-schema" in (proc.stdout or "")
+    except (OSError, subprocess.SubprocessError):
+        supported = False
+    _JSON_SCHEMA_SUPPORT[claude_cmd] = supported
+    return supported
+
+
 def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
     """Call Claude via the locally-installed Claude Code CLI (`claude -p`).
 
@@ -1425,6 +1481,16 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     cli_model = os.environ.get("GRAPHIFY_CLAUDE_CLI_MODEL", "").strip()
     if cli_model:
         cli_args.extend(["--model", cli_model])
+    # Constrain the output shape structurally where the CLI supports it. Newer
+    # Claude Code releases increasingly treat a bare file-dump prompt as an
+    # agentic task and REPORT the extraction in prose ("Knowledge graph
+    # extracted — 21 nodes, 20 edges…") instead of returning it; that parses to
+    # zero nodes, reads as truncation, and gets bisected without ever
+    # converging (#2076). --json-schema pins the object shape regardless of
+    # that framing; the user-turn prompt above stays as the fallback for older
+    # CLIs that predate the flag.
+    if _claude_cli_supports_json_schema(claude_cmd):
+        cli_args.extend(["--json-schema", _EXTRACTION_JSON_SCHEMA])
     proc = subprocess.run(
         cli_args,
         input=combined_message,
@@ -1443,7 +1509,17 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
 
     envelope = _claude_cli_envelope(proc.stdout)
 
-    raw_content = envelope.get("result", "")
+    # When --json-schema is in effect the CLI puts the CONSTRAINED object in the
+    # `structured_output` envelope field; `result` stays the model's discretionary
+    # text, which on a "reporting" turn is prose even with the flag set (verified
+    # live on Claude Code 2.1.185). Prefer the structured channel and route it
+    # through the same _parse_llm_json normalizer; fall back to parsing `result`
+    # for older CLIs that don't emit structured_output (#2076 review).
+    structured = envelope.get("structured_output")
+    if isinstance(structured, dict):
+        raw_content = json.dumps(structured)
+    else:
+        raw_content = envelope.get("result", "")
     result = _parse_llm_json(raw_content or "{}")
     usage = envelope.get("usage") or {}
     result["input_tokens"] = (

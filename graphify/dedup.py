@@ -244,14 +244,49 @@ def _collision_rank(node: dict) -> tuple:
     )
 
 
+def _same_source_entity(survivor: dict, duplicate: dict) -> bool:
+    """True when exact-ID records came from the same source file.
+
+    Exact IDs can also collide across files through references or slugged-path
+    ambiguity (#1504).  Keep those records isolated rather than importing
+    attributes whose provenance belongs to another file.
+    """
+    keep_file = survivor.get("source_file") or ""
+    lose_file = duplicate.get("source_file") or ""
+    # Require a non-empty source_file: two provenance-less records ("" == "")
+    # are NOT proof of the same symbol (#1178), and merging their attributes
+    # would be a cross-pollination bug in the opposite direction (#2091 review).
+    return bool(keep_file) and keep_file == lose_file
+
+
+def _merge_missing_attributes(survivor: dict, duplicate: dict) -> dict:
+    """Fill the survivor's absent/None attributes from a same-source duplicate,
+    without overriding values the survivor already has (#2091)."""
+    merged = dict(survivor)
+    for key, value in duplicate.items():
+        # Never inherit a provenance tag from a dropped record: a false
+        # _origin="ast" on an LLM survivor is read as an authority signal by the
+        # ghost-merge (#2068) and watch deletion logic (#2091 review).
+        if key == "_origin":
+            continue
+        if value is None:
+            continue
+        # Treat an explicit None on the survivor as absent — the codebase emits
+        # `source_location: None`, and that is exactly the attribute #2091 loses.
+        if merged.get(key) is None:
+            merged[key] = value
+    return merged
+
+
 def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
     """Report an ID collision in proportion to what dropping the loser actually costs.
 
-    Cross-reference to a defining node: same entity, edges are keyed by ID and rewire
-    to the survivor — nothing is lost, so say nothing. Same file, different labels: the
-    extractor emitted two labels for one entity and one is discarded — note it. Two
-    files that both encode this ID: they are distinct entities and one is genuinely
-    lost — warn, and point at the extraction split that keeps them apart (#1504).
+    Cross-reference to a defining node: the structural entity and its edges survive;
+    foreign-file attributes stay isolated, so no collision warning is needed. Same
+    file, different labels: the extractor emitted two labels for one entity and one is
+    discarded — note it. Two files that both encode this ID: they are distinct entities
+    and one is genuinely lost — warn, and point at the extraction split that keeps them
+    apart (#1504).
     """
     keep_file = survivor.get("source_file") or ""
     keep_label = survivor.get("label") or ""
@@ -316,8 +351,9 @@ def deduplicate_entities(
     # Pre-deduplicate: one node per ID. The survivor is the node that *defines* the
     # ID (its source_file is the file the ID encodes), not merely the first seen —
     # otherwise chunk order decides whether an entity keeps its own attributes or a
-    # passing cross-reference's. Warnings are then emitted for what is actually lost
-    # (#1504); a same-entity merge costs nothing and stays quiet.
+    # passing cross-reference's. Missing attributes from same-source records are
+    # retained so AST structure and semantic enrichment can coexist (#2091).
+    # Genuine cross-file ID collisions stay isolated and are reported below (#1504).
     seen_ids: dict[str, dict] = {}
     dropped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
@@ -335,6 +371,21 @@ def deduplicate_entities(
             dropped[nid].append(incumbent)
         else:
             dropped[nid].append(node)
+
+    # Gap-fill each survivor from its SAME-SOURCE losers, applied in deterministic
+    # _collision_rank order (best loser first). Merging here — not incrementally in
+    # the loop above — keeps the merged attributes independent of chunk arrival
+    # order with 3+ colliding records, preserving the #1851 order-independence
+    # contract (#2091 review).
+    for nid, losers in dropped.items():
+        survivor = seen_ids[nid]
+        same_source = sorted(
+            (l for l in losers if _same_source_entity(survivor, l)),
+            key=_collision_rank,
+        )
+        for loser in same_source:
+            survivor = _merge_missing_attributes(survivor, loser)
+        seen_ids[nid] = survivor
 
     for nid, losers in dropped.items():
         _report_id_collision(nid, seen_ids[nid], losers)

@@ -474,3 +474,79 @@ def test_label_communities_counts_tokens_for_failed_batch(monkeypatch):
             G2, {0: ["a"]}, backend="gemini", usage_out=usage,
         )
     assert usage == {"input": 50, "output": 5}
+
+
+def _two_community_graph(out):
+    """Two disconnected components -> two stable communities, each hub-labelled
+    by its own node."""
+    graph = {
+        "directed": False, "multigraph": False,
+        "nodes": [
+            {"id": "orders", "label": "OrderService", "community": 0},
+            {"id": "order_db", "label": "OrderDB", "community": 0},
+            {"id": "payments", "label": "PaymentService", "community": 1},
+            {"id": "pay_db", "label": "PayDB", "community": 1},
+        ],
+        "links": [
+            {"source": "orders", "target": "order_db", "relation": "calls"},
+            {"source": "payments", "target": "pay_db", "relation": "calls"},
+        ],
+    }
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+
+
+def test_cluster_only_no_label_does_not_persist_placeholders(tmp_path, monkeypatch):
+    """#2073: --no-label must not write .graphify_labels.json with 'Community N'
+    placeholders (which the reuse path would then treat as fresh forever). A
+    later normal run must produce real (non-placeholder) labels."""
+    import graphify.__main__ as cli
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    labels_path = out / ".graphify_labels.json"
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.export.to_html", lambda *a, **k: None)
+    # No-backend fallback shape: returns placeholders, which must not clobber hubs.
+    monkeypatch.setattr("graphify.llm.generate_community_labels",
+                        lambda G, comms, **k: ({cid: f"Community {cid}" for cid in comms}, "none"))
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-label", "--no-viz"])
+    cli.main()
+    assert not labels_path.exists(), "--no-label persisted a placeholder labels file (#2073)"
+    assert not (out / ".graphify_labels.json.sig").exists()
+
+    # A later normal run generates real labels (no sticky placeholders blocking it).
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-viz"])
+    cli.main()
+    assert labels_path.exists()
+    saved = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert saved, "no labels written on the normal run"
+    assert not any(v == f"Community {k}" for k, v in saved.items()), (
+        f"real labels expected, got placeholders: {saved} (#2073)"
+    )
+
+
+def test_cluster_only_heals_persisted_placeholder_but_reuses_genuine(tmp_path, monkeypatch):
+    """#2073: an already-polluted sidecar (a placeholder for one community, a
+    genuine label for another) self-heals — the placeholder is replaced by the
+    hub name while the genuine label is reused, with no LLM call."""
+    import graphify.__main__ as cli
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out)
+    labels_path = out / ".graphify_labels.json"
+    # Polluted state: community 0 is a stuck placeholder, community 1 is genuine.
+    labels_path.write_text(json.dumps({"0": "Community 0", "1": "Payment Flow"}), encoding="utf-8")
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.export.to_html", lambda *a, **k: None)
+    def _fail_generate(*a, **k):
+        raise AssertionError("generate_community_labels must not be called on the reuse path")
+    monkeypatch.setattr("graphify.llm.generate_community_labels", _fail_generate)
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-viz"])
+    cli.main()
+    saved = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert saved["0"] != "Community 0", "stuck placeholder was not healed (#2073)"
+    assert saved["1"] == "Payment Flow", "genuine label was not reused"

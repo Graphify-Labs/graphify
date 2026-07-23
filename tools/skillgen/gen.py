@@ -879,6 +879,14 @@ def _is_manifest_stamp_fix_line(line: str) -> bool:
     )
 
 
+def _is_sensitive_reporting_fix_line(line: str) -> bool:
+    """The #2106 change to how a non-empty ``skipped_sensitive`` is reported: the
+    skill now lists the skipped file names instead of only a count, so a
+    wrongly-flagged source/doc is visible. Both the removed count-only line and
+    the added list-the-names line mention ``skipped_sensitive`` is non-empty."""
+    return "skipped_sensitive` is non-empty" in line
+
+
 def _is_no_api_key_fix_line(line: str) -> bool:
     """Whether a line is part of the "no API key required" clarity (#1461).
 
@@ -960,6 +968,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_zero_node_guard_fix_line,
     _is_manifest_root_fix_line,
     _is_manifest_stamp_fix_line,
+    _is_sensitive_reporting_fix_line,
     _is_no_api_key_fix_line,
     _is_shebang_allowlist_fix_line,
     _is_obsidian_usage_comment_line,

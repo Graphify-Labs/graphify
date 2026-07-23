@@ -270,10 +270,12 @@ def test_ghost_merge_unique_located_node_still_merges():
     assert G.has_edge("caller", "ast_render")
 
 
-def test_ghost_merge_skipped_on_basename_collision():
-    """#1257: when two files with the same basename both define a symbol with the
-    same label, the (basename, label) key is ambiguous and the semantic ghost
-    must not be merged into an arbitrary one of them."""
+def test_ghost_merge_uses_source_file_not_basename():
+    """#2068: the ghost-merge key is the full source_file, not the bare basename.
+    A ghost from src/a/index.ts merges into THAT file's AST node (a_render), never
+    the unrelated same-basename b_render in src/b/index.ts. (Pre-#2068 the
+    (basename, label) key made ('index.ts','render') ambiguous and skipped the
+    merge; the directory-aware key resolves it precisely.)"""
     ext = {
         "nodes": [
             {"id": "a_render", "label": "render", "file_type": "code",
@@ -290,13 +292,36 @@ def test_ghost_merge_skipped_on_basename_collision():
         "input_tokens": 0, "output_tokens": 0,
     }
     G = build_from_json(ext)
-    # The ghost survives: merging it into either a_render or b_render would
-    # pick an arbitrary winner (set iteration order over node_set).
-    assert "ghost_render" in G.nodes()
-    assert G.number_of_nodes() == 4
-    assert G.has_edge("caller", "ghost_render")
-    assert not G.has_edge("caller", "a_render")
+    # Ghost merges into its same-file twin; the edge re-points to a_render only.
+    assert "ghost_render" not in G.nodes()
+    assert G.has_edge("caller", "a_render")
     assert not G.has_edge("caller", "b_render")
+    # The unrelated same-basename node in another directory is untouched.
+    assert "b_render" in G.nodes()
+
+
+def test_ghost_merge_not_across_directories_same_basename():
+    """#2068: two unrelated non-AST nodes with the same basename+label in
+    DIFFERENT directories must NOT be merged onto one survivor (the bug: bare
+    basename collapsed docs/product_a/index.md and docs/product_b/index.md)."""
+    ext = {
+        "nodes": [
+            {"id": "docs_a_index", "label": "Quickstart", "file_type": "document",
+             "source_file": "docs/product_a/index.md", "source_location": "L1"},
+            {"id": "docs_b_index", "label": "Quickstart", "file_type": "document",
+             "source_file": "docs/product_b/index.md"},
+            {"id": "docs_hub", "label": "Docs", "file_type": "concept",
+             "source_file": "docs/hub.md", "source_location": "L1"},
+        ],
+        "edges": [{"source": "docs_hub", "target": "docs_b_index", "relation": "links_to",
+                   "confidence": "INFERRED", "source_file": "docs/hub.md"}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(ext, directed=False)
+    # Both docs survive; the edge stays on the file it was authored against.
+    assert "docs_a_index" in G.nodes() and "docs_b_index" in G.nodes()
+    assert G.has_edge("docs_hub", "docs_b_index")
+    assert not G.has_edge("docs_hub", "docs_a_index")
 
 
 def test_ghost_merge_non_ast_different_files_both_survive():

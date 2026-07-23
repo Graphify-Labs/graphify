@@ -623,6 +623,65 @@ def test_agents_uninstall_no_op_when_not_installed(tmp_path, capsys):
     assert "nothing to do" in out
 
 
+def test_remove_marker_section_matches_exact_heading_only(tmp_path):
+    """#2062: the strip helper must match graphify's own `## graphify` heading
+    exactly, never a substring inside a user's `### graphify` H3."""
+    from graphify.install import _remove_marker_section
+    m = "## graphify"
+
+    # Only a user H3 mention -> no exact marker line -> None (file left untouched).
+    assert _remove_marker_section("# Doc\n\n### graphify\n\nmy notes\n", m) is None
+    # An inline/bullet mention is likewise not a section.
+    assert _remove_marker_section("see the ## graphify bullet\n", m) is None
+
+    # A real H2 section alongside a user H3: remove only the H2 section.
+    content = "# Doc\n\n### graphify\n\nmy notes\n\n## graphify\n\ngraphify stuff\n"
+    out = _remove_marker_section(content, m)
+    assert out is not None
+    assert "### graphify" in out and "my notes" in out
+    assert not any(l.strip() == "## graphify" for l in out.splitlines())
+    assert "graphify stuff" not in out
+
+    # The section runs to the next H2 (not stopping at a `###` inside it).
+    c2 = "## graphify\n\nintro\n\n### sub\n\ninner\n\n## Keep\n\nkeep me\n"
+    out2 = _remove_marker_section(c2, m)
+    assert "## Keep" in out2 and "keep me" in out2
+    assert "inner" not in out2 and "intro" not in out2
+
+
+def test_agents_uninstall_preserves_user_h3_graphify_heading(tmp_path):
+    """#2062 end-to-end: uninstall strips graphify's own H2 section but leaves a
+    user-authored `### graphify` H3 (and everything else) byte-intact."""
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text(
+        "# My rules\n\n"
+        "### graphify\n\n"
+        "My own notes on how I use graphify. Keep this.\n\n"
+        "## Other\n\nUnrelated content.\n"
+    )
+    _agents_install(tmp_path, "codex")  # appends a genuine `## graphify` H2 section
+    assert "## graphify" in agents_md.read_text()
+
+    _agents_uninstall(tmp_path)
+    content = agents_md.read_text()
+    assert "### graphify" in content, "user's H3 heading was deleted (#2062)"
+    assert "My own notes on how I use graphify. Keep this." in content
+    assert "## Other" in content and "Unrelated content." in content
+    assert not any(l.strip() == "## graphify" for l in content.splitlines())
+
+
+def test_uninstall_untouched_when_only_user_h3_present(tmp_path, capsys):
+    """#2062: a file with only a user `### graphify` H3 (graphify never installed)
+    must be left byte-identical, not stripped."""
+    agents_md = tmp_path / "AGENTS.md"
+    original = "# My rules\n\n### graphify\n\nHand-written. Do not touch.\n"
+    agents_md.write_text(original)
+    before = agents_md.read_bytes()
+    _agents_uninstall(tmp_path)
+    assert agents_md.read_bytes() == before
+    assert "nothing to do" in capsys.readouterr().out
+
+
 # --- OpenCode plugin tests ---
 
 

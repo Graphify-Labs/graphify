@@ -10,7 +10,7 @@ from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap
-from graphify.build import edge_data
+from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
 
 try:
@@ -805,8 +805,34 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     # Empty when no sidecar exists, so un-annotated output stays byte-identical.
     overlay = getattr(G, "graph", {}).get("_learning_overlay", {}) or {}
     seed_set = set(seeds or [])
-    ordered = [n for n in (seeds or []) if n in nodes] + \
-              sorted(nodes - seed_set, key=lambda n: G.degree(n), reverse=True)
+    seed_hits = [n for n in (seeds or []) if n in nodes]
+    # Rank non-seed nodes by hop distance from the seeds so the node that answers
+    # the query (a direct hit or its close neighbors) survives the budget cut
+    # instead of being pushed past it by incidental high-degree hubs (#BUG2). BFS
+    # discovery order was discarded upstream (_bfs returns a set), so recompute
+    # layers here over BOTH edge directions. Deterministic: neighbor iteration is
+    # insertion-ordered and the sort key ends in str(n) (no hash-order).
+    def _adj(n):
+        if G.is_directed():
+            yield from G.successors(n)
+            yield from G.predecessors(n)
+        else:
+            yield from G.neighbors(n)
+    dist: dict[str, int] = {n: 0 for n in seed_hits}
+    frontier, hop = seed_hits, 0
+    while frontier:
+        hop += 1
+        nxt = []
+        for n in frontier:
+            for nb in _adj(n):
+                if nb in nodes and nb not in dist:
+                    dist[nb] = hop
+                    nxt.append(nb)
+        frontier = nxt
+    ordered = seed_hits + sorted(
+        nodes - seed_set,
+        key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
+    )
     for nid in ordered:
         d = G.nodes[nid]
         # Every LLM-derived field passes through sanitize_label before being
@@ -834,28 +860,92 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         if u in nodes and v in nodes:
             raw = G[u][v]
             d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
+            # (u, v) is BFS/DFS visit order, not necessarily the true edge
+            # direction: on an undirected graph G.neighbors() walks callers
+            # and callees alike, so a caller->callee edge renders backwards
+            # whenever the callee is visited first. _src/_tgt (stashed on the
+            # edge data by the `query` CLI loader) carry the real direction;
+            # fall back to (u, v) for graphs/edges that don't set them.
+            src = d.get("_src", u)
+            tgt = d.get("_tgt", v)
+            # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
+            # graph.json): only trust them when they name exactly this edge's
+            # endpoints, else fall back to (u, v). Without this, G.nodes[src]
+            # would KeyError on an unknown id (#2080 review).
+            if {src, tgt} != {u, v}:
+                src, tgt = u, v
             context = d.get("context")
             context_suffix = f" context={sanitize_label(str(context))}" if context else ""
+            # The relation SITE (call/import/reference line in the source's
+            # file), not a def line — so "who calls X" cites a clickable call
+            # location, not the caller's def (#BUG1).
+            _loc = str(d.get("source_location") or "")
+            at_suffix = (
+                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
+                if _loc else ""
+            )
             line = (
-                f"EDGE {sanitize_label(G.nodes[u].get('label', u))} "
+                f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
                 f"--{sanitize_label(str(d.get('relation', '')))} "
                 f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                f"{sanitize_label(G.nodes[v].get('label', v))}"
+                f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
             )
             lines.append(line)
     output = "\n".join(lines)
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
         cut_at = cut_at if cut_at > 0 else char_budget
+        # Never cut the seed nodes: they render first, so if the budget lands
+        # inside the seed block, extend the cut to cover it. The symbol the
+        # question named must always be in the answer (#BUG2). Seeds are bounded
+        # (_pick_seeds max_k + one per term), so the overshoot is a few lines.
+        if seed_hits:
+            seed_block_end = sum(len(lines[i]) + 1 for i in range(len(seed_hits))) - 1
+            cut_at = max(cut_at, min(seed_block_end, len(output)))
         total_nodes = sum(1 for l in lines if l.startswith("NODE "))
         shown_nodes = output[:cut_at].count("\nNODE ") + (1 if output.startswith("NODE ") else 0)
         cut_count = total_nodes - shown_nodes
+        # Prominent notice at the TOP so a truncated answer can never be mistaken
+        # for a complete one — silence used to read as absence (#BUG2). The
+        # notice + end marker sit OUTSIDE char_budget by design (two bounded
+        # wrapper lines, like the existing end marker).
         output = (
-            output[:cut_at]
+            f"[!] TRUNCATED: showing {shown_nodes} of {total_nodes} nodes "
+            f"(~{token_budget}-token budget). The answer may be among the "
+            f"{cut_count} cut nodes — raise the token budget (CLI: --budget) or "
+            f"narrow the query (e.g. context_filter=['call'], or get_node for a "
+            f"specific symbol).\n\n"
+            + output[:cut_at]
             + f"\n... (truncated — {cut_count} more nodes cut by ~{token_budget}-token budget."
             f" Narrow with context_filter=['call'] or use get_node for a specific symbol)"
         )
     return output
+
+
+def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) -> str:
+    """Render pre-built lines under the same ~3-chars/token budget rule as
+    _subgraph_to_text; over-budget output is cut at a line boundary with a count and a
+    narrowing hint instead of flooding the caller's context window."""
+    output = "\n".join(lines)
+    char_budget = token_budget * 3
+    if len(output) <= char_budget:
+        return output
+    cut_at = output[:char_budget].rfind("\n")
+    cut_at = cut_at if cut_at > 0 else char_budget
+    kept = output[:cut_at]
+    shown = kept.count("\n") + 1
+    cut_count = len(lines) - shown
+    # Announce truncation at the TOP as well, matching _subgraph_to_text — a
+    # bottom-only marker reads as silence/absence (the BUG-2 fix rationale). The
+    # notice sits outside char_budget by design (one bounded wrapper line).
+    return (
+        f"[!] TRUNCATED: showing {shown} of {len(lines)} lines "
+        f"(~{token_budget}-token budget). {narrow_hint}\n\n"
+        + kept
+        + f"\n... (truncated — {cut_count} more lines cut by ~{token_budget}-token budget. "
+        + narrow_hint
+        + ")"
+    )
 
 
 def _query_graph_text(
@@ -889,7 +979,10 @@ def _query_graph_text(
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget)
+    # Pass the seeds so the queried symbol renders first and survives truncation
+    # (#BUG2): a branch merge had silently dropped this argument, leaving the
+    # seed-first ordering as dead code.
+    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
 
 
 def _find_node(G: nx.Graph, label: str) -> list[str]:
@@ -1136,6 +1229,7 @@ def _build_server(graph_path: str):
                     "properties": {
                         "label": {"type": "string"},
                         "relation_filter": {"type": "string", "description": "Optional: filter by relation type"},
+                        "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
                     },
                     "required": ["label"],
                 },
@@ -1145,7 +1239,10 @@ def _build_server(graph_path: str):
                 description="Get all nodes in a community by community ID.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"community_id": {"type": "integer", "description": "Community ID (0-indexed by size)"}},
+                    "properties": {
+                        "community_id": {"type": "integer", "description": "Community ID (0-indexed by size)"},
+                        "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
+                    },
                     "required": ["community_id"],
                 },
             ),
@@ -1288,6 +1385,14 @@ def _build_server(graph_path: str):
             return f"No node matching '{label}' found."
         nid = matches[0]
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
+        def _edge_at(d: dict) -> str:
+            # Edge location = the relation SITE (call/import line) in the source
+            # node's file, not a def line (#BUG1).
+            loc = str(d.get("source_location") or "")
+            return (
+                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
+                if loc else ""
+            )
         for nb in G.successors(nid):
             d = edge_data(G, nid, nb)
             rel = d.get("relation", "")
@@ -1295,7 +1400,7 @@ def _build_server(graph_path: str):
                 continue
             lines.append(
                 f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]"
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
             )
         for nb in G.predecessors(nid):
             d = edge_data(G, nb, nid)
@@ -1304,9 +1409,12 @@ def _build_server(graph_path: str):
                 continue
             lines.append(
                 f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]"
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
             )
-        return "\n".join(lines)
+        budget = int(arguments.get("token_budget", 2000))
+        return _cut_lines_to_budget(
+            lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"
+        )
 
     def _tool_get_community(arguments: dict) -> str:
         cid = int(arguments["community_id"])
@@ -1322,7 +1430,10 @@ def _build_server(graph_path: str):
                 f"  {sanitize_label(d.get('label', n))} "
                 f"[{sanitize_label(str(d.get('source_file', '')))}]"
             )
-        return "\n".join(lines)
+        budget = int(arguments.get("token_budget", 2000))
+        return _cut_lines_to_budget(
+            lines, budget, "Raise token_budget or use get_node for specific members"
+        )
 
     def _tool_god_nodes(arguments: dict) -> str:
         from graphify.analyze import god_nodes as _god_nodes
@@ -1376,8 +1487,14 @@ def _build_server(graph_path: str):
                     )
         max_hops = int(arguments.get("max_hops", 8))
         try:
-            # Use undirected view for path-finding (works regardless of query src/tgt order)
-            path_nodes = nx.shortest_path(G.to_undirected(as_view=True), src_nid, tgt_nid)
+            # Deterministic path (#2074): the hash-seeded undirected view picked an
+            # arbitrary route among equal-length paths. Build a sorted, materialized
+            # undirected graph so the chosen path is canonical. Serve's shared G is
+            # left untouched (its degree feeds query-seed tie-breaks).
+            _und = nx.Graph()
+            _und.add_nodes_from(sorted(G.nodes))
+            _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+            path_nodes = nx.shortest_path(_und, src_nid, tgt_nid)
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             return f"No path found between '{G.nodes[src_nid].get('label', src_nid)}' and '{G.nodes[tgt_nid].get('label', tgt_nid)}'."
         hops = len(path_nodes) - 1
@@ -1386,15 +1503,18 @@ def _build_server(graph_path: str):
         segments = []
         for i in range(len(path_nodes) - 1):
             u, v = path_nodes[i], path_nodes[i + 1]
+            # Report the actual stored relation(s), never a fabricated `calls`;
+            # fall back to an honest "related" when the edge has no relation (#2074).
             if G.has_edge(u, v):
-                edata = edge_data(G, u, v)
+                datas = edge_datas(G, u, v)
                 forward = True
             else:
-                edata = edge_data(G, v, u)
+                datas = edge_datas(G, v, u)
                 forward = False
-            rel = edata.get("relation", "")
-            conf = edata.get("confidence", "")
-            conf_str = f" [{conf}]" if conf else ""
+            rels = sorted({d.get("relation") for d in datas if d.get("relation")})
+            rel = "/".join(rels) if rels else "related"
+            confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
+            conf_str = f" [{'/'.join(confs)}]" if confs else ""
             if i == 0:
                 segments.append(G.nodes[u].get("label", u))
             if forward:

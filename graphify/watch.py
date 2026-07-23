@@ -1242,7 +1242,12 @@ def _rebuild_code(
         labels_file = out / ".graphify_labels.json"
         try:
             raw = json.loads(labels_file.read_text(encoding="utf-8")) if labels_file.exists() else {}
-            labels = {int(k): v for k, v in raw.items() if int(k) in communities}
+            # Skip persisted "Community N" placeholders so the hub-fill below
+            # replaces them instead of perpetuating them on every rebuild (#2073).
+            labels = {
+                int(k): v for k, v in raw.items()
+                if int(k) in communities and v != f"Community {int(k)}"
+            }
         except Exception:
             raw = {}
             labels = {}

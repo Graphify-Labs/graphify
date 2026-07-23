@@ -1074,6 +1074,233 @@ def test_python_module_qualified_call_requires_the_import(tmp_path):
     assert bad == [], f"non-imported receiver must not link cross-file: {bad}"
 
 
+def test_python_from_import_alias_module_call_resolves(tmp_path):
+    """`from pkg import mod as alias` must resolve `alias.func()` the same way the
+    unaliased `from pkg import mod` / `mod.func()` form already does (#2082). The
+    local alias binding was untracked, so the aliased receiver never matched the
+    submodule's own stem and the `calls` edge silently disappeared while the
+    file-level `imports_from` edge stayed present and made the graph look intact.
+
+    Also covers the fix's `local_alias` hint hygiene: like the existing
+    `target_file` transient hint (#1814), it must be popped once the resolver
+    that reads it has run, never surviving into the returned edges/graph.json --
+    otherwise an internal local-variable name from the source tree leaks into
+    every graph.json produced from an aliased import."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "gate.py").write_text("def validate(rows):\n    return bool(rows)\n")
+    caller = pkg / "caller.py"
+    caller.write_text(
+        "from pkg import gate as m_gate\n\n"
+        "def use_alias(rows):\n"
+        "    return m_gate.validate(rows)\n"
+    )
+    result = extract(
+        [caller, pkg / "gate.py", pkg / "__init__.py"],
+        cache_root=tmp_path,
+        root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "use_alias" in nodes[e["source"]]["label"]
+        and "validate" in nodes[e["target"]]["label"]
+        and "gate.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(edges) == 1, f"expected one use_alias->validate edge, got {edges}"
+    assert edges[0]["confidence"] == "EXTRACTED"
+    leaked = [e for e in result["edges"] if "local_alias" in e]
+    assert leaked == [], f"local_alias hint must not survive into the output: {leaked}"
+
+
+def test_python_import_as_alias_module_call_resolves(tmp_path):
+    """`import mod as alias` must resolve `alias.func()` the same way `import mod`
+    / `mod.func()` already does (#1883) -- the same untracked-alias regression as
+    `from pkg import mod as alias` (#2082), on the plain `import` form."""
+    mathlib = tmp_path / "mathlib.py"
+    caller = tmp_path / "caller.py"
+    mathlib.write_text("def compute(x):\n    return x * 2\n")
+    caller.write_text(
+        "import mathlib as m\n\n"
+        "def use_aliased_import(n):\n"
+        "    return m.compute(n)\n"
+    )
+    result = extract([caller, mathlib], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "use_aliased_import" in nodes[e["source"]]["label"]
+        and "compute" in nodes[e["target"]]["label"]
+        and "mathlib.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(edges) == 1, f"expected one use_aliased_import->compute edge, got {edges}"
+    assert edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_python_try_except_from_import_alias_module_call_resolves(tmp_path):
+    """The issue's own motivating shape (#2082): `from pkg import mod as alias`
+    guarded by a `try:`/`except ImportError:` fallback assignment, the pattern
+    real code uses for an optional dependency. The issue explicitly called out
+    that the drop is independent of the `try:` nesting -- this locks that in as
+    a regression test rather than relying only on the unwrapped module-level
+    form above."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "gate.py").write_text("def validate(rows):\n    return bool(rows)\n")
+    caller = pkg / "caller_try.py"
+    caller.write_text(
+        "try:\n"
+        "    from pkg import gate as t_gate\n"
+        "except ImportError:\n"
+        "    t_gate = None\n\n"
+        "def use_try_alias(rows):\n"
+        "    return t_gate.validate(rows)\n"
+    )
+    result = extract(
+        [caller, pkg / "gate.py", pkg / "__init__.py"],
+        cache_root=tmp_path,
+        root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "use_try_alias" in nodes[e["source"]]["label"]
+        and "validate" in nodes[e["target"]]["label"]
+        and "gate.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(edges) == 1, f"expected one use_try_alias->validate edge, got {edges}"
+    assert edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_python_dotted_import_alias_module_call_resolves(tmp_path):
+    """`import pkg.mod as alias` -- the dotted absolute-import form the issue
+    flagged as needing coverage -- must resolve `alias.func()` the same way the
+    single-segment `import mathlib as m` form above does. This exercises the
+    `aliased_import` branch of `_import_python`'s `import_statement` arm with a
+    multi-segment module name, where the target id comes from collapsing
+    `pkg.gate` rather than a bare stem."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "gate.py").write_text("def validate(rows):\n    return bool(rows)\n")
+    caller = pkg / "caller_dotted.py"
+    caller.write_text(
+        "import pkg.gate as g_alias\n\n"
+        "def use_dotted_alias(rows):\n"
+        "    return g_alias.validate(rows)\n"
+    )
+    result = extract(
+        [caller, pkg / "gate.py", pkg / "__init__.py"],
+        cache_root=tmp_path,
+        root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "use_dotted_alias" in nodes[e["source"]]["label"]
+        and "validate" in nodes[e["target"]]["label"]
+        and "gate.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(edges) == 1, f"expected one use_dotted_alias->validate edge, got {edges}"
+    assert edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_python_relative_from_import_alias_module_call_resolves(tmp_path):
+    """`from . import mod as alias` -- a relative sibling-module import with an
+    alias -- must resolve `alias.func()` the same way the absolute `from pkg
+    import mod as alias` form above does. Relative imports route through the
+    same #1146 submodule-import path (module_imports' local_name slot) with a
+    level instead of an absolute module name, which is a distinct branch from
+    the absolute-import case already covered."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "gate.py").write_text("def validate(rows):\n    return bool(rows)\n")
+    caller = pkg / "caller_relative.py"
+    caller.write_text(
+        "from . import gate as r_gate\n\n"
+        "def use_relative_alias(rows):\n"
+        "    return r_gate.validate(rows)\n"
+    )
+    result = extract(
+        [caller, pkg / "gate.py", pkg / "__init__.py"],
+        cache_root=tmp_path,
+        root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "use_relative_alias" in nodes[e["source"]]["label"]
+        and "validate" in nodes[e["target"]]["label"]
+        and "gate.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(edges) == 1, f"expected one use_relative_alias->validate edge, got {edges}"
+    assert edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_python_external_aliased_import_fabricates_no_call_edge(tmp_path):
+    """#2082 must not over-resolve: an aliased import of an EXTERNAL/uncorpus
+    module (`import numpy as np; np.array()`) has no in-corpus callee, so it must
+    produce NO `calls` edge — the alias resolution stays inside the member-call
+    carve-out (in-corpus target required)."""
+    caller = tmp_path / "app.py"
+    caller.write_text(
+        "import numpy as np\n"
+        "from os import path as p\n\n"
+        "def build(rows):\n"
+        "    p.join('a', 'b')\n"
+        "    return np.array(rows)\n"
+    )
+    result = extract([caller], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    fabricated = [
+        e for e in result["edges"]
+        if e["relation"] in ("calls", "indirect_call")
+        and ("array" in nodes.get(e["target"], {}).get("label", "")
+             or "join" in nodes.get(e["target"], {}).get("label", ""))
+    ]
+    assert fabricated == [], f"external aliased calls must not fabricate edges: {fabricated}"
+
+
+def test_python_aliased_call_survives_warm_cache(tmp_path):
+    """#2082: the aliased `calls` edge must survive a warm (cache-hit) re-extract.
+    The fix threads a transient `local_alias` hint that is popped after the
+    resolver runs; the per-file cache must serialize it BEFORE the pop, or the
+    edge would resolve only on a cold run and silently vanish on the next."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "gate.py").write_text("def validate(rows):\n    return bool(rows)\n")
+    caller = pkg / "caller.py"
+    caller.write_text(
+        "from pkg import gate as m_gate\n\n"
+        "def use_alias(rows):\n"
+        "    return m_gate.validate(rows)\n"
+    )
+    paths = [caller, pkg / "gate.py", pkg / "__init__.py"]
+
+    def _alias_edges(result):
+        nodes = {n["id"]: n for n in result["nodes"]}
+        return [
+            e for e in result["edges"]
+            if e["relation"] == "calls"
+            and "use_alias" in nodes[e["source"]]["label"]
+            and "validate" in nodes[e["target"]]["label"]
+        ]
+
+    cold = extract(paths, cache_root=tmp_path, root=tmp_path)
+    assert len(_alias_edges(cold)) == 1, "cold run must resolve the aliased call"
+    warm = extract(paths, cache_root=tmp_path, root=tmp_path)  # cache-hit
+    assert len(_alias_edges(warm)) == 1, "aliased call edge vanished on warm cache (#2082)"
+
+
 def test_python_qualified_call_resolves_when_method_name_collides_with_caller(tmp_path):
     """The real #1446 shape: a viewset action `approve()` delegates to a SERVICE
     action of the SAME name via `Service.approve()`. The bare-name in-file lookup

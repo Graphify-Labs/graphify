@@ -1,5 +1,6 @@
 import os
 import unicodedata
+import pytest
 from pathlib import Path
 from graphify.detect import classify_file, count_words, detect, detect_incremental, save_manifest, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore, _is_sensitive
 from graphify import detect as detect_mod
@@ -1165,10 +1166,15 @@ def test_sensitive_flags_everything_under_credential_store_dirs():
     assert _is_sensitive(Path("backup/.gcloud/sync.sh"))
 
 def test_sensitive_dir_carveout_does_not_bypass_name_screens():
-    # #1943: rescued source still falls through to Stages 2-3, so a file whose
-    # NAME is sensitive stays dropped even though its dir carve-out applied.
-    assert _is_sensitive(Path("secrets/service_account.py"))   # Stage 2 pattern
+    # #1943: rescued source still falls through to Stages 2-3, so a NON-source
+    # file whose name/extension is sensitive stays dropped even though the dir
+    # carve-out spared genuine source beside it.
     assert _is_sensitive(Path("credentials/id_rsa"))           # extensionless key
+    assert _is_sensitive(Path("secrets/deploy.pem"))           # Stage 2 extension
+    # #2106: `service_account.py` is real source (e.g. Google's oauth2 lib), not a
+    # secret. The old unbounded `service.account` substring wrongly dropped it;
+    # it is now indexed. A downloaded `service-account.json` key still drops.
+    assert not _is_sensitive(Path("secrets/service_account.py"))
 
 
 def test_sensitive_dir_carveout_still_drops_tfvars_values_store():
@@ -2037,6 +2043,31 @@ def test_detect_unclassified_empty_when_all_supported(tmp_path):
     assert res.get("unclassified", []) == []
 
 
+def test_graphifyinclude_is_inert_and_not_unclassified(tmp_path, capsys):
+    """#2112: .graphifyinclude support was removed (dead since #873).
+
+    A leftover .graphifyinclude must not error, must not surface in the
+    unclassified list, and must not change which real files are indexed.
+    detect() prints a one-time stderr note so the removal is not silent.
+    """
+    (tmp_path / "main.py").write_text("x = 1\n")
+
+    baseline = detect(tmp_path)
+    capsys.readouterr()  # discard any baseline output
+
+    (tmp_path / ".graphifyinclude").write_text(".github/\ndocs/**\n")
+    result = detect(tmp_path)
+
+    # not surfaced as an unclassified scan input
+    assert not any(".graphifyinclude" in p for p in result["unclassified"])
+    # real files are indexed exactly as before; the file changes nothing
+    assert result["files"] == baseline["files"]
+    assert any("main.py" in f for f in result["files"]["code"])
+    # one-time stderr note, matching the [graphify] warning convention
+    err = capsys.readouterr().err
+    assert err.count("[graphify] WARNING: .graphifyinclude is no longer supported") == 1
+
+
 def test_detect_reports_walk_errors_key():
     """detect() always surfaces a walk_errors list so callers can tell whether
     enumeration was complete."""
@@ -2288,3 +2319,43 @@ def test_detect_incremental_exclusion_stable_across_runs(tmp_path):
     inc2 = detect_incremental(tmp_path, manifest_path, extra_excludes=["b.py"])
     assert inc2["deleted_files"] == []
     assert inc2["excluded_files"] == []
+
+
+# ── #2106: sensitive-filter over-match (prose/source rescued, real secrets kept) ──
+
+@pytest.mark.parametrize("path", [
+    "wiki/privacy-tokens.md",          # reporter's own hub node
+    "wiki/ai-token-economics.md",
+    "wiki/chain-of-hope-tokenomics.md",
+    "tokenizer.py",
+    "secretary.py",
+    "google/oauth2/service_account.py",   # real Google auth source
+    "docs/service-account-setup.md",
+    "wiki/aws_credentials_rotation_guide.md",
+    "token.economics.notes.md",           # multi-dot topic slug
+    "password-reset/design.md",
+])
+def test_sensitive_filter_indexes_topic_prose_and_source(path):
+    from graphify.detect import _is_sensitive
+    assert not _is_sensitive(Path(path)), f"{path} is a topic doc / real source, must be indexed (#2106)"
+
+
+@pytest.mark.parametrize("path", [
+    ".env", "id_rsa", "credentials.json", "server.pem", "certs/server.key",
+    "secrets.md", "passwords.md", "token.md", "token.txt", "api_token.json",
+    "service-account.json",                # a downloaded GCP key file
+    ".npmrc", ".pypirc", "secring.gpg", ".git-credentials",   # #2106 newly-caught
+    "Secrets/creds.json", "SECRETS/db.json", "ID_RSA",        # #2106 case variants
+    "secrets/prod.tfvars", "credentials/id_rsa",
+])
+def test_sensitive_filter_still_excludes_real_secrets(path):
+    from graphify.detect import _is_sensitive
+    assert _is_sensitive(Path(path)), f"{path} is a real secret, must stay excluded (#2106)"
+
+
+def test_sensitive_bare_keyword_prose_still_dropped():
+    """A prose file whose stem IS exactly a bare keyword still reads as a dump."""
+    from graphify.detect import _is_sensitive
+    assert _is_sensitive(Path("secrets.md"))
+    assert _is_sensitive(Path("token.rst"))
+    assert not _is_sensitive(Path("token-lifecycle.md"))  # multi-word slug indexed

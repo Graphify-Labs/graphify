@@ -137,6 +137,30 @@ def test_build_calls_dedup():
     assert G.number_of_nodes() == 1
 
 
+def test_build_dedup_preserves_semantic_attributes():
+    """The default build path must not discard semantic enrichment (#2091)."""
+    from graphify.build import build
+    ast = {
+        "nodes": [{"id": "src_auth_login", "label": "login", "file_type": "code",
+                   "source_file": "src/auth.py", "_origin": "ast",
+                   "source_location": "L42"}],
+        "edges": [],
+    }
+    semantic = {
+        "nodes": [{"id": "src_auth_login", "label": "User login handler",
+                   "file_type": "code", "source_file": "src/auth.py",
+                   "summary": "Authenticates a user.", "confidence_score": 0.9}],
+        "edges": [],
+    }
+
+    node = dict(build([ast, semantic], directed=True, dedup=True).nodes["src_auth_login"])
+
+    assert node["label"] == "login"
+    assert node["source_location"] == "L42"
+    assert node["summary"] == "Authenticates a user."
+    assert node["confidence_score"] == 0.9
+
+
 # --- #878: fuzzy dedup false merges on short/variant labels ---
 
 def test_dedup_does_not_merge_numeric_variants(tmp_path):
@@ -469,14 +493,15 @@ def test_defining_file_wins_over_referencing_file(nodes, capsys):
 
 
 def test_reference_collision_is_silent(capsys):
-    """A cross-reference collapsing into the entity it references loses nothing —
-    edges are keyed by ID and rewire to the survivor — so it must not be reported."""
+    """A cross-reference rewires silently without importing foreign-file metadata."""
     edges = _make_edges("agents_make_batch_fixtures_make_batch_fixtures", "other")
+    referencing = dict(_REFERENCING, summary="Reference-local description.")
     result_nodes, result_edges = deduplicate_entities(
-        [_DEFINING, _REFERENCING], edges, communities={})
+        [_DEFINING, referencing], edges, communities={})
 
     assert len(result_nodes) == 1
     assert len(result_edges) == 1
+    assert "summary" not in result_nodes[0]
     captured = capsys.readouterr()
     assert "WARNING" not in captured.err
     assert "note:" not in captured.err
@@ -511,6 +536,56 @@ def test_same_file_relabel_is_noted(capsys):
     assert "note:" in captured.err
     assert "make-batch-fixtures helper agent" in captured.err
     assert "WARNING" not in captured.err
+
+
+@pytest.mark.parametrize("nodes", [
+    [
+        {"id": "src_auth_login", "label": "login", "file_type": "code",
+         "source_file": "src/auth.py", "_origin": "ast", "source_location": "L42"},
+        {"id": "src_auth_login", "label": "User login handler", "file_type": "code",
+         "source_file": "src/auth.py", "summary": "Authenticates a user.",
+         "confidence_score": 0.9},
+    ],
+    [
+        {"id": "src_auth_login", "label": "User login handler", "file_type": "code",
+         "source_file": "src/auth.py", "summary": "Authenticates a user.",
+         "confidence_score": 0.9},
+        {"id": "src_auth_login", "label": "login", "file_type": "code",
+         "source_file": "src/auth.py", "_origin": "ast", "source_location": "L42"},
+    ],
+], ids=["ast-first", "semantic-first"])
+def test_same_id_same_entity_retains_complementary_attributes(nodes):
+    """Exact-ID dedup combines AST precision with semantic enrichment (#2091)."""
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0] == {
+        "id": "src_auth_login",
+        "label": "login",
+        "file_type": "code",
+        "source_file": "src/auth.py",
+        "_origin": "ast",
+        "source_location": "L42",
+        "summary": "Authenticates a user.",
+        "confidence_score": 0.9,
+    }
+
+
+def test_cross_file_id_collision_does_not_mix_attributes(capsys):
+    """Two files that both mint one ID remain isolated despite exact-ID dedup."""
+    nodes = [
+        {"id": "pkg_service_run", "label": "run", "file_type": "code",
+         "source_file": "pkg/service.py", "source_location": "L10"},
+        {"id": "pkg_service_run", "label": "run helper", "file_type": "code",
+         "source_file": "pkg_service.py", "summary": "Different function."},
+    ]
+
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["source_file"] == "pkg/service.py"
+    assert "summary" not in result_nodes[0]
+    assert "WARNING" in capsys.readouterr().err
 
 
 def test_collision_survivor_is_order_independent():
@@ -551,3 +626,69 @@ def test_defines_id_helper():
     # A path that is merely a string-prefix of the ID's path does not define it.
     assert not _defines_id({"id": "agents_foo", "source_file": "agent/foo.md"})
     assert not _defines_id({"id": "docs_intro_foo", "source_file": ""})
+
+
+# ── #2091 review: attribute-merge correctness (fixes A-D) ─────────────────────
+
+def test_dedup_gapfill_is_order_independent_with_multiple_losers():
+    """(fix A) With 3+ same-ID same-source records, the merged attributes must not
+    depend on arrival order — the best loser by collision rank supplies each
+    missing key deterministically, preserving the #1851 order-independence."""
+    import itertools
+    base = [
+        {"id": "f", "label": "f", "file_type": "code", "source_file": "m.py",
+         "source_location": "L1"},                                  # shortest label -> survivor
+        {"id": "f", "label": "f helper beta", "file_type": "code",
+         "source_file": "m.py", "summary": "BETA"},
+        {"id": "f", "label": "f helper alpha", "file_type": "code",
+         "source_file": "m.py", "summary": "ALPHA"},
+    ]
+    seen = set()
+    for perm in itertools.permutations(base):
+        nodes, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(nodes) == 1
+        seen.add(nodes[0].get("summary"))
+    assert len(seen) == 1, f"merged summary depends on arrival order: {seen}"
+
+
+def test_dedup_no_attribute_merge_when_source_file_missing():
+    """(fix B) Two provenance-less records sharing an ID must NOT cross-pollinate
+    attributes — '' == '' is not proof of the same symbol (#1178)."""
+    nodes = [
+        {"id": "c", "label": "c", "file_type": "concept", "summary": "A"},
+        {"id": "c", "label": "c", "file_type": "concept", "notes": "B"},
+    ]
+    result, _ = deduplicate_entities([dict(n) for n in nodes], [], communities={})
+    assert len(result) == 1
+    surv = result[0]
+    assert not ("summary" in surv and "notes" in surv), (
+        "provenance-less same-id records must not merge attributes"
+    )
+
+
+def test_dedup_survivor_does_not_inherit_false_origin_ast():
+    """(fix C) An LLM survivor must not inherit _origin='ast' from a dropped
+    same-source AST record — a false authority tag is read by ghost-merge/watch."""
+    nodes = [
+        {"id": "x", "label": "run", "file_type": "code", "source_file": "m.py",
+         "source_location": "L9"},                                   # shorter label -> survivor (LLM)
+        {"id": "x", "label": "run() [ast]", "file_type": "code", "source_file": "m.py",
+         "source_location": "L2", "_origin": "ast"},                 # loser carries _origin=ast
+    ]
+    result, _ = deduplicate_entities([dict(n) for n in nodes], [], communities={})
+    assert len(result) == 1
+    assert result[0].get("_origin") != "ast", "survivor must not inherit a false _origin=ast"
+
+
+def test_dedup_fills_explicit_none_attribute():
+    """(fix D) An explicit source_location=None on the survivor is treated as
+    absent and filled from a same-source record that has a real line (#2091)."""
+    nodes = [
+        {"id": "y", "label": "y", "file_type": "code", "source_file": "m.py",
+         "source_location": None},                                   # survivor, explicit None
+        {"id": "y", "label": "y helper", "file_type": "code", "source_file": "m.py",
+         "source_location": "L7"},
+    ]
+    result, _ = deduplicate_entities([dict(n) for n in nodes], [], communities={})
+    assert len(result) == 1
+    assert result[0].get("source_location") == "L7", "explicit-None must be filled from the loser"

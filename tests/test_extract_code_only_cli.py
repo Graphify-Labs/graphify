@@ -56,6 +56,19 @@ def test_mixed_repo_without_key_errors_and_points_at_code_only(tmp_path):
     assert "--code-only" in r.stderr, "the no-key error must point users at --code-only"
 
 
+def test_extract_usage_advertises_code_only(tmp_path):
+    """#2071: --code-only must be discoverable in the extract usage text, not only
+    by triggering the no-key error. `graphify extract` with no path prints usage."""
+    r = subprocess.run(
+        [PYTHON, "-m", "graphify", "extract"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert r.returncode != 0
+    assert "--code-only" in r.stdout + r.stderr, (
+        "extract usage must advertise --code-only (#2071)"
+    )
+
+
 def _run_relative_out(repo: Path, *extra: str):
     """Like _run but with a RELATIVE GRAPHIFY_OUT so --out/--output controls the
     parent dir (an absolute GRAPHIFY_OUT would override the flag)."""
@@ -231,3 +244,17 @@ def test_explicit_exclude_replaces_persisted_setting_with_custom_out(tmp_path):
     assert json.loads((graph_out / ".graphify_build.json").read_text()) == {
         "excludes": ["generated"]
     }
+
+
+def test_extract_names_skipped_sensitive_files(tmp_path):
+    """#2106 traceability: a file dropped by the sensitive-file filter is reported
+    by NAME (not just a count), so a wrongly-flagged file is visible."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("def hello():\n    return 1\n")
+    (repo / "github_token.txt").write_text("ghp_secretvalue\n")  # real secret -> skipped
+    r = _run(repo, "--code-only", "--no-cluster")
+    assert r.returncode == 0, r.stderr
+    out = r.stdout + r.stderr
+    assert "skipped as potentially sensitive" in out
+    assert "github_token.txt" in out, "the skipped filename must be surfaced (#2106)"

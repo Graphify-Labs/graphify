@@ -273,6 +273,40 @@ def test_xaml_prism_autowire_false_does_not_infer_from_filename(tmp_path):
     assert _view_model_edges(r) == []
 
 
+def test_xaml_cs_scan_prunes_noise_dirs_and_stays_bounded(tmp_path):
+    """The code-behind/.cs scan prunes noise dirs (node_modules/.venv/.git/...)
+    during traversal and is bounded, so it links the real ViewModel while a decoy
+    .cs buried in node_modules is never scanned — and it can't rglob a huge tree
+    and hang (the standalone-root escape that stalled the suite)."""
+    proj = tmp_path / "App"
+    (proj / "Views").mkdir(parents=True)
+    (proj / "ViewModels").mkdir()
+    (proj / "App.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk" />', encoding="utf-8")
+    (proj / "Views" / "MainWindow.xaml").write_text(
+        '<Window x:Class="App.Views.MainWindow"\n'
+        '  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"\n'
+        '  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"\n'
+        '  xmlns:vm="clr-namespace:App.ViewModels">\n'
+        '  <Window.DataContext><vm:MainWindowViewModel/></Window.DataContext>\n'
+        "</Window>\n", encoding="utf-8")
+    (proj / "ViewModels" / "MainWindowViewModel.cs").write_text(
+        "namespace App.ViewModels { public class MainWindowViewModel {} }\n", encoding="utf-8")
+    # A decoy with the SAME class name inside a noise dir: if pruning failed it
+    # would be scanned and make the link ambiguous/wrong.
+    nm = proj / "node_modules" / "pkg"
+    nm.mkdir(parents=True)
+    (nm / "Decoy.cs").write_text(
+        "namespace App.ViewModels { public class MainWindowViewModel {} }\n", encoding="utf-8")
+    r = extract_xaml(proj / "Views" / "MainWindow.xaml")
+    assert "error" not in r
+    nodes = {n["id"]: n for n in r["nodes"]}
+    edges = _view_model_edges(r)
+    assert len(edges) == 1
+    tgt = nodes[edges[0]["target"]]
+    assert tgt["label"] == "MainWindowViewModel"
+    assert "node_modules" not in (tgt.get("source_file") or ""), "decoy in node_modules was scanned"
+
+
 def test_xaml_links_communitytoolkit_generated_members_and_event_to_command():
     r = extract_xaml(FIXTURES / "xaml_viewmodel" / "Views" / "ToolkitView.xaml")
     nodes = {n["id"]: n for n in r["nodes"]}

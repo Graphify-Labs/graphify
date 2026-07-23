@@ -116,9 +116,17 @@ _AMBIGUOUS_SENSITIVE_DIRS = frozenset({
 _SENSITIVE_PATTERNS = [
     re.compile(r'(^|[\\/])\.(env|envrc)(\.|$)', re.IGNORECASE),
     re.compile(r'\.(pem|key|p12|pfx|cert|crt|der|p8)$', re.IGNORECASE),
-    re.compile(r'(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$'),
-    re.compile(r'(\.netrc|\.pgpass|\.htpasswd)$', re.IGNORECASE),
-    re.compile(r'(aws_credentials|gcloud_credentials|service.account)', re.IGNORECASE),
+    # SSH/GPG private keys. Left boundary + IGNORECASE so `grid_rsa` (alpha before
+    # `id_rsa`) and `ID_RSA` are handled correctly, not matched as a substring.
+    re.compile(r'(^|[^A-Za-z0-9])(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$', re.IGNORECASE),
+    re.compile(r'^secring(\.(gpg|pgp))?$', re.IGNORECASE),  # GPG private keyring
+    # Auth/credential dotfiles that routinely hold tokens (#2106: .npmrc/.pypirc/
+    # .git-credentials/.boto were silently indexed before).
+    re.compile(r'(\.netrc|\.pgpass|\.htpasswd|\.npmrc|\.pypirc|\.git-credentials|\.boto)$', re.IGNORECASE),
+    # NOTE: aws_credentials/gcloud_credentials/service_account moved to the
+    # boundary-checked Stage 3 keyword path (#2106). The old unbounded
+    # `service.account` substring (regex `.` wildcard) matched real source like
+    # google/oauth2/service_account.py and prose like aws_credentials_rotation.md.
 ]
 
 # Generic keyword patterns - these only count when the keyword is LOAD-BEARING
@@ -134,7 +142,20 @@ _SENSITIVE_PATTERNS = [
 _GENERIC_KEYWORD_PATTERNS = [
     re.compile(r'(?<![a-zA-Z0-9])(credential|secret|passwd|password|private_key)s?(?![a-zA-Z])', re.IGNORECASE),
     re.compile(r'(?<![a-zA-Z0-9])tokens?(?![a-zA-Z])', re.IGNORECASE),
+    # service_account / service-account / serviceaccount (GCP key files). In the
+    # keyword path so `service_account.py` (real source) is spared while
+    # `service-account.json` (a downloaded key) and bare names are still caught
+    # (#2106; was an unbounded Stage 2 substring). aws_credentials/gcloud_credentials
+    # are already covered by the `credential` keyword above.
+    re.compile(r'(?<![a-zA-Z0-9])service[._-]?account(?![a-zA-Z])', re.IGNORECASE),
 ]
+
+# Prose/note formats: a heavily-linked wiki article whose topic slug ends in a
+# keyword (privacy-tokens.md, token-economics.md) is a document ABOUT the topic,
+# not a credential store, so it must not be silently dropped (#2106). A BARE
+# keyword name (secrets.md, token.md, passwords.md) still reads as a dump and
+# stays excluded — see _is_prose_note.
+_PROSE_EXTS = frozenset({".md", ".markdown", ".rst", ".org", ".adoc", ".tex"})
 
 # Data/serialization extensions that commonly ARE secret stores when their name
 # hits a generic keyword (credentials.json, secrets.yaml, token.toml) or they sit
@@ -154,7 +175,18 @@ _SECRET_PRONE_DATA_EXTS = frozenset({
 # Word separators for the load-bearing check (underscore intentionally included;
 # multi-word keywords like private_key are handled by the end-of-stem check,
 # which runs before word counting).
-_WORD_SPLIT = re.compile(r'[-_\s]+')
+_WORD_SPLIT = re.compile(r'[-_\s.]+')  # '.' included so `token.economics.notes` counts as 3 words (#2106)
+
+
+def _is_prose_note(path: Path) -> bool:
+    """A prose/note file (.md/.rst/...) whose stem is a multi-word topic slug is
+    exempt from the generic-keyword drop (#2106). A stem that IS exactly a bare
+    keyword (secrets / token / passwords) is NOT exempt — that still reads as a
+    credential dump."""
+    if path.suffix.lower() not in _PROSE_EXTS:
+        return False
+    stem = Path(path.name).stem.lstrip('.') or Path(path.name).stem
+    return not any(p.fullmatch(stem) for p in _GENERIC_KEYWORD_PATTERNS)
 
 
 def _generic_keyword_hit(name: str) -> bool:
@@ -167,9 +199,11 @@ def _generic_keyword_hit(name: str) -> bool:
     ("token-economics-of-recall.md", "password-policy-discussion.md") and must
     not cause the file to be silently dropped from the graph (#436, #718).
     """
-    # Stem = name up to the first dot, ignoring leading dots so dotfiles like
-    # ".token" keep their keyword ("" stems would never match).
-    stem = name.lstrip('.').split('.')[0]
+    # Stem = name minus only the FINAL extension (not up to the first dot), so a
+    # multi-dot topic slug like `token.economics.notes.md` keeps all its words and
+    # doesn't collapse to a bare `token` (#2106). Leading dots stripped so
+    # dotfiles like `.token` keep their keyword.
+    stem = Path(name).stem.lstrip('.') or Path(name).stem
     for pat in _GENERIC_KEYWORD_PATTERNS:
         hit = False
         for m in pat.finditer(stem):
@@ -218,9 +252,11 @@ def _is_sensitive(path: Path) -> bool:
     # (secrets/, credentials/) spare genuine source (#1943), which still falls
     # through so Stages 2-3 screen its filename like anywhere else.
     parents = path.parts[:-1]
-    if any(part in _CREDENTIAL_STORE_DIRS for part in parents):
+    # Lowercase the segment comparison so `Secrets/`/`SECRETS/` (real on
+    # case-insensitive macOS/Windows filesystems) are still caught (#2106).
+    if any(part.lower() in _CREDENTIAL_STORE_DIRS for part in parents):
         return True
-    if any(part in _AMBIGUOUS_SENSITIVE_DIRS for part in parents) and not _is_graphable_source(path):
+    if any(part.lower() in _AMBIGUOUS_SENSITIVE_DIRS for part in parents) and not _is_graphable_source(path):
         return True
     # Stage 2: filename pattern match
     name = path.name
@@ -235,7 +271,9 @@ def _is_sensitive(path: Path) -> bool:
     # secret stores this stage must catch. The specific Stage 2 patterns (.env, .pem,
     # id_rsa, ...) still apply to everything regardless of extension.
     if _generic_keyword_hit(name):
-        return not _is_graphable_source(path)
+        # Genuine source AND multi-word prose notes are exempt; a bare-keyword
+        # name (secrets.md, token.txt) still drops (#1666, #2106).
+        return not (_is_graphable_source(path) or _is_prose_note(path))
     return False
 
 
@@ -759,6 +797,9 @@ _SKIP_FILES = {
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     "Cargo.lock", "poetry.lock", "Gemfile.lock",
     "composer.lock", "go.sum", "go.work.sum",
+    # Removed allowlist config (#2112) — no longer consumed, so keep a leftover
+    # file out of the unclassified list instead of surfacing it as scan input.
+    ".graphifyinclude",
 }
 
 # A bare "snapshots" dir is a Jest/Vitest artifact only when it actually holds
@@ -1099,117 +1140,6 @@ def _is_ignored(
     return _eval(path)
 
 
-def _load_graphifyinclude(root: Path) -> list[tuple[Path, str]]:
-    """Read .graphifyinclude allowlist patterns from root and ancestors.
-
-    Include patterns opt matching hidden files/dirs into traversal. Sensitive
-    files and hard-skipped noise directories are still excluded later.
-    Uses the same VCS-root ceiling logic as _load_graphifyignore.
-    """
-    root = root.resolve()
-    ceiling = _find_vcs_root(root) or root
-
-    dirs: list[Path] = []
-    current = root
-    while True:
-        dirs.append(current)
-        if current == ceiling:
-            break
-        current = current.parent
-    dirs.reverse()
-
-    patterns: list[tuple[Path, str]] = []
-    for d in dirs:
-        include_file = d / ".graphifyinclude"
-        if include_file.exists():
-            for raw in include_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = _parse_gitignore_line(raw)
-                if line:
-                    patterns.append((d, line))
-    return patterns
-
-
-def _is_included(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> bool:
-    """Return True if path matches any .graphifyinclude allowlist pattern."""
-    if not patterns:
-        return False
-
-    def _matches(rel: str, p: str, anchored: bool) -> bool:
-        if anchored:
-            return fnmatch.fnmatch(rel, p)
-        parts = rel.split("/")
-        if fnmatch.fnmatch(rel, p):
-            return True
-        if fnmatch.fnmatch(path.name, p):
-            return True
-        for i, part in enumerate(parts):
-            if fnmatch.fnmatch(part, p):
-                return True
-            if fnmatch.fnmatch("/".join(parts[:i + 1]), p):
-                return True
-        return False
-
-    for anchor, pattern in patterns:
-        anchored = pattern.startswith("/")
-        p = pattern.strip("/")
-        if not p:
-            continue
-        if anchored:
-            try:
-                rel_anchor = str(path.relative_to(anchor)).replace(os.sep, "/")
-                if _matches(rel_anchor, p, anchored=True):
-                    return True
-            except ValueError:
-                pass
-        else:
-            try:
-                rel = str(path.relative_to(root)).replace(os.sep, "/")
-                if _matches(rel, p, anchored=False):
-                    return True
-            except ValueError:
-                pass
-            if anchor != root:
-                try:
-                    rel_anchor = str(path.relative_to(anchor)).replace(os.sep, "/")
-                    if _matches(rel_anchor, p, anchored=False):
-                        return True
-                except ValueError:
-                    pass
-    return False
-
-
-def _could_contain_included_path(path: Path, root: Path, patterns: list[tuple[Path, str]]) -> bool:
-    """Return True if a directory may contain files matched by .graphifyinclude."""
-    if not patterns:
-        return False
-
-    rels: list[str] = []
-    try:
-        rels.append(str(path.relative_to(root)).replace(os.sep, "/"))
-    except ValueError:
-        pass
-    for anchor, _ in patterns:
-        if anchor != root:
-            try:
-                rels.append(str(path.relative_to(anchor)).replace(os.sep, "/"))
-            except ValueError:
-                pass
-
-    for rel in rels:
-        rel = rel.strip("/")
-        if not rel:
-            return True
-        for _, pattern in patterns:
-            p = pattern.strip("/")
-            if not p:
-                continue
-            if p == rel or p.startswith(rel + "/"):
-                return True
-            if fnmatch.fnmatch(rel, p):
-                return True
-    return False
-
-
 def _auto_follow_symlinks(root: Path) -> bool:
     """Return whether ``root`` has any direct symlinked child.
 
@@ -1237,6 +1167,19 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
 
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
     root = root.resolve()
+    # .graphifyinclude support was removed (#2112): its loader and matchers had
+    # no consumers, so the file has been a silent no-op since dot directories
+    # became indexed by default (#873). Surface that once per scan so a
+    # leftover allowlist file is not a silent behavior change.
+    if (root / ".graphifyinclude").is_file():
+        import sys as _sys
+        print(
+            "[graphify] WARNING: .graphifyinclude is no longer supported "
+            "(it has been non-functional since dot directories became indexed "
+            "by default); to re-include ignored paths, use ! negation patterns "
+            "in .graphifyignore.",
+            file=_sys.stderr,
+        )
     if follow_symlinks is None:
         follow_symlinks = False
     google_workspace = google_workspace_enabled() if google_workspace is None else google_workspace
@@ -1274,7 +1217,6 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             line = _parse_gitignore_line(pat)
             if line:
                 ignore_patterns.append((root, line))
-    include_patterns = _load_graphifyinclude(root)
 
     # Always include graphify-out/memory/ - query results filed back into the graph
     memory_dir = root / GRAPHIFY_OUT / "memory"

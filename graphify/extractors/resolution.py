@@ -796,7 +796,7 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None) -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
@@ -816,6 +816,11 @@ def _apply_symbol_resolution_facts(
         # the id-disambiguation salt is keyed by the TARGET, not the importer (#1814).
         if target_file is not None:
             edge["target_file"] = target_file
+        # The local name this import bound in the importing file, when it differs
+        # from the target's own name (`from pkg import mod as alias`) -- lets the
+        # cross-file member-call resolver match `alias.func()` (#2082).
+        if local_alias is not None:
+            edge["local_alias"] = local_alias
         edges.append(edge)
 
     for declaration in facts.declarations:
@@ -962,7 +967,7 @@ def _apply_symbol_resolution_facts(
         )
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
-    for from_path, to_path, line in facts.module_imports:
+    for from_path, to_path, line, local_name in facts.module_imports:
         try:
             from_rel = from_path.relative_to(root)
             to_rel = to_path.relative_to(root)
@@ -970,7 +975,10 @@ def _apply_symbol_resolution_facts(
             continue
         source_id = _make_id(_file_stem(from_rel))
         target_id = _make_id(_file_stem(to_rel))
-        add_edge(source_id, target_id, "imports_from", "submodule_import", line, from_path)
+        add_edge(
+            source_id, target_id, "imports_from", "submodule_import", line, from_path,
+            local_alias=local_name if local_name != to_path.stem else None,
+        )
 
     for use_fact in facts.uses:
         file_path = use_fact.file_path.resolve()
@@ -1605,15 +1613,9 @@ def _python_imported_names(node, source: bytes) -> list[tuple[str, str]]:
             names.append((name, local))
     return names
 
-def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
-    if level > 0:
-        base = current_path.parent
-        for _ in range(level - 1):
-            base = base.parent
-        candidate = base / module_name.replace(".", "/") if module_name else base
-    else:
-        candidate = root / module_name.replace(".", "/")
-
+def _probe_python_module_candidate(candidate: Path) -> Path | None:
+    """Resolve one module-path candidate to a .py file (dir+__init__, exact, or
+    with a .py suffix), or None."""
     if candidate.is_dir():
         init_path = candidate / "__init__.py"
         if init_path.is_file():
@@ -1623,6 +1625,45 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
     py_candidate = candidate.with_suffix(".py")
     if py_candidate.is_file():
         return py_candidate
+    return None
+
+
+def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
+    if level > 0:
+        base = current_path.parent
+        for _ in range(level - 1):
+            base = base.parent
+        candidate = base / module_name.replace(".", "/") if module_name else base
+        return _probe_python_module_candidate(candidate)
+
+    # Absolute import. Probe the scan root first (unchanged for the common
+    # root-is-package-root layout), then walk up from the importing file toward
+    # the root so a `src/` (or otherwise nested) package root resolves regardless
+    # of where the scan started — `import pkg.mod` from src/pkg/app.py must find
+    # src/pkg/mod.py whether the scan root is the repo or src/ (#2072). Mirrors
+    # the upward walk already used for Lua (_resolve_lua_import_target, #1075).
+    rel = module_name.replace(".", "/")
+    hit = _probe_python_module_candidate(root / rel)
+    if hit is not None:
+        return hit
+    for anc in current_path.parents:
+        try:
+            anc.relative_to(root)
+        except ValueError:
+            break  # left the scan root; stop walking up
+        if anc == root:
+            continue  # already probed root/rel above
+        # Only probe sys.path-root candidates — dirs that are NOT themselves part
+        # of a package. Probing a package dir would resolve an absolute
+        # `from helpers import x` to a sibling in the current package (Python-2
+        # implicit-relative semantics), fabricating edges to what may be an
+        # external dependency (#2072 review). A src-layout root (src/, no
+        # __init__.py) is still probed.
+        if (anc / "__init__.py").is_file():
+            continue
+        cand = _probe_python_module_candidate(anc / rel)
+        if cand is not None:
+            return cand
     return None
 
 def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
@@ -1684,7 +1725,7 @@ def _collect_python_symbol_resolution_facts(
                     sub_pkg = pkg_dir / imported_name / "__init__.py"
                     submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
                     if submodule is not None:
-                        facts.module_imports.append((path, submodule, line))
+                        facts.module_imports.append((path, submodule, line, local_name))
                         continue
                 facts.imports.append(
                     _SymbolImportFact(path, local_name, target_path, imported_name, line)
