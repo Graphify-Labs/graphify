@@ -447,6 +447,7 @@ A cluster is a directory with a `cluster.json` spec:
 {
   "schema_version": 1,
   "name": "my-stack",
+  "graph_mode": "multi",
   "members": [
     {"tag": "web", "url": "https://github.com/org/web", "path": "../web"},
     {"tag": "worker", "url": "https://github.com/org/worker"}
@@ -473,8 +474,12 @@ A cluster is a directory with a `cluster.json` spec:
 }
 ```
 
-YAML specs remain available when PyYAML is installed, but initialization and
-documentation use JSON consistently.
+`graph_mode` is `simple` by default. Set it to `multi` and extract members with
+`graphify extract . --multigraph` to retain several relations between the same
+nodes. The multigraph format persists across rebuilds (including `--force`);
+`graphify extract . --no-multigraph` converts back, with a warning that
+parallel relations collapse. YAML specs remain available when PyYAML is
+installed, but initialization and documentation use JSON consistently.
 
 Node selectors are `{repo, file|label|id}` — `file` suffix-matches `source_file` (preferring the file node), `label` matches exactly then case-insensitively, `id` matches the member-local node id. You never write raw graph ids. Externals (library nodes with no `source_file`) are deduplicated cluster-wide, so a `label` selector for one resolves under any member's tag regardless of spec order.
 
@@ -495,7 +500,7 @@ graphify path "api-client" "index.ts"
 
 The build composes each member's `graphify-out/graph.json` under a `tag::` namespace, dedups external-library nodes by label across members (same behavior as the global graph), resolves the declared links into `EXTRACTED`-confidence edges, and writes a standard `graphify-out/graph.json` plus a `CLUSTER_REPORT.md` documenting every resolved/skipped link. Rebuilds are incremental-aware: unchanged members and spec skip the rebuild entirely. `graphify cluster check` dry-runs the whole thing (exit 1 on errors) — useful in CI to catch selector drift when a member repo refactors.
 
-`cluster check` and `cluster build` reject a declared link that would overwrite another relation on the same pair. `auto_links.packages` connects direct package dependencies to a unique provider in another member repo; external, same-repo, and ambiguous dependencies are skipped, and declared links take precedence.
+In simple mode, `cluster check` and `cluster build` reject a declared link that would overwrite another relation on the same pair. Multi mode preserves every keyed relation. `auto_links.packages` connects direct package dependencies to a unique provider in another member repo; external, same-repo, and ambiguous dependencies are skipped, and declared links take precedence.
 
 Each member needs its own graph first (`graphify extract .` in that repo); `build` names exactly which members are missing one.
 
@@ -819,6 +824,9 @@ graphify export callflow-html                       # graphify-out/<project>-cal
 graphify export callflow-html --max-sections 8      # cap generated architecture sections
 graphify export callflow-html --output docs/arch.html
 graphify export callflow-html ./some-repo/graphify-out
+
+graphify extract . --multigraph                       # opt in to keyed parallel relations (sticky across rebuilds)
+graphify extract . --no-multigraph                    # convert back to a simple graph (collapses parallels)
 
 graphify global add graphify-out/graph.json --as myrepo   # register a project graph into ~/.graphify/global-graph.json
 graphify global remove myrepo                         # remove a project from the global graph
