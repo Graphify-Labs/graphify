@@ -476,12 +476,14 @@ A cluster is a directory with a `cluster.json` spec:
 
 `graph_mode` is `simple` by default. Set it to `multi` and extract members with
 `graphify extract . --multigraph` to retain several relations between the same
-nodes. YAML specs remain available when PyYAML is installed, but initialization
-and documentation use JSON consistently.
+nodes. The multigraph format persists across rebuilds (including `--force`);
+`graphify extract . --no-multigraph` converts back, with a warning that
+parallel relations collapse. YAML specs remain available when PyYAML is
+installed, but initialization and documentation use JSON consistently.
 
-Node selectors are `{repo, file|label|id}` — `file` suffix-matches `source_file` (preferring the file node), `label` matches exactly then case-insensitively, `id` matches the member-local node id. You never write raw graph ids.
+Node selectors are `{repo, file|label|id}` — `file` suffix-matches `source_file` (preferring the file node), `label` matches exactly then case-insensitively, `id` matches the member-local node id. You never write raw graph ids. Externals (library nodes with no `source_file`) are deduplicated cluster-wide, so a `label` selector for one resolves under any member's tag regardless of spec order.
 
-Direction: `from` is the dependent side (`from` depends on / calls / copies `to`), matching how `imports` and `calls` edges point. So `graphify affected <changed-node>` seeded on a link's `to` side reports the `from` side — "I changed the worker's payload type; the web client is affected."
+Direction: `from` is the dependent side (`from` depends on / calls / copies `to`), matching how `imports` and `calls` edges point. So `graphify affected <changed-node>` seeded on a link's `to` side reports the `from` side — "I changed the worker's payload type; the web client is affected." `direction: "both"` on a link (e.g. a mirrored file kept in sync by hand in both directions) materializes the reverse edge too, so `affected` works from either endpoint; the declared link still owns the node pair in simple mode.
 
 Because members are identified by `url`, the spec commits cleanly and works on any machine: paths resolve via a gitignored `cluster.local.json` override (`graphify cluster locate <tag> <path>`), then the spec's `path` hint, then auto-discovery — scanning sibling directories for a checkout whose `origin` remote matches. A resolved checkout whose origin *doesn't* match the declared url gets a warning, so a same-named directory of the wrong repo can't sneak in.
 
@@ -823,7 +825,8 @@ graphify export callflow-html --max-sections 8      # cap generated architecture
 graphify export callflow-html --output docs/arch.html
 graphify export callflow-html ./some-repo/graphify-out
 
-graphify extract . --multigraph                       # opt in to keyed parallel relations
+graphify extract . --multigraph                       # opt in to keyed parallel relations (sticky across rebuilds)
+graphify extract . --no-multigraph                    # convert back to a simple graph (collapses parallels)
 
 graphify global add graphify-out/graph.json --as myrepo   # register a project graph into ~/.graphify/global-graph.json
 graphify global remove myrepo                         # remove a project from the global graph
