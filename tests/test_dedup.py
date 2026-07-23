@@ -513,6 +513,30 @@ def test_same_file_relabel_is_noted(capsys):
     assert "WARNING" not in captured.err
 
 
+def test_same_id_merge_preserves_losers_disjoint_attributes():
+    """#2091: when two same-ID nodes collide, the survivor keeps its own values on
+    conflicting keys but gap-fills attributes only the loser carried. The AST node
+    wins the canonical label while the semantic node's summary/confidence_score —
+    which the user paid API credits for — must survive rather than be discarded."""
+    ast_node = {"id": "src_auth_login", "label": "login", "file_type": "code",
+                "source_file": "src/auth.py", "source_location": "L42"}
+    semantic_node = {"id": "src_auth_login", "label": "User login handler",
+                     "file_type": "code", "source_file": "src/auth.py",
+                     "summary": "Authenticates a user.", "confidence_score": 0.9}
+
+    result_nodes, _ = deduplicate_entities(
+        [ast_node, semantic_node], [], communities={})
+
+    assert len(result_nodes) == 1
+    survivor = result_nodes[0]
+    # Survivor wins conflicting keys (shorter, more canonical label).
+    assert survivor["label"] == "login"
+    assert survivor.get("source_location") == "L42"
+    # ...but the loser's disjoint attributes are gap-filled, not dropped.
+    assert survivor.get("summary") == "Authenticates a user."
+    assert survivor.get("confidence_score") == 0.9
+
+
 def test_collision_survivor_is_order_independent():
     """#1851: definer + same-file relabel + cross-file reference. Across every
     insertion order the SAME node (source_file AND label) must survive — the

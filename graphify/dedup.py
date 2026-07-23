@@ -326,14 +326,22 @@ def deduplicate_entities(
             continue
         incumbent = seen_ids.get(nid)
         if incumbent is None:
-            seen_ids[nid] = node
+            seen_ids[nid] = dict(node)
         elif _collision_rank(node) < _collision_rank(incumbent):
             # Smallest-ranked node wins; the min over a total order is independent
             # of the order nodes arrive in, so the survivor no longer depends on
-            # chunk ordering (#1851).
-            seen_ids[nid] = node
+            # chunk ordering (#1851). The survivor's values win on conflicting keys,
+            # but the loser's disjoint attributes (an AST node's canonical label and
+            # source_location colliding with a semantic node's summary/confidence)
+            # are gap-filled rather than discarded (#2091).
+            merged = dict(node)
+            for k, v in incumbent.items():
+                merged.setdefault(k, v)
+            seen_ids[nid] = merged
             dropped[nid].append(incumbent)
         else:
+            for k, v in node.items():
+                incumbent.setdefault(k, v)
             dropped[nid].append(node)
 
     for nid, losers in dropped.items():
