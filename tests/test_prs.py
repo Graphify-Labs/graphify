@@ -20,6 +20,7 @@ from graphify.prs import (
     fetch_pr_files,
     fetch_worktrees,
     format_prs_text,
+    change_request_reference,
     _detect_default_branch,
 )
 
@@ -37,6 +38,7 @@ def make_pr(
     ci_status: str = "SUCCESS",
     updated_at: datetime | None = None,
     expected_base: str = "v8",
+    provider: str = "github",
 ) -> PRInfo:
     """Build a minimal PRInfo with sensible defaults."""
     if updated_at is None:
@@ -52,6 +54,7 @@ def make_pr(
         ci_status=ci_status,
         updated_at=updated_at,
         expected_base=expected_base,
+        provider=provider,
     )
 
 
@@ -309,7 +312,7 @@ class TestFormatPrsText:
         out = format_prs_text(prs, base="v8")
 
         # Count header: 2 actionable, 1 on wrong base
-        assert "Open PRs targeting v8: 2" in out
+        assert "Open change requests targeting v8: 2" in out
         assert "(1 on wrong base, not shown)" in out
 
         # PR numbers and titles included
@@ -327,8 +330,34 @@ class TestFormatPrsText:
 
     def test_empty_pr_list(self):
         out = format_prs_text([], base="v8")
-        assert "Open PRs targeting v8: 0" in out
+        assert "Open change requests targeting v8: 0" in out
         assert "(0 on wrong base, not shown)" in out
+
+    def test_uses_gitlab_merge_request_reference(self):
+        mr = make_pr(
+            number=104,
+            title="Add GitLab support",
+            provider="gitlab",
+            base_branch="v8",
+            expected_base="v8",
+        )
+
+        out = format_prs_text([mr], base="v8")
+
+        assert "!104" in out
+        assert "#104" not in out
+
+
+class TestChangeRequestReference:
+    def test_github_reference(self):
+        pr = make_pr(number=7, provider="github")
+        assert change_request_reference(pr) == "#7"
+        assert change_request_reference(pr, qualified=True) == "PR #7"
+
+    def test_gitlab_reference(self):
+        mr = make_pr(number=8, provider="gitlab")
+        assert change_request_reference(mr) == "!8"
+        assert change_request_reference(mr, qualified=True) == "MR !8"
 
 
 # ── _detect_default_branch ────────────────────────────────────────────────────
@@ -453,6 +482,7 @@ class TestSubprocessOutputEncoding:
             fetch_worktrees()
         _args, kwargs = mock_run.call_args
         assert kwargs.get("encoding") == "utf-8"
+        assert kwargs.get("stdin") is subprocess.DEVNULL
 
     def test_detect_default_branch_decodes_output_as_utf8(self):
         # Force the git symbolic-ref fallback: gh returns None -> git subprocess runs.
@@ -462,3 +492,4 @@ class TestSubprocessOutputEncoding:
             _detect_default_branch()
         _args, kwargs = mock_run.call_args
         assert kwargs.get("encoding") == "utf-8"
+        assert kwargs.get("stdin") is subprocess.DEVNULL
