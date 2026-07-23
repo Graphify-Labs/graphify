@@ -21,7 +21,7 @@ from graphify.presentation import (
     cleanup_orphaned_presentation_bundles,
     convert_presentation_file,
 )
-from graphify.epub import EpubError, convert_epub_file
+from graphify.epub import EpubError, convert_epub_file, cleanup_orphaned_epub_bundles
 
 
 class FileType(str, Enum):
@@ -1351,6 +1351,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     output_home = Path(cache_root).resolve() if cache_root is not None else root
     converted_dir = output_home / GRAPHIFY_OUT / "converted"
     cleanup_orphaned_presentation_bundles(converted_dir, root=root)
+    cleanup_orphaned_epub_bundles(converted_dir, root=root)
 
     for p in all_files:
         # For memory dir files, skip hidden/noise filtering
