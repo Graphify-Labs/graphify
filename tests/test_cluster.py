@@ -1,9 +1,11 @@
 import json
+import math
 import sys
 import networkx as nx
+import pytest
 from pathlib import Path
 from graphify.build import build_from_json
-from graphify.cluster import cluster, cohesion_score, remap_communities_to_previous, score_all
+from graphify.cluster import _partition, cluster, cohesion_score, remap_communities_to_previous, score_all
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -74,6 +76,24 @@ def test_cluster_does_not_write_to_stderr(capsys):
     # Allow logging output (starts with [graphify]) but no raw ANSI codes
     for line in captured.err.splitlines():
         assert "\x1b" not in line, f"cluster() wrote ANSI to stderr: {line!r}"
+
+
+@pytest.mark.parametrize("weight", [math.nan, math.inf, -math.inf])
+def test_partition_replaces_non_finite_edge_weights(monkeypatch, weight):
+    graph = nx.Graph()
+    graph.add_edge("a", "b", weight=weight)
+    captured = {}
+
+    monkeypatch.setitem(sys.modules, "graspologic.partition", None)
+
+    def fake_louvain(projected, **_kwargs):
+        captured["weight"] = projected["a"]["b"]["weight"]
+        return [{"a", "b"}]
+
+    monkeypatch.setattr(nx.community, "louvain_communities", fake_louvain)
+
+    assert _partition(graph) == {"a": 0, "b": 0}
+    assert captured["weight"] == 1.0
 
 
 def test_remap_communities_to_previous_reuses_old_ids():

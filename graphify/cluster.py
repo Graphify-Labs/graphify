@@ -4,6 +4,7 @@ import contextlib
 import inspect
 import io
 import json
+import math
 import sys
 import networkx as nx
 
@@ -42,7 +43,21 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
         ),
     )
     for src, tgt, attrs in edge_rows:
-        stable.add_edge(src, tgt, **attrs)
+        weight = attrs.get("weight", 1.0)
+        try:
+            weight = float(weight)
+            if not math.isfinite(weight):
+                raise ValueError("edge weight must be finite")
+        except (TypeError, ValueError):
+            weight = 1.0
+        if stable.has_edge(src, tgt):
+            stable[src][tgt]["weight"] = stable[src][tgt].get("weight", 1.0) + weight
+            stable[src][tgt]["parallel_count"] = stable[src][tgt].get("parallel_count", 1) + 1
+        else:
+            projected = dict(attrs)
+            projected["weight"] = weight
+            projected["parallel_count"] = 1
+            stable.add_edge(src, tgt, **projected)
 
     try:
         from graspologic.partition import leiden

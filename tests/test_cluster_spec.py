@@ -70,20 +70,15 @@ def test_new_spec_and_local_config_are_json_first(tmp_path):
 
 
 def test_graph_mode_round_trip_and_validation(tmp_path):
-    # Only "simple" exists today; unknown modes fail LOUD rather than silently
-    # composing a simple graph. The plumbing (spec field, manifest key, status
-    # line) is in place so a future mode is a validation widening, not a
-    # format change.
-    _write_spec(tmp_path, _minimal(graph_mode="simple"))
+    _write_spec(tmp_path, _minimal(graph_mode="multi"))
     spec = load_spec(tmp_path)
-    assert spec.graph_mode == "simple"
+    assert spec.graph_mode == "multi"
     save_spec(spec, tmp_path)
-    assert json.loads((tmp_path / "cluster.json").read_text())["graph_mode"] == "simple"
+    assert json.loads((tmp_path / "cluster.json").read_text())["graph_mode"] == "multi"
 
-    for unknown in ("multi", "hyper"):
-        _write_spec(tmp_path, _minimal(graph_mode=unknown))
-        with pytest.raises(ClusterSpecError, match="graph_mode"):
-            load_spec(tmp_path)
+    _write_spec(tmp_path, _minimal(graph_mode="hyper"))
+    with pytest.raises(ClusterSpecError, match="graph_mode"):
+        load_spec(tmp_path)
 
 
 def test_missing_spec_is_actionable(tmp_path):

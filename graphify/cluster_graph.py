@@ -54,7 +54,7 @@ DIRECT_LINK_RELATIONS = {
 LINK_TYPES = (*DIRECT_LINK_RELATIONS, "shared_resource")
 
 _ON_MISSING = ("warn", "create", "error")
-_GRAPH_MODES = ("simple",)
+_GRAPH_MODES = ("simple", "multi")
 
 
 class ClusterSpecError(ValueError):
@@ -502,13 +502,14 @@ def compose_members(
         load_graph_json,
         merge_prefixed_into,
         prefix_graph_for_global,
+        promote_to_multidigraph,
     )
 
-    # Composed directed: the composed graph is re-serialized, and an
-    # undirected round-trip re-emits edge endpoints by node insertion order,
+    # Composed directed in BOTH modes: the composed graph is re-serialized, and
+    # an undirected round-trip re-emits edge endpoints by node insertion order,
     # silently flipping caller/callee (#760). Members load directed so their
     # stored source/target order is what the cluster graph.json persists.
-    G: nx.Graph = nx.DiGraph()
+    G: nx.Graph = nx.MultiDiGraph() if spec.graph_mode == "multi" else nx.DiGraph()
     stats: dict[str, dict] = {}
     cid_base = 0
     for member in spec.members:
@@ -519,12 +520,23 @@ def compose_members(
                 f"Run `graphify extract .` (or your usual build) in {resolved[member.tag]} first."
             )
         try:
-            member_graph = load_graph_json(gp, directed=True)
+            member_graph = load_graph_json(
+                gp, preserve_type=spec.graph_mode == "multi", directed=True
+            )
         except ValueError as exc:  # JSONDecodeError and the size cap
             raise ClusterSpecError(
                 f"member '{member.tag}' has an unreadable graph at {gp} ({exc}). "
                 f"Re-run `graphify extract . --force` in {resolved[member.tag]} to rebuild it."
             ) from exc
+        source_multigraph = member_graph.is_multigraph()
+        if spec.graph_mode == "multi":
+            if not source_multigraph:
+                print(
+                    f"[graphify cluster] warning: member '{member.tag}' is a simple "
+                    "graph; re-extract it with --multigraph to recover parallel relations",
+                    file=sys.stderr,
+                )
+            member_graph = promote_to_multidigraph(member_graph)
         prefixed = prefix_graph_for_global(member_graph, member.tag)
         cid_base = _renumber_member_communities(prefixed, cid_base)
         total = prefixed.number_of_nodes()
@@ -538,6 +550,7 @@ def compose_members(
             "node_count": total,
             "edge_count": prefixed.number_of_edges(),
             "externals_merged": total - added,
+            "source_multigraph": source_multigraph,
         }
     return G, stats
 
@@ -695,6 +708,7 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
         pair = (min(u, v), max(u, v))
         relation = data.get("relation") or "unknown"
         occupied_pairs[pair] = f"existing relation {relation!r}"
+    declared_identities: set[tuple[str, str, str, str]] = set()
 
     def _resolve(link: ClusterLink, sel: dict, link_label: str) -> str | None:
         try:
@@ -735,15 +749,24 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
             report.warnings.append(f"link '{link.name or link.type}' resolved to a self-loop; skipped")
             return False
         pair = (min(u, v), max(u, v))
-        prior = occupied_pairs.get(pair)
-        if prior is not None:
-            report.errors.append(
-                f"{link_label}: cannot add relation {relation!r} between {u} and {v}; "
-                f"the pair already has {prior}. Simple cluster graphs allow only "
-                f"one relation per node pair"
-            )
-            return False
-        occupied_pairs[pair] = f"{link_label} relation {relation!r}"
+        if G.is_multigraph():
+            identities = [(u, v, relation, link.name or link.type)]
+            if link.direction == "both":
+                identities.append((v, u, relation, link.name or link.type))
+            if any(identity in declared_identities for identity in identities):
+                report.errors.append(f"{link_label}: duplicate declared cluster relation")
+                return False
+            declared_identities.update(identities)
+        else:
+            prior = occupied_pairs.get(pair)
+            if prior is not None:
+                report.errors.append(
+                    f"{link_label}: cannot add relation {relation!r} between {u} and {v}; "
+                    f"the pair already has {prior}. Simple cluster graphs allow only "
+                    f"one relation per node pair"
+                )
+                return False
+            occupied_pairs[pair] = f"{link_label} relation {relation!r}"
         # direction: "both" materializes as a real reverse edge — traversal
         # (affected's in_edges, query BFS) reads topology, not attrs, so a
         # metadata-only flag would silently traverse one way. The declared
@@ -768,7 +791,13 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
                     attrs["direction"] = "both"
                 if link.note:
                     attrs["note"] = link.note
-                G.add_edge(src, tgt, **attrs)
+                if G.is_multigraph():
+                    from .build import stable_edge_key
+
+                    attrs["context"] = link.name or link.type
+                    G.add_edge(src, tgt, key=stable_edge_key(src, tgt, attrs), **attrs)
+                else:
+                    G.add_edge(src, tgt, **attrs)
         report.edges_added += len(endpoint_pairs)
         return True
 
@@ -891,7 +920,16 @@ def apply_auto_package_links(
                     "_src": source,
                     "_tgt": target,
                 }
-                G.add_edge(source, target, **attrs)
+                if G.is_multigraph():
+                    from .build import stable_edge_key
+
+                    G.add_edge(
+                        source, target,
+                        key=stable_edge_key(source, target, attrs),
+                        **attrs,
+                    )
+                else:
+                    G.add_edge(source, target, **attrs)
             report.edges_added += 1
             report.auto_package_edges += 1
             report.resolved.append(
