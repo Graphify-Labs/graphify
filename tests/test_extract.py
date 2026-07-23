@@ -1541,6 +1541,46 @@ def test_extract_bash_emits_source_imports_from(tmp_path):
     assert import_edges[0].get("context") == "import"
 
 
+def test_extract_bash_source_via_variable_path_resolves_to_real_file(tmp_path):
+    """`source "${DIR}/lib/x.sh"` (the `dirname "${BASH_SOURCE[0]}"` idiom) must
+    resolve to the real file node relative to the script dir — never emit a dead
+    id baking in the literal `${DIR}` text (#2079)."""
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    helper = lib / "gpu-discover.sh"
+    helper.write_text("# helper\n", encoding="utf-8")
+    script = tmp_path / "bench.sh"
+    script.write_text(
+        '#!/bin/bash\n'
+        'BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "${BENCH_DIR}/lib/gpu-discover.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    import_edges = [e for e in result["edges"] if e["relation"] == "imports_from"]
+    targets = [e["target"] for e in import_edges]
+    assert _make_id(str(helper.resolve())) in targets, import_edges
+    assert not any("$" in t for t in targets), f"dead expansion id emitted: {targets}"
+    inferred = next(e for e in import_edges
+                    if e["target"] == _make_id(str(helper.resolve())))
+    assert inferred.get("confidence") == "INFERRED"
+    assert inferred.get("context") == "import"
+
+
+def test_extract_bash_source_via_variable_path_no_match_emits_no_dead_edge(tmp_path):
+    """A variable-built source path with no matching file on disk must emit no
+    import edge at all — not an `imports` edge to an id containing `${VAR}` (#2079)."""
+    script = tmp_path / "bench.sh"
+    script.write_text(
+        '#!/bin/bash\nsource "${BENCH_DIR}/lib/missing.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    edges = [e for e in result["edges"]
+             if e["relation"] in ("imports", "imports_from")]
+    assert edges == [], f"variable source with no on-disk match must emit no edge; got: {edges}"
+
+
 @pytest.mark.parametrize("command", ["./helpers.sh", "bash ./helpers.sh"])
 def test_extract_bash_emits_script_invocation_calls(tmp_path, command):
     helpers = tmp_path / "helpers.sh"

@@ -1,10 +1,32 @@
 """Bash extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-
+import re
 from pathlib import Path
 from typing import Any
+
 from graphify.extractors.base import _file_stem, _make_id, _read_text
+
+
+# Leading `${VAR}` / `$VAR` expansion segment(s) of a `source` path argument. The
+# canonical `BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` idiom makes
+# such a variable resolve to the script's own directory, so the literal suffix that
+# follows (`lib/x.sh`) can be resolved against the sourcing file's own dir (#2079).
+_BASH_LEADING_EXPANSION = re.compile(
+    r"^(?:(?:\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*)/?)+"
+)
+
+
+def _bash_source_suffix(raw: str) -> str | None:
+    """Return the literal path suffix of a variable-built `source` argument, or
+    None when the remainder is empty, still holds an expansion, or escapes upward
+    with ``..``.  ``"${DIR}/lib/x.sh"`` -> ``"lib/x.sh"``."""
+    suffix = _BASH_LEADING_EXPANSION.sub("", raw, count=1).lstrip("/")
+    if not suffix or "$" in suffix:
+        return None
+    if ".." in suffix.split("/"):
+        return None
+    return suffix
 
 
 def extract_bash(path: Path) -> dict:
@@ -180,6 +202,23 @@ def extract_bash(path: Path) -> dict:
                                 tgt_nid = _make_id(str(resolved))
                                 add_edge(file_nid, tgt_nid, "imports_from", line,
                                          context="import")
+                        elif "$" in raw:
+                            # Variable-built path, e.g. the ubiquitous
+                            # `source "${BENCH_DIR}/lib/x.sh"` idiom. The raw text
+                            # bakes the unexpanded `${VAR}` into the id, which
+                            # matches no node and is dropped as a dangling edge
+                            # (#2079). Strip the leading expansion(s) and resolve
+                            # the literal suffix against the script's own dir;
+                            # emit INFERRED (the expansion can't be proven
+                            # statically) only when it resolves to a real file,
+                            # never a dead id.
+                            suffix = _bash_source_suffix(raw)
+                            if suffix:
+                                resolved = (path.parent / suffix).resolve()
+                                if resolved.is_file():
+                                    add_edge(file_nid, _make_id(str(resolved)),
+                                             "imports_from", line,
+                                             confidence="INFERRED", context="import")
                         else:
                             tgt_nid = _make_id(raw)
                             if tgt_nid:
