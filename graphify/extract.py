@@ -4967,6 +4967,10 @@ def extract(
     # function/method/class, never a same-named data symbol, and the guard never goes
     # stale when node ids were relativized/disambiguated above (#1566).
     callable_nids = {n["id"] for n in all_nodes if n.get("_callable")}
+    # Class defs are callable only via their constructor; they are frequently passed
+    # as descriptive values (`select(Model)`, exception tuples), not invoked. Exclude
+    # them from the indirect_call guard below to avoid false edges (#2137).
+    class_nids = {n["id"] for n in all_nodes if n.get("_callable_class")}
 
     # Build evidence index from import edges so cross-file calls backed by an
     # explicit import statement can be promoted from INFERRED to EXTRACTED.
@@ -5145,7 +5149,7 @@ def extract(
             # evidence: the name is referenced as a value here, not invoked. Dedup
             # is call-aware (an existing direct `calls` edge pre-empts it; a benign
             # `imports` edge to the same symbol does NOT suppress it).
-            if tgt != caller and (caller, tgt) not in call_like_pairs and tgt in callable_nids:
+            if tgt != caller and (caller, tgt) not in call_like_pairs and tgt in callable_nids and tgt not in class_nids:
                 call_like_pairs.add((caller, tgt))
                 all_edges.append({
                     "source": caller,
@@ -5264,6 +5268,7 @@ def extract(
     for n in all_nodes:
         n.pop("origin_file", None)
         n.pop("_callable", None)  # internal indirect_call marker — never ships to graph.json
+        n.pop("_callable_class", None)  # internal #2137 marker — never ships to graph.json
 
     # local_alias is a transient import-resolution hint (#2082), same shape as
     # target_file (#1814): it exists only so the module arm of
