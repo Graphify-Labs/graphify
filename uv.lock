@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -1093,6 +1093,7 @@ name = "graphifyy"
 version = "0.9.25"
 source = { editable = "." }
 dependencies = [
+    { name = "defusedxml" },
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
@@ -1252,6 +1253,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'" },
     { name = "boto3", marker = "extra == 'all'" },
     { name = "boto3", marker = "extra == 'bedrock'" },
+    { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "falkordb", marker = "extra == 'all'" },
     { name = "falkordb", marker = "extra == 'falkordb'" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'all'" },

@@ -2,7 +2,12 @@
 # Converts video/audio files to text transcripts for graph extraction
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import re
+import tempfile
+import unicodedata
 from pathlib import Path
 
 from graphify.paths import out_path as _out_path
@@ -14,6 +19,12 @@ URL_PREFIXES = ('http://', 'https://', 'www.')
 _DEFAULT_MODEL = "base"
 _TRANSCRIPTS_DIR = str(_out_path("transcripts"))
 _FALLBACK_PROMPT = "Use proper punctuation and paragraph breaks."
+_TRANSCRIPTION_OPTIONS = {
+    "beam_size": 5,
+    "compute_type": "int8",
+    "device": "cpu",
+    "schema": 1,
+}
 
 
 def _model_name() -> str:
@@ -26,8 +37,9 @@ def _get_whisper():
         return WhisperModel
     except ImportError as exc:
         raise ImportError(
-            "Video transcription requires faster-whisper. "
-            "Run: pip install 'graphifyy[video]'"
+            "Video transcription requires faster-whisper "
+            "(Python 3.11+; graphifyy[video] installs it only on 3.11+). "
+            "Run: pip install 'graphifyy[video]' on Python 3.11 or newer"
         ) from exc
 
 
@@ -100,12 +112,12 @@ def build_whisper_prompt(god_nodes: list[dict]) -> str:
     domain hint from these labels and passes it via GRAPHIFY_WHISPER_PROMPT or
     as initial_prompt — no separate API call needed here.
     """
-    if not god_nodes:
-        return _FALLBACK_PROMPT
-
     override = os.environ.get("GRAPHIFY_WHISPER_PROMPT")
     if override:
         return override
+
+    if not god_nodes:
+        return _FALLBACK_PROMPT
 
     labels = [n.get("label", "") for n in god_nodes[:10] if n.get("label")]
     if not labels:
@@ -113,6 +125,55 @@ def build_whisper_prompt(god_nodes: list[dict]) -> str:
 
     topics = ", ".join(labels[:5])
     return f"Technical discussion about {topics}. Use proper punctuation and paragraph breaks."
+
+
+def _effective_prompt(initial_prompt: str | None) -> str:
+    return initial_prompt or os.environ.get("GRAPHIFY_WHISPER_PROMPT") or _FALLBACK_PROMPT
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def transcript_path_for(
+    video_path: Path | str,
+    output_dir: Path | None = None,
+    initial_prompt: str | None = None,
+    *,
+    media_path: Path | None = None,
+) -> Path:
+    """Return the content/config-addressed transcript path for a media source."""
+    out_dir = Path(output_dir) if output_dir else Path(_TRANSCRIPTS_DIR)
+    source = str(video_path)
+    if is_url(source):
+        source_identity = source
+        content_sha256 = _sha256_file(media_path) if media_path is not None else hashlib.sha256(
+            source.encode("utf-8")
+        ).hexdigest()
+        stem_source = media_path.stem if media_path is not None else "remote-media"
+    else:
+        local = Path(video_path)
+        source_identity = local.resolve().as_posix()
+        content_sha256 = _sha256_file(local)
+        stem_source = local.stem
+    cache_key = {
+        "content_sha256": content_sha256,
+        "model": _model_name(),
+        "options": _TRANSCRIPTION_OPTIONS,
+        "prompt": _effective_prompt(initial_prompt),
+        "source": unicodedata.normalize("NFC", source_identity),
+    }
+    digest = hashlib.sha256(
+        json.dumps(cache_key, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    stem = re.sub(
+        r"[^A-Za-z0-9._-]+", "_", unicodedata.normalize("NFC", stem_source)
+    ).strip("._-")
+    return out_dir / f"{(stem[:80] or 'media')}-{digest}.txt"
 
 
 def transcribe(
@@ -138,36 +199,59 @@ def transcribe(
     else:
         audio_path = Path(video_path)
 
-    transcript_path = out_dir / (audio_path.stem + ".txt")
+    prompt = _effective_prompt(initial_prompt)
+    transcript_path = transcript_path_for(
+        video_path,
+        out_dir,
+        initial_prompt=prompt,
+        media_path=audio_path,
+    )
     if transcript_path.exists() and not force:
         return transcript_path
 
     WhisperModel = _get_whisper()
     model_name = _model_name()
-    prompt = initial_prompt or _FALLBACK_PROMPT
 
     print(f"  transcribing {audio_path.name} (model={model_name}) ...", flush=True)
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    model = WhisperModel(
+        model_name,
+        device=_TRANSCRIPTION_OPTIONS["device"],
+        compute_type=_TRANSCRIPTION_OPTIONS["compute_type"],
+    )
     segments, info = model.transcribe(
         str(audio_path),
-        beam_size=5,
+        beam_size=_TRANSCRIPTION_OPTIONS["beam_size"],
         initial_prompt=prompt,
     )
 
     lines = [segment.text.strip() for segment in segments if segment.text.strip()]
     transcript = "\n".join(lines)
 
-    transcript_path.write_text(transcript, encoding="utf-8")
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=out_dir,
+        prefix=f".{transcript_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(transcript)
+        temporary = Path(handle.name)
+    try:
+        os.replace(temporary, transcript_path)
+    finally:
+        temporary.unlink(missing_ok=True)
     lang = info.language if hasattr(info, "language") else "unknown"
     print(f"  transcript saved -> {transcript_path} (lang={lang}, {len(lines)} segments)")
     return transcript_path
 
 
 def transcribe_all(
-    video_files: list[str],
+    video_files: list[Path | str],
     output_dir: Path | None = None,
     initial_prompt: str | None = None,
-) -> list[str]:
+    force: bool = False,
+) -> list[Path]:
     """Transcribe a list of video/audio files or URLs, return paths to transcript .txt files.
 
     Already-transcribed files are returned from cache instantly.
@@ -179,8 +263,8 @@ def transcribe_all(
     transcript_paths = []
     for vf in video_files:
         try:
-            t = transcribe(vf, output_dir, initial_prompt=initial_prompt)
-            transcript_paths.append(str(t))
+            t = transcribe(vf, output_dir, initial_prompt=initial_prompt, force=force)
+            transcript_paths.append(t)
         except Exception as exc:
             print(f"  warning: could not transcribe {vf}: {exc}")
     return transcript_paths

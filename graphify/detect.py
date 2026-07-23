@@ -16,6 +16,11 @@ from graphify.google_workspace import (
     google_workspace_enabled,
 )
 from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
+from graphify.presentation import (
+    PresentationError,
+    cleanup_orphaned_presentation_bundles,
+    convert_presentation_file,
+)
 
 
 class FileType(str, Enum):
@@ -32,7 +37,7 @@ CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', 
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
-OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
+OFFICE_EXTENSIONS = {'.docx', '.xlsx', '.pptx'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
 
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
@@ -690,11 +695,20 @@ def xlsx_extract_structure(path: Path) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -> Path | None:
+def convert_office_file(
+    path: Path,
+    out_dir: Path,
+    root: "Path | None" = None,
+    *,
+    provenance: dict[str, str] | None = None,
+) -> Path | None:
     """Convert a .docx or .xlsx to a markdown sidecar in out_dir.
 
     Returns the path of the converted .md file, or None if conversion failed
     or the required library is not installed.
+
+    ``provenance`` optionally records parent-deck/slide context for embedded
+    Office attachments so downstream semantic extraction retains deck lineage.
     """
     ext = path.suffix.lower()
     if ext == ".docx":
@@ -732,9 +746,25 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
         # sources, direct API callers): keep the previous absolute form rather
         # than guessing, so behavior is unchanged for those cases.
         key = str(path.resolve())
+    if provenance:
+        # Salt embedded-attachment sidecars with parent identity so two decks
+        # embedding the same workbook do not collide and cleanup can reattach
+        # lineage after regeneration.
+        provenance_key = "|".join(
+            f"{name}={provenance[name]}" for name in sorted(provenance)
+        )
+        key = f"{key}::{provenance_key}"
     normalized_path = unicodedata.normalize("NFC", key)
     name_hash = hashlib.sha256(normalized_path.encode()).hexdigest()[:8]
     out_path = out_dir / f"{path.stem}_{name_hash}.md"
+    header_lines = [f"<!-- converted from {path.name} -->"]
+    if provenance:
+        for name in sorted(provenance):
+            value = provenance[name].replace("-->", "").strip()
+            if value:
+                header_lines.append(f"<!-- {name}: {value} -->")
+    header = "\n".join(header_lines) + "\n\n"
+    body = f"{header}{text}"
     # Skip re-writing only when the sidecar is present AND at least as new as the
     # source. detect_incremental tracks the SIDECAR (not the Office source), so a
     # sidecar that is never rewritten after the source changes leaves the doc
@@ -744,14 +774,17 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
     # its (newer-or-equal) sidecar untouched so it never churns (#1226).
     try:
         if out_path.exists() and os.stat(_os_path(out_path)).st_mtime >= os.stat(_os_path(path)).st_mtime:
-            return out_path
+            # Still refresh if provenance header is missing/stale.
+            try:
+                existing = out_path.read_text(encoding="utf-8")
+            except OSError:
+                existing = ""
+            if existing.startswith(header) or (not provenance and existing.startswith("<!-- converted from")):
+                return out_path
     except OSError:
         if out_path.exists():
             return out_path
-    out_path.write_text(
-        f"<!-- converted from {path.name} -->\n\n{text}",
-        encoding="utf-8",
-    )
+    out_path.write_text(body, encoding="utf-8")
     return out_path
 
 
@@ -1310,13 +1343,24 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
 
     all_files.sort(key=lambda p: str(p))
 
-    converted_dir = root / GRAPHIFY_OUT / "converted"
+    # Conversion/output root owns converter sidecars and PPTX bundles. When the
+    # headless CLI passes ``cache_root`` (``extract --out``), place derivatives
+    # under that tree so source checkouts stay clean and graph/transcripts/
+    # converted artifacts share one portable output root.
+    output_home = Path(cache_root).resolve() if cache_root is not None else root
+    converted_dir = output_home / GRAPHIFY_OUT / "converted"
+    cleanup_orphaned_presentation_bundles(converted_dir, root=root)
 
     for p in all_files:
         # For memory dir files, skip hidden/noise filtering
         in_memory = memory_dir.exists() and str(p).startswith(str(memory_dir))
         if not in_memory:
             # Skip files inside our own converted/ dir (avoid re-processing sidecars)
+            try:
+                p.resolve().relative_to(converted_dir.resolve())
+                continue
+            except (ValueError, OSError, RuntimeError):
+                pass
             if str(p).startswith(str(converted_dir)):
                 continue
         if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
@@ -1357,6 +1401,88 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     total_words += _wc(md_path)
                 else:
                     skipped_sensitive.append(str(p) + " [Google Workspace export produced no readable text]")
+                continue
+            # PPTX is a compound semantic source: its structured slide sidecar,
+            # extracted images, and embedded audio/video must enter their native
+            # semantic queues together. A one-file Office converter would lose
+            # the visual/media evidence and its slide provenance.
+            if p.suffix.lower() == ".pptx":
+                try:
+                    presentation = convert_presentation_file(
+                        p,
+                        converted_dir,
+                        root=root,
+                    )
+                except PresentationError as exc:
+                    skipped_sensitive.append(str(p) + f" [PPTX extraction failed: {exc}]")
+                    continue
+                if not _is_ignored(
+                    presentation.markdown_path, root, ignore_patterns, _cache=ignore_cache
+                ):
+                    files[FileType.DOCUMENT].append(str(presentation.markdown_path))
+                    total_words += _wc(presentation.markdown_path)
+                for image_path in presentation.images:
+                    if not _is_ignored(image_path, root, ignore_patterns, _cache=ignore_cache):
+                        files[FileType.IMAGE].append(str(image_path))
+                for media_path in presentation.media:
+                    if not _is_ignored(media_path, root, ignore_patterns, _cache=ignore_cache):
+                        files[FileType.VIDEO].append(str(media_path))
+                # Embedded attachments remain inert. Feed only formats whose
+                # normal Graphify readers can safely consume; nested PPTX is
+                # retained and named in the parent sidecar but is not recursively
+                # expanded (bounded recursion policy).
+                for attachment in presentation.attachments:
+                    attachment_type = classify_file(attachment)
+                    if attachment.suffix.lower() == ".pptx":
+                        skipped_sensitive.append(
+                            str(attachment)
+                            + " [nested PPTX attachment retained but not recursively expanded]"
+                        )
+                    elif attachment.suffix.lower() in {".docx", ".xlsx"}:
+                        slide_match = re.search(r"-slide-(\d{4})-", attachment.name)
+                        slide_label = (
+                            str(int(slide_match.group(1))) if slide_match else "unknown"
+                        )
+                        attachment_md = convert_office_file(
+                            attachment,
+                            converted_dir,
+                            root=root,
+                            provenance={
+                                "parent_presentation": str(p),
+                                "parent_slide": slide_label,
+                                "embedded_attachment": attachment.name,
+                                "presentation_markdown": str(presentation.markdown_path),
+                            },
+                        )
+                        if attachment_md and not _is_ignored(
+                            attachment_md, root, ignore_patterns, _cache=ignore_cache
+                        ):
+                            files[FileType.DOCUMENT].append(str(attachment_md))
+                            total_words += _wc(attachment_md)
+                        elif not attachment_md:
+                            skipped_sensitive.append(
+                                str(attachment)
+                                + " [embedded Office attachment could not be converted]"
+                            )
+                    elif attachment_type is not None and attachment_type in {
+                        FileType.DOCUMENT,
+                        FileType.PAPER,
+                        FileType.IMAGE,
+                        FileType.VIDEO,
+                    }:
+                        if not _is_ignored(attachment, root, ignore_patterns, _cache=ignore_cache):
+                            files[attachment_type].append(str(attachment))
+                            if attachment_type not in {FileType.IMAGE, FileType.VIDEO}:
+                                total_words += _wc(attachment)
+                    else:
+                        skipped_sensitive.append(
+                            str(attachment)
+                            + " [embedded attachment retained but format unsupported]"
+                        )
+                for extraction_warning in presentation.warnings:
+                    skipped_sensitive.append(
+                        str(p) + f" [PPTX extraction warning: {extraction_warning}]"
+                    )
                 continue
             # Office files: convert to markdown sidecar so subagents can read them
             if p.suffix.lower() in OFFICE_EXTENSIONS:
@@ -1690,6 +1816,7 @@ def detect_incremental(
     kind: str = "semantic",
     extra_excludes: list[str] | None = None,
     gitignore: bool = True,
+    transcript_root: Path | None = None,
 ) -> dict:
     """Like detect(), but returns only new or modified files since the last run.
 
@@ -1720,6 +1847,23 @@ def detect_incremental(
         extra_excludes=extra_excludes,
         gitignore=gitignore,
     )
+    if transcript_root is not None:
+        # Transcripts are generated under graphify-out, which detect() excludes
+        # from recursive scanning. Reintroduce the exact content/config-addressed
+        # derivative of each live media source so manifest, graph, and semantic-
+        # cache liveness all share the same complete corpus.
+        from graphify.transcribe import transcript_path_for
+
+        documents = full["files"].setdefault("document", [])
+        for media in full["files"].get("video", []):
+            try:
+                transcript = transcript_path_for(media, output_dir=transcript_root)
+            except OSError:
+                continue
+            transcript_str = str(transcript)
+            if transcript.is_file() and transcript_str not in documents:
+                documents.append(transcript_str)
+                full["total_files"] += 1
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
     # re-anchored to the absolute form the rest of this function compares
     # against. Legacy absolute-keyed manifests pass through unchanged.
