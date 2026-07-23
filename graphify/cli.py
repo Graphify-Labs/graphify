@@ -386,6 +386,36 @@ def _stale_graph_sources(
     return stale
 
 
+def _filter_payload_sources(data: dict, stale: set) -> int:
+    """Drop nodes/edges/hyperedges owned by ``stale`` source spellings from a
+    raw graph payload IN MEMORY, mutating ``data``. Returns nodes removed.
+
+    Exact string matching against ``source_file`` — callers pass spellings the
+    graph itself uses (or every plausible spelling of a path).
+    """
+    links_key = "links" if "links" in data else "edges"
+    nodes = [n for n in data.get("nodes", []) if isinstance(n, dict)]
+    kept_nodes = [n for n in nodes if n.get("source_file") not in stale]
+    removed_ids = {
+        n.get("id") for n in nodes if n.get("source_file") in stale
+    }
+    n_removed = len(nodes) - len(kept_nodes)
+    data["nodes"] = kept_nodes
+    data[links_key] = [
+        e for e in data.get(links_key, [])
+        if isinstance(e, dict)
+        and e.get("source_file") not in stale
+        and e.get("source") not in removed_ids
+        and e.get("target") not in removed_ids
+    ]
+    if "hyperedges" in data:
+        data["hyperedges"] = [
+            h for h in data.get("hyperedges", [])
+            if isinstance(h, dict) and h.get("source_file") not in stale
+        ]
+    return n_removed
+
+
 def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int:
     """Drop nodes/edges/hyperedges owned by ``stale_sources`` from graph.json
     in place. Returns the number of nodes removed.
@@ -403,33 +433,16 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
         return 0
     if not isinstance(data, dict):
         return 0
-    stale = set(stale_sources)
     links_key = "links" if "links" in data else "edges"
-    nodes = [n for n in data.get("nodes", []) if isinstance(n, dict)]
-    kept_nodes = [n for n in nodes if n.get("source_file") not in stale]
-    removed_ids = {
-        n.get("id") for n in nodes if n.get("source_file") in stale
-    }
-    n_removed = len(nodes) - len(kept_nodes)
-    kept_edges = [
-        e for e in data.get(links_key, [])
-        if isinstance(e, dict)
-        and e.get("source_file") not in stale
-        and e.get("source") not in removed_ids
-        and e.get("target") not in removed_ids
-    ]
-    kept_hyper = [
-        h for h in data.get("hyperedges", [])
-        if isinstance(h, dict) and h.get("source_file") not in stale
-    ]
-    if n_removed == 0 and len(kept_edges) == len(data.get(links_key, [])) and (
-        len(kept_hyper) == len(data.get("hyperedges", []))
+    n_edges_before = len(data.get(links_key, []))
+    n_hyper_before = len(data.get("hyperedges", []))
+    n_removed = _filter_payload_sources(data, set(stale_sources))
+    if (
+        n_removed == 0
+        and len(data.get(links_key, [])) == n_edges_before
+        and len(data.get("hyperedges", [])) == n_hyper_before
     ):
         return 0
-    data["nodes"] = kept_nodes
-    data[links_key] = kept_edges
-    if "hyperedges" in data:
-        data["hyperedges"] = kept_hyper
     from graphify.export import backup_if_protected as _backup
     _backup(graph_path.parent)
     from graphify.paths import write_json_atomic
@@ -1497,12 +1510,12 @@ def dispatch_command(cmd: str) -> None:
         except Exception:
             pass
         print(f"  Degree:    {G.degree(nid)}")
-        from graphify.build import edge_data
+        from graphify.build import edge_datas
         connections: list[tuple[str, str, dict]] = []  # (direction, neighbor_id, edge_data)
         for nb in G.successors(nid):
-            connections.append(("out", nb, edge_data(G, nid, nb)))
+            connections.extend(("out", nb, data) for data in edge_datas(G, nid, nb))
         for nb in G.predecessors(nid):
-            connections.append(("in", nb, edge_data(G, nb, nid)))
+            connections.extend(("in", nb, data) for data in edge_datas(G, nb, nid))
         if connections:
             print(f"\nConnections ({len(connections)}):")
             connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
@@ -2681,7 +2694,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
-                "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
+                "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] [--multigraph|--no-multigraph] "
                 "[--no-gitignore] [--code-only] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
@@ -2706,6 +2719,7 @@ def dispatch_command(cmd: str) -> None:
         cli_postgres_dsn: str | None = None
         cli_cargo: bool = False
         cli_allow_partial: bool = False
+        cli_multigraph: bool | None = None
         no_cluster = False
         dedup_llm = False
         google_workspace = False
@@ -2774,6 +2788,10 @@ def dispatch_command(cmd: str) -> None:
                 out_dir = Path(a.split("=", 1)[1]); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
+            elif a == "--multigraph":
+                cli_multigraph = True; i += 1
+            elif a == "--no-multigraph":
+                cli_multigraph = False; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--code-only":
@@ -3390,6 +3408,35 @@ def dispatch_command(cmd: str) -> None:
         }
 
         graph_json_path = graphify_out / "graph.json"
+        # The existing graph's format is read on EVERY rebuild, not just
+        # incremental ones: --force without a repeated --multigraph must not
+        # silently downgrade a multigraph back to simple (the only intended
+        # downgrade path is an explicit --no-multigraph).
+        existing_is_multigraph = False
+        if graph_json_path.is_file():
+            try:
+                existing_is_multigraph = bool(
+                    json.loads(graph_json_path.read_text(encoding="utf-8")).get(
+                        "multigraph", False
+                    )
+                )
+            except Exception:
+                pass
+        if cli_multigraph is None:
+            cli_multigraph = existing_is_multigraph
+        elif not cli_multigraph and existing_is_multigraph:
+            print(
+                "[graphify extract] warning: --no-multigraph converts the existing "
+                "multigraph to a simple graph, collapsing parallel relations; "
+                "re-run with --multigraph to restore them.",
+                file=sys.stderr,
+            )
+        # An explicit format flag that differs from the existing graph means a
+        # conversion is pending (either direction), so the no-change early
+        # exit must not fire.
+        multigraph_conversion = (
+            graph_json_path.is_file() and bool(cli_multigraph) != existing_is_multigraph
+        )
         analysis_path = graphify_out / ".graphify_analysis.json"
 
         # Build a manifest-safe files dict: only stamp semantic_hash for files
@@ -3458,6 +3505,7 @@ def dispatch_command(cmd: str) -> None:
                 and not pg_result.get("edges")
                 and not cargo_result.get("nodes")
                 and not cargo_result.get("edges")
+                and not multigraph_conversion
             ):
                 # An exclusion-only change reaches this gate (excluded files
                 # are deliberately NOT in deleted_files, #1908) but must still
@@ -3484,8 +3532,58 @@ def dispatch_command(cmd: str) -> None:
                 stages.total()
                 sys.exit(0)
 
+            if multigraph_conversion and incremental_mode:
+                # A conversion run bypassed the no-change early exit only to
+                # rewrite the graph's format, but `merged` holds just this
+                # run's incremental extraction (empty when nothing changed) —
+                # the existing graph must be carried forward, not replaced.
+                # Carried entries are filtered like build_merge's prune set:
+                # sources re-extracted this run (their fresh results replace
+                # them — carrying both would leave stale nodes and duplicate
+                # parallel keyed edges), plus deleted and newly-excluded
+                # sources. Existing entries go first so this run's results win
+                # on dedupe collision, matching the AST-then-semantic order.
+                try:
+                    _existing_payload = json.loads(
+                        graph_json_path.read_text(encoding="utf-8")
+                    )
+                    _stale = {
+                        str(x["source_file"])
+                        for part in ("nodes", "edges", "hyperedges")
+                        for x in merged[part]
+                        if isinstance(x, dict) and x.get("source_file")
+                    }
+                    _stale.update(str(s) for s in graph_stale_sources)
+                    for _d in deleted_files:
+                        # deleted_files spellings may be absolute; the graph
+                        # stores root-relative — match both, like build_merge.
+                        _stale.add(str(_d))
+                        try:
+                            _rel = os.path.relpath(str(_d), str(target))
+                            _stale.add(_rel)
+                            _stale.add(Path(_rel).as_posix())
+                        except ValueError:  # Windows cross-drive
+                            pass
+                    _filter_payload_sources(_existing_payload, _stale)
+                    _existing_links = _existing_payload.get(
+                        "links", _existing_payload.get("edges", [])
+                    )
+                    merged["nodes"] = list(_existing_payload.get("nodes", [])) + merged["nodes"]
+                    merged["edges"] = list(_existing_links) + merged["edges"]
+                    merged["hyperedges"] = (
+                        list(_existing_payload.get("hyperedges", [])) + merged["hyperedges"]
+                    )
+                except Exception as exc:
+                    print(
+                        f"[graphify extract] warning: could not read the existing "
+                        f"graph for multigraph conversion ({exc}); converting this "
+                        f"run's extraction only",
+                        file=sys.stderr,
+                    )
+
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
-            merged["edges"] = _dedupe_edges(merged["edges"])
+            if not cli_multigraph:
+                merged["edges"] = _dedupe_edges(merged["edges"])
             # Disambiguate colliding-basename file-node labels (#2032). This raw
             # --no-cluster path bypasses build_from_json (where the clustered path
             # gets this), so apply it directly on the merged node list.
@@ -3528,7 +3626,19 @@ def dispatch_command(cmd: str) -> None:
             _backup(graphify_out)
             _invalidate_file_manifest_for_db_graph()
             from graphify.paths import write_json_atomic as _write_json_atomic
-            _write_json_atomic(graph_json_path, merged, indent=2)
+            if cli_multigraph:
+                from networkx.readwrite import json_graph as _json_graph
+                from graphify.build import build_from_json as _build_multigraph
+
+                _raw_graph = _build_multigraph(merged, multigraph=True, root=target)
+                try:
+                    _output_payload = _json_graph.node_link_data(_raw_graph, edges="links")
+                except TypeError:
+                    _output_payload = _json_graph.node_link_data(_raw_graph)
+                _output_payload["hyperedges"] = _raw_graph.graph.get("hyperedges", [])
+            else:
+                _output_payload = merged
+            _write_json_atomic(graph_json_path, _output_payload, indent=2)
             try:
                 # Record the scan root so a later build_merge / update runbook can
                 # relativize deleted-file paths correctly even for a custom --out
@@ -3545,7 +3655,8 @@ def dispatch_command(cmd: str) -> None:
             )
             print(
                 f"[graphify extract] wrote {graph_json_path} — "
-                f"{len(merged['nodes'])} nodes, {len(merged['edges'])} edges "
+                f"{len(_output_payload['nodes'])} nodes, "
+                f"{len(_output_payload.get('links', _output_payload.get('edges', [])))} edges "
                 f"(no clustering)"
             )
             if merged["input_tokens"] or merged["output_tokens"]:
@@ -3599,6 +3710,7 @@ def dispatch_command(cmd: str) -> None:
                 graph_path=existing_graph_path,
                 prune_sources=_prune_sources or None,
                 dedup=True,
+                multigraph=cli_multigraph,
                 dedup_llm_backend=dedup_backend,
                 root=target,
             )
@@ -3606,6 +3718,7 @@ def dispatch_command(cmd: str) -> None:
             G = _build(
                 [merged],
                 dedup=True,
+                multigraph=cli_multigraph,
                 dedup_llm_backend=dedup_backend,
                 root=target,
             )

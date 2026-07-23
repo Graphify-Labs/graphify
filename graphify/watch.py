@@ -1140,12 +1140,21 @@ def _rebuild_code(
             # Dedupe parallel edges (the clustered path's DiGraph collapses them implicitly);
             # without it, --no-cluster + repeated `update` accumulate duplicates and edge
             # counts diverge across build modes (#1317).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
-            candidate_graph_data = {
-                **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
-                "nodes": _dedupe_nodes(result.get("nodes", [])),
-                "links": _dedupe_edges(result.get("edges", [])),
-            }
+            from graphify.build import (
+                build_from_json as _build_from_json,
+                dedupe_edges as _dedupe_edges,
+                dedupe_nodes as _dedupe_nodes,
+            )
+            if existing_graph_data.get("multigraph"):
+                candidate_graph_data = _topology_from_graph(
+                    _build_from_json(result, multigraph=True, root=project_root)
+                )
+            else:
+                candidate_graph_data = {
+                    **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
+                    "nodes": _dedupe_nodes(result.get("nodes", [])),
+                    "links": _dedupe_edges(result.get("edges", [])),
+                }
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
             if existing_graph.exists():
@@ -1206,10 +1215,11 @@ def _rebuild_code(
             "total_words": detected.get("total_words", 0),
         }
 
-        # root=project_root aligns watch rebuilds with `graphify build`'s
-        # root-relative source_file paths (#932); without it, absolute paths
-        # from semantic subagents survive in watch-produced graphs only.
-        G = build_from_json(result, root=project_root)
+        G = build_from_json(
+            result,
+            multigraph=bool(existing_graph_data.get("multigraph", False)),
+            root=project_root,
+        )
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:
