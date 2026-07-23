@@ -311,3 +311,34 @@ def test_affected_falls_back_to_def_line_when_edge_has_no_location(monkeypatch, 
     monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "affected", "target", "--graph", str(gp)])
     mainmod.main()
     assert "a.py:L90" in capsys.readouterr().out
+
+
+def test_affected_preserves_edge_file_when_edge_location_is_missing(
+    monkeypatch, tmp_path, capsys
+):
+    g = nx.DiGraph()
+    g.add_node("loader", label="load()", source_file="definition.py", source_location="L90")
+    g.add_node("target", label="target()", source_file="target.py", source_location="L5")
+    g.add_edge(
+        "loader",
+        "target",
+        relation="calls",
+        confidence="INFERRED",
+        source_file="traversed.py",
+    )
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(
+        json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8"
+    )
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "affected", "target", "--graph", str(graph_path)],
+    )
+
+    mainmod.main()
+
+    out = capsys.readouterr().out
+    assert "traversed.py:-" in out
+    assert "definition.py:L90" not in out

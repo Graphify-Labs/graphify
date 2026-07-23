@@ -49,7 +49,7 @@ def _save_manifest(manifest: dict) -> None:
 def _load_global_graph() -> nx.Graph:
     if _GLOBAL_GRAPH.exists():
         from graphify.build import load_graph_json
-        return load_graph_json(_GLOBAL_GRAPH)
+        return load_graph_json(_GLOBAL_GRAPH, preserve_type=True)
     return nx.Graph()
 
 
@@ -79,6 +79,7 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         load_graph_json,
         merge_prefixed_into,
         prefix_graph_for_global,
+        promote_to_multidigraph,
         prune_repo_from_graph,
     )
 
@@ -101,12 +102,15 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True}
 
     # Load source graph, prefix IDs for cross-project isolation
-    src_G = load_graph_json(source_path)
-    prefixed = prefix_graph_for_global(src_G, repo_tag)
+    src_G = load_graph_json(source_path, preserve_type=True)
 
     # Load global graph, prune stale nodes for this repo, merge with
     # external-library dedup-by-label (shared helper in build.py).
     G = _load_global_graph()
+    if src_G.is_multigraph() or G.is_multigraph():
+        src_G = promote_to_multidigraph(src_G)
+        G = promote_to_multidigraph(G)
+    prefixed = prefix_graph_for_global(src_G, repo_tag)
     removed = prune_repo_from_graph(G, repo_tag)
     added = merge_prefixed_into(G, prefixed)
     _save_global_graph(G)

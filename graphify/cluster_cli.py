@@ -52,7 +52,7 @@ Subcommands:
 
 The cluster graph is written to <DIR>/graphify-out/graph.json, so query/path/
 explain/affected/export all work from inside the cluster directory (or via
---graph). Declare cross-repo links in cluster.yaml; see README for the format.
+--graph). Declare cross-repo links in cluster.json; see README for the format.
 """
 
 
@@ -197,22 +197,39 @@ def _cmd_remove(args: list[str]) -> None:
             f"member '{tag}' is referenced by links {sorted(set(referencing))}; "
             f"remove or update those links first"
         )
-    # Resolve before mutating the spec so the member's back-reference marker
-    # can be cleaned up too; marker cleanup never blocks the removal.
+    # Resolve before mutating the spec so this cluster's membership can be
+    # removed from the member marker too; cleanup never blocks removal.
     member = next(m for m in spec.members if m.tag == tag)
     resolved_path, _warnings = resolve_member_path(member, cluster_dir, load_local_config(cluster_dir))
     spec.members = [m for m in spec.members if m.tag != tag]
     save_spec(spec, cluster_dir)
     print(f"Removed member '{tag}'")
     if resolved_path is not None:
-        from .cluster_ref import CLUSTER_REF_NAME
-        from .paths import GRAPHIFY_OUT_NAME
+        from .cluster_ref import (
+            CLUSTER_REF_NAME,
+            CLUSTER_REF_VERSION,
+            load_cluster_refs,
+        )
+        from .paths import GRAPHIFY_OUT_NAME, write_json_atomic
 
-        marker = resolved_path / GRAPHIFY_OUT_NAME / CLUSTER_REF_NAME
+        out_dir = resolved_path / GRAPHIFY_OUT_NAME
+        marker = out_dir / CLUSTER_REF_NAME
         try:
             if marker.is_file():
-                marker.unlink()
-                print(f"  also removed its {CLUSTER_REF_NAME} marker")
+                refs = [
+                    ref for ref in load_cluster_refs(out_dir)
+                    if ref["cluster_name"] != spec.name
+                ]
+                if refs:
+                    write_json_atomic(
+                        marker,
+                        {"version": CLUSTER_REF_VERSION, "clusters": refs},
+                        indent=2,
+                    )
+                    print(f"  also removed its '{spec.name}' membership")
+                else:
+                    marker.unlink()
+                    print(f"  also removed its {CLUSTER_REF_NAME} marker")
         except OSError as exc:
             print(f"  note: could not remove {marker}: {exc}", file=sys.stderr)
     else:
@@ -270,6 +287,8 @@ def _cmd_build(args: list[str]) -> None:
         f"{summary['nodes']} nodes, {summary['edges']} edges"
     )
     print(f"  links: {report.edges_added} edges, {report.hubs_added} shared-resource hubs")
+    if report.auto_package_edges:
+        print(f"  automatic package links: {report.auto_package_edges}")
     if report.nodes_created:
         print(f"  created {len(report.nodes_created)} concept nodes (on_missing: create)")
     if not no_refs:
@@ -291,7 +310,11 @@ def _cmd_check(args: list[str]) -> None:
         print(f"  error: {e}", file=sys.stderr)
     if errors:
         sys.exit(1)
-    print(f"Spec OK: {report.edges_added} edges, {report.hubs_added} hubs would be created")
+    print(
+        f"Spec OK: {report.edges_added} edges "
+        f"({report.auto_package_edges} automatic package), "
+        f"{report.hubs_added} hubs would be created"
+    )
 
 
 def _cmd_status(args: list[str]) -> None:
@@ -311,7 +334,10 @@ def _cmd_status(args: list[str]) -> None:
             pass
     built = manifest.get("members") or {}
 
-    print(f"Cluster '{spec.name}' ({len(spec.members)} members, {len(spec.links)} links)")
+    print(
+        f"Cluster '{spec.name}' ({len(spec.members)} members, "
+        f"{len(spec.links)} links, graph mode: {spec.graph_mode})"
+    )
     from .cluster_graph import _file_hash
     for member in spec.members:
         path = resolved.get(member.tag)

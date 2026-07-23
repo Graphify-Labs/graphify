@@ -63,6 +63,24 @@ def test_load_spec_round_trip(tmp_path):
     assert reloaded.tags() == {"a", "b"}
 
 
+def test_new_spec_and_local_config_are_json_first(tmp_path):
+    spec = ClusterSpec(name="fresh")
+    assert save_spec(spec, tmp_path).name == "cluster.json"
+    assert save_local_config(tmp_path, {"paths": {}}).name == "cluster.local.json"
+
+
+def test_graph_mode_round_trip_and_validation(tmp_path):
+    _write_spec(tmp_path, _minimal(graph_mode="multi"))
+    spec = load_spec(tmp_path)
+    assert spec.graph_mode == "multi"
+    save_spec(spec, tmp_path)
+    assert json.loads((tmp_path / "cluster.json").read_text())["graph_mode"] == "multi"
+
+    _write_spec(tmp_path, _minimal(graph_mode="hyper"))
+    with pytest.raises(ClusterSpecError, match="graph_mode"):
+        load_spec(tmp_path)
+
+
 def test_missing_spec_is_actionable(tmp_path):
     with pytest.raises(ClusterSpecError, match="cluster init"):
         load_spec(tmp_path)

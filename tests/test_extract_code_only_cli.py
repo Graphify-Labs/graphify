@@ -49,6 +49,20 @@ def test_code_only_succeeds_without_key(tmp_path):
     assert any(str(l).startswith("hello") for l in labels), "code was indexed"
 
 
+def test_multigraph_flag_writes_keyed_directed_graph(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text(
+        "def target():\n    return 1\n\ndef caller():\n    return target()\n",
+        encoding="utf-8",
+    )
+    result = _run(repo, "--code-only", "--multigraph")
+    assert result.returncode == 0, result.stderr
+    graph = json.loads((repo / "graphify-out" / "graph.json").read_text())
+    assert graph["multigraph"] is True and graph["directed"] is True
+    assert graph["links"] and all("key" in edge for edge in graph["links"])
+
+
 def test_mixed_repo_without_key_errors_and_points_at_code_only(tmp_path):
     repo = _mixed_repo(tmp_path)
     r = _run(repo)  # no --code-only, no key

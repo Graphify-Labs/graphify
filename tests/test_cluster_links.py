@@ -1,15 +1,18 @@
 """Spec-declared cross-repo link resolution (selectors, hubs, on_missing)."""
 import json
 
+import networkx as nx
 import pytest
 
 from graphify.cluster_graph import (
     AmbiguousSelectorError,
     ClusterSpecError,
+    ClusterSpec,
     build_cluster,
     check_cluster,
     load_spec,
     apply_spec_links,
+    apply_auto_package_links,
     compose_members,
     resolve_selector,
 )
@@ -40,6 +43,102 @@ def _compose(cluster_dir):
     assert not errors
     G, _stats = compose_members(spec, resolved)
     return G, spec
+
+
+def _package(nid, name, repo_key, dependencies=()):
+    return _node(
+        nid,
+        label=name,
+        source_file="pyproject.toml",
+        type="package",
+        ecosystem="python",
+        package_key=repo_key,
+        dependency_keys=list(dependencies),
+    )
+
+
+def test_auto_packages_links_unique_cross_repo_provider(tmp_path):
+    make_member(tmp_path, "app", [
+        _package("pkg_app", "app", "python:app", ["python:shared-lib"]),
+    ])
+    make_member(tmp_path, "lib", [
+        _package("pkg_shared", "shared-lib", "python:shared-lib"),
+    ])
+    cluster = tmp_path / "cluster"
+    write_cluster(
+        cluster,
+        [{"tag": "app", "path": "../app"}, {"tag": "lib", "path": "../lib"}],
+        auto_links={"packages": True},
+    )
+
+    summary = build_cluster(cluster)
+    graph = _load_out(cluster)
+    edge = graph.get_edge_data("app::pkg_app", "lib::pkg_shared")
+    assert edge["relation"] == "depends_on"
+    assert edge["origin"] == "cluster_auto_package"
+    assert summary["links"].auto_package_edges == 1
+
+
+def test_auto_packages_skips_external_same_repo_and_ambiguous_providers(tmp_path):
+    make_member(tmp_path, "app", [
+        _package(
+            "pkg_app", "app", "python:app",
+            ["python:local", "python:external", "python:shared"],
+        ),
+        _package("pkg_local", "local", "python:local"),
+    ])
+    make_member(tmp_path, "lib1", [_package("pkg_shared1", "shared", "python:shared")])
+    make_member(tmp_path, "lib2", [_package("pkg_shared2", "shared", "python:shared")])
+    cluster = tmp_path / "cluster"
+    write_cluster(
+        cluster,
+        [
+            {"tag": "app", "path": "../app"},
+            {"tag": "lib1", "path": "../lib1"},
+            {"tag": "lib2", "path": "../lib2"},
+        ],
+        auto_links={"packages": True},
+    )
+
+    summary = build_cluster(cluster)
+    assert summary["links"].auto_package_edges == 0
+    assert any("2 cross-repo providers" in warning for warning in summary["links"].warnings)
+
+
+def test_auto_packages_declared_link_takes_precedence(tmp_path):
+    make_member(tmp_path, "app", [
+        _package("pkg_app", "app", "python:app", ["python:shared"]),
+    ])
+    make_member(tmp_path, "lib", [_package("pkg_shared", "shared", "python:shared")])
+    cluster = tmp_path / "cluster"
+    write_cluster(
+        cluster,
+        [{"tag": "app", "path": "../app"}, {"tag": "lib", "path": "../lib"}],
+        links=[{
+            "type": "depends_on",
+            "name": "declared",
+            "from": {"repo": "app", "id": "pkg_app"},
+            "to": {"repo": "lib", "id": "pkg_shared"},
+        }],
+        auto_links={"packages": True},
+    )
+
+    summary = build_cluster(cluster)
+    edge = _load_out(cluster).get_edge_data("app::pkg_app", "lib::pkg_shared")
+    assert edge["origin"] == "cluster_spec"
+    assert summary["links"].auto_package_edges == 0
+    assert any("already connected" in warning for warning in summary["links"].warnings)
+
+
+def test_auto_packages_warns_for_stale_member_graph():
+    graph = nx.Graph()
+    graph.add_node(
+        "app::pkg", type="package", repo="app", package_key="python:app"
+    )
+    report = apply_auto_package_links(
+        graph, ClusterSpec(name="test", auto_packages=True)
+    )
+    assert any("re-run `graphify extract --force`" in warning for warning in report.warnings)
 
 
 def test_api_call_link_by_file_selector(linked_cluster, tmp_path):

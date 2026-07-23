@@ -4,10 +4,10 @@ import sys
 
 import pytest
 
-from graphify.cluster_graph import build_cluster
+from graphify.cluster_graph import ClusterSpecError, build_cluster
 from graphify.cluster_ref import (
     CLUSTER_REF_NAME,
-    load_cluster_ref,
+    load_cluster_refs,
     resolve_cluster_dir,
     unresolvable_message,
 )
@@ -37,6 +37,12 @@ def _marker(tmp_path, member):
     return tmp_path / member / "graphify-out" / CLUSTER_REF_NAME
 
 
+def _only_ref(out_dir):
+    refs = load_cluster_refs(out_dir)
+    assert len(refs) == 1
+    return refs[0]
+
+
 # ---------------------------------------------------------------------------
 # Writing markers
 # ---------------------------------------------------------------------------
@@ -44,8 +50,10 @@ def _marker(tmp_path, member):
 def test_build_writes_portable_markers(tmp_path, built_cluster):
     for member, tag in (("alpha", "alpha"), ("beta", "beta")):
         raw = _marker(tmp_path, member).read_text(encoding="utf-8")
-        ref = json.loads(raw)
-        assert ref["version"] == 1
+        marker = json.loads(raw)
+        assert marker["version"] == 1
+        assert len(marker["clusters"]) == 1
+        ref = marker["clusters"][0]
         assert ref["cluster_name"] == "test-cluster"
         assert ref["self_tag"] == tag
         assert ref["member_count"] == 2
@@ -62,12 +70,12 @@ def test_cluster_url_recorded_from_cluster_dir_origin(tmp_path):
     write_cluster(cluster, [{"tag": "alpha", "path": "../alpha"}])
     _fake_checkout(cluster, "https://github.com/org/my-cluster")
     build_cluster(cluster)
-    ref = load_cluster_ref(tmp_path / "alpha" / "graphify-out")
+    ref = _only_ref(tmp_path / "alpha" / "graphify-out")
     assert ref["cluster_url"] == "https://github.com/org/my-cluster"
 
 
 def test_cluster_url_empty_without_git(tmp_path, built_cluster):
-    ref = load_cluster_ref(tmp_path / "alpha" / "graphify-out")
+    ref = _only_ref(tmp_path / "alpha" / "graphify-out")
     assert ref["cluster_url"] == ""
 
 
@@ -84,6 +92,107 @@ def test_skip_branch_backfills_missing_marker_only(tmp_path, built_cluster):
     assert alpha_marker.is_file()
     assert beta_marker.read_bytes() == beta_before
     assert beta_marker.stat().st_mtime_ns == beta_mtime
+
+
+def test_member_can_keep_multiple_cluster_memberships(tmp_path, built_cluster):
+    make_member(tmp_path, "gamma", [_node("worker", source_file="src/worker.ts")])
+    other = tmp_path / "other-cluster"
+    write_cluster(other, [
+        {"tag": "alpha", "path": "../alpha"},
+        {"tag": "gamma", "path": "../gamma"},
+    ], links=[{
+        "type": "references",
+        "from": {"repo": "alpha", "id": "app"},
+        "to": {"repo": "gamma", "id": "worker"},
+    }])
+    spec_path = other / "cluster.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["name"] = "other-cluster"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    build_cluster(other)
+
+    refs = load_cluster_refs(tmp_path / "alpha" / "graphify-out")
+    assert [ref["cluster_name"] for ref in refs] == ["other-cluster", "test-cluster"]
+
+
+def test_duplicate_cluster_name_across_remotes_is_rejected_before_writes(tmp_path):
+    """Two clusters with the same name but DIFFERENT git remotes are a genuine
+    collision: the build fails before any output is written, and keeps
+    failing on retry (the check runs ahead of the unchanged-inputs skip)."""
+    make_member(tmp_path, "alpha", [_node("app", source_file="src/app.ts")])
+    first = tmp_path / "first"
+    write_cluster(first, [{"tag": "alpha", "path": "../alpha"}])
+    _fake_checkout(first, "https://github.com/org/first-cluster")
+    build_cluster(first)
+
+    duplicate = tmp_path / "duplicate"
+    write_cluster(duplicate, [{"tag": "alpha", "path": "../alpha"}])
+    _fake_checkout(duplicate, "https://github.com/org/other-cluster")
+
+    for _attempt in range(2):  # sticky: the second run must not skip-and-pass
+        with pytest.raises(ClusterSpecError, match="cluster names must be unique"):
+            build_cluster(duplicate)
+    assert not (duplicate / "graphify-out").exists()
+    assert _only_ref(tmp_path / "alpha" / "graphify-out")["cluster_url"] == (
+        "https://github.com/org/first-cluster"
+    )
+
+
+def test_moved_cluster_without_remote_rebuilds_and_refreshes_hint(tmp_path, capsys):
+    """A dir_hint mismatch alone is not a name collision — a no-remote cluster
+    that was moved (or laid out differently on another machine) must rebuild
+    with a warning and refresh the marker, not hard-error."""
+    import shutil
+
+    make_member(tmp_path, "alpha", [_node("app", source_file="src/app.ts")])
+    old_home = tmp_path / "clusters-old" / "demo"
+    write_cluster(old_home, [{"tag": "alpha", "path": "../../alpha"}])
+    build_cluster(old_home)
+    assert _only_ref(tmp_path / "alpha" / "graphify-out")["dir_hint"].startswith(
+        "../clusters-old"
+    )
+
+    new_home = tmp_path / "clusters-new" / "demo"
+    new_home.parent.mkdir()
+    shutil.move(str(old_home), str(new_home))  # same depth: the path hint still resolves
+
+    summary = build_cluster(new_home, force=True)
+    assert not summary["skipped"]
+    assert "updating it" in capsys.readouterr().err
+    assert _only_ref(tmp_path / "alpha" / "graphify-out")["dir_hint"].startswith(
+        "../clusters-new"
+    )
+
+
+def test_named_cluster_selection_and_ambiguous_bare_flag(
+    tmp_path, built_cluster, monkeypatch, capsys
+):
+    make_member(tmp_path, "gamma", [_node("worker", source_file="src/worker.ts")])
+    other = tmp_path / "other-cluster"
+    write_cluster(other, [
+        {"tag": "alpha", "path": "../alpha"},
+        {"tag": "gamma", "path": "../gamma"},
+    ], links=[{
+        "type": "references",
+        "from": {"repo": "alpha", "id": "app"},
+        "to": {"repo": "gamma", "id": "worker"},
+    }])
+    spec_path = other / "cluster.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["name"] = "other-cluster"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    build_cluster(other)
+
+    monkeypatch.chdir(tmp_path / "alpha")
+    code, out, err = _dispatch(
+        ["explain", "worker", "--cluster", "other-cluster"], monkeypatch, capsys
+    )
+    assert code == 0 and "Node: worker" in out
+
+    code, _out, err = _dispatch(["explain", "worker", "--cluster"], monkeypatch, capsys)
+    assert code == 1
+    assert "belongs to multiple clusters" in err
+    assert "other-cluster" in err and "test-cluster" in err
 
 
 def test_no_refs_opt_out(tmp_path):
@@ -125,29 +234,34 @@ def test_cli_remove_unresolvable_member_soft_note(tmp_path, capsys):
 # Reading + resolving markers
 # ---------------------------------------------------------------------------
 
-def test_load_cluster_ref_fail_soft(tmp_path):
+def test_load_cluster_refs_fail_soft(tmp_path):
     out = tmp_path / "graphify-out"
     out.mkdir()
-    assert load_cluster_ref(out) is None  # missing
+    assert load_cluster_refs(out) == []  # missing
     marker = out / CLUSTER_REF_NAME
     marker.write_text("{not json", encoding="utf-8")
-    assert load_cluster_ref(out) is None  # corrupt
+    assert load_cluster_refs(out) == []  # corrupt
     marker.write_text('["a list"]', encoding="utf-8")
-    assert load_cluster_ref(out) is None  # non-dict
-    marker.write_text('{"cluster_name": "x"}', encoding="utf-8")
-    assert load_cluster_ref(out) is None  # missing self_tag
+    assert load_cluster_refs(out) == []  # non-dict
+    marker.write_text('{"version": 1, "clusters": {}}', encoding="utf-8")
+    assert load_cluster_refs(out) == []  # clusters is not a list
     marker.write_text(
-        '{"version": 99, "cluster_name": "x", "self_tag": "a"}', encoding="utf-8"
+        '{"version": 99, "clusters": []}', encoding="utf-8"
     )
-    assert load_cluster_ref(out) is None  # future version
+    assert load_cluster_refs(out) == []  # unsupported version
     marker.write_text(
+        '{"version": 1, "clusters": [{"cluster_name": "x", "self_tag": "a"}]}',
+        encoding="utf-8",
+    )
+    assert load_cluster_refs(out)[0]["cluster_name"] == "x"
+    marker.write_text(  # draft-era flat marker: clean break, regenerate via build
         '{"version": 1, "cluster_name": "x", "self_tag": "a"}', encoding="utf-8"
     )
-    assert load_cluster_ref(out)["cluster_name"] == "x"
+    assert load_cluster_refs(out) == []
 
 
 def test_resolve_cluster_dir_via_hint_then_discovery(tmp_path, built_cluster):
-    ref = load_cluster_ref(tmp_path / "alpha" / "graphify-out")
+    ref = _only_ref(tmp_path / "alpha" / "graphify-out")
     assert resolve_cluster_dir(ref, tmp_path / "alpha") == tmp_path / "cluster"
 
     # Stale hint: move the cluster; discovery over parent siblings finds it.

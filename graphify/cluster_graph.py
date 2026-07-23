@@ -1,6 +1,6 @@
 """Cluster graphs: link multiple repos' graphs into one connected graph.
 
-A *cluster* is a directory holding a ``cluster.yaml`` (or ``cluster.json``)
+A *cluster* is a directory holding a ``cluster.json`` (or optional YAML spec)
 spec that names member repos and declares the cross-repo contracts between
 them (API calls, shared resources, mirrored files, dependencies). Building a
 cluster composes each member's ``graphify-out/graph.json`` under a
@@ -12,7 +12,7 @@ Not to be confused with ``graphify/cluster.py`` (community detection). Docs
 use "repo cluster" for this feature and "community detection" for that one.
 
 Portability: member identity is the git ``url``; local paths are resolved
-per machine (``cluster.local.yaml`` override → spec ``path`` hint → origin-
+per machine (``cluster.local.json`` override → spec ``path`` hint → origin-
 remote auto-discovery under ``search_roots``), so one committed spec works
 across machines with different checkout layouts.
 
@@ -35,8 +35,8 @@ import networkx as nx
 
 from .ids import normalize_id
 
-SPEC_NAMES = ("cluster.yaml", "cluster.yml", "cluster.json")
-LOCAL_NAMES = ("cluster.local.yaml", "cluster.local.yml", "cluster.local.json")
+SPEC_NAMES = ("cluster.json", "cluster.yaml", "cluster.yml")
+LOCAL_NAMES = ("cluster.local.json", "cluster.local.yaml", "cluster.local.yml")
 SCHEMA_VERSION = 1
 
 # Pseudo repo tag for synthetic hub nodes; reserved, never a member tag.
@@ -54,6 +54,7 @@ DIRECT_LINK_RELATIONS = {
 LINK_TYPES = (*DIRECT_LINK_RELATIONS, "shared_resource")
 
 _ON_MISSING = ("warn", "create", "error")
+_GRAPH_MODES = ("simple", "multi")
 
 
 class ClusterSpecError(ValueError):
@@ -93,6 +94,7 @@ class ClusterSpec:
     on_missing: str = "warn"
     auto_externals: bool = True
     auto_packages: bool = False
+    graph_mode: str = "simple"
     spec_path: Path | None = None
 
     def tags(self) -> set[str]:
@@ -102,6 +104,7 @@ class ClusterSpec:
 @dataclass
 class LinkReport:
     edges_added: int = 0
+    auto_package_edges: int = 0
     hubs_added: int = 0
     nodes_created: list[str] = field(default_factory=list)
     resolved: list[str] = field(default_factory=list)
@@ -243,6 +246,12 @@ def load_spec(cluster_dir: Path) -> ClusterSpec:
         links.append(link)
 
     auto = data.get("auto_links") or {}
+    graph_mode = str(data.get("graph_mode") or "simple")
+    if graph_mode not in _GRAPH_MODES:
+        raise ClusterSpecError(
+            f"{spec_path.name}: graph_mode must be one of {_GRAPH_MODES}, "
+            f"got {graph_mode!r}"
+        )
     return ClusterSpec(
         name=str(data.get("name") or cluster_dir.name),
         members=members,
@@ -250,6 +259,7 @@ def load_spec(cluster_dir: Path) -> ClusterSpec:
         on_missing=on_missing,
         auto_externals=bool(auto.get("externals", True)),
         auto_packages=bool(auto.get("packages", False)),
+        graph_mode=graph_mode,
         spec_path=spec_path,
     )
 
@@ -280,6 +290,7 @@ def spec_to_dict(spec: ClusterSpec) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "name": spec.name,
+        "graph_mode": spec.graph_mode,
         "members": members,
         "links": links,
         "defaults": {"on_missing": spec.on_missing},
@@ -288,21 +299,14 @@ def spec_to_dict(spec: ClusterSpec) -> dict:
 
 
 def save_spec(spec: ClusterSpec, cluster_dir: Path) -> Path:
-    """Write the spec back, preserving the existing file's format.
-
-    New specs prefer YAML when pyyaml is importable, else JSON.
-    """
+    """Write the spec back, preserving existing YAML but creating JSON."""
     from .paths import write_text_atomic
 
     cluster_dir = Path(cluster_dir)
     target = spec.spec_path or find_spec_file(cluster_dir)
     data = spec_to_dict(spec)
     if target is None:
-        try:
-            import yaml  # noqa: F401
-            target = cluster_dir / "cluster.yaml"
-        except ImportError:
-            target = cluster_dir / "cluster.json"
+        target = cluster_dir / "cluster.json"
     if target.suffix == ".json":
         write_text_atomic(target, json.dumps(data, indent=2) + "\n")
     else:
@@ -334,11 +338,7 @@ def save_local_config(cluster_dir: Path, cfg: dict) -> Path:
             target = p
             break
     if target is None:
-        try:
-            import yaml  # noqa: F401
-            target = Path(cluster_dir) / "cluster.local.yaml"
-        except ImportError:
-            target = Path(cluster_dir) / "cluster.local.json"
+        target = Path(cluster_dir) / "cluster.local.json"
     if target.suffix == ".json":
         write_text_atomic(target, json.dumps(cfg, indent=2) + "\n")
     else:
@@ -492,9 +492,14 @@ def compose_members(
     graph and per-member stats. Externals dedup-by-label follows
     ``spec.auto_externals``.
     """
-    from .build import load_graph_json, merge_prefixed_into, prefix_graph_for_global
+    from .build import (
+        load_graph_json,
+        merge_prefixed_into,
+        prefix_graph_for_global,
+        promote_to_multidigraph,
+    )
 
-    G = nx.Graph()
+    G: nx.Graph = nx.MultiDiGraph() if spec.graph_mode == "multi" else nx.Graph()
     stats: dict[str, dict] = {}
     for member in spec.members:
         gp = member_graph_path(member, resolved[member.tag])
@@ -503,18 +508,29 @@ def compose_members(
                 f"member '{member.tag}' has no graph at {gp}. "
                 f"Run `graphify extract .` (or your usual build) in {resolved[member.tag]} first."
             )
-        prefixed = prefix_graph_for_global(load_graph_json(gp), member.tag)
+        member_graph = load_graph_json(gp, preserve_type=spec.graph_mode == "multi")
+        source_multigraph = member_graph.is_multigraph()
+        if spec.graph_mode == "multi":
+            if not source_multigraph:
+                print(
+                    f"[graphify cluster] warning: member '{member.tag}' is a simple "
+                    "graph; re-extract it with --multigraph to recover parallel relations",
+                    file=sys.stderr,
+                )
+            member_graph = promote_to_multidigraph(member_graph)
+        prefixed = prefix_graph_for_global(member_graph, member.tag)
         total = prefixed.number_of_nodes()
         if spec.auto_externals:
             added = merge_prefixed_into(G, prefixed)
         else:
-            G.update(prefixed)
+            G = nx.compose(G, prefixed)
             added = total
         stats[member.tag] = {
             "graph_path": str(gp),
             "node_count": total,
             "edge_count": prefixed.number_of_edges(),
             "externals_merged": total - added,
+            "source_multigraph": source_multigraph,
         }
     return G, stats
 
@@ -612,10 +628,16 @@ def _hub_id(kind: str, name: str) -> str:
 
 def strip_cluster_artifacts(G: nx.Graph) -> tuple[int, int]:
     """Remove cluster-added edges and synthetic nodes (rebuild idempotency)."""
-    edges = [
-        (u, v) for u, v, d in G.edges(data=True)
-        if str(d.get("origin", "")).startswith("cluster_")
-    ]
+    if G.is_multigraph():
+        edges = [
+            (u, v, key) for u, v, key, d in G.edges(keys=True, data=True)
+            if str(d.get("origin", "")).startswith("cluster_")
+        ]
+    else:
+        edges = [
+            (u, v) for u, v, d in G.edges(data=True)
+            if str(d.get("origin", "")).startswith("cluster_")
+        ]
     G.remove_edges_from(edges)
     nodes = [
         n for n, d in G.nodes(data=True)
@@ -628,20 +650,21 @@ def strip_cluster_artifacts(G: nx.Graph) -> tuple[int, int]:
 def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -> LinkReport:
     """Turn declared links into edges (and hub/concept nodes) on the composed graph."""
     report = LinkReport()
-    spec_file = spec.spec_path.name if spec.spec_path else "cluster.yaml"
+    spec_file = spec.spec_path.name if spec.spec_path else "cluster.json"
 
     nodes_by_repo: dict[str, list[tuple[str, dict]]] = {}
     for n, d in G.nodes(data=True):
         nodes_by_repo.setdefault(d.get("repo", ""), []).append((n, d))
 
-    # Cluster output is deliberately a simple Graph. Track every occupied pair
-    # (including dry-run additions) so a declared relation can never silently
-    # overwrite an existing or earlier relation on the same endpoints.
+    # Simple mode rejects occupied pairs to prevent NetworkX overwrites. Multi
+    # mode permits distinct keyed relations and rejects only an exact duplicate
+    # declared-link identity.
     occupied_pairs: dict[tuple[str, str], str] = {}
     for u, v, data in G.edges(data=True):
         pair = (min(u, v), max(u, v))
         relation = data.get("relation") or "unknown"
         occupied_pairs[pair] = f"existing relation {relation!r}"
+    declared_identities: set[tuple[str, str, str, str]] = set()
 
     def _resolve(link: ClusterLink, sel: dict, link_label: str) -> str | None:
         try:
@@ -682,15 +705,22 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
             report.warnings.append(f"link '{link.name or link.type}' resolved to a self-loop; skipped")
             return False
         pair = (min(u, v), max(u, v))
-        prior = occupied_pairs.get(pair)
-        if prior is not None:
-            report.errors.append(
-                f"{link_label}: cannot add relation {relation!r} between {u} and {v}; "
-                f"the pair already has {prior}. Simple cluster graphs allow only "
-                f"one relation per node pair"
-            )
-            return False
-        occupied_pairs[pair] = f"{link_label} relation {relation!r}"
+        if G.is_multigraph():
+            identity = (u, v, relation, link.name or link.type)
+            if identity in declared_identities:
+                report.errors.append(f"{link_label}: duplicate declared cluster relation")
+                return False
+            declared_identities.add(identity)
+        else:
+            prior = occupied_pairs.get(pair)
+            if prior is not None:
+                report.errors.append(
+                    f"{link_label}: cannot add relation {relation!r} between {u} and {v}; "
+                    f"the pair already has {prior}. Simple cluster graphs allow only "
+                    f"one relation per node pair"
+                )
+                return False
+            occupied_pairs[pair] = f"{link_label} relation {relation!r}"
         if not dry_run:
             attrs = {
                 "relation": relation,
@@ -708,7 +738,13 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
                 attrs["direction"] = "both"
             if link.note:
                 attrs["note"] = link.note
-            G.add_edge(u, v, **attrs)
+            if G.is_multigraph():
+                from .build import stable_edge_key
+
+                attrs["context"] = link.name or link.type
+                G.add_edge(u, v, key=stable_edge_key(u, v, attrs), **attrs)
+            else:
+                G.add_edge(u, v, **attrs)
         report.edges_added += 1
         return True
 
@@ -750,6 +786,102 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
             if _add_edge(src, tgt, link, relation, link_label):
                 report.resolved.append(f"{link_label}: {src} -[{relation}]-> {tgt}")
 
+    return report
+
+
+def apply_auto_package_links(
+    G: nx.Graph,
+    spec: ClusterSpec,
+    report: LinkReport | None = None,
+    *,
+    dry_run: bool = False,
+) -> LinkReport:
+    """Link package definitions to unique providers in other member repos."""
+    report = report or LinkReport()
+    package_nodes = sorted(
+        (
+            (node, data)
+            for node, data in G.nodes(data=True)
+            if data.get("type") == "package"
+        ),
+        key=lambda item: str(item[0]),
+    )
+    providers: dict[str, list[tuple[str, dict]]] = {}
+    stale_repos: set[str] = set()
+    for node, data in package_nodes:
+        key = data.get("package_key")
+        if isinstance(key, str) and key:
+            providers.setdefault(key, []).append((node, data))
+        if "dependency_keys" not in data:
+            stale_repos.add(str(data.get("repo") or "unknown"))
+
+    for repo in sorted(stale_repos):
+        report.warnings.append(
+            f"member '{repo}' has package nodes without dependency metadata; "
+            "re-run `graphify extract --force` in that member to enable "
+            "auto_links.packages"
+        )
+
+    occupied = {
+        (min(str(u), str(v)), max(str(u), str(v))) for u, v in G.edges()
+    }
+    spec_file = spec.spec_path.name if spec.spec_path else "cluster.json"
+    for source, data in package_nodes:
+        source_repo = data.get("repo")
+        dep_keys = data.get("dependency_keys")
+        if not isinstance(dep_keys, list):
+            continue
+        for dep_key in sorted({str(key) for key in dep_keys if key}):
+            candidates = [
+                (node, provider)
+                for node, provider in providers.get(dep_key, [])
+                if provider.get("repo") != source_repo
+            ]
+            if not candidates:
+                continue
+            if len(candidates) > 1:
+                listing = ", ".join(str(node) for node, _data in candidates)
+                report.warnings.append(
+                    f"package dependency {dep_key!r} from {source} has "
+                    f"{len(candidates)} cross-repo providers ({listing}); skipped"
+                )
+                continue
+            target, _provider = candidates[0]
+            pair = (min(str(source), str(target)), max(str(source), str(target)))
+            if pair in occupied:
+                report.warnings.append(
+                    f"package dependency {dep_key!r} from {source} is already "
+                    "connected by a member or declared link; automatic link skipped"
+                )
+                continue
+            occupied.add(pair)
+            if not dry_run:
+                attrs = {
+                    "relation": "depends_on",
+                    "confidence": "EXTRACTED",
+                    "confidence_score": 1.0,
+                    "weight": 1.0,
+                    "source_file": spec_file,
+                    "origin": "cluster_auto_package",
+                    "package_key": dep_key,
+                    "_src": source,
+                    "_tgt": target,
+                }
+                if G.is_multigraph():
+                    from .build import stable_edge_key
+
+                    G.add_edge(
+                        source, target,
+                        key=stable_edge_key(source, target, attrs),
+                        **attrs,
+                    )
+                else:
+                    G.add_edge(source, target, **attrs)
+            report.edges_added += 1
+            report.auto_package_edges += 1
+            report.resolved.append(
+                f"auto package: {source} -[depends_on]-> {target} ({dep_key})"
+            )
     return report
 
 
@@ -814,6 +946,7 @@ def _render_report(spec: ClusterSpec, stats: dict, report: LinkReport, built_at:
         "## Links",
         "",
         f"- edges added: {report.edges_added}",
+        f"- automatic package edges: {report.auto_package_edges}",
         f"- shared-resource hubs: {report.hubs_added}",
     ]
     if report.resolved:
@@ -828,6 +961,42 @@ def _render_report(spec: ClusterSpec, stats: dict, report: LinkReport, built_at:
     return "\n".join(lines) + "\n"
 
 
+def check_member_ref_conflicts(
+    spec: ClusterSpec, resolved: dict[str, Path], cluster_dir: Path
+) -> None:
+    """Raise when a member's marker shows a *different* cluster owns this name.
+
+    Only a git-URL mismatch proves a genuine collision (two distinct remotes,
+    same cluster name). A differing ``dir_hint`` alone never errors — hints
+    are machine- and layout-dependent, and a moved cluster directory is the
+    common benign cause (write_member_refs warns and refreshes the hint).
+    Runs in build_cluster BEFORE any output is written, on every build path
+    including the unchanged-inputs skip, so a real conflict fails cleanly and
+    keeps failing until resolved.
+    """
+    from .cluster_ref import load_cluster_refs
+    from .paths import GRAPHIFY_OUT_NAME
+
+    new_url = normalize_git_url(origin_url(cluster_dir) or "")
+    if not new_url:
+        return
+    for member in spec.members:
+        repo_dir = resolved.get(member.tag)
+        if repo_dir is None:
+            continue
+        refs = load_cluster_refs(Path(repo_dir) / GRAPHIFY_OUT_NAME)
+        old = next((r for r in refs if r["cluster_name"] == spec.name), None)
+        if old is None:
+            continue
+        old_url = normalize_git_url(str(old.get("cluster_url") or ""))
+        if old_url and old_url != new_url:
+            raise ClusterSpecError(
+                f"member '{member.tag}' already belongs to a different cluster "
+                f"named '{spec.name}' ({old.get('cluster_url')}); cluster "
+                f"names must be unique per member"
+            )
+
+
 def write_member_refs(
     spec: ClusterSpec,
     resolved: dict[str, Path],
@@ -836,37 +1005,45 @@ def write_member_refs(
     *,
     only_missing: bool = False,
 ) -> int:
-    """Write a portable cluster-ref.json into each resolved member's graphify-out.
+    """Upsert this cluster in each member's portable cluster-ref collection.
 
     The marker is committable (graphify-out/ travels with the member repo), so
     it carries no absolute paths — only the cluster's git URL, the member
     roster, and a machine-derived relative ``dir_hint`` that fails soft on
     other machines. ``only_missing`` (the skipped-rebuild path) backfills
-    markers for freshly cloned members without churning existing files.
+    memberships for freshly cloned members without churning existing entries.
     A member whose ``graph`` field points outside graphify-out/ still gets its
     marker in graphify-out/ — that is where member-side readers look.
-    Failures are warnings, never build errors. Returns the count written.
+    Failures are warnings, never build errors; name collisions with a
+    *different* cluster are ``check_member_ref_conflicts``'s job, which
+    ``build_cluster`` runs before writing any output. Returns the count
+    written.
     """
-    from .cluster_ref import CLUSTER_REF_NAME, CLUSTER_REF_VERSION
+    from .cluster_ref import (
+        CLUSTER_REF_NAME,
+        CLUSTER_REF_VERSION,
+        load_cluster_refs,
+    )
     from .paths import GRAPHIFY_OUT_NAME, write_json_atomic
 
     roster = [{"tag": m.tag, "url": m.url} for m in spec.members]
     cluster_url = origin_url(cluster_dir) or ""
-    written = 0
+    pending: list[tuple[ClusterMember, Path, Path, list[dict], dict]] = []
     for member in spec.members:
         repo_dir = resolved.get(member.tag)
         if repo_dir is None:
             continue
         out_dir = Path(repo_dir) / GRAPHIFY_OUT_NAME
         target = out_dir / CLUSTER_REF_NAME
-        if only_missing and target.is_file():
+        existing = load_cluster_refs(out_dir)
+        old = next((r for r in existing if r["cluster_name"] == spec.name), None)
+        if only_missing and old is not None:
             continue
         try:
             dir_hint = os.path.relpath(Path(cluster_dir).resolve(), Path(repo_dir).resolve())
         except ValueError:  # Windows cross-drive
             dir_hint = ""
         ref = {
-            "version": CLUSTER_REF_VERSION,
             "cluster_name": spec.name,
             "cluster_url": cluster_url,
             "self_tag": member.tag,
@@ -875,9 +1052,40 @@ def write_member_refs(
             "built_at": built_at,
             "dir_hint": dir_hint,
         }
+        if old is not None:
+            old_url = normalize_git_url(str(old.get("cluster_url") or ""))
+            new_url = normalize_git_url(cluster_url)
+            same_by_url = bool(old_url and new_url and old_url == new_url)
+            if (
+                not same_by_url
+                and old.get("dir_hint") and dir_hint
+                and os.path.normpath(str(old["dir_hint"])) != os.path.normpath(dir_hint)
+            ):
+                # A hint mismatch alone can't distinguish a moved cluster (or a
+                # different checkout layout) from a same-named other cluster, so
+                # it never blocks the build — genuine collisions are caught by
+                # URL in check_member_ref_conflicts before any output is
+                # written. Warn and refresh the entry: last build wins.
+                print(
+                    f"[graphify cluster] warning: member '{member.tag}' marker "
+                    f"for cluster '{spec.name}' pointed at {old['dir_hint']}; "
+                    f"updating it to this cluster's location",
+                    file=sys.stderr,
+                )
+        pending.append((member, out_dir, target, existing, ref))
+
+    written = 0
+    for member, out_dir, target, existing, ref in pending:
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
-            write_json_atomic(target, ref, indent=2)
+            refs = [r for r in existing if r["cluster_name"] != spec.name]
+            refs.append(ref)
+            refs.sort(key=lambda r: r["cluster_name"])
+            write_json_atomic(
+                target,
+                {"version": CLUSTER_REF_VERSION, "clusters": refs},
+                indent=2,
+            )
             written += 1
         except OSError as exc:
             print(
@@ -910,6 +1118,9 @@ def build_cluster(
     if errors:
         raise ClusterSpecError("; ".join(errors))
 
+    if write_refs:
+        check_member_ref_conflicts(spec, resolved, cluster_dir)
+
     out_dir = cluster_out_dir(cluster_dir)
     graph_path = out_dir / "graph.json"
     manifest_path = _manifest_path(out_dir)
@@ -931,6 +1142,7 @@ def build_cluster(
             manifest.get("spec_hash") == spec_hash
             and prior == member_hashes
             and manifest.get("links_enabled") == links_enabled
+            and manifest.get("graph_mode") == spec.graph_mode
         ):
             # Backfill markers for members that don't have one yet (e.g. a
             # freshly cloned checkout) without churning existing files.
@@ -951,13 +1163,10 @@ def build_cluster(
 
     G, stats = compose_members(spec, resolved)
     report = LinkReport() if no_links else apply_spec_links(G, spec)
+    if not no_links and spec.auto_packages:
+        apply_auto_package_links(G, spec, report)
     if report.errors:
         raise ClusterSpecError("link resolution failed: " + "; ".join(report.errors))
-    if spec.auto_packages:
-        report.warnings.append(
-            "auto_links.packages is not implemented yet; only declared links and "
-            "external-node merging were applied"
-        )
     for w in report.warnings:
         print(f"[graphify cluster] warning: {w}", file=sys.stderr)
 
@@ -975,6 +1184,7 @@ def build_cluster(
         "built_at": built_at,
         "spec_hash": spec_hash,
         "links_enabled": links_enabled,
+        "graph_mode": spec.graph_mode,
         "node_count": G.number_of_nodes(),
         "edge_count": G.number_of_edges(),
         "members": {
@@ -1030,8 +1240,14 @@ def check_cluster(cluster_dir: Path) -> tuple[LinkReport, list[str]]:
         return report, report.errors
 
     G, _stats = compose_members(spec, resolved)
-    link_report = apply_spec_links(G, spec, dry_run=True)
+    # This graph exists only for validation, so materialize declared links in
+    # memory. Auto-package precedence then sees the same occupied pairs as a
+    # real build without writing any files.
+    link_report = apply_spec_links(G, spec, dry_run=False)
+    if spec.auto_packages:
+        apply_auto_package_links(G, spec, link_report, dry_run=False)
     report.edges_added = link_report.edges_added
+    report.auto_package_edges = link_report.auto_package_edges
     report.hubs_added = link_report.hubs_added
     report.nodes_created = link_report.nodes_created
     report.resolved = link_report.resolved
