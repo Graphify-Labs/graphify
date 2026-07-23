@@ -1206,7 +1206,10 @@ def _rebuild_code(
             "total_words": detected.get("total_words", 0),
         }
 
-        G = build_from_json(result)
+        # root=project_root aligns watch rebuilds with `graphify build`'s
+        # root-relative source_file paths (#932); without it, absolute paths
+        # from semantic subagents survive in watch-produced graphs only.
+        G = build_from_json(result, root=project_root)
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:
