@@ -2,6 +2,13 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- New: `graphify cluster` — cluster graphs link multiple repos into one connected graph. A committable `cluster.json` names member repos by git URL (paths resolve per machine via a local override, the spec's path hint, or origin-remote auto-discovery) and declares the cross-repo contracts auto-detection can't see (`api_call`, `shared_resource`, `mirrored_file`, `depends_on`, `references`, each optionally `direction: "both"`); `cluster build` composes member graphs under `tag::` namespaces into a directed graph (reusing the global-graph external dedup) and resolves declared links into `EXTRACTED` edges, writing a standard `graphify-out/graph.json` so query/path/explain/affected/export work unchanged; `cluster check` dry-runs resolution for CI.
+- New: cluster member back-references. `cluster build` writes a portable `cluster-ref.json` into each member's `graphify-out/` recording every membership (cluster name + git URL + roster, no absolute paths; `--no-refs` to skip, `cluster remove` drops only its own entry). Inside a member repo, `query`/`path`/`explain`/`affected` accept `--cluster` (or `--cluster NAME`), no-match failures note the membership, and the search-nudge hook + installed skills surface it to assistants; marker fields are sanitized before reaching any assistant-facing output. Without the cluster locally, `--cluster` explains exactly what to clone and build.
+- New: `auto_links.packages` connects a member's direct package dependencies to their unique provider in another member (ambiguous matches are warned and skipped; declared links take precedence). Package-manifest nodes now carry normalized `package_key`/`dependency_keys` identities.
+- New: `affected` traverses `calls_api`/`mirrors` relations by default, so impact analysis crosses repo boundaries.
+
 ## 0.9.25 (2026-07-22)
 
 - License: the project is now licensed under the Apache License, Version 2.0 (previously MIT). Apache 2.0 adds an explicit patent grant and patent-retaliation clause and explicit contribution terms. Contributions made before the relicensing were submitted under MIT and remain available under those terms; the original MIT license text is retained in `LICENSE-MIT` and referenced from `NOTICE`.
