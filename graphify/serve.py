@@ -858,39 +858,38 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         lines.append(line)
     for u, v in edges:
         if u in nodes and v in nodes:
-            raw = G[u][v]
-            d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
+            for d in edge_datas(G, u, v):
             # (u, v) is BFS/DFS visit order, not necessarily the true edge
             # direction: on an undirected graph G.neighbors() walks callers
             # and callees alike, so a caller->callee edge renders backwards
             # whenever the callee is visited first. _src/_tgt (stashed on the
             # edge data by the `query` CLI loader) carry the real direction;
             # fall back to (u, v) for graphs/edges that don't set them.
-            src = d.get("_src", u)
-            tgt = d.get("_tgt", v)
+                src = d.get("_src", u)
+                tgt = d.get("_tgt", v)
             # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
             # graph.json): only trust them when they name exactly this edge's
             # endpoints, else fall back to (u, v). Without this, G.nodes[src]
             # would KeyError on an unknown id (#2080 review).
-            if {src, tgt} != {u, v}:
-                src, tgt = u, v
-            context = d.get("context")
-            context_suffix = f" context={sanitize_label(str(context))}" if context else ""
+                if {src, tgt} != {u, v}:
+                    src, tgt = u, v
+                context = d.get("context")
+                context_suffix = f" context={sanitize_label(str(context))}" if context else ""
             # The relation SITE (call/import/reference line in the source's
             # file), not a def line — so "who calls X" cites a clickable call
             # location, not the caller's def (#BUG1).
-            _loc = str(d.get("source_location") or "")
-            at_suffix = (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
-                if _loc else ""
-            )
-            line = (
-                f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
-                f"--{sanitize_label(str(d.get('relation', '')))} "
-                f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
-            )
-            lines.append(line)
+                _loc = str(d.get("source_location") or "")
+                at_suffix = (
+                    f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
+                    if _loc else ""
+                )
+                line = (
+                    f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
+                    f"--{sanitize_label(str(d.get('relation', '')))} "
+                    f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
+                    f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
+                )
+                lines.append(line)
     output = "\n".join(lines)
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
@@ -983,6 +982,40 @@ def _query_graph_text(
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+
+
+def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
+    """Per-edge neighbor lines for get_neighbors.
+
+    One line per parallel edge (edge_datas, matching the query surface):
+    edge_data would surface an arbitrary single relation on multigraphs, so a
+    relation_filter could return empty for relations that exist. Simple graphs
+    produce identical output (edge_datas returns a one-element list).
+    """
+    def _edge_at(d: dict) -> str:
+        # Edge location = the relation SITE (call/import line) in the source
+        # node's file, not a def line (#BUG1).
+        loc = str(d.get("source_location") or "")
+        return (
+            f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
+            if loc else ""
+        )
+
+    lines: list[str] = []
+    for arrow, pairs in (
+        ("-->", ((nid, nb, nb) for nb in G.successors(nid))),
+        ("<--", ((nb, nid, nb) for nb in G.predecessors(nid))),
+    ):
+        for u, v, nb in pairs:
+            for d in edge_datas(G, u, v):
+                rel = d.get("relation", "")
+                if rel_filter and rel_filter not in str(rel).lower():
+                    continue
+                lines.append(
+                    f"  {arrow} {sanitize_label(G.nodes[nb].get('label', nb))} "
+                    f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                )
+    return lines
 
 
 def _find_node(G: nx.Graph, label: str) -> list[str]:
@@ -1425,32 +1458,7 @@ def _build_server(graph_path: str):
             return f"No node matching '{label}' found." + _cluster_note()
         nid = matches[0]
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
-        def _edge_at(d: dict) -> str:
-            # Edge location = the relation SITE (call/import line) in the source
-            # node's file, not a def line (#BUG1).
-            loc = str(d.get("source_location") or "")
-            return (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
-                if loc else ""
-            )
-        for nb in G.successors(nid):
-            d = edge_data(G, nid, nb)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
-        for nb in G.predecessors(nid):
-            d = edge_data(G, nb, nid)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
+        lines += _neighbor_lines(G, nid, rel_filter)
         budget = int(arguments.get("token_budget", 2000))
         return _cut_lines_to_budget(
             lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"
