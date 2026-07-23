@@ -22,6 +22,13 @@ DEFAULT_AFFECTED_RELATIONS = (
     "uses",
     "mixes_in",
     "embeds",
+    # Cluster-graph relations (declared cross-repo links, graphify cluster):
+    # traversing them by default is what makes `affected` cross repo
+    # boundaries. `depends_on` is deliberately NOT here — package edges exist
+    # in single-repo graphs too, and including it would change single-repo
+    # affected behavior.
+    "calls_api",
+    "mirrors",
 )
 
 
