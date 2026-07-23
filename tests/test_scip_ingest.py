@@ -1011,7 +1011,7 @@ def test_ingest_edge_with_zero_sourceline_has_empty_location() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cycle 2.4 v2: endpoint-safe edges + build_from_json round-trip (F1)
+# Cycle 2.4 v2: endpoint-safe edges + build_from_extraction round-trip (F1)
 # ---------------------------------------------------------------------------
 
 
@@ -1103,8 +1103,8 @@ def test_relationship_target_unknown_emits_stub_node():
 
 
 def test_relationship_edges_survive_validate_extraction_and_build():
-    """Result passes Graphify's validate_extraction and build_from_json keeps the edges."""
-    from graphify.build import build_from_json
+    """Result passes Graphify's validate_extraction and build_from_extraction keeps the edges."""
+    from graphify.build import build_from_extraction
     from graphify.validate import validate_extraction
 
     doc = {
@@ -1129,9 +1129,9 @@ def test_relationship_edges_survive_validate_extraction_and_build():
     result = ingest_scip_json(doc)
     errors = validate_extraction(result)
     assert errors == [], f"validate_extraction failures: {errors}"
-    graph = build_from_json(result)
+    graph = build_from_extraction(result)
     # Two edges should survive into the graph
-    edge_count = sum(1 for _ in graph.edges())
+    edge_count = len(graph.edges)
     assert edge_count == 2, f"expected 2 edges in graph, got {edge_count}"
 
 

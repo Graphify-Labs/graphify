@@ -28,7 +28,7 @@ Entièrement multimodal. Déposez du code, des PDFs, du markdown, des captures d
 graphify-out/
 ├── graph.html       graphe interactif — ouvrir dans un navigateur, cliquer, rechercher, filtrer
 ├── GRAPH_REPORT.md  nœuds dieu, connexions surprenantes, questions suggérées
-├── graph.json       graphe persistant — interrogeable des semaines plus tard sans relire
+├── graph.helix       graphe persistant — interrogeable des semaines plus tard sans relire
 └── cache/           cache SHA256 — les réexécutions ne traitent que les fichiers modifiés
 ```
 
@@ -46,7 +46,7 @@ Même syntaxe que `.gitignore`. Un seul `.graphifyignore` à la racine du dépô
 
 ## Comment ça fonctionne
 
-graphify s'exécute en trois passes. D'abord, un passage AST déterministe extrait la structure des fichiers de code (classes, fonctions, imports, graphes d'appel, docstrings, commentaires de justification) sans LLM. Ensuite, les fichiers vidéo et audio sont transcrits localement avec faster-whisper. Enfin, des sous-agents Claude s'exécutent en parallèle sur les docs, articles, images et transcriptions pour extraire concepts, relations et justifications de conception. Les résultats sont fusionnés dans un graphe NetworkX, regroupés avec la détection de communautés Leiden, et exportés en HTML interactif, JSON interrogeable et un rapport d'audit en langage naturel.
+graphify s'exécute en trois passes. D'abord, un passage AST déterministe extrait la structure des fichiers de code (classes, fonctions, imports, graphes d'appel, docstrings, commentaires de justification) sans LLM. Ensuite, les fichiers vidéo et audio sont transcrits localement avec faster-whisper. Enfin, des sous-agents Claude s'exécutent en parallèle sur les docs, articles, images et transcriptions pour extraire concepts, relations et justifications de conception. Les résultats sont fusionnés dans un graphe Helix, regroupés avec la détection de communautés Leiden, et exportés en HTML interactif, JSON interrogeable et un rapport d'audit en langage naturel.
 
 **Le clustering est basé sur la topologie du graphe — pas d'embeddings.** Leiden trouve les communautés par densité d'arêtes. Les arêtes de similarité sémantique extraites par Claude (`semantically_similar_to`, marquées INFERRED) sont déjà dans le graphe. La structure du graphe est le signal de similarité — pas d'étape d'embedding séparée ni de base de données vectorielle nécessaire.
 
@@ -157,7 +157,7 @@ graphify envoie le contenu des fichiers à l'API du modèle de votre assistant I
 
 ## Stack technique
 
-NetworkX + Leiden (graspologic) + tree-sitter + vis.js. Extraction sémantique via Claude, GPT-4 ou le modèle de votre plateforme. Transcription vidéo via faster-whisper + yt-dlp (optionnel).
+Helix + Leiden (native Leiden) + tree-sitter + vis.js. Extraction sémantique via Claude, GPT-4 ou le modèle de votre plateforme. Transcription vidéo via faster-whisper + yt-dlp (optionnel).
 
 ## Construit sur graphify — Penpax
 

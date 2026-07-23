@@ -9,9 +9,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-import networkx as nx
-
-
 _SUPPRESSION_DECL_RE = re.compile(r"^\s*(?P<name>seen_[A-Za-z0-9_]+)\s*[:=]")
 _TYPE_TUPLE_RE = re.compile(r"set\[tuple\[(?P<inside>[^\]]+)\]\]")
 
@@ -161,8 +158,8 @@ def diagnose_extraction(
     max_examples: int = 5,
     extract_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Summarize same-endpoint edge-collapse risk for one JSON graph/extraction dict."""
-    from graphify.build import build_from_json
+    """Summarize same-endpoint edge-collapse risk for an extraction payload."""
+    from graphify.build import build_from_extraction
 
     node_ids = _node_ids(extraction)
     raw_edges = _edge_list(extraction)
@@ -170,7 +167,7 @@ def diagnose_extraction(
 
     # Code-typed semantic nodes the extractor could not verify against the source
     # it read (#1949): likely-inferred (or hallucinated) symbols surfaced from a
-    # document. Count them so the flag on graph.json nodes is actually surfaced.
+    # document. Count them so the verification flag is surfaced.
     unverified_node_count = sum(
         1 for n in extraction.get("nodes", [])
         if isinstance(n, dict) and n.get("verification") == "unverified"
@@ -234,10 +231,10 @@ def diagnose_extraction(
     post_build_node_count: int | None = None
     try:
         graph_input = deepcopy(extraction)
-        graph: nx.Graph = build_from_json(graph_input, directed=directed, root=root)
-        graph_type = type(graph).__name__
-        post_build_edge_count = graph.number_of_edges()
-        post_build_node_count = graph.number_of_nodes()
+        graph = build_from_extraction(graph_input, directed=directed, root=root)
+        graph_type = graph.kind
+        post_build_edge_count = graph.edge_count
+        post_build_node_count = graph.node_count
     except Exception as exc:
         build_error = f"{type(exc).__name__}: {exc}"
 
@@ -277,56 +274,6 @@ def diagnose_extraction(
     }
 
 
-def _read_json_file(path: str | Path) -> dict[str, Any]:
-    """Read a JSON graph after applying Graphify's graph-load size cap."""
-    from graphify.security import check_graph_file_size_cap
-
-    json_path = Path(path)
-    check_graph_file_size_cap(json_path)
-    try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        raise RuntimeError(
-            f"Cannot parse {json_path}: {exc}. "
-            "The file may be corrupted — re-run 'graphify extract'."
-        ) from exc
-    if not isinstance(data, dict):
-        raise ValueError("diagnostic input must be a JSON object")
-    return data
-
-
-def diagnose_file(
-    path: str | Path,
-    *,
-    directed: bool | None = None,
-    root: str | Path | None = None,
-    max_examples: int = 5,
-    extract_path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Diagnose a graph/extraction JSON file without mutating it.
-
-    When `directed` is None, the JSON's "directed" flag is honored. Raw
-    extraction JSON that has no "directed" flag defaults to directed analysis.
-    """
-    data = _read_json_file(path)
-    if directed is None:
-        raw_directed = data.get("directed")
-        effective_directed = raw_directed if isinstance(raw_directed, bool) else True
-    else:
-        effective_directed = directed
-
-    summary = diagnose_extraction(
-        data,
-        directed=effective_directed,
-        root=root,
-        max_examples=max_examples,
-        extract_path=extract_path,
-    )
-    summary["input_path"] = str(path)
-    summary["effective_directed"] = effective_directed
-    return summary
-
-
 def format_diagnostic_json(summary: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -339,7 +286,7 @@ def format_diagnostic_json(summary: dict[str, Any]) -> dict[str, Any]:
         "producer_suppression": summary.get("producer_suppression", {}),
         "notes": [
             "Diagnostics are read-only.",
-            "A normal graph.json is already post-build and cannot recover raw producer edges.",
+            "An active Helix generation is post-build and cannot recover raw producer edges.",
             "Producer suppression sites are heuristic source-code evidence.",
         ],
     }
@@ -350,7 +297,7 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
     lines = [
         "[graphify] MultiDiGraph edge-collapse diagnostic",
         f"input: {summary.get('input_path', '<in-memory>')}",
-        "input_stage: provided JSON (normal graph.json is post-build)",
+        "input_stage: extraction payload",
         f"effective_directed: {summary.get('effective_directed', '<direct-call>')}",
         f"nodes: {summary['node_count']}",
         f"unverified_code_nodes: {summary.get('unverified_node_count', 0)}",
@@ -400,7 +347,5 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
                 f"locations={example['source_locations']} "
                 f"contexts={example['contexts']}"
             )
-    lines.append(
-        "note: normal graph.json is post-build; raw producer loss must be measured earlier."
-    )
+    lines.append("note: raw producer loss must be measured before native ingestion.")
     return "\n".join(lines)

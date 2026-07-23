@@ -37,7 +37,7 @@ def test_log_query_writes_jsonl(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_QUERY_LOG", str(log_file))
     monkeypatch.delenv("GRAPHIFY_QUERY_LOG_DISABLE", raising=False)
 
-    log_query(kind="query", question="what is X", corpus="/some/graph.json",
+    log_query(kind="query", question="what is X", corpus="/some/graph.helix",
               result="3 nodes found\nNODE a", duration_ms=12.5, mode="bfs", depth=2)
 
     lines = log_file.read_text().splitlines()
@@ -45,7 +45,7 @@ def test_log_query_writes_jsonl(tmp_path, monkeypatch):
     rec = json.loads(lines[0])
     assert rec["kind"] == "query"
     assert rec["question"] == "what is X"
-    assert rec["corpus"] == "/some/graph.json"
+    assert rec["corpus"] == "/some/graph.helix"
     assert rec["nodes_returned"] == 3
     assert rec["result_chars"] > 0
     assert rec["duration_ms"] == pytest.approx(12.5, abs=0.01)

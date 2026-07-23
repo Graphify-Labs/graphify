@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def _csharp_namespace_id(dotted_name: str) -> str:
-    digest = hashlib.sha1(dotted_name.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha1(dotted_name.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
     return f"csharp_namespace:{digest}"
 
 REFERENCE_CONTEXTS = frozenset({
@@ -2324,7 +2324,7 @@ def _extract_generic(
                 # Module-level import handlers (Swift) name a module, not a file
                 # path, so there is no pre-existing node to anchor the edge to.
                 # They return (id, label) pairs for which we materialize a
-                # `type=module` node; otherwise build_from_json prunes every such
+                # `type=module` node; otherwise build_from_extraction prunes every such
                 # import edge as a dangling/external reference. The same module
                 # imported from N files shares one id (file_type=code keeps
                 # build.py validation happy; `type=module` exempts it from

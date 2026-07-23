@@ -563,11 +563,6 @@ def _print_banner() -> None:
     if not sys.stdout.isatty():
         return
     try:
-        if sys.platform == "win32":
-            import ctypes
-            ctypes.windll.kernel32.SetConsoleMode(
-                ctypes.windll.kernel32.GetStdHandle(-11), 7
-            )
         A = "\033[38;5;214m"
         D = "\033[38;5;130m"
         R = "\033[0m"
@@ -976,7 +971,7 @@ def _antigravity_install(project_dir: Path) -> None:
     print('  "graphify": {')
     print('    "command": "uv",')
     print(
-        '    "args": ["run", "--with", "graphifyy", "--with", "mcp", "-m", "graphify.serve", "${workspace.path}/graphify-out/graph.json"]'
+        '    "args": ["run", "--with", "graphifyy", "--with", "mcp", "-m", "graphify.serve", "${workspace.path}/graphify-out/graph.helix"]'
     )
     print("  }")
 def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
@@ -1033,7 +1028,7 @@ This applies to YOU and to every subagent you spawn. Include this rule explicitl
 
 Only use Read/Grep/Glob directly when:
 1. graphify has already oriented you and you need to modify or debug specific lines
-2. `graphify-out/graph.json` does not exist yet
+2. `graphify-out/graph.helix` does not exist yet
 
 - If `graphify-out/wiki/index.md` exists, navigate it instead of reading raw files
 - Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review when query/path/explain do not surface enough context
@@ -1071,7 +1066,7 @@ _DEVIN_RULES = """\
 This project has a graphify knowledge graph at graphify-out/.
 
 Rules:
-- For codebase or architecture questions, when `graphify-out/graph.json` exists, first run `graphify query "<question>"` (or `graphify path "<A>" "<B>"` / `graphify explain "<concept>"`). These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
+- For codebase or architecture questions, when `graphify-out/graph.helix` exists, first run `graphify query "<question>"` (or `graphify path "<A>" "<B>"` / `graphify explain "<concept>"`). These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
@@ -1105,7 +1100,7 @@ export const GraphifyPlugin = async ({ directory }) => {
   return {
     "tool.execute.before": async (input, output) => {
       if (reminded) return;
-      if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
+      if (!existsSync(join(directory, "graphify-out", "graph.helix"))) return;
 
       if (input.tool === "bash") {
         // Separate with ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a
@@ -1252,7 +1247,7 @@ def _uninstall_kilo_plugin(project_dir: Path) -> None:
             f"  {write_config_file.relative_to(project_dir)}  ->  plugin deregistered"
         )
 # OpenCode tool.execute.before plugin — fires before every tool call.
-# Injects a graph reminder into bash command output when graph.json exists.
+# Injects a graph reminder into bash command output when graph.helix exists.
 _OPENCODE_PLUGIN_JS = """\
 // graphify OpenCode plugin
 // Injects a knowledge graph reminder before bash tool calls when the graph exists.
@@ -1271,7 +1266,7 @@ export const GraphifyPlugin = async ({ directory }) => {
   return {
     "tool.execute.before": async (input, output) => {
       if (reminded) return;
-      if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
+      if (!existsSync(join(directory, "graphify-out", "graph.helix"))) return;
 
       if (input.tool === "bash") {
         // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement

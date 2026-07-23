@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from graphify.extract import extract
 
 
@@ -143,13 +143,14 @@ def test_java_implements_edge_survives_build(tmp_path: Path):
         "public class Svc implements Handler {}\n",
     )
     result = extract([iface, impl], cache_root=tmp_path)
-    G = build_from_json(result, directed=True)
+    G = build_from_extraction(result, directed=True)
     impl_edges = [
-        (u, v) for u, v, d in G.edges(data=True) if d.get("relation") == "implements"
+        (edge.source, edge.target) for edge in G.edges
+        if edge.attributes.get("relation") == "implements"
     ]
     assert impl_edges
     # The interface node has an incoming implements edge (not isolated).
-    assert any(G.in_degree(v) >= 1 for _, v in impl_edges)
+    assert any(any(edge.target == v for edge in G.edges) for _, v in impl_edges)
 
 
 def _label_edges(result: dict, relations):
@@ -283,5 +284,5 @@ def test_java_cross_file_constructor_call_resolves(tmp_path: Path):
     assert foo_id in call_targets, "new Foo(...) should produce a calls/references edge to Foo"
 
     # Survives graph construction (target is a real node).
-    g = build_from_json(result)
-    assert foo_id in set(g.nodes())
+    g = build_from_extraction(result)
+    assert foo_id in {node.id for node in g.nodes}

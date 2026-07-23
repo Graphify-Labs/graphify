@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 import unicodedata
 
-import networkx as nx
+from .helix.model import edge_attributes, node_attributes
+from .helix.persistence import load_graph as load_helix_graph
 
 
 DEFAULT_AFFECTED_RELATIONS = (
@@ -27,7 +27,7 @@ DEFAULT_AFFECTED_RELATIONS = (
 
 @dataclass(frozen=True)
 class AffectedHit:
-    node_id: str
+    node_id: Any
     depth: int
     via_relation: str
     # The traversed edge's location — the actual call/import/reference SITE in
@@ -37,8 +37,8 @@ class AffectedHit:
     via_location: "str | None" = None
 
 
-def _node_label(graph: nx.Graph, node_id: str) -> str:
-    data = graph.nodes[node_id]
+def _node_label(graph: Any, node_id: Any) -> str:
+    data = node_attributes(graph, node_id)
     return str(data.get("label") or node_id)
 
 
@@ -61,8 +61,8 @@ def _normalize_label(label: str) -> str:
 
 
 def _prefer_file_node(
-    graph: nx.Graph,
-    node_ids: list[str],
+    graph: Any,
+    node_ids: list[Any],
     query: str,
 ) -> str | None:
     """Return the file-level node when a source_file query matches many nodes."""
@@ -70,8 +70,8 @@ def _prefer_file_node(
     exact_file_nodes = [
         node_id
         for node_id in node_ids
-        if str(graph.nodes[node_id].get("source_location", "")) == "L1"
-        and _normalize_label(str(graph.nodes[node_id].get("label", ""))) == query_basename
+        if str(node_attributes(graph, node_id).get("source_location", "")) == "L1"
+        and _normalize_label(str(node_attributes(graph, node_id).get("label", ""))) == query_basename
     ]
     if len(exact_file_nodes) == 1:
         return exact_file_nodes[0]
@@ -79,7 +79,7 @@ def _prefer_file_node(
     l1_nodes = [
         node_id
         for node_id in node_ids
-        if str(graph.nodes[node_id].get("source_location", "")) == "L1"
+        if str(node_attributes(graph, node_id).get("source_location", "")) == "L1"
     ]
     if len(l1_nodes) == 1:
         return l1_nodes[0]
@@ -87,7 +87,7 @@ def _prefer_file_node(
     basename_nodes = [
         node_id
         for node_id in node_ids
-        if _normalize_label(str(graph.nodes[node_id].get("label", ""))) == query_basename
+        if _normalize_label(str(node_attributes(graph, node_id).get("label", ""))) == query_basename
     ]
     if len(basename_nodes) == 1:
         return basename_nodes[0]
@@ -95,17 +95,25 @@ def _prefer_file_node(
     return None
 
 
-def resolve_seed(graph: nx.Graph, query: str) -> str | None:
+def resolve_seed(graph: Any, query: str, *, node_query: Any) -> Any | None:
+    """Resolve a seed from a bounded native predicate projection."""
     # A trailing path separator must not change a source-file match — serve's
     # _find_node tokenizes the path (which drops it), so strip it here for parity
     # (otherwise `affected "src/x.ts/"` returned None while `explain` resolved it).
     query = query.rstrip("/\\") or query
-    if query in graph:
+    if graph.contains_node(query):
         return query
+    if node_query is None:
+        raise RuntimeError("affected analysis requires the native Helix query interface")
     query_lower = _normalize_label(query)
+    candidate_terms = [query]
+    if query_lower.endswith("()"):
+        candidate_terms.append(query[:-2])
+    candidate_ids = node_query.candidate_ids(candidate_terms)
     exact_label_matches = [
-        str(node_id)
-        for node_id, data in graph.nodes(data=True)
+        node_id
+        for node_id in candidate_ids
+        if (data := node_attributes(graph, node_id)) is not None
         if _normalize_label(str(data.get("label", ""))) == query_lower
     ]
     if len(exact_label_matches) == 1:
@@ -115,15 +123,17 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     # contains pass. Match on the undecorated name before giving up.
     query_bare = _bare_name(query_lower)
     bare_name_matches = [
-        str(node_id)
-        for node_id, data in graph.nodes(data=True)
+        node_id
+        for node_id in candidate_ids
+        if (data := node_attributes(graph, node_id)) is not None
         if _bare_name(str(data.get("label", ""))) == query_bare
     ]
     if len(bare_name_matches) == 1:
         return bare_name_matches[0]
     exact_source_matches = [
-        str(node_id)
-        for node_id, data in graph.nodes(data=True)
+        node_id
+        for node_id in candidate_ids
+        if (data := node_attributes(graph, node_id)) is not None
         if _normalize_label(str(data.get("source_file", ""))) == query_lower
     ]
     if len(exact_source_matches) == 1:
@@ -133,8 +143,9 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
         if preferred_file_node is not None:
             return preferred_file_node
     contains_matches = [
-        str(node_id)
-        for node_id, data in graph.nodes(data=True)
+        node_id
+        for node_id in candidate_ids
+        if (data := node_attributes(graph, node_id)) is not None
         if query_lower in _normalize_label(str(data.get("label", "")))
     ]
     if len(contains_matches) == 1:
@@ -143,16 +154,15 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
 
 
 def affected_nodes(
-    graph: nx.Graph,
-    seed: str,
+    graph: Any,
+    seed: Any,
     *,
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
 ) -> list[AffectedHit]:
-    relation_set = set(relations)
-    seen = {seed}
-    queue: deque[tuple[str, int]] = deque([(seed, 0)])
-    hits: list[AffectedHit] = []
+    from helixdb.graph import TraversalOptions
+
+    relation_list = tuple(dict.fromkeys(str(relation) for relation in relations))
 
     # #1669: seed the reverse walk with the root's own member nodes (one outward
     # `method`/`contains` hop). A caller can bind to a class's method node rather
@@ -161,64 +171,51 @@ def affected_nodes(
     # otherwise. The member nodes are seeds only (not reported as hits), and
     # `method`/`contains` stay out of the general relation-filtered walk, so this
     # adds no forward noise anywhere else.
-    if hasattr(graph, "out_edges"):
-        member_edges = graph.out_edges(seed, data=True)
-    else:
-        member_edges = (
-            (s, t, d) for s, t, d in graph.edges(data=True) if s == seed
-        )
-    for _s, member, data in member_edges:
+    member_seeds: list[Any] = []
+    member_edges = (graph.edge(edge_id) for edge_id in graph.out_edge_ids(seed))
+    for edge in member_edges:
+        if edge is None:
+            continue
+        member, data = edge.target, edge_attributes(edge)
         if str(data.get("relation", "")) not in ("method", "contains"):
             continue
-        member = str(member)
-        if member not in seen:
-            seen.add(member)
-            queue.append((member, 0))
+        if member != seed and member not in member_seeds:
+            member_seeds.append(member)
 
-    while queue:
-        current, current_depth = queue.popleft()
-        if current_depth >= depth:
-            continue
-        if hasattr(graph, "in_edges"):
-            incoming = graph.in_edges(current, data=True)
-        else:
-            incoming = (
-                (source, target, data)
-                for source, target, data in graph.edges(data=True)
-                if target == current
-            )
-        for source, _target, data in incoming:
-            relation = str(data.get("relation", ""))
-            if relation not in relation_set:
-                continue
-            source = str(source)
-            if source in seen:
-                continue
-            seen.add(source)
-            # Carry the matched edge's location (taken from the SAME edge dict
-            # whose relation passed the filter, so relation and location stay
-            # consistent) — that is the call/import/reference site in `source`'s
-            # own file, which is where the user should click (#BUG1).
-            hit = AffectedHit(
-                source, current_depth + 1, relation,
-                via_file=str(data.get("source_file") or "") or None,
-                via_location=str(data.get("source_location") or "") or None,
-            )
-            hits.append(hit)
-            queue.append((source, current_depth + 1))
-
-    return hits
+    seeds = (seed, *member_seeds)
+    result = graph.traverse(TraversalOptions(
+        seeds=seeds,
+        max_depth=max(0, depth),
+        direction="in",
+        allowed_labels=relation_list,
+    ))
+    seed_set = set(seeds)
+    via: dict[Any, tuple[str, str | None, str | None]] = {}
+    for traversed in result.discovery_edges:
+        edge = graph.edge(traversed.edge_id)
+        data = edge_attributes(edge) if edge is not None else {}
+        via[traversed.source] = (
+            str(data.get("relation") or traversed.label or ""),
+            str(data.get("source_file") or "") or None,
+            str(data.get("source_location") or "") or None,
+        )
+    return [
+        AffectedHit(visit.node_id, visit.depth, *via.get(visit.node_id, ("", None, None)))
+        for visit in result.visits
+        if visit.node_id not in seed_set
+    ]
 
 
 def format_affected(
-    graph: nx.Graph,
+    graph: Any,
     query: str,
     *,
+    node_query: Any,
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
 ) -> str:
     relation_list = tuple(relations)
-    seed = resolve_seed(graph, query)
+    seed = resolve_seed(graph, query, node_query=node_query)
     if seed is None:
         return f"No unique node match for {query}"
 
@@ -233,7 +230,7 @@ def format_affected(
         return "\n".join(lines)
 
     for hit in hits:
-        data = graph.nodes[hit.node_id]
+        data = node_attributes(graph, hit.node_id)
         if hit.via_location:
             # The relation SITE in this node's file (call/import/reference line),
             # labeled by [via_relation] so it's never mistaken for a def line.
@@ -246,27 +243,12 @@ def format_affected(
     return "\n".join(lines)
 
 
-def load_graph(path: Path) -> nx.Graph:
-    import json
-    from networkx.readwrite import json_graph
-
+def load_graph(path: Path):
+    """Open the active immutable graph from a Helix store directory."""
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        return load_helix_graph(path).graph
+    except (OSError, RuntimeError, ValueError) as exc:
         raise RuntimeError(
-            f"Cannot read graph file {path}: {exc}. "
+            f"Cannot open Helix store {path}: {exc}. "
             "Re-run 'graphify extract' to regenerate it."
         ) from exc
-    # Force directed so stored caller→callee direction survives the round-trip;
-    # mirrors serve.py and __main__.py (#1174).
-    raw = {**raw, "directed": True}
-    # Normalize the edge key: graphify's `extract` output uses "edges" while
-    # networkx's node_link_data default is "links". Without this, an edges-keyed
-    # graph.json raises an uncaught KeyError: 'links' here — every other loader
-    # (__main__.py) already normalizes this (#738; same class as #1198).
-    if "links" not in raw and "edges" in raw:
-        raw = dict(raw, links=raw["edges"])
-    try:
-        return json_graph.node_link_graph(raw, edges="links")
-    except TypeError:
-        return json_graph.node_link_graph(raw)

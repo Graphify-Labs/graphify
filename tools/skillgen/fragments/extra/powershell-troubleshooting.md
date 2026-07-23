@@ -1,12 +1,11 @@
 ## Troubleshooting
 
+### Windows support
+
+Use CPython 3.10 or 3.12 on native Windows x86_64 and install Graphify normally with pip or uv. The exact public `helix-db-embedded` version must provide a `win_amd64` wheel; do not substitute WSL, a source build, a downloaded DLL, or a compatibility graph library.
+
 ### PowerShell 5.1: Vertical scrolling stops working
 
-If vertical scrolling breaks in PowerShell after running graphify, this is caused by ANSI escape sequences from the `graspologic` library. Graphify v0.3.10+ suppresses this output, but if you still see the issue:
-
-1. **Upgrade graphify**: `pip install --upgrade graphifyy`
-2. **Use Windows Terminal** instead of the legacy PowerShell console — Windows Terminal handles ANSI codes correctly
-3. **Reset your terminal**: close and reopen PowerShell
-4. **Skip graspologic**: uninstall it (`pip uninstall graspologic`) and graphify will fall back to NetworkX's built-in Louvain algorithm, which produces no ANSI output
+Use Windows Terminal or PowerShell 7 when possible. Graphify does not patch terminal modes or load a helper DLL.
 
 ---

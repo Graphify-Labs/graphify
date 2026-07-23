@@ -294,11 +294,15 @@ def out_path(*parts: str) -> Path:
     return Path(GRAPHIFY_OUT, *parts)
 
 
-def default_graph_json() -> str:
-    """Default ``graph.json`` path under the configured output dir.
+def default_graph_store() -> str:
+    """Default embedded Helix store under the configured output directory."""
+    return str(out_path("graph.helix"))
 
-    The package-wide fallback used by serve/build/benchmark/prs and the CLI read
-    commands so a ``GRAPHIFY_OUT`` override is honoured everywhere, not just where
-    the path is passed explicitly (#1423).
-    """
-    return str(out_path("graph.json"))
+
+def project_graph_store(
+    root: str | Path = Path("."), output_dir: str | Path | None = None
+) -> Path:
+    """Resolve a project's native store for hooks and other project workflows."""
+    output = Path(GRAPHIFY_OUT if output_dir is None else output_dir)
+    base = output if output.is_absolute() else Path(root) / output
+    return base / "graph.helix"

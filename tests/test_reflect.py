@@ -28,6 +28,10 @@ from graphify.reflect import (
     reflect,
     render_lessons_md,
 )
+from graphify.helix.model import graphify_attributes
+from graphify.helix.persistence import HelixEmbeddedStore, load_graph
+from graphify.helix.state import community_records, new_state
+from tests.native_helpers import make_loaded
 
 PYTHON = sys.executable
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -520,13 +524,13 @@ def test_cli_reflect_respects_out_flag(tmp_path):
 
 
 def test_cli_reflect_groups_by_community_when_graph_present(tmp_path):
-    """With a real graph.json present, reflect auto-detects it and groups lessons
+    """With a real graph.helix present, reflect auto-detects it and groups lessons
     under the community of the cited node — including when the node is cited by its
     LABEL (what save-result records), not its id (regression guard: keying community
     lookup on ids alone collapsed every lesson into Uncategorized)."""
     out = _make_graph(tmp_path)
-    graph = json.loads((out / "graph.json").read_text())
-    node_label = graph["nodes"][0]["label"]
+    loaded = load_graph(out / "graph.helix")
+    node_label = graphify_attributes(loaded.graph.nodes()[0].attributes)["label"]
 
     _run(["save-result", "--question", "q", "--answer", "a",
           "--nodes", node_label, "--outcome", "useful"], tmp_path)
@@ -539,14 +543,15 @@ def test_cli_reflect_groups_by_community_when_graph_present(tmp_path):
 
 
 def test_cli_node_existence_gate_drops_stale_node_end_to_end(tmp_path):
-    """Through reflect()/CLI with a real graph.json: a cited node that isn't in the
+    """Through reflect()/CLI with a real graph.helix: a cited node that isn't in the
     graph is dropped from LESSONS.md; a real one stays. Exercises _load_known_nodes
     + the wiring, not just the known_nodes param."""
     out = _make_graph(tmp_path)
     # Cite the node by its LABEL — what an agent/`save-result` actually records —
     # not its id. The gate must match labels too, else every real citation is
     # silently dropped whenever a graph is present (regression guard).
-    real = json.loads((out / "graph.json").read_text())["nodes"][0]["label"]
+    loaded = load_graph(out / "graph.helix")
+    real = graphify_attributes(loaded.graph.nodes()[0].attributes)["label"]
 
     _run(["save-result", "--question", "q", "--answer", "a",
           "--nodes", real, "GhostNode", "--outcome", "useful"], tmp_path)
@@ -558,32 +563,27 @@ def test_cli_node_existence_gate_drops_stale_node_end_to_end(tmp_path):
 
 
 def _make_graph(tmp_path: Path) -> Path:
-    """Build a minimal graph.json + analysis/labels in tmp_path/graphify-out/.
+    """Build a minimal native graph and community state in graphify-out/.
 
     Mirrors tests/test_cli_export.py::_make_graph so reflect can be exercised with a
     real community structure.
     """
     out = tmp_path / "graphify-out"
-    out.mkdir()
-    extraction = json.loads((FIXTURES / "extraction.json").read_text())
-    from graphify.build import build_from_json
-    from graphify.cluster import cluster, score_all
-    from graphify.analyze import god_nodes, surprising_connections
-    from graphify.export import to_json
-
-    G = build_from_json(extraction)
-    communities = cluster(G)
-    cohesion = score_all(G, communities)
-    gods = god_nodes(G)
-    surprises = surprising_connections(G, communities)
-    to_json(G, communities, str(out / "graph.json"))
-    (out / ".graphify_analysis.json").write_text(json.dumps({
-        "communities": {str(k): v for k, v in communities.items()},
-        "cohesion": {str(k): v for k, v in cohesion.items()},
-        "gods": gods, "surprises": surprises,
-    }))
-    (out / ".graphify_labels.json").write_text(
-        json.dumps({str(cid): f"Community {cid}" for cid in communities})
+    state = new_state(
+        communities=community_records(
+            {0: ["auth", "token"]}, labels={0: "Authentication"}
+        ),
+        analysis={"cohesion": {"0": 1.0}, "gods": [], "surprises": []},
+    )
+    make_loaded(
+        out,
+        nodes=[
+            {"id": "auth", "label": "authenticate()", "source_file": "auth.py"},
+            {"id": "token", "label": "Token", "source_file": "token.py"},
+        ],
+        edges=[{"source": "auth", "target": "token", "relation": "calls"}],
+        kind="digraph",
+        state=state,
     )
     return out
 
@@ -621,34 +621,36 @@ def test_lessons_fresh_false_when_graph_newer(tmp_path):
     mem = tmp_path / "memory"; mem.mkdir()
     (mem / "q.md").write_text("x", encoding="utf-8")
     out = tmp_path / "LESSONS.md"; out.write_text("y", encoding="utf-8")
-    graph = tmp_path / "graph.json"; graph.write_text("{}", encoding="utf-8")
+    graph = tmp_path / "graph.helix"; graph.mkdir()
     os.utime(mem / "q.md", (1000, 1000))
     os.utime(out, (1500, 1500))
     os.utime(graph, (2000, 2000))  # graph rebuilt since last reflect -> stale
     assert lessons_fresh(out, mem, graph) is False
 
 
-@pytest.mark.parametrize("sidecar_name", [".graphify_analysis.json", ".graphify_labels.json"])
-def test_lessons_fresh_false_when_graph_sidecar_newer(tmp_path, sidecar_name):
+@pytest.mark.parametrize("state_category", ["analysis", "communities"])
+def test_lessons_fresh_false_when_graph_sidecar_newer(tmp_path, state_category):
     import os
     mem = tmp_path / "memory"; mem.mkdir()
     (mem / "q.md").write_text("x", encoding="utf-8")
     out = tmp_path / "LESSONS.md"; out.write_text("y", encoding="utf-8")
-    graph = tmp_path / "graph.json"; graph.write_text("{}", encoding="utf-8")
-    analysis = tmp_path / ".graphify_analysis.json"; analysis.write_text("{}", encoding="utf-8")
-    labels = tmp_path / ".graphify_labels.json"; labels.write_text("{}", encoding="utf-8")
-    for p in [mem / "q.md", graph, analysis, labels]:
+    graph = tmp_path / "graph.helix"; graph.mkdir()
+    for p in [mem / "q.md", graph]:
         os.utime(p, (1000, 1000))
     os.utime(out, (1500, 1500))
-    os.utime(tmp_path / sidecar_name, (2000, 2000))
-    assert lessons_fresh(out, mem, graph, analysis, labels) is False
+    # Analysis and labels now share the native generation. Updating either
+    # category advances the store input as a whole.
+    assert state_category in {"analysis", "communities"}
+    os.utime(graph, (2000, 2000))
+    assert lessons_fresh(out, mem, graph) is False
 
 
 def test_cli_reflect_if_stale_skips_when_fresh(tmp_path):
     """`reflect --if-stale` skips the rebuild when LESSONS.md is already current,
     and still runs when a new outcome arrives."""
     out = _make_graph(tmp_path)
-    real = json.loads((out / "graph.json").read_text())["nodes"][0]["label"]
+    loaded = load_graph(out / "graph.helix")
+    real = graphify_attributes(loaded.graph.nodes()[0].attributes)["label"]
     _run(["save-result", "--question", "q", "--answer", "a",
           "--nodes", real, "--outcome", "useful"], tmp_path)
     first = _run(["reflect"], tmp_path)
@@ -673,24 +675,24 @@ def test_cli_reflect_if_stale_skips_when_fresh(tmp_path):
 def test_cli_reflect_if_stale_reruns_when_labels_newer(tmp_path):
     """A label refresh changes LESSONS.md topic headings, so --if-stale must rebuild."""
     out = _make_graph(tmp_path)
-    graph_data = json.loads((out / "graph.json").read_text())
-    node = graph_data["nodes"][0]
-    real = node["label"]
-    community = str(node["community"])
+    store_path = out / "graph.helix"
+    loaded = load_graph(store_path)
+    real = graphify_attributes(loaded.graph.nodes()[0].attributes)["label"]
     _run(["save-result", "--question", "q", "--answer", "a",
           "--nodes", real, "--outcome", "useful"], tmp_path)
     first = _run(["reflect"], tmp_path)
     assert first.returncode == 0, first.stderr
 
     lessons = out / "reflections" / "LESSONS.md"
-    labels_path = out / ".graphify_labels.json"
-    labels = json.loads(labels_path.read_text(encoding="utf-8"))
-    labels[community] = "Renamed Topic"
-    labels_path.write_text(json.dumps(labels), encoding="utf-8")
+    with HelixEmbeddedStore(store_path) as store:
+        previous = store.read_state()
+        state = json.loads(json.dumps(previous))
+        state["communities"][0]["name"] = "Renamed Topic"
+        store.replace_state(state, previous_state=previous)
 
     import os
     os.utime(lessons, (1500, 1500))
-    os.utime(labels_path, (2000, 2000))
+    os.utime(store_path, (2000, 2000))
     ran = _run(["reflect", "--if-stale"], tmp_path)
     assert ran.returncode == 0, ran.stderr
     assert "up to date" not in (ran.stdout + ran.stderr).lower()
@@ -712,27 +714,37 @@ def test_dead_ends_and_corrections_dedupe_by_question():
     assert agg["corrections"][0]["correction"] == "SHA-256"  # recency wins
 
 
-# --- work-memory overlay sidecar (.graphify_learning.json) --------------------
+# --- work-memory overlay in native durable state ------------------------------
 #
-# The sidecar is a DERIVED experiential layer written next to graph.json; the
-# durable structural truth in graph.json is never stamped with learning_* fields.
+# The learning category is DERIVED experiential state stored in the same atomic
+# Helix generation; native topology is never stamped with learning_* fields.
 # It projects the reflect aggregate (preferred/tentative/contested) into a
 # per-node-id map with a code fingerprint for staleness and a provenance trail.
 
 from graphify.reflect import (  # noqa: E402
-    LEARNING_SIDECAR_NAME,
     build_learning_overlay,
     load_learning_overlay,
-    write_learning_sidecar,
+    write_learning_state,
 )
 
 
-def _overlay_graph(out: Path, nodes: list[dict]) -> None:
-    """Write a minimal graph.json under ``out`` with the given node dicts."""
-    out.mkdir(parents=True, exist_ok=True)
-    graph = {"directed": True, "multigraph": False, "graph": {},
-             "nodes": nodes, "links": []}
-    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+def _overlay_graph(out: Path, nodes: list[dict]) -> Path:
+    """Write a minimal real embedded Helix store under ``out``."""
+    members = [node["id"] for node in nodes]
+    loaded = make_loaded(
+        out,
+        nodes=nodes,
+        kind="digraph",
+        state=new_state(
+            communities=community_records({0: members}, labels={0: "Topic"})
+        ),
+    )
+    return loaded.store_path
+
+
+def _learning_state(store_path: Path) -> dict:
+    """Return a detached copy of the active native learning category."""
+    return json.loads(json.dumps(load_graph(store_path).state.get("learning", {})))
 
 
 def _overlay_corpus(mem: Path) -> None:
@@ -753,9 +765,7 @@ def _overlay_corpus(mem: Path) -> None:
 
 
 def test_sidecar_write_classifies_and_keys_by_canonical_id(tmp_path):
-    """reflect with a graph writes .graphify_learning.json next to graph.json with
-    the preferred/tentative/contested nodes keyed by canonical node id; the
-    dead-end-only node is NOT present; score/uses/provenance are carried."""
+    """Reflect persists learning in Helix, keyed by canonical node id."""
     out = tmp_path / "graphify-out"
     src = tmp_path / "auth.py"
     src.write_text("def login(): pass\n", encoding="utf-8")
@@ -769,8 +779,8 @@ def test_sidecar_write_classifies_and_keys_by_canonical_id(tmp_path):
     _overlay_corpus(mem)
 
     reflect(mem, out / "reflections" / "LESSONS.md",
-            graph_path=out / "graph.json", now=_NOW)
-    sidecar = json.loads((out / LEARNING_SIDECAR_NAME).read_text(encoding="utf-8"))
+            graph_path=out / "graph.helix", now=_NOW)
+    sidecar = _learning_state(out / "graph.helix")
 
     assert sidecar["version"] == 1
     assert sidecar["generated_at"] == _NOW.isoformat()
@@ -786,10 +796,10 @@ def test_sidecar_write_classifies_and_keys_by_canonical_id(tmp_path):
     assert nodes["contested_node"]["verdict"] in ("useful", "dead end", "even")
     # Dead-end-only node stays query-scoped — never in the overlay.
     assert "deadend_node" not in nodes
-    # And learning_* is NOT stamped into graph.json (durable truth untouched).
-    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
-    for n in graph["nodes"]:
-        assert not any(k.startswith("learning") for k in n)
+    # Learning is generation state, not topology attributes.
+    for node in load_graph(out / "graph.helix").graph.nodes():
+        attrs = graphify_attributes(node.attributes)
+        assert not any(key.startswith("learning") for key in attrs)
 
 
 def test_sidecar_is_byte_identical_across_runs(tmp_path):
@@ -806,11 +816,11 @@ def test_sidecar_is_byte_identical_across_runs(tmp_path):
     _write_raw_doc(mem, "b.md", "2026-05-10", outcome="useful", nodes=["login()"])
 
     reflect(mem, out / "reflections" / "LESSONS.md",
-            graph_path=out / "graph.json", now=_NOW)
-    first = (out / LEARNING_SIDECAR_NAME).read_bytes()
+            graph_path=out / "graph.helix", now=_NOW)
+    first = json.dumps(_learning_state(out / "graph.helix"), sort_keys=True).encode()
     reflect(mem, out / "reflections" / "LESSONS.md",
-            graph_path=out / "graph.json", now=_NOW)
-    second = (out / LEARNING_SIDECAR_NAME).read_bytes()
+            graph_path=out / "graph.helix", now=_NOW)
+    second = json.dumps(_learning_state(out / "graph.helix"), sort_keys=True).encode()
     assert first == second
 
 
@@ -827,23 +837,23 @@ def test_loader_marks_entry_stale_when_source_file_changes(tmp_path):
     _write_raw_doc(mem, "a.md", "2026-05-01", outcome="useful", nodes=["login()"])
     _write_raw_doc(mem, "b.md", "2026-05-10", outcome="useful", nodes=["login()"])
     reflect(mem, out / "reflections" / "LESSONS.md",
-            graph_path=out / "graph.json", now=_NOW)
+            graph_path=out / "graph.helix", now=_NOW)
 
-    fresh = load_learning_overlay(out / "graph.json")
+    fresh = load_learning_overlay(out / "graph.helix")
     assert fresh["auth_login"]["stale"] is False
 
     src.write_text("def login(): return 1  # changed\n", encoding="utf-8")
-    after = load_learning_overlay(out / "graph.json")
+    after = load_learning_overlay(out / "graph.helix")
     assert after["auth_login"]["stale"] is True
 
 
 def test_relative_source_file_not_spuriously_stale_in_graphify_out_layout(tmp_path):
-    """Regression: with a RELATIVE source_file and graph.json under graphify-out/,
+    """Regression: with a relative source_file and graph.helix under graphify-out/,
     a freshly-written verdict must NOT be flagged stale. The fingerprint resolves
-    the file relative to the PROJECT root (tmp_path), not graph.json's own dir
+    the file relative to the project root, not graph.helix's own directory
     (graphify-out/) — otherwise every node looked unfindable and was marked stale.
     The edit case must still flip stale=True."""
-    out = tmp_path / "graphify-out"          # graph.json lives here
+    out = tmp_path / "graphify-out"
     (tmp_path / "auth.py").write_text("def login(): pass\n", encoding="utf-8")
     _overlay_graph(out, [
         # source_file is RELATIVE to the project root (tmp_path), as `extract` writes it
@@ -853,20 +863,20 @@ def test_relative_source_file_not_spuriously_stale_in_graphify_out_layout(tmp_pa
     _write_raw_doc(mem, "a.md", "2026-05-01", outcome="useful", nodes=["login()"])
     _write_raw_doc(mem, "b.md", "2026-05-10", outcome="useful", nodes=["login()"])
     reflect(mem, out / "reflections" / "LESSONS.md",
-            graph_path=out / "graph.json", now=_NOW)
+            graph_path=out / "graph.helix", now=_NOW)
 
-    fresh = load_learning_overlay(out / "graph.json")
+    fresh = load_learning_overlay(out / "graph.helix")
     assert fresh["auth_login"]["status"] == "preferred"
     assert fresh["auth_login"]["stale"] is False  # the bug: was spuriously True
 
     (tmp_path / "auth.py").write_text("def login(): return 1  # changed\n", encoding="utf-8")
-    assert load_learning_overlay(out / "graph.json")["auth_login"]["stale"] is True
+    assert load_learning_overlay(out / "graph.helix")["auth_login"]["stale"] is True
 
 
 def test_relative_source_file_resolved_via_graphify_root_marker(tmp_path):
     """When a committed .graphify_root marker records the project root (e.g. a
     GRAPHIFY_OUT override pointing the output dir elsewhere), the fingerprint
-    resolves source_file against that root, not graph.json's own dir."""
+    resolves source_file against that root, not graph.helix's own dir."""
     proj = tmp_path / "project"
     proj.mkdir()
     (proj / "auth.py").write_text("def login(): pass\n", encoding="utf-8")
@@ -879,12 +889,12 @@ def test_relative_source_file_resolved_via_graphify_root_marker(tmp_path):
     _write_raw_doc(mem, "a.md", "2026-05-01", outcome="useful", nodes=["login()"])
     _write_raw_doc(mem, "b.md", "2026-05-10", outcome="useful", nodes=["login()"])
     reflect(mem, out / "reflections" / "LESSONS.md",
-            graph_path=out / "graph.json", now=_NOW)
-    assert load_learning_overlay(out / "graph.json")["auth_login"]["stale"] is False
+            graph_path=out / "graph.helix", now=_NOW)
+    assert load_learning_overlay(out / "graph.helix")["auth_login"]["stale"] is False
 
 
 def test_flat_layout_does_not_match_same_named_file_one_dir_up(tmp_path):
-    """In a flat layout (graph.json at the project root), the resolver must use the
+    """In a flat layout (graph.helix at the project root), use the store directory,
     graph's own dir, not its parent — otherwise a same-named file one level up
     would be fingerprinted instead, producing a wrong staleness verdict."""
     proj = tmp_path / "proj"
@@ -892,25 +902,24 @@ def test_flat_layout_does_not_match_same_named_file_one_dir_up(tmp_path):
     (proj / "util.py").write_text("REAL = 1\n", encoding="utf-8")
     # A decoy same-named file in the parent dir (tmp_path / util.py).
     (tmp_path / "util.py").write_text("DECOY = 2\n", encoding="utf-8")
-    # Flat layout: graph.json sits directly in proj/ (not a graphify-out subdir).
-    proj.joinpath("graph.json").write_text(json.dumps({
-        "nodes": [{"id": "util", "label": "util.py", "source_file": "util.py",
-                   "source_location": "L1", "community": 0}],
-        "links": [],
-    }), encoding="utf-8")
+    # Flat layout: graph.helix sits directly in proj/ (not graphify-out/).
+    _overlay_graph(proj, [
+        {"id": "util", "label": "util.py", "source_file": "util.py",
+         "source_location": "L1"},
+    ])
     mem = proj / "memory"
     _write_raw_doc(mem, "a.md", "2026-05-01", outcome="useful", nodes=["util.py"])
     _write_raw_doc(mem, "b.md", "2026-05-10", outcome="useful", nodes=["util.py"])
     reflect(mem, proj / "reflections" / "LESSONS.md",
-            graph_path=proj / "graph.json", now=_NOW)
+            graph_path=proj / "graph.helix", now=_NOW)
     # Not stale on a clean build...
-    assert load_learning_overlay(proj / "graph.json")["util"]["stale"] is False
+    assert load_learning_overlay(proj / "graph.helix")["util"]["stale"] is False
     # ...and editing the REAL file (proj/util.py) flips it, while editing the
     # decoy (parent) does not — proving the resolver bound to the right file.
     (tmp_path / "util.py").write_text("DECOY = 999\n", encoding="utf-8")
-    assert load_learning_overlay(proj / "graph.json")["util"]["stale"] is False
+    assert load_learning_overlay(proj / "graph.helix")["util"]["stale"] is False
     (proj / "util.py").write_text("REAL = 999\n", encoding="utf-8")
-    assert load_learning_overlay(proj / "graph.json")["util"]["stale"] is True
+    assert load_learning_overlay(proj / "graph.helix")["util"]["stale"] is True
 
 
 def test_provenance_capped_to_five_most_recent(tmp_path):
@@ -927,8 +936,8 @@ def test_provenance_capped_to_five_most_recent(tmp_path):
         _write_raw_doc(mem, f"u{i}.md", f"2026-05-{10 + i:02d}",
                        outcome="useful", question=f"q{i}", nodes=["login()"])
     reflect(mem, out / "reflections" / "LESSONS.md",
-            graph_path=out / "graph.json", now=_NOW)
-    sidecar = json.loads((out / LEARNING_SIDECAR_NAME).read_text(encoding="utf-8"))
+            graph_path=out / "graph.helix", now=_NOW)
+    sidecar = _learning_state(out / "graph.helix")
     prov = sidecar["nodes"]["auth_login"]["provenance"]
     assert len(prov) == 5
     # Most-recent first.
@@ -951,8 +960,76 @@ def test_ambiguous_or_unresolved_citation_is_skipped(tmp_path):
     _write_raw_doc(mem, "c.md", "2026-05-03", outcome="useful", nodes=["Solo"])
     _write_raw_doc(mem, "d.md", "2026-05-04", outcome="useful", nodes=["Solo"])
     reflect(mem, out / "reflections" / "LESSONS.md",
-            graph_path=out / "graph.json", now=_NOW)
-    nodes = json.loads((out / LEARNING_SIDECAR_NAME).read_text(encoding="utf-8"))["nodes"]
+            graph_path=out / "graph.helix", now=_NOW)
+    nodes = _learning_state(out / "graph.helix")["nodes"]
     # Ambiguous "Dup" skipped; only the unambiguous "Solo" survives.
     assert "dup_a" not in nodes and "dup_b" not in nodes
     assert "solo" in nodes
+
+from datetime import datetime, timezone
+
+from graphify.ingest import save_query_result
+from graphify.reflect import (
+    aggregate_lessons,
+    load_learning_overlay,
+    load_memory_docs,
+    parse_memory_doc,
+    reflect,
+    render_lessons_md,
+)
+from graphify.helix.state import community_records, new_state
+from graphify.helix.persistence import load_graph
+from tests.native_helpers import make_loaded
+
+
+NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+
+def test_saved_memory_round_trips_frontmatter(tmp_path):
+    path = save_query_result(
+        'what is "attention"?', "softmax", tmp_path,
+        source_nodes=["AttentionLayer"], outcome="useful",
+    )
+    parsed = parse_memory_doc(path.read_text())
+    assert parsed["question"] == 'what is "attention"?'
+    assert parsed["source_nodes"] == ["AttentionLayer"]
+    assert parsed["outcome"] == "useful"
+    assert len(load_memory_docs(tmp_path)) == 1
+
+
+def test_aggregation_and_render_are_deterministic():
+    docs = [
+        {"question": "q1", "date": "2026-05-31T00:00:00+00:00", "outcome": "useful", "source_nodes": ["Auth"]},
+        {"question": "q2", "date": "2026-05-31T01:00:00+00:00", "outcome": "useful", "source_nodes": ["Auth"]},
+        {"question": "bad", "date": "2026-05-31T02:00:00+00:00", "outcome": "dead_end", "source_nodes": ["Old"]},
+    ]
+    aggregate = aggregate_lessons(docs, None, now=NOW, min_corroboration=2)
+    assert aggregate["preferred"][0]["node"] == "Auth"
+    assert aggregate["dead_ends"][0]["question"] == "bad"
+    assert render_lessons_md(aggregate) == render_lessons_md(aggregate)
+
+
+def test_reflect_persists_learning_inside_atomic_generation(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    for index in (1, 2):
+        (memory / f"q{index}.md").write_text(
+            "---\n"
+            f'type: "query"\ndate: "2026-05-{29 + index:02d}T00:00:00+00:00"\n'
+            f'question: "q{index}"\noutcome: "useful"\nsource_nodes: ["Auth"]\n---\n'
+        )
+    state = new_state(communities=community_records({0: ["auth"]}, labels={0: "Security"}))
+    loaded = make_loaded(
+        tmp_path / "native",
+        nodes=[{"id": "auth", "label": "Auth", "source_file": "auth.py"}],
+        state=state,
+    )
+    output, aggregate = reflect(
+        memory, tmp_path / "LESSONS.md", graph_path=loaded.store_path,
+        now=NOW, min_corroboration=2,
+    )
+    assert output.is_file() and aggregate["preferred"]
+    overlay = load_learning_overlay(loaded.store_path)
+    assert overlay["auth"]["status"] == "preferred"
+    assert "Security" in output.read_text()
+    assert load_graph(loaded.store_path).generation == loaded.generation

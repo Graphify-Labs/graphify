@@ -27,13 +27,13 @@
 graphify-out/
 ├── graph.html       互動式圖譜 — 在任何瀏覽器中開啟
 ├── GRAPH_REPORT.md  神級節點、令人驚訝的連接、建議問題
-├── graph.json       持久圖譜 — 幾週後仍可查詢
+├── graph.helix       持久圖譜 — 幾週後仍可查詢
 └── cache/           SHA256 快取 — 重複執行只處理已變更的檔案
 ```
 
 ## 運作原理
 
-graphify 分三個階段工作。首先，確定性 AST 遍歷在不使用 LLM 的情況下從程式碼檔案中提取結構。然後使用 faster-whisper 在本地轉錄視訊和音訊檔案。最後，Claude 子代理並行處理文件、論文、圖片和轉錄文字。結果被合併到 NetworkX 圖譜中，使用 Leiden 進行聚類，並匯出為互動式 HTML、可查詢 JSON 和審計報告。
+graphify 分三個階段工作。首先，確定性 AST 遍歷在不使用 LLM 的情況下從程式碼檔案中提取結構。然後使用 faster-whisper 在本地轉錄視訊和音訊檔案。最後，Claude 子代理並行處理文件、論文、圖片和轉錄文字。結果被合併到 Helix 圖譜中，使用 Leiden 進行聚類，並匯出為互動式 HTML、可查詢 JSON 和審計報告。
 
 每個關係都標記為 `EXTRACTED`、`INFERRED`（帶有置信度分數）或 `AMBIGUOUS`。
 

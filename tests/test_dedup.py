@@ -134,7 +134,7 @@ def test_build_calls_dedup():
         "edges": [],
     }
     G = build([chunk1, chunk2])
-    assert G.number_of_nodes() == 1
+    assert G.node_count == 1
 
 
 def test_build_dedup_preserves_semantic_attributes():
@@ -153,7 +153,12 @@ def test_build_dedup_preserves_semantic_attributes():
         "edges": [],
     }
 
-    node = dict(build([ast, semantic], directed=True, dedup=True).nodes["src_auth_login"])
+    built = build([ast, semantic], directed=True, dedup=True)
+    node = dict(next(
+        record.attributes
+        for record in built.nodes
+        if record.id == "src_auth_login"
+    ))
 
     assert node["label"] == "login"
     assert node["source_location"] == "L42"
@@ -207,7 +212,6 @@ def test_prefix_extension_symbols_not_merged():
     """Distinct symbols whose name is a strict prefix-extension of another must not
     be merged (#1201). getActiveSession / getActiveSessions score ~98.82 JW but are
     different functions; parseConfig / parseConfigFile likewise."""
-    import networkx as nx
     from graphify.dedup import deduplicate_entities
 
     pairs = [

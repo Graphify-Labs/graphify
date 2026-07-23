@@ -10,17 +10,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from graphify.security import (
-    check_graph_file_size_cap,
     sanitize_label,
     sanitize_metadata,
     safe_fetch,
     safe_fetch_text,
-    validate_graph_path,
+    validate_store_path,
     validate_url,
     _MAX_FETCH_BYTES,
-    _MAX_GRAPH_FILE_BYTES,
     _MAX_TEXT_BYTES,
-    _max_graph_file_bytes,
     _METADATA_MAX_LIST_ITEMS,
     _METADATA_MAX_VALUE_LEN,
     _sanitize_metadata_string,
@@ -149,37 +146,41 @@ def test_safe_fetch_text_replaces_bad_bytes():
 def test_validate_graph_path_allows_inside_base(tmp_path):
     base = tmp_path / "graphify-out"
     base.mkdir()
-    graph = base / "graph.json"
-    graph.write_text("{}")
-    result = validate_graph_path(str(graph), base=base)
-    assert result == graph.resolve()
+    store = base / "graph.helix"
+    store.mkdir()
+    result = validate_store_path(str(store))
+    assert result == store.resolve()
 
 def test_validate_graph_path_blocks_traversal(tmp_path):
     base = tmp_path / "graphify-out"
     base.mkdir()
-    evil = tmp_path / "graphify-out" / ".." / "etc_passwd"
-    with pytest.raises(ValueError, match="escapes"):
-        validate_graph_path(str(evil), base=base)
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text("{}", encoding="utf-8")
+    # Native stores may live outside graphify-out, but traversal must not turn a
+    # legacy JSON path into an accepted store path after resolution.
+    traversing_legacy = base / ".." / legacy.name
+    with pytest.raises(ValueError, match="obsolete"):
+        validate_store_path(str(traversing_legacy))
 
 def test_validate_graph_path_requires_base_exists(tmp_path):
     base = tmp_path / "graphify-out"  # not created
-    with pytest.raises(ValueError, match="does not exist"):
-        validate_graph_path(str(base / "graph.json"), base=base)
+    with pytest.raises(FileNotFoundError, match="Helix store not found"):
+        validate_store_path(str(base / "graph.helix"))
 
 def test_validate_graph_path_raises_if_file_missing(tmp_path):
     base = tmp_path / "graphify-out"
     base.mkdir()
     with pytest.raises(FileNotFoundError):
-        validate_graph_path(str(base / "missing.json"), base=base)
+        validate_store_path(str(base / "missing.helix"))
 
 def test_validate_graph_path_default_base_discovers_output_dir(tmp_path):
     """With base omitted, the output dir is discovered by walking the path's
     parents for the configured output-dir name (default 'graphify-out')."""
     base = tmp_path / "graphify-out"
     base.mkdir()
-    graph = base / "graph.json"
-    graph.write_text("{}")
-    assert validate_graph_path(str(graph)) == graph.resolve()
+    store = base / "graph.helix"
+    store.mkdir()
+    assert validate_store_path(str(store)) == store.resolve()
 
 def test_validate_graph_path_default_base_honours_graphify_out_override(tmp_path, monkeypatch):
     """The base=None discovery must honour GRAPHIFY_OUT, not the hardcoded
@@ -189,10 +190,10 @@ def test_validate_graph_path_default_base_honours_graphify_out_override(tmp_path
     monkeypatch.setattr("graphify.security.GRAPHIFY_OUT", "custom-out")
     out = tmp_path / "custom-out"
     out.mkdir()
-    graph = out / "graph.json"
-    graph.write_text("{}")
+    graph = out / "graph.helix"
+    graph.mkdir()
     # No base passed → must discover custom-out by name rather than graphify-out.
-    assert validate_graph_path(str(graph)) == graph.resolve()
+    assert validate_store_path(str(graph)) == graph.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -224,122 +225,6 @@ def test_sanitize_label_none_returns_empty():
     # nodes, or JSON `null`) must not raise — .get() returns None, not the
     # default, when the key is present-but-null.
     assert sanitize_label(None) == ""
-
-
-# ---------------------------------------------------------------------------
-# check_graph_file_size_cap (#F4 — graph-load memory bomb protection)
-# ---------------------------------------------------------------------------
-
-def test_graph_size_cap_default_is_512_mib():
-    assert _MAX_GRAPH_FILE_BYTES == 512 * 1024 * 1024
-
-
-# ---------------------------------------------------------------------------
-# _max_graph_file_bytes — GRAPHIFY_MAX_GRAPH_BYTES env-var parsing
-# ---------------------------------------------------------------------------
-
-def test_max_graph_bytes_default_when_unset(monkeypatch):
-    monkeypatch.delenv("GRAPHIFY_MAX_GRAPH_BYTES", raising=False)
-    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
-
-
-def test_max_graph_bytes_default_when_blank(monkeypatch):
-    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "   ")
-    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
-
-
-def test_max_graph_bytes_plain_integer(monkeypatch):
-    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "671088640")
-    assert _max_graph_file_bytes() == 671088640
-
-
-def test_max_graph_bytes_mb_suffix_is_binary(monkeypatch):
-    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "640MB")
-    assert _max_graph_file_bytes() == 640 * 1024 * 1024
-
-
-def test_max_graph_bytes_gb_suffix_is_binary(monkeypatch):
-    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "2GB")
-    assert _max_graph_file_bytes() == 2 * 1024 * 1024 * 1024
-
-
-def test_max_graph_bytes_suffix_is_case_insensitive(monkeypatch):
-    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "3gb")
-    assert _max_graph_file_bytes() == 3 * 1024 * 1024 * 1024
-
-
-def test_max_graph_bytes_tolerates_space_before_suffix(monkeypatch):
-    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "5 GB")
-    assert _max_graph_file_bytes() == 5 * 1024 * 1024 * 1024
-
-
-@pytest.mark.parametrize("bad", ["not-a-number", "1.5GB", "0x10", "640KB"])
-def test_max_graph_bytes_unparseable_falls_back(monkeypatch, bad):
-    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", bad)
-    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
-
-
-@pytest.mark.parametrize("nonpositive", ["0", "-1", "-4GB"])
-def test_max_graph_bytes_nonpositive_falls_back(monkeypatch, nonpositive):
-    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", nonpositive)
-    assert _max_graph_file_bytes() == _MAX_GRAPH_FILE_BYTES
-
-
-def test_graph_size_cap_under_limit_returns_none(tmp_path):
-    p = tmp_path / "graph.json"
-    p.write_text('{"nodes": [], "links": []}', encoding="utf-8")
-    assert check_graph_file_size_cap(p) is None
-
-
-def test_graph_size_cap_over_limit_raises(monkeypatch, tmp_path):
-    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 16)
-    p = tmp_path / "graph.json"
-    p.write_text('{"nodes": [], "links": [], "padding": "x" * 50}', encoding="utf-8")
-    with pytest.raises(ValueError, match="exceeds"):
-        check_graph_file_size_cap(p)
-
-
-def test_graph_size_cap_error_message_includes_size_and_cap(monkeypatch, tmp_path):
-    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
-    p = tmp_path / "graph.json"
-    p.write_text("AAAAAAAAAAAAAAAA", encoding="utf-8")  # 16 bytes
-    with pytest.raises(ValueError) as excinfo:
-        check_graph_file_size_cap(p)
-    msg = str(excinfo.value)
-    assert "16" in msg  # observed size
-    assert "8" in msg   # cap
-    assert "byte" in msg.lower()
-
-
-def test_graph_size_cap_at_boundary_passes(monkeypatch, tmp_path):
-    # Boundary: equal to cap is allowed; strictly greater is rejected.
-    p = tmp_path / "graph.json"
-    payload = "A" * 32
-    p.write_text(payload, encoding="utf-8")
-    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 32)
-    assert check_graph_file_size_cap(p) is None
-    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 31)
-    with pytest.raises(ValueError):
-        check_graph_file_size_cap(p)
-
-
-def test_graph_size_cap_missing_file_silently_returns(tmp_path):
-    # When stat() fails (FileNotFoundError → OSError), the helper returns None
-    # so the caller's own existence check can surface a clearer error.
-    missing = tmp_path / "does_not_exist.json"
-    assert check_graph_file_size_cap(missing) is None
-
-
-def test_graph_size_cap_unreadable_directory_silently_returns(monkeypatch, tmp_path):
-    # Force stat() to raise PermissionError → still OSError → silent return.
-    p = tmp_path / "graph.json"
-    p.write_text("{}", encoding="utf-8")
-
-    def _boom(self):
-        raise PermissionError("denied")
-
-    monkeypatch.setattr(Path, "stat", _boom)
-    assert check_graph_file_size_cap(p) is None
 
 
 # ---------------------------------------------------------------------------
@@ -461,3 +346,47 @@ def test_sanitize_metadata_bool_not_coerced_to_int():
     assert out["flag_t"] is True
     assert out["flag_f"] is False
     assert out["num"] == 1
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from graphify.security import sanitize_label, sanitize_metadata, safe_fetch, validate_store_path, validate_url
+
+
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://example.com/a", "data:text/plain,x"])
+def test_url_rejects_non_http_schemes(url):
+    with pytest.raises(ValueError):
+        validate_url(url)
+
+
+def test_safe_fetch_caps_streamed_response():
+    response = MagicMock()
+    response.__enter__ = lambda value: value
+    response.__exit__ = MagicMock(return_value=False)
+    response.status = 200
+    response.read.side_effect = [b"x" * 9, b""]
+    with patch("graphify.security.validate_url"), patch("graphify.security._build_opener") as factory:
+        factory.return_value.open.return_value = response
+        with pytest.raises(OSError, match="size limit"):
+            safe_fetch("https://example.com", max_bytes=8)
+
+
+def test_native_store_validation_and_legacy_rejection(tmp_path):
+    store = tmp_path / "graph.helix"
+    store.mkdir()
+    assert validate_store_path(store) == store.resolve()
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text("{}")
+    with pytest.raises(ValueError, match="obsolete"):
+        validate_store_path(legacy)
+    with pytest.raises(FileNotFoundError):
+        validate_store_path(tmp_path / "missing.helix")
+
+
+def test_sanitizers_bound_untrusted_values():
+    assert sanitize_label(None) == ""
+    assert "\x00" not in sanitize_label("a\x00b")
+    assert len(sanitize_label("x" * 1000)) <= 256
+    cleaned = sanitize_metadata({"nested": {"value": "x" * 10000}})
+    assert len(cleaned["nested"]["value"]) < 10000

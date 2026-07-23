@@ -310,7 +310,7 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
                 f"from '{lose_file}'. An ID is derived from the source path plus the "
                 f"entity name, so this one does not identify a single entity and the "
                 f"dropped node is lost. To keep them distinct, run 'graphify extract' "
-                f"per subfolder and merge with 'graphify merge-graphs'.",
+                f"per subfolder and register each native store with 'graphify global add'.",
                 file=sys.stderr,
             )
 
@@ -581,7 +581,7 @@ def deduplicate_entities(
     for edge in edges:
         e = dict(edge)
         # Tolerate "from"/"to" keys from LLM backends that don't follow the
-        # schema exactly — build_from_json normalises later but dedup runs
+        # schema exactly — build_from_extraction normalises later but dedup runs
         # first so bracket access would KeyError here (#803).
         # Use explicit key presence check (not `or`) so empty-string src/tgt
         # aren't silently replaced by the fallback key.
@@ -591,7 +591,7 @@ def deduplicate_entities(
             continue
         e["source"] = remap.get(src, src)
         e["target"] = remap.get(tgt, tgt)
-        # Remove legacy keys so they don't leak into edge attrs in graph.json.
+        # Remove legacy keys so they don't leak into edge attrs in native graph.
         e.pop("from", None)
         e.pop("to", None)
         if e["source"] != e["target"]:

@@ -1,184 +1,164 @@
+"""Cross-project aggregation streamed directly between embedded Helix stores."""
+
 from __future__ import annotations
-import json
-import hashlib
-import sys
+
+import copy
 from datetime import datetime, timezone
 from pathlib import Path
-import networkx as nx
-from networkx.readwrite import json_graph as _jg
+from typing import Iterable
 
-_GLOBAL_DIR = Path.home() / ".graphify"
-_GLOBAL_GRAPH = _GLOBAL_DIR / "global-graph.json"
-_GLOBAL_MANIFEST = _GLOBAL_DIR / "global-manifest.json"
+from .helix.persistence import DEFAULT_GLOBAL_STORE, HelixEmbeddedStore
+from .helix.state import new_state
 
 
-def _load_manifest() -> dict:
-    if _GLOBAL_MANIFEST.exists():
-        try:
-            return json.loads(_GLOBAL_MANIFEST.read_text(encoding="utf-8"))
-        except Exception as exc:
-            # Don't silently wipe the user's manifest on a parse error: that
-            # deletes every tracked repo. Back the bad file up and surface the
-            # error so the user can recover or report it.
-            backup = _GLOBAL_MANIFEST.with_suffix(
-                _GLOBAL_MANIFEST.suffix + f".corrupt.{int(datetime.now(timezone.utc).timestamp())}"
+def _project_store(path: str | Path) -> Path:
+    candidate = Path(path).expanduser().resolve()
+    if candidate.name == "graph.helix":
+        store = candidate
+    elif (candidate / "graph.helix").is_dir():
+        store = candidate / "graph.helix"
+    else:
+        store = candidate / "graphify-out" / "graph.helix"
+    if not store.is_dir():
+        if candidate.suffix.lower() == ".json" or candidate.is_file():
+            raise ValueError(
+                "legacy JSON graphs are obsolete; rebuild the project and pass "
+                "its graph.helix store"
             )
-            try:
-                _GLOBAL_MANIFEST.rename(backup)
-                print(
-                    f"[graphify global] manifest at {_GLOBAL_MANIFEST} failed to parse ({exc}); "
-                    f"moved to {backup} and starting fresh. Restore from the backup if this was "
-                    f"unexpected.",
-                    file=sys.stderr,
-                )
-            except Exception as rename_exc:
-                print(
-                    f"[graphify global] manifest at {_GLOBAL_MANIFEST} failed to parse ({exc}) "
-                    f"and could not be backed up ({rename_exc}). Starting fresh.",
-                    file=sys.stderr,
-                )
-    return {"version": 1, "repos": {}}
+        raise FileNotFoundError(f"Helix store not found: {store}")
+    return store
 
 
-def _save_manifest(manifest: dict) -> None:
-    _GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
-    from graphify.paths import write_json_atomic
-    write_json_atomic(_GLOBAL_MANIFEST, manifest, indent=2)
+def _state() -> dict:
+    if not DEFAULT_GLOBAL_STORE.is_dir():
+        return new_state(build={"kind": "global-aggregate"})
+    with HelixEmbeddedStore(DEFAULT_GLOBAL_STORE, read_only=True) as store:
+        return copy.deepcopy(store.read_state())
 
 
-def _load_global_graph() -> nx.Graph:
-    if _GLOBAL_GRAPH.exists():
-        from graphify.security import check_graph_file_size_cap
-        check_graph_file_size_cap(_GLOBAL_GRAPH)
-        data = json.loads(_GLOBAL_GRAPH.read_text(encoding="utf-8"))
-        if "links" not in data and "edges" in data:
-            data = dict(data, links=data["edges"])
-        try:
-            return _jg.node_link_graph(data, edges="links")
-        except TypeError:
-            return _jg.node_link_graph(data)
-    return nx.Graph()
+def _repos(state: dict) -> dict:
+    global_state = state.setdefault("global", {})
+    return global_state.setdefault("repos", {})
 
 
-def _save_global_graph(G: nx.Graph) -> None:
-    _GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        data = _jg.node_link_data(G, edges="links")
-    except TypeError:
-        data = _jg.node_link_data(G)
-    from graphify.paths import write_json_atomic
-    write_json_atomic(_GLOBAL_GRAPH, data, indent=2)
+def _source_records(state: dict) -> list[tuple[Path, str, str]]:
+    records: list[tuple[Path, str, str]] = []
+    for repo, value in sorted(_repos(state).items()):
+        if not isinstance(value, dict):
+            raise RuntimeError(f"global repository record {repo!r} is invalid")
+        source = Path(str(value.get("source_path", ""))).expanduser().resolve()
+        generation = value.get("source_generation")
+        if not source.is_dir() or not isinstance(generation, str):
+            raise RuntimeError(
+                f"global repository {repo!r} source is unavailable; re-add it"
+            )
+        records.append((source, generation, repo))
+    return records
 
 
-def _file_hash(path: Path) -> str:
-    h = hashlib.sha256()
-    h.update(path.read_bytes())
-    return h.hexdigest()[:16]
+def _save_state(state: dict, *, retain_rollback: bool) -> None:
+    with HelixEmbeddedStore(
+        DEFAULT_GLOBAL_STORE, retain_rollback=retain_rollback
+    ) as store:
+        store.save_aggregate_sources(_source_records(state), state)
 
 
-def global_add(source_path: Path, repo_tag: str) -> dict:
-    """Add or update a project graph in the global graph.
-
-    Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped.
-    Skipped=True means the source graph hasn't changed since last add.
-    """
-    from graphify.build import prefix_graph_for_global, prune_repo_from_graph
-
-    if not source_path.exists():
-        raise FileNotFoundError(f"graph not found: {source_path}")
-
-    manifest = _load_manifest()
-    src_hash = _file_hash(source_path)
-
-    existing = manifest["repos"].get(repo_tag, {})
-    existing_path = existing.get("source_path", "")
-    if existing_path and existing_path != str(source_path.resolve()):
-        print(
-            f"[graphify global] warning: repo tag '{repo_tag}' previously pointed to "
-            f"{existing_path!r}, now updating to {str(source_path.resolve())!r}. "
-            f"Use --as <tag> to give it a different name.",
-            file=sys.stderr,
-        )
-    if existing.get("source_hash") == src_hash:
-        return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True}
-
-    # Load source graph
-    from graphify.security import check_graph_file_size_cap
-    check_graph_file_size_cap(source_path)
-    data = json.loads(source_path.read_text(encoding="utf-8"))
-    if "links" not in data and "edges" in data:
-        data = dict(data, links=data["edges"])
-    try:
-        src_G = _jg.node_link_graph(data, edges="links")
-    except TypeError:
-        src_G = _jg.node_link_graph(data)
-
-    # Prefix IDs for cross-project isolation
-    prefixed = prefix_graph_for_global(src_G, repo_tag)
-
-    # Load global graph and prune stale nodes for this repo
-    G = _load_global_graph()
-    removed = prune_repo_from_graph(G, repo_tag)
-
-    # Merge external-library nodes (no source_file) by label to avoid duplication
-    external_labels = {
-        d.get("label", ""): n
-        for n, d in G.nodes(data=True)
-        if not d.get("source_file") and d.get("label")
-    }
-    # Map each deduplicated external onto the existing global node so that
-    # edges incident to it can be rewired instead of dropped.
-    remap = {}
-    for node, data in prefixed.nodes(data=True):
-        if not data.get("source_file") and data.get("label") in external_labels:
-            remap[node] = external_labels[data["label"]]
-
-    # Compose: add prefixed nodes (except deduplicated externals) into global graph
-    for node, data in prefixed.nodes(data=True):
-        if node not in remap:
-            G.add_node(node, **data)
-    for u, v, data in prefixed.edges(data=True):
-        u = remap.get(u, u)
-        v = remap.get(v, v)
-        if u != v:  # don't introduce self-loops via remapping
-            G.add_edge(u, v, **data)
-
-    added = prefixed.number_of_nodes() - len(remap)
-    _save_global_graph(G)
-
-    manifest["repos"][repo_tag] = {
+def global_add(
+    source_path: Path,
+    repo_tag: str,
+    *,
+    retain_rollback: bool = False,
+) -> dict:
+    """Add or replace a project by rebuilding the aggregate through native pages."""
+    source = _project_store(source_path)
+    with HelixEmbeddedStore(source, read_only=True) as store:
+        source_generation = store.active_generation
+        metadata = store._metadata(source_generation)
+    state = _state()
+    repos = _repos(state)
+    existing = repos.get(repo_tag, {})
+    if (
+        existing.get("source_path") == str(source)
+        and existing.get("source_generation") == source_generation
+    ):
+        return {
+            "repo_tag": repo_tag,
+            "nodes_added": 0,
+            "nodes_removed": 0,
+            "skipped": True,
+        }
+    removed = int(existing.get("node_count", 0)) if isinstance(existing, dict) else 0
+    repos[repo_tag] = {
         "added_at": datetime.now(timezone.utc).isoformat(),
-        "source_path": str(source_path.resolve()),
-        "node_count": added,
-        "edge_count": prefixed.number_of_edges(),
-        "source_hash": src_hash,
+        "source_path": str(source),
+        "source_generation": source_generation,
+        "node_count": int(metadata.get("node_count", 0)),
+        "edge_count": int(metadata.get("edge_count", 0)),
     }
-    _save_manifest(manifest)
+    _save_state(state, retain_rollback=retain_rollback)
+    return {
+        "repo_tag": repo_tag,
+        "nodes_added": int(metadata.get("node_count", 0)),
+        "nodes_removed": removed,
+        "skipped": False,
+    }
 
-    return {"repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed, "skipped": False}
 
-
-def global_remove(repo_tag: str) -> int:
-    """Remove all nodes for repo_tag from the global graph. Returns count removed."""
-    from graphify.build import prune_repo_from_graph
-
-    manifest = _load_manifest()
-    if repo_tag not in manifest["repos"]:
+def global_remove(repo_tag: str, *, retain_rollback: bool = False) -> int:
+    if not DEFAULT_GLOBAL_STORE.is_dir():
         raise KeyError(f"repo '{repo_tag}' not in global graph")
-
-    G = _load_global_graph()
-    removed = prune_repo_from_graph(G, repo_tag)
-    _save_global_graph(G)
-
-    del manifest["repos"][repo_tag]
-    _save_manifest(manifest)
+    state = _state()
+    repos = _repos(state)
+    if repo_tag not in repos:
+        raise KeyError(f"repo '{repo_tag}' not in global graph")
+    record = repos.pop(repo_tag)
+    removed = int(record.get("node_count", 0)) if isinstance(record, dict) else 0
+    _save_state(state, retain_rollback=retain_rollback)
     return removed
 
 
 def global_list() -> dict:
-    """Return the manifest repos dict."""
-    return _load_manifest().get("repos", {})
+    if not DEFAULT_GLOBAL_STORE.is_dir():
+        return {}
+    return dict(_repos(_state()))
 
 
 def global_path() -> Path:
-    return _GLOBAL_GRAPH
+    return DEFAULT_GLOBAL_STORE
+
+
+def aggregate(
+    project_stores: Iterable[str | Path],
+    output: str | Path = DEFAULT_GLOBAL_STORE,
+    *,
+    retain_rollback: bool = False,
+) -> Path:
+    """Create an aggregate through bounded public Helix reads and writes."""
+    sources: list[tuple[Path, str, str]] = []
+    state = new_state(build={"kind": "global-aggregate"})
+    repos = _repos(state)
+    tags: dict[str, int] = {}
+    for raw_path in project_stores:
+        path = _project_store(raw_path)
+        base = path.parent.parent.name or "project"
+        tags[base] = tags.get(base, 0) + 1
+        repo = base if tags[base] == 1 else f"{base}-{tags[base]}"
+        with HelixEmbeddedStore(path, read_only=True) as store:
+            generation = store.active_generation
+            metadata = store._metadata(generation)
+        repos[repo] = {
+            "source_path": str(path),
+            "source_generation": generation,
+            "node_count": int(metadata.get("node_count", 0)),
+            "edge_count": int(metadata.get("edge_count", 0)),
+        }
+        sources.append((path, generation, repo))
+    destination = Path(output).expanduser().resolve()
+    with HelixEmbeddedStore(
+        destination, retain_rollback=retain_rollback
+    ) as store:
+        store.save_aggregate_sources(sources, state)
+    return destination
+
+
+__all__ = ["aggregate", "global_add", "global_list", "global_path", "global_remove"]

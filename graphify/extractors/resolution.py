@@ -628,7 +628,9 @@ def _disambiguate_colliding_node_ids(
             if not source_key:
                 continue
             if source_key in needs_hash:
-                salt = hashlib.sha1(source_key.encode("utf-8")).hexdigest()[:6]
+                salt = hashlib.sha1(
+                    source_key.encode("utf-8"), usedforsecurity=False
+                ).hexdigest()[:6]
                 new_id = _make_id(source_key, old_id, salt)
             else:
                 new_id = naive.get(source_key) or _make_id(source_key, old_id)
@@ -640,7 +642,7 @@ def _disambiguate_colliding_node_ids(
         # No colliding ids to salt apart, but the transient `target_file` hint an
         # importer stamps on every resolved import (#1814) still has to be dropped
         # here — this early exit skips the edge loop below, so without it a
-        # non-colliding import would carry its absolute path into graph.json.
+        # non-colliding import would carry its absolute path into native storage.
         for edge in edges:
             edge.pop("target_file", None)
         return
@@ -684,7 +686,7 @@ def _disambiguate_colliding_node_ids(
         # target file, key the target salt by THAT file so the salt lands on the
         # correct sibling. Generalizes the #1475 C/ObjC header carve-out (below) to
         # every language and to re_exports. `pop` it as we consume it: this is the
-        # hint's only reader, and its absolute path must not persist into graph.json.
+        # hint's only reader, and its absolute path must not persist into Helix.
         target_file = edge.pop("target_file", None)
         if target_file and edge.get("relation") in ("imports", "imports_from", "re_exports"):
             target_edge_key = _source_key(str(target_file), root)
@@ -1653,8 +1655,9 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
             break  # left the scan root; stop walking up
         if anc == root:
             continue  # already probed root/rel above
-        # Only probe sys.path-root candidates — dirs that are NOT themselves part
-        # of a package. Probing a package dir would resolve an absolute
+        # Only probe interpreter search-root candidates — dirs that are NOT
+        # themselves part of a package. Probing a package dir would resolve an
+        # absolute
         # `from helpers import x` to a sibling in the current package (Python-2
         # implicit-relative semantics), fabricating edges to what may be an
         # external dependency (#2072 review). A src-layout root (src/, no

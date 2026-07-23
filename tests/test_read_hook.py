@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 from graphify.__main__ import _claude_pretooluse_hooks
+from tests.native_helpers import make_loaded
 
 
 def _read_matcher():
@@ -31,7 +32,7 @@ def _env():
 def _run(tool_input, cwd, *, graph: bool):
     if graph:
         (cwd / "graphify-out").mkdir(parents=True, exist_ok=True)
-        (cwd / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+        make_loaded(cwd / "graphify-out")
     stdin = json.dumps({"tool_input": tool_input})
     return subprocess.run(
         [sys.executable, "-m", "graphify", "hook-guard", "read"],
@@ -127,7 +128,7 @@ def test_silent_when_extension_is_on_a_directory_segment(tmp_path):
 
 def test_fails_open_on_malformed_stdin(tmp_path):
     (tmp_path / "graphify-out").mkdir()
-    (tmp_path / "graphify-out" / "graph.json").write_text("{}", encoding="utf-8")
+    make_loaded(tmp_path / "graphify-out")
     r = subprocess.run(
         [sys.executable, "-m", "graphify", "hook-guard", "read"],
         input="this is not json", capture_output=True, text=True, cwd=tmp_path, env=_env(),

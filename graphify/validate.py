@@ -51,7 +51,7 @@ def validate_extraction(data: dict) -> list[str]:
                     f"'{node['file_type']}' - must be one of {sorted(VALID_FILE_TYPES)}"
                 )
 
-    # Edges - accept "links" (NetworkX <= 3.1) as fallback for "edges"
+    # Edges - accept the standard node-link spelling as a fallback for "edges".
     edge_list = data.get("edges") if "edges" in data else data.get("links")
     if edge_list is None:
         errors.append("Missing required key 'edges'")

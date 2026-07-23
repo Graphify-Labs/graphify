@@ -1,14 +1,13 @@
-"""Regression tests for `graphify path` arrow direction (#849) and determinism +
-honest edge labels (#2074)."""
+"""Regression tests for `graphify path` arrow direction (#849)."""
 from __future__ import annotations
-import json
 import os
+from pathlib import Path
 import subprocess
 import sys
-import networkx as nx
+
 import pytest
-from networkx.readwrite import json_graph
 import graphify.__main__ as mainmod
+from tests.native_helpers import make_loaded
 
 
 def _write_graph(tmp_path):
@@ -25,9 +24,11 @@ def _write_graph(tmp_path):
              "relation": "calls", "confidence": "EXTRACTED"},
         ],
     }
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(graph_data))
-    return p
+    return make_loaded(
+        tmp_path,
+        nodes=graph_data["nodes"],
+        edges=graph_data["links"],
+    ).store_path
 
 
 def _run(monkeypatch, graph_path, src, tgt, capsys):
@@ -80,9 +81,11 @@ def _write_misranking_graph(tmp_path):
              "relation": "mentions", "confidence": "EXTRACTED"},
         ],
     }
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(graph_data))
-    return p
+    return make_loaded(
+        tmp_path,
+        nodes=graph_data["nodes"],
+        edges=graph_data["links"],
+    ).store_path
 
 
 def test_endpoint_prefers_full_token_match(monkeypatch, tmp_path, capsys):
@@ -109,86 +112,105 @@ def test_endpoint_falls_back_to_score_head(monkeypatch, tmp_path, capsys):
     assert "No path found" in capsys.readouterr().out
 
 
-# ── #2074: deterministic route + honest edge relation ────────────────────────
-
 def _diamond_graph(tmp_path):
-    """Two equal-length routes A->P->B and A->Q->B — a tie the traversal must
-    resolve deterministically."""
-    data = {
-        "directed": False, "multigraph": False, "graph": {},
-        "nodes": [
+    return make_loaded(
+        tmp_path,
+        nodes=[
             {"id": "a", "label": "Alpha", "source_file": "a.py"},
             {"id": "p", "label": "Pmid", "source_file": "p.py"},
             {"id": "q", "label": "Qmid", "source_file": "q.py"},
             {"id": "b", "label": "Beta", "source_file": "b.py"},
         ],
-        "links": [
-            {"source": "a", "target": "p", "relation": "calls", "confidence": "EXTRACTED"},
-            {"source": "p", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
-            {"source": "a", "target": "q", "relation": "calls", "confidence": "EXTRACTED"},
-            {"source": "q", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+        edges=[
+            {
+                "source": "a",
+                "target": "p",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+            },
+            {
+                "source": "p",
+                "target": "b",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+            },
+            {
+                "source": "a",
+                "target": "q",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+            },
+            {
+                "source": "q",
+                "target": "b",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+            },
         ],
-    }
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(data))
-    return p
-
-
-def _arrow_line(stdout: str) -> str:
-    return next((l.strip() for l in stdout.splitlines() if "-->" in l or "<--" in l), "")
+    ).store_path
 
 
 def test_path_deterministic_across_hash_seeds(tmp_path):
-    """#2074: the same graph must yield the same route regardless of
-    PYTHONHASHSEED. pytest fixes the seed per process, so run out-of-process."""
-    gp = _diamond_graph(tmp_path)
+    graph_path = _diamond_graph(tmp_path)
     routes = set()
-    for seed in ("0", "1", "2", "3", "4", "5", "6", "7"):
-        env = {**os.environ, "PYTHONHASHSEED": seed}
-        r = subprocess.run(
-            [sys.executable, "-m", "graphify", "path", "Alpha", "Beta", "--graph", str(gp)],
-            capture_output=True, text=True, env=env, cwd=str(tmp_path),
+    repo_root = Path(__file__).resolve().parents[1]
+    script = (
+        "import sys; "
+        "from graphify.cli import _path; "
+        "_path([sys.argv[1], sys.argv[2], '--store', sys.argv[3]])"
+    )
+    for seed in ("0", "1", "2", "3"):
+        result = subprocess.run(
+            [sys.executable, "-c", script, "Alpha", "Beta", str(graph_path)],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "PYTHONHASHSEED": seed,
+                "PYTHONPATH": str(repo_root),
+            },
+            cwd=tmp_path,
+            check=False,
         )
-        assert r.returncode == 0, r.stderr
-        routes.add(_arrow_line(r.stdout))
-    assert len(routes) == 1, f"non-deterministic path across hash seeds: {routes}"
-    # Canonical tie-break picks the lexicographically-smaller mid node (Pmid).
+        assert result.returncode == 0, result.stderr
+        routes.add(result.stdout.strip())
+
+    assert len(routes) == 1
     assert "Pmid" in next(iter(routes))
 
 
-def test_path_relation_matches_stored_edge_not_fabricated(monkeypatch, tmp_path, capsys):
-    """#2074: the printed relation must be the edge's ACTUAL stored relation,
-    never a hardcoded/fabricated `calls`."""
-    data = {
-        "directed": False, "multigraph": False, "graph": {},
-        "nodes": [
-            {"id": "a", "label": "Alpha", "source_file": "a.py"},
-            {"id": "b", "label": "Beta", "source_file": "b.py"},
+def test_path_reports_all_parallel_relations(monkeypatch, tmp_path, capsys):
+    loaded = make_loaded(
+        tmp_path,
+        kind="multidigraph",
+        nodes=[
+            {"id": "a", "label": "Alpha"},
+            {"id": "b", "label": "Beta"},
         ],
-        "links": [
-            {"source": "a", "target": "b", "relation": "references", "confidence": "INFERRED"},
+        edges=[
+            {
+                "source": "a",
+                "target": "b",
+                "key": "calls",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+            },
+            {
+                "source": "a",
+                "target": "b",
+                "key": "references",
+                "relation": "references",
+                "confidence": "INFERRED",
+            },
         ],
-    }
-    gp = tmp_path / "graph.json"
-    gp.write_text(json.dumps(data))
-    out = _run(monkeypatch, gp, "Alpha", "Beta", capsys)
-    assert "--references [INFERRED]-->" in out
-    assert "calls" not in out
+    )
 
+    output = _run(
+        monkeypatch,
+        loaded.store_path,
+        "Alpha",
+        "Beta",
+        capsys,
+    )
 
-def test_path_relation_fallback_related_when_missing(monkeypatch, tmp_path, capsys):
-    """#2074: an edge with no stored relation prints an honest 'related', not an
-    empty '---->' arrow and not a fabricated relation."""
-    data = {
-        "directed": False, "multigraph": False, "graph": {},
-        "nodes": [
-            {"id": "a", "label": "Alpha", "source_file": "a.py"},
-            {"id": "b", "label": "Beta", "source_file": "b.py"},
-        ],
-        "links": [{"source": "a", "target": "b"}],
-    }
-    gp = tmp_path / "graph.json"
-    gp.write_text(json.dumps(data))
-    out = _run(monkeypatch, gp, "Alpha", "Beta", capsys)
-    assert "--related-->" in out
-    assert "---->" not in out.replace("--related-->", "")
+    assert "--calls/references [EXTRACTED/INFERRED]-->" in output

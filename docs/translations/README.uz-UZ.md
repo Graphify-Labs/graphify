@@ -28,7 +28,7 @@ To'liq multimodal. Kod, PDF, markdown, ekran tasvirlari, diagrammalar, doska sur
 graphify-out/
 ├── graph.html       interaktiv graf — brauzerda oching, tugunlarni bosing, qidiring, filtrlang
 ├── GRAPH_REPORT.md  god-tugunlar, kutilmagan aloqalar, taklif qilingan savollar
-├── graph.json       doimiy graf — haftalardan keyin qayta o'qimasdan so'rov qiling
+├── graph.helix       doimiy graf — haftalardan keyin qayta o'qimasdan so'rov qiling
 └── cache/           SHA256-kesh — qayta ishga tushirish faqat o'zgargan fayllarni qayta ishlaydi
 ```
 
@@ -46,7 +46,7 @@ Sintaksisi `.gitignore` ga o'xshash.
 
 ## Qanday ishlaydi
 
-graphify uch bosqichda ishlaydi. Birinchi navbatda, deterministik AST bosqichi kod fayllaridan tuzilmani chiqaradi (klasslar, funksiyalar, importlar, chaqiruv graflari, docstring lar, sabab izohlari) — LLM ishtirokisiz. Keyin video va audio fayllar faster-whisper yordamida mahalliy ravishda transkripsiya qilinadi. Nihoyat, Claude subagentlari hujjatlar, maqolalar, tasvirlar va transkriptlar ustida parallel ishlab, tushunchalar, aloqalar va dizayn asoslarini chiqarib oladi. Natijalar NetworkX grafiga birlashtiriladi, Leiden hamjamiyat aniqlash algoritmi bilan klasterlanadi va interaktiv HTML, so'rov qilinadigan JSON hamda tabiiy tildagi audit hisoboti sifatida eksport qilinadi.
+graphify uch bosqichda ishlaydi. Birinchi navbatda, deterministik AST bosqichi kod fayllaridan tuzilmani chiqaradi (klasslar, funksiyalar, importlar, chaqiruv graflari, docstring lar, sabab izohlari) — LLM ishtirokisiz. Keyin video va audio fayllar faster-whisper yordamida mahalliy ravishda transkripsiya qilinadi. Nihoyat, Claude subagentlari hujjatlar, maqolalar, tasvirlar va transkriptlar ustida parallel ishlab, tushunchalar, aloqalar va dizayn asoslarini chiqarib oladi. Natijalar Helix grafiga birlashtiriladi, Leiden hamjamiyat aniqlash algoritmi bilan klasterlanadi va interaktiv HTML, so'rov qilinadigan JSON hamda tabiiy tildagi audit hisoboti sifatida eksport qilinadi.
 
 **Klasterlash graf topologiyasiga asoslangan — embedding ishlatilmaydi.** Leiden hamjamiyatlarni qirralar zichligi bo'yicha topadi. Claude tomonidan chiqarilgan semantik o'xshashlik qirralari (`semantically_similar_to`, INFERRED deb belgilangan) allaqachon grafda. Graf tuzilmasining o'zi o'xshashlik signali. Alohida embedding bosqichi yoki vektor ma'lumotlar bazasi shart emas.
 
@@ -157,7 +157,7 @@ graphify hujjatlar, maqolalar va tasvirlardan semantik chiqarish uchun fayl mazm
 
 ## Texnologiyalar to'plami
 
-NetworkX + Leiden (graspologic) + tree-sitter + vis.js. Semantik chiqarish Claude, GPT-4 yoki sizning platformangiz modeli orqali. Video transkripsiyasi faster-whisper + yt-dlp orqali (opsional).
+Helix + Leiden (native Leiden) + tree-sitter + vis.js. Semantik chiqarish Claude, GPT-4 yoki sizning platformangiz modeli orqali. Video transkripsiyasi faster-whisper + yt-dlp orqali (opsional).
 
 ## graphify ustida qurilgan — Penpax
 

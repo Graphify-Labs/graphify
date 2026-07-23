@@ -17,6 +17,7 @@ pytest.importorskip("starlette")
 from starlette.testclient import TestClient  # noqa: E402
 
 from graphify import serve as serve_mod  # noqa: E402
+from tests.native_helpers import make_loaded  # noqa: E402
 
 SAMPLE_GRAPH = {
     "directed": True,
@@ -47,9 +48,12 @@ _MCP_HEADERS = {
 
 
 def _graph_file(tmp_path: Path) -> str:
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(SAMPLE_GRAPH), encoding="utf-8")
-    return str(p)
+    return str(make_loaded(
+        tmp_path,
+        nodes=SAMPLE_GRAPH["nodes"],
+        edges=SAMPLE_GRAPH["edges"],
+        kind="digraph",
+    ).store_path)
 
 
 def _client(app) -> TestClient:
@@ -171,15 +175,14 @@ def test_tools_list_over_http(tmp_path):
 
 
 def _project_with_graph(tmp_path, node_count: int) -> str:
-    """Create ``<proj>/graphify-out/graph.json`` and return the project dir."""
+    """Create ``<proj>/graphify-out/graph.helix`` and return the project dir."""
     proj = tmp_path / "proj"
     (proj / "graphify-out").mkdir(parents=True)
-    graph = {
-        "directed": True,
-        "nodes": [{"id": f"n{i}", "label": f"N{i}", "community": 0} for i in range(node_count)],
-        "edges": [],
-    }
-    (proj / "graphify-out" / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+    make_loaded(
+        proj / "graphify-out",
+        nodes=[{"id": f"n{i}", "label": f"N{i}", "community": 0} for i in range(node_count)],
+        kind="digraph",
+    )
     return str(proj)
 
 
@@ -271,8 +274,8 @@ def test_cli_defaults_to_stdio(monkeypatch):
     monkeypatch.setattr(
         serve_mod, "serve_http", lambda *a, **k: calls.setdefault("http", (a, k))
     )
-    serve_mod._main(["graphify-out/graph.json"])
-    assert calls.get("stdio") == "graphify-out/graph.json"
+    serve_mod._main(["graphify-out/graph.helix"])
+    assert calls.get("stdio") == "graphify-out/graph.helix"
     assert "http" not in calls
 
 
@@ -283,10 +286,10 @@ def test_cli_http_passes_flags(monkeypatch):
         serve_mod, "serve_http", lambda gp, **k: captured.update(gp=gp, **k)
     )
     serve_mod._main([
-        "g.json", "--transport", "http", "--host", "0.0.0.0",
+        "graph.helix", "--transport", "http", "--host", "0.0.0.0",
         "--port", "9000", "--api-key", "k", "--stateless",
     ])
-    assert captured["gp"] == "g.json"
+    assert captured["gp"] == "graph.helix"
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 9000
     assert captured["api_key"] == "k"
@@ -297,5 +300,5 @@ def test_cli_api_key_from_env(monkeypatch):
     captured = {}
     monkeypatch.setenv("GRAPHIFY_API_KEY", "from-env")
     monkeypatch.setattr(serve_mod, "serve_http", lambda gp, **k: captured.update(**k))
-    serve_mod._main(["g.json", "--transport", "http"])
+    serve_mod._main(["graph.helix", "--transport", "http"])
     assert captured["api_key"] == "from-env"

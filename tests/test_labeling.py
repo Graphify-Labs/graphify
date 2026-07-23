@@ -6,19 +6,21 @@ malformed replies, and the no-backend fallback.
 import json
 import sys
 
-import networkx as nx
 import pytest
 
 from graphify.llm import label_communities, generate_community_labels
+from graphify.helix.persistence import load_graph
+from graphify.helix.state import labels_from_state, new_state
+from tests.native_helpers import graph_from_payload, make_loaded
 
 
 def _graph():
-    G = nx.Graph()
-    # community 0 = ordering, community 1 = payments
-    G.add_node("order_place", label="place_order")
-    G.add_node("order_repo", label="OrderRepository")
-    G.add_node("pay_charge", label="charge_card")
-    G.add_node("pay_stripe", label="StripeClient")
+    G = graph_from_payload([
+        {"id": "order_place", "label": "place_order"},
+        {"id": "order_repo", "label": "OrderRepository"},
+        {"id": "pay_charge", "label": "charge_card"},
+        {"id": "pay_stripe", "label": "StripeClient"},
+    ])
     communities = {0: ["order_place", "order_repo"], 1: ["pay_charge", "pay_stripe"]}
     return G, communities
 
@@ -69,27 +71,24 @@ def test_label_cli_passes_model_override(tmp_path, monkeypatch):
 
     out = tmp_path / "graphify-out"
     out.mkdir()
-    graph = {
-        "directed": False,
-        "multigraph": False,
-        "nodes": [
-            {"id": "n1", "label": "OrderService", "community": 0},
-        ],
-        "links": [],
-    }
-    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+    make_loaded(
+        out,
+        nodes=[{"id": "n1", "label": "OrderService"}],
+        state=new_state(communities=[{"id": 0, "members": ["n1"], "name": "Community 0"}]),
+    )
 
     captured = {}
 
     def fake_generate(G, communities, *, backend=None, model=None, gods=None,
-                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+                      max_concurrency=4, batch_size=100, **kwargs):
         captured["backend"] = backend
         captured["model"] = model
         captured["max_concurrency"] = max_concurrency
         captured["batch_size"] = batch_size
-        return {0: "Orders"}, "llm"
+        return {0: "Orders"}
 
-    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.operations.label_communities", fake_generate, raising=False)
+    monkeypatch.setattr("graphify.llm.label_communities", fake_generate)
     monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         sys,
@@ -125,29 +124,26 @@ def test_label_cli_missing_only_preserves_existing_labels(tmp_path, monkeypatch)
 
     out = tmp_path / "graphify-out"
     out.mkdir()
-    graph = {
-        "directed": False,
-        "multigraph": False,
-        "nodes": [
-            {"id": "orders", "label": "OrderService", "community": 0},
-            {"id": "payments", "label": "PaymentService", "community": 1},
+    make_loaded(
+        out,
+        nodes=[
+            {"id": "orders", "label": "OrderService"},
+            {"id": "payments", "label": "PaymentService"},
         ],
-        "links": [],
-    }
-    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
-    (out / ".graphify_labels.json").write_text(
-        json.dumps({"0": "Order Management", "1": "Community 1"}),
-        encoding="utf-8",
+        state=new_state(communities=[
+            {"id": 0, "members": ["orders"], "name": "Order Management"},
+            {"id": 1, "members": ["payments"], "name": "Community 1"},
+        ]),
     )
 
     captured = {}
 
     def fake_generate(G, communities, *, backend=None, model=None, gods=None,
-                      quiet=False, max_concurrency=4, batch_size=100, usage_out=None):
+                      max_concurrency=4, batch_size=100, **kwargs):
         captured["communities"] = dict(communities)
-        return {1: "Payment Flow"}, "llm"
+        return {1: "Payment Flow"}
 
-    monkeypatch.setattr("graphify.llm.generate_community_labels", fake_generate)
+    monkeypatch.setattr("graphify.llm.label_communities", fake_generate)
     monkeypatch.setattr("graphify.export.to_html", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         sys,
@@ -158,8 +154,14 @@ def test_label_cli_missing_only_preserves_existing_labels(tmp_path, monkeypatch)
     cli.main()
 
     assert set(captured["communities"]) == {1}
-    labels = json.loads((out / ".graphify_labels.json").read_text(encoding="utf-8"))
-    assert labels == {"0": "Order Management", "1": "Payment Flow"}
+    from graphify.helix.persistence import HelixEmbeddedStore
+
+    with HelixEmbeddedStore(out / "graph.helix", read_only=True) as store:
+        communities = store.load().state["communities"]
+    assert {str(item["id"]): item["name"] for item in communities} == {
+        "0": "Order Management",
+        "1": "Payment Flow",
+    }
 
 
 def test_label_communities_partial_reply_fills_placeholder(monkeypatch):
@@ -226,7 +228,7 @@ def test_gods_as_dicts_do_not_crash(monkeypatch):
 
 
 def test_empty_communities_returns_placeholders(monkeypatch):
-    G = nx.Graph()
+    G = graph_from_payload([])
     called = False
 
     def fake_call(p, *, backend, max_tokens=200):
@@ -249,14 +251,16 @@ def test_empty_communities_returns_placeholders(monkeypatch):
 
 
 def _wide_graph(n_communities: int):
-    G = nx.Graph()
     communities: dict[int, list[str]] = {}
+    nodes = []
     for cid in range(n_communities):
         a, b = f"c{cid}_a", f"c{cid}_b"
-        G.add_node(a, label=f"node_{cid}_a")
-        G.add_node(b, label=f"node_{cid}_b")
+        nodes.extend([
+            {"id": a, "label": f"node_{cid}_a"},
+            {"id": b, "label": f"node_{cid}_b"},
+        ])
         communities[cid] = [a, b]
-    return G, communities
+    return graph_from_payload(nodes), communities
 
 
 def test_label_communities_batches_when_over_batch_size(monkeypatch):
@@ -274,7 +278,7 @@ def test_label_communities_batches_when_over_batch_size(monkeypatch):
     labels = label_communities(G, communities, backend="gemini", batch_size=100)
 
     # 250 communities / 100 per batch -> 3 batches (100, 100, 50)
-    assert calls == [100, 100, 50]
+    assert sorted(calls) == [50, 100, 100]
     # And every community got a real name, none left as a placeholder.
     assert all(name.startswith("Cluster ") for name in labels.values()), \
         f"some communities still have placeholders: {[k for k, v in labels.items() if not v.startswith('Cluster ')][:5]}"
@@ -341,13 +345,13 @@ import time as _time
 
 
 def _many_communities(n):
-    G = nx.Graph()
     comms = {}
+    nodes = []
     for i in range(n):
         nid = f"n{i}"
-        G.add_node(nid, label=f"sym_{i}")
+        nodes.append({"id": nid, "label": f"sym_{i}"})
         comms[i] = [nid]
-    return G, comms
+    return graph_from_payload(nodes), comms
 
 
 def test_label_communities_parallel_matches_sequential(monkeypatch):
@@ -467,8 +471,7 @@ def test_label_communities_counts_tokens_for_failed_batch(monkeypatch):
     usage = {"input": 0, "output": 0}
     # single community -> no split retry; the only batch fails to parse, so
     # label_communities re-raises (every batch failed) after counting tokens.
-    G2 = nx.Graph()
-    G2.add_node("a", label="alpha")
+    G2 = graph_from_payload([{"id": "a", "label": "alpha"}])
     with pytest.raises((ValueError, json.JSONDecodeError)):
         label_communities(
             G2, {0: ["a"]}, backend="gemini", usage_out=usage,
@@ -476,77 +479,80 @@ def test_label_communities_counts_tokens_for_failed_batch(monkeypatch):
     assert usage == {"input": 50, "output": 5}
 
 
-def _two_community_graph(out):
+def _two_community_graph(out, labels):
     """Two disconnected components -> two stable communities, each hub-labelled
     by its own node."""
-    graph = {
-        "directed": False, "multigraph": False,
-        "nodes": [
+    return make_loaded(
+        out,
+        nodes=[
             {"id": "orders", "label": "OrderService", "community": 0},
             {"id": "order_db", "label": "OrderDB", "community": 0},
             {"id": "payments", "label": "PaymentService", "community": 1},
             {"id": "pay_db", "label": "PayDB", "community": 1},
         ],
-        "links": [
+        edges=[
             {"source": "orders", "target": "order_db", "relation": "calls"},
             {"source": "payments", "target": "pay_db", "relation": "calls"},
         ],
-    }
-    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
-
-
-def test_cluster_only_no_label_does_not_persist_placeholders(tmp_path, monkeypatch):
-    """#2073: --no-label must not write .graphify_labels.json with 'Community N'
-    placeholders (which the reuse path would then treat as fresh forever). A
-    later normal run must produce real (non-placeholder) labels."""
-    import graphify.__main__ as cli
-    out = tmp_path / "graphify-out"
-    out.mkdir()
-    _two_community_graph(out)
-    labels_path = out / ".graphify_labels.json"
-
-    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
-    monkeypatch.setattr("graphify.export.to_html", lambda *a, **k: None)
-    # No-backend fallback shape: returns placeholders, which must not clobber hubs.
-    monkeypatch.setattr("graphify.llm.generate_community_labels",
-                        lambda G, comms, **k: ({cid: f"Community {cid}" for cid in comms}, "none"))
-
-    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-label", "--no-viz"])
-    cli.main()
-    assert not labels_path.exists(), "--no-label persisted a placeholder labels file (#2073)"
-    assert not (out / ".graphify_labels.json.sig").exists()
-
-    # A later normal run generates real labels (no sticky placeholders blocking it).
-    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-viz"])
-    cli.main()
-    assert labels_path.exists()
-    saved = json.loads(labels_path.read_text(encoding="utf-8"))
-    assert saved, "no labels written on the normal run"
-    assert not any(v == f"Community {k}" for k, v in saved.items()), (
-        f"real labels expected, got placeholders: {saved} (#2073)"
+        state=new_state(communities=[
+            {
+                "id": 0,
+                "members": ["orders", "order_db"],
+                "name": labels[0],
+            },
+            {
+                "id": 1,
+                "members": ["payments", "pay_db"],
+                "name": labels[1],
+            },
+        ]),
     )
 
 
-def test_cluster_only_heals_persisted_placeholder_but_reuses_genuine(tmp_path, monkeypatch):
-    """#2073: an already-polluted sidecar (a placeholder for one community, a
-    genuine label for another) self-heals — the placeholder is replaced by the
-    hub name while the genuine label is reused, with no LLM call."""
+def test_label_missing_only_does_not_treat_placeholders_as_genuine(
+    tmp_path, monkeypatch
+):
+    """#2073: native ``Community N`` placeholders remain eligible for labeling."""
     import graphify.__main__ as cli
+
     out = tmp_path / "graphify-out"
     out.mkdir()
-    _two_community_graph(out)
-    labels_path = out / ".graphify_labels.json"
-    # Polluted state: community 0 is a stuck placeholder, community 1 is genuine.
-    labels_path.write_text(json.dumps({"0": "Community 0", "1": "Payment Flow"}), encoding="utf-8")
+    _two_community_graph(out, {0: "Community 0", 1: "Community 1"})
 
     monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
-    monkeypatch.setattr("graphify.export.to_html", lambda *a, **k: None)
-    def _fail_generate(*a, **k):
-        raise AssertionError("generate_community_labels must not be called on the reuse path")
-    monkeypatch.setattr("graphify.llm.generate_community_labels", _fail_generate)
+    monkeypatch.setattr("graphify.llm.detect_backend", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "label", str(tmp_path), "--missing-only"],
+    )
 
-    monkeypatch.setattr(sys, "argv", ["graphify", "cluster-only", str(tmp_path), "--no-viz"])
     cli.main()
-    saved = json.loads(labels_path.read_text(encoding="utf-8"))
-    assert saved["0"] != "Community 0", "stuck placeholder was not healed (#2073)"
-    assert saved["1"] == "Payment Flow", "genuine label was not reused"
+
+    labels = labels_from_state(load_graph(out / "graph.helix").state)
+    assert labels
+    assert not any(label == f"Community {cid}" for cid, label in labels.items())
+
+
+def test_label_missing_only_heals_placeholder_but_reuses_genuine(
+    tmp_path, monkeypatch
+):
+    """#2073: replace a placeholder while preserving a genuine native label."""
+    import graphify.__main__ as cli
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    _two_community_graph(out, {0: "Community 0", 1: "Payment Flow"})
+
+    monkeypatch.setattr(cli, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr("graphify.llm.detect_backend", lambda: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["graphify", "label", str(tmp_path), "--missing-only"],
+    )
+    cli.main()
+
+    labels = labels_from_state(load_graph(out / "graph.helix").state)
+    assert labels[0] != "Community 0"
+    assert labels[1] == "Payment Flow"

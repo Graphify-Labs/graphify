@@ -7,8 +7,8 @@ from pathlib import Path
 
 _HOOK_MARKER = "# graphify-hook-start"
 _HOOK_MARKER_END = "# graphify-hook-end"
-_CHECKOUT_MARKER = "# graphify-checkout-hook-start"
-_CHECKOUT_MARKER_END = "# graphify-checkout-hook-end"
+_CHECKOUT_MARKER = _HOOK_MARKER
+_CHECKOUT_MARKER_END = _HOOK_MARKER_END
 
 # __PINNED_PYTHON__ is replaced at install time with the absolute path of the
 # Python interpreter that ran `graphify hook install`.  For uv-tool and pipx
@@ -137,9 +137,10 @@ try:
         _md = (_root / _out) / 'memory'
         if _md.is_dir() and any(_md.glob('*.md')):
             from graphify.reflect import reflect as _reflect
-            _gj = (_root / _out) / 'graph.json'
+            from graphify.paths import project_graph_store as _graph_store
+            _gj = _graph_store(_root, _out)
             _reflect(memory_dir=_md, out_path=(_root / _out) / 'reflections' / 'LESSONS.md',
-                     graph_path=_gj if _gj.exists() else None)
+                     graph_path=_gj if _gj.is_dir() else None)
     except Exception:
         pass
 except TimeoutError as exc:
@@ -178,9 +179,10 @@ try:
         _md = (_root / _out) / 'memory'
         if _md.is_dir() and any(_md.glob('*.md')):
             from graphify.reflect import reflect as _reflect
-            _gj = (_root / _out) / 'graph.json'
+            from graphify.paths import project_graph_store as _graph_store
+            _gj = _graph_store(_root, _out)
             _reflect(memory_dir=_md, out_path=(_root / _out) / 'reflections' / 'LESSONS.md',
-                     graph_path=_gj if _gj.exists() else None)
+                     graph_path=_gj if _gj.is_dir() else None)
     except Exception:
         pass
 except TimeoutError as exc:
@@ -263,9 +265,7 @@ _HOOK_SCRIPT = """\
 # Auto-rebuilds the knowledge graph after each commit (code files only, no LLM needed).
 # Installed by: graphify hook install
 
-# Deterministic clustering: networkx louvain iterates string-keyed sets whose
-# order is randomized per-process by PYTHONHASHSEED, so community assignments
-# churn run-to-run. Pinning it makes graphify-out reproducible.
+# Keep extraction and generated artifacts deterministic across hook processes.
 export PYTHONHASHSEED=0
 
 # Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
@@ -314,13 +314,11 @@ echo "[graphify hook] launching background rebuild (log: $_GRAPHIFY_LOG)"
 
 
 _CHECKOUT_SCRIPT = """\
-# graphify-checkout-hook-start
+# graphify-hook-start
 # Auto-rebuilds the knowledge graph (code only) when switching branches.
 # Installed by: graphify hook install
 
-# Deterministic clustering: networkx louvain iterates string-keyed sets whose
-# order is randomized per-process by PYTHONHASHSEED, so community assignments
-# churn run-to-run. Pinning it makes graphify-out reproducible.
+# Keep extraction and generated artifacts deterministic across hook processes.
 export PYTHONHASHSEED=0
 
 # Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
@@ -362,7 +360,7 @@ _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify] Branch switched - launching background rebuild (log: $_GRAPHIFY_LOG)"
-""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """# graphify-checkout-hook-end
+""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """# graphify-hook-end
 """
 
 
@@ -486,135 +484,13 @@ def _pinned_python() -> str:
     Applies the same allowlist used in _PYTHON_DETECT: rejects any character
     that is not a valid plain filesystem path character, preventing $(...),
     backtick, double-quote, semicolon, etc. from being injected into generated
-    shell scripts or the merge-driver command line. The allowlist includes ':'
+    shell scripts. The allowlist includes ':'
     and '\\' so Windows paths (C:\\...) are accepted. An empty return means
     callers must fall back to the `graphify` launcher on PATH — safe degradation.
     """
     if re.search(r"[^a-zA-Z0-9/_.@:\\-]", sys.executable):
         return ""
     return sys.executable
-
-
-def _merge_attr_line() -> str:
-    """The .gitattributes line assigning the graphify merge driver to graph.json.
-
-    The graph lives under the configured output directory (graphify.paths,
-    GRAPHIFY_OUT env override). gitattributes patterns are repo-relative, so an
-    absolute output-dir override cannot be expressed there — fall back to the
-    default name in that case.
-    """
-    from graphify.paths import GRAPHIFY_OUT
-    out = GRAPHIFY_OUT
-    if not out or Path(out).is_absolute() or "\\" in out:
-        out = "graphify-out"
-    return f"{out.rstrip('/')}/graph.json merge=graphify"
-
-
-def _has_merge_attr(content: str) -> bool:
-    """True if a (non-comment) `<...>graph.json ... merge=graphify` line exists."""
-    for raw in content.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        fields = line.split()
-        if fields and fields[0].endswith("graph.json") and "merge=graphify" in fields[1:]:
-            return True
-    return False
-
-
-def _register_merge_driver(root: Path) -> str:
-    """Register the graph.json union merge driver in git config + .gitattributes (#1902).
-
-    README and CHANGELOG 0.7.0 document `graphify merge-driver` as being set up
-    by `hook install`, but install never actually registered it. Writes go
-    through `git config` (never hand-edit .git/config — in a linked worktree the
-    effective config is not at root/.git/config). The interpreter is pinned the
-    same way the hook scripts pin it, so the driver works even when the graphify
-    launcher is not on PATH at merge time.
-    """
-    import subprocess as _sp
-    pinned = _pinned_python()
-    if pinned:
-        driver = f"{pinned} -m graphify merge-driver %O %A %B"
-    else:
-        driver = "graphify merge-driver %O %A %B"
-    try:
-        for key, value in (
-            ("merge.graphify.name", "graphify graph.json union merge"),
-            ("merge.graphify.driver", driver),
-        ):
-            _sp.run(
-                ["git", "-C", str(root), "config", key, value],
-                check=True, capture_output=True, text=True,
-            )
-    except (OSError, _sp.CalledProcessError) as exc:
-        return f"not registered (git config failed: {exc})"
-
-    line = _merge_attr_line()
-    attrs = root / ".gitattributes"
-    if attrs.exists():
-        content = attrs.read_text(encoding="utf-8")
-        if _has_merge_attr(content):
-            return f"already registered ({line})"
-        # Never clobber other entries; preserve a trailing newline.
-        if content and not content.endswith("\n"):
-            content += "\n"
-        attrs.write_text(content + line + "\n", encoding="utf-8", newline="\n")
-    else:
-        attrs.write_text(line + "\n", encoding="utf-8", newline="\n")
-    return f"registered ({line})"
-
-
-def _unregister_merge_driver(root: Path) -> str:
-    """Remove the merge-driver git config keys and the .gitattributes line."""
-    import subprocess as _sp
-    for key in ("merge.graphify.name", "merge.graphify.driver"):
-        try:
-            # --unset exits nonzero if the key is absent; that is fine.
-            _sp.run(
-                ["git", "-C", str(root), "config", "--unset", key],
-                capture_output=True, text=True,
-            )
-        except OSError:
-            pass
-    attrs = root / ".gitattributes"
-    if not attrs.exists():
-        return "not registered - nothing to remove."
-    content = attrs.read_text(encoding="utf-8")
-    kept = [
-        raw for raw in content.splitlines()
-        if not _has_merge_attr(raw)
-    ]
-    if kept == content.splitlines():
-        return "gitattributes entry not found - nothing to remove."
-    if kept:
-        # Other entries survive; the file stays.
-        attrs.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
-        return "removed from .gitattributes (other entries preserved)"
-    attrs.unlink()
-    return "removed (.gitattributes deleted - no other entries)"
-
-
-def _merge_driver_status(root: Path) -> str:
-    """Report whether the merge driver is registered (config + gitattributes)."""
-    import subprocess as _sp
-    try:
-        res = _sp.run(
-            ["git", "-C", str(root), "config", "--get", "merge.graphify.driver"],
-            capture_output=True, text=True,
-        )
-        cfg_ok = res.returncode == 0 and bool(res.stdout.strip())
-    except OSError:
-        cfg_ok = False
-    attrs = root / ".gitattributes"
-    attr_ok = attrs.exists() and _has_merge_attr(attrs.read_text(encoding="utf-8"))
-    if cfg_ok and attr_ok:
-        return "registered"
-    if cfg_ok:
-        return "partially registered (git config set, .gitattributes line missing)"
-    if attr_ok:
-        return "partially registered (.gitattributes line set, git config missing)"
-    return "not registered"
 
 
 def _user_hooks_dir(hooks_dir: Path) -> Path:
@@ -652,9 +528,8 @@ def install(path: Path = Path(".")) -> str:
 
     commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER)
     checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER)
-    merge_msg = _register_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
+    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}"
 
 
 def uninstall(path: Path = Path(".")) -> str:
@@ -666,9 +541,8 @@ def uninstall(path: Path = Path(".")) -> str:
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
     commit_msg = _uninstall_hook(hooks_dir, "post-commit", _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _uninstall_hook(hooks_dir, "post-checkout", _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
-    merge_msg = _unregister_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
+    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}"
 
 
 def status(path: Path = Path(".")) -> str:
@@ -686,5 +560,4 @@ def status(path: Path = Path(".")) -> str:
 
     commit = _check("post-commit", _HOOK_MARKER)
     checkout = _check("post-checkout", _CHECKOUT_MARKER)
-    merge = _merge_driver_status(root)
-    return f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
+    return f"post-commit: {commit}\npost-checkout: {checkout}"

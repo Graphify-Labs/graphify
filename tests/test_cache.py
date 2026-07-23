@@ -1,7 +1,205 @@
 """Tests for graphify/cache.py."""
+from pathlib import Path
+
+from graphify.cache import (
+    _body_content,
+    cached_files,
+    check_semantic_cache,
+    clear_cache,
+    file_hash,
+    load_cached,
+    prune_semantic_cache,
+    save_cached,
+    save_semantic_cache,
+)
+
+
+def test_ast_cache_roundtrip_and_content_invalidation(tmp_path: Path) -> None:
+    source = tmp_path / "sample.py"
+    source.write_text("x = 1\n", encoding="utf-8")
+    cache: dict = {}
+    result = {"nodes": [{"id": "n", "source_file": str(source)}], "edges": []}
+
+    _REAL_SAVE_CACHED(source, result, root=tmp_path, cache=cache)
+
+    loaded = _REAL_LOAD_CACHED(source, root=tmp_path, cache=cache)
+    assert loaded == {"nodes": [{"id": "n", "source_file": str(source.resolve())}], "edges": []}
+    source.write_text("x = 2\n", encoding="utf-8")
+    assert _REAL_LOAD_CACHED(source, root=tmp_path, cache=cache) is None
+
+
+def test_cache_state_contains_portable_paths_and_no_sidecar(tmp_path: Path) -> None:
+    source = tmp_path / "src" / "sample.py"
+    source.parent.mkdir()
+    source.write_text("pass\n", encoding="utf-8")
+    cache: dict = {}
+
+    _REAL_SAVE_CACHED(
+        source,
+        {"nodes": [{"id": "n", "source_file": str(source.resolve())}], "edges": []},
+        root=tmp_path,
+        cache=cache,
+    )
+
+    entry = next(iter(cache.values()))
+    assert entry["result"]["nodes"][0]["source_file"] == "src/sample.py"
+    assert not (tmp_path / "graphify-out" / "cache").exists()
+
+
+def test_semantic_cache_is_scoped_by_mode_and_prompt(tmp_path: Path) -> None:
+    source = tmp_path / "doc.md"
+    source.write_text("# Doc\nBody\n", encoding="utf-8")
+    result = [{"id": "doc", "source_file": "doc.md"}]
+    cache: dict = {}
+
+    assert _REAL_SAVE_SEMANTIC_CACHE(
+        result, [], root=tmp_path, allowed_source_files=[source],
+        mode="deep", prompt="prompt-a", cache=cache,
+    ) == 1
+    nodes, _, _, misses = _REAL_CHECK_SEMANTIC_CACHE(
+        [str(source)], cache, root=tmp_path, mode="deep", prompt="prompt-a"
+    )
+    assert [node["id"] for node in nodes] == ["doc"]
+    assert nodes[0]["source_file"] == str(source.resolve())
+    assert misses == []
+    assert _REAL_CHECK_SEMANTIC_CACHE(
+        [str(source)], cache, root=tmp_path, mode=None, prompt="prompt-a"
+    )[3] == [str(source)]
+    assert _REAL_CHECK_SEMANTIC_CACHE(
+        [str(source)], cache, root=tmp_path, mode="deep", prompt="prompt-b"
+    )[3] == [str(source)]
+
+
+def test_partial_semantic_entry_is_a_miss(tmp_path: Path) -> None:
+    source = tmp_path / "doc.md"
+    source.write_text("body\n", encoding="utf-8")
+    cache: dict = {}
+    _REAL_SAVE_SEMANTIC_CACHE(
+        [{"id": "doc", "source_file": "doc.md"}], [], root=tmp_path,
+        allowed_source_files=[source], partial_source_files=["doc.md"], cache=cache,
+    )
+    assert _REAL_CHECK_SEMANTIC_CACHE(
+        [str(source)], cache, root=tmp_path
+    )[3] == [str(source)]
+
+
+def test_cached_files_clear_and_prune(tmp_path: Path) -> None:
+    ast = tmp_path / "a.py"
+    semantic = tmp_path / "b.md"
+    ast.write_text("pass\n", encoding="utf-8")
+    semantic.write_text("body\n", encoding="utf-8")
+    cache: dict = {}
+    _REAL_SAVE_CACHED(ast, {"nodes": [], "edges": []}, root=tmp_path, cache=cache)
+    _REAL_SAVE_SEMANTIC_CACHE(
+        [{"id": "b", "source_file": "b.md"}], [], root=tmp_path,
+        allowed_source_files=[semantic], cache=cache,
+    )
+    hashes = _REAL_CACHED_FILES(cache)
+    assert file_hash(ast) in hashes
+    assert file_hash(semantic) in hashes
+    assert _REAL_PRUNE_SEMANTIC_CACHE(cache, {"not-live"}) == 1
+    assert len(cache) == 1
+    _REAL_CLEAR_CACHE(cache)
+    assert cache == {}
+
+
+def test_markdown_frontmatter_only_change_keeps_hash(tmp_path: Path) -> None:
+    source = tmp_path / "doc.md"
+    source.write_text("---\nreviewed: one\n---\n\nBody", encoding="utf-8")
+    first = file_hash(source)
+    source.write_text("---\nreviewed: two\n---\n\nBody", encoding="utf-8")
+    assert file_hash(source) == first
+    source.write_text("---\nreviewed: two\n---\n\nChanged", encoding="utf-8")
+    assert file_hash(source) != first
+
+
+def test_frontmatter_delimiters_must_be_whole_lines() -> None:
+    content = b"----\nIntro\n---\nbody"
+    assert _body_content(content) == content
+    assert _body_content(b"---\ntitle: Test\n---\nbody") == b"\nbody"
+    assert _body_content(b"---\ntitle: Test\n--- not close\nbody") == b"---\ntitle: Test\n--- not close\nbody"
+
 import pytest
 from pathlib import Path
-from graphify.cache import file_hash, cache_dir, load_cached, save_cached, cached_files, clear_cache, _body_content
+import graphify.cache as cache_mod
+from graphify.cache import file_hash, _body_content
+
+
+_REAL_LOAD_CACHED = cache_mod.load_cached
+_REAL_SAVE_CACHED = cache_mod.save_cached
+_REAL_CACHED_FILES = cache_mod.cached_files
+_REAL_CLEAR_CACHE = cache_mod.clear_cache
+_REAL_CHECK_SEMANTIC_CACHE = cache_mod.check_semantic_cache
+_REAL_SAVE_SEMANTIC_CACHE = cache_mod.save_semantic_cache
+_REAL_PRUNE_SEMANTIC_CACHE = cache_mod.prune_semantic_cache
+_CACHE: dict[str, dict] = {}
+_DIRECT_NATIVE_TESTS = {
+    "test_ast_cache_roundtrip_and_content_invalidation",
+    "test_cache_state_contains_portable_paths_and_no_sidecar",
+    "test_semantic_cache_is_scoped_by_mode_and_prompt",
+    "test_partial_semantic_entry_is_a_miss",
+    "test_cached_files_clear_and_prune",
+    "test_markdown_frontmatter_only_change_keeps_hash",
+    "test_frontmatter_delimiters_must_be_whole_lines",
+}
+
+
+def load_cached(*args, **kwargs):
+    kwargs["cache"] = _CACHE
+    return _REAL_LOAD_CACHED(*args, **kwargs)
+
+
+def save_cached(*args, **kwargs):
+    kwargs["cache"] = _CACHE
+    return _REAL_SAVE_CACHED(*args, **kwargs)
+
+
+def cached_files(_cache_root=None):
+    return _REAL_CACHED_FILES(_CACHE)
+
+
+def clear_cache(_cache_root=None):
+    return _REAL_CLEAR_CACHE(_CACHE)
+
+
+def check_semantic_cache(files, *args, **kwargs):
+    return _REAL_CHECK_SEMANTIC_CACHE(files, _CACHE, *args, **kwargs)
+
+
+def save_semantic_cache(*args, **kwargs):
+    kwargs["cache"] = _CACHE
+    return _REAL_SAVE_SEMANTIC_CACHE(*args, **kwargs)
+
+
+def prune_semantic_cache(_cache_root, live_hashes):
+    return _REAL_PRUNE_SEMANTIC_CACHE(_CACHE, live_hashes)
+
+
+def _raw_entry(path: Path, root: Path, kind: str = "ast", **scope) -> dict:
+    key = cache_mod._cache_key(path, root, kind, scope.get("prompt"), scope.get("prompt_file"))
+    return _CACHE[key]
+
+
+def _keys(kind: str) -> list[str]:
+    return sorted(key for key in _CACHE if key.startswith(kind + ":"))
+
+
+@pytest.fixture(autouse=True)
+def native_generation_cache(monkeypatch, request):
+    """Give every restored case a fresh caller-owned Helix state category."""
+    global _CACHE
+    _CACHE = {}
+    if request.node.name in _DIRECT_NATIVE_TESTS:
+        yield
+        return
+    monkeypatch.setattr(cache_mod, "load_cached", load_cached)
+    monkeypatch.setattr(cache_mod, "save_cached", save_cached)
+    monkeypatch.setattr(cache_mod, "cached_files", cached_files)
+    monkeypatch.setattr(cache_mod, "clear_cache", clear_cache)
+    monkeypatch.setattr(cache_mod, "check_semantic_cache", check_semantic_cache)
+    monkeypatch.setattr(cache_mod, "save_semantic_cache", save_semantic_cache)
+    monkeypatch.setattr(cache_mod, "prune_semantic_cache", prune_semantic_cache)
+    yield
 
 
 @pytest.fixture
@@ -67,13 +265,11 @@ def test_cached_files(tmp_path, cache_root):
 
 
 def test_clear_cache(tmp_file, cache_root):
-    """clear_cache removes all .json files from graphify-out/cache/ (all subdirs)."""
+    """clear_cache removes every extraction record from generation state."""
     save_cached(tmp_file, {"nodes": [], "edges": []}, root=cache_root)
-    # Since v0.5.3 entries go into cache/ast/, not the flat cache/ dir
-    cache_base = cache_root / "graphify-out" / "cache"
-    assert len(list(cache_base.rglob("*.json"))) > 0
+    assert _CACHE
     clear_cache(cache_root)
-    assert len(list(cache_base.rglob("*.json"))) == 0
+    assert _CACHE == {}
 
 
 def test_md_frontmatter_only_change_same_hash(tmp_path):
@@ -192,13 +388,12 @@ def test_md_edit_above_hr_changes_hash(tmp_path):
 # ``save_cached`` relativizes ``source_file`` entries inside the cache file
 # so a committed ``graphify-out/cache/`` is portable across machines and
 # CI runners. ``load_cached`` re-absolutizes them so consumers (extract,
-# merge into graph.json) see the same shape that fresh extraction emits.
+# merge into the native build DTO) see the same shape that fresh extraction emits.
 
 def test_save_cached_relativizes_source_file(tmp_path):
-    """The on-disk cache JSON contains forward-slash relative source_file
+    """The durable cache entry contains forward-slash relative source_file
     entries — no absolute prefix from the saving machine leaks in."""
-    import json
-    from graphify.cache import save_cached, file_hash, cache_dir
+    from graphify.cache import save_cached
 
     (tmp_path / "src").mkdir()
     src = tmp_path / "src" / "foo.py"
@@ -210,9 +405,7 @@ def test_save_cached_relativizes_source_file(tmp_path):
     }
     save_cached(src, result, root=tmp_path, kind="ast")
 
-    h = file_hash(src, tmp_path)
-    entry = cache_dir(tmp_path, "ast") / f"{h}.json"
-    on_disk = json.loads(entry.read_text(encoding="utf-8"))
+    on_disk = _raw_entry(src, tmp_path)["result"]
     node_sources = {n["source_file"] for n in on_disk["nodes"]}
     edge_sources = {e["source_file"] for e in on_disk["edges"]}
     assert node_sources == {"src/foo.py"}, (
@@ -246,21 +439,22 @@ def test_load_cached_passes_through_legacy_absolute_source_file(tmp_path):
     """Cache entries written by an older graphify (with absolute source_file
     inside) must still load correctly: the absolutize step is a no-op for
     already-absolute values."""
-    import json
-    from graphify.cache import load_cached, file_hash, cache_dir
+    from graphify.cache import load_cached
 
     (tmp_path / "src").mkdir()
     src = tmp_path / "src" / "foo.py"
     src.write_text("pass\n")
     abs_src = str(src.resolve())
 
-    # Hand-write a legacy-format cache entry (absolute source_file).
-    h = file_hash(src, tmp_path)
-    entry = cache_dir(tmp_path, "ast") / f"{h}.json"
-    entry.write_text(json.dumps({
-        "nodes": [{"id": "n1", "source_file": abs_src}],
-        "edges": [],
-    }))
+    # Seed an older durable payload whose source path was already absolute.
+    key = cache_mod._cache_key(src, tmp_path, "ast", None, None)
+    _CACHE[key] = {
+        "content_hash": file_hash(src, tmp_path),
+        "kind": "ast",
+        "prompt_fingerprint": "unscoped",
+        "partial": False,
+        "result": {"nodes": [{"id": "n1", "source_file": abs_src}], "edges": []},
+    }
 
     loaded = load_cached(src, root=tmp_path, kind="ast")
     assert loaded is not None
@@ -271,9 +465,8 @@ def test_cache_portable_across_roots(tmp_path):
     """End-to-end portability: a cache entry written at one root can be
     consumed at a different absolute root because the file is content-hashed
     AND its embedded source_file is stored relative."""
-    import json
     import shutil
-    from graphify.cache import save_cached, load_cached, file_hash, cache_dir
+    from graphify.cache import save_cached, load_cached
 
     repo_a = tmp_path / "repo_a"
     repo_a.mkdir()
@@ -326,8 +519,7 @@ def test_ast_cache_invalidated_on_version_bump(tmp_path, monkeypatch):
 
 
 def test_ast_cache_version_bump_cleans_stale_entries(tmp_path, monkeypatch):
-    """Upgrading removes AST entries left behind by previous versions so the
-    cache directory does not grow one full copy per release."""
+    """Upgrading removes stale AST state instead of growing one copy per release."""
     import graphify.cache as cache_mod
 
     f = tmp_path / "mod.py"
@@ -335,35 +527,23 @@ def test_ast_cache_version_bump_cleans_stale_entries(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.8.0", raising=False)
     save_cached(f, {"nodes": [{"id": "n1"}], "edges": []}, root=tmp_path, kind="ast")
-    old_dir = cache_dir(tmp_path, "ast")
-    assert any(old_dir.glob("*.json"))
+    assert _keys("ast") and ":v0.8.0:" in _keys("ast")[0]
 
     monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.8.1", raising=False)
-    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set(), raising=False)
-    cache_dir(tmp_path, "ast")
-    assert not old_dir.exists(), (
-        "stale AST version directory must be removed on upgrade"
-    )
+    assert load_cached(f, root=tmp_path, kind="ast") is None
+    assert _keys("ast") == []
 
 
 def test_legacy_unversioned_ast_entries_not_served(tmp_path):
     """Entries written by pre-versioning graphify (flat cache/ or unversioned
     cache/ast/) are by definition from an older extractor and must not be
     served — that staleness is exactly what version namespacing fixes."""
-    import json
-    from graphify.cache import file_hash, _GRAPHIFY_OUT
-
     f = tmp_path / "mod.py"
     f.write_text("def f(): pass\n")
-    h = file_hash(f, tmp_path)
-    payload = json.dumps({"nodes": [{"id": "stale"}], "edges": []})
-
-    # Unversioned cache/ast/{hash}.json (pre-versioning layout)
-    unversioned = tmp_path / _GRAPHIFY_OUT / "cache" / "ast"
-    unversioned.mkdir(parents=True)
-    (unversioned / f"{h}.json").write_text(payload)
-    # Legacy flat cache/{hash}.json (pre-0.5.3 layout)
-    (unversioned.parent / f"{h}.json").write_text(payload)
+    _CACHE[f"ast:unversioned:{f.name}"] = {
+        "content_hash": file_hash(f, tmp_path),
+        "result": {"nodes": [{"id": "stale"}], "edges": []},
+    }
 
     assert load_cached(f, root=tmp_path, kind="ast") is None
 
@@ -378,15 +558,11 @@ def test_semantic_cache_survives_version_bump(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.8.0", raising=False)
     save_cached(f, {"nodes": [{"id": "n1"}], "edges": []}, root=tmp_path, kind="semantic")
-    semantic_dir = cache_dir(tmp_path, "semantic")
+    before = set(_keys("semantic"))
 
     monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "0.8.1", raising=False)
-    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set(), raising=False)
-    cache_dir(tmp_path, "ast")  # triggers stale-AST cleanup
     assert load_cached(f, root=tmp_path, kind="semantic") is not None
-    assert any(semantic_dir.glob("*.json")), (
-        "semantic entries must survive both the version bump and AST cleanup"
-    )
+    assert set(_keys("semantic")) == before
 
 
 def test_save_cached_in_root_symlink_keeps_symlink_name(tmp_path):
@@ -394,8 +570,7 @@ def test_save_cached_in_root_symlink_keeps_symlink_name(tmp_path):
     symlink's own name, not the resolved target. Lower-impact than the
     manifest case (cache lookup is content-hashed, not key-matched), but
     keeps the on-disk shape consistent with what callers passed in."""
-    import json
-    from graphify.cache import save_cached, file_hash, cache_dir
+    from graphify.cache import save_cached
 
     (tmp_path / "sub").mkdir()
     target = tmp_path / "sub" / "target.py"
@@ -413,9 +588,7 @@ def test_save_cached_in_root_symlink_keeps_symlink_name(tmp_path):
         "edges": [],
     }, root=tmp_path, kind="ast")
 
-    h = file_hash(alias, tmp_path)
-    entry = cache_dir(tmp_path, "ast") / f"{h}.json"
-    on_disk = json.loads(entry.read_text(encoding="utf-8"))
+    on_disk = _raw_entry(alias, tmp_path)["result"]
     assert on_disk["nodes"][0]["source_file"] == "alias.py", (
         f"cache must store symlink name, not resolved target; got "
         f"{on_disk['nodes'][0]['source_file']!r}"
@@ -423,9 +596,7 @@ def test_save_cached_in_root_symlink_keeps_symlink_name(tmp_path):
 
 
 def test_semantic_prune_removes_orphan_entries(tmp_path):
-    """Changing a file's content leaves the old content-hash entry orphaned;
-    pruning against the new live hash removes the stale entry and keeps the
-    current one."""
+    """A changed file replaces its path-keyed state without leaving an orphan."""
     from graphify.cache import prune_semantic_cache
 
     f = tmp_path / "doc.md"
@@ -437,14 +608,11 @@ def test_semantic_prune_removes_orphan_entries(tmp_path):
     h_b = file_hash(f, tmp_path)
     save_cached(f, {"nodes": [{"id": "b"}], "edges": []}, root=tmp_path, kind="semantic")
 
-    semantic_dir = cache_dir(tmp_path, "semantic")
-    assert (semantic_dir / f"{h_a}.json").exists()
-    assert (semantic_dir / f"{h_b}.json").exists()
+    assert {entry["content_hash"] for entry in _CACHE.values()} == {h_b}
 
     pruned = prune_semantic_cache(tmp_path, {h_b})
-    assert pruned == 1
-    assert not (semantic_dir / f"{h_a}.json").exists()
-    assert (semantic_dir / f"{h_b}.json").exists()
+    assert pruned == 0
+    assert {entry["content_hash"] for entry in _CACHE.values()} == {h_b}
 
 
 def test_semantic_prune_keeps_live_unchanged_entries(tmp_path):
@@ -460,12 +628,11 @@ def test_semantic_prune_keeps_live_unchanged_entries(tmp_path):
         save_cached(f, {"nodes": [{"id": str(i)}], "edges": []}, root=tmp_path, kind="semantic")
         live_hashes.add(file_hash(f, tmp_path))
 
-    semantic_dir = cache_dir(tmp_path, "semantic")
-    assert len(list(semantic_dir.glob("*.json"))) == 5
+    assert len(_keys("semantic")) == 5
 
     pruned = prune_semantic_cache(tmp_path, live_hashes)
     assert pruned == 0
-    assert len(list(semantic_dir.glob("*.json"))) == 5
+    assert len(_keys("semantic")) == 5
 
 
 def test_semantic_prune_handles_deleted_file(tmp_path):
@@ -477,39 +644,32 @@ def test_semantic_prune_handles_deleted_file(tmp_path):
     f.write_text("# Gone\n\nWill be deleted.\n")
     h = file_hash(f, tmp_path)
     save_cached(f, {"nodes": [{"id": "g"}], "edges": []}, root=tmp_path, kind="semantic")
-    semantic_dir = cache_dir(tmp_path, "semantic")
-    assert (semantic_dir / f"{h}.json").exists()
+    assert h in {entry["content_hash"] for entry in _CACHE.values()}
 
     f.unlink()
     # Live set is empty: the file is gone, so its entry must be pruned.
     pruned = prune_semantic_cache(tmp_path, set())
     assert pruned == 1
-    assert not (semantic_dir / f"{h}.json").exists()
+    assert h not in {entry.get("content_hash") for entry in _CACHE.values()}
 
 
 def test_semantic_prune_ignores_ast_and_tmp(tmp_path):
-    """Prune touches only cache/semantic/*.json: AST entries and atomic-write
-    *.tmp temporaries are left untouched."""
+    """Prune touches only semantic records; AST and unrelated state survive."""
     from graphify.cache import prune_semantic_cache
 
     f = tmp_path / "doc.md"
     f.write_text("# Doc\n\nBody.\n")
     # AST entry (different subtree) must survive.
     save_cached(f, {"nodes": [{"id": "ast"}], "edges": []}, root=tmp_path, kind="ast")
-    ast_dir = cache_dir(tmp_path, "ast")
-    assert len(list(ast_dir.glob("*.json"))) == 1
-
-    # A semantic orphan .json (to be pruned) plus a .tmp temporary (to survive).
-    semantic_dir = cache_dir(tmp_path, "semantic")
-    (semantic_dir / "deadbeef.json").write_text('{"nodes": [], "edges": []}')
-    tmp_entry = semantic_dir / "deadbeef.tmp"
-    tmp_entry.write_text("partial")
+    assert len(_keys("ast")) == 1
+    _CACHE["semantic:unscoped:orphan.md"] = {"content_hash": "deadbeef", "result": {}}
+    _CACHE["transient:checkpoint"] = {"content_hash": "deadbeef"}
 
     pruned = prune_semantic_cache(tmp_path, set())
     assert pruned == 1
-    assert not (semantic_dir / "deadbeef.json").exists()
-    assert tmp_entry.exists(), "*.tmp temporaries must not be swept"
-    assert len(list(ast_dir.glob("*.json"))) == 1, "AST entries must not be touched"
+    assert "semantic:unscoped:orphan.md" not in _CACHE
+    assert "transient:checkpoint" in _CACHE
+    assert len(_keys("ast")) == 1, "AST entries must not be touched"
 
 
 def test_save_semantic_cache_overwrites_by_default(tmp_path):
@@ -577,7 +737,7 @@ def test_save_semantic_cache_rejects_out_of_scope_source_file(tmp_path):
 # flows call check/save without the parameter and must be unaffected.
 
 def test_semantic_cache_deep_mode_roundtrip_under_deep_namespace(tmp_path):
-    """mode='deep' saves under cache/semantic-deep/ and reads back from it."""
+    """mode='deep' uses an isolated semantic-deep state namespace."""
     from graphify.cache import check_semantic_cache, save_semantic_cache
 
     f = tmp_path / "doc.md"
@@ -587,14 +747,8 @@ def test_semantic_cache_deep_mode_roundtrip_under_deep_namespace(tmp_path):
     )
     assert saved == 1
 
-    deep_dir = tmp_path / "graphify-out" / "cache" / "semantic-deep"
-    h = file_hash(f, tmp_path)
-    assert (deep_dir / f"{h}.json").exists(), (
-        "deep entry must land under cache/semantic-deep/"
-    )
-    # And NOT in the plain namespace.
-    plain_dir = tmp_path / "graphify-out" / "cache" / "semantic"
-    assert not (plain_dir / f"{h}.json").exists()
+    assert len(_keys("semantic-deep")) == 1
+    assert _keys("semantic") == []
 
     nodes, edges, hyper, uncached = check_semantic_cache(
         [str(f)], root=tmp_path, mode="deep"
@@ -634,24 +788,20 @@ def test_semantic_cache_deep_invisible_to_plain_reads_and_vice_versa(tmp_path):
 
 
 def test_semantic_cache_mode_none_layout_unchanged(tmp_path):
-    """Omitting mode writes exactly the historical cache/semantic/ layout —
-    forward-compat for older installed callers that never pass mode."""
+    """Omitting mode writes the plain semantic state namespace."""
     from graphify.cache import check_semantic_cache, save_semantic_cache
 
     f = tmp_path / "doc.md"
     f.write_text("# Doc\n")
     save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [], root=tmp_path)
-    h = file_hash(f, tmp_path)
-    assert (tmp_path / "graphify-out" / "cache" / "semantic" / f"{h}.json").exists()
-    assert not (tmp_path / "graphify-out" / "cache" / "semantic-deep").exists(), (
-        "mode=None must never create the deep namespace"
-    )
+    assert len(_keys("semantic")) == 1
+    assert _keys("semantic-deep") == []
     nodes, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path)
     assert [n["id"] for n in nodes] == ["n"] and uncached == []
 
 
 def test_clear_cache_removes_deep_namespace(tmp_path):
-    """clear_cache sweeps cache/semantic-deep/ alongside semantic/ and ast/."""
+    """clear_cache sweeps deep and plain semantic state together."""
     from graphify.cache import save_semantic_cache
 
     f = tmp_path / "doc.md"
@@ -659,14 +809,10 @@ def test_clear_cache_removes_deep_namespace(tmp_path):
     save_semantic_cache([{"id": "p", "source_file": "doc.md"}], [], root=tmp_path)
     save_semantic_cache([{"id": "d", "source_file": "doc.md"}], [],
                         root=tmp_path, mode="deep")
-    base = tmp_path / "graphify-out" / "cache"
-    assert list((base / "semantic").glob("*.json"))
-    assert list((base / "semantic-deep").glob("*.json"))
+    assert _keys("semantic") and _keys("semantic-deep")
 
     clear_cache(tmp_path)
-    assert not list(base.rglob("*.json")), (
-        "clear_cache must remove entries in BOTH semantic namespaces"
-    )
+    assert _CACHE == {}
 
 
 def test_cached_files_includes_deep_namespace(tmp_path):
@@ -700,17 +846,13 @@ def test_semantic_prune_sweeps_both_namespaces_against_same_live_set(tmp_path):
     save_semantic_cache([{"id": "db", "source_file": "doc.md"}], [],
                         root=tmp_path, mode="deep")
 
-    plain_dir = tmp_path / "graphify-out" / "cache" / "semantic"
-    deep_dir = tmp_path / "graphify-out" / "cache" / "semantic-deep"
-    for d in (plain_dir, deep_dir):
-        assert (d / f"{h_old}.json").exists()
-        assert (d / f"{h_live}.json").exists()
+    assert sum(entry.get("content_hash") == h_old for entry in _CACHE.values()) == 0
+    assert sum(entry.get("content_hash") == h_live for entry in _CACHE.values()) == 2
 
     pruned = prune_semantic_cache(tmp_path, {h_live})
-    assert pruned == 2, "one orphan in EACH namespace must be pruned"
-    for d in (plain_dir, deep_dir):
-        assert not (d / f"{h_old}.json").exists(), f"orphan survived in {d.name}"
-        assert (d / f"{h_live}.json").exists(), f"live entry pruned from {d.name}"
+    assert pruned == 0, "path-keyed state replaces old content in each namespace"
+    assert all(entry.get("content_hash") != h_old for entry in _CACHE.values())
+    assert sum(entry.get("content_hash") == h_live for entry in _CACHE.values()) == 2
 
 
 def test_save_semantic_cache_merge_existing_unions(tmp_path):
@@ -855,10 +997,7 @@ def test_save_semantic_cache_unscoped_preserves_dangling_refs_verbatim(tmp_path)
     saved = save_semantic_cache(nodes, edges, hyperedges, root=tmp_path)
     assert saved == 1
 
-    import json
-    raw = json.loads(
-        (cache_dir(tmp_path, "semantic") / f"{file_hash(doc, tmp_path)}.json").read_text()
-    )
+    raw = _raw_entry(doc, tmp_path, kind="semantic")["result"]
     assert raw["edges"] == edges
     assert raw["hyperedges"] == hyperedges
 
@@ -963,7 +1102,7 @@ def test_semantic_cache_prompt_change_invalidates(tmp_path):
 
 
 def test_semantic_cache_prompt_namespaced_layout(tmp_path):
-    """Fingerprinted entries live under cache/semantic/p{fp}/, never flat."""
+    """Fingerprinted entries use their own semantic state scope, never unscoped."""
     from graphify.cache import prompt_fingerprint, save_semantic_cache
 
     f = tmp_path / "doc.md"
@@ -971,12 +1110,10 @@ def test_semantic_cache_prompt_namespaced_layout(tmp_path):
     save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [],
                         root=tmp_path, prompt="PROMPT V1")
 
-    sem = tmp_path / "graphify-out" / "cache" / "semantic"
-    h = file_hash(f, tmp_path)
-    assert (sem / f"p{prompt_fingerprint('PROMPT V1')}" / f"{h}.json").exists()
-    assert not (sem / f"{h}.json").exists(), (
-        "a known-vintage entry must never be written into the flat unknown-vintage layout"
-    )
+    keys = _keys("semantic")
+    assert len(keys) == 1
+    assert f":{prompt_fingerprint('PROMPT V1')}:" in keys[0]
+    assert ":unscoped:" not in keys[0]
 
 
 def test_semantic_cache_prompt_and_mode_compose(tmp_path):
@@ -989,8 +1126,9 @@ def test_semantic_cache_prompt_and_mode_compose(tmp_path):
     save_semantic_cache([{"id": "d", "source_file": "doc.md"}], [],
                         root=tmp_path, mode="deep", prompt="PROMPT V1")
 
-    deep = tmp_path / "graphify-out" / "cache" / "semantic-deep"
-    assert list(deep.glob("p*/*.json")), "deep + prompt must nest under semantic-deep/p{fp}/"
+    keys = _keys("semantic-deep")
+    assert len(keys) == 1
+    assert f":{cache_mod.prompt_fingerprint('PROMPT V1')}:" in keys[0]
 
     # Right mode, wrong prompt -> miss. Right prompt, wrong mode -> miss.
     _, _, _, uncached = check_semantic_cache([str(f)], root=tmp_path, mode="deep",
@@ -1092,7 +1230,7 @@ def test_semantic_prune_and_clear_reach_fingerprint_subdirs(tmp_path):
     save_semantic_cache([{"id": "n", "source_file": "doc.md"}], [],
                         root=tmp_path, prompt="PROMPT V1")
     clear_cache(tmp_path)
-    assert not list((tmp_path / "graphify-out" / "cache" / "semantic").glob("**/*.json"))
+    assert _CACHE == {}
 
 
 def test_semantic_cache_unreadable_prompt_file_warns_and_falls_back(tmp_path):

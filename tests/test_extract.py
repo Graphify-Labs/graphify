@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from graphify.build import build_from_json
+from graphify.build import build_from_extraction
 from graphify.extract import extract_python, extract, collect_files, _make_id, extract_bash, extract_json, _DISPATCH
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -210,7 +210,7 @@ def test_imported_type_stubs_do_not_collide_across_source_files(tmp_path):
 def test_origin_file_is_not_serialized_into_extract_output(tmp_path):
     """origin_file is an internal disambiguation hint (#1462) consumed only by the
     colliding-id pass during extraction. It must not survive into the returned nodes
-    (and thus graph.json), where it would ship as an absolute, machine-specific path —
+    (and thus the durable graph), where it would ship as an absolute, machine-specific path —
     the "no absolute paths in output" contract (#555, #932). Disambiguation still keys
     on it first, so the two same-label cross-file stubs stay distinct."""
     first = tmp_path / "pkg/a.py"
@@ -1909,20 +1909,22 @@ def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
     }
 
     extracted = extract([package_json, tsconfig], cache_root=tmp_path, parallel=False)
-    graph = build_from_json(extracted, directed=True)
+    graph = build_from_extraction(extracted, directed=True)
+    node_labels = {node.id: node.attributes["label"] for node in graph.nodes}
     import_targets = {
-        graph.nodes[data["_tgt"]]["label"]
-        for _, _, data in graph.edges(data=True)
-        if data.get("relation") == "imports"
+        node_labels[edge.target]
+        for edge in graph.edges
+        if edge.attributes.get("relation") == "imports"
     }
     extends_targets = {
-        graph.nodes[data["_tgt"]]["label"]
-        for _, _, data in graph.edges(data=True)
-        if data.get("relation") == "extends"
+        node_labels[edge.target]
+        for edge in graph.edges
+        if edge.attributes.get("relation") == "extends"
     }
     self_loops = [
-        data for _, _, data in graph.edges(data=True)
-        if data.get("relation") in {"imports", "extends"} and data["_src"] == data["_tgt"]
+        edge.attributes for edge in graph.edges
+        if edge.attributes.get("relation") in {"imports", "extends"}
+        and edge.attributes["_src"] == edge.attributes["_tgt"]
     ]
     assert self_loops == []
     assert {"left-pad", "bats"} <= import_targets

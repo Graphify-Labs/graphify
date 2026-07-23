@@ -2,7 +2,7 @@
 """
 callflow_html.py — Generate call-flow architecture HTML from graphify knowledge graph outputs.
 
-Reads graph.json plus optional GRAPH_REPORT.md, .graphify_labels.json, and sections JSON,
+Reads an embedded Helix generation plus optional report, labels, and sections,
 then produces a self-contained HTML file with:
   - Dark-themed CSS (fixed template)
   - Navigation bar from section list
@@ -13,8 +13,8 @@ then produces a self-contained HTML file with:
 
 Usage:
   python3 -m graphify export callflow-html
-  python3 -m graphify export callflow-html /path/to/project/graphify-out/graph.json
-  python3 -m graphify export callflow-html --graph /path/to/graph.json --output docs/architecture.html
+  python3 -m graphify export callflow-html /path/to/project
+  python3 -m graphify export callflow-html --graph /path/to/graph.helix --output docs/architecture.html
 """
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ def endpoint_id(value) -> str:
 
 
 def normalize_node(raw: dict, index: int) -> dict:
-    """Normalize a graphify node across common graph.json schema variants."""
+    """Normalize a Graphify node for the presentation model."""
     node = dict(raw)
     node_id = first_present(
         node,
@@ -219,61 +219,47 @@ def normalize_edge(raw: dict, index: int) -> dict | None:
     return edge
 
 
-def _node_link_payload(data: dict) -> tuple[list, list] | None:
-    """Read current graphify graph.json via NetworkX's node-link parser."""
-    if not isinstance(data.get("nodes"), list):
-        return None
-    if not isinstance(data.get("links"), list) and not isinstance(data.get("edges"), list):
-        return None
-
-    try:
-        from networkx.readwrite import json_graph
-
-        try:
-            graph = json_graph.node_link_graph(data, edges="links")
-        except TypeError:
-            graph = json_graph.node_link_graph(data)
-    except Exception:
-        return None
-
-    nodes = []
-    for node_id, attrs in graph.nodes(data=True):
-        node = dict(attrs)
-        node["id"] = node_id
-        nodes.append(node)
-
-    edges = []
-    for index, (source, target, attrs) in enumerate(graph.edges(data=True), 1):
-        edge = dict(attrs)
-        edge["source"] = edge.get("_src", edge.get("source", source))
-        edge["target"] = edge.get("_tgt", edge.get("target", target))
-        edge.setdefault("id", f"edge_{index}")
-        edges.append(edge)
-    return nodes, edges
-
-
 def load_graph(path: str | Path) -> tuple:
-    """Load graph.json. Returns normalized (nodes, edges, hyperedges, metadata)."""
-    if path:
-        from graphify.security import check_graph_file_size_cap
-        try:
-            check_graph_file_size_cap(Path(path))
-        except ValueError as exc:
-            raise SystemExit(f"ERROR: {exc}") from exc
-    data = read_json(path)
-    if not isinstance(data, dict):
-        raise SystemExit(f"ERROR: graph file must contain a JSON object: {path}")
+    """Load one native generation into the call-flow presentation records."""
+    from graphify.helix.model import edge_attributes, graphify_attributes
+    from graphify.helix.persistence import load_graph as load_helix_graph
+    from graphify.security import validate_store_path
 
-    graph_block = data.get("graph") if isinstance(data.get("graph"), dict) else {}
-    meta_block = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-
-    node_link = _node_link_payload(data)
-    if node_link:
-        raw_nodes, raw_edges = node_link
-    else:
-        raw_nodes = first_list(data.get("nodes"), data.get("vertices"), graph_block.get("nodes"), graph_block.get("vertices"))
-        raw_edges = first_list(data.get("links"), data.get("edges"), graph_block.get("links"), graph_block.get("edges"))
-    hyperedges = first_list(data.get("hyperedges"), graph_block.get("hyperedges"), data.get("groups"), graph_block.get("groups"))
+    loaded = load_helix_graph(validate_store_path(path))
+    graph = loaded.graph
+    community_records = [
+        record for record in loaded.state.get("communities", [])
+        if isinstance(record, dict) and isinstance(record.get("id"), int)
+    ]
+    membership = {
+        member: record["id"]
+        for record in community_records
+        for member in record.get("members", [])
+    }
+    community_names = {record["id"]: record.get("name") for record in community_records}
+    raw_nodes = []
+    for node in graph.nodes():
+        attrs = graphify_attributes(node.attributes)
+        cid = membership.get(node.id)
+        raw_nodes.append({
+            "id": node.id,
+            **attrs,
+            "community": cid,
+            "community_name": community_names.get(cid),
+        })
+    raw_edges = [
+        {
+            "id": str(edge.id),
+            "source": edge.source,
+            "target": edge.target,
+            **edge_attributes(edge),
+        }
+        for edge in graph.edges()
+    ]
+    graph_block = dict(graph.attributes).get("graph", {})
+    graph_block = graph_block if isinstance(graph_block, dict) else {}
+    hyperedges = list(graph_block.get("hyperedges", []))
+    meta_block = dict(loaded.metadata)
 
     nodes = [normalize_node(n, i) for i, n in enumerate(raw_nodes) if isinstance(n, dict)]
     edges = []
@@ -286,33 +272,23 @@ def load_graph(path: str | Path) -> tuple:
 
     meta = dict(graph_block)
     meta.update(meta_block)
+    build_meta = loaded.state.get("build", {})
+    build_meta = build_meta if isinstance(build_meta, dict) else {}
     for key in ("built_at_commit", "commit", "project_name", "repo", "repository", "language_breakdown"):
-        if data.get(key) and not meta.get(key):
-            meta[key] = data.get(key)
+        if build_meta.get(key) and not meta.get(key):
+            meta[key] = build_meta.get(key)
     if meta.get("commit") and not meta.get("built_at_commit"):
         meta["built_at_commit"] = meta["commit"]
+
+    meta["community_labels"] = {
+        str(record["id"]): str(record.get("name") or f"Community {record['id']}")
+        for record in community_records
+    }
 
     return nodes, edges, hyperedges, meta
 
 
-def load_labels(path: str | Path | None) -> dict:
-    """Load community labels from .graphify_labels.json, tolerating wrapper keys."""
-    data = read_json(path, default={})
-    if not isinstance(data, dict):
-        return {}
-    if isinstance(data.get("labels"), dict):
-        data = data["labels"]
-    if isinstance(data.get("communities"), dict):
-        data = data["communities"]
-    labels = {}
-    for key, value in data.items():
-        if isinstance(value, dict):
-            value = first_present(value, "label", "name", "title", default=key)
-        labels[str(key)] = str(value)
-    return labels
-
-
-def load_sections(path: str | Path | None) -> list:
+def load_sections(path: str | Path) -> list:
     """Load section definitions from JSON file."""
     data = read_json(path, default=[])
     if isinstance(data, dict) and isinstance(data.get("sections"), list):
@@ -418,22 +394,20 @@ def resolve_graphify_paths(args) -> dict:
         graphify_out = Path(args.graphify_out).expanduser()
     elif args.graph:
         graphify_out = Path(args.graph).expanduser().parent
-    elif (base / "graph.json").exists():
+    elif (base / "graph.helix").is_dir():
         graphify_out = base
     else:
         graphify_out = base / GRAPHIFY_OUT
 
     project_root = graphify_out.parent if graphify_out.name == GRAPHIFY_OUT_NAME else base
-    graph = Path(args.graph).expanduser() if args.graph else graphify_out / "graph.json"
+    graph = Path(args.graph).expanduser() if args.graph else graphify_out / "graph.helix"
     report = Path(args.report).expanduser() if args.report else graphify_out / "GRAPH_REPORT.md"
-    labels = Path(args.labels).expanduser() if args.labels else graphify_out / ".graphify_labels.json"
     sections = Path(args.sections).expanduser() if args.sections else None
     return {
         "base": project_root,
         "graphify_out": graphify_out,
         "graph": graph,
         "report": report,
-        "labels": labels,
         "sections": sections,
     }
 
@@ -1518,7 +1492,6 @@ class CallflowOptions:
         graphify_out: str | Path | None = None,
         graph: str | Path | None = None,
         report: str | Path | None = None,
-        labels: str | Path | None = None,
         sections: str | Path | None = None,
         output: str | Path | None = None,
         lang: str = "auto",
@@ -1531,7 +1504,6 @@ class CallflowOptions:
         self.graphify_out = str(graphify_out) if graphify_out is not None else None
         self.graph = str(graph) if graph is not None else None
         self.report = str(report) if report is not None else None
-        self.labels = str(labels) if labels is not None else None
         self.sections = str(sections) if sections is not None else None
         self.output = str(output) if output is not None else None
         self.lang = lang
@@ -1582,7 +1554,6 @@ def write_callflow_html(
     graphify_out: str | Path | None = None,
     graph: str | Path | None = None,
     report: str | Path | None = None,
-    labels: str | Path | None = None,
     sections: str | Path | None = None,
     output: str | Path | None = None,
     lang: str = "auto",
@@ -1598,7 +1569,6 @@ def write_callflow_html(
         graphify_out=graphify_out,
         graph=graph,
         report=report,
-        labels=labels,
         sections=sections,
         output=output,
         lang=lang,
@@ -1612,12 +1582,12 @@ def write_callflow_html(
     if not paths["graph"].exists():
         raise FileNotFoundError(
             f"graphify output not found: {paths['graph']}. "
-            "Run graphify first or pass --graph /path/to/graph.json."
+            "Run graphify first or pass --graph /path/to/graph.helix."
         )
 
     # Load data
     nodes, edges, hyperedges, meta = load_graph(paths["graph"])
-    labels = load_labels(paths["labels"])
+    labels = dict(meta.get("community_labels", {}))
     lang = detect_lang(args.lang, nodes, labels)
     if paths["sections"]:
         sections = load_sections(paths["sections"])
@@ -1627,7 +1597,7 @@ def write_callflow_html(
     report_text = load_report(paths["report"])
 
     if not nodes:
-        raise ValueError("graph.json contains 0 nodes")
+        raise ValueError("the active Helix generation contains 0 nodes")
     if len(sections) <= 1:
         raise ValueError("no sections defined")
 
@@ -1637,7 +1607,7 @@ def write_callflow_html(
     node_ids = {node.get("id") for node in nodes}
     missing_endpoint_edges = [edge for edge in edges if edge.get("source") not in node_ids or edge.get("target") not in node_ids]
     if verbose and missing_endpoint_edges:
-        print(f"WARNING: {len(missing_endpoint_edges)} edges reference nodes not present in graph.json.", file=sys.stderr)
+        print(f"WARNING: {len(missing_endpoint_edges)} edges reference missing nodes.", file=sys.stderr)
 
     meta["project_name"] = infer_project_name(str(paths["graph"]), meta)
     meta["node_count"] = len(nodes)
@@ -1985,9 +1955,8 @@ def main():
     )
     parser.add_argument("project", nargs="?", default=None, help="Project root or graphify output directory")
     parser.add_argument("--graphify-out", default=None, help="Path to graphify output directory")
-    parser.add_argument("--graph", default=None, help="Path to graph.json")
+    parser.add_argument("--graph", default=None, help="Path to graph.helix store")
     parser.add_argument("--report", default=None, help="Path to GRAPH_REPORT.md")
-    parser.add_argument("--labels", default=None, help="Path to .graphify_labels.json")
     parser.add_argument("--sections", default=None, help="Path to sections JSON file; auto-derived when omitted")
     parser.add_argument("--output", default=None, help="Output HTML path")
     parser.add_argument("--lang", default="auto", help="HTML language: auto, zh-CN, en, etc. (default: auto)")
@@ -2003,7 +1972,6 @@ def main():
             graphify_out=args.graphify_out,
             graph=args.graph,
             report=args.report,
-            labels=args.labels,
             sections=args.sections,
             output=args.output,
             lang=args.lang,

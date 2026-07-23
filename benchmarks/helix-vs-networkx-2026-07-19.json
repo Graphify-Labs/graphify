@@ -1,0 +1,460 @@
+{
+  "helix_revision": "0.2.0b3",
+  "python": "3.12.13",
+  "platform": "macOS-26.5.2-arm64-arm-64bit",
+  "pid": 55199,
+  "results": [
+    {
+      "nodes": 5000,
+      "edges": 15000,
+      "networkx": {
+        "ingest_seconds": 0.07641220799996518,
+        "ingest_runs": 1,
+        "reopen_seconds": 0.025735499999427702,
+        "reopen_samples_seconds": [
+          0.025735499999427702,
+          0.024884999998903368,
+          0.03188929199677659
+        ],
+        "neighbor_20_queries_seconds": 3.5420016502030194e-06,
+        "neighbor_samples_seconds": [
+          2.454200148349628e-05,
+          4.417001036927104e-06,
+          3.5420016502030194e-06,
+          3.3750038710422814e-06,
+          3.291999746579677e-06
+        ],
+        "bfs_seconds": 0.001392665995808784,
+        "bfs_samples_seconds": [
+          0.0024065000034170225,
+          0.001651625003432855,
+          0.0013815839993185364,
+          0.001379041001200676,
+          0.001392665995808784
+        ],
+        "shortest_path_5_queries_seconds": 0.00010879200272029266,
+        "shortest_path_samples_seconds": [
+          0.0003638340058387257,
+          0.00010900000052060932,
+          0.00010879200272029266,
+          0.00010595899948384613,
+          0.00010445800580782816
+        ],
+        "community_detection": "Louvain (production NetworkX comparator)",
+        "community_seconds": 0.9960345830040751,
+        "community_samples_seconds": [
+          0.9838285829973756,
+          1.0004757499991683,
+          0.9960345830040751
+        ],
+        "node_betweenness_seconds": 0.665316584003449,
+        "node_betweenness_samples_seconds": [
+          0.665316584003449
+        ],
+        "edge_betweenness_seconds": 0.8258883750022505,
+        "edge_betweenness_samples_seconds": [
+          0.8258883750022505
+        ],
+        "betweenness_mode": "sampled (100 sources, seed 42)",
+        "incremental_1pct_seconds": 0.0450237080003717,
+        "graphml_export_seconds": 0.5118335419974755,
+        "peak_rss_delta_bytes": 25477120,
+        "disk_bytes": 1436547
+      },
+      "helix": {
+        "ingest_seconds": 8.167331750002631,
+        "ingest_runs": 1,
+        "reopen_seconds": 1.0732905830009258,
+        "reopen_samples_seconds": [
+          1.0922817909959122,
+          1.0656928750031511,
+          1.0732905830009258
+        ],
+        "hot_open_seconds": 0.005478249993757345,
+        "hot_open_samples_seconds": [
+          0.005679333000443876,
+          0.005313916997693013,
+          0.005478249993757345,
+          0.0054750839990447275,
+          0.005643750002491288
+        ],
+        "neighbor_20_queries_seconds": 0.0011476250001578592,
+        "neighbor_samples_seconds": [
+          0.0012960420062881894,
+          0.0011476250001578592,
+          0.0011508749958011322,
+          0.0011415420012781397,
+          0.0011369999992894009
+        ],
+        "bfs_seconds": 0.020567291998304427,
+        "bfs_samples_seconds": [
+          0.020894415996735916,
+          0.020567291998304427,
+          0.020452249998925254,
+          0.020468916998652276,
+          0.020609833001799416
+        ],
+        "shortest_path_5_queries_seconds": 0.0011083749996032566,
+        "shortest_path_samples_seconds": [
+          0.0013168330042390153,
+          0.001116250001359731,
+          0.0011083749996032566,
+          0.0010899580011027865,
+          0.0010933750018011779
+        ],
+        "community_detection": "weighted Leiden (Graphify production)",
+        "community_seconds": 0.0947054170028423,
+        "community_samples_seconds": [
+          0.09471074999601115,
+          0.0947054170028423,
+          0.09400404199550394
+        ],
+        "node_betweenness_seconds": 0.09330433300056029,
+        "node_betweenness_samples_seconds": [
+          0.09330433300056029
+        ],
+        "edge_betweenness_seconds": 0.3006899579995661,
+        "edge_betweenness_samples_seconds": [
+          0.3006899579995661
+        ],
+        "betweenness_mode": "sampled (100 sources, seed 42)",
+        "incremental_1pct_seconds": 10.729899457997817,
+        "graphml_export_seconds": 0.5823157080012606,
+        "eight_concurrent_reopens_seconds": 4.033307792000414,
+        "peak_rss_delta_bytes": 243630080,
+        "disk_after_ingest_bytes": 36827950,
+        "disk_after_update_bytes": 76794602
+      }
+    },
+    {
+      "nodes": 20000,
+      "edges": 60000,
+      "networkx": {
+        "ingest_seconds": 0.3044721250043949,
+        "ingest_runs": 1,
+        "reopen_seconds": 0.12366070800635498,
+        "reopen_samples_seconds": [
+          0.12366070800635498,
+          0.10231733399996301,
+          0.13137324999843258
+        ],
+        "neighbor_20_queries_seconds": 3.4579934435896575e-06,
+        "neighbor_samples_seconds": [
+          2.2000000171829015e-05,
+          4.082998202648014e-06,
+          3.4579934435896575e-06,
+          3.25000291923061e-06,
+          3.416003892198205e-06
+        ],
+        "bfs_seconds": 0.0009334999995189719,
+        "bfs_samples_seconds": [
+          0.0011756669991882518,
+          0.0010096670011989772,
+          0.0007989160003489815,
+          0.0007129590012482367,
+          0.0009334999995189719
+        ],
+        "shortest_path_5_queries_seconds": 0.0001099579967558384,
+        "shortest_path_samples_seconds": [
+          0.00017779199697542936,
+          0.00011137499677715823,
+          0.0001099579967558384,
+          0.00010837500303750858,
+          0.00010750000365078449
+        ],
+        "community_detection": "Louvain (production NetworkX comparator)",
+        "community_seconds": 9.914627540994843,
+        "community_samples_seconds": [
+          9.753872833003697,
+          9.914627540994843,
+          10.012469834000512
+        ],
+        "node_betweenness_seconds": 4.096053250003024,
+        "node_betweenness_samples_seconds": [
+          4.096053250003024
+        ],
+        "edge_betweenness_seconds": 5.731195250002202,
+        "edge_betweenness_samples_seconds": [
+          5.731195250002202
+        ],
+        "betweenness_mode": "sampled (100 sources, seed 42)",
+        "incremental_1pct_seconds": 0.1919678330013994,
+        "graphml_export_seconds": 0.5387877500033937,
+        "peak_rss_delta_bytes": 102105088,
+        "disk_bytes": 5852869
+      },
+      "helix": {
+        "ingest_seconds": 32.553641709004296,
+        "ingest_runs": 1,
+        "reopen_seconds": 4.8753892079985235,
+        "reopen_samples_seconds": [
+          4.974821375006286,
+          4.8753892079985235,
+          4.873887665999064
+        ],
+        "hot_open_seconds": 0.007152040998334996,
+        "hot_open_samples_seconds": [
+          0.007963042000483256,
+          0.0071519999983138405,
+          0.006855957995867357,
+          0.007557749995612539,
+          0.007152040998334996
+        ],
+        "neighbor_20_queries_seconds": 0.0011049160020775162,
+        "neighbor_samples_seconds": [
+          0.0012251250009285286,
+          0.001101458001357969,
+          0.0011022909966413863,
+          0.0011049160020775162,
+          0.0011372919980203733
+        ],
+        "bfs_seconds": 0.008930916999815963,
+        "bfs_samples_seconds": [
+          0.009267082998121623,
+          0.008957958001701627,
+          0.008930916999815963,
+          0.008895042003132403,
+          0.008882750000339001
+        ],
+        "shortest_path_5_queries_seconds": 0.0032470840014866553,
+        "shortest_path_samples_seconds": [
+          0.004328625000198372,
+          0.00329987499571871,
+          0.0032433340020361356,
+          0.0032470840014866553,
+          0.003222624996851664
+        ],
+        "community_detection": "weighted Leiden (Graphify production)",
+        "community_seconds": 1.0154825419958797,
+        "community_samples_seconds": [
+          1.0154825419958797,
+          1.0692213329966762,
+          1.0087809999968158
+        ],
+        "node_betweenness_seconds": 0.41240491600183304,
+        "node_betweenness_samples_seconds": [
+          0.41240491600183304
+        ],
+        "edge_betweenness_seconds": 1.3862965000007534,
+        "edge_betweenness_samples_seconds": [
+          1.3862965000007534
+        ],
+        "betweenness_mode": "sampled (100 sources, seed 42)",
+        "incremental_1pct_seconds": 49.52538345799985,
+        "graphml_export_seconds": 2.5530614579984103,
+        "eight_concurrent_reopens_seconds": 16.802997667000454,
+        "peak_rss_delta_bytes": 678559744,
+        "disk_after_ingest_bytes": 150420706,
+        "disk_after_update_bytes": 313312766
+      }
+    }
+  ],
+  "acceptance": {
+    "passed": false,
+    "checks": [
+      {
+        "name": "5000/15000 ingest vs v8",
+        "actual": 106.88516879405387,
+        "limit": 2.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "5000/15000 1% update vs v8",
+        "actual": 238.31665437038717,
+        "limit": 2.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "5000/15000 cold open seconds",
+        "actual": 1.0732905830009258,
+        "limit": 0.5,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "5000/15000 cold open vs v8",
+        "actual": 41.704671874445545,
+        "limit": 5.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "5000/15000 active store vs v8",
+        "actual": 25.63643932290416,
+        "limit": 3.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "5000/15000 post-update store vs v8",
+        "actual": 53.4577720046751,
+        "limit": 3.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "5000/15000 hot_open_seconds",
+        "actual": 0.005478249993757345,
+        "limit": 0.1,
+        "comparison": "<=",
+        "passed": true
+      },
+      {
+        "name": "5000/15000 neighbor_20_queries_seconds",
+        "actual": 0.0011476250001578592,
+        "limit": 0.1,
+        "comparison": "<=",
+        "passed": true
+      },
+      {
+        "name": "5000/15000 neighbor_20_queries_seconds vs v8",
+        "actual": 324.00464864043187,
+        "limit": 2.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "5000/15000 bfs_seconds",
+        "actual": 0.020567291998304427,
+        "limit": 0.1,
+        "comparison": "<=",
+        "passed": true
+      },
+      {
+        "name": "5000/15000 bfs_seconds vs v8",
+        "actual": 14.768287629770176,
+        "limit": 2.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "5000/15000 shortest_path_5_queries_seconds",
+        "actual": 0.0011083749996032566,
+        "limit": 0.1,
+        "comparison": "<=",
+        "passed": true
+      },
+      {
+        "name": "5000/15000 shortest_path_5_queries_seconds vs v8",
+        "actual": 10.188019081263908,
+        "limit": 2.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "20000/60000 ingest vs v8",
+        "actual": 106.91829903487684,
+        "limit": 2.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "20000/60000 1% update vs v8",
+        "actual": 257.98792789226735,
+        "limit": 2.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "20000/60000 cold open seconds",
+        "actual": 4.8753892079985235,
+        "limit": 3.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "20000/60000 cold open vs v8",
+        "actual": 39.42553205944749,
+        "limit": 5.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "20000/60000 active store vs v8",
+        "actual": 25.70033704837747,
+        "limit": 3.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "20000/60000 post-update store vs v8",
+        "actual": 53.53148447368291,
+        "limit": 3.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "20000/60000 clustering speedup",
+        "actual": 9.763464295021894,
+        "limit": 3.0,
+        "comparison": ">=",
+        "passed": true
+      },
+      {
+        "name": "20000/60000 node centrality speedup",
+        "actual": 9.93211547940136,
+        "limit": 3.0,
+        "comparison": ">=",
+        "passed": true
+      },
+      {
+        "name": "20000/60000 edge centrality speedup",
+        "actual": 4.134177104247963,
+        "limit": 3.0,
+        "comparison": ">=",
+        "passed": true
+      },
+      {
+        "name": "20000/60000 hot_open_seconds",
+        "actual": 0.007152040998334996,
+        "limit": 0.5,
+        "comparison": "<=",
+        "passed": true
+      },
+      {
+        "name": "20000/60000 neighbor_20_queries_seconds",
+        "actual": 0.0011049160020775162,
+        "limit": 0.5,
+        "comparison": "<=",
+        "passed": true
+      },
+      {
+        "name": "20000/60000 neighbor_20_queries_seconds vs v8",
+        "actual": 319.5251871069282,
+        "limit": 2.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "20000/60000 bfs_seconds",
+        "actual": 0.008930916999815963,
+        "limit": 0.5,
+        "comparison": "<=",
+        "passed": true
+      },
+      {
+        "name": "20000/60000 bfs_seconds vs v8",
+        "actual": 9.567131231299435,
+        "limit": 2.0,
+        "comparison": "<=",
+        "passed": false
+      },
+      {
+        "name": "20000/60000 shortest_path_5_queries_seconds",
+        "actual": 0.0032470840014866553,
+        "limit": 0.5,
+        "comparison": "<=",
+        "passed": true
+      },
+      {
+        "name": "20000/60000 shortest_path_5_queries_seconds vs v8",
+        "actual": 29.530221514464305,
+        "limit": 2.0,
+        "comparison": "<=",
+        "passed": false
+      }
+    ]
+  }
+}
