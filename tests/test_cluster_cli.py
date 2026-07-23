@@ -27,9 +27,10 @@ def _fake_checkout(path, url):
 
 
 def test_usage_on_no_subcommand(capsys):
-    code, _out, err = _run([], capsys)
+    code, out, _err = _run([], capsys)
     assert code == 0
-    assert "cluster-only" in err  # disambiguation from community detection
+    # Requested help goes to stdout (like `graphify --help`).
+    assert "cluster-only" in out  # disambiguation from community detection
 
 
 def test_unknown_subcommand_exits_1(capsys):
@@ -220,5 +221,74 @@ def test_dispatch_routes_cluster_command(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit) as exc:
         dispatch_command("cluster")
     assert exc.value.code == 0
-    _out, err = capsys.readouterr()
-    assert "Manage cluster graphs" in err
+    out, _err = capsys.readouterr()
+    assert "Manage cluster graphs" in out
+
+
+def test_flag_missing_value_is_a_hard_error(tmp_path, monkeypatch, capsys):
+    """A value flag with no value must error, never fall through to a
+    positional (`cluster init --name` used to create a dir named `--name`)."""
+    monkeypatch.chdir(tmp_path)
+    for argv in (
+        ["init", "--name"],
+        ["init", "--name="],
+        ["init", "--dir"],
+        ["init", "--name", "--dir", "d"],
+    ):
+        code, _out, err = _run(argv, capsys)
+        assert code == 1, argv
+        assert "requires a value" in err, argv
+    assert not (tmp_path / "--name").exists()
+    assert not (tmp_path / "--dir").exists()
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert _run(["init", "cl", "--name", "x"], capsys)[0] == 0
+    code, _out, err = _run(["add", str(repo), "--as", "--dir", str(tmp_path / "cl")], capsys)
+    assert code == 1 and "requires a value" in err
+
+
+def test_unknown_flags_are_rejected(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    code, _out, err = _run(["init", "--nmae", "typo"], capsys)
+    assert code == 1 and "unknown option" in err
+    assert not (tmp_path / "--nmae").exists() and not (tmp_path / "typo").exists()
+
+    assert _run(["init", "cl", "--name", "x"], capsys)[0] == 0
+    code, _out, err = _run(["remove", "tag", "--frob", "--dir", "cl"], capsys)
+    assert code == 1 and "unknown option" in err
+
+
+def test_help_tokens_never_reach_handlers(tmp_path, monkeypatch, capsys):
+    """`cluster add --help` (any position) prints USAGE and exits 0 — it must
+    never fall through to a handler and cause side effects."""
+    monkeypatch.chdir(tmp_path)
+    for argv in (["add", "--help"], ["init", "-h"], ["--help"], ["build", "-?"]):
+        code, out, _err = _run(argv, capsys)
+        assert code == 0, argv
+        assert "Manage cluster graphs" in out, argv
+    assert not any(p.is_dir() and p.name != "__pycache__" for p in tmp_path.iterdir())
+
+
+def test_main_entrypoint_routes_cluster_help(tmp_path, monkeypatch, capsys):
+    """The universal -h guard in __main__ defers to cluster's own USAGE."""
+    import sys as _sys
+    from graphify.__main__ import main
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(_sys, "argv", ["graphify", "cluster", "add", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 0
+    out, _err = capsys.readouterr()
+    assert "Manage cluster graphs" in out
+    assert not (tmp_path / "graphify-out").exists()
+
+
+def test_add_rejects_cluster_dir_itself(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert _run(["init", "cl", "--name", "x"], capsys)[0] == 0
+    code, _out, err = _run(["add", "cl", "--dir", "cl"], capsys)
+    assert code == 1
+    assert "own member" in err
+    assert load_spec(tmp_path / "cl").members == []

@@ -346,3 +346,46 @@ def test_extract_names_skipped_sensitive_files(tmp_path):
     out = r.stdout + r.stderr
     assert "skipped as potentially sensitive" in out
     assert "github_token.txt" in out, "the skipped filename must be surfaced (#2106)"
+
+
+def test_force_rebuild_preserves_multigraph_format(tmp_path):
+    """`extract --force` without a repeated --multigraph must keep the existing
+    graph's format — the only intended downgrade path is --no-multigraph."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text(
+        "def target():\n    return 1\n\ndef caller():\n    return target()\n",
+        encoding="utf-8",
+    )
+    assert _run(repo, "--code-only", "--multigraph").returncode == 0
+    graph_path = repo / "graphify-out" / "graph.json"
+    assert json.loads(graph_path.read_text())["multigraph"] is True
+
+    result = _run(repo, "--code-only", "--force")
+    assert result.returncode == 0, result.stderr
+    graph = json.loads(graph_path.read_text())
+    assert graph["multigraph"] is True, "--force silently downgraded the format"
+    assert graph["links"] and all("key" in edge for edge in graph["links"])
+
+
+def test_no_multigraph_downgrades_with_warning(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text(
+        "def target():\n    return 1\n\ndef caller():\n    return target()\n",
+        encoding="utf-8",
+    )
+    assert _run(repo, "--code-only", "--multigraph").returncode == 0
+    graph_path = repo / "graphify-out" / "graph.json"
+    before = json.loads(graph_path.read_text())
+    assert before["multigraph"] is True
+
+    # Incremental downgrade on an unchanged corpus: the conversion must bypass
+    # the no-change early exit and still carry the graph content forward.
+    result = _run(repo, "--code-only", "--no-multigraph")
+    assert result.returncode == 0, result.stderr
+    assert "collapsing parallel relations" in result.stderr
+    graph = json.loads(graph_path.read_text())
+    assert graph.get("multigraph", False) is False
+    assert {n["id"] for n in graph["nodes"]} == {n["id"] for n in before["nodes"]}
+    assert graph["links"], "downgrade must keep the edges"

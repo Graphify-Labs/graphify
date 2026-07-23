@@ -90,21 +90,29 @@ def _hook_cluster_line() -> str:
     try:
         from graphify.cluster_ref import load_cluster_refs
         from graphify.paths import GRAPHIFY_OUT
+        from graphify.security import sanitize_label
 
         refs = load_cluster_refs(Path(GRAPHIFY_OUT))
         if not refs:
             return ""
+        # The marker is a committed file that travels with clones — its fields
+        # are untrusted input to assistant-facing hook context, so they pass
+        # sanitize_label (stdlib-only; the hook path stays light).
         if len(refs) > 1:
-            names = ", ".join(sorted(ref["cluster_name"] for ref in refs))
+            names = ", ".join(sorted(sanitize_label(str(ref["cluster_name"])) for ref in refs))
             return (
                 f" This repo belongs to {len(refs)} clusters ({names}); for "
                 "cross-repo questions add --cluster NAME to graphify "
                 "query/path/explain/affected."
             )
         ref = refs[0]
+        try:
+            member_count: "int | str" = int(ref.get("member_count", 0)) or "?"
+        except (TypeError, ValueError):
+            member_count = "?"
         return (
-            f" This repo is member '{ref['self_tag']}' of cluster "
-            f"'{ref['cluster_name']}' ({ref.get('member_count', '?')} members); "
+            f" This repo is member '{sanitize_label(str(ref['self_tag']))}' of cluster "
+            f"'{sanitize_label(str(ref['cluster_name']))}' ({member_count} members); "
             f"for cross-repo questions add --cluster to graphify "
             f"query/path/explain/affected."
         )
@@ -992,8 +1000,11 @@ def dispatch_command(cmd: str) -> None:
             # a seed with no outgoing edges. Direction is instead preserved
             # per-edge below (mirrors graphify/build.py's _src/_tgt pattern)
             # so the *rendering* stays correct without narrowing traversal.
+            # Force the flag too: cluster graphs persist "directed": true, and
+            # honoring it here would narrow traversal exactly that way.
             _raw = dict(
                 _raw,
+                directed=False,
                 links=[
                     {**link, "_src": link.get("source"), "_tgt": link.get("target")}
                     for link in _raw.get("links", [])
@@ -1028,6 +1039,13 @@ def dispatch_command(cmd: str) -> None:
             token_budget=budget,
             context_filters=context_filters,
         )
+        if _result.startswith("No matching nodes found."):
+            # Same cluster-membership breadcrumb the other query surfaces get
+            # (the hook text promises it for query too); logged with the
+            # result so the query log matches what was printed.
+            hint = _maybe_cluster_hint(gp)
+            if hint:
+                _result += "\n" + hint
         querylog.log_query(
             kind="query",
             question=question,
@@ -2676,7 +2694,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
-                "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] [--multigraph] "
+                "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] [--multigraph|--no-multigraph] "
                 "[--no-gitignore] [--code-only] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
@@ -2772,6 +2790,8 @@ def dispatch_command(cmd: str) -> None:
                 no_cluster = True; i += 1
             elif a == "--multigraph":
                 cli_multigraph = True; i += 1
+            elif a == "--no-multigraph":
+                cli_multigraph = False; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--code-only":
@@ -3388,8 +3408,12 @@ def dispatch_command(cmd: str) -> None:
         }
 
         graph_json_path = graphify_out / "graph.json"
+        # The existing graph's format is read on EVERY rebuild, not just
+        # incremental ones: --force without a repeated --multigraph must not
+        # silently downgrade a multigraph back to simple (the only intended
+        # downgrade path is an explicit --no-multigraph).
         existing_is_multigraph = False
-        if incremental_mode and graph_json_path.is_file():
+        if graph_json_path.is_file():
             try:
                 existing_is_multigraph = bool(
                     json.loads(graph_json_path.read_text(encoding="utf-8")).get(
@@ -3400,9 +3424,19 @@ def dispatch_command(cmd: str) -> None:
                 pass
         if cli_multigraph is None:
             cli_multigraph = existing_is_multigraph
-        # An explicit --multigraph on a simple existing graph means a format
-        # conversion is pending, so the no-change early exit must not fire.
-        multigraph_conversion = cli_multigraph and not existing_is_multigraph
+        elif not cli_multigraph and existing_is_multigraph:
+            print(
+                "[graphify extract] warning: --no-multigraph converts the existing "
+                "multigraph to a simple graph, collapsing parallel relations; "
+                "re-run with --multigraph to restore them.",
+                file=sys.stderr,
+            )
+        # An explicit format flag that differs from the existing graph means a
+        # conversion is pending (either direction), so the no-change early
+        # exit must not fire.
+        multigraph_conversion = (
+            graph_json_path.is_file() and bool(cli_multigraph) != existing_is_multigraph
+        )
         analysis_path = graphify_out / ".graphify_analysis.json"
 
         # Build a manifest-safe files dict: only stamp semantic_hash for files

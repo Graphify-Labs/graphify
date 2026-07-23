@@ -61,22 +61,45 @@ def _fail(msg: str) -> None:
     sys.exit(1)
 
 
+def _take_flag_value(args: list[str], i: int, flag: str) -> tuple[str, int]:
+    """Consume ``--flag VALUE`` or ``--flag=VALUE`` at args[i].
+
+    A missing value (end of args, empty ``=`` form, or another ``--option``
+    next) is a hard error — falling through would turn the next token (or the
+    flag itself, in the caller's positional handling) into a positional and
+    silently do the wrong thing, e.g. `cluster init --name` creating a
+    directory literally named ``--name``.
+    """
+    a = args[i]
+    if a.startswith(flag + "="):
+        value = a.split("=", 1)[1]
+        if not value:
+            _fail(f"{flag} requires a value")
+        return value, i + 1
+    if i + 1 >= len(args) or args[i + 1].startswith("--"):
+        _fail(f"{flag} requires a value")
+    return args[i + 1], i + 2
+
+
 def _parse_dir(args: list[str]) -> tuple[Path, list[str]]:
     """Pop --dir DIR (default: cwd) from args."""
     rest: list[str] = []
     cluster_dir = Path(".")
     i = 0
     while i < len(args):
-        if args[i] == "--dir" and i + 1 < len(args):
-            cluster_dir = Path(args[i + 1])
-            i += 2
-        elif args[i].startswith("--dir="):
-            cluster_dir = Path(args[i].split("=", 1)[1])
-            i += 1
+        if args[i] == "--dir" or args[i].startswith("--dir="):
+            value, i = _take_flag_value(args, i, "--dir")
+            cluster_dir = Path(value)
         else:
             rest.append(args[i])
             i += 1
     return cluster_dir, rest
+
+
+def _reject_unknown_flags(rest: list[str], usage: str) -> None:
+    unknown = [a for a in rest if a.startswith("--")]
+    if unknown:
+        _fail(f"unknown option {unknown[0]!r} (usage: {usage})")
 
 
 def _looks_like_url(s: str) -> bool:
@@ -84,20 +107,21 @@ def _looks_like_url(s: str) -> bool:
 
 
 def _cmd_init(args: list[str]) -> None:
+    usage = "graphify cluster init [DIR] --name NAME"
     cluster_dir, rest = _parse_dir(args)
     name = ""
     positional: list[str] = []
     i = 0
     while i < len(rest):
-        if rest[i] == "--name" and i + 1 < len(rest):
-            name = rest[i + 1]
-            i += 2
-        elif rest[i].startswith("--name="):
-            name = rest[i].split("=", 1)[1]
-            i += 1
+        if rest[i] == "--name" or rest[i].startswith("--name="):
+            name, i = _take_flag_value(rest, i, "--name")
+        elif rest[i].startswith("--"):
+            _fail(f"unknown option {rest[i]!r} (usage: {usage})")
         else:
             positional.append(rest[i])
             i += 1
+    if len(positional) > 1:
+        _fail(f"usage: {usage}")
     if positional:
         cluster_dir = Path(positional[0])
     cluster_dir.mkdir(parents=True, exist_ok=True)
@@ -120,22 +144,21 @@ def _cmd_init(args: list[str]) -> None:
 
 
 def _cmd_add(args: list[str]) -> None:
+    usage = "graphify cluster add <repo-path-or-url> [--as TAG] [--dir DIR]"
     cluster_dir, rest = _parse_dir(args)
     tag = ""
     positional = []
     i = 0
     while i < len(rest):
-        if rest[i] == "--as" and i + 1 < len(rest):
-            tag = rest[i + 1]
-            i += 2
-        elif rest[i].startswith("--as="):
-            tag = rest[i].split("=", 1)[1]
-            i += 1
+        if rest[i] == "--as" or rest[i].startswith("--as="):
+            tag, i = _take_flag_value(rest, i, "--as")
+        elif rest[i].startswith("--"):
+            _fail(f"unknown option {rest[i]!r} (usage: {usage})")
         else:
             positional.append(rest[i])
             i += 1
     if len(positional) != 1:
-        _fail("usage: graphify cluster add <repo-path-or-url> [--as TAG] [--dir DIR]")
+        _fail(f"usage: {usage}")
     target = positional[0]
 
     spec = load_spec(cluster_dir)
@@ -150,6 +173,12 @@ def _cmd_add(args: list[str]) -> None:
         # symlinks; member path resolution deliberately preserves user-written
         # symlinked checkout layouts.
         repo_dir = Path(os.path.abspath(repo_dir))
+        if repo_dir == Path(os.path.abspath(cluster_dir)):
+            _fail(
+                "cannot add the cluster directory as its own member; a cluster "
+                "composes OTHER repos' graphs (run this from the cluster dir "
+                "and pass the member repo's path)"
+            )
         url = origin_url(repo_dir) or ""
         try:
             # abspath (not resolve) on BOTH sides: the hint is later re-joined
@@ -181,6 +210,7 @@ def _cmd_add(args: list[str]) -> None:
 
 def _cmd_remove(args: list[str]) -> None:
     cluster_dir, rest = _parse_dir(args)
+    _reject_unknown_flags(rest, "graphify cluster remove <TAG> [--dir DIR]")
     if len(rest) != 1:
         _fail("usage: graphify cluster remove <TAG> [--dir DIR]")
     tag = rest[0]
@@ -242,6 +272,7 @@ def _cmd_remove(args: list[str]) -> None:
 
 def _cmd_locate(args: list[str]) -> None:
     cluster_dir, rest = _parse_dir(args)
+    _reject_unknown_flags(rest, "graphify cluster locate <TAG> <PATH> [--dir DIR]")
     if len(rest) != 2:
         _fail("usage: graphify cluster locate <TAG> <PATH> [--dir DIR]")
     tag, path_str = rest
@@ -366,6 +397,13 @@ def _cmd_status(args: list[str]) -> None:
 
 def cmd_cluster(argv: list[str]) -> None:
     sub = argv[0] if argv else ""
+    # Help tokens ANYWHERE in argv print USAGE and stop — `cluster init --help`
+    # must never fall through to a handler and mkdir/init as a side effect.
+    # (This dispatcher is exempted from __main__'s universal help guard so the
+    # user gets the cluster USAGE instead of the generic pointer.)
+    help_requested = sub in ("", "help") or any(
+        a in ("-h", "--help", "-?") for a in argv
+    )
     handlers = {
         "init": _cmd_init,
         "add": _cmd_add,
@@ -375,10 +413,13 @@ def cmd_cluster(argv: list[str]) -> None:
         "check": _cmd_check,
         "status": _cmd_status,
     }
+    if help_requested:
+        print(USAGE)
+        sys.exit(0)
     handler = handlers.get(sub)
     if handler is None:
         print(USAGE, file=sys.stderr)
-        sys.exit(0 if sub in ("", "help", "--help", "-h") else 1)
+        sys.exit(1)
     try:
         handler(argv[1:])
     except ClusterSpecError as exc:
