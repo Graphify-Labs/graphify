@@ -956,7 +956,29 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-                elif not is_scoped_call and callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
+                elif is_scoped_call:
+                    # A module-qualified call (`crate::m::f()`, `m::f()`, `super::m::f()`)
+                    # goes to the cross-file pass with its qualifier, which binds it only
+                    # when the qualifier matches the candidate's module path and exactly
+                    # one candidate survives. Bare last-segment lookup stays off (#908).
+                    qual_node = func_node.child_by_field_name("path")
+                    qualifier = _read_text(qual_node, source) if qual_node else ""
+                    # `use std::fs; fs::read()` names std's fs, never a local `fs.rs`.
+                    first_seg = qualifier.split("::", 1)[0].split("<", 1)[0].strip()
+                    roots = use_roots.get(first_seg, {"crate"})
+                    if not roots <= {"crate", "super", "self"}:
+                        qualifier = ""
+                    if qualifier:
+                        raw_calls.append({
+                            "caller_nid": caller_nid,
+                            "callee": callee_name,
+                            "is_member_call": False,
+                            "is_scoped_call": True,
+                            "scope_qualifier": qualifier,
+                            "source_file": str_path,
+                            "source_location": f"L{node.start_point[0] + 1}",
+                        })
+                elif callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
                     rc_entry = {
                         "caller_nid": caller_nid,
                         "callee": callee_name,
