@@ -248,6 +248,31 @@ def test_cross_file_imported_callback_emits_indirect_call(tmp_path):
             assert e["confidence"] == "INFERRED"
 
 
+def test_cross_file_class_ref_is_not_indirect_call(tmp_path):
+    """The cross-file resolver guard in extract.py must suppress indirect_call edges
+    whose target is a class imported from another module (a descriptor, not an
+    invocation), while a genuine imported function callback still emits its edge.
+    This exercises the _callable_class exclusion on the CROSS-FILE path, which the
+    intra-file test (test_class_ref_is_not_indirect_call) does not reach."""
+    r, nid = _extract_dir(tmp_path, {
+        "models.py": (
+            "class Widget:\n    pass\n\n\n"
+            "def on_event(x):\n    return x\n"
+        ),
+        "scheduler.py": (
+            "from models import Widget, on_event\n\n\n"
+            "def schedule(pool, db, i):\n"
+            "    db.get(Widget, i)          # imported class as descriptor -> no edge\n"
+            "    pool.submit(on_event)      # imported fn callback -> indirect_call\n"
+        ),
+    })
+    indirect = _rels(r, "indirect_call")
+    # imported class is never an indirect_call target across files
+    assert all(t != nid["Widget"] for _s, t in indirect)
+    # genuine imported function callback still emits its edge
+    assert (nid["schedule"], nid["on_event"]) in indirect
+
+
 def test_cross_file_affected_includes_importing_dispatcher(tmp_path):
     r, nid = _extract_dir(tmp_path, {
         "handlers.py": "def on_event(x):\n    return x\n",
