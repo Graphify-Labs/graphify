@@ -2940,7 +2940,7 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
 
 
 def _file_node_ids(result):
-    return {n["id"] for n in result["nodes"] if str(n.get("label", "")).endswith((".py", ".js"))}
+    return {n["id"] for n in result["nodes"] if str(n.get("label", "")).endswith((".py", ".js", ".rb", ".rake"))}
 
 
 def test_python_toplevel_call_gets_file_caller(tmp_path):
@@ -2966,6 +2966,33 @@ def test_js_toplevel_call_gets_file_caller(tmp_path):
     tally_id = next(n["id"] for n in result["nodes"] if n.get("label") == "tally()")
     assert any(s in file_ids and t == tally_id for s, t in calls), \
         f"top-level tally() not sourced from file node: {calls}"
+
+
+def test_ruby_toplevel_call_gets_file_caller(tmp_path):
+    """#1972: a plain top-level Ruby call (no enclosing def) is sourced from the
+    file node. .rake extraction (0.9.13) is the main consumer of this fix."""
+    f = tmp_path / "toplevel.rb"
+    f.write_text("def tally\n  1\nend\n\ntally()\n")
+    result = extract([f], cache_root=tmp_path)
+    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
+    file_ids = _file_node_ids(result)
+    tally_id = next(n["id"] for n in result["nodes"] if n.get("label") == "tally()")
+    assert any(s in file_ids and t == tally_id for s, t in calls), \
+        f"top-level tally() not sourced from file node: {calls}"
+
+
+def test_ruby_rake_task_block_call_gets_file_caller(tmp_path):
+    """#1972: a call inside a ``task :name do ... end`` block. The block is not a
+    definition, so the file-root walk must attribute the inner call to the file
+    node rather than dropping it. This is the rake-task worst case from the issue."""
+    f = tmp_path / "build.rake"
+    f.write_text("def compile\n  1\nend\n\ntask :build do\n  compile()\nend\n")
+    result = extract([f], cache_root=tmp_path)
+    calls = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
+    file_ids = _file_node_ids(result)
+    compile_id = next(n["id"] for n in result["nodes"] if n.get("label") == "compile()")
+    assert any(s in file_ids and t == compile_id for s, t in calls), \
+        f"call inside rake task block not sourced from file node: {calls}"
 
 
 def test_incontext_call_unaffected_by_toplevel_fix(tmp_path):
