@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from graphify.build import build_from_extraction
 from graphify.extract import extract
 from graphify.extractors.resolution import _resolve_python_module_path
-from graphify.build import build_from_json
 
 
 _FILES = {
@@ -40,9 +40,9 @@ def _write(base: Path, prefix: str = "") -> list[Path]:
 def _import_edges(G):
     """(relation, source, target) for import edges, present-endpoints only."""
     return {
-        (d.get("relation"), u, v)
-        for u, v, d in G.edges(data=True)
-        if d.get("relation") in ("imports", "imports_from")
+        (edge.attributes.get("relation"), edge.source, edge.target)
+        for edge in G.edges
+        if edge.attributes.get("relation") in ("imports", "imports_from")
     }
 
 
@@ -73,8 +73,14 @@ def test_import_edges_identical_from_root_or_src(tmp_path):
 
     dpaths = [direct / r for r in _FILES]
     npaths = [nested / "src" / r for r in _FILES]
-    dG = build_from_json(extract(dpaths, cache_root=tmp_path / "cd", root=direct, parallel=False), root=str(direct))
-    nG = build_from_json(extract(npaths, cache_root=tmp_path / "cn", root=nested, parallel=False), root=str(nested))
+    dG = build_from_extraction(
+        extract(dpaths, cache_root=tmp_path / "cd", root=direct, parallel=False),
+        root=direct,
+    )
+    nG = build_from_extraction(
+        extract(npaths, cache_root=tmp_path / "cn", root=nested, parallel=False),
+        root=nested,
+    )
 
     d_edges = _import_edges(dG)
     # strip the `src_` prefix the nested layout adds to every id.
@@ -115,7 +121,10 @@ def test_ambiguous_package_alias_is_not_repointed(tmp_path):
         tmp_path / "a" / "src" / "pkg" / "__init__.py",
         tmp_path / "b" / "src" / "pkg" / "__init__.py",
     ]
-    G = build_from_json(extract(paths, cache_root=tmp_path / "c", root=tmp_path, parallel=False), root=str(tmp_path))
+    G = build_from_extraction(
+        extract(paths, cache_root=tmp_path / "c", root=tmp_path, parallel=False),
+        root=tmp_path,
+    )
     # The ambiguous `pkg_mod` alias claimed by both a/ and b/ must not be
     # repointed onto either file — no fabricated cross-tree import edge.
     imports = _import_edges(G)
@@ -145,7 +154,7 @@ def test_non_python_import_edge_is_not_repointed(tmp_path):
         {"source": "app_cs", "target": "pkg_mod", "relation": "imports",
          "confidence": "EXTRACTED", "source_file": "app.cs"}
     )
-    G = build_from_json(result, root=str(tmp_path))
+    G = build_from_extraction(result, root=tmp_path)
     # The C# edge's target must remain the (dangling, dropped) `pkg_mod`, never
     # repointed to the Python file node src_pkg_mod.
     assert not any(v == "src_pkg_mod" and u == "app_cs" for _, u, v in _import_edges(G)), (

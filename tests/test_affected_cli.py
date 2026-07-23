@@ -56,3 +56,82 @@ def test_cli_rejects_legacy_json_path(tmp_path, monkeypatch, capsys):
     except SystemExit as exc:
         assert exc.code == 1
     assert "obsolete" in capsys.readouterr().err
+
+
+def _callsite_graph(tmp_path, *, with_location: bool):
+    edge = {
+        "source": "loader",
+        "target": "transition",
+        "relation": "calls",
+        "confidence": "EXTRACTED",
+    }
+    if with_location:
+        edge.update(
+            source_file="apollo_pipeline_status.py",
+            source_location="L158",
+        )
+    return make_loaded(
+        tmp_path,
+        kind="digraph",
+        nodes=[
+            {
+                "id": "loader",
+                "label": "_load_apollo_app_state()",
+                "source_file": "apollo_pipeline_status.py",
+                "source_location": "L90",
+            },
+            {
+                "id": "transition",
+                "label": "transition_state()",
+                "source_file": "state.py",
+                "source_location": "L56",
+            },
+        ],
+        edges=[edge],
+    )
+
+
+def test_affected_reports_call_site_line_not_def_line(
+    monkeypatch, tmp_path, capsys
+):
+    loaded = _callsite_graph(tmp_path, with_location=True)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        [
+            "graphify",
+            "affected",
+            "transition_state",
+            "--store",
+            str(loaded.store_path),
+        ],
+    )
+
+    mainmod.main()
+
+    output = capsys.readouterr().out
+    assert "apollo_pipeline_status.py:L158" in output
+    assert "apollo_pipeline_status.py:L90" not in output
+
+
+def test_affected_falls_back_to_def_line_when_edge_has_no_location(
+    monkeypatch, tmp_path, capsys
+):
+    loaded = _callsite_graph(tmp_path, with_location=False)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        [
+            "graphify",
+            "affected",
+            "transition_state",
+            "--store",
+            str(loaded.store_path),
+        ],
+    )
+
+    mainmod.main()
+
+    assert "apollo_pipeline_status.py:L90" in capsys.readouterr().out

@@ -5247,7 +5247,8 @@ def extract(
     # _resolve_python_member_calls (run above via run_language_resolvers) can
     # match an aliased receiver against the import edge it came from. Nothing
     # reads it after that pass runs, so drop it here rather than let an internal
-    # local variable name ship into graph.json. Popped post-resolution, unlike
+    # local variable name ship into persistent graph state. Popped
+    # post-resolution, unlike
     # target_file (which _disambiguate_colliding_node_ids pops earlier in the
     # pipeline) — local_alias must survive until run_language_resolvers has run,
     # so it cannot be popped at that earlier point without breaking the fix.

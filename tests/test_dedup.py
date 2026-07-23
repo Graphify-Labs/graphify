@@ -153,7 +153,12 @@ def test_build_dedup_preserves_semantic_attributes():
         "edges": [],
     }
 
-    node = dict(build([ast, semantic], directed=True, dedup=True).nodes["src_auth_login"])
+    built = build([ast, semantic], directed=True, dedup=True)
+    node = dict(next(
+        record.attributes
+        for record in built.nodes
+        if record.id == "src_auth_login"
+    ))
 
     assert node["label"] == "login"
     assert node["source_location"] == "L42"

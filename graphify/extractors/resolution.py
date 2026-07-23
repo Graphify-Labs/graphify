@@ -1655,8 +1655,9 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
             break  # left the scan root; stop walking up
         if anc == root:
             continue  # already probed root/rel above
-        # Only probe sys.path-root candidates — dirs that are NOT themselves part
-        # of a package. Probing a package dir would resolve an absolute
+        # Only probe interpreter search-root candidates — dirs that are NOT
+        # themselves part of a package. Probing a package dir would resolve an
+        # absolute
         # `from helpers import x` to a sibling in the current package (Python-2
         # implicit-relative semantics), fabricating edges to what may be an
         # external dependency (#2072 review). A src-layout root (src/, no

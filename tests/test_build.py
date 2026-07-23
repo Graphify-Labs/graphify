@@ -68,6 +68,103 @@ def test_build_merges_last_node_attributes_and_backfills_edge_source():
     assert _edge(graph, "a", "b").attributes["source_file"] == "a.py"
 
 
+def test_ghost_merge_uses_source_file_not_basename():
+    graph = build_from_extraction({
+        "nodes": [
+            {
+                "id": "a_render",
+                "label": "render",
+                "file_type": "code",
+                "source_file": "src/a/index.ts",
+                "source_location": "L10",
+                "_origin": "ast",
+            },
+            {
+                "id": "b_render",
+                "label": "render",
+                "file_type": "code",
+                "source_file": "src/b/index.ts",
+                "source_location": "L20",
+                "_origin": "ast",
+            },
+            {
+                "id": "ghost_render",
+                "label": "render",
+                "file_type": "code",
+                "source_file": "src/a/index.ts",
+            },
+            {
+                "id": "caller",
+                "label": "main",
+                "file_type": "code",
+                "source_file": "src/main.ts",
+                "source_location": "L1",
+                "_origin": "ast",
+            },
+        ],
+        "edges": [{
+            "source": "caller",
+            "target": "ghost_render",
+            "relation": "calls",
+            "confidence": "EXTRACTED",
+            "source_file": "src/main.ts",
+        }],
+    })
+
+    node_ids = {node.id for node in graph.nodes}
+    assert "ghost_render" not in node_ids
+    assert "b_render" in node_ids
+    assert _edge(graph, "caller", "a_render")
+    assert not any(
+        edge.source == "caller" and edge.target == "b_render"
+        for edge in graph.edges
+    )
+
+
+def test_ghost_merge_not_across_directories_same_basename():
+    graph = build_from_extraction({
+        "nodes": [
+            {
+                "id": "docs_a_index",
+                "label": "Quickstart",
+                "file_type": "document",
+                "source_file": "docs/product_a/index.md",
+                "source_location": "L1",
+            },
+            {
+                "id": "docs_b_index",
+                "label": "Quickstart",
+                "file_type": "document",
+                "source_file": "docs/product_b/index.md",
+            },
+            {
+                "id": "docs_hub",
+                "label": "Docs",
+                "file_type": "concept",
+                "source_file": "docs/hub.md",
+                "source_location": "L1",
+            },
+        ],
+        "edges": [{
+            "source": "docs_hub",
+            "target": "docs_b_index",
+            "relation": "links_to",
+            "confidence": "INFERRED",
+            "source_file": "docs/hub.md",
+        }],
+    })
+
+    assert {node.id for node in graph.nodes} >= {
+        "docs_a_index",
+        "docs_b_index",
+    }
+    assert _edge(graph, "docs_hub", "docs_b_index")
+    assert not any(
+        edge.source == "docs_hub" and edge.target == "docs_a_index"
+        for edge in graph.edges
+    )
+
+
 def test_parallel_relations_and_self_loop_survive():
     graph = build_from_extraction({
         "directed": True,

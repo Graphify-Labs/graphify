@@ -1,5 +1,10 @@
 """Regression tests for `graphify path` arrow direction (#849)."""
 from __future__ import annotations
+import os
+from pathlib import Path
+import subprocess
+import sys
+
 import pytest
 import graphify.__main__ as mainmod
 from tests.native_helpers import make_loaded
@@ -105,3 +110,107 @@ def test_endpoint_falls_back_to_score_head(monkeypatch, tmp_path, capsys):
         mainmod.main()
     assert exc_info.value.code == 0
     assert "No path found" in capsys.readouterr().out
+
+
+def _diamond_graph(tmp_path):
+    return make_loaded(
+        tmp_path,
+        nodes=[
+            {"id": "a", "label": "Alpha", "source_file": "a.py"},
+            {"id": "p", "label": "Pmid", "source_file": "p.py"},
+            {"id": "q", "label": "Qmid", "source_file": "q.py"},
+            {"id": "b", "label": "Beta", "source_file": "b.py"},
+        ],
+        edges=[
+            {
+                "source": "a",
+                "target": "p",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+            },
+            {
+                "source": "p",
+                "target": "b",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+            },
+            {
+                "source": "a",
+                "target": "q",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+            },
+            {
+                "source": "q",
+                "target": "b",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+            },
+        ],
+    ).store_path
+
+
+def test_path_deterministic_across_hash_seeds(tmp_path):
+    graph_path = _diamond_graph(tmp_path)
+    routes = set()
+    repo_root = Path(__file__).resolve().parents[1]
+    script = (
+        "import sys; "
+        "from graphify.cli import _path; "
+        "_path([sys.argv[1], sys.argv[2], '--store', sys.argv[3]])"
+    )
+    for seed in ("0", "1", "2", "3"):
+        result = subprocess.run(
+            [sys.executable, "-c", script, "Alpha", "Beta", str(graph_path)],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "PYTHONHASHSEED": seed,
+                "PYTHONPATH": str(repo_root),
+            },
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        routes.add(result.stdout.strip())
+
+    assert len(routes) == 1
+    assert "Pmid" in next(iter(routes))
+
+
+def test_path_reports_all_parallel_relations(monkeypatch, tmp_path, capsys):
+    loaded = make_loaded(
+        tmp_path,
+        kind="multidigraph",
+        nodes=[
+            {"id": "a", "label": "Alpha"},
+            {"id": "b", "label": "Beta"},
+        ],
+        edges=[
+            {
+                "source": "a",
+                "target": "b",
+                "key": "calls",
+                "relation": "calls",
+                "confidence": "EXTRACTED",
+            },
+            {
+                "source": "a",
+                "target": "b",
+                "key": "references",
+                "relation": "references",
+                "confidence": "INFERRED",
+            },
+        ],
+    )
+
+    output = _run(
+        monkeypatch,
+        loaded.store_path,
+        "Alpha",
+        "Beta",
+        capsys,
+    )
+
+    assert "--calls/references [EXTRACTED/INFERRED]-->" in output

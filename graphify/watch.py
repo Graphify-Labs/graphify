@@ -421,6 +421,22 @@ def _rebuild_code(
             extra_excludes=_read_build_excludes(out) or None,
             gitignore=_read_build_gitignore(out),
         )
+        skipped = detected.get("skipped_sensitive", [])
+        sensitive = [
+            str(path)
+            for path in skipped
+            if isinstance(path, str) and " [" not in path
+        ]
+        if sensitive:
+            names = ", ".join(
+                sorted({Path(path).name for path in sensitive})[:6]
+            )
+            more = f" (+{len(sensitive) - 6} more)" if len(sensitive) > 6 else ""
+            print(
+                f"[graphify extract] {len(sensitive)} file(s) skipped as "
+                "potentially sensitive (rename or move if wrongly flagged): "
+                f"{names}{more}"
+            )
         if _timer is not None:
             _timer.mark("detect")
         files_by_type = detected.get("files", {})

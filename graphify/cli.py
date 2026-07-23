@@ -436,24 +436,36 @@ def _path(args: list[str]) -> None:
             graph.edge(edge_id)
             for edge_id in graph.incident_edge_ids(left)
         ]
-        edge = next(
-            (
-                record for record in records
-                if record is not None
-                and {record.source, record.target} == {left, right}
-            ),
-            None,
-        )
-        if edge is None:
+        hop_edges = [
+            record
+            for record in records
+            if record is not None
+            and {record.source, record.target} == {left, right}
+        ]
+        if not hop_edges:
             raise RuntimeError("native shortest path returned an edge-less hop")
-        attrs = edge_attributes(edge)
-        relation = attrs.get("relation", "related")
-        confidence = attrs.get("confidence")
-        confidence_text = f" [{confidence}]" if confidence else ""
+        forward_edges = [
+            edge for edge in hop_edges
+            if edge.source == left and edge.target == right
+        ]
+        selected_edges = forward_edges or hop_edges
+        attributes = [edge_attributes(edge) for edge in selected_edges]
+        relations = sorted({
+            str(value)
+            for attrs in attributes
+            if (value := attrs.get("relation"))
+        })
+        relation = "/".join(relations) if relations else "related"
+        confidences = sorted({
+            str(value)
+            for attrs in attributes
+            if (value := attrs.get("confidence"))
+        })
+        confidence_text = f" [{'/'.join(confidences)}]" if confidences else ""
         if index == 0:
             segments.append(str(node_attributes(graph, left).get("label", left)))
         label = str(node_attributes(graph, right).get("label", right))
-        if edge.source == left and edge.target == right:
+        if forward_edges:
             segments.append(f"--{relation}{confidence_text}--> {label}")
         else:
             segments.append(f"<--{relation}{confidence_text}-- {label}")
@@ -510,15 +522,53 @@ def _explain(args: list[str]) -> None:
         if entry.get("stale"):
             lesson += " [code changed since — re-verify]"
         print(lesson)
-    print("Connections:")
+    connections: list[tuple[str, Any, dict[str, Any]]] = []
     for edge_id in graph.incident_edge_ids(node_id):
         edge = graph.edge(edge_id)
         if edge is None:
             continue
         neighbor = edge.target if edge.source == node_id else edge.source
-        relation = edge_attributes(edge).get("relation", "related")
-        arrow = "-->" if edge.source == node_id else "<--"
-        print(f"  {arrow} {node_attributes(graph, neighbor).get('label', neighbor)} [{relation}]")
+        connections.append((
+            "out" if edge.source == node_id else "in",
+            neighbor,
+            edge_attributes(edge),
+        ))
+    if not connections:
+        return
+
+    print(f"\nConnections ({len(connections)}):")
+    # Native incident-edge order is deterministic. Keep it as the tie-break so
+    # equal-degree callers retain source order, matching the established CLI.
+    connections.sort(key=lambda connection: -graph.degree(connection[1]).degree)
+    for direction, neighbor, edge_data in connections[:20]:
+        relation = edge_data.get("relation", "")
+        confidence = edge_data.get("confidence", "")
+        location = edge_data.get("source_location") or ""
+        source_file = edge_data.get("source_file") or ""
+        at = f" {source_file}:{location}" if location else ""
+        arrow = "-->" if direction == "out" else "<--"
+        print(
+            f"  {arrow} {node_attributes(graph, neighbor).get('label', neighbor)} "
+            f"[{relation}] [{confidence}]{at}"
+        )
+    if len(connections) <= 20:
+        return
+
+    remainder = connections[20:]
+    print(f"  ... and {len(remainder)} more")
+    by_file: dict[tuple[str, str], int] = {}
+    for direction, _neighbor, edge_data in remainder:
+        source_file = edge_data.get("source_file") or "(unknown file)"
+        key = (direction, str(source_file))
+        by_file[key] = by_file.get(key, 0) + 1
+    grouped = sorted(by_file.items(), key=lambda item: (-item[1], item[0]))
+    print("  Grouped by file:")
+    for (direction, source_file), count in grouped[:20]:
+        arrow = "-->" if direction == "out" else "<--"
+        noun = "connection" if count == 1 else "connections"
+        print(f"    {arrow} {source_file}: {count} {noun}")
+    if len(grouped) > 20:
+        print(f"    ... and {len(grouped) - 20} more files")
 
 
 def _export(args: list[str]) -> None:
@@ -765,6 +815,11 @@ def _activate_external_only(
 def _update_or_extract(cmd: str, args: list[str]) -> None:
     from graphify.watch import _rebuild_code, _write_build_config
 
+    if cmd == "extract" and not args:
+        raise ValueError(
+            "Usage: graphify extract <path> [--code-only] "
+            "[--out DIR|--output DIR]"
+        )
     timer = _StageTimer("--timing" in args)
     postgres_dsn = _option(args, "--postgres")
     positional = _first_positional(

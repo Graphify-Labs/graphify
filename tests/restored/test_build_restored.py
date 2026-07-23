@@ -219,13 +219,15 @@ def test_ghost_merge_unique_located_node_still_merges():
     assert _has_edge(data, "caller", "ast_render")
 
 
-def test_ghost_merge_skipped_on_basename_collision():
+def test_ghost_merge_uses_full_path_despite_basename_collision():
     data = build_from_extraction({
         "nodes": _ghost_nodes(two_ast=True),
         "edges": [{"source": "caller", "target": "ghost_render", "relation": "calls"}],
     })
-    assert "ghost_render" in _ids(data)
-    assert _has_edge(data, "caller", "ghost_render")
+    assert "ghost_render" not in _ids(data)
+    assert "other_render" in _ids(data)
+    assert _has_edge(data, "caller", "ast_render")
+    assert not _has_edge(data, "caller", "other_render")
 
 
 def test_ghost_merge_non_ast_different_files_both_survive():
