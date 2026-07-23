@@ -21,6 +21,7 @@ from graphify.presentation import (
     cleanup_orphaned_presentation_bundles,
     convert_presentation_file,
 )
+from graphify.epub import EpubError, convert_epub_file
 
 
 class FileType(str, Enum):
@@ -37,7 +38,7 @@ CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', 
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
-OFFICE_EXTENSIONS = {'.docx', '.xlsx', '.pptx'}
+OFFICE_EXTENSIONS = {'.docx', '.xlsx', '.pptx', '.epub'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
 
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
@@ -1484,6 +1485,33 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         str(p) + f" [PPTX extraction warning: {extraction_warning}]"
                     )
                 continue
+            if p.suffix.lower() == ".epub":
+                try:
+                    epub_art = convert_epub_file(
+                        p,
+                        converted_dir,
+                        root=root,
+                    )
+                except EpubError as exc:
+                    skipped_sensitive.append(str(p) + f" [EPUB extraction failed: {exc}]")
+                    continue
+                if not _is_ignored(
+                    epub_art.markdown_path, root, ignore_patterns, _cache=ignore_cache
+                ):
+                    files[FileType.DOCUMENT].append(str(epub_art.markdown_path))
+                    total_words += _wc(epub_art.markdown_path)
+                for image_path in epub_art.images:
+                    if not _is_ignored(image_path, root, ignore_patterns, _cache=ignore_cache):
+                        files[FileType.IMAGE].append(str(image_path))
+                for media_path in epub_art.media:
+                    if not _is_ignored(media_path, root, ignore_patterns, _cache=ignore_cache):
+                        files[FileType.VIDEO].append(str(media_path))
+                for extraction_warning in getattr(epub_art, "warnings", []):
+                    skipped_sensitive.append(
+                        str(p) + f" [EPUB extraction warning: {extraction_warning}]"
+                    )
+                continue
+
             # Office files: convert to markdown sidecar so subagents can read them
             if p.suffix.lower() in OFFICE_EXTENSIONS:
                 md_path = convert_office_file(p, converted_dir, root=root)
