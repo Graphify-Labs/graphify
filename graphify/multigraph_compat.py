@@ -2,8 +2,8 @@
 
 Verifies that the current NetworkX runtime supports the behaviors a future
 opt-in --multigraph build will rely on. The probe is BEHAVIOR-based, not
-version-based — both NX 3.4.2 (Py 3.10 lane) and NX 3.6.1+ (Py 3.11+ lane)
-pass. The probe result is cached for the process lifetime via lru_cache.
+version-based.
+The probe result is cached for the process lifetime via lru_cache.
 
 No call sites added yet; downstream multigraph PRs will gate on
 require_multigraph_capabilities() before enabling MDG mode.
