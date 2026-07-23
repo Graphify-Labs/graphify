@@ -425,6 +425,63 @@ def test_probe_prefers_sibling_python_exe_on_windows_layouts():
     assert "/python.exe" in _PYTHON_DETECT
 
 
+def _extract_case_pattern(marker: str) -> str:
+    """Pull the `*[!...]*` glob portion of a real case arm out of _PYTHON_DETECT
+    by a unique anchor, so tests run against the emitted text, not a copy."""
+    from graphify.hooks import _PYTHON_DETECT
+    for line in _PYTHON_DETECT.splitlines():
+        if marker in line:
+            return line.strip().split(")")[0]
+    raise AssertionError(f"case arm containing {marker!r} not found in _PYTHON_DETECT")
+
+
+def _shell_verdict(pattern: str, candidate: str) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f'case "$1" in\n{pattern}) echo REJECTED ;;\n*) echo ACCEPTED ;;\nesac', "_", candidate],
+        capture_output=True, text=True,
+    )
+    return result.stdout.strip()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@pytest.mark.parametrize("winpath", [
+    r"C:\Users\u\.venv\Scripts\python.exe",
+    r"C:\Python311\python.exe",
+])
+def test_file_path_allowlist_accepts_windows_backslash_path(winpath):
+    """#2126: the .graphify_python FILE allowlist must accept real Windows paths
+    at actual shell runtime. Old pattern rejected them due to bash bracket-escape."""
+    pattern = _extract_case_pattern('_FROM_FILE=""')
+    assert _shell_verdict(pattern, winpath) == "ACCEPTED", (
+        f"Windows path {winpath!r} rejected by file-path allowlist at shell runtime"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@pytest.mark.parametrize("shebang_path", [
+    r"C:\Users\u\.venv\Scripts\python.exe",
+])
+def test_shebang_allowlist_accepts_windows_backslash_path(shebang_path):
+    """#2126: the shebang-parsed launcher allowlist had no `:` or `\\` at all, so
+    any Windows-style shebang path was unconditionally emptied. Must ACCEPT now."""
+    pattern = _extract_case_pattern('GRAPHIFY_PYTHON="" ;;')
+    assert _shell_verdict(pattern, shebang_path) == "ACCEPTED", (
+        f"Windows shebang path {shebang_path!r} rejected by launcher allowlist"
+    )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash required to exercise emitted glob")
+@pytest.mark.parametrize("dangerous", ["foo;rm -rf /", "foo`id`", "foo$(id)", "foo$IFS"])
+def test_python_detect_allowlists_still_reject_shell_metacharacters(dangerous):
+    """Guard against a naive fix (backslash right before `]`) that forms a
+    `:`-to-`\\` range admitting `;`, backtick, `$`. Both allowlists must reject."""
+    for marker in ('_FROM_FILE=""', 'GRAPHIFY_PYTHON="" ;;'):
+        pattern = _extract_case_pattern(marker)
+        assert _shell_verdict(pattern, dangerous) == "REJECTED", (
+            f"{marker} allowlist wrongly accepted dangerous input {dangerous!r}"
+        )
+
+
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
 def test_hooks_reuse_git_dir_from_env(name, script):
     """git exports GIT_DIR to hooks, so the rev-parse fallback should only run
