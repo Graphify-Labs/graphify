@@ -428,6 +428,35 @@ def test_fresh_writer_opens_native_database_on_a_background_thread(tmp_path, mon
     assert client.closed
 
 
+@pytest.mark.parametrize("read_only", [False, True])
+def test_existing_store_reopens_with_embedded_caches_disabled(tmp_path, monkeypatch, read_only):
+    from graphify.helix import persistence
+
+    path = tmp_path / "graph.helix"
+    path.mkdir()
+    (path / "existing").touch()
+
+    class Client:
+        def close(self):
+            pass
+
+    client = Client()
+
+    def open_client(_path, *, read_only=False, disable_cache=False):
+        assert read_only is read_only_mode
+        assert disable_cache
+        return client
+
+    read_only_mode = read_only
+    monkeypatch.setattr(persistence, "open_embedded_client", open_client)
+    monkeypatch.setattr(HelixEmbeddedStore, "_validate_active_schema", lambda self: None)
+    monkeypatch.setattr(HelixEmbeddedStore, "_cleanup_inactive_generations", lambda self: None)
+    monkeypatch.setattr(HelixEmbeddedStore, "_cleanup_inactive_state_revisions", lambda self: None)
+
+    store = HelixEmbeddedStore(path, read_only=read_only)
+    store.close()
+
+
 def test_background_open_failure_releases_writer_lock(tmp_path, monkeypatch):
     from graphify.helix import persistence
 
@@ -443,6 +472,28 @@ def test_background_open_failure_releases_writer_lock(tmp_path, monkeypatch):
         store._ensure_client()
     assert store._closed
 
+    lock = _StoreLock(path / ".graphify-writer.lock", shared=False, timeout=0.1)
+    lock.acquire()
+    lock.release()
+
+
+def test_background_open_interrupt_closes_store_without_masking_interrupt(tmp_path, monkeypatch):
+    from graphify.helix import persistence
+
+    def interrupt_open(_path, *, read_only=False, disable_cache=False):
+        assert not read_only
+        assert disable_cache
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(persistence, "open_embedded_client", interrupt_open)
+    path = tmp_path / "graph.helix"
+    store = HelixEmbeddedStore(path)
+
+    with pytest.raises(KeyboardInterrupt):
+        store._ensure_client()
+
+    assert store._closed
+    store.close()
     lock = _StoreLock(path / ".graphify-writer.lock", shared=False, timeout=0.1)
     lock.acquire()
     lock.release()

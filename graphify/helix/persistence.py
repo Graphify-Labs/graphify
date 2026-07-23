@@ -935,7 +935,11 @@ class HelixNodeQuery:
         self.path = Path(path).expanduser().resolve()
         self.generation = generation
         self.max_candidates = max_candidates
-        self._client = client or open_embedded_client(self.path, read_only=True)
+        self._client = client or open_embedded_client(
+            self.path,
+            read_only=True,
+            disable_cache=True,
+        )
         self._lock = threading.RLock()
         self._closed = False
 
@@ -1059,7 +1063,7 @@ class HelixNodeQuery:
             _close_public_client(self._client)
             self._closed = True
 
-    # Deliberately no __del__: b3's async native close can re-enter while
+    # Deliberately no __del__: async native close can re-enter while
     # Python is garbage-collecting inside another embedded request.
 
 
@@ -1133,7 +1137,11 @@ class HelixEmbeddedStore:
                 raise
             return
         try:
-            self._client = open_embedded_client(self.path, read_only=read_only)
+            self._client = open_embedded_client(
+                self.path,
+                read_only=read_only,
+                disable_cache=True,
+            )
         except Exception as exc:
             self._store_lock.release()
             if message := _public_store_rebuild_message(exc, self.path):
@@ -1165,7 +1173,7 @@ class HelixEmbeddedStore:
             assert future is not None, "an open store must own a client or open future"
             try:
                 self._client = future.result()
-            except Exception as exc:
+            except BaseException as exc:
                 self._closed = True
                 self._store_lock.release()
                 if message := _public_store_rebuild_message(exc, self.path):
@@ -2748,6 +2756,11 @@ class HelixEmbeddedStore:
             generation,
             await_durability=False,
         )
+        # The publication fence can transiently duplicate SlateDB's pending
+        # write buffers. These canonical records have already been staged and
+        # are intentionally consumed here so they do not overlap that peak.
+        nodes.clear()
+        edges.clear()
 
     def _write_state_records(
         self,
@@ -3112,7 +3125,7 @@ class HelixEmbeddedStore:
                     _STATE_LABEL,
                     predicate,
                 )
-                .value_map(),
+                .value_map((_STATE_KIND, _STATE_KEY, _STATE_PAYLOAD, _ORDER)),
             )
             .returning(["state"])
         )
@@ -3266,6 +3279,7 @@ class HelixEmbeddedStore:
         *,
         metadata: dict[str, Any] | None = None,
         client: Any | None = None,
+        include_storage_identity: bool = False,
     ) -> Any:
         """Load one immutable native snapshot of the active generation."""
         generation = generation or self.active_generation
@@ -3324,8 +3338,12 @@ class HelixEmbeddedStore:
                 else None
             ),
             weight_property=_NATIVE_WEIGHT,
-            node_properties=(_ATTRS, _STORAGE_KEY),
-            edge_properties=(_ATTRS, _EDGE_IDENTITY),
+            node_properties=(
+                (_ATTRS, _STORAGE_KEY) if include_storage_identity else (_ATTRS,)
+            ),
+            edge_properties=(
+                (_ATTRS, _EDGE_IDENTITY) if include_storage_identity else (_ATTRS,)
+            ),
             max_nodes=self._max_nodes,
             max_edges=self._max_edges,
             allow_full_scan=True,
@@ -3339,7 +3357,11 @@ class HelixEmbeddedStore:
     def _read_generation_data(self, generation: str) -> dict[str, Any]:
         meta = self._metadata(generation)
         self._validate_metadata(meta)
-        native = self.native_graph(generation, metadata=meta)
+        native = self.native_graph(
+            generation,
+            metadata=meta,
+            include_storage_identity=True,
+        )
 
         nodes_with_order: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
         for record in native.nodes():
@@ -3515,7 +3537,7 @@ class HelixEmbeddedStore:
                 open_embedded_client(
                     self.path,
                     read_only=True,
-                    disable_cache=native is not None,
+                    disable_cache=True,
                 )
                 if attach_query
                 else None

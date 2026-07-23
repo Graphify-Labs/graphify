@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -311,8 +312,10 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
             return list(pool.map(lambda _: reopen().graph.node_count, range(8)))
 
     _, helix_concurrency, _ = measure(concurrent_readers)
-    nx_memory = isolated_ingest_memory("networkx", nodes, edges)
-    helix_memory = isolated_ingest_memory("helix", nodes, edges)
+    nx_memory_samples = [isolated_ingest_memory("networkx", nodes, edges) for _ in range(3)]
+    helix_memory_samples = [isolated_ingest_memory("helix", nodes, edges) for _ in range(3)]
+    nx_memory = int(statistics.median(nx_memory_samples))
+    helix_memory = int(statistics.median(helix_memory_samples))
     result["networkx"] = {
         "ingest_seconds": nx_ingest,
         "ingest_runs": 1,
@@ -335,6 +338,7 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
         "incremental_1pct_seconds": nx_incremental,
         "graphml_export_seconds": nx_export,
         "peak_rss_delta_bytes": nx_memory,
+        "peak_rss_samples_bytes": nx_memory_samples,
         "disk_bytes": nx_path.stat().st_size,
     }
     result["helix"] = {
@@ -366,6 +370,7 @@ def run_size(nodes: int, edges: int, root: Path) -> dict[str, Any]:
         "graphml_export_seconds": helix_export,
         "eight_concurrent_reopens_seconds": helix_concurrency,
         "peak_rss_delta_bytes": helix_memory,
+        "peak_rss_samples_bytes": helix_memory_samples,
         "disk_after_ingest_bytes": helix_ingest_disk,
         "disk_after_update_bytes": directory_size(store_path),
         "post_delta_store_ratio": directory_size(store_path) / helix_ingest_disk,
@@ -500,7 +505,7 @@ def main() -> None:
     try:
         results = [run_size(nodes, edges, root) for nodes, edges in SIZES]
         report = {
-            "helix_revision": "0.2.0b3",
+            "helix_revision": importlib.metadata.version("helix-db-embedded"),
             "python": platform.python_version(),
             "platform": platform.platform(),
             "pid": os.getpid(),

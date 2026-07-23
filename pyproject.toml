@@ -11,8 +11,8 @@ license = { file = "LICENSE" }
 keywords = ["claude", "claude-code", "codex", "opencode", "kilo", "cursor", "gemini", "aider", "kiro", "pi", "devin", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
 requires-python = ">=3.10"
 dependencies = [
-    "helix-db==0.2.0b3",
-    "helix-db-embedded==0.2.0b3",
+    "helix-db==0.2.0b4",
+    "helix-db-embedded==0.2.0b4",
     "defusedxml>=0.7.1",
     "numpy>=1.21",
     "rapidfuzz>=3.0",
@@ -148,6 +148,6 @@ pythonVersion = "3.10"
 typeCheckingMode = "basic"
 
 [tool.graphify.helix]
-index = "https://pypi.org/project/helix-db/0.2.0b3/"
-package = "helix-db==0.2.0b3"
-embedded_package = "helix-db-embedded==0.2.0b3"
+index = "https://pypi.org/project/helix-db/0.2.0b4/"
+package = "helix-db==0.2.0b4"
+embedded_package = "helix-db-embedded==0.2.0b4"
