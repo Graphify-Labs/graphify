@@ -160,9 +160,11 @@ def test_api_call_link_by_file_selector(linked_cluster, tmp_path):
     assert data["confidence"] == "EXTRACTED"
     assert data["origin"] == "cluster_spec"
     assert data["link_name"] == "cube-rest"
-    assert data["_src"] == "web::lib_cube_client"
-    assert data["_tgt"] == "svc::cube"
     assert data["source_file"] == "cluster.json"
+    # Direction is topological (the graph is directed) and the _src/_tgt
+    # persistence markers are popped at write time like export.to_json does.
+    assert "_src" not in data and "_tgt" not in data
+    assert G.get_edge_data("svc::cube", "web::lib_cube_client") is None
 
 
 def test_file_selector_prefers_file_node(linked_cluster):
@@ -269,9 +271,11 @@ def test_shared_resource_creates_hub_with_uses_edges(linked_cluster):
     assert G.nodes[hub]["file_type"] == "concept"
     assert G.nodes[hub]["label"] == "cro.pings"
     assert G.nodes[hub]["repo"] == "cluster"
-    assert set(G.neighbors(hub)) == {"web::types_payload", "svc::sync"}
-    for neighbor in G.neighbors(hub):
-        assert G.get_edge_data(neighbor, hub)["relation"] == "uses"
+    # Referents depend on the resource, so `uses` edges point referent -> hub.
+    referents = {"web::types_payload", "svc::sync"}
+    assert set(G.predecessors(hub)) == referents
+    for referent in referents:
+        assert G.get_edge_data(referent, hub)["relation"] == "uses"
 
 
 def test_mirrored_file_link(linked_cluster):
@@ -290,6 +294,73 @@ def test_mirrored_file_link(linked_cluster):
     data = G.get_edge_data("web::types_payload", "svc::payload")
     assert data["relation"] == "mirrors"
     assert data["direction"] == "both"
+    # direction: "both" materializes a real reverse edge, not just metadata —
+    # affected/query traverse topology, so both directions must exist.
+    reverse = G.get_edge_data("svc::payload", "web::types_payload")
+    assert reverse is not None
+    assert reverse["relation"] == "mirrors"
+    assert reverse["direction"] == "both"
+
+
+def test_direction_both_traverses_from_either_endpoint(linked_cluster):
+    write_cluster(linked_cluster, [
+        {"tag": "web", "path": "../web"},
+        {"tag": "svc", "path": "../svc"},
+    ], links=[{
+        "type": "mirrored_file",
+        "name": "payload",
+        "from": {"repo": "web", "file": "src/types/payload.ts"},
+        "to": {"repo": "svc", "file": "src/payload.ts"},
+        "direction": "both",
+    }])
+    build_cluster(linked_cluster)
+    from graphify.affected import affected_nodes
+
+    G = _load_out(linked_cluster)
+    from_web = {h.node_id for h in affected_nodes(G, "web::types_payload", relations=["mirrors"])}
+    from_svc = {h.node_id for h in affected_nodes(G, "svc::payload", relations=["mirrors"])}
+    assert "svc::payload" in from_web
+    assert "web::types_payload" in from_svc
+
+
+def test_direction_validation_rejects_unknown_values(linked_cluster):
+    write_cluster(linked_cluster, [
+        {"tag": "web", "path": "../web"},
+        {"tag": "svc", "path": "../svc"},
+    ], links=[{
+        "type": "mirrored_file",
+        "name": "payload",
+        "from": {"repo": "web", "file": "src/types/payload.ts"},
+        "to": {"repo": "svc", "file": "src/payload.ts"},
+        "direction": "sideways",
+    }])
+    with pytest.raises(ClusterSpecError, match="direction"):
+        load_spec(linked_cluster)
+
+
+def test_direction_both_still_owns_the_pair(linked_cluster):
+    # The declared link's own reverse edge is exempt from the
+    # one-relation-per-pair guard; a separate reverse-declaring link is not.
+    write_cluster(linked_cluster, [
+        {"tag": "web", "path": "../web"},
+        {"tag": "svc", "path": "../svc"},
+    ], links=[
+        {
+            "type": "mirrored_file",
+            "name": "payload",
+            "from": {"repo": "web", "file": "src/types/payload.ts"},
+            "to": {"repo": "svc", "file": "src/payload.ts"},
+            "direction": "both",
+        },
+        {
+            "type": "references",
+            "name": "reverse-decl",
+            "from": {"repo": "svc", "file": "src/payload.ts"},
+            "to": {"repo": "web", "file": "src/types/payload.ts"},
+        },
+    ])
+    with pytest.raises(ClusterSpecError, match="one relation per node pair"):
+        build_cluster(linked_cluster)
 
 
 def test_duplicate_direct_links_fail_check_and_build(linked_cluster):
@@ -417,3 +488,71 @@ def test_dry_run_does_not_mutate(linked_cluster):
     report = apply_spec_links(G, spec, dry_run=True)
     assert report.edges_added == 1
     assert (G.number_of_nodes(), G.number_of_edges()) == (before_nodes, before_edges)
+
+
+def test_norm_source_file_keeps_leading_dots():
+    from graphify.cluster_graph import _norm_source_file
+
+    assert _norm_source_file(".env") == ".env"
+    assert _norm_source_file(".github/workflows/ci.yml") == ".github/workflows/ci.yml"
+    assert _norm_source_file("./src/app.py") == "src/app.py"
+    assert _norm_source_file("/abs/src/app.py") == "abs/src/app.py"
+
+
+def test_file_selector_matches_dotfile(tmp_path):
+    make_member(tmp_path, "web", [
+        _node("env", label=".env", source_file=".env"),
+        _node("scripts_env", label="env", source_file="scripts/env"),
+    ])
+    make_member(tmp_path, "svc", [_node("sync", source_file="src/sync.ts")])
+    cluster = tmp_path / "cluster"
+    write_cluster(cluster, [
+        {"tag": "web", "path": "../web"},
+        {"tag": "svc", "path": "../svc"},
+    ], links=[{
+        "type": "references",
+        "name": "env-contract",
+        "from": {"repo": "svc", "file": "src/sync.ts"},
+        "to": {"repo": "web", "file": ".env"},
+    }])
+    build_cluster(cluster)
+    G = _load_out(cluster)
+    # ".env" must match the dotfile node, not alias onto "scripts/env".
+    assert G.get_edge_data("svc::sync", "web::env") is not None
+    assert G.get_edge_data("svc::sync", "web::scripts_env") is None
+
+
+def test_external_label_selector_is_member_order_independent(tmp_path):
+    """Externals dedupe onto the FIRST member that references them; a selector
+    naming any other referencing member must still resolve, in either order."""
+    make_member(tmp_path, "alpha", [
+        _node("app", source_file="src/app.ts"),
+        _node("requests", label="requests"),  # external
+    ], edges=[("app", "requests", {"relation": "imports"})])
+    make_member(tmp_path, "beta", [
+        _node("server", source_file="src/server.ts"),
+        _node("requests", label="requests"),
+    ], edges=[("server", "requests", {"relation": "imports"})])
+
+    for member_order in (["alpha", "beta"], ["beta", "alpha"]):
+        cluster = tmp_path / f"cluster-{'-'.join(member_order)}"
+        # Distinct names: same-named clusters sharing a member are (correctly)
+        # rejected by the marker conflict check.
+        write_cluster(cluster, [
+            {"tag": tag, "path": f"../{tag}"} for tag in member_order
+        ], name=f"stack-{'-'.join(member_order)}", links=[{
+            "type": "shared_resource",
+            "kind": "library",
+            "name": "requests-lib",
+            "referents": [
+                {"repo": "beta", "label": "requests"},
+                {"repo": "alpha", "file": "src/app.ts"},
+            ],
+        }])
+        build_cluster(cluster)
+        G = _load_out(cluster)
+        hub = "cluster::library_requests_lib"
+        assert hub in G, f"hub missing for member order {member_order}"
+        referents = set(G.predecessors(hub))
+        assert any("requests" in r for r in referents), member_order
+        assert "alpha::app" in referents, member_order

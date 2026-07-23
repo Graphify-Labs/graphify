@@ -218,12 +218,18 @@ def load_spec(cluster_dir: Path) -> ClusterSpec:
         link_missing = str(raw.get("on_missing") or "")
         if link_missing and link_missing not in _ON_MISSING:
             raise ClusterSpecError(f"{where}: on_missing must be one of {_ON_MISSING}")
+        link_direction = str(raw.get("direction") or "")
+        if link_direction and link_direction != "both":
+            raise ClusterSpecError(
+                f"{where}: direction must be \"both\" or omitted (default: "
+                f"from -> to), got {link_direction!r}"
+            )
         link = ClusterLink(
             type=ltype,
             name=str(raw.get("name") or ""),
             kind=str(raw.get("kind") or ""),
             on_missing=link_missing,
-            direction=str(raw.get("direction") or ""),
+            direction=link_direction,
             note=str(raw.get("note") or ""),
         )
         if ltype == "shared_resource":
@@ -499,8 +505,13 @@ def compose_members(
         promote_to_multidigraph,
     )
 
-    G: nx.Graph = nx.MultiDiGraph() if spec.graph_mode == "multi" else nx.Graph()
+    # Composed directed in BOTH modes: the composed graph is re-serialized, and
+    # an undirected round-trip re-emits edge endpoints by node insertion order,
+    # silently flipping caller/callee (#760). Members load directed so their
+    # stored source/target order is what the cluster graph.json persists.
+    G: nx.Graph = nx.MultiDiGraph() if spec.graph_mode == "multi" else nx.DiGraph()
     stats: dict[str, dict] = {}
+    cid_base = 0
     for member in spec.members:
         gp = member_graph_path(member, resolved[member.tag])
         if not gp.is_file():
@@ -508,7 +519,15 @@ def compose_members(
                 f"member '{member.tag}' has no graph at {gp}. "
                 f"Run `graphify extract .` (or your usual build) in {resolved[member.tag]} first."
             )
-        member_graph = load_graph_json(gp, preserve_type=spec.graph_mode == "multi")
+        try:
+            member_graph = load_graph_json(
+                gp, preserve_type=spec.graph_mode == "multi", directed=True
+            )
+        except ValueError as exc:  # JSONDecodeError and the size cap
+            raise ClusterSpecError(
+                f"member '{member.tag}' has an unreadable graph at {gp} ({exc}). "
+                f"Re-run `graphify extract . --force` in {resolved[member.tag]} to rebuild it."
+            ) from exc
         source_multigraph = member_graph.is_multigraph()
         if spec.graph_mode == "multi":
             if not source_multigraph:
@@ -519,6 +538,7 @@ def compose_members(
                 )
             member_graph = promote_to_multidigraph(member_graph)
         prefixed = prefix_graph_for_global(member_graph, member.tag)
+        cid_base = _renumber_member_communities(prefixed, cid_base)
         total = prefixed.number_of_nodes()
         if spec.auto_externals:
             added = merge_prefixed_into(G, prefixed)
@@ -535,13 +555,40 @@ def compose_members(
     return G, stats
 
 
+def _renumber_member_communities(H: "nx.Graph", next_cid: int) -> int:
+    """Remap one member's community ids onto a cluster-global range, in place.
+
+    Every member numbers its communities from 0, so composing them verbatim
+    merges unrelated "community 0" groups across repos in every consumer that
+    groups by the integer (MCP get_community, NODE lines, explain). Ids are
+    assigned in node order (deterministic: node_link_graph preserves the
+    member graph.json's order). Placeholder names ("Community N") track the
+    new id; real LLM-assigned names are preserved. Returns the next free id.
+    """
+    mapping: dict = {}
+    for _, data in H.nodes(data=True):
+        cid = data.get("community")
+        if cid is None:
+            continue
+        if cid not in mapping:
+            mapping[cid] = next_cid
+            next_cid += 1
+        if data.get("community_name") == f"Community {cid}":
+            data["community_name"] = f"Community {mapping[cid]}"
+        data["community"] = mapping[cid]
+    return next_cid
+
+
 def _selector_str(sel: dict) -> str:
     key = next(k for k in ("id", "file", "label") if k in sel)
     return f"{sel['repo']}:{key}={sel[key]}"
 
 
 def _norm_source_file(sf: str) -> str:
-    return PurePosixPath(sf.replace("\\", "/")).as_posix().lstrip("./")
+    # removeprefix, not lstrip: lstrip("./") strips *characters*, eating the
+    # dot off ".env" / ".github/..." and aliasing them onto unrelated paths.
+    p = PurePosixPath(sf.replace("\\", "/")).as_posix()
+    return p.removeprefix("./").lstrip("/")
 
 
 def resolve_selector(
@@ -603,10 +650,28 @@ def resolve_selector(
                     matches = file_nodes
     else:
         want = sel["label"]
+        want_n = normalize_id(want)
         matches = [n for n, d in candidates if d.get("label") == want]
         if not matches:
-            want_n = normalize_id(want)
             matches = [n for n, d in candidates if normalize_id(d.get("label") or "") == want_n]
+        if not matches:
+            # External-library nodes dedupe by label onto the FIRST member that
+            # references them, keeping that member's `repo` attr — a selector
+            # naming any other referencing member would silently break when the
+            # spec's member order changes. Externals are cluster-wide by
+            # construction, so label selectors fall back to matching them
+            # regardless of repo attribution.
+            externals = [
+                (n, d)
+                for bucket in nodes_by_repo.values()
+                for n, d in bucket
+                if not d.get("source_file") and d.get("label")
+            ]
+            matches = [n for n, d in externals if d["label"] == want]
+            if not matches:
+                matches = [n for n, d in externals if normalize_id(d["label"]) == want_n]
+            if matches:
+                candidates = externals  # keep the ambiguity listing resolvable
 
     if not matches:
         return None
@@ -624,27 +689,6 @@ def resolve_selector(
 
 def _hub_id(kind: str, name: str) -> str:
     return f"{CLUSTER_TAG}::{normalize_id(kind or 'resource')}_{normalize_id(name)}"
-
-
-def strip_cluster_artifacts(G: nx.Graph) -> tuple[int, int]:
-    """Remove cluster-added edges and synthetic nodes (rebuild idempotency)."""
-    if G.is_multigraph():
-        edges = [
-            (u, v, key) for u, v, key, d in G.edges(keys=True, data=True)
-            if str(d.get("origin", "")).startswith("cluster_")
-        ]
-    else:
-        edges = [
-            (u, v) for u, v, d in G.edges(data=True)
-            if str(d.get("origin", "")).startswith("cluster_")
-        ]
-    G.remove_edges_from(edges)
-    nodes = [
-        n for n, d in G.nodes(data=True)
-        if d.get("repo") == CLUSTER_TAG or str(d.get("origin", "")).startswith("cluster_")
-    ]
-    G.remove_nodes_from(nodes)
-    return len(edges), len(nodes)
 
 
 def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -> LinkReport:
@@ -706,11 +750,13 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
             return False
         pair = (min(u, v), max(u, v))
         if G.is_multigraph():
-            identity = (u, v, relation, link.name or link.type)
-            if identity in declared_identities:
+            identities = [(u, v, relation, link.name or link.type)]
+            if link.direction == "both":
+                identities.append((v, u, relation, link.name or link.type))
+            if any(identity in declared_identities for identity in identities):
                 report.errors.append(f"{link_label}: duplicate declared cluster relation")
                 return False
-            declared_identities.add(identity)
+            declared_identities.update(identities)
         else:
             prior = occupied_pairs.get(pair)
             if prior is not None:
@@ -721,31 +767,38 @@ def apply_spec_links(G: nx.Graph, spec: ClusterSpec, *, dry_run: bool = False) -
                 )
                 return False
             occupied_pairs[pair] = f"{link_label} relation {relation!r}"
+        # direction: "both" materializes as a real reverse edge — traversal
+        # (affected's in_edges, query BFS) reads topology, not attrs, so a
+        # metadata-only flag would silently traverse one way. The declared
+        # link owns the unordered pair: its own reverse edge is exempt from
+        # the one-relation-per-pair guard, a separate reverse link is not.
+        endpoint_pairs = [(u, v)] + ([(v, u)] if link.direction == "both" else [])
         if not dry_run:
-            attrs = {
-                "relation": relation,
-                "confidence": "EXTRACTED",
-                "confidence_score": 1.0,
-                "weight": 1.0,
-                "source_file": spec_file,
-                "origin": "cluster_spec",
-                "_src": u,
-                "_tgt": v,
-            }
-            if link.name:
-                attrs["link_name"] = link.name
-            if link.direction == "both":
-                attrs["direction"] = "both"
-            if link.note:
-                attrs["note"] = link.note
-            if G.is_multigraph():
-                from .build import stable_edge_key
+            for src, tgt in endpoint_pairs:
+                attrs = {
+                    "relation": relation,
+                    "confidence": "EXTRACTED",
+                    "confidence_score": 1.0,
+                    "weight": 1.0,
+                    "source_file": spec_file,
+                    "origin": "cluster_spec",
+                    "_src": src,
+                    "_tgt": tgt,
+                }
+                if link.name:
+                    attrs["link_name"] = link.name
+                if link.direction == "both":
+                    attrs["direction"] = "both"
+                if link.note:
+                    attrs["note"] = link.note
+                if G.is_multigraph():
+                    from .build import stable_edge_key
 
-                attrs["context"] = link.name or link.type
-                G.add_edge(u, v, key=stable_edge_key(u, v, attrs), **attrs)
-            else:
-                G.add_edge(u, v, **attrs)
-        report.edges_added += 1
+                    attrs["context"] = link.name or link.type
+                    G.add_edge(src, tgt, key=stable_edge_key(src, tgt, attrs), **attrs)
+                else:
+                    G.add_edge(src, tgt, **attrs)
+        report.edges_added += len(endpoint_pairs)
         return True
 
     for i, link in enumerate(spec.links):
@@ -966,20 +1019,21 @@ def check_member_ref_conflicts(
 ) -> None:
     """Raise when a member's marker shows a *different* cluster owns this name.
 
-    Only a git-URL mismatch proves a genuine collision (two distinct remotes,
-    same cluster name). A differing ``dir_hint`` alone never errors — hints
-    are machine- and layout-dependent, and a moved cluster directory is the
-    common benign cause (write_member_refs warns and refreshes the hint).
-    Runs in build_cluster BEFORE any output is written, on every build path
-    including the unchanged-inputs skip, so a real conflict fails cleanly and
-    keeps failing until resolved.
+    A git-URL mismatch proves a genuine collision (two distinct remotes, same
+    cluster name). For URL-less clusters, identity is best-effort: an existing
+    ref that carries a URL always owns the name, and two URL-less clusters
+    collide when the old ref's ``dir_hint`` resolves to a different existing
+    cluster directory bearing the same name. A stale/unresolvable ``dir_hint``
+    alone never errors — hints are machine- and layout-dependent, and a moved
+    cluster directory is the common benign cause (write_member_refs warns and
+    refreshes the hint). Runs in build_cluster BEFORE any output is written,
+    on every build path including the unchanged-inputs skip, so a real
+    conflict fails cleanly and keeps failing until resolved.
     """
     from .cluster_ref import load_cluster_refs
     from .paths import GRAPHIFY_OUT_NAME
 
     new_url = normalize_git_url(origin_url(cluster_dir) or "")
-    if not new_url:
-        return
     for member in spec.members:
         repo_dir = resolved.get(member.tag)
         if repo_dir is None:
@@ -989,12 +1043,38 @@ def check_member_ref_conflicts(
         if old is None:
             continue
         old_url = normalize_git_url(str(old.get("cluster_url") or ""))
-        if old_url and old_url != new_url:
+        if new_url:
+            if old_url and old_url != new_url:
+                raise ClusterSpecError(
+                    f"member '{member.tag}' already belongs to a different cluster "
+                    f"named '{spec.name}' ({old.get('cluster_url')}); cluster "
+                    f"names must be unique per member"
+                )
+            continue
+        if old_url:
             raise ClusterSpecError(
-                f"member '{member.tag}' already belongs to a different cluster "
-                f"named '{spec.name}' ({old.get('cluster_url')}); cluster "
-                f"names must be unique per member"
+                f"member '{member.tag}' already belongs to a cluster named "
+                f"'{spec.name}' tracked at {old.get('cluster_url')}, and this "
+                f"cluster directory has no origin remote to prove it is the same "
+                f"one. Rename this cluster, or add the matching remote."
             )
+        hint = str(old.get("dir_hint") or "")
+        if hint:
+            candidate = Path(os.path.normpath(Path(repo_dir) / hint))
+            try:
+                is_other = (
+                    find_spec_file(candidate) is not None
+                    and load_spec(candidate).name == spec.name
+                    and candidate.resolve() != Path(cluster_dir).resolve()
+                )
+            except Exception:
+                is_other = False
+            if is_other:
+                raise ClusterSpecError(
+                    f"member '{member.tag}' already belongs to a cluster named "
+                    f"'{spec.name}' at {candidate}; cluster names must be unique "
+                    f"per member. Rename one of the clusters."
+                )
 
 
 def write_member_refs(
@@ -1096,6 +1176,34 @@ def write_member_refs(
     return written
 
 
+def _check_self_composition(
+    spec: ClusterSpec, resolved: dict[str, Path], cluster_dir: Path
+) -> None:
+    """Refuse a cluster that lists itself (or its own output) as a member.
+
+    Composing reads each member's graphify-out/graph.json and writes the
+    cluster's own graphify-out/graph.json; if those coincide, the build
+    consumes its own prior output and overwrites it, and the next build
+    re-prefixes already-prefixed ids (``a::a::x``), snowballing.
+    """
+    own_dir = Path(cluster_dir).resolve()
+    own_graph = (cluster_out_dir(cluster_dir) / "graph.json").resolve()
+    for member in spec.members:
+        repo = resolved.get(member.tag)
+        if repo is None:
+            continue
+        if (
+            Path(repo).resolve() == own_dir
+            or member_graph_path(member, repo).resolve() == own_graph
+        ):
+            raise ClusterSpecError(
+                f"member '{member.tag}' resolves to the cluster directory itself "
+                f"({repo}); a cluster cannot compose its own output. Remove it with "
+                f"`graphify cluster remove {member.tag}`, or point it at the real "
+                f"checkout with `graphify cluster locate {member.tag} <path>`."
+            )
+
+
 def build_cluster(
     cluster_dir: Path, *, force: bool = False, no_links: bool = False, write_refs: bool = True
 ) -> dict:
@@ -1111,12 +1219,18 @@ def build_cluster(
 
     cluster_dir = Path(cluster_dir)
     spec = load_spec(cluster_dir)
+    if not spec.members:
+        raise ClusterSpecError(
+            "cluster has no members; add repos with `graphify cluster add <path>` "
+            "(an empty build would write an empty graph.json)"
+        )
     local_cfg = load_local_config(cluster_dir)
     resolved, warnings, errors = resolve_all_members(spec, cluster_dir, local_cfg)
     for w in warnings:
         print(f"[graphify cluster] warning: {w}", file=sys.stderr)
     if errors:
         raise ClusterSpecError("; ".join(errors))
+    _check_self_composition(spec, resolved, cluster_dir)
 
     if write_refs:
         check_member_ref_conflicts(spec, resolved, cluster_dir)
@@ -1175,6 +1289,11 @@ def build_cluster(
         data = _jg.node_link_data(G, edges="links")
     except TypeError:
         data = _jg.node_link_data(G)
+    # The graph is composed directed, so source/target already carry the true
+    # direction; drop the _src/_tgt persistence markers like export.to_json.
+    for link in data.get("links", data.get("edges", [])):
+        link.pop("_src", None)
+        link.pop("_tgt", None)
     write_json_atomic(graph_path, data, indent=2)
 
     built_at = datetime.now(timezone.utc).isoformat()
@@ -1228,6 +1347,15 @@ def check_cluster(cluster_dir: Path) -> tuple[LinkReport, list[str]]:
     resolved, warnings, errors = resolve_all_members(spec, cluster_dir, local_cfg)
 
     report = LinkReport(warnings=list(warnings), errors=list(errors))
+    if not spec.members:
+        report.errors.append(
+            "cluster has no members; add repos with `graphify cluster add <path>`"
+        )
+        return report, report.errors
+    try:
+        _check_self_composition(spec, resolved, cluster_dir)
+    except ClusterSpecError as exc:
+        report.errors.append(str(exc))
     missing_graphs = [
         member.tag for member in spec.members
         if member.tag in resolved and not member_graph_path(member, resolved[member.tag]).is_file()
@@ -1239,7 +1367,11 @@ def check_cluster(cluster_dir: Path) -> tuple[LinkReport, list[str]]:
     if report.errors:
         return report, report.errors
 
-    G, _stats = compose_members(spec, resolved)
+    try:
+        G, _stats = compose_members(spec, resolved)
+    except ClusterSpecError as exc:  # e.g. a corrupt member graph.json
+        report.errors.append(str(exc))
+        return report, report.errors
     # This graph exists only for validation, so materialize declared links in
     # memory. Auto-package precedence then sees the same occupied pairs as a
     # real build without writing any files.

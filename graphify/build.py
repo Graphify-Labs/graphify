@@ -793,15 +793,21 @@ def build_from_json(
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
     # and makes the serialized graph churn. Sorting fixes the last-write outcome.
-    for edge in sorted(
-        extraction.get("edges", []),
-        key=lambda e: (
+    # Multigraphs additionally need a TOTAL order: parallel keyed edges share
+    # (src, tgt, relation), and their iteration order decides content-suffix
+    # key collisions. Simple graphs skip that O(E) json.dumps tiebreak — the
+    # 3-tuple sort plus input order already fixes their last-write outcome.
+    def _edge_sort_key(e: dict):
+        key = (
             str(e.get("source", e.get("from", ""))),
             str(e.get("target", e.get("to", ""))),
             str(e.get("relation", "")),
-            json.dumps(e, sort_keys=True, ensure_ascii=False, default=str),
-        ),
-    ):
+        )
+        if multigraph:
+            key += (json.dumps(e, sort_keys=True, ensure_ascii=False, default=str),)
+        return key
+
+    for edge in sorted(extraction.get("edges", []), key=_edge_sort_key):
         if "source" not in edge and "from" in edge:
             edge["source"] = edge["from"]
         if "target" not in edge and "to" in edge:
@@ -1374,13 +1380,22 @@ def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
     return len(to_remove)
 
 
-def load_graph_json(path: Path, *, preserve_type: bool = False) -> nx.Graph:
+def load_graph_json(
+    path: Path, *, preserve_type: bool = False, directed: bool = False
+) -> nx.Graph:
     """Load persisted node-link JSON, optionally preserving its graph type.
 
     Shared by merge-graphs, the global graph, and cluster graphs. Applies the
     graph-file size cap, normalizes the legacy ``edges`` key to ``links``
     (#738). By default directed/multi inputs are coerced to a simple Graph for
     established callers; MultiGraph-aware composition uses ``preserve_type``.
+
+    directed=True loads the stored source/target order into a directed graph.
+    Persisted simple graphs say ``"directed": false`` even though their edge
+    order is meaningful (export restores it from _src/_tgt and pops the
+    attrs), so an undirected round-trip re-emits endpoints by node insertion
+    order and silently flips caller/callee — the #760 failure mode. Callers
+    that re-serialize a composed graph must load members directed.
     """
     from networkx.readwrite import json_graph as _jg
     from .security import check_graph_file_size_cap
@@ -1389,12 +1404,15 @@ def load_graph_json(path: Path, *, preserve_type: bool = False) -> nx.Graph:
     data = json.loads(path.read_text(encoding="utf-8"))
     if "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
+    if directed:
+        data = dict(data, directed=True)
     try:
         G = _jg.node_link_graph(data, edges="links")
     except TypeError:
         G = _jg.node_link_graph(data)
-    if not preserve_type and type(G) is not nx.Graph:
-        G = nx.Graph(G)
+    simple_type = nx.DiGraph if directed else nx.Graph
+    if not preserve_type and type(G) is not simple_type:
+        G = simple_type(G)
     return G
 
 

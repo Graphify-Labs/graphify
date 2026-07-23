@@ -8,7 +8,6 @@ from networkx.readwrite import json_graph as _jg
 from graphify.cluster_graph import (
     ClusterSpecError,
     build_cluster,
-    strip_cluster_artifacts,
 )
 
 
@@ -88,8 +87,9 @@ def test_build_merges_externals_by_label(two_members):
     react_nodes = [n for n, d in G.nodes(data=True) if d.get("label") == "react"]
     assert len(react_nodes) == 1
     (react,) = react_nodes
-    neighbors = set(G.neighbors(react))
-    assert {"alpha::app", "beta::server"} <= neighbors
+    # The cluster graph is directed; import edges point importer -> external.
+    importers = set(G.predecessors(react))
+    assert {"alpha::app", "beta::server"} <= importers
 
 
 def test_build_without_externals_merge(tmp_path, two_members):
@@ -199,15 +199,143 @@ def test_build_writes_manifest_and_report(two_members):
     assert "test-cluster" in report and "alpha" in report
 
 
-def test_strip_cluster_artifacts():
-    G = nx.Graph()
-    G.add_node("a::x", repo="a")
-    G.add_node("b::y", repo="b")
-    G.add_node("cluster::table_pings", repo="cluster", origin="cluster_spec")
-    G.add_edge("a::x", "b::y", relation="calls_api", origin="cluster_spec")
-    G.add_edge("a::x", "cluster::table_pings", relation="uses", origin="cluster_spec")
-    edges_removed, nodes_removed = strip_cluster_artifacts(G)
-    assert edges_removed >= 1 and nodes_removed == 1
-    assert "cluster::table_pings" not in G
-    assert not G.edges()
-    assert "a::x" in G and "b::y" in G
+
+
+def _write_member_json(base, name, graph):
+    """Write a member graph.json exactly as a real export would persist it."""
+    out = base / name / "graphify-out"
+    out.mkdir(parents=True)
+    (out / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+    return base / name
+
+
+def test_build_preserves_edge_direction_regardless_of_node_order(tmp_path):
+    # Real member graphs say "directed": false but their source/target order IS
+    # the caller->callee direction (export restores it from _src/_tgt and pops
+    # the attrs). The callee node deliberately precedes the caller here — the
+    # exact case where an undirected compose re-emits the edge flipped by node
+    # insertion order (#760 class). The cluster graph must keep caller->callee.
+    _write_member_json(tmp_path, "alpha", {
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [
+            {"id": "callee", "label": "callee", "file_type": "code",
+             "source_file": "src/callee.ts"},
+            {"id": "caller", "label": "caller", "file_type": "code",
+             "source_file": "src/caller.ts"},
+        ],
+        "links": [{"source": "caller", "target": "callee", "relation": "calls"}],
+    })
+    cluster = tmp_path / "cluster"
+    write_cluster(cluster, [{"tag": "alpha", "path": "../alpha"}])
+    build_cluster(cluster)
+
+    data = json.loads(
+        (cluster / "graphify-out" / "graph.json").read_text(encoding="utf-8")
+    )
+    assert data["directed"] is True
+    (link,) = [l for l in data["links"] if l.get("relation") == "calls"]
+    assert link["source"] == "alpha::caller"
+    assert link["target"] == "alpha::callee"
+
+    # affected traverses in_edges on the loaded graph: changing the callee
+    # must report the caller, never the reverse.
+    from graphify.affected import affected_nodes, load_graph
+
+    G = load_graph(cluster / "graphify-out" / "graph.json")
+    from_callee = {h.node_id for h in affected_nodes(G, "alpha::callee", relations=["calls"])}
+    from_caller = {h.node_id for h in affected_nodes(G, "alpha::caller", relations=["calls"])}
+    assert "alpha::caller" in from_callee
+    assert "alpha::callee" not in from_caller
+
+
+def test_corrupt_member_graph_is_actionable(two_members):
+    (two_members.parent / "alpha" / "graphify-out" / "graph.json").write_text(
+        "{oops", encoding="utf-8"
+    )
+    with pytest.raises(ClusterSpecError) as exc:
+        build_cluster(two_members)
+    msg = str(exc.value)
+    assert "alpha" in msg and "unreadable" in msg and "graphify extract" in msg
+
+    from graphify.cluster_graph import check_cluster
+
+    report, errors = check_cluster(two_members)
+    assert any("unreadable" in e for e in errors)
+
+
+def test_cluster_cannot_compose_itself(two_members):
+    spec_path = two_members / "cluster.json"
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec["members"].append({"tag": "selfie", "path": "."})
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    (two_members / "graphify-out").mkdir(exist_ok=True)
+    (two_members / "graphify-out" / "graph.json").write_text(
+        json.dumps({"directed": False, "multigraph": False, "graph": {},
+                    "nodes": [], "links": []}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ClusterSpecError, match="compose its own output"):
+        build_cluster(two_members)
+
+    from graphify.cluster_graph import check_cluster
+
+    report, errors = check_cluster(two_members)
+    assert any("compose its own output" in e for e in errors)
+
+
+def test_member_communities_are_renumbered_per_member(tmp_path):
+    # Both members number their communities from 0; composing verbatim would
+    # merge unrelated "community 0" groups across repos.
+    make_member(tmp_path, "alpha", [
+        _node("a1", source_file="a1.ts", community=0, community_name="Community 0"),
+        _node("a2", source_file="a2.ts", community=0, community_name="Community 0"),
+    ])
+    make_member(tmp_path, "beta", [
+        _node("b1", source_file="b1.ts", community=0, community_name="Auth Layer"),
+    ])
+    cluster = tmp_path / "cluster"
+    write_cluster(cluster, [
+        {"tag": "alpha", "path": "../alpha"},
+        {"tag": "beta", "path": "../beta"},
+    ])
+    build_cluster(cluster)
+    G = _load_out(cluster)
+    cids = {n: d.get("community") for n, d in G.nodes(data=True) if d.get("community") is not None}
+    assert cids["alpha::a1"] == cids["alpha::a2"]
+    assert cids["alpha::a1"] != cids["beta::b1"]
+    # Placeholder names track the new id; real LLM names are preserved.
+    assert G.nodes["alpha::a1"]["community_name"] == f"Community {cids['alpha::a1']}"
+    assert G.nodes["beta::b1"]["community_name"] == "Auth Layer"
+
+
+def test_empty_cluster_build_is_actionable(tmp_path):
+    cluster = tmp_path / "cluster"
+    write_cluster(cluster, [])
+    with pytest.raises(ClusterSpecError, match="no members"):
+        build_cluster(cluster)
+    assert not (cluster / "graphify-out").exists()
+
+    from graphify.cluster_graph import check_cluster
+
+    report, errors = check_cluster(cluster)
+    assert any("no members" in e for e in errors)
+
+
+def test_yaml_spec_still_loads(tmp_path):
+    yaml = pytest.importorskip("yaml")
+    make_member(tmp_path, "alpha", [_node("app", source_file="src/app.ts")])
+    cluster = tmp_path / "cluster"
+    cluster.mkdir()
+    (cluster / "cluster.yaml").write_text(
+        yaml.safe_dump({
+            "schema_version": 1,
+            "name": "yaml-cluster",
+            "members": [{"tag": "alpha", "path": "../alpha"}],
+        }),
+        encoding="utf-8",
+    )
+    summary = build_cluster(cluster)
+    assert summary["name"] == "yaml-cluster"
+    assert "alpha::app" in _load_out(cluster)
