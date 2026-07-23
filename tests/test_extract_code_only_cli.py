@@ -63,6 +63,80 @@ def test_multigraph_flag_writes_keyed_directed_graph(tmp_path):
     assert graph["links"] and all("key" in edge for edge in graph["links"])
 
 
+def _link_signature(links):
+    """Endpoints + relation data per link, ignoring only the multigraph key."""
+    return sorted(
+        (str(l.get("source")), str(l.get("target")), str(l.get("relation", "")))
+        for l in links
+    )
+
+
+def test_multigraph_conversion_of_unchanged_graph_preserves_content(tmp_path):
+    """`--multigraph` on an unchanged simple graph bypasses the no-change early
+    exit to rewrite the format — it must carry the existing graph forward, not
+    serialize this run's empty incremental extraction over it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text(
+        "def target():\n    return 1\n\ndef caller():\n    return target()\n",
+        encoding="utf-8",
+    )
+    (repo / "lib.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+    assert _run(repo, "--code-only").returncode == 0
+    graph_path = repo / "graphify-out" / "graph.json"
+    before = json.loads(graph_path.read_text())
+    assert before.get("multigraph", False) is False and before["nodes"]
+    # Seed a hyperedge over real node ids, as a prior semantic pass would have
+    # left it — conversion must carry hyperedge CONTENT forward too. graph.json
+    # is not a manifest-tracked source, so the run below still sees no changes.
+    hyper_nodes = sorted(n["id"] for n in before["nodes"])[:2]
+    before["hyperedges"] = [{
+        "id": "flow_seeded", "nodes": hyper_nodes, "relation": "data_flow",
+        "label": "seeded flow", "source_file": "app.py",
+    }]
+    graph_path.write_text(json.dumps(before), encoding="utf-8")
+
+    result = _run(repo, "--code-only", "--multigraph")
+    assert result.returncode == 0, result.stderr
+    after = json.loads(graph_path.read_text())
+    assert after["multigraph"] is True and after["directed"] is True
+    assert {n["id"] for n in after["nodes"]} == {n["id"] for n in before["nodes"]}
+    before_links = before.get("links", before.get("edges", []))
+    assert _link_signature(after["links"]) == _link_signature(before_links)
+    assert all("key" in edge for edge in after["links"])
+    (hyper,) = after["hyperedges"]
+    assert hyper["relation"] == "data_flow"
+    assert sorted(hyper["nodes"]) == hyper_nodes
+
+
+def test_multigraph_conversion_with_changed_file_replaces_its_content(tmp_path):
+    """A conversion run that coincides with a changed file must NOT carry that
+    file's old content forward — fresh extraction replaces it (no stale nodes,
+    no duplicate parallel edges) while other files' content is preserved."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text(
+        "def target():\n    return 1\n\ndef caller():\n    return target()\n",
+        encoding="utf-8",
+    )
+    (repo / "lib.py").write_text("def helper():\n    return 2\n", encoding="utf-8")
+    assert _run(repo, "--code-only").returncode == 0
+    graph_path = repo / "graphify-out" / "graph.json"
+    before_ids = {n["id"] for n in json.loads(graph_path.read_text())["nodes"]}
+    assert "lib_helper" in before_ids
+
+    (repo / "lib.py").write_text("def renamed():\n    return 2\n", encoding="utf-8")
+    result = _run(repo, "--code-only", "--multigraph")
+    assert result.returncode == 0, result.stderr
+    after = json.loads(graph_path.read_text())
+    after_ids = {n["id"] for n in after["nodes"]}
+    assert "lib_helper" not in after_ids, "changed file's stale node survived"
+    assert "lib_renamed" in after_ids
+    assert before_ids - {"lib_helper"} <= after_ids, "unchanged files' nodes lost"
+    sigs = _link_signature(after["links"])
+    assert len(sigs) == len(set(sigs)), "duplicate parallel edges from the carry-forward"
+
+
 def test_mixed_repo_without_key_errors_and_points_at_code_only(tmp_path):
     repo = _mixed_repo(tmp_path)
     r = _run(repo)  # no --code-only, no key

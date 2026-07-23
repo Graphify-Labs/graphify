@@ -1199,15 +1199,21 @@ def _build_server(graph_path: str):
             refs = load_cluster_refs(Path(active_graph_path).parent)
             if not refs:
                 return ""
+            # The marker is a committed file: its fields are untrusted input to
+            # assistant-facing output, so they pass sanitize_label like every
+            # other non-literal field this server emits.
             if len(refs) == 1:
                 ref = refs[0]
                 return (
-                    f"\nnote: this repo is member '{ref['self_tag']}' of cluster "
-                    f"'{ref['cluster_name']}' ({ref.get('member_count', '?')} members) — "
+                    f"\nnote: this repo is member '{sanitize_label(str(ref['self_tag']))}' of cluster "
+                    f"'{sanitize_label(str(ref['cluster_name']))}' "
+                    f"({sanitize_label(str(ref.get('member_count', '?')))} members) — "
                     f"cross-repo answers live in the cluster graph (query it from the "
                     f"cluster directory, or via `graphify ... --cluster` on the CLI)."
                 )
-            names = ", ".join(sorted(str(ref["cluster_name"]) for ref in refs))
+            names = ", ".join(
+                sorted(sanitize_label(str(ref["cluster_name"])) for ref in refs)
+            )
             return (
                 f"\nnote: this repo belongs to {len(refs)} clusters ({names}) — "
                 f"cross-repo answers live in a cluster graph (query it from that "
