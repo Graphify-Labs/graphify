@@ -1187,6 +1187,42 @@ def _build_server(graph_path: str):
         G, communities = _load_ctx(path)
         active_graph_path = path
 
+    def _cluster_note() -> str:
+        """Member-of-cluster hint appended to no-match answers, or ''.
+
+        Computed per call — active_graph_path rebinds per project_path. MCP has
+        no --cluster flag, so the wording points at the cluster dir instead.
+        Never raises.
+        """
+        try:
+            from graphify.cluster_ref import load_cluster_refs
+
+            refs = load_cluster_refs(Path(active_graph_path).parent)
+            if not refs:
+                return ""
+            # The marker is a committed file: its fields are untrusted input to
+            # assistant-facing output, so they pass sanitize_label like every
+            # other non-literal field this server emits.
+            if len(refs) == 1:
+                ref = refs[0]
+                return (
+                    f"\nnote: this repo is member '{sanitize_label(str(ref['self_tag']))}' of cluster "
+                    f"'{sanitize_label(str(ref['cluster_name']))}' "
+                    f"({sanitize_label(str(ref.get('member_count', '?')))} members) — "
+                    f"cross-repo answers live in the cluster graph (query it from the "
+                    f"cluster directory, or via `graphify ... --cluster` on the CLI)."
+                )
+            names = ", ".join(
+                sorted(sanitize_label(str(ref["cluster_name"])) for ref in refs)
+            )
+            return (
+                f"\nnote: this repo belongs to {len(refs)} clusters ({names}) — "
+                f"cross-repo answers live in a cluster graph (query it from that "
+                f"cluster's directory, or via `graphify ... --cluster NAME` on the CLI)."
+            )
+        except Exception:
+            return ""
+
     server = Server("graphify")
 
     @server.list_tools()
@@ -1348,6 +1384,10 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
         )
+        if result.startswith("No matching nodes found."):
+            # Same cluster-membership note the other no-match tools append,
+            # added before logging so the query log matches the response.
+            result += _cluster_note()
         querylog.log_query(
             kind="mcp_query",
             question=question,
@@ -1365,7 +1405,7 @@ def _build_server(graph_path: str):
         matches = [(nid, d) for nid, d in G.nodes(data=True)
                    if label in (d.get("label") or "").lower() or label == nid.lower()]
         if not matches:
-            return f"No node matching '{label}' found."
+            return f"No node matching '{label}' found." + _cluster_note()
         nid, d = matches[0]
         # Sanitise every LLM-derived field before concatenation (F-010).
         return "\n".join([
@@ -1382,7 +1422,7 @@ def _build_server(graph_path: str):
         rel_filter = arguments.get("relation_filter", "").lower()
         matches = _find_node(G, label)
         if not matches:
-            return f"No node matching '{label}' found."
+            return f"No node matching '{label}' found." + _cluster_note()
         nid = matches[0]
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
         def _edge_at(d: dict) -> str:
@@ -1458,9 +1498,9 @@ def _build_server(graph_path: str):
         src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
         if not src_scored:
-            return f"No node matching source '{arguments['source']}' found."
+            return f"No node matching source '{arguments['source']}' found." + _cluster_note()
         if not tgt_scored:
-            return f"No node matching target '{arguments['target']}' found."
+            return f"No node matching target '{arguments['target']}' found." + _cluster_note()
         src_nid = _pick_scored_endpoint(G, src_scored, arguments["source"])
         tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
         # Ambiguity guard: when both queries resolve to the same node, the
