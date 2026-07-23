@@ -255,12 +255,13 @@ def format_affected(
 
     for hit in hits:
         data = graph.nodes[hit.node_id]
-        if hit.via_file:
-            # The relation SITE in this node's file (call/import/reference line),
-            # labeled by [via_relation] so it's never mistaken for a def line.
-            location = f"{hit.via_file}:{hit.via_location or '-'}"
-        elif hit.via_location:
-            location = f"{data.get('source_file') or '-'}:{hit.via_location}"
+        if hit.via_location:
+            # The relation SITE (call/import/reference line), labeled by
+            # [via_relation] so it's never mistaken for a def line. Gate on the
+            # LOCATION: an edge with source_file but a null source_location
+            # (allowed by the extraction schema) would render a non-clickable
+            # "file:-" — the node's own def line is the honest fallback there.
+            location = f"{hit.via_file or data.get('source_file') or '-'}:{hit.via_location}"
         else:
             location = _format_location(data)  # honest fallback: the node's own def line
         relations_text = ", ".join(hit.via_relations or (hit.via_relation,))

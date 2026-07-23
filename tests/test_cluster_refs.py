@@ -314,6 +314,13 @@ def test_cluster_flag_end_to_end(tmp_path, built_cluster, monkeypatch, capsys):
     assert code == 0
     assert "No node matching" not in out
 
+    # query --cluster is the README's headline example: the answer lives one
+    # repo over, so it must surface the other member's node.
+    code, out, err = _dispatch(["query", "server", "--cluster"], monkeypatch, capsys)
+    assert code == 0, err
+    assert "beta::server" in out or "server.ts" in out
+    assert "No matching nodes found." not in out
+
 
 def test_cluster_flag_mutually_exclusive_with_graph(tmp_path, built_cluster, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path / "alpha")
@@ -363,6 +370,12 @@ def test_hints_on_failures_with_marker(tmp_path, built_cluster, monkeypatch, cap
     assert "member 'alpha' of cluster 'test-cluster'" in out
 
     code, out, _err = _dispatch(["affected", "no-such-thing"], monkeypatch, capsys)
+    assert "member 'alpha' of cluster 'test-cluster'" in out
+
+    # query gets the same breadcrumb — it is the surface the hook text
+    # explicitly promises it for.
+    code, out, _err = _dispatch(["query", "zz-no-such-thing"], monkeypatch, capsys)
+    assert "No matching nodes found." in out
     assert "member 'alpha' of cluster 'test-cluster'" in out
 
 
@@ -443,3 +456,81 @@ def test_serve_no_match_includes_cluster_note(tmp_path, built_cluster):
     text = asyncio.run(handler(req)).root.content[0].text
     assert "No node matching" in text
     assert "member 'alpha' of cluster 'test-cluster'" in text
+
+    # query_graph no-match gets the same note.
+    req = mcp_types.CallToolRequest(
+        method="tools/call",
+        params=mcp_types.CallToolRequestParams(
+            name="query_graph", arguments={"question": "zz-no-such-thing"}
+        ),
+    )
+    text = asyncio.run(handler(req)).root.content[0].text
+    assert "No matching nodes found." in text
+    assert "member 'alpha' of cluster 'test-cluster'" in text
+
+
+def test_urlless_duplicate_cluster_name_is_rejected(tmp_path):
+    """Two URL-less clusters with the same name sharing a member collide when
+    the member's marker hint still resolves to the other (existing) cluster."""
+    make_member(tmp_path, "alpha", [_node("app", source_file="src/app.ts")])
+    first = tmp_path / "first"
+    write_cluster(first, [{"tag": "alpha", "path": "../alpha"}])
+    build_cluster(first)
+
+    duplicate = tmp_path / "duplicate"
+    write_cluster(duplicate, [{"tag": "alpha", "path": "../alpha"}])
+    with pytest.raises(ClusterSpecError, match="unique"):
+        build_cluster(duplicate)
+    assert not (duplicate / "graphify-out").exists()
+
+
+def test_urlless_cluster_cannot_claim_url_tracked_name(tmp_path):
+    """An existing marker that carries a cluster_url owns the name; a URL-less
+    cluster directory cannot silently take it over (that overwrite would drop
+    the real cluster's URL from the member's marker)."""
+    make_member(tmp_path, "alpha", [_node("app", source_file="src/app.ts")])
+    tracked = tmp_path / "tracked"
+    write_cluster(tracked, [{"tag": "alpha", "path": "../alpha"}])
+    _fake_checkout(tracked, "https://github.com/org/tracked-cluster")
+    build_cluster(tracked)
+
+    impostor = tmp_path / "impostor"
+    write_cluster(impostor, [{"tag": "alpha", "path": "../alpha"}])
+    with pytest.raises(ClusterSpecError, match="no origin remote"):
+        build_cluster(impostor)
+    # The member's marker still points at the URL-tracked owner.
+    assert _only_ref(tmp_path / "alpha" / "graphify-out")["cluster_url"] == (
+        "https://github.com/org/tracked-cluster"
+    )
+
+
+def test_marker_fields_are_sanitized_in_hook_and_hints(tmp_path, built_cluster, monkeypatch, capsys):
+    """The marker is committed and travels with clones: hostile field values
+    must not reach hook context, hints, or error messages unsanitized."""
+    evil_name = "evil\x1b]0;pwned\x07" + "A" * 10_000
+    marker_path = _marker(tmp_path, "alpha")
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["clusters"][0]["cluster_name"] = evil_name
+    marker["clusters"][0]["self_tag"] = "tag\x1b[31m"
+    marker["clusters"][0]["member_count"] = "2; rm -rf /"
+    marker["clusters"][0]["cluster_url"] = "https://x.test/\x1b[0m"
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path / "alpha")
+    hook_out = _run_search_hook(monkeypatch, capsys)
+    ctx = json.loads(hook_out)["hookSpecificOutput"]["additionalContext"]
+    assert "\x1b" not in ctx and "\x07" not in ctx
+    assert "A" * 300 not in ctx  # long fields are capped
+
+    from graphify.cluster_ref import (
+        cluster_hint_line,
+        load_cluster_refs,
+        unresolvable_message,
+    )
+
+    refs = load_cluster_refs(tmp_path / "alpha" / "graphify-out")
+    for text in (cluster_hint_line(refs), unresolvable_message(refs[0])):
+        assert "\x1b" not in text and "\x07" not in text
+        assert "A" * 300 not in text
+        assert "rm -rf" not in text or "?" in text  # count coerced to int-or-?
+    assert "(? members)" in cluster_hint_line(refs)

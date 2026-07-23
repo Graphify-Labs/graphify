@@ -55,7 +55,7 @@ def load_cluster_refs(out_dir: "Path | str") -> list[dict]:
 
 def select_cluster_ref(refs: list[dict], name: str | None = None) -> dict:
     """Select one membership or raise ``ValueError`` with an actionable error."""
-    names = sorted(str(ref["cluster_name"]) for ref in refs)
+    names = sorted(_clean(ref["cluster_name"]) for ref in refs)
     if name is not None:
         for ref in refs:
             if ref["cluster_name"] == name:
@@ -72,6 +72,25 @@ def select_cluster_ref(refs: list[dict], name: str | None = None) -> dict:
     )
 
 
+def _clean(value) -> str:
+    """Sanitize one marker field for assistant/terminal-facing text.
+
+    The marker is a committed file that travels with clones, so its fields are
+    untrusted. security.py is stdlib-only, so the lazy import preserves this
+    module's light-import contract for the hook path.
+    """
+    from .security import sanitize_label
+
+    return sanitize_label(str(value))
+
+
+def _member_count(ref: dict) -> "int | str":
+    try:
+        return int(ref.get("member_count", 0)) or "?"
+    except (TypeError, ValueError):
+        return "?"
+
+
 def cluster_hint_line(refs: list[dict]) -> str:
     """One-line member hint appended to no-match/empty results."""
     if not refs:
@@ -79,11 +98,11 @@ def cluster_hint_line(refs: list[dict]) -> str:
     if len(refs) == 1:
         ref = refs[0]
         return (
-            f"note: this repo is member '{ref['self_tag']}' of cluster "
-            f"'{ref['cluster_name']}' ({ref.get('member_count', '?')} members) — "
+            f"note: this repo is member '{_clean(ref['self_tag'])}' of cluster "
+            f"'{_clean(ref['cluster_name'])}' ({_member_count(ref)} members) — "
             "cross-repo answers may need the cluster graph; re-run with --cluster"
         )
-    names = ", ".join(sorted(str(ref["cluster_name"]) for ref in refs))
+    names = ", ".join(sorted(_clean(ref["cluster_name"]) for ref in refs))
     return (
         f"note: this repo belongs to {len(refs)} clusters ({names}) — cross-repo "
         "answers may need a cluster graph; re-run with --cluster NAME"
@@ -92,21 +111,22 @@ def cluster_hint_line(refs: list[dict]) -> str:
 
 def unresolvable_message(ref: dict) -> str:
     """Actionable message when one selected cluster is unavailable locally."""
+    name = _clean(ref["cluster_name"])
     base = (
-        f"this repo is member '{ref['self_tag']}' of cluster "
-        f"'{ref['cluster_name']}' ({ref.get('member_count', '?')} members) "
+        f"this repo is member '{_clean(ref['self_tag'])}' of cluster "
+        f"'{name}' ({_member_count(ref)} members) "
         "but the cluster isn't available locally"
     )
-    url = ref.get("cluster_url") or ""
+    url = _clean(ref.get("cluster_url") or "")
     if url:
         return (
             f"{base}; clone {url} next to this repo and run "
             f"'graphify cluster build' there, then re-run with "
-            f"--cluster {ref['cluster_name']}"
+            f"--cluster {name}"
         )
     return (
         f"{base} and has no recorded remote; create it with "
-        f"'graphify cluster init <dir> --name {ref['cluster_name']}', add the "
+        f"'graphify cluster init <dir> --name {name}', add the "
         "members, and run 'graphify cluster build'"
     )
 

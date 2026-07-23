@@ -984,6 +984,40 @@ def _query_graph_text(
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
 
 
+def _neighbor_lines(G: nx.Graph, nid: str, rel_filter: str = "") -> list[str]:
+    """Per-edge neighbor lines for get_neighbors.
+
+    One line per parallel edge (edge_datas, matching the query surface):
+    edge_data would surface an arbitrary single relation on multigraphs, so a
+    relation_filter could return empty for relations that exist. Simple graphs
+    produce identical output (edge_datas returns a one-element list).
+    """
+    def _edge_at(d: dict) -> str:
+        # Edge location = the relation SITE (call/import line) in the source
+        # node's file, not a def line (#BUG1).
+        loc = str(d.get("source_location") or "")
+        return (
+            f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
+            if loc else ""
+        )
+
+    lines: list[str] = []
+    for arrow, pairs in (
+        ("-->", ((nid, nb, nb) for nb in G.successors(nid))),
+        ("<--", ((nb, nid, nb) for nb in G.predecessors(nid))),
+    ):
+        for u, v, nb in pairs:
+            for d in edge_datas(G, u, v):
+                rel = d.get("relation", "")
+                if rel_filter and rel_filter not in str(rel).lower():
+                    continue
+                lines.append(
+                    f"  {arrow} {sanitize_label(G.nodes[nb].get('label', nb))} "
+                    f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                )
+    return lines
+
+
 def _find_node(G: nx.Graph, label: str) -> list[str]:
     """Return node IDs whose label or ID matches the search term (diacritic-insensitive).
 
@@ -1383,6 +1417,10 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
         )
+        if result.startswith("No matching nodes found."):
+            # Same cluster-membership note the other no-match tools append,
+            # added before logging so the query log matches the response.
+            result += _cluster_note()
         querylog.log_query(
             kind="mcp_query",
             question=question,
@@ -1420,32 +1458,7 @@ def _build_server(graph_path: str):
             return f"No node matching '{label}' found." + _cluster_note()
         nid = matches[0]
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
-        def _edge_at(d: dict) -> str:
-            # Edge location = the relation SITE (call/import line) in the source
-            # node's file, not a def line (#BUG1).
-            loc = str(d.get("source_location") or "")
-            return (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
-                if loc else ""
-            )
-        for nb in G.successors(nid):
-            d = edge_data(G, nid, nb)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
-        for nb in G.predecessors(nid):
-            d = edge_data(G, nb, nid)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
+        lines += _neighbor_lines(G, nid, rel_filter)
         budget = int(arguments.get("token_budget", 2000))
         return _cut_lines_to_budget(
             lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"

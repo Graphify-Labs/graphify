@@ -313,9 +313,13 @@ def test_affected_falls_back_to_def_line_when_edge_has_no_location(monkeypatch, 
     assert "a.py:L90" in capsys.readouterr().out
 
 
-def test_affected_preserves_edge_file_when_edge_location_is_missing(
+def test_affected_falls_back_to_def_line_when_edge_location_is_missing(
     monkeypatch, tmp_path, capsys
 ):
+    """An edge with source_file but a NULL source_location (allowed by the
+    extraction schema) must fall back to the node's own def line — a bare
+    "traversed.py:-" is a non-clickable location, worse than the honest
+    fallback the pre-cluster formatter printed."""
     g = nx.DiGraph()
     g.add_node("loader", label="load()", source_file="definition.py", source_location="L90")
     g.add_node("target", label="target()", source_file="target.py", source_location="L5")
@@ -340,5 +344,5 @@ def test_affected_preserves_edge_file_when_edge_location_is_missing(
     mainmod.main()
 
     out = capsys.readouterr().out
-    assert "traversed.py:-" in out
-    assert "definition.py:L90" not in out
+    assert "traversed.py:-" not in out
+    assert "definition.py:L90" in out

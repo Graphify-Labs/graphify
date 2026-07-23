@@ -141,3 +141,65 @@ def test_multigraph_exporters_keep_parallel_edges(tmp_path):
     payload = json.loads(canvas.read_text(encoding="utf-8"))
     assert len(payload["edges"]) == 2
     assert len({edge["id"] for edge in payload["edges"]}) == 2
+
+
+def test_get_neighbors_surfaces_all_parallel_relations():
+    """get_neighbors must iterate edge_datas like query/path: edge_data picks
+    one arbitrary parallel edge, so a relation_filter could return empty for
+    relations that exist."""
+    from graphify.serve import _neighbor_lines
+
+    G = nx.MultiDiGraph()
+    G.add_node("a", label="A")
+    G.add_node("b", label="B")
+    G.add_edge("a", "b", key="k1", relation="calls", confidence="EXTRACTED")
+    G.add_edge("a", "b", key="k2", relation="references", confidence="INFERRED")
+
+    out = _neighbor_lines(G, "a")
+    assert any("[calls]" in line for line in out)
+    assert any("[references]" in line for line in out)
+    incoming = _neighbor_lines(G, "b")
+    assert any("[calls]" in line for line in incoming)
+    assert any("[references]" in line for line in incoming)
+    # The filter applies per edge, not to an arbitrarily-picked one.
+    assert _neighbor_lines(G, "a", "references") and all(
+        "[references]" in line for line in _neighbor_lines(G, "a", "references")
+    )
+
+
+def test_mixed_graph_modes_compose_with_warning(tmp_path, capsys):
+    """A simple member in a multi cluster promotes with a warning; a
+    multigraph member in a simple cluster collapses parallels silently
+    (the coercion the loader documents)."""
+    # simple member into multi cluster
+    make_member(tmp_path, "plain", [
+        _node("a", source_file="a.ts"), _node("b", source_file="b.ts"),
+    ], edges=[("a", "b", {"relation": "calls"})])
+    multi_cluster = tmp_path / "multi-cluster"
+    write_cluster(
+        multi_cluster, [{"tag": "plain", "path": "../plain"}],
+        name="multi-cluster", graph_mode="multi",
+    )
+    build_cluster(multi_cluster)
+    assert "re-extract it with --multigraph" in capsys.readouterr().err
+    assert isinstance(_load_out(multi_cluster), nx.MultiDiGraph)
+
+    # multigraph member into simple cluster: parallel edges collapse to one
+    keyed = tmp_path / "keyed" / "graphify-out"
+    keyed.mkdir(parents=True)
+    M = nx.MultiDiGraph()
+    M.add_node("x", label="x", source_file="x.ts")
+    M.add_node("y", label="y", source_file="y.ts")
+    M.add_edge("x", "y", key="k1", relation="calls")
+    M.add_edge("x", "y", key="k2", relation="references")
+    (keyed / "graph.json").write_text(
+        json.dumps(json_graph.node_link_data(M, edges="links")), encoding="utf-8"
+    )
+    simple_cluster = tmp_path / "simple-cluster"
+    write_cluster(
+        simple_cluster, [{"tag": "keyed", "path": "../keyed"}], name="simple-cluster"
+    )
+    build_cluster(simple_cluster)
+    G = _load_out(simple_cluster)
+    assert not G.is_multigraph()
+    assert G.number_of_edges() == 1
