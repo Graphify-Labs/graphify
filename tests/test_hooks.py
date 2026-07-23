@@ -440,6 +440,11 @@ def _shell_verdict(pattern: str, candidate: str) -> str:
         ["bash", "-c", f'case "$1" in\n{pattern}) echo REJECTED ;;\n*) echo ACCEPTED ;;\nesac', "_", candidate],
         capture_output=True, text=True,
     )
+    # Fail loudly on a malformed case snippet instead of returning "" and
+    # producing a confusing ACCEPTED/REJECTED mismatch downstream.
+    assert result.returncode == 0, (
+        f"bash exited {result.returncode} for pattern {pattern!r}: {result.stderr.strip()}"
+    )
     return result.stdout.strip()
 
 
