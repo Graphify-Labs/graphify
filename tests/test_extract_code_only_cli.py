@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 PYTHON = sys.executable
 _KEY_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
              "ANTHROPIC_API_KEY", "MOONSHOT_API_KEY", "DEEPSEEK_API_KEY")
@@ -69,6 +71,38 @@ def _link_signature(links):
         (str(l.get("source")), str(l.get("target")), str(l.get("relation", "")))
         for l in links
     )
+
+
+def test_filter_payload_sources_drops_hyperedges_with_removed_members():
+    from graphify.cli import _filter_payload_sources
+
+    payload = {
+        "nodes": [
+            {"id": "removed", "source_file": "stale.py"},
+            {"id": "kept", "source_file": "live.py"},
+        ],
+        "links": [],
+        "hyperedges": [
+            {
+                "id": "dangling",
+                "nodes": ["removed", "kept"],
+                "source_file": "live.py",
+            },
+            {
+                "id": "owned-by-stale",
+                "nodes": ["kept"],
+                "source_file": "stale.py",
+            },
+            {"id": "kept", "nodes": ["kept"], "source_file": "live.py"},
+            "malformed",
+        ],
+    }
+
+    assert _filter_payload_sources(payload, {"stale.py"}) == 1
+    assert payload["nodes"] == [{"id": "kept", "source_file": "live.py"}]
+    assert payload["hyperedges"] == [
+        {"id": "kept", "nodes": ["kept"], "source_file": "live.py"}
+    ]
 
 
 def test_multigraph_conversion_of_unchanged_graph_preserves_content(tmp_path):
@@ -389,3 +423,32 @@ def test_no_multigraph_downgrades_with_warning(tmp_path):
     assert graph.get("multigraph", False) is False
     assert {n["id"] for n in graph["nodes"]} == {n["id"] for n in before["nodes"]}
     assert graph["links"], "downgrade must keep the edges"
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--multigraph", "--no-multigraph"),
+        ("--no-multigraph", "--multigraph"),
+    ],
+)
+def test_conflicting_multigraph_flags_fail_before_extraction(tmp_path, flags):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+
+    result = _run(repo, "--code-only", *flags)
+    assert result.returncode == 2
+    assert "mutually exclusive" in result.stderr
+    assert not (repo / "graphify-out" / "graph.json").exists()
+
+
+def test_repeated_multigraph_flag_is_idempotent(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+
+    result = _run(repo, "--code-only", "--multigraph", "--multigraph")
+    assert result.returncode == 0, result.stderr
+    graph = json.loads((repo / "graphify-out" / "graph.json").read_text())
+    assert graph["multigraph"] is True

@@ -117,9 +117,18 @@ class LinkReport:
 # ---------------------------------------------------------------------------
 
 def _read_structured(path: Path) -> dict:
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ClusterSpecError(f"{path}: could not read file ({exc})") from exc
     if path.suffix == ".json":
-        data = json.loads(text)
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ClusterSpecError(
+                f"{path}: invalid JSON at line {exc.lineno}, column {exc.colno} "
+                f"({exc.msg})"
+            ) from exc
     else:
         try:
             import yaml
@@ -128,7 +137,10 @@ def _read_structured(path: Path) -> dict:
                 f"{path.name} requires pyyaml (`pip install pyyaml`), "
                 f"or use the JSON spec form ({path.stem}.json)."
             )
-        data = yaml.safe_load(text)
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ClusterSpecError(f"{path}: invalid YAML ({exc})") from exc
     if not isinstance(data, dict):
         raise ClusterSpecError(f"{path}: expected a mapping at the top level")
     return data
@@ -183,9 +195,30 @@ def load_spec(cluster_dir: Path) -> ClusterSpec:
             f"(this graphify understands version {SCHEMA_VERSION})"
         )
 
+    raw_members = data.get("members", [])
+    if not isinstance(raw_members, list):
+        raise ClusterSpecError(f"{spec_path.name}: members must be a list")
+
+    raw_links = data.get("links", [])
+    if not isinstance(raw_links, list):
+        raise ClusterSpecError(f"{spec_path.name}: links must be a list")
+
+    defaults = data.get("defaults", {})
+    if not isinstance(defaults, dict):
+        raise ClusterSpecError(f"{spec_path.name}: defaults must be a mapping")
+
+    auto = data.get("auto_links", {})
+    if not isinstance(auto, dict):
+        raise ClusterSpecError(f"{spec_path.name}: auto_links must be a mapping")
+    for key in ("externals", "packages"):
+        if key in auto and not isinstance(auto[key], bool):
+            raise ClusterSpecError(
+                f"{spec_path.name}: auto_links.{key} must be a boolean"
+            )
+
     members: list[ClusterMember] = []
     seen_tags: set[str] = set()
-    for i, m in enumerate(data.get("members") or []):
+    for i, m in enumerate(raw_members):
         if not isinstance(m, dict) or not m.get("tag"):
             raise ClusterSpecError(f"{spec_path.name}: members[{i}] needs a 'tag'")
         tag = str(m["tag"])
@@ -200,7 +233,6 @@ def load_spec(cluster_dir: Path) -> ClusterSpec:
             graph=str(m.get("graph") or ""),
         ))
 
-    defaults = data.get("defaults") or {}
     on_missing = str(defaults.get("on_missing") or "warn")
     if on_missing not in _ON_MISSING:
         raise ClusterSpecError(
@@ -208,7 +240,7 @@ def load_spec(cluster_dir: Path) -> ClusterSpec:
         )
 
     links: list[ClusterLink] = []
-    for i, raw in enumerate(data.get("links") or []):
+    for i, raw in enumerate(raw_links):
         where = f"{spec_path.name}: links[{i}]"
         if not isinstance(raw, dict) or not raw.get("type"):
             raise ClusterSpecError(f"{where} needs a 'type'")
@@ -251,7 +283,6 @@ def load_spec(cluster_dir: Path) -> ClusterSpec:
                 )
         links.append(link)
 
-    auto = data.get("auto_links") or {}
     graph_mode = str(data.get("graph_mode") or "simple")
     if graph_mode not in _GRAPH_MODES:
         raise ClusterSpecError(
@@ -523,7 +554,7 @@ def compose_members(
             member_graph = load_graph_json(
                 gp, preserve_type=spec.graph_mode == "multi", directed=True
             )
-        except ValueError as exc:  # JSONDecodeError and the size cap
+        except ValueError as exc:
             raise ClusterSpecError(
                 f"member '{member.tag}' has an unreadable graph at {gp} ({exc}). "
                 f"Re-run `graphify extract . --force` in {resolved[member.tag]} to rebuild it."

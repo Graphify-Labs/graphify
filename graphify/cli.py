@@ -86,34 +86,37 @@ def _hook_cluster_line() -> str:
 
     Reads graphify-out/cluster-ref.json (written by `graphify cluster build`)
     via the stdlib-only cluster_ref module — the hook path must stay light.
+    The marker is committed, untrusted input, so assistant context contains
+    only static guidance and validated numeric counts: marker-controlled names,
+    tags, URLs, and paths are never interpolated here.
     """
     try:
         from graphify.cluster_ref import load_cluster_refs
         from graphify.paths import GRAPHIFY_OUT
-        from graphify.security import sanitize_label
 
         refs = load_cluster_refs(Path(GRAPHIFY_OUT))
         if not refs:
             return ""
-        # The marker is a committed file that travels with clones — its fields
-        # are untrusted input to assistant-facing hook context, so they pass
-        # sanitize_label (stdlib-only; the hook path stays light).
         if len(refs) > 1:
-            names = ", ".join(sorted(sanitize_label(str(ref["cluster_name"])) for ref in refs))
             return (
-                f" This repo belongs to {len(refs)} clusters ({names}); for "
+                f" This repo belongs to {len(refs)} clusters; for "
                 "cross-repo questions add --cluster NAME to graphify "
                 "query/path/explain/affected."
             )
         ref = refs[0]
+        raw_count = ref.get("member_count", 0)
         try:
-            member_count: "int | str" = int(ref.get("member_count", 0)) or "?"
+            parsed_count = int(raw_count)
         except (TypeError, ValueError):
-            member_count = "?"
+            parsed_count = 0
+        member_count: "int | str" = (
+            parsed_count
+            if not isinstance(raw_count, bool) and 1 <= parsed_count <= 100_000
+            else "?"
+        )
         return (
-            f" This repo is member '{sanitize_label(str(ref['self_tag']))}' of cluster "
-            f"'{sanitize_label(str(ref['cluster_name']))}' ({member_count} members); "
-            f"for cross-repo questions add --cluster to graphify "
+            f" This repo belongs to a cluster ({member_count} members); for "
+            f"cross-repo questions add --cluster to graphify "
             f"query/path/explain/affected."
         )
     except Exception:
@@ -182,8 +185,11 @@ def _resolve_cluster_graph_or_exit(cluster_name: str | None = None) -> str:
 
     cluster_graph = cluster_out_dir(cluster_dir) / "graph.json"
     if not cluster_graph.is_file():
+        from graphify.security import sanitize_label
+
+        display_name = sanitize_label(str(ref["cluster_name"]))
         print(
-            f"error: cluster '{ref['cluster_name']}' found at {cluster_dir} but has "
+            f"error: cluster '{display_name}' found at {cluster_dir} but has "
             f"no built graph; run 'graphify cluster build' in {cluster_dir}",
             file=sys.stderr,
         )
@@ -411,7 +417,12 @@ def _filter_payload_sources(data: dict, stale: set) -> int:
     if "hyperedges" in data:
         data["hyperedges"] = [
             h for h in data.get("hyperedges", [])
-            if isinstance(h, dict) and h.get("source_file") not in stale
+            if isinstance(h, dict)
+            and h.get("source_file") not in stale
+            and not (
+                isinstance(h.get("nodes"), list)
+                and any(member in removed_ids for member in h["nodes"])
+            )
         ]
     return n_removed
 
@@ -2720,6 +2731,8 @@ def dispatch_command(cmd: str) -> None:
         cli_cargo: bool = False
         cli_allow_partial: bool = False
         cli_multigraph: bool | None = None
+        saw_multigraph = False
+        saw_no_multigraph = False
         no_cluster = False
         dedup_llm = False
         google_workspace = False
@@ -2789,9 +2802,9 @@ def dispatch_command(cmd: str) -> None:
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
             elif a == "--multigraph":
-                cli_multigraph = True; i += 1
+                cli_multigraph = True; saw_multigraph = True; i += 1
             elif a == "--no-multigraph":
-                cli_multigraph = False; i += 1
+                cli_multigraph = False; saw_no_multigraph = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--code-only":
@@ -2847,6 +2860,13 @@ def dispatch_command(cmd: str) -> None:
                 cli_timing = True; i += 1
             else:
                 i += 1
+
+        if saw_multigraph and saw_no_multigraph:
+            print(
+                "error: --multigraph and --no-multigraph are mutually exclusive",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
         if not has_path and cli_postgres_dsn is None:
             print("error: must specify a path to scan or a --postgres DSN", file=sys.stderr)

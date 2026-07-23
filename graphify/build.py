@@ -795,19 +795,30 @@ def build_from_json(
     # and makes the serialized graph churn. Sorting fixes the last-write outcome.
     # Multigraphs additionally need a TOTAL order: parallel keyed edges share
     # (src, tgt, relation), and their iteration order decides content-suffix
-    # key collisions. Simple graphs skip that O(E) json.dumps tiebreak — the
-    # 3-tuple sort plus input order already fixes their last-write outcome.
-    def _edge_sort_key(e: dict):
-        key = (
+    # key collisions. Simple graphs need the same tiebreak only when multiple
+    # inputs share that 3-tuple; unique edges avoid the json.dumps cost.
+    edge_rows = extraction.get("edges", [])
+
+    def _edge_identity(e: dict) -> tuple[str, str, str]:
+        return (
             str(e.get("source", e.get("from", ""))),
             str(e.get("target", e.get("to", ""))),
             str(e.get("relation", "")),
         )
-        if multigraph:
-            key += (json.dumps(e, sort_keys=True, ensure_ascii=False, default=str),)
-        return key
 
-    for edge in sorted(extraction.get("edges", []), key=_edge_sort_key):
+    identity_counts: dict[tuple[str, str, str], int] = {}
+    for edge in edge_rows:
+        identity = _edge_identity(edge)
+        identity_counts[identity] = identity_counts.get(identity, 0) + 1
+
+    def _edge_sort_key(e: dict) -> tuple[str, str, str, str]:
+        identity = _edge_identity(e)
+        tiebreak = ""
+        if multigraph or identity_counts[identity] > 1:
+            tiebreak = json.dumps(e, sort_keys=True, ensure_ascii=False, default=str)
+        return (*identity, tiebreak)
+
+    for edge in sorted(edge_rows, key=_edge_sort_key):
         if "source" not in edge and "from" in edge:
             edge["source"] = edge["from"]
         if "target" not in edge and "to" in edge:
@@ -1400,16 +1411,64 @@ def load_graph_json(
     from networkx.readwrite import json_graph as _jg
     from .security import check_graph_file_size_cap
 
-    check_graph_file_size_cap(path)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if "links" not in data and "edges" in data:
-        data = dict(data, links=data["edges"])
-    if directed:
-        data = dict(data, directed=True)
     try:
-        G = _jg.node_link_graph(data, edges="links")
-    except TypeError:
-        G = _jg.node_link_graph(data)
+        check_graph_file_size_cap(path)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("expected a mapping at the top level")
+
+        nodes = data.get("nodes")
+        if not isinstance(nodes, list):
+            raise ValueError("'nodes' must be a list")
+        for i, node in enumerate(nodes):
+            if not isinstance(node, dict):
+                raise ValueError(f"nodes[{i}] must be a mapping")
+            if "id" not in node:
+                raise ValueError(f"nodes[{i}] is missing required 'id'")
+            try:
+                hash(node["id"])
+            except TypeError as exc:
+                raise ValueError(f"nodes[{i}].id must be hashable") from exc
+
+        links_key = "links" if "links" in data else "edges" if "edges" in data else ""
+        if not links_key:
+            raise ValueError("expected a 'links' or legacy 'edges' list")
+        links = data[links_key]
+        if not isinstance(links, list):
+            raise ValueError(f"'{links_key}' must be a list")
+        for i, link in enumerate(links):
+            if not isinstance(link, dict):
+                raise ValueError(f"{links_key}[{i}] must be a mapping")
+            for endpoint in ("source", "target"):
+                if endpoint not in link:
+                    raise ValueError(
+                        f"{links_key}[{i}] is missing required '{endpoint}'"
+                    )
+                try:
+                    hash(link[endpoint])
+                except TypeError as exc:
+                    raise ValueError(
+                        f"{links_key}[{i}].{endpoint} must be hashable"
+                    ) from exc
+
+        if links_key == "edges":
+            data = dict(data, links=links)
+        if directed:
+            data = dict(data, directed=True)
+        try:
+            G = _jg.node_link_graph(data, edges="links")
+        except TypeError:
+            G = _jg.node_link_graph(data)
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        nx.NetworkXException,
+    ) as exc:
+        raise ValueError(f"cannot load graph {path}: {exc}") from exc
+
     simple_type = nx.DiGraph if directed else nx.Graph
     if not preserve_type and type(G) is not simple_type:
         G = simple_type(G)

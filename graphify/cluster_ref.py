@@ -60,6 +60,11 @@ def select_cluster_ref(refs: list[dict], name: str | None = None) -> dict:
         for ref in refs:
             if ref["cluster_name"] == name:
                 return ref
+        cleaned_matches = [
+            ref for ref in refs if _clean(ref["cluster_name"]) == name
+        ]
+        if len(cleaned_matches) == 1:
+            return cleaned_matches[0]
         available = ", ".join(names) or "none"
         raise ValueError(f"unknown cluster {name!r}; available clusters: {available}")
     if len(refs) == 1:
@@ -85,10 +90,14 @@ def _clean(value) -> str:
 
 
 def _member_count(ref: dict) -> "int | str":
+    raw = ref.get("member_count", 0)
     try:
-        return int(ref.get("member_count", 0)) or "?"
+        count = int(raw)
     except (TypeError, ValueError):
         return "?"
+    if isinstance(raw, bool) or not 1 <= count <= 100_000:
+        return "?"
+    return count
 
 
 def cluster_hint_line(refs: list[dict]) -> str:

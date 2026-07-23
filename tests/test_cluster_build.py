@@ -265,6 +265,37 @@ def test_corrupt_member_graph_is_actionable(two_members):
     assert any("unreadable" in e for e in errors)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"nodes": "bad", "links": []},
+        {"nodes": [], "links": "bad"},
+        {"nodes": [{"label": "missing id"}], "links": []},
+        {"nodes": [{"id": "a"}], "links": [{"source": "a"}]},
+    ],
+    ids=[
+        "non-mapping-root",
+        "nodes-not-list",
+        "links-not-list",
+        "node-missing-id",
+        "edge-missing-target",
+    ],
+)
+def test_structurally_corrupt_member_graph_is_actionable(two_members, payload):
+    graph_path = two_members.parent / "alpha" / "graphify-out" / "graph.json"
+    graph_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ClusterSpecError, match="unreadable graph"):
+        build_cluster(two_members)
+
+    from graphify.cluster_graph import check_cluster
+
+    report, errors = check_cluster(two_members)
+    assert report.errors == errors
+    assert any("unreadable graph" in error for error in errors)
+
+
 def test_cluster_cannot_compose_itself(two_members):
     spec_path = two_members / "cluster.json"
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
@@ -339,3 +370,59 @@ def test_yaml_spec_still_loads(tmp_path):
     summary = build_cluster(cluster)
     assert summary["name"] == "yaml-cluster"
     assert "alpha::app" in _load_out(cluster)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("members", {}, "members must be a list"),
+        ("links", {}, "links must be a list"),
+        ("defaults", [], "defaults must be a mapping"),
+        ("auto_links", [], "auto_links must be a mapping"),
+        (
+            "auto_links",
+            {"externals": "false"},
+            "auto_links.externals must be a boolean",
+        ),
+        (
+            "auto_links",
+            {"packages": 1},
+            "auto_links.packages must be a boolean",
+        ),
+    ],
+)
+def test_invalid_cluster_spec_field_shapes_are_actionable(
+    tmp_path, field, value, message
+):
+    from graphify.cluster_graph import load_spec
+
+    cluster = tmp_path / "cluster"
+    write_cluster(cluster, [])
+    spec_path = cluster / "cluster.json"
+    data = json.loads(spec_path.read_text(encoding="utf-8"))
+    data[field] = value
+    spec_path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ClusterSpecError, match=message):
+        load_spec(cluster)
+
+
+def test_invalid_json_cluster_spec_is_actionable(tmp_path):
+    from graphify.cluster_graph import load_spec
+
+    cluster = tmp_path / "cluster"
+    cluster.mkdir()
+    (cluster / "cluster.json").write_text("{oops", encoding="utf-8")
+    with pytest.raises(ClusterSpecError, match="invalid JSON at line"):
+        load_spec(cluster)
+
+
+def test_invalid_yaml_cluster_spec_is_actionable(tmp_path):
+    pytest.importorskip("yaml")
+    from graphify.cluster_graph import load_spec
+
+    cluster = tmp_path / "cluster"
+    cluster.mkdir()
+    (cluster / "cluster.yaml").write_text("members: [\n", encoding="utf-8")
+    with pytest.raises(ClusterSpecError, match="invalid YAML"):
+        load_spec(cluster)
