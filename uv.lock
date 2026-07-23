@@ -1181,8 +1181,8 @@ requires-dist = [
     { name = "falkordb", marker = "extra == 'falkordb'" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'all'" },
     { name = "faster-whisper", marker = "python_full_version >= '3.11' and extra == 'video'" },
-    { name = "helix-db", specifier = "==0.2.0b3" },
-    { name = "helix-db-embedded", specifier = "==0.2.0b3" },
+    { name = "helix-db", specifier = "==0.2.0b4" },
+    { name = "helix-db-embedded", specifier = "==0.2.0b4" },
     { name = "jieba", marker = "extra == 'all'" },
     { name = "jieba", marker = "extra == 'chinese'" },
     { name = "markdownify", marker = "extra == 'all'" },
@@ -1287,21 +1287,22 @@ wheels = [
 
 [[package]]
 name = "helix-db"
-version = "0.2.0b3"
+version = "0.2.0b4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/31/e5/746b5c6b078fb5385e00df7ad375e6047e898e5660154336afa59008d872/helix_db-0.2.0b3.tar.gz", hash = "sha256:3c4038913cb7ab91db803efa54d4d9ad14b4cd895367423cb9f771946ac6b477", size = 42482, upload-time = "2026-07-19T11:44:26.142Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/d4/32273966072e6c313b0455be430ed100346e56ae3c861fe44d8f56983347/helix_db-0.2.0b4.tar.gz", hash = "sha256:b137656fc06a895240f83665dba0971b9c1a5174e1fdf7c5f0cad94be1b6d76b", size = 46958, upload-time = "2026-07-23T00:37:55.019Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/d4/85118889f6946442b38867241f6e372914c16989cf98aef6e35b59304a13/helix_db-0.2.0b3-py3-none-any.whl", hash = "sha256:6d7f22e2d29949e740b5a245c1f082d140d3116f596dd3d16cccf8050fcb7003", size = 36430, upload-time = "2026-07-19T11:44:25.169Z" },
+    { url = "https://files.pythonhosted.org/packages/28/39/c1b5b663d41ea9301086c8f756e068355f808f56cd3039bb37460af92389/helix_db-0.2.0b4-py3-none-any.whl", hash = "sha256:a173fa7fe54503deb59704bcd373bca7f3c01bf080a2968c351a786428e6bc61", size = 38788, upload-time = "2026-07-23T00:37:31.506Z" },
 ]
 
 [[package]]
 name = "helix-db-embedded"
-version = "0.2.0b3"
+version = "0.2.0b4"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bb/3e/6df319091bf2681c08dbb25f74dddc60fc0fe767d73c713fc24c86c09ab4/helix_db_embedded-0.2.0b3-py3-none-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:5270ff1967b712e72ab86086edf0ba53d29a4a7ca1e72d043fb752aba0c019e6", size = 42290706, upload-time = "2026-07-19T11:44:50.598Z" },
-    { url = "https://files.pythonhosted.org/packages/fe/12/0fa8ba4ac77b9997d04d2c662d8536579658f0148dcd2fd37be8e5d6476e/helix_db_embedded-0.2.0b3-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:84667a0eb081e2dd2770209553396079ed7bfa564de95e50b72be360c0b4d27f", size = 22596385, upload-time = "2026-07-19T11:44:56.863Z" },
-    { url = "https://files.pythonhosted.org/packages/d3/32/3a71d17c24293ae4a670d7a254565a2af60468c5a9d0ef18785197b1ee6b/helix_db_embedded-0.2.0b3-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:a9458c87dbd9112c5419a36f4dbaf12b380ceb1d0c48ca27999ecc500fbf8e92", size = 23577363, upload-time = "2026-07-19T11:45:03.691Z" },
+    { url = "https://files.pythonhosted.org/packages/90/b3/27d0ed62ed38bdc3e4fc01731377f6ecc59bff24817c15a0c76625213e8e/helix_db_embedded-0.2.0b4-py3-none-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:f9879e2f4e07f39963f097fabd519d7cca261439f8567f617590234264776e35", size = 46107223, upload-time = "2026-07-23T00:37:37.742Z" },
+    { url = "https://files.pythonhosted.org/packages/64/d8/3cf3e34abc847ca20bb94f2828cd67334a2b94104a65e180edb8b499c5ec/helix_db_embedded-0.2.0b4-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:a5febabf8f70627eced370d3d1dc2c8199975ed6d4a78c52978ae8144f1603b7", size = 24468413, upload-time = "2026-07-23T00:37:42.93Z" },
+    { url = "https://files.pythonhosted.org/packages/80/91/6e4d02752eb49983980f391847fdc7da76da3d4a2f383671ca5e3148b085/helix_db_embedded-0.2.0b4-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:df91da0491ba557e505cc151250be2c0d4efa113123e1799f5bd11dc3bac9b07", size = 25072643, upload-time = "2026-07-23T00:37:48.088Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/55/87860c762d47ebc2e19175d7a781e3045696113a61a702e0e238590f0e16/helix_db_embedded-0.2.0b4-py3-none-win_amd64.whl", hash = "sha256:79a9c5d66f5b923e5b9ad5dfbb875049b92ef0d7e5a0474cf5825b3b8a97758d", size = 24224971, upload-time = "2026-07-23T00:37:52.91Z" },
 ]
 
 [[package]]

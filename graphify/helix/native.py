@@ -12,10 +12,10 @@ from typing import Any
 import helixdb
 
 
-HELIX_PACKAGE_INDEX = "https://pypi.org/project/helix-db/0.2.0b3/"
-HELIX_PYTHON_VERSION = "0.2.0b3"
+HELIX_PACKAGE_INDEX = "https://pypi.org/project/helix-db/0.2.0b4/"
+HELIX_PYTHON_VERSION = "0.2.0b4"
 HELIX_EMBEDDED_DISTRIBUTION = "helix-db-embedded"
-HELIX_EMBEDDED_VERSION = "0.2.0b3"
+HELIX_EMBEDDED_VERSION = "0.2.0b4"
 _DATABASE_NAME = "graphify"
 _ID_LEASE_SIZE = 100_000
 _CACHE_DISABLED = helixdb.EmbeddedCacheConfig(

@@ -50,11 +50,11 @@ def test_exact_helix_package_is_pinned_everywhere():
     root = Path(__file__).parents[1]
     project = (root / "pyproject.toml").read_text()
     native = (root / "graphify/helix/native.py").read_text()
-    assert "helix-db==0.2.0b3" in project
-    assert "helix-db-embedded==0.2.0b3" in project
-    assert 'HELIX_PYTHON_VERSION = "0.2.0b3"' in native
-    assert 'HELIX_EMBEDDED_VERSION = "0.2.0b3"' in native
-    assert "https://pypi.org/project/helix-db/0.2.0b3/" in project
+    assert "helix-db==0.2.0b4" in project
+    assert "helix-db-embedded==0.2.0b4" in project
+    assert 'HELIX_PYTHON_VERSION = "0.2.0b4"' in native
+    assert 'HELIX_EMBEDDED_VERSION = "0.2.0b4"' in native
+    assert "https://pypi.org/project/helix-db/0.2.0b4/" in project
     assert "github.com/HelixDB/helix-proper" not in project
     assert "github.com/HelixDB/helix-db" not in project
     assert not (root / "graphify/helix/installer.py").exists()
@@ -62,7 +62,7 @@ def test_exact_helix_package_is_pinned_everywhere():
 
 
 def test_public_wheel_platform_matching_is_strict():
-    assert _pinned_version() == "0.2.0b3"
+    assert _pinned_version() == "0.2.0b4"
     assert _matches("helix_db_embedded-1-py3-none-win_amd64.whl", "windows-x86_64")
     assert _matches(
         "helix_db_embedded-1-py3-none-manylinux_2_28_aarch64.whl",

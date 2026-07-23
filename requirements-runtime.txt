@@ -1,7 +1,7 @@
 # Production dependencies. Keep synchronized with pyproject.toml.
 # Public Helix SDK and its matching embedded runtime.
-helix-db==0.2.0b3
-helix-db-embedded==0.2.0b3
+helix-db==0.2.0b4
+helix-db-embedded==0.2.0b4
 defusedxml>=0.7.1
 numpy>=1.21
 rapidfuzz>=3.0
