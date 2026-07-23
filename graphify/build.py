@@ -1299,13 +1299,20 @@ def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
     return len(to_remove)
 
 
-def load_graph_json(path: Path) -> nx.Graph:
-    """Load a persisted graph.json into a plain undirected ``nx.Graph``.
+def load_graph_json(path: Path, *, directed: bool = False) -> nx.Graph:
+    """Load a persisted graph.json into a plain ``nx.Graph`` (or ``DiGraph``).
 
     Shared by merge-graphs, the global graph, and cluster graphs. Applies the
     graph-file size cap, normalizes the legacy ``edges`` key to ``links``
-    (#738), and coerces DiGraph/MultiGraph/MultiDiGraph inputs to a simple
-    Graph so ``nx.compose`` never sees mixed types (#1606).
+    (#738), and coerces DiGraph/MultiGraph/MultiDiGraph inputs to one simple
+    type so ``nx.compose`` never sees mixed types (#1606).
+
+    directed=True loads the stored source/target order into a directed graph.
+    Persisted simple graphs say ``"directed": false`` even though their edge
+    order is meaningful (export restores it from _src/_tgt and pops the
+    attrs), so an undirected round-trip re-emits endpoints by node insertion
+    order and silently flips caller/callee — the #760 failure mode. Callers
+    that re-serialize a composed graph must load members directed.
     """
     from networkx.readwrite import json_graph as _jg
     from .security import check_graph_file_size_cap
@@ -1314,12 +1321,15 @@ def load_graph_json(path: Path) -> nx.Graph:
     data = json.loads(path.read_text(encoding="utf-8"))
     if "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
+    if directed:
+        data = dict(data, directed=True)
     try:
         G = _jg.node_link_graph(data, edges="links")
     except TypeError:
         G = _jg.node_link_graph(data)
-    if type(G) is not nx.Graph:
-        G = nx.Graph(G)
+    simple_type = nx.DiGraph if directed else nx.Graph
+    if type(G) is not simple_type:
+        G = simple_type(G)
     return G
 
 
