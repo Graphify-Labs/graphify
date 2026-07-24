@@ -1,10 +1,8 @@
-"""Deterministic R extraction shared with Compass.
+"""Deterministic R extraction for Graphify.
 
-R is intentionally source-driven: Graphify does not require an optional R
-grammar at runtime, while Compass keeps its grammar bundle static.  Keeping the
-small structural contract here avoids a classified-as-code file disappearing
-from one implementation while preserving the useful R relationships: package
-imports, named functions, and direct calls between local functions.
+R is intentionally source-driven so Graphify does not require an optional R
+grammar at runtime. The extractor preserves useful R relationships for package
+imports, named functions, containment, and direct calls between local functions.
 """
 from __future__ import annotations
 
