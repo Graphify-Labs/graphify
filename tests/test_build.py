@@ -842,3 +842,101 @@ def test_semantic_rekey_relative_vs_absolute_source_file():
     # absolute path with no resolvable root → skipped, not remapped to an abs-path id
     ab = [{"id": "api_readme", "source_file": "/abs/docs/v1/api/README.md", "type": "document"}]
     assert _semantic_id_remap(ab, None) == {}
+def test_build_merge_dry_run_does_not_write(tmp_path):
+    import json
+
+    graph_path = tmp_path / "graph.json"
+
+    graph_path.write_text(
+        json.dumps({
+            "nodes": [
+                {
+                    "id": "old_node",
+                    "source_file": "old.py"
+                }
+            ],
+            "edges": []
+        }),
+        encoding="utf-8"
+    )
+
+    before = graph_path.read_text(encoding="utf-8")
+
+    report = build_merge(
+        [
+            {
+                "nodes": [
+                    {
+                        "id": "new_node",
+                        "source_file": "new.py"
+                    }
+                ],
+                "edges": []
+            }
+        ],
+        graph_path,
+        dedup=False,
+        dry_run=True
+    )
+
+    after = graph_path.read_text(encoding="utf-8")
+
+    assert before == after
+    assert report["nodes_before"] == 1
+def test_build_merge_dry_run_detects_hub_collapse(tmp_path, capsys):
+    import json
+
+    graph_path = tmp_path / "graph.json"
+
+    nodes = [
+        {
+            "id": "hub",
+            "source_file": "hub.py"
+        }
+    ]
+
+    edges = []
+
+    for i in range(60):
+        nodes.append(
+            {
+                "id": f"node_{i}",
+                "source_file": "old.py"
+            }
+        )
+        edges.append(
+            {
+                "source": "hub",
+                "target": f"node_{i}",
+                "relation": "calls"
+            }
+        )
+
+    graph_path.write_text(
+        json.dumps({
+            "nodes": nodes,
+            "edges": edges
+        }),
+        encoding="utf-8"
+    )
+
+    build_merge(
+        [
+            {
+                "nodes": [
+                    {
+                        "id": "hub",
+                        "source_file": "hub.py"
+                    }
+                ],
+                "edges": []
+            }
+        ],
+        graph_path,
+        dedup=False,
+        dry_run=True
+    )
+
+    output = capsys.readouterr().out
+
+    assert "Hub degree collapse detected" in output

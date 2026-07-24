@@ -242,48 +242,78 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
     Drift-proof by construction: the new id is computed from ``source_file`` in
     code, never trusted from the fragment's own ``id`` string. AST-origin nodes
     are skipped (they are already canonical via the extract() post-pass)."""
-    from graphify.extractors.base import _file_stem  # local: avoid import cost at module load
+    from graphify.extractors.base import _file_stem
 
     remap: dict[str, str] = {}
+
     for node in nodes:
         if not isinstance(node, dict):
             continue
+
         if node.get("_origin") == "ast":
             continue
+
         nid = node.get("id")
         sf = node.get("source_file")
+
         if not nid or not isinstance(nid, str) or not sf:
             continue
-        sf_norm = _norm_source_file(str(sf), root) or str(sf)
-        rel = Path(sf_norm)
-        if rel.is_absolute():
-            continue  # can't relativize (no/failed root) — leave id untouched
-        if not rel.name:
-            # source_file equals the scan root, so _norm_source_file relativized it
-            # to Path('.') — a project-level node with no per-file identity to remap.
-            # Leave its id untouched (and avoid _file_stem's empty-name crash, #1618).
+
+        sf_str = str(sf)
+        sf_path = Path(sf_str)
+
+        # Absolute paths cannot be safely converted without a project root.
+        # Handle Unix-style absolute paths even when running on Windows.
+        # Prevent machine-specific paths leaking into graph IDs.
+        if (sf_str.startswith("/") or sf_path.is_absolute()) and root is None:
             continue
+
+        sf_norm = _norm_source_file(sf_str, root)
+
+        if not sf_norm:
+            continue
+
+        rel = Path(sf_norm)
+
+        # If normalization failed and path is still absolute, skip remapping.
+        if rel.is_absolute():
+            continue
+
+        # source_file points to the scan root itself.
+        # No file identity exists to generate an ID.
+        if not rel.name:
+            continue
+
         new_stem = make_id(_file_stem(rel))
+
         if not new_stem:
             continue
+
         norm_nid = _normalize_id(nid)
+
         new_id: str | None = None
+
         for old_stem in _old_file_stems(rel):
             if old_stem == new_stem:
-                continue  # already canonical for this form
+                continue
+
+            # File node itself
             if norm_nid == old_stem:
-                new_id = new_stem  # the file node itself
+                new_id = new_stem
                 break
+
+            # Symbol node inside file
             prefix = old_stem + "_"
+
             if norm_nid.startswith(prefix):
                 entity = norm_nid[len(prefix):]
                 new_id = make_id(new_stem, entity)
                 break
+
         if new_id and new_id != nid:
             remap[nid] = new_id
+
     return remap
-
-
 def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: int = 300) -> bool:
     """Whether a loaded graph still uses pre-#1504 node IDs (parent-dir / filename
     stem) rather than the full repo-relative path. Read-only consumers (query,
@@ -327,8 +357,8 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
             break
     return False
 
-
-def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
+def build_from_json(
+extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
     """Build a NetworkX graph from an extraction dict.
 
     directed=True produces a DiGraph that preserves edge direction (source→target).
@@ -772,7 +802,8 @@ def build_merge(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
-) -> nx.Graph:
+    dry_run: bool = False,
+):
     """Load existing graph.json, merge new chunks into it, and save back.
 
     Re-extracted files REPLACE their prior contribution: any source_file present
@@ -803,6 +834,8 @@ def build_merge(
         links_key = "links" if "links" in data else "edges"
         existing_nodes = list(data.get("nodes", []))
         existing_edges = list(data.get(links_key, []))
+        original_existing_nodes = list(existing_nodes)
+        original_existing_edges = list(existing_edges)
         existing_hyperedges = list(data.get("hyperedges", []))
         had_graph = True
     else:
@@ -810,6 +843,8 @@ def build_merge(
         existing_edges = []
         existing_hyperedges = []
         had_graph = False
+    existing_node_count = len(existing_nodes)
+    existing_edge_count = len(existing_edges)
 
     # Effective root for relativizing absolute source_file / prune paths back to the
     # stored relative source_file keys. When the caller passes root we use it;
@@ -844,12 +879,55 @@ def build_merge(
             if norm:
                 new_sources.add(norm)
     if new_sources:
-        def _kept(item: dict) -> bool:
-            sf = item.get("source_file")
-            return sf not in new_sources and _norm_source_file(sf, _replace_root) not in new_sources
-        existing_nodes = [n for n in existing_nodes if _kept(n)]
-        existing_edges = [e for e in existing_edges if _kept(e)]
+        replaced_node_ids = set()
 
+        def is_replaced_source(sf):
+            return (
+                sf in new_sources
+                or _norm_source_file(sf, _replace_root) in new_sources
+             )
+
+
+    # Find nodes that belong to replaced files
+        for n in existing_nodes:
+            sf = n.get("source_file")
+
+            if is_replaced_source(sf):
+                if n.get("id"):
+                    replaced_node_ids.add(n["id"])
+
+
+    # Remove old nodes from replaced files
+        existing_nodes = [
+            n
+            for n in existing_nodes
+            if n.get("id") not in replaced_node_ids
+        ]
+        def edge_kept(edge: dict) -> bool:
+            sf = edge.get("source_file")
+            if sf:
+                return not is_replaced_source(sf)
+
+        # Older graphs (no source_file on edge)
+            src = edge.get("source")
+            tgt = edge.get("target")
+
+            src_replaced = src in replaced_node_ids
+            tgt_replaced = tgt in replaced_node_ids
+
+            if src_replaced and tgt_replaced:
+                return False
+
+# Remove outgoing edges from replaced nodes
+            if src_replaced:
+                return False
+            return True
+
+        existing_edges = [
+            e
+            for e in existing_edges
+            if edge_kept(e)
+        ]
     base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
 
     all_chunks = base + list(new_chunks)
@@ -925,19 +1003,205 @@ def build_merge(
                 f"no matching nodes or edges in graph, already clean.",
                 file=sys.stderr,
             )
-
-    # Safety check: refuse to shrink the graph silently (#479)
-    # Skip when dedup or prune_sources is active — shrinkage is intentional there.
     if graph_path.exists() and not dedup and not prune_sources:
         existing_n = len(existing_nodes)
         new_n = G.number_of_nodes()
         if new_n < existing_n:
-            raise ValueError(
-                f"graphify: build_merge would shrink graph from {existing_n} → {new_n} nodes. "
-                f"Pass prune_sources explicitly if you intend to remove nodes."
+                raise ValueError(
+                    f"graphify: build_merge would shrink graph from "
+                    f"{existing_n} → {new_n} nodes. "
+                    f"Pass prune_sources explicitly if you intend to remove nodes."
+                    )
+
+    new_node_count = G.number_of_nodes()
+    new_edge_count = G.number_of_edges()
+
+    # -------- Dry-run preview calculation --------
+
+    before_node_ids = {
+        n.get("id")
+        for n in original_existing_nodes
+        if n.get("id")
+    }
+
+    after_node_ids = set(G.nodes())
+
+    added_nodes = after_node_ids - before_node_ids
+    removed_nodes = before_node_ids - after_node_ids
+
+    before_edges = {
+        (
+            e.get("source"),
+            e.get("target"),
+            e.get("relation", "")
+        )
+        for e in original_existing_edges
+    }
+
+    after_edges = {
+        (
+            u,
+            v,
+            d.get("relation", "")
+        )
+        for u, v, d in G.edges(data=True)
+    }
+
+    added_edges = after_edges - before_edges
+    removed_edges = before_edges - after_edges
+
+
+    # -------- Source level impact report --------
+
+    source_changes: dict[str, dict[str, int]] = {}
+
+    for node_id in removed_nodes:
+        old_node = next(
+            (
+                n for n in original_existing_nodes
+                if n.get("id") == node_id
+            ),
+            {}
+        )
+
+        source = old_node.get(
+            "source_file",
+            "unknown"
+        )
+
+        if source not in source_changes:
+            source_changes[source] = {
+                "nodes_removed": 0,
+                "nodes_added": 0,
+            }
+
+        source_changes[source]["nodes_removed"] += 1
+
+
+    for node_id in added_nodes:
+        node_data = G.nodes.get(node_id, {})
+
+        source = node_data.get(
+            "source_file",
+            "unknown"
+        )
+
+        if source not in source_changes:
+            source_changes[source] = {
+                "nodes_removed": 0,
+                "nodes_added": 0,
+            }
+
+        source_changes[source]["nodes_added"] += 1
+
+
+    report = {
+        "nodes_before": existing_node_count,
+        "nodes_after": new_node_count,
+        "nodes_added": len(added_nodes),
+        "nodes_removed": len(removed_nodes),
+
+        "edges_before": existing_edge_count,
+        "edges_after": new_edge_count,
+        "edges_added": len(added_edges),
+        "edges_removed": len(removed_edges),
+
+        "sources": source_changes,
+        "pruned_sources": list(prune_sources or []),
+    }
+
+
+   # -------- Hub degree collapse warning --------
+
+    # -------- Hub degree collapse warning --------
+
+    hub_warnings = []
+
+    old_degree_map = {}
+
+    for edge in original_existing_edges:
+        src = edge.get("source")
+        tgt = edge.get("target")
+
+        if src:
+            old_degree_map[src] = old_degree_map.get(src, 0) + 1
+
+        if tgt:
+            old_degree_map[tgt] = old_degree_map.get(tgt, 0) + 1
+
+
+    for node, old_degree in old_degree_map.items():
+
+        if old_degree < 50:
+            continue
+
+        new_degree = G.degree(node) if node in G else 0
+
+        loss = (old_degree - new_degree) / old_degree
+
+        if loss > 0.5:
+            hub_warnings.append(
+                {
+                    "node": node,
+                    "old_degree": old_degree,
+                    "new_degree": new_degree,
+                    "loss_percent": round(loss * 100, 2),
+                }
             )
+        
+
+
+    
+    if dry_run:
+
+        print("\n[graphify] Dry-run preview")
+
+        print("\nNodes:")
+        print(f"  Added:   {len(added_nodes)}")
+        print(f"  Removed: {len(removed_nodes)}")
+
+        print("\nEdges:")
+        print(f"  Added:   {len(added_edges)}")
+        print(f"  Removed: {len(removed_edges)}")
+
+
+        if source_changes:
+            print("\nAffected sources:")
+
+            for src, values in source_changes.items():
+                print(
+                    f"  {src}: "
+                    f"+{values['nodes_added']} nodes, "
+                    f"-{values['nodes_removed']} nodes"
+                )
+
+
+        if hub_warnings:
+            print("\n[graphify] WARNING: Hub degree collapse detected")
+
+            for warning in hub_warnings:
+                print(
+                    f"  {warning['node']}: "
+                    f"{warning['old_degree']} -> "
+                    f"{warning['new_degree']} "
+                    f"({warning['loss_percent']}% loss)"
+                )
+
+
+        print(
+            "\n[graphify] Dry-run complete. "
+            "No graph.json changes written."
+        )
+
+        # attach report without changing return type
+        
+
+        return report   
+
 
     return G
+
+
 
 
 def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:

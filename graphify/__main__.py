@@ -2368,6 +2368,7 @@ def main() -> None:
         print("    --force                 overwrite graph.json even if the rebuild has fewer nodes")
         print("                            (also: GRAPHIFY_FORCE=1 env var; use after refactors that delete code)")
         print("    --no-cluster            skip clustering, write raw extraction only")
+        print("    --dry-run              preview merge changes without writing graph.json")
         print("  cluster-only <path>     rerun clustering on an existing graph.json and regenerate report")
         print("    --no-viz                skip graph.html generation (useful for >5000 node graphs / CI)")
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")
@@ -3739,7 +3740,7 @@ def main() -> None:
                           learning=_llfr(out / "graph.json"))
         (out / "GRAPH_REPORT.md").write_text(report, encoding="utf-8")
         stages.mark("report")
-        from graphify.export import backup_if_protected as _backup
+        from graphify.export import backup_if_protected as _backup  
         _backup(out)
         analysis = {
             "communities": {str(k): v for k, v in communities.items()},
@@ -4455,7 +4456,7 @@ def main() -> None:
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
-                "[--api-timeout S] [--postgres DSN] [--cargo] [--timing]",
+                "[--api-timeout S] [--postgres DSN] [--cargo] [--timing][--dry-run]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -4481,6 +4482,7 @@ def main() -> None:
         google_workspace = False
         global_merge = False
         global_repo_tag: str | None = None
+        dry_run = False
         # Performance/tuning knobs (issue #792). None means "use library default".
         cli_max_workers: int | None = None
         cli_token_budget: int | None = None
@@ -4536,6 +4538,8 @@ def main() -> None:
                 out_dir = Path(a.split("=", 1)[1]); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
+            elif a == "--dry-run":
+                dry_run = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--google-workspace":
@@ -5047,7 +5051,7 @@ def main() -> None:
                     print(f"[graphify global] warning: failed to merge into global graph: {exc}", file=sys.stderr)
             stages.total()
             sys.exit(0)
-
+        
         # Build graph + cluster + score + write.
         from graphify.build import (
             build as _build,
@@ -5065,6 +5069,7 @@ def main() -> None:
                 prune_sources=deleted_files or None,
                 dedup=True,
                 dedup_llm_backend=dedup_backend,
+                dry_run=dry_run,
                 root=target,
             )
         else:
@@ -5093,14 +5098,19 @@ def main() -> None:
         stages.mark("analyze")
 
         from graphify.export import backup_if_protected as _backup
-        _backup(graphify_out)
-        _to_json(G, communities, str(graph_json_path), force=True)
-        stages.mark("export")
+        if dry_run:
+            print(
+        "[graphify extract] dry-run: skipping graph.json write."
+        )
+        else:
+            _backup(graphify_out)
+            _to_json(G, communities, str(graph_json_path), force=True)
+            stages.mark("export")
         if merged.get("output_tokens", 0) > 0:
             (graphify_out / ".graphify_semantic_marker").write_text(
                 json.dumps({"output_tokens": merged["output_tokens"]}), encoding="utf-8"
             )
-        if global_merge:
+        if global_merge and not dry_run:
             from graphify.global_graph import global_add as _global_add
             _tag = global_repo_tag or target.name
             try:
@@ -5122,7 +5132,11 @@ def main() -> None:
                 "output": merged["output_tokens"],
             },
         }
-        analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
+        if not dry_run:
+            analysis_path.write_text(
+                json.dumps(analysis, indent=2),
+                encoding="utf-8"
+                )
         try:
             _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target)
         except Exception as exc:
