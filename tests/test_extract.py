@@ -1842,6 +1842,80 @@ def test_extract_bash_source_user_defined_emits_calls_not_imports_from(tmp_path)
     )
 
 
+def test_extract_bash_emits_raw_calls_and_bash_sources_for_sourced_calls(tmp_path):
+    """extract_bash must surface the data cross-file resolution needs: a
+    ``bash_sources`` entry per sourced file and a ``raw_calls`` entry for each
+    call whose callee is not defined in the same file. Without these,
+    resolve_bash_source_edges has nothing to resolve a sourced-function call
+    from (#2141)."""
+    (tmp_path / "b.sh").write_text("#!/usr/bin/env bash\nb_func() { echo ok; }\n")
+    a = tmp_path / "a.sh"
+    a.write_text(
+        "#!/usr/bin/env bash\n"
+        "source ./b.sh\n"
+        "main() { b_func; }\n"
+    )
+    result = extract_bash(a)
+
+    sources = result.get("bash_sources", [])
+    assert any(str(s.get("target_path", "")).endswith("b.sh") for s in sources), sources
+
+    main_nid = next(n["id"] for n in result["nodes"] if n.get("label") == "main()")
+    raw_calls = result.get("raw_calls", [])
+    assert any(
+        rc.get("language") == "bash"
+        and rc.get("callee") == "b_func"
+        and rc.get("caller_nid") == main_nid
+        for rc in raw_calls
+    ), raw_calls
+
+
+def test_extract_bash_call_to_sourced_function_resolves(tmp_path):
+    """#2141 repro: a call to a function defined in a sourced file must produce a
+    real ``calls`` edge through the full extract() pipeline, so ``path`` and
+    ``callers`` can traverse it."""
+    (tmp_path / "b.sh").write_text("#!/usr/bin/env bash\nb_func() { echo ok; }\n")
+    (tmp_path / "a.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        "source ./b.sh\n"
+        "main() { b_func; }\n"
+    )
+    result = extract([tmp_path / "a.sh", tmp_path / "b.sh"], cache_root=tmp_path)
+    calls = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+    assert ("a_main", "b_b_func") in calls, sorted(calls)
+
+
+def test_extract_bash_sourced_call_does_not_duplicate_source_edge(tmp_path):
+    """Wiring the source-backed call resolver must not re-emit the ``imports_from``
+    source edge the extractor already resolved for ``source ./b.sh`` (#2141)."""
+    (tmp_path / "b.sh").write_text("#!/usr/bin/env bash\nb_func() { echo ok; }\n")
+    (tmp_path / "a.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        "source ./b.sh\n"
+        "main() { b_func; }\n"
+    )
+    result = extract([tmp_path / "a.sh", tmp_path / "b.sh"], cache_root=tmp_path)
+    imports = [(e["source"], e["target"]) for e in result["edges"]
+               if e["relation"] == "imports_from"]
+    assert imports.count(("a", "b")) == 1, imports
+
+
+def test_extract_bash_call_to_external_command_stays_unlinked(tmp_path):
+    """A call to a command that is not a function in any sourced file (an external
+    binary) must not gain a cross-file ``calls`` edge — even when a same-named
+    function exists in an *unsourced* file. Source-scoped resolution is what keeps
+    #2141 from over-connecting the graph (acceptance criterion)."""
+    # b.sh is NOT sourced by a.sh, yet defines a function named `deploy`.
+    (tmp_path / "b.sh").write_text("#!/usr/bin/env bash\ndeploy() { echo ok; }\n")
+    (tmp_path / "a.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        "main() { deploy; }\n"
+    )
+    result = extract([tmp_path / "a.sh", tmp_path / "b.sh"], cache_root=tmp_path)
+    calls = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+    assert ("a_main", "b_deploy") not in calls, sorted(calls)
+
+
 # ---------------------------------------------------------------------------
 # JSON extractor tests (#866)
 # ---------------------------------------------------------------------------

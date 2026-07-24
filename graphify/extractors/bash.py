@@ -28,6 +28,14 @@ def extract_bash(path: Path) -> dict:
     str_path = str(path)
     nodes: list[dict] = []
     edges: list[dict] = []
+    # Cross-file resolution scaffolding consumed by resolve_bash_source_edges in
+    # the extract pipeline: `bash_sources` records which files this one `source`s,
+    # `raw_calls` records calls whose callee isn't defined in this file (candidate
+    # calls into a sourced library). The extractor sees one file at a time and so
+    # can't resolve these itself (#2141).
+    raw_calls: list[dict] = []
+    bash_sources: list[dict] = []
+    raw_seen: set[tuple[str, str]] = set()
     seen_ids: set[str] = set()
     function_bodies: list[tuple[str, Any]] = []
     defined_functions: set[str] = set()
@@ -129,6 +137,24 @@ def extract_bash(path: Path) -> dict:
                             add_edge(func_nid, tgt, "calls",
                                      child.start_point[0] + 1,
                                      confidence="EXTRACTED", context="call")
+                    elif (name and name not in _BASH_SOURCE_COMMANDS
+                          and name not in _BASH_SCRIPT_RUNNERS):
+                        # Callee isn't defined in this file — it may be a function
+                        # from a sourced library. Record an unresolved raw_call for
+                        # resolve_bash_source_edges to bind against the files this
+                        # script `source`s. A callee that is not a sourced function
+                        # (a genuine external command) matches nothing there and
+                        # yields no edge, so this can't over-connect the graph (#2141).
+                        raw_key = (func_nid, name)
+                        if raw_key not in raw_seen:
+                            raw_seen.add(raw_key)
+                            raw_calls.append({
+                                "language": "bash",
+                                "callee": name,
+                                "caller_nid": func_nid,
+                                "source_file": str_path,
+                                "source_location": f"L{child.start_point[0] + 1}",
+                            })
             walk_calls(child, func_nid, seen_calls)
 
     def walk(node, parent_nid: str) -> None:
@@ -180,6 +206,15 @@ def extract_bash(path: Path) -> dict:
                                 tgt_nid = _make_id(str(resolved))
                                 add_edge(file_nid, tgt_nid, "imports_from", line,
                                          context="import")
+                                # Record the sourced file so resolve_bash_source_edges
+                                # can bind calls into its functions (#2141). Gated on
+                                # existence like the edge above, so crafted traversal
+                                # paths never enter the resolver's data.
+                                bash_sources.append({
+                                    "target_path": raw,
+                                    "source_file": str_path,
+                                    "source_location": f"L{line}",
+                                })
                         else:
                             tgt_nid = _make_id(raw)
                             if tgt_nid:
@@ -245,4 +280,5 @@ def extract_bash(path: Path) -> dict:
     for fn_nid, body in function_bodies:
         walk_calls(body, fn_nid, set())
 
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": nodes, "edges": edges,
+            "raw_calls": raw_calls, "bash_sources": bash_sources}
