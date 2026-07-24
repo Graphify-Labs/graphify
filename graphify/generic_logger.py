@@ -71,6 +71,7 @@ class GenericLogExtractor:
             cursor = QueryCursor(query)
             matches = cursor.matches(tree.root_node)
             
+            logs_by_source = {}
             for _, captures in matches:
                 func_name_nodes = captures.get("func_name", [])
                 log_obj_nodes = captures.get("log_obj", [])
@@ -115,12 +116,18 @@ class GenericLogExtractor:
                         log_prefix = log_obj
                         
                     log_signature = f"{log_prefix}{args}"
-                    
-                    graph_builder.add_edge(
-                        source=source_id,
-                        target=log_signature,
-                        relationship="PRINTS_LOG",
-                        metadata={"file": file_path, "type": "EXTRACTED", "lang": lang_key}
-                    )
+                    if source_id not in logs_by_source:
+                        logs_by_source[source_id] = []
+                    if log_signature not in logs_by_source[source_id]:
+                        logs_by_source[source_id].append(log_signature)
+
+            for source_id, logs in logs_by_source.items():
+                consolidated_target = " | ".join(logs)
+                graph_builder.add_edge(
+                    source=source_id,
+                    target=consolidated_target,
+                    relationship="PRINTS_LOG",
+                    metadata={"file": file_path, "type": "EXTRACTED", "lang": lang_key}
+                )
         except Exception as e:
             print(f"[LogExtractor Hook Warning] Skipping AST pass on {file_path}: {e}")
