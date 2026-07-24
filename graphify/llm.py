@@ -1619,6 +1619,7 @@ _CONTEXT_EXCEEDED_MARKERS = (
     "too many tokens",
     "prompt is too long",
     "context_length_exceeded",
+    "input length",  # DashScope/百炼: "Range of input length should be [1, N]"
 )
 
 

@@ -255,17 +255,23 @@ def main():
     )
     args = parser.parse_args()
 
+    temp_files: list[str] = []
+
     if args.csv_dir:
         nodes_csv, edges_csv = load_real_data(args.csv_dir)
+        # Only the float-converted edges CSV is a temp file;
+        # nodes_csv points to the original data — do NOT delete it.
+        temp_files.append(edges_csv)
         print("Using real graphify data from:", args.csv_dir)
     else:
         nodes_csv, edges_csv = generate_synthetic_data()
+        temp_files.extend([nodes_csv, edges_csv])
         print("Using synthetic data (10 nodes, 2 communities)")
 
     run_test(nodes_csv, edges_csv)
 
-    # Cleanup temp files
-    for f in [nodes_csv, edges_csv]:
+    # Cleanup only temp files we created
+    for f in temp_files:
         try:
             os.unlink(f)
         except OSError:

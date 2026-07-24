@@ -740,11 +740,8 @@ def cluster_on_files(
     _EDGE_LABEL = "TEMP_FILE_EDGE"
 
     # Defensive: clean up any leftover temp tables from previous calls
-    for lbl in (_EDGE_LABEL, _NODE_LABEL):
-        try:
-            conn.execute(f"DROP TABLE {lbl}")
-        except RuntimeError:
-            pass
+    conn.execute(f"DROP TABLE IF EXISTS {_EDGE_LABEL}")
+    conn.execute(f"DROP TABLE IF EXISTS {_NODE_LABEL}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         edge_csv = Path(tmpdir) / "file_edges.csv"
@@ -752,6 +749,11 @@ def cluster_on_files(
 
         # 1. Aggregate symbol edges → file-level edge CSV
         all_files = _aggregate_file_edges(conn, edge_csv)
+
+        # Guard: if no files with inter-file edges, return empty — COPY TEMP
+        # with an empty CSV does not register the table in neug's catalog.
+        if not all_files:
+            return {}
 
         # 2. Write file node CSV (id = file path, must match edge CSV from/to)
         #    Include community + community_name columns for ingest_communities writeback
@@ -1155,45 +1157,6 @@ def _find_surprising_file_connections(
 
 
 # ---------------------------------------------------------------------------
-# Post-cluster: merge small communities
-# ---------------------------------------------------------------------------
-
-
-def merge_small_communities(
-    conn: object,
-    communities: dict[int, list[str]],
-    *,
-    min_size: int = 5,
-    node_label: str = "node",
-    edge_label: str = "edge",
-) -> dict[int, list[str]]:
-    """Merge communities smaller than *min_size* into their best neighbour.
-
-    TODO: implement merging logic.  For now this is a no-op pass-through.
-
-    Planned strategy:
-      1. Collect communities with len(members) < min_size.
-      2. For each small community, find the neighbour community with the
-         strongest edge connection (by total edge weight or edge count).
-      3. Merge the small community into that neighbour.
-      4. Repeat until no community is below the threshold.
-
-    Args:
-        conn: neug connection.
-        communities: {cid: [node_ids]} from leiden.
-        min_size: minimum community size; smaller ones get merged.
-        node_label / edge_label: graph labels (``TempFile`` /
-            ``TEMP_FILE_EDGE`` for file-level, ``node`` / ``edge`` for
-            symbol-level).
-
-    Returns:
-        Updated communities dict (same format, possibly fewer keys).
-    """
-    # Placeholder: return communities unchanged.
-    return communities
-
-
-# ---------------------------------------------------------------------------
 # Orchestration: neug clustered path
 # ---------------------------------------------------------------------------
 
@@ -1229,15 +1192,7 @@ def cluster_by_neug(
         communities = run_leiden(conn, resolution=resolution)
     stages.mark("cluster")
 
-    # 1b. Merge small communities (placeholder — not yet implemented)
-    communities = merge_small_communities(
-        conn, communities,
-        node_label=_FILE_NODE if file_level else "node",
-        edge_label=_FILE_EDGE if file_level else "edge",
-    )
-    stages.mark("merge")
-
-    if file_level:
+    if file_level and communities:
         # 2a. Label + analysis on temp tables (file-level graph)
         labels = label_communities_by_hub(
             conn, communities, node_label=_FILE_NODE, edge_label=_FILE_EDGE
@@ -1263,6 +1218,14 @@ def cluster_by_neug(
                 f"MATCH (n:node) WHERE n.source_file IN [{files_inline}] "
                 f"SET n.community = {cid}, n.community_name = '{safe_name}'"
             )
+        stages.mark("writeback")
+    elif file_level and not communities:
+        # No inter-file edges — skip file-level analysis (temp tables don't exist)
+        labels = {}
+        cohesion = {}
+        gods = []
+        surprises = []
+        stages.mark("analyze")
         stages.mark("writeback")
     else:
         # 2. Batch writeback community IDs
@@ -1300,11 +1263,8 @@ def cluster_by_neug(
 
     # 8. Clean up temp tables (file-level only)
     if file_level:
-        try:
-            conn.execute(f"DROP TABLE {_FILE_EDGE}")
-            conn.execute(f"DROP TABLE {_FILE_NODE}")
-        except RuntimeError:
-            pass
+        conn.execute(f"DROP TABLE IF EXISTS {_FILE_EDGE}")
+        conn.execute(f"DROP TABLE IF EXISTS {_FILE_NODE}")
 
     return data
 
@@ -1418,6 +1378,119 @@ def run_leiden_freeze_assign(
     return [(nid, int(cid), prev) for nid, cid, prev in results]
 
 
+def _merge_changed_fragments(
+    conn: object,
+    leiden_results: list[tuple[str, int, int | None]],
+    old_communities: dict[str, int],
+    *,
+    min_size: int = 5,
+) -> list[tuple[str, int, int | None]]:
+    """Merge small changed/new communities into their strongest neighbour.
+
+    Only touches communities that are **new** or **changed** (not stable).
+    Stable communities may *receive* merged members but are never split.
+
+    Args:
+        conn: neug connection (uses node/edge tables).
+        leiden_results: [(node_id, new_cid, prev_cid), ...] from freeze-assign.
+        old_communities: {node_id: old_cid} from baseline.
+        min_size: communities smaller than this get merged.
+
+    Returns updated leiden_results with merged community assignments.
+    """
+    # Build new_communities and node→prev mapping
+    new_communities: dict[int, list[str]] = {}
+    node_prev: dict[str, int | None] = {}
+    for nid, new_cid, prev_cid in leiden_results:
+        new_communities.setdefault(new_cid, []).append(nid)
+        node_prev[nid] = prev_cid
+
+    # Build old community membership for comparison
+    old_comm_to_nodes: dict[int, set[str]] = {}
+    for nid, cid in old_communities.items():
+        old_comm_to_nodes.setdefault(cid, set()).add(nid)
+
+    # Identify changed/new CIDs
+    changed_cids: set[int] = set()
+    for cid, members in new_communities.items():
+        if cid not in old_comm_to_nodes:
+            changed_cids.add(cid)  # new
+        elif set(members) != old_comm_to_nodes[cid]:
+            changed_cids.add(cid)  # changed
+
+    if not changed_cids:
+        return leiden_results
+
+    # Load edge weights from the database
+    edges: dict[tuple[str, str], float] = {}
+    try:
+        for row in conn.execute(
+            "MATCH (a:node)-[e:edge]->(b:node) "
+            "RETURN a.id, b.id, e.weight"
+        ):
+            w = row[2] if row[2] is not None else 1.0
+            edges[(row[0], row[1])] = float(w)
+    except RuntimeError:
+        pass
+
+    node_comm: dict[str, int] = {
+        n: cid for cid, nodes in new_communities.items() for n in nodes
+    }
+    communities = {k: list(v) for k, v in new_communities.items()}
+
+    merged_any = True
+    while merged_any:
+        merged_any = False
+        small_cids = [
+            cid for cid in communities
+            if cid in changed_cids and len(communities[cid]) < min_size
+        ]
+        for small_cid in small_cids:
+            if small_cid not in communities:
+                continue
+            members = communities[small_cid]
+            if len(members) >= min_size:
+                continue
+
+            # Find strongest neighbour community by edge weight
+            comm_connections: dict[int, float] = {}
+            for node in members:
+                for (a, b), w in edges.items():
+                    if a == node:
+                        other = node_comm.get(b, -1)
+                    elif b == node:
+                        other = node_comm.get(a, -1)
+                    else:
+                        continue
+                    if other != small_cid and other >= 0:
+                        comm_connections[other] = (
+                            comm_connections.get(other, 0.0) + w
+                        )
+
+            if not comm_connections:
+                continue
+
+            best_cid = max(comm_connections, key=lambda k: comm_connections[k])
+            if best_cid not in communities:
+                continue
+
+            # Merge small_cid → best_cid
+            communities[best_cid].extend(members)
+            del communities[small_cid]
+            for n in members:
+                node_comm[n] = best_cid
+            # If target was stable, mark it as changed now
+            changed_cids.add(best_cid)
+            merged_any = True
+
+    # Rebuild leiden_results from merged communities
+    result: list[tuple[str, int, int | None]] = []
+    for cid, members in communities.items():
+        for nid in members:
+            result.append((nid, cid, node_prev.get(nid)))
+    return result
+
+
 def analyze_community_changes(
     leiden_results: list[tuple[str, int, int | None]],
     old_communities: dict[str, int],
@@ -1523,11 +1596,8 @@ def _delta_analyze_file_level(
     _EDGE_LABEL = "TEMP_FILE_EDGE"
 
     # Defensive: clean up any leftover temp tables from previous calls
-    for lbl in (_EDGE_LABEL, _NODE_LABEL):
-        try:
-            conn.execute(f"DROP TABLE {lbl}")
-        except RuntimeError:
-            pass
+    conn.execute(f"DROP TABLE IF EXISTS {_EDGE_LABEL}")
+    conn.execute(f"DROP TABLE IF EXISTS {_NODE_LABEL}")
 
     # 1. old_communities is already {file_path: old_cid} in file-level mode
     old_file_communities: dict[str, int] = old_communities
@@ -1538,6 +1608,11 @@ def _delta_analyze_file_level(
 
         # 2. Aggregate edges → CSV
         all_files = _aggregate_file_edges(conn, edge_csv)
+
+        # Guard: if no files with inter-file edges, return empty — COPY TEMP
+        # with an empty CSV does not register the table in neug's catalog.
+        if not all_files:
+            return []
 
         # 3. Write file node CSV with delta_comm + community columns
         #    id = file path, delta_comm = old community (or -1 for new files)
@@ -1620,6 +1695,12 @@ def delta_analyze(
         leiden_results = run_leiden_freeze_assign(conn, old_communities, resolution=resolution)
     stages.mark("freeze-assign")
 
+    # 2b. Merge small changed/new communities (only fragments, no split)
+    leiden_results = _merge_changed_fragments(
+        conn, leiden_results, old_communities, min_size=5,
+    )
+    stages.mark("merge-fragments")
+
     # 3. Analyze community changes
     changes = analyze_community_changes(leiden_results, old_communities)
     stages.mark("analyze-changes")
@@ -1639,7 +1720,7 @@ def delta_analyze(
     _FILE_NODE = "TempFile"
     _FILE_EDGE = "TEMP_FILE_EDGE"
 
-    if file_level:
+    if file_level and new_communities:
         # File-level analysis on temp tables
         all_cohesion = compute_cohesion(
             conn, new_communities, node_label=_FILE_NODE, edge_label=_FILE_EDGE
@@ -1651,6 +1732,12 @@ def delta_analyze(
         )
         gods = _find_god_files(conn)
         surprises = _find_surprising_file_connections(conn, new_communities)
+    elif file_level and not new_communities:
+        # No inter-file edges — temp tables don't exist, skip file-level analysis
+        delta_cohesion = {}
+        labels = {}
+        gods = []
+        surprises = []
     else:
         # Symbol-level analysis (existing path)
         all_cohesion = compute_cohesion(conn, new_communities)
@@ -1730,10 +1817,7 @@ def delta_analyze(
 
     # Clean up temp tables (file-level only)
     if file_level:
-        try:
-            conn.execute(f"DROP TABLE {_FILE_EDGE}")
-            conn.execute(f"DROP TABLE {_FILE_NODE}")
-        except RuntimeError:
-            pass
+        conn.execute(f"DROP TABLE IF EXISTS {_FILE_EDGE}")
+        conn.execute(f"DROP TABLE IF EXISTS {_FILE_NODE}")
 
     return delta

@@ -1386,11 +1386,12 @@ def dispatch_command(cmd: str) -> None:
         from graphify.storage import init_db as _init_db, close_db as _close_db, delta_analyze as _delta_analyze
 
         if len(sys.argv) < 3:
-            print("Usage: graphify delta-cluster <path> [--resolution R] [--cluster-on-files]", file=sys.stderr)
+            print("Usage: graphify delta-cluster <path> [--resolution R] [--cluster-on-files] [--baseline <file>]", file=sys.stderr)
             sys.exit(1)
 
         _delta_resolution: float = 1.0
         _delta_file_level: bool = False
+        _delta_baseline: str | None = None
         _delta_args = sys.argv[2:]
         _delta_pos: list[str] = []
         _di = 0
@@ -1402,16 +1403,33 @@ def dispatch_command(cmd: str) -> None:
                 _delta_resolution = float(_da.split("=", 1)[1]); _di += 1
             elif _da == "--cluster-on-files":
                 _delta_file_level = True; _di += 1
+            elif _da == "--baseline" and _di + 1 < len(_delta_args):
+                _delta_baseline = _delta_args[_di + 1]; _di += 2
+            elif _da.startswith("--baseline="):
+                _delta_baseline = _da.split("=", 1)[1]; _di += 1
             else:
                 _delta_pos.append(_da); _di += 1
         if not _delta_pos:
-            print("Usage: graphify delta-cluster <path> [--resolution R] [--cluster-on-files]", file=sys.stderr)
+            print("Usage: graphify delta-cluster <path> [--resolution R] [--cluster-on-files] [--baseline <file>]", file=sys.stderr)
             sys.exit(1)
         _target = Path(_delta_pos[0]).resolve()
         _graphify_out = _target / _GRAPHIFY_OUT
         _analysis_path = _graphify_out / ".graphify_analysis.json"
         _delta_path = _graphify_out / ".graphify_delta_analysis.json"
         _db_path = str(_graphify_out / "graph.db")
+
+        # --baseline overrides the default analysis file
+        if _delta_baseline:
+            _baseline_path = Path(_delta_baseline)
+            if not _baseline_path.is_absolute():
+                _baseline_path = _graphify_out / _delta_baseline
+            if not _baseline_path.exists():
+                print(
+                    f"[graphify delta-cluster] baseline file not found: {_baseline_path}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            _analysis_path = _baseline_path
 
         if not _analysis_path.exists():
             print(
