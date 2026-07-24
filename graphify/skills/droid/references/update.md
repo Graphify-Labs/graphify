@@ -65,6 +65,71 @@ If `code_only` is True: print `[graphify update] Code-only changes detected - sk
 
 If `code_only` is False (any changed file is a doc/paper/image/video): **first, if any changed file is in `new_files['video']`, run `references/transcribe.md` (Step 2.5) on those files, then rewrite `.graphify_detect.json` to move the resulting transcript paths into `files['document']` and drop `files['video']`** — otherwise raw `.mp4/.mp3` paths are fed to semantic subagents as unreadable media (#1392). Then run the full Steps 3A–3C pipeline as normal.
 
+### REQUIRED: mandatory-ID gate for re-extracted docs
+
+Semantic re-extraction of an already-graphed doc is non-deterministic: the same file can
+yield 75 nodes on one run and 49 on the next, dropping whole sections with no error. The
+loss lands in `build_merge` and only surfaces later as a question the graph can no longer
+answer. Apply this gate to **every changed doc/paper that already has nodes in
+`graph.json`**. Do not skip it for a small edit — a one-line change re-extracts the whole
+file.
+
+**1 — Snapshot the file's existing node IDs before extracting.**
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+TARGET = 'DOC_PATH'   # substitute: the changed doc, as it appears in source_file
+g = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
+ids = sorted(n['id'] for n in g['nodes'] if str(n.get('source_file','')).endswith(TARGET))
+Path('graphify-out/.graphify_must_ids.txt').write_text('\n'.join(ids), encoding='utf-8')
+print(f'baseline: {len(ids)} existing node(s) for {TARGET}')
+"
+```
+
+A count of 0 means the file is new — skip the gate and extract normally.
+
+**2 — Pass the IDs to the subagent as mandatory.** Append to the prompt from
+`references/extraction-spec.md`:
+
+- the baseline count as an explicit target ("the prior build extracted N nodes from this
+  file; land at approximately N — under 90% of N means you under-extracted, go back and
+  cover the sections you skimmed"),
+- the full ID list verbatim, labelled **MANDATORY — every one of these existed in the
+  prior graph and MUST appear in your output, reusing the ID verbatim**,
+- an instruction to verify every mandatory ID is present *before* writing CHUNK_PATH.
+
+Reusing the IDs also suppresses gratuitous ID churn on re-extraction, which orphans saved
+queries and inflates the merge diff for no semantic gain.
+
+**3 — Hard-gate the merge.** After the chunk lands and before `build_merge`, require both:
+node count ≥ 90% of baseline, and zero mandatory IDs missing.
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from pathlib import Path
+d = json.loads(Path('graphify-out/.graphify_chunk_01.json').read_text(encoding='utf-8'))
+must = [l for l in Path('graphify-out/.graphify_must_ids.txt').read_text(encoding='utf-8').split() if l]
+ids = {n['id'] for n in d['nodes']}
+missing = [m for m in must if m not in ids]
+ok = len(d['nodes']) >= 0.9 * len(must) and not missing
+print(f'nodes={len(d[\"nodes\"])} baseline={len(must)} missing={len(missing)}')
+if missing: print('MISSING:', ' '.join(missing[:20]))
+print('GATE:', 'PASS' if ok else 'FAIL')
+"
+```
+
+On **FAIL**, do not merge: re-dispatch the extraction with the same mandatory list and a
+sharper completeness instruction naming the missing IDs. Two consecutive failures — stop
+and report to the user rather than merging a regressed graph.
+
+**The `to_json` shrink guard (#479) stays authoritative.** It is the backstop, not a
+nuisance. Never pass `force=True` to clear it until you have diffed the old and new node
+sets and can name why each removed node is legitimately gone (file deleted, section
+removed, ID renamed with a verified replacement). ID churn on a re-extracted file is a
+legitimate shrink; a missing section is not.
 
 If no new files exist (only deletions), create an empty extraction so the merge step can prune:
 
