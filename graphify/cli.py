@@ -1917,6 +1917,49 @@ def dispatch_command(cmd: str) -> None:
         print(f"open with: xdg-open {out}  (or file://{out.resolve()})")
         sys.exit(0)
 
+    elif cmd == "graph3d":
+        # Emit an interactive 3D force-directed HTML view of graph.json (WebGL via
+        # 3d-force-graph). Unlike the flat graph.html, it *draws edge direction*
+        # (source -> target) as arrows; rotate/zoom, click a node to focus it and
+        # list its typed relations, search by label.
+        from typing import Optional as _Opt
+        from graphify.graph3d_html import write_graph3d_html
+        graph_path = Path(_GRAPHIFY_OUT) / "graph.json"
+        output_path: "_Opt[Path]" = None
+        project_label: "_Opt[str]" = None
+        args = sys.argv[2:]
+        i_arg = 0
+        while i_arg < len(args):
+            a = args[i_arg]
+            if a == "--graph" and i_arg + 1 < len(args):
+                graph_path = Path(args[i_arg + 1]); i_arg += 2
+            elif a == "--output" and i_arg + 1 < len(args):
+                output_path = Path(args[i_arg + 1]); i_arg += 2
+            elif a == "--label" and i_arg + 1 < len(args):
+                project_label = args[i_arg + 1]; i_arg += 2
+            elif a in ("-h", "--help"):
+                print("Usage: graphify graph3d [--graph PATH] [--output HTML] [--label NAME]")
+                print("  --graph PATH         path to graph.json (default graphify-out/graph.json)")
+                print("  --output HTML        output path (default graphify-out/GRAPH_3D.html)")
+                print("  --label NAME         project label shown in the page header")
+                return
+            else:
+                i_arg += 1
+        if not graph_path.is_file():
+            print(f"error: graph.json not found at {graph_path}", file=sys.stderr)
+            sys.exit(1)
+        _enforce_graph_size_cap_or_exit(graph_path)
+        if output_path is None:
+            output_path = graph_path.parent / "GRAPH_3D.html"
+        out = write_graph3d_html(
+            graph_path=graph_path, output_path=output_path,
+            project_label=project_label,
+        )
+        size_kb = out.stat().st_size / 1024
+        print(f"wrote {out} ({size_kb:.1f} KB)")
+        print(f"open with: xdg-open {out}  (or file://{out.resolve()})")
+        sys.exit(0)
+
     elif cmd == "merge-driver":
         # git merge driver for graph.json — takes (base, current, other) and writes
         # the union of current+other nodes/edges back to current. Exits 1 on
