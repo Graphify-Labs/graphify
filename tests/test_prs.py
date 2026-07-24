@@ -335,6 +335,9 @@ class TestFormatPrsText:
 
 class TestFetchPrs:
     def test_fetch_prs_parses_gh_payload(self):
+        updated_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace(
+            "+00:00", "Z"
+        )
         raw = [
             {
                 "number": 7,
@@ -345,7 +348,7 @@ class TestFetchPrs:
                 "isDraft": False,
                 "reviewDecision": "APPROVED",
                 "statusCheckRollup": [{"conclusion": "SUCCESS", "status": "COMPLETED"}],
-                "updatedAt": "2026-07-20T10:00:00Z",
+                "updatedAt": updated_at,
             }
         ]
         with patch("graphify.prs._gh", return_value=raw):

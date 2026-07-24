@@ -1390,7 +1390,7 @@ def test_subgraph_to_text_honors_valid_src_tgt_direction():
     assert "caller --calls" in edge_line and "--> callee" in edge_line
 
 
-def _run_asgi(app, scope: dict) -> tuple[list[dict], int]:
+def _run_asgi(_app, scope: dict) -> tuple[list[dict], int]:
     sent: list[dict] = []
     app_calls = 0
 
