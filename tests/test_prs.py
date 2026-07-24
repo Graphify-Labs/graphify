@@ -17,9 +17,11 @@ from graphify.prs import (
     _path_match,
     build_community_labels,
     compute_pr_impact,
+    fetch_prs,
     fetch_pr_files,
     fetch_worktrees,
     format_prs_text,
+    attach_graph_impact,
     _detect_default_branch,
 )
 
@@ -329,6 +331,71 @@ class TestFormatPrsText:
         out = format_prs_text([], base="v8")
         assert "Open PRs targeting v8: 0" in out
         assert "(0 on wrong base, not shown)" in out
+
+
+class TestFetchPrs:
+    def test_fetch_prs_parses_gh_payload(self):
+        raw = [
+            {
+                "number": 7,
+                "title": "Fix auth race",
+                "headRefName": "fix-auth",
+                "baseRefName": "v8",
+                "author": {"login": "alice"},
+                "isDraft": False,
+                "reviewDecision": "APPROVED",
+                "statusCheckRollup": [{"conclusion": "SUCCESS", "status": "COMPLETED"}],
+                "updatedAt": "2026-07-20T10:00:00Z",
+            }
+        ]
+        with patch("graphify.prs._gh", return_value=raw):
+            prs = fetch_prs(base="v8")
+        assert len(prs) == 1
+        pr = prs[0]
+        assert pr.number == 7
+        assert pr.branch == "fix-auth"
+        assert pr.author == "alice"
+        assert pr.ci_status == "SUCCESS"
+        assert pr.expected_base == "v8"
+        assert pr.status == "APPROVED"
+
+    def test_fetch_prs_raises_when_gh_unavailable(self):
+        with patch("graphify.prs._gh", return_value=None):
+            with pytest.raises(RuntimeError, match="gh CLI not found or not authenticated"):
+                fetch_prs()
+
+
+class TestAttachGraphImpact:
+    def test_attach_graph_impact_populates_actionable_prs_only(self, tmp_path):
+        graph = {
+            "nodes": [
+                {"id": "n1", "label": "AuthAPI", "source_file": "src/auth/api.py", "community": 2},
+                {"id": "n2", "label": "AuthHelper", "source_file": "src/auth/api.py", "community": 2},
+                {"id": "n3", "label": "Billing", "source_file": "src/billing/pay.py", "community": 7},
+            ],
+            "edges": [],
+        }
+        graph_path = tmp_path / "graph.json"
+        graph_path.write_text(json.dumps(graph), encoding="utf-8")
+
+        actionable = make_pr(number=1, base_branch="v8", expected_base="v8")
+        wrong_base = make_pr(number=2, base_branch="main", expected_base="v8")
+        prs = [actionable, wrong_base]
+
+        def _fake_files(number: int, _repo=None) -> list[str]:
+            if number == 1:
+                return ["src/auth/api.py"]
+            raise AssertionError("wrong-base PR should not request diff files")
+
+        with patch("graphify.prs.fetch_pr_files", side_effect=_fake_files):
+            labels = attach_graph_impact(prs, graph_path)
+
+        assert labels[2] == ["AuthAPI", "AuthHelper"]
+        assert actionable.communities_touched == [2]
+        assert actionable.nodes_affected == 2
+        assert actionable.files_changed == ["src/auth/api.py"]
+        assert wrong_base.communities_touched == []
+        assert wrong_base.nodes_affected == 0
 
 
 # ── _detect_default_branch ────────────────────────────────────────────────────

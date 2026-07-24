@@ -1,4 +1,5 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
+import asyncio
 import json
 import pytest
 import networkx as nx
@@ -28,6 +29,7 @@ from graphify.serve import (
     _cut_lines_to_budget,
     _load_graph,
     _community_header,
+    _ApiKeyMiddleware,
     _search_tokens,
 )
 
@@ -1386,3 +1388,64 @@ def test_subgraph_to_text_honors_valid_src_tgt_direction():
     out = _subgraph_to_text(G, {"caller", "callee"}, [("callee", "caller")])
     edge_line = next(l for l in out.splitlines() if l.startswith("EDGE"))
     assert "caller --calls" in edge_line and "--> callee" in edge_line
+
+
+def _run_asgi(app, scope: dict) -> tuple[list[dict], int]:
+    sent: list[dict] = []
+    app_calls = 0
+
+    async def _receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def _send(message: dict) -> None:
+        sent.append(message)
+
+    async def _inner() -> int:
+        nonlocal app_calls
+
+        async def _downstream(_scope, _receive, send):
+            nonlocal app_calls
+            app_calls += 1
+            await send({"type": "http.response.start", "status": 204, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        wrapped = _ApiKeyMiddleware(_downstream, api_key="s3cret")
+        await wrapped(scope, _receive, _send)
+        return app_calls
+
+    calls = asyncio.run(_inner())
+    return sent, calls
+
+
+def test_api_key_middleware_rejects_missing_key():
+    scope = {"type": "http", "headers": []}
+    sent, calls = _run_asgi(None, scope)
+
+    assert calls == 0
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 401
+    assert sent[1]["body"] == b'{"error": "unauthorized"}'
+
+
+def test_api_key_middleware_accepts_x_api_key():
+    scope = {"type": "http", "headers": [(b"x-api-key", b"s3cret")]}
+    sent, calls = _run_asgi(None, scope)
+
+    assert calls == 1
+    assert sent[0]["status"] == 204
+
+
+def test_api_key_middleware_accepts_case_insensitive_bearer():
+    scope = {"type": "http", "headers": [(b"authorization", b"bEaReR s3cret")]}
+    sent, calls = _run_asgi(None, scope)
+
+    assert calls == 1
+    assert sent[0]["status"] == 204
+
+
+def test_api_key_middleware_skips_non_http_scopes():
+    scope = {"type": "lifespan", "headers": []}
+    sent, calls = _run_asgi(None, scope)
+
+    assert calls == 1
+    assert sent[0]["status"] == 204
