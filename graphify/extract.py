@@ -2191,6 +2191,12 @@ def _resolve_swift_member_calls(
             type_qualified = False
         if not type_name:
             continue
+        # A builtin receiver type (Data, NSLock, DispatchQueue, ...) must not
+        # resolve to a same-named user symbol — the cross-file CALL resolver and
+        # the TS/Python member-call resolvers already skip these globals (#1726);
+        # do the same for Swift (#2147).
+        if type_name in _LANGUAGE_BUILTIN_GLOBALS:
+            continue
         type_defs = type_def_nids.get(_key(type_name), [])
         if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
             continue
