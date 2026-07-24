@@ -77,12 +77,36 @@ class GenericLogExtractor:
                 log_level_nodes = captures.get("log_level", [])
                 args_nodes = captures.get("args", [])
                 
+                if not func_name_nodes and log_obj_nodes:
+                    curr = log_obj_nodes[0]
+                    while curr and curr.type not in ["function_declaration", "method_declaration", "function_definition"]:
+                        curr = curr.parent
+                    if curr:
+                        def find_id(n):
+                            if n.type == "identifier": return n
+                            for c in n.children:
+                                r = find_id(c)
+                                if r: return r
+                            return None
+                        id_node = find_id(curr)
+                        if id_node:
+                            func_name_nodes = [id_node]
+                
                 if func_name_nodes and log_obj_nodes and args_nodes:
                     func_name = func_name_nodes[0].text.decode("utf-8", errors="ignore")
                     log_obj = log_obj_nodes[0].text.decode("utf-8", errors="ignore")
                     args = args_nodes[0].text.decode("utf-8", errors="ignore")
                     
-                    current_function = f"{file_path}::{func_name}"
+                    source_id = None
+                    possible_nodes = [n for n in graph_builder.result.get("nodes", []) if n.get("_callable")]
+                    for n in possible_nodes:
+                        label = n.get("label", "")
+                        if label == func_name or label == f".{func_name}()" or label == f"{func_name}()":
+                            source_id = n["id"]
+                            break
+                    if not source_id:
+                        nodes = graph_builder.result.get("nodes", [])
+                        source_id = nodes[0]["id"] if nodes else f"{file_path}::{func_name}"
                     
                     if log_level_nodes:
                         log_level = log_level_nodes[0].text.decode("utf-8", errors="ignore")
@@ -93,7 +117,7 @@ class GenericLogExtractor:
                     log_signature = f"{log_prefix}{args}"
                     
                     graph_builder.add_edge(
-                        source=current_function,
+                        source=source_id,
                         target=log_signature,
                         relationship="PRINTS_LOG",
                         metadata={"file": file_path, "type": "EXTRACTED", "lang": lang_key}

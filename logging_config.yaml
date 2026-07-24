@@ -1,65 +1,33 @@
 logging_rules:
   java:
     query: |
-      (method_declaration
-        name: (identifier) @func_name
-        body: (block
-          (expression_statement
-            (method_invocation
-              object: (identifier) @log_obj (#match? @log_obj "{pattern}")
-              name: (identifier) @log_level
-              arguments: (argument_list) @args
-            )
-          )
-        )
+      (method_invocation
+        object: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        name: (identifier) @log_level
+        arguments: (argument_list) @args
       )
-    pattern: "^(log|logger)$"
+    pattern: "(?i)^(log|logger|timber)$"
   kotlin:
     query: |
-      (function_declaration
-        (identifier) @func_name
-        (function_body
-          (block
-            (call_expression
-              (navigation_expression
-                (identifier) @log_obj (#match? @log_obj "{pattern}")
-                (identifier) @log_level
-              )
-              (value_arguments) @args
-            )
-          )
+      (call_expression
+        (navigation_expression
+          (identifier) @log_obj (#match? @log_obj "{pattern}")
+          (identifier) @log_level
         )
+        (value_arguments) @args
       )
-    pattern: "^(log|logger)$"
+    pattern: "(?i)^(log|logger|timber)$"
   c:
     query: |
-      (function_definition
-        declarator: (function_declarator
-          declarator: (identifier) @func_name
-        )
-        body: (compound_statement
-          (expression_statement
-            (call_expression
-              function: (identifier) @log_obj (#match? @log_obj "{pattern}")
-              arguments: (argument_list) @args
-            )
-          )
-        )
+      (call_expression
+        function: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        arguments: (argument_list) @args
       )
-    pattern: "^(log_.*|LOG_.*)$"
+    pattern: "(?i)^(log_.*)$"
   cpp:
     query: |
-      (function_definition
-        declarator: (function_declarator
-          declarator: (identifier) @func_name
-        )
-        body: (compound_statement
-          (expression_statement
-            (call_expression
-              function: (identifier) @log_obj (#match? @log_obj "{pattern}")
-              arguments: (argument_list) @args
-            )
-          )
-        )
+      (call_expression
+        function: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        arguments: (argument_list) @args
       )
-    pattern: "^(log_.*|LOG_.*)$"
+    pattern: "(?i)^(log_.*)$"

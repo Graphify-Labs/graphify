@@ -15,68 +15,36 @@ def test_generic_logging_extraction(tmp_path, monkeypatch):
 logging_rules:
   java:
     query: |
-      (method_declaration
-        name: (identifier) @func_name
-        body: (block
-          (expression_statement
-            (method_invocation
-              object: (identifier) @log_obj (#match? @log_obj "{pattern}")
-              name: (identifier) @log_level
-              arguments: (argument_list) @args
-            )
-          )
-        )
+      (method_invocation
+        object: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        name: (identifier) @log_level
+        arguments: (argument_list) @args
       )
-    pattern: "^(log|logger)$"
+    pattern: "(?i)^(log|logger|timber)$"
   kotlin:
     query: |
-      (function_declaration
-        (identifier) @func_name
-        (function_body
-          (block
-            (call_expression
-              (navigation_expression
-                (identifier) @log_obj (#match? @log_obj "{pattern}")
-                (identifier) @log_level
-              )
-              (value_arguments) @args
-            )
-          )
+      (call_expression
+        (navigation_expression
+          (identifier) @log_obj (#match? @log_obj "{pattern}")
+          (identifier) @log_level
         )
+        (value_arguments) @args
       )
-    pattern: "^(log|logger)$"
+    pattern: "(?i)^(log|logger|timber)$"
   c:
     query: |
-      (function_definition
-        declarator: (function_declarator
-          declarator: (identifier) @func_name
-        )
-        body: (compound_statement
-          (expression_statement
-            (call_expression
-              function: (identifier) @log_obj (#match? @log_obj "{pattern}")
-              arguments: (argument_list) @args
-            )
-          )
-        )
+      (call_expression
+        function: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        arguments: (argument_list) @args
       )
-    pattern: "^(log_.*|LOG_.*)$"
+    pattern: "(?i)^(log_.*)$"
   cpp:
     query: |
-      (function_definition
-        declarator: (function_declarator
-          declarator: (identifier) @func_name
-        )
-        body: (compound_statement
-          (expression_statement
-            (call_expression
-              function: (identifier) @log_obj (#match? @log_obj "{pattern}")
-              arguments: (argument_list) @args
-            )
-          )
-        )
+      (call_expression
+        function: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        arguments: (argument_list) @args
       )
-    pattern: "^(log_.*|LOG_.*)$"
+    pattern: "(?i)^(log_.*)$"
 """
     (tmp_path / "logging_config.yaml").write_text(config_content)
     
@@ -142,20 +110,20 @@ void doCpp() {
     
     # Assert details of java log edge
     java_edge = next(e for e in prints_log_edges if e.get("metadata", {}).get("lang") == "java")
-    assert java_edge["source"].endswith("::doSomething")
+    assert java_edge["source"].endswith("_dosomething")
     assert java_edge["target"] == 'logger.info("Java log message")'
     
     # Assert details of kotlin log edge
     kotlin_edge = next(e for e in prints_log_edges if e.get("metadata", {}).get("lang") == "kotlin")
-    assert kotlin_edge["source"].endswith("::doKotlin")
+    assert kotlin_edge["source"].endswith("_dokotlin")
     assert kotlin_edge["target"] == 'logger.warn("Kotlin log message")'
     
     # Assert details of c log edge
     c_edge = next(e for e in prints_log_edges if e.get("metadata", {}).get("lang") == "c")
-    assert c_edge["source"].endswith("::doC")
+    assert c_edge["source"].endswith("_doc")
     assert c_edge["target"] == 'log_info("C log message")'
     
     # Assert details of cpp log edge
     cpp_edge = next(e for e in prints_log_edges if e.get("metadata", {}).get("lang") == "cpp")
-    assert cpp_edge["source"].endswith("::doCpp")
+    assert cpp_edge["source"].endswith("_docpp")
     assert cpp_edge["target"] == 'LOG_WARN("Cpp log message")'
