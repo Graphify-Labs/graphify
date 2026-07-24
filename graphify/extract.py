@@ -47,6 +47,7 @@ from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
+from graphify.extractors.r import extract_r  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
@@ -4024,6 +4025,7 @@ _DISPATCH: dict[str, Any] = {
     ".sv": extract_verilog,
     ".svh": extract_verilog,
     ".sql": extract_sql,
+    ".r": extract_r,
     ".md": extract_markdown,
     ".mdx": extract_markdown,
     ".qmd": extract_markdown,
@@ -4080,7 +4082,7 @@ _EXTRA_FOR_EXTENSION = {
 # routes them to the CODE path via _shebang_interpreter; _get_extractor must
 # honor the same signal or these files are classified as code and then silently
 # dropped by extraction. Only interpreters with a real extractor are mapped —
-# detect's wider set (perl, fish, tcsh, Rscript) stays unmapped and skipped.
+# detect's wider set (perl, fish, tcsh) stays unmapped and skipped.
 _SHEBANG_DISPATCH: dict[str, Any] = {
     "python": extract_python,
     "python2": extract_python,
@@ -4096,6 +4098,7 @@ _SHEBANG_DISPATCH: dict[str, Any] = {
     "lua": extract_lua,
     "php": extract_php,
     "julia": extract_julia,
+    "Rscript": extract_r,
 }
 
 
@@ -4545,8 +4548,8 @@ def extract(
         )
 
     # #1689: a file counted as code (extension in CODE_EXTENSIONS) but with no AST
-    # extractor wired up (e.g. .r/.R — there is no tree-sitter-r dispatch) silently
-    # contributes zero nodes. The #1666 warning above deliberately skips these (it
+    # extractor wired up silently contributes zero nodes. The #1666 warning above
+    # deliberately skips these (it
     # only fires when an extractor exists), so surface them explicitly, grouped by
     # extension, rather than reporting success as if the language were mapped.
     from graphify.detect import CODE_EXTENSIONS as _CODE_EXTS
