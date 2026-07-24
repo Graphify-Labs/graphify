@@ -330,6 +330,26 @@ def test_rebuild_bodies_with_graphify_root_are_valid_python():
         ast.parse(body)
 
 
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_arm_a_timeout_without_sigalrm(name, body):
+    """Windows has no signal.SIGALRM, so the #791 rebuild timeout never armed
+    there at all (#2148). The fallback has to sit in the else-branch of the
+    SIGALRM check rather than merely appear somewhere in the body, so that a
+    watchdog firing unconditionally or on every platform still fails here."""
+    fallbacks = [
+        node.orelse
+        for node in ast.walk(ast.parse(body))
+        if isinstance(node, ast.If) and "'SIGALRM'" in ast.dump(node.test) and node.orelse
+    ]
+    assert fallbacks, f"{name} has no else-branch for the missing-SIGALRM case (#2148)"
+    dumped = "".join(ast.dump(stmt) for stmt in fallbacks[0])
+    assert "attr='Timer'" in dumped, f"{name} fallback does not arm a threading.Timer (#2148)"
+    assert "attr='_exit'" in dumped, f"{name} fallback does not kill the stuck rebuild (#2148)"
+
+
 def test_detached_launch_targets_graphify_python():
     """The launcher must run via the resolved $GRAPHIFY_PYTHON, not a bare
     `python`, so it uses the same interpreter the detection block selected."""

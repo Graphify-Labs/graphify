@@ -104,7 +104,7 @@ fi
 # double-quote, $, backtick or backslash characters: it is carried inside a
 # shell double-quoted `-c "..."` argument (see _detached_launch).
 _REBUILD_BODY_COMMIT = """\
-import os, signal, sys
+import os, signal, sys, threading
 from pathlib import Path
 
 changed_raw = os.environ.get('GRAPHIFY_CHANGED', '')
@@ -119,9 +119,17 @@ try:
     from graphify.watch import _rebuild_code, _apply_resource_limits
     _apply_resource_limits()
     _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
-    if _timeout > 0 and hasattr(signal, 'SIGALRM'):
-        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
-        signal.alarm(_timeout)
+    if _timeout > 0:
+        if hasattr(signal, 'SIGALRM'):
+            signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
+            signal.alarm(_timeout)
+        else:
+            def _bail():
+                print(f'[graphify hook] graphify rebuild exceeded {_timeout}s', flush=True)
+                os._exit(1)
+            _watchdog = threading.Timer(_timeout, _bail)
+            _watchdog.daemon = True
+            _watchdog.start()
     _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
     _root = Path('.')
     _out = os.environ.get('GRAPHIFY_OUT', 'graphify-out')
@@ -153,13 +161,21 @@ except Exception as exc:
 _REBUILD_BODY_CHECKOUT = """\
 from graphify.watch import _rebuild_code, _apply_resource_limits
 from pathlib import Path
-import os, signal, sys
+import os, signal, sys, threading
 try:
     _apply_resource_limits()
     _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
-    if _timeout > 0 and hasattr(signal, 'SIGALRM'):
-        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
-        signal.alarm(_timeout)
+    if _timeout > 0:
+        if hasattr(signal, 'SIGALRM'):
+            signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
+            signal.alarm(_timeout)
+        else:
+            def _bail():
+                print(f'[graphify hook] graphify rebuild exceeded {_timeout}s', flush=True)
+                os._exit(1)
+            _watchdog = threading.Timer(_timeout, _bail)
+            _watchdog.daemon = True
+            _watchdog.start()
     _force = os.environ.get('GRAPHIFY_FORCE', '').lower() in ('1', 'true', 'yes')
     # post-checkout: branch switch can touch arbitrary files; full rebuild path
     # (no changed_paths) is correct here. The flock inside _rebuild_code still
