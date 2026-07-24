@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feat: `graphify graph3d` renders an interactive 3D force-directed HTML view of `graph.json` (WebGL via `3d-force-graph`, MIT, CDN-loaded — the same habit as the `tree` viewer's D3). Unlike the flat `graph.html`, which lays the graph out undirected with no arrowheads, the 3D view *draws edge direction* (`source → target`) as arrows, so `calls` / `imports` / `inherits` read directionally; rotate/zoom, click a node to focus it and list its typed relations, and search by label. Community colors (`exporters.base.COMMUNITY_COLORS`) and the graph-size cap are shared with the existing exporters, and node labels are HTML-escaped at render time so a hostile label can't inject markup into the local report. A minimal, focused alternative to the stalled #225.
+
 ## 0.9.26 (2026-07-25)
 
 - Fix: `graphify query`/`explain` no longer fabricate `indirect_call` edges to class definitions (#2137, thanks @Rishet11). The callable guard admitted classes, so passing a class as a value (`select(Model)`, `db.get(Model, id)`, `except (ErrorA, ErrorB)`, `getattr(obj, "Name", 0)`) produced a false inferred call edge in both the intra-file and cross-file paths. Classes are now tracked separately and excluded from `indirect_call`; direct instantiation still emits its `calls` edge. The suppression is context-blind, so a genuine higher-order class callback that is actually invoked (e.g. `map(Point, coords)`) also loses its edge, which is the intended tradeoff.
