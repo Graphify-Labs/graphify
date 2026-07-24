@@ -171,7 +171,7 @@ try:
             signal.alarm(_timeout)
         else:
             def _bail():
-                print(f'[graphify hook] graphify rebuild exceeded {_timeout}s', flush=True)
+                print(f'[graphify] graphify rebuild exceeded {_timeout}s', flush=True)
                 os._exit(1)
             _watchdog = threading.Timer(_timeout, _bail)
             _watchdog.daemon = True

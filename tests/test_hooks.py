@@ -348,6 +348,11 @@ def test_rebuild_bodies_arm_a_timeout_without_sigalrm(name, body):
     dumped = "".join(ast.dump(stmt) for stmt in fallbacks[0])
     assert "attr='Timer'" in dumped, f"{name} fallback does not arm a threading.Timer (#2148)"
     assert "attr='_exit'" in dumped, f"{name} fallback does not kill the stuck rebuild (#2148)"
+    # The fallback logs the timeout itself, because os._exit skips the except
+    # handler that reports it on the SIGALRM path. Its prefix has to match the
+    # rest of the body, or the same event reads differently per platform.
+    prefixes = set(re.findall(r"print\(f'\[([a-z ]+)\]", body))
+    assert len(prefixes) == 1, f"{name} mixes log prefixes {sorted(prefixes)} (#2148)"
 
 
 def test_detached_launch_targets_graphify_python():
