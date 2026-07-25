@@ -170,11 +170,23 @@ def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:
     G.graph["hyperedges"] = existing
 
 
-def _git_head() -> str | None:
-    """Return the current git HEAD commit hash, or None if not in a git repo."""
+def _git_head(root: str | Path | None = None) -> str | None:
+    """Return the git HEAD commit hash for ``root``, or None if not in a git repo.
+
+    ``root`` may be any path inside the repository (git walks up to find it). When omitted
+    the caller's current working directory is used, preserving the previous behaviour.
+
+    Passing ``root`` matters because this value is written to ``graph.json`` as
+    ``built_at_commit``. Resolved from the process CWD it records whichever repository the
+    caller happened to be sitting in, which for a hook, daemon or wrapper is routinely not
+    the repository being graphed -- producing a graph that claims a commit which does not
+    exist in the repo it describes.
+    """
     import subprocess as _sp
+    cmd = ["git", "rev-parse", "HEAD"] if root is None else [
+        "git", "-C", str(root), "rev-parse", "HEAD"]
     try:
-        r = _sp.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3)
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=3)
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
@@ -312,7 +324,10 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
             link["source"] = true_src
             link["target"] = true_tgt
     data["hyperedges"] = getattr(G, "graph", {}).get("hyperedges", [])
-    commit = built_at_commit if built_at_commit is not None else _git_head()
+    # Resolve from the graph's own output location, not the caller's CWD: `to_json` is
+    # reached from hooks and wrappers whose CWD is unrelated to the repo being written.
+    commit = built_at_commit if built_at_commit is not None else _git_head(
+        Path(output_path).parent)
     if commit:
         data["built_at_commit"] = commit
     from graphify.paths import write_json_atomic

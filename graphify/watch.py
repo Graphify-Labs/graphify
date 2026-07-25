@@ -242,11 +242,18 @@ def _apply_resource_limits() -> None:
         pass
 
 
-def _git_head() -> str | None:
-    """Return current git HEAD commit hash, or None outside a repo."""
+def _git_head(root: str | Path | None = None) -> str | None:
+    """Return the git HEAD commit hash for ``root``, or None outside a repo.
+
+    ``root`` may be any path inside the repository. Omitting it uses the caller's CWD,
+    preserving the previous behaviour. See the note on ``export._git_head``: a watch rebuild
+    is normally driven from a hook whose CWD is not the project being rebuilt.
+    """
     import subprocess as _sp
+    cmd = ["git", "rev-parse", "HEAD"] if root is None else [
+        "git", "-C", str(root), "rev-parse", "HEAD"]
     try:
-        r = _sp.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3)
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=3)
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
@@ -1092,7 +1099,7 @@ def _rebuild_code(
             # below still counts the doc as a rebuilt source.
             extract_targets = [p for p in code_files if p not in semantic_doc_files]
 
-        commit = _git_head()
+        commit = _git_head(project_root)
         result = extract(extract_targets, cache_root=watch_root) if extract_targets else {
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
