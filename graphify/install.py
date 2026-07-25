@@ -1388,7 +1388,11 @@ def _install_codex_hook(project_dir: Path) -> None:
     existing["hooks"]["PreToolUse"] = [h for h in pre_tool if "graphify" not in str(h)]
     existing["hooks"]["PreToolUse"].extend(hook_entry["hooks"]["PreToolUse"])
     hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-    print(f"  .codex/hooks.json  ->  PreToolUse hook registered ({graphify_exe} hook-check)")
+    print(
+        f"  .codex/hooks.json  ->  PreToolUse hook registered ({graphify_exe} hook-check"
+        " - intentional no-op; Codex Desktop rejects additionalContext on PreToolUse,"
+        " so graph guidance comes from AGENTS.md)"
+    )
 def _uninstall_codex_hook(project_dir: Path) -> None:
     """Remove graphify PreToolUse hook from .codex/hooks.json."""
     hooks_path = project_dir / ".codex" / "hooks.json"
