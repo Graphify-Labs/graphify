@@ -337,3 +337,111 @@ def test_global_add_rejects_oversized_source_graph(monkeypatch, tmp_path):
         from graphify.global_graph import global_add
         with pytest.raises(ValueError, match="exceeds"):
             global_add(src_graph, "repoA")
+
+
+# ── concurrency: the lock around the read-modify-write ───────────────────────
+
+def _patch_global_dir(global_dir):
+    """Point the module-level global-graph paths at a temp dir."""
+    return (
+        patch("graphify.global_graph._GLOBAL_DIR", global_dir),
+        patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"),
+        patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"),
+        patch("graphify.global_graph._GLOBAL_LOCK", global_dir / ".global.lock"),
+    )
+
+
+def test_concurrent_global_add_does_not_lose_a_repo(tmp_path):
+    """Two threads adding different repos concurrently must both survive.
+
+    Without the lock this is a lost update: both load the same base graph,
+    both write atomically, and the second write silently drops the first
+    repo's nodes. The file is never corrupt, so nothing surfaces an error.
+    """
+    import threading
+
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    _graph_to_json(_make_graph([{"id": "a", "label": "A", "source_file": "src/a.py"}]), g1)
+    _graph_to_json(_make_graph([{"id": "b", "label": "B", "source_file": "src/b.py"}]), g2)
+
+    global_dir = tmp_path / ".graphify"
+    p1, p2, p3, p4 = _patch_global_dir(global_dir)
+    with p1, p2, p3, p4:
+        from graphify.global_graph import global_add, global_list
+
+        start = threading.Barrier(2)
+        errors = []
+
+        def add(src, tag):
+            try:
+                start.wait(timeout=5)
+                global_add(src, tag)
+            except Exception as exc:  # pragma: no cover - surfaced via assert
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=add, args=(g1, "repoA")),
+            threading.Thread(target=add, args=(g2, "repoB")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert not errors, errors
+        assert set(global_list()) == {"repoA", "repoB"}
+
+
+def test_manifest_records_source_mtime(tmp_path):
+    """The manifest must record when the source graph was built, not only
+    when the sync ran: otherwise a months-old graph reads as current."""
+    import os
+    import time
+
+    src_graph = tmp_path / "graph.json"
+    _graph_to_json(_make_graph([{"id": "x", "label": "X", "source_file": "src/x.py"}]), src_graph)
+    built_at = time.time() - 86_400 * 30
+    os.utime(src_graph, (built_at, built_at))
+
+    global_dir = tmp_path / ".graphify"
+    p1, p2, p3, p4 = _patch_global_dir(global_dir)
+    with p1, p2, p3, p4:
+        from graphify.global_graph import global_add, global_list
+
+        result = global_add(src_graph, "repoA")
+        entry = global_list()["repoA"]
+
+    assert entry["source_mtime"][:10] != entry["added_at"][:10]
+    assert result["source_mtime"] == entry["source_mtime"]
+
+
+def test_stale_flag_set_when_graph_predates_last_commit(tmp_path):
+    """A graph older than its repo's HEAD commit is reported stale."""
+    import os
+    import time
+
+    src_graph = tmp_path / "graph.json"
+    _graph_to_json(_make_graph([{"id": "x", "label": "X", "source_file": "src/x.py"}]), src_graph)
+    built_at = time.time() - 86_400 * 30
+    os.utime(src_graph, (built_at, built_at))
+
+    global_dir = tmp_path / ".graphify"
+    p1, p2, p3, p4 = _patch_global_dir(global_dir)
+    with p1, p2, p3, p4, \
+         patch("graphify.global_graph._repo_head_timestamp", return_value=time.time()):
+        from graphify.global_graph import global_add
+        assert global_add(src_graph, "repoA")["stale"] is True
+
+
+def test_stale_flag_false_without_git(tmp_path):
+    """No git work tree -> no staleness claim (never guess)."""
+    src_graph = tmp_path / "graph.json"
+    _graph_to_json(_make_graph([{"id": "x", "label": "X", "source_file": "src/x.py"}]), src_graph)
+
+    global_dir = tmp_path / ".graphify"
+    p1, p2, p3, p4 = _patch_global_dir(global_dir)
+    with p1, p2, p3, p4, \
+         patch("graphify.global_graph._repo_head_timestamp", return_value=None):
+        from graphify.global_graph import global_add
+        assert global_add(src_graph, "repoA")["stale"] is False

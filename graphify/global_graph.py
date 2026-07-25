@@ -1,6 +1,8 @@
 from __future__ import annotations
+import contextlib
 import json
 import hashlib
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +12,82 @@ from networkx.readwrite import json_graph as _jg
 _GLOBAL_DIR = Path.home() / ".graphify"
 _GLOBAL_GRAPH = _GLOBAL_DIR / "global-graph.json"
 _GLOBAL_MANIFEST = _GLOBAL_DIR / "global-manifest.json"
+_GLOBAL_LOCK = _GLOBAL_DIR / ".global.lock"
+
+
+@contextlib.contextmanager
+def _global_lock():
+    """Exclusive advisory lock around a global-graph read-modify-write.
+
+    ``global_add`` / ``global_remove`` load the whole global graph, mutate it
+    and write it back. Without a lock, two concurrent callers (e.g. post-commit
+    hooks firing in two repos at once) both read the same base, and the second
+    writer silently discards the first one's repo: the write is atomic, so
+    nothing is *corrupted* — the update is simply lost, with no error anywhere.
+    Serializing the whole read-modify-write is what makes concurrent syncing
+    safe.
+
+    Blocking by design: a caller that cannot get the lock must wait, never skip.
+    Uses fcntl.flock so the lock is released if the process is killed. Falls
+    back to a no-op on platforms without fcntl (Windows).
+
+    The lock file is deliberately never unlinked: removing it while other
+    processes hold descriptors to it lets a newcomer create a fresh inode and
+    take the "same" lock concurrently.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+
+    _GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
+    fh = open(_GLOBAL_LOCK, "a+", encoding="utf-8")
+    acquired = False
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        acquired = True
+        # Record the holder's PID so external tooling can see who is syncing.
+        with contextlib.suppress(OSError):
+            fh.seek(0)
+            fh.truncate()
+            fh.write(f"{os.getpid()}\n")
+            fh.flush()
+        yield
+    finally:
+        if acquired:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+
+
+def _repo_head_timestamp(source_path: Path) -> float | None:
+    """Unix timestamp of the last commit of the repo owning ``source_path``.
+
+    Returns None when the file is not inside a git work tree, or git is
+    unavailable/slow. Used only to warn about stale graphs, never to block.
+    """
+    import subprocess
+
+    start = source_path.resolve().parent
+    for candidate in [start, *start.parents]:
+        if not (candidate / ".git").exists():
+            continue
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(candidate), "log", "-1", "--format=%ct"],
+                capture_output=True, text=True, timeout=3,
+            )
+        except Exception:
+            return None
+        out = r.stdout.strip()
+        if r.returncode == 0 and out:
+            try:
+                return float(out)
+            except ValueError:
+                return None
+        return None
+    return None
 
 
 def _load_manifest() -> dict:
@@ -79,16 +157,28 @@ def _file_hash(path: Path) -> str:
 def global_add(source_path: Path, repo_tag: str) -> dict:
     """Add or update a project graph in the global graph.
 
-    Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped.
-    Skipped=True means the source graph hasn't changed since last add.
+    Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed,
+    skipped, source_mtime, stale. Skipped=True means the source graph hasn't
+    changed since last add. Stale=True means the source graph predates the last
+    commit of its own repo, i.e. what gets synced is older than the code.
     """
-    from graphify.build import prefix_graph_for_global, prune_repo_from_graph
-
     if not source_path.exists():
         raise FileNotFoundError(f"graph not found: {source_path}")
 
+    with _global_lock():
+        return _global_add_locked(source_path, repo_tag)
+
+
+def _global_add_locked(source_path: Path, repo_tag: str) -> dict:
+    """Body of :func:`global_add`. Caller must hold :func:`_global_lock`."""
+    from graphify.build import prefix_graph_for_global, prune_repo_from_graph
+
     manifest = _load_manifest()
     src_hash = _file_hash(source_path)
+    src_mtime = source_path.stat().st_mtime
+    src_mtime_iso = datetime.fromtimestamp(src_mtime, timezone.utc).isoformat()
+    head_ts = _repo_head_timestamp(source_path)
+    stale = bool(head_ts is not None and src_mtime < head_ts)
 
     existing = manifest["repos"].get(repo_tag, {})
     existing_path = existing.get("source_path", "")
@@ -100,7 +190,10 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             file=sys.stderr,
         )
     if existing.get("source_hash") == src_hash:
-        return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True}
+        return {
+            "repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0,
+            "skipped": True, "source_mtime": src_mtime_iso, "stale": stale,
+        }
 
     # Load source graph
     from graphify.security import check_graph_file_size_cap
@@ -147,7 +240,11 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     _save_global_graph(G)
 
     manifest["repos"][repo_tag] = {
+        # When this sync ran. NOT how fresh the content is — see source_mtime.
         "added_at": datetime.now(timezone.utc).isoformat(),
+        # When the source graph was last built. This is the age of what the
+        # global graph actually holds for this repo.
+        "source_mtime": src_mtime_iso,
         "source_path": str(source_path.resolve()),
         "node_count": added,
         "edge_count": prefixed.number_of_edges(),
@@ -155,11 +252,20 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     }
     _save_manifest(manifest)
 
-    return {"repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed, "skipped": False}
+    return {
+        "repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed,
+        "skipped": False, "source_mtime": src_mtime_iso, "stale": stale,
+    }
 
 
 def global_remove(repo_tag: str) -> int:
     """Remove all nodes for repo_tag from the global graph. Returns count removed."""
+    with _global_lock():
+        return _global_remove_locked(repo_tag)
+
+
+def _global_remove_locked(repo_tag: str) -> int:
+    """Body of :func:`global_remove`. Caller must hold :func:`_global_lock`."""
     from graphify.build import prune_repo_from_graph
 
     manifest = _load_manifest()

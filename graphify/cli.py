@@ -2427,6 +2427,17 @@ def dispatch_command(cmd: str) -> None:
                 else:
                     print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
                           f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
+                if result.get("stale"):
+                    # The graph being synced predates its own repo's last
+                    # commit: the global graph will look freshly synced while
+                    # holding outdated content.
+                    print(
+                        f"warning: '{tag}' graph was built {result.get('source_mtime', '?')[:10]}, "
+                        f"older than the repo's last commit. The global graph now holds stale "
+                        f"content under a current sync date. Rebuild it "
+                        f"('graphify update <repo>') and add it again.",
+                        file=sys.stderr,
+                    )
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":
@@ -2445,7 +2456,15 @@ def dispatch_command(cmd: str) -> None:
             else:
                 print(f"Global graph: {_global_path()}")
                 for tag, info in repos.items():
-                    print(f"  {tag}: {info.get('node_count', '?')} nodes, added {info.get('added_at', '?')[:10]}")
+                    # Two distinct dates: when the sync ran, and how old the
+                    # synced content actually is. Reporting only the former
+                    # makes a months-old graph look current.
+                    content = info.get("source_mtime")
+                    content_note = f", content {content[:10]}" if content else ""
+                    print(
+                        f"  {tag}: {info.get('node_count', '?')} nodes, "
+                        f"synced {info.get('added_at', '?')[:10]}{content_note}"
+                    )
         elif subcmd == "path":
             print(_global_path())
         else:
