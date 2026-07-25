@@ -29,6 +29,45 @@ def _bash_source_suffix(raw: str) -> str | None:
     return suffix
 
 
+# Name of the leading variable of a `source` argument: `${ROOT}/lib/x.sh` -> ROOT.
+_BASH_LEADING_VAR = re.compile(
+    r"^\$\{([A-Za-z_][A-Za-z0-9_]*)[^}]*\}|^\$([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+# The `$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)` idiom, capturing the
+# trailing `/..` hops applied to the dirname result.
+_BASH_DIRNAME_IDIOM = re.compile(r"dirname[^)]*\)((?:/\.\.)*)")
+
+
+def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
+    """Resolve a top-level assignment's value to a directory, or None if untracked.
+
+    Covers the two forms that make a ``source "${VAR}/lib/x.sh"`` target knowable
+    statically (#2172):
+
+    * the script-dir idiom ``"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"``,
+      including any number of trailing ``/..`` hops (and the ``$0`` spelling)
+    * a literal path, absolute or relative to the script's own directory
+
+    Anything else -- a value built from other variables, or command substitution
+    we do not model -- is left untracked so the caller keeps its previous
+    script-dir guess rather than binding somewhere invented.
+    """
+    val = value.strip().strip("'\"")
+    if not val:
+        return None
+    if "dirname" in val and ("BASH_SOURCE" in val or "$0" in val):
+        m = _BASH_DIRNAME_IDIOM.search(val)
+        base = script_dir
+        for _ in range((m.group(1).count("..") if m else 0)):
+            base = base.parent
+        return base
+    if "$" in val or "`" in val:
+        return None
+    candidate = Path(val)
+    return candidate if candidate.is_absolute() else script_dir / candidate
+
+
 def extract_bash(path: Path) -> dict:
     """Extract functions, source imports, and cross-function calls from a .sh file."""
     try:
@@ -92,8 +131,7 @@ def extract_bash(path: Path) -> dict:
     add_edge(file_nid, entry_nid, "contains", 1)
 
     _BASH_SOURCE_COMMANDS = frozenset({"source", "."})
-    _BASH_SCRIPT_RUNNERS = frozenset({"bash", "sh", "zsh", "ksh", "dash"})
-    # Parent node types that mean a contained command is part of a substitution
+    _BASH_SCRIPT_RUNNERS = frozenset({"bash", "sh", "zsh", "ksh", "dash"})    # Parent node types that mean a contained command is part of a substitution
     # or expansion, not a real function call. Token-level filtering misses
     # these because `$(build)` exposes `build` as a child command whose name
     # token has no metacharacters — only the parent does.
@@ -249,7 +287,16 @@ def extract_bash(path: Path) -> dict:
                             # never a dead id.
                             suffix = _bash_source_suffix(raw)
                             if suffix:
-                                resolved = (path.parent / suffix).resolve()
+                                # Resolve against the variable's tracked base when
+                                # we know it, else fall back to the script's own
+                                # directory as before (#2172).
+                                base = path.parent
+                                var_match = _BASH_LEADING_VAR.match(raw)
+                                if var_match:
+                                    var_name = var_match.group(1) or var_match.group(2)
+                                    if var_name in var_bases:
+                                        base = var_bases[var_name]
+                                resolved = (base / suffix).resolve()
                                 if resolved.is_file():
                                     add_edge(file_nid, _make_id(str(resolved)),
                                              "imports_from", line,
@@ -321,6 +368,27 @@ def extract_bash(path: Path) -> dict:
                 _prescan_functions(child)
 
     _prescan_functions(root)
+    # Bases for `source "${VAR}/lib/x.sh"` resolution (#2172). #2079 always resolved
+    # the literal suffix against the script's own directory, which is right for the
+    # `DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` idiom but wrong whenever
+    # the variable points elsewhere -- e.g. ROOT=".../scripts/.." with a same-named
+    # decoy under the script dir bound to the decoy. Track top-level assignments so
+    # the real base is used; untracked variables keep the script-dir guess.
+    var_bases: dict[str, Path] = {}
+    for _assign in root.children:
+        if _assign.type != "variable_assignment":
+            continue
+        _name_node = _assign.child_by_field_name("name")
+        _value_node = _assign.child_by_field_name("value")
+        if _name_node is None or _value_node is None:
+            continue
+        _name = _read_text(_name_node, source).strip()
+        if not _name:
+            continue
+        _base = _bash_assignment_base(_read_text(_value_node, source), path.parent)
+        if _base is not None:
+            var_bases[_name] = _base
+
     walk(root, file_nid)
 
     # Second pass: cross-function calls

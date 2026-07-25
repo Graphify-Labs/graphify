@@ -2059,6 +2059,75 @@ def test_extract_bash_source_suffix_guard_rejects_traversal(tmp_path):
     assert result["bash_sources"] == [], result["bash_sources"]
 
 
+def test_extract_bash_var_source_uses_tracked_assignment_base(tmp_path):
+    """#2172: `${VAR}` must resolve against the variable's tracked base.
+
+    #2079 always resolved the literal suffix against the script's own directory.
+    That is right for `DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`, but
+    when the variable points elsewhere -- here ROOT is the script dir's parent --
+    and a same-named decoy exists under the script dir, the edge bound to the
+    decoy: a wrong edge to a real node.
+    """
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "utils.sh").write_text(
+        "#!/usr/bin/env bash\nreal_util() { echo real; }\n", encoding="utf-8"
+    )
+    scripts = tmp_path / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    decoy = scripts / "lib" / "utils.sh"
+    decoy.write_text(
+        "#!/usr/bin/env bash\ndecoy_util() { echo decoy; }\n", encoding="utf-8"
+    )
+    script = scripts / "deploy.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"\n'
+        'source "${ROOT}/lib/utils.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [str(s["target_path"]) for s in result["bash_sources"]]
+    assert targets, "the ${VAR} source must still resolve"
+    for t in targets:
+        assert Path(t).resolve() == (tmp_path / "lib" / "utils.sh").resolve(), t
+        assert Path(t).resolve() != decoy.resolve(), f"bound to the decoy: {t}"
+
+
+def test_extract_bash_var_source_script_dir_idiom_still_resolves(tmp_path):
+    """The canonical script-dir idiom must keep working (#2079 regression guard)."""
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "x.sh").write_text(
+        "#!/usr/bin/env bash\nx_fn() { :; }\n", encoding="utf-8"
+    )
+    script = tmp_path / "bench.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "${BENCH_DIR}/lib/x.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "x.sh").resolve() in targets, targets
+
+
+def test_extract_bash_var_source_untracked_var_keeps_script_dir_guess(tmp_path):
+    """An untracked variable (assigned from the environment, or not assigned in
+    this file at all) keeps the #2079 script-dir guess rather than binding
+    nowhere -- the fallback must survive the #2172 change."""
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "y.sh").write_text("#!/usr/bin/env bash\ny_fn() { :; }\n", encoding="utf-8")
+    script = tmp_path / "run.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\nsource "${SOME_EXTERNAL_DIR}/lib/y.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (lib / "y.sh").resolve() in targets, targets
+
+
 # ---------------------------------------------------------------------------
 # JSON extractor tests (#866)
 # ---------------------------------------------------------------------------
