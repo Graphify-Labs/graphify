@@ -1,9 +1,10 @@
-"""`graphify merge-graphs` tolerates inputs that disagree on graph type (#1606).
+"""`graphify merge-graphs` preserves graph type intentionally (#1606).
 
 Per-repo graph.json files written by different extract paths at different times
 don't always agree on the `directed` / `multigraph` flags. compose requires one
 uniform type, so a mixed set used to crash with an unhandled NetworkXError. The
-handler now normalizes every input to a plain undirected Graph before composing.
+Simple inputs still normalize to Graph. Multigraph inputs require an explicit
+``--multigraph`` so parallel relationships are never simplified silently.
 """
 from __future__ import annotations
 
@@ -37,15 +38,22 @@ def test_merge_graphs_mixed_directed_and_multigraph(tmp_path):
     _write(c, directed=False, multigraph=True, node_id="z")    # MultiGraph
     out = tmp_path / "merged.json"
 
-    r = _run(["merge-graphs", str(a), str(b), str(c), "--out", str(out)], tmp_path)
+    refused = _run(["merge-graphs", str(a), str(b), str(c), "--out", str(out)], tmp_path)
+    assert refused.returncode == 2
+    assert "pass --multigraph" in refused.stderr
+
+    r = _run([
+        "merge-graphs", str(a), str(b), str(c),
+        "--out", str(out), "--multigraph",
+    ], tmp_path)
     assert r.returncode == 0, f"merge crashed: {r.stderr}"
     assert out.exists()
     data = json.loads(out.read_text())
     ids = {n["id"] for n in data["nodes"]}
-    # every input's node survives, normalized into one undirected simple graph
+    # every input's node survives in one directed multigraph
     assert {"r1::x", "r2::y", "r3::z"} <= ids or len(ids) == 3
-    assert data.get("directed") is False
-    assert data.get("multigraph") is False
+    assert data.get("directed") is True
+    assert data.get("multigraph") is True
 
 
 def test_merge_graphs_same_named_repo_dirs_do_not_collapse(tmp_path):

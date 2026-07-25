@@ -1061,3 +1061,123 @@ def test_build_from_json_prunes_dangling_hyperedge_members(capsys):
     assert set(hes) == {"he_partial"}, "an all-dangling hyperedge must be dropped"
     assert hes["he_partial"]["nodes"] == ["alpha", "beta"]
     assert "he_all_ghost" in capsys.readouterr().err
+
+
+def test_multigraph_preserves_distinct_parallel_relations_and_directions():
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "A", "source_file": "a.py", "file_type": "code"},
+            {"id": "b", "label": "B", "source_file": "b.py", "file_type": "code"},
+        ],
+        "edges": [
+            {
+                "source": "a", "target": "b", "relation": "references",
+                "confidence": "EXTRACTED", "source_file": "a.py",
+                "source_location": "L10", "context": "parameter_type",
+            },
+            {
+                "source": "a", "target": "b", "relation": "calls",
+                "confidence": "EXTRACTED", "source_file": "a.py",
+                "source_location": "L20", "context": "call",
+            },
+            {
+                "source": "b", "target": "a", "relation": "calls",
+                "confidence": "EXTRACTED", "source_file": "b.py",
+                "source_location": "L30", "context": "call",
+            },
+        ],
+    }
+
+    graph = build_from_json(extraction, multigraph=True)
+
+    assert isinstance(graph, nx.MultiDiGraph)
+    assert graph.number_of_edges("a", "b") == 2
+    assert graph.number_of_edges("b", "a") == 1
+    assert {
+        (data["relation"], data["source_location"], data["context"])
+        for data in edge_datas(graph, "a", "b")
+    } == {
+        ("references", "L10", "parameter_type"),
+        ("calls", "L20", "call"),
+    }
+
+
+def test_multigraph_aggregates_exact_duplicates_with_occurrence_count():
+    edge = {
+        "source": "a", "target": "b", "relation": "calls",
+        "confidence": "EXTRACTED", "source_file": "a.py",
+        "source_location": "L20", "context": "call",
+    }
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "A", "source_file": "a.py", "file_type": "code"},
+            {"id": "b", "label": "B", "source_file": "b.py", "file_type": "code"},
+        ],
+        "edges": [dict(edge), dict(edge), dict(edge)],
+    }
+
+    graph = build_from_json(extraction, multigraph=True)
+
+    assert graph.number_of_edges("a", "b") == 1
+    assert edge_datas(graph, "a", "b")[0]["occurrence_count"] == 3
+
+
+def test_multigraph_keys_are_stable_across_order_and_checkout_root(tmp_path):
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+
+    def extraction(root):
+        return {
+            "nodes": [
+                {
+                        "id": "a", "label": "A",
+                        "source_file": str(root / "src" / "a.py"), "file_type": "code",
+                        "_origin": "ast",
+                },
+                {
+                        "id": "b", "label": "B",
+                        "source_file": str(root / "src" / "b.py"), "file_type": "code",
+                        "_origin": "ast",
+                },
+            ],
+            "edges": [
+                {
+                    "source": "a", "target": "b", "relation": "calls",
+                    "confidence": "EXTRACTED",
+                    "source_file": str(root / "src" / "a.py"),
+                    "source_location": "L20", "context": "call",
+                },
+                {
+                    "source": "a", "target": "b", "relation": "references",
+                    "confidence": "EXTRACTED",
+                    "source_file": str(root / "src" / "a.py"),
+                    "source_location": "L10", "context": "parameter_type",
+                },
+            ],
+        }
+
+    first = build_from_json(extraction(left), multigraph=True, root=left)
+    second_input = extraction(right)
+    second_input["edges"].reverse()
+    second = build_from_json(second_input, multigraph=True, root=right)
+
+    assert set(first["a"]["b"]) == set(second["a"]["b"])
+    assert all(str(left) not in key and str(right) not in key for key in first["a"]["b"])
+
+
+def test_analysis_projection_counts_each_endpoint_pair_once():
+    graph = nx.MultiDiGraph()
+    graph.add_nodes_from(["a", "b"])
+    graph.add_edge("a", "b", key="one")
+    graph.add_edge("a", "b", key="two")
+    graph.add_edge("b", "a", key="reverse")
+
+    from graphify.build import analysis_projection
+
+    projected = analysis_projection(graph)
+
+    assert isinstance(projected, nx.Graph)
+    assert projected.number_of_edges() == 1
+    assert projected["a"]["b"]["weight"] == 1.0

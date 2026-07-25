@@ -55,6 +55,20 @@ def test_to_cypher_contains_merge_statements():
         content = out.read_text()
         assert "MERGE" in content
 
+def test_to_cypher_preserves_parallel_edge_identity_and_occurrences(tmp_path):
+    import networkx as nx
+    G = nx.MultiDiGraph()
+    G.add_edge("a", "b", key="first", relation="calls", occurrence_count=2,
+               occurrences=[{"source_span": "L1:C1-L1:C2"}])
+    G.add_edge("a", "b", key="second", relation="calls", occurrence_count=1,
+               occurrences=[{"source_span": "L2:C1-L2:C2"}])
+    out = tmp_path / "cypher.txt"
+    to_cypher(G, str(out))
+    content = out.read_text()
+    assert "graphify_key: 'first'" in content
+    assert "graphify_key: 'second'" in content
+    assert "occurrences_json" in content
+
 def test_to_graphml_creates_file():
     G = make_graph()
     communities = cluster(G)
@@ -139,6 +153,37 @@ def test_to_graphml_preserves_native_scalar_types():
         assert H.nodes["a"]["ratio"] == 0.5
         assert H.nodes["a"]["flag"] is True
         assert H.nodes["a"]["name"] == "x"
+
+
+def test_to_graphml_preserves_multigraph_occurrence_evidence(tmp_path):
+    import networkx as nx
+    G = nx.MultiDiGraph()
+    G.add_edge(
+        "a",
+        "b",
+        key="first",
+        relation="calls",
+        occurrences=[{"source_span": "L1:C1-L1:C2"}],
+    )
+    G.add_edge(
+        "a",
+        "b",
+        key="second",
+        relation="references",
+        occurrences=[{"source_span": "L2:C1-L2:C2"}],
+    )
+    out = tmp_path / "graph.graphml"
+    to_graphml(G, {0: ["a", "b"]}, str(out))
+    H = nx.read_graphml(str(out), force_multigraph=True)
+    assert H.number_of_edges() == 2
+    evidence = [
+        json.loads(attrs["occurrences"])
+        for _, _, _, attrs in H.edges(keys=True, data=True)
+    ]
+    assert {item[0]["source_span"] for item in evidence} == {
+        "L1:C1-L1:C2",
+        "L2:C1-L2:C2",
+    }
 
 
 def test_to_html_creates_file():

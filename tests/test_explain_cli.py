@@ -152,6 +152,48 @@ def test_explain_connection_shows_call_site_line(monkeypatch, tmp_path, capsys):
     assert "state.py" in out and "L56" in out
 
 
+def test_explain_lists_every_parallel_edge(monkeypatch, tmp_path, capsys):
+    graph_data = {
+        "directed": True, "multigraph": True, "graph": {},
+        "nodes": [
+            {"id": "stage", "label": "StageTrackPaths.__init__",
+             "source_file": "stage_track_paths.py", "community": 0},
+            {"id": "path", "label": "Path",
+             "source_file": "pathlib.pyi", "community": 0},
+        ],
+        "links": [
+            {
+                "source": "stage", "target": "path", "key": "references",
+                "relation": "references", "confidence": "EXTRACTED",
+                "context": "parameter_type", "source_file": "stage_track_paths.py",
+                "source_location": "L982", "occurrence_count": 6,
+                "occurrences": [
+                    {
+                        "source_span": "L982:C12-L982:C16",
+                        "parameter": "path",
+                    }
+                ],
+            },
+            {
+                "source": "stage", "target": "path", "key": "calls",
+                "relation": "calls", "confidence": "EXTRACTED",
+                "context": "call", "source_file": "stage_track_paths.py",
+                "source_location": "L1002", "occurrence_count": 1,
+            },
+        ],
+    }
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(graph_data))
+
+    out = _run(monkeypatch, graph_path, "StageTrackPaths", capsys)
+
+    assert "[references]" in out and "context=parameter_type x6" in out
+    assert "stage_track_paths.py:L982" in out
+    assert "L982:C12-L982:C16(path)" in out
+    assert "[calls]" in out and "context=call" in out
+    assert "stage_track_paths.py:L1002" in out
+
+
 # --- #2009: high-degree nodes must not silently hide the cut connections ------
 
 def _write_high_degree_graph(tmp_path, n_callers=30, files=None):

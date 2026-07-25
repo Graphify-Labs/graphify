@@ -176,6 +176,43 @@ def test_path_relation_matches_stored_edge_not_fabricated(monkeypatch, tmp_path,
     assert "calls" not in out
 
 
+def test_path_shows_parallel_relation_context_location_and_occurrences(
+    monkeypatch, tmp_path, capsys
+):
+    data = {
+        "directed": True, "multigraph": True, "graph": {},
+        "nodes": [
+            {"id": "a", "label": "Alpha", "source_file": "a.py"},
+            {"id": "b", "label": "Beta", "source_file": "b.py"},
+        ],
+        "links": [
+            {
+                "source": "a", "target": "b", "key": "calls",
+                "relation": "calls", "confidence": "EXTRACTED",
+                "context": "call", "source_file": "a.py",
+                "source_location": "L20",
+            },
+            {
+                "source": "a", "target": "b", "key": "references",
+                "relation": "references", "confidence": "EXTRACTED",
+                "context": "parameter_type", "source_file": "a.py",
+                "source_location": "L10", "occurrence_count": 6,
+                "occurrences": [
+                    {"source_span": "L10:C5-L10:C9", "parameter": "value"},
+                ],
+            },
+        ],
+    }
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(data))
+
+    out = _run(monkeypatch, graph_path, "Alpha", "Beta", capsys)
+
+    assert "calls:call@a.py:L20" in out
+    assert "references:parameter_type@a.py:L10x6" in out
+    assert "L10:C5-L10:C9(value)" in out
+
+
 def test_path_relation_fallback_related_when_missing(monkeypatch, tmp_path, capsys):
     """#2074: an edge with no stored relation prints an honest 'related', not an
     empty '---->' arrow and not a fabricated relation."""

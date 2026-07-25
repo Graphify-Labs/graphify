@@ -81,12 +81,13 @@ def _write_build_config(
     *,
     excludes: "list[str] | None",
     gitignore: bool | None = None,
+    multigraph: bool | None = None,
 ) -> None:
     """Persist corpus-shaping options under ``out_dir``.
 
     Best effort and non clobbering: omitted options retain their existing values.
     """
-    if not excludes and gitignore is None:
+    if not excludes and gitignore is None and multigraph is None:
         return
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -101,6 +102,8 @@ def _write_build_config(
             config["excludes"] = list(excludes)
         if gitignore is not None:
             config["gitignore"] = gitignore
+        if multigraph is not None:
+            config["multigraph"] = multigraph
         path.write_text(json.dumps(config), encoding="utf-8")
     except OSError:
         pass
@@ -131,6 +134,19 @@ def _read_build_gitignore(out_dir: Path) -> bool:
     except (OSError, json.JSONDecodeError):
         pass
     return True
+
+
+def _read_build_multigraph(out_dir: Path) -> bool:
+    """Return whether rebuilds must preserve MultiDiGraph output."""
+    try:
+        path = out_dir / _BUILD_CONFIG_FILENAME
+        if path.is_file():
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and isinstance(cfg.get("multigraph"), bool):
+                return cfg["multigraph"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return False
 
 
 def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
@@ -843,6 +859,7 @@ def _rebuild_code(
     follow_symlinks: bool = False,
     force: bool = False,
     no_cluster: bool = False,
+    multigraph: bool | None = None,
     acquire_lock: bool = True,
     block_on_lock: bool = False,
 ) -> bool:
@@ -903,6 +920,7 @@ def _rebuild_code(
                 follow_symlinks=follow_symlinks,
                 force=force,
                 no_cluster=no_cluster,
+                multigraph=multigraph,
                 acquire_lock=False,
             )
             # Late-arrival drain: another hook may have queued work while we
@@ -920,6 +938,7 @@ def _rebuild_code(
                         follow_symlinks=follow_symlinks,
                         force=force,
                         no_cluster=no_cluster,
+                        multigraph=multigraph,
                         acquire_lock=False,
                     ) and ok
             return ok
@@ -1135,7 +1154,19 @@ def _rebuild_code(
         rebuilt_sources |= set(deleted_paths)
         out.mkdir(exist_ok=True)
 
-        if no_cluster:
+        effective_multigraph = (
+            multigraph
+            if multigraph is not None
+            else (
+                bool(existing_graph_data.get("multigraph"))
+                if isinstance(existing_graph_data, dict)
+                else _read_build_multigraph(out)
+            )
+        )
+        if effective_multigraph:
+            _write_build_config(out, excludes=None, multigraph=True)
+
+        if no_cluster and not effective_multigraph:
             # Normalise to "links" key so schema is consistent with the full clustered path.
             # Dedupe parallel edges (the clustered path's DiGraph collapses them implicitly);
             # without it, --no-cluster + repeated `update` accumulate duplicates and edge
@@ -1206,7 +1237,11 @@ def _rebuild_code(
             "total_words": detected.get("total_words", 0),
         }
 
-        G = build_from_json(result)
+        G = build_from_json(
+            result,
+            directed=effective_multigraph,
+            multigraph=effective_multigraph,
+        )
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:
@@ -1232,7 +1267,7 @@ def _rebuild_code(
                 print("[graphify watch] No code-graph topology changes detected; outputs left untouched.")
                 return True
 
-        communities = cluster(G)
+        communities = {} if no_cluster else cluster(G)
         previous_node_community = _node_community_map(existing_graph_data)
         if previous_node_community:
             communities = remap_communities_to_previous(communities, previous_node_community)

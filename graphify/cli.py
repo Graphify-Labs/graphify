@@ -85,6 +85,27 @@ def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
 
+def _format_occurrence_details(data: dict, limit: int = 3) -> str:
+    occurrences = data.get("occurrences")
+    if not isinstance(occurrences, list) or not occurrences:
+        return ""
+    rendered = []
+    for occurrence in occurrences[:limit]:
+        if not isinstance(occurrence, dict):
+            continue
+        detail = str(
+            occurrence.get("source_span")
+            or occurrence.get("source_location")
+            or "unlocated"
+        )
+        if occurrence.get("parameter"):
+            detail += f"({occurrence['parameter']})"
+        rendered.append(detail)
+    if len(occurrences) > limit:
+        rendered.append(f"+{len(occurrences) - limit}")
+    return ",".join(rendered)
+
+
 def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
@@ -1177,8 +1198,33 @@ def dispatch_command(cmd: str) -> None:
             else:
                 datas = edge_datas(G, v, u)
                 forward = False
-            rels = sorted({d.get("relation") for d in datas if d.get("relation")})
-            rel = "/".join(rels) if rels else "related"
+            relation_details = []
+            for data in sorted(
+                datas,
+                key=lambda item: (
+                    str(item.get("relation", "")),
+                    str(item.get("source_file", "")),
+                    str(item.get("source_location", "")),
+                    str(item.get("context", "")),
+                ),
+            ):
+                relation = data.get("relation") or "related"
+                context = data.get("context")
+                location = data.get("source_location")
+                source_file = data.get("source_file")
+                occurrences = data.get("occurrence_count", 1)
+                detail = relation
+                if context:
+                    detail += f":{context}"
+                if source_file or location:
+                    detail += f"@{source_file or ''}{':' + str(location) if location else ''}"
+                if occurrences != 1:
+                    detail += f"x{occurrences}"
+                evidence = _format_occurrence_details(data)
+                if evidence:
+                    detail += f"[{evidence}]"
+                relation_details.append(detail)
+            rel = " | ".join(relation_details) if relation_details else "related"
             confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
             conf_str = f" [{'/'.join(confs)}]" if confs else ""
             if i == 0:
@@ -1218,8 +1264,9 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(gp.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee direction.
-        _raw = {**_raw, "directed": True}
+        # Force a directed multigraph view so every stored parallel relation is
+        # available even for legacy simple-graph files.
+        _raw = {**_raw, "directed": True, "multigraph": True}
         try:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
@@ -1262,12 +1309,16 @@ def dispatch_command(cmd: str) -> None:
         except Exception:
             pass
         print(f"  Degree:    {G.degree(nid)}")
-        from graphify.build import edge_data
+        from graphify.build import edge_datas
         connections: list[tuple[str, str, dict]] = []  # (direction, neighbor_id, edge_data)
         for nb in G.successors(nid):
-            connections.append(("out", nb, edge_data(G, nid, nb)))
+            connections.extend(
+                ("out", nb, data) for data in edge_datas(G, nid, nb)
+            )
         for nb in G.predecessors(nid):
-            connections.append(("in", nb, edge_data(G, nb, nid)))
+            connections.extend(
+                ("in", nb, data) for data in edge_datas(G, nb, nid)
+            )
         if connections:
             print(f"\nConnections ({len(connections)}):")
             connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
@@ -1281,7 +1332,16 @@ def dispatch_command(cmd: str) -> None:
                 loc = edata.get("source_location") or ""
                 sfile = edata.get("source_file") or ""
                 at = f" {sfile}:{loc}" if loc else ""
-                print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}")
+                context = edata.get("context") or ""
+                context_text = f" context={context}" if context else ""
+                occurrences = edata.get("occurrence_count", 1)
+                occurrence_text = f" x{occurrences}" if occurrences != 1 else ""
+                evidence = _format_occurrence_details(edata)
+                evidence_text = f" evidence={evidence}" if evidence else ""
+                print(
+                    f"  {arrow} {G.nodes[nb].get('label', nb)} "
+                    f"[{rel}] [{conf}]{context_text}{occurrence_text}{evidence_text}{at}"
+                )
             if len(connections) > 20:
                 remainder = connections[20:]
                 print(f"  ... and {len(remainder)} more")
@@ -1319,7 +1379,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify diagnose multigraph "
                 "[--graph path] [--json] [--max-examples N] "
-                "[--directed] [--undirected] [--extract-path path]",
+                "[--directed] [--undirected] [--multigraph] [--extract-path path]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1327,6 +1387,7 @@ def dispatch_command(cmd: str) -> None:
         graph_path = Path(_default_graph_path())
         max_examples = 5
         directed: bool | None = None
+        multigraph: bool | None = None
         direction_flag: str | None = None
         json_output = False
         extract_path: Path | None = None
@@ -1373,6 +1434,9 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
                 direction_flag = "undirected"
                 directed = False
+            elif arg == "--multigraph":
+                multigraph = True
+                directed = True
             elif arg == "--extract-path":
                 i += 1
                 if i >= len(sys.argv):
@@ -1394,6 +1458,7 @@ def dispatch_command(cmd: str) -> None:
             summary = diagnose_file(
                 graph_path,
                 directed=directed,
+                multigraph=multigraph,
                 root=Path(".").resolve(),
                 max_examples=max_examples,
                 extract_path=extract_path,
@@ -1558,7 +1623,12 @@ def dispatch_command(cmd: str) -> None:
             )
         _raw = json.loads(graph_json.read_text(encoding="utf-8"))
         _directed = bool(_raw.get("directed", False))
-        G = build_from_json(_raw, directed=_directed)
+        _multigraph = bool(_raw.get("multigraph", False))
+        G = build_from_json(
+            _raw,
+            directed=_directed,
+            multigraph=_multigraph,
+        )
         print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
         stages.mark("load")
         print("Re-clustering...")
@@ -1782,6 +1852,7 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
         no_cluster = False
+        multigraph: bool | None = None
         args = sys.argv[2:]
         watch_arg: str | None = None
         for a in args:
@@ -1790,6 +1861,9 @@ def dispatch_command(cmd: str) -> None:
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                continue
+            if a == "--multigraph":
+                multigraph = True
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -1817,7 +1891,13 @@ def dispatch_command(cmd: str) -> None:
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
-        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        ok = _rebuild_code(
+            watch_path,
+            force=force,
+            no_cluster=no_cluster,
+            multigraph=multigraph,
+            block_on_lock=True,
+        )
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
@@ -1977,17 +2057,22 @@ def dispatch_command(cmd: str) -> None:
         args = sys.argv[2:]
         graph_paths: list[Path] = []
         out_path = Path(_GRAPHIFY_OUT) / "merged-graph.json"
+        merge_multigraph = False
         i = 0
         while i < len(args):
             if args[i] == "--out" and i + 1 < len(args):
                 out_path = Path(args[i + 1])
                 i += 2
+            elif args[i] == "--multigraph":
+                merge_multigraph = True
+                i += 1
             else:
                 graph_paths.append(Path(args[i]))
                 i += 1
         if len(graph_paths) < 2:
             print(
-                "Usage: graphify merge-graphs <graph1.json> <graph2.json> [...] [--out merged.json]",
+                "Usage: graphify merge-graphs <graph1.json> <graph2.json> [...] "
+                "[--out merged.json] [--multigraph]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -2010,6 +2095,13 @@ def dispatch_command(cmd: str) -> None:
             except TypeError:
                 G = _jg.node_link_graph(data)
             graphs.append(G)
+        if any(graph.is_multigraph() for graph in graphs) and not merge_multigraph:
+            print(
+                "error: one or more inputs are multigraphs; pass --multigraph "
+                "to preserve parallel relations.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         # nx.compose requires all graphs to be the same type.  When input graphs
         # come from different sources (e.g. an AST-only run vs a full LLM run) one
         # may be a MultiGraph and another a Graph.  Normalise everything to Graph
@@ -2033,9 +2125,40 @@ def dispatch_command(cmd: str) -> None:
         naive_tags = [gp.parent.parent.name for gp in graph_paths]
         if len(set(naive_tags)) != len(naive_tags):
             print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
-        merged = _nx.Graph()
+        from graphify.build import canonical_edge_key as _edge_key
+
+        def _to_multidigraph(g: "_nx.Graph") -> "_nx.MultiDiGraph":
+            if isinstance(g, _nx.MultiDiGraph):
+                return g
+            result = _nx.MultiDiGraph()
+            result.add_nodes_from(g.nodes(data=True))
+            if g.is_multigraph():
+                rows = g.edges(keys=True, data=True)
+                for u, v, key, attrs in rows:
+                    src = attrs.get("_src", u)
+                    tgt = attrs.get("_tgt", v)
+                    result.add_edge(src, tgt, key=str(key), **dict(attrs))
+            else:
+                for u, v, attrs in g.edges(data=True):
+                    attrs = dict(attrs)
+                    src = attrs.get("_src", u)
+                    tgt = attrs.get("_tgt", v)
+                    result.add_edge(
+                        src,
+                        tgt,
+                        key=_edge_key(str(src), str(tgt), attrs),
+                        **attrs,
+                    )
+            return result
+
+        merged = _nx.MultiDiGraph() if merge_multigraph else _nx.Graph()
         for G, repo_tag in zip(graphs, repo_tags):
-            prefixed = _to_simple(_prefix(G, repo_tag))
+            prefixed_raw = _prefix(G, repo_tag)
+            prefixed = (
+                _to_multidigraph(prefixed_raw)
+                if merge_multigraph
+                else _to_simple(prefixed_raw)
+            )
             merged = _nx.compose(merged, prefixed)
         try:
             out_data = _jg.node_link_data(merged, edges="links")
@@ -2408,10 +2531,13 @@ def dispatch_command(cmd: str) -> None:
             args = sys.argv[3:]
             source = None
             tag = None
+            use_multigraph = False
             i = 0
             while i < len(args):
                 if args[i] == "--as" and i + 1 < len(args):
                     tag = args[i + 1]; i += 2
+                elif args[i] == "--multigraph":
+                    use_multigraph = True; i += 1
                 elif not source:
                     source = Path(args[i]); i += 1
                 else:
@@ -2421,7 +2547,7 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(1)
             tag = tag or source.parent.parent.name
             try:
-                result = _global_add(source, tag)
+                result = _global_add(source, tag, multigraph=use_multigraph)
                 if result["skipped"]:
                     print(f"'{tag}' unchanged since last add - global graph not modified.")
                 else:
@@ -2462,7 +2588,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
-                "[--no-gitignore] [--code-only] "
+                "[--multigraph] [--no-gitignore] [--code-only] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -2487,6 +2613,7 @@ def dispatch_command(cmd: str) -> None:
         cli_cargo: bool = False
         cli_allow_partial: bool = False
         no_cluster = False
+        cli_multigraph = False
         dedup_llm = False
         google_workspace = False
         global_merge = False
@@ -2554,6 +2681,8 @@ def dispatch_command(cmd: str) -> None:
                 out_dir = Path(a.split("=", 1)[1]); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
+            elif a == "--multigraph":
+                cli_multigraph = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--code-only":
@@ -2645,6 +2774,7 @@ def dispatch_command(cmd: str) -> None:
             _write_build_config as _write_build_cfg,
             _read_build_excludes as _read_build_ex,
             _read_build_gitignore as _read_build_gi,
+            _read_build_multigraph as _read_build_mg,
         )
         # #1971 persistence: an explicit --no-gitignore persists False; a later
         # flag-less `graphify extract` must NOT clobber it back to True, which
@@ -2656,10 +2786,12 @@ def dispatch_command(cmd: str) -> None:
         _effective_gitignore = False if no_gitignore else _read_build_gi(graphify_out)
         # An explicit list replaces the persisted one; omission reuses it.
         _effective_excludes = cli_excludes or _read_build_ex(graphify_out)
+        _effective_multigraph = cli_multigraph or _read_build_mg(graphify_out)
         _write_build_cfg(
             graphify_out,
             excludes=cli_excludes or None,
             gitignore=False if no_gitignore else None,
+            multigraph=True if cli_multigraph else None,
         )
 
         stages = _StageTimer(cli_timing)
@@ -3165,6 +3297,10 @@ def dispatch_command(cmd: str) -> None:
             "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])),
             "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])),
             "hyperedges": list(sem_result.get("hyperedges", [])),
+            "extraction_diagnostics": dict(
+                ast_result.get("extraction_diagnostics", {})
+            ),
+            "file_outcomes": list(ast_result.get("file_outcomes", [])),
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
         }
@@ -3217,7 +3353,7 @@ def dispatch_command(cmd: str) -> None:
                 print(f"error: could not invalidate file manifest: {exc}", file=sys.stderr)
                 sys.exit(1)
 
-        if no_cluster:
+        if no_cluster and not _effective_multigraph:
             # --no-cluster: dump the raw merged extraction as graph.json.
             # No NetworkX, no community detection, no analysis sidecar.
             # Dedupe nodes (by id) and parallel edges so the raw output matches the
@@ -3344,7 +3480,11 @@ def dispatch_command(cmd: str) -> None:
                 from graphify.global_graph import global_add as _global_add
                 _tag = global_repo_tag or target.name
                 try:
-                    result = _global_add(graphify_out / "graph.json", _tag)
+                    result = _global_add(
+                        graphify_out / "graph.json",
+                        _tag,
+                        multigraph=_effective_multigraph,
+                    )
                     if result["skipped"]:
                         print(f"[graphify global] '{_tag}' unchanged since last add - skipped.")
                     else:
@@ -3380,10 +3520,17 @@ def dispatch_command(cmd: str) -> None:
                 prune_sources=_prune_sources or None,
                 dedup=True,
                 dedup_llm_backend=dedup_backend,
+                multigraph=True if _effective_multigraph else None,
                 root=target,
             )
         else:
-            G = _build([merged], dedup=True, dedup_llm_backend=dedup_backend, root=target)
+            G = _build(
+                [merged],
+                dedup=True,
+                dedup_llm_backend=dedup_backend,
+                multigraph=_effective_multigraph,
+                root=target,
+            )
         stages.mark("build")
         if G.number_of_nodes() == 0:
             print(
@@ -3394,7 +3541,15 @@ def dispatch_command(cmd: str) -> None:
             )
             sys.exit(1)
 
-        communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs)
+        communities = (
+            {}
+            if no_cluster
+            else _cluster(
+                G,
+                resolution=cli_resolution,
+                exclude_hubs_percentile=cli_exclude_hubs,
+            )
+        )
         stages.mark("cluster")
         cohesion = _score_all(G, communities)
         try:
@@ -3462,7 +3617,11 @@ def dispatch_command(cmd: str) -> None:
             from graphify.global_graph import global_add as _global_add
             _tag = global_repo_tag or target.name
             try:
-                result = _global_add(graphify_out / "graph.json", _tag)
+                result = _global_add(
+                    graphify_out / "graph.json",
+                    _tag,
+                    multigraph=_effective_multigraph,
+                )
                 if result["skipped"]:
                     print(f"[graphify global] '{_tag}' unchanged since last add - skipped.")
                 else:

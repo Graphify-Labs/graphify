@@ -41,6 +41,7 @@ dependencies = [
     "tree-sitter-fortran>=0.6,<0.8",
     "tree-sitter-bash>=0.23,<0.27",
     "tree-sitter-json>=0.23,<0.26",
+    "tomli>=2.0 ; python_version < '3.11'",
 ]
 
 [project.urls]
@@ -102,7 +103,6 @@ dev = [
     "ruff>=0.15.13",
     "setuptools>=82.0.1",
     "wheel>=0.47.0",
-    "tomli>=2.0 ; python_version < '3.11'",
     "tree-sitter-hcl>=1.2.0",
 ]
 

@@ -21,6 +21,20 @@ _CONFIG_JSON_KEYS = frozenset({
     "extends", "$ref", "$schema", "compilerOptions",
 })
 
+
+def _is_config_json_name(path: Path) -> bool:
+    name = path.name.casefold()
+    return name in _CONFIG_JSON_NAMES or name.endswith(
+        (
+            ".eslintrc.json",
+            ".prettierrc.json",
+            ".babelrc.json",
+            "tsconfig.json",
+            "jsconfig.json",
+        )
+    )
+
+
 def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     """True if a .json file is a recognized config/manifest worth AST-extracting.
 
@@ -28,12 +42,7 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     so arbitrarily-named config files (e.g. ``api.tsconfig.json``,
     ``foo.eslintrc.json``) are still picked up. Returns False for data JSON so it
     is skipped by the structural pass (#1224)."""
-    name = path.name.casefold()
-    if name in _CONFIG_JSON_NAMES:
-        return True
-    # Common compound config names: *.eslintrc.json, *.prettierrc.json, etc.
-    if name.endswith((".eslintrc.json", ".prettierrc.json", ".babelrc.json",
-                      "tsconfig.json", "jsconfig.json")):
+    if _is_config_json_name(path):
         return True
     # Top-level key probe: scan the root object's immediate keys (no deep walk).
     for top_key in obj_node.children:
@@ -71,7 +80,20 @@ def extract_json(path: Path) -> dict:
         with path.open("rb") as _f:
             source = _f.read(_JSON_MAX_BYTES + 1)
         if len(source) > _JSON_MAX_BYTES:
-            return {"nodes": [], "edges": [], "error": "json file too large to index"}
+            if not _is_config_json_name(path):
+                return {
+                    "nodes": [],
+                    "edges": [],
+                    "status": "skipped_intentional",
+                    "skipped": "data json outside structural indexing scope",
+                    "reason": "data json outside structural indexing scope",
+                }
+            return {
+                "nodes": [],
+                "edges": [],
+                "status": "failed",
+                "error": "recognized config json file too large to index",
+            }
         language = Language(tsjson.language())
         parser = Parser(language)
         tree = parser.parse(source)
@@ -207,10 +229,22 @@ def extract_json(path: Path) -> dict:
         # datasets, GeoJSON, API dumps) is skipped so it doesn't explode into
         # orphan key-nodes (#1224); it's left to the LLM semantic pass.
         if not _is_config_json(path, doc, source):
-            return {"nodes": [], "edges": [], "skipped": "data json (not a config/manifest)"}
+            return {
+                "nodes": [],
+                "edges": [],
+                "status": "skipped_intentional",
+                "skipped": "data json outside structural indexing scope",
+                "reason": "data json outside structural indexing scope",
+            }
         walk_object(doc, file_nid, None, 0, [0])
     else:
         # Top-level array or scalar => data JSON, never a config/manifest.
-        return {"nodes": [], "edges": [], "skipped": "data json (non-object root)"}
+        return {
+            "nodes": [],
+            "edges": [],
+            "status": "skipped_intentional",
+            "skipped": "data json outside structural indexing scope",
+            "reason": "data json outside structural indexing scope",
+        }
 
     return {"nodes": nodes, "edges": edges}

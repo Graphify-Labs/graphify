@@ -264,3 +264,37 @@ def test_prune_reextracted_absolute_node_not_deleted(tmp_path):
     G = build_merge([new_chunk], graph_path, prune_sources=["mod.py"], dedup=False)
     labels = {d["label"] for _, d in G.nodes(data=True)}
     assert "gone" in labels, "re-extracted file wrongly pruned across mismatched forms (#2012/#1796)"
+
+
+def test_build_merge_preserves_existing_multigraph_mode(tmp_path):
+    from graphify.export import to_json
+
+    graph_path = tmp_path / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir()
+    initial = build_merge(
+        [{
+            "nodes": [
+                {"id": "a", "label": "A", "file_type": "code", "source_file": "a.py"},
+                {"id": "b", "label": "B", "file_type": "code", "source_file": "b.py"},
+            ],
+            "edges": [
+                {
+                    "source": "a", "target": "b", "relation": "calls",
+                    "source_file": "a.py", "source_location": "L1",
+                },
+                {
+                    "source": "a", "target": "b", "relation": "references",
+                    "source_file": "a.py", "source_location": "L2",
+                },
+            ],
+        }],
+        graph_path=graph_path,
+        multigraph=True,
+    )
+    to_json(initial, {}, str(graph_path), force=True)
+
+    merged = build_merge([], graph_path=graph_path)
+
+    assert merged.is_directed()
+    assert merged.is_multigraph()
+    assert merged.number_of_edges("a", "b") == 2

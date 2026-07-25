@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 from graphify.build import build_from_json
 from graphify.detect import FileType, classify_file
@@ -9,6 +10,14 @@ from graphify.manifest_ingest import (
     extract_package_manifest,
     is_package_manifest_path,
 )
+
+
+def test_tomli_is_a_runtime_dependency_for_python_310():
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    dependencies = pyproject["project"]["dependencies"]
+    assert "tomli>=2.0 ; python_version < '3.11'" in dependencies
 
 
 def _write(p: Path, text: str) -> Path:

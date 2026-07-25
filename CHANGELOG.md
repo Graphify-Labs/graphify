@@ -2,6 +2,26 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: AST edges now retain portable token-level occurrence evidence. Python
+  annotations use their real line/column span and parameter name, repeated
+  evidence on one relation is aggregated deterministically, and duplicate
+  emissions introduced by post-resolution endpoint rewrites are suppressed.
+  Diagnostics separate legitimate source repetition from producer defects.
+  Deliberately unindexed data JSON is now a cached intentional skip rather than
+  a recurring zero-node warning, with failures and unsupported files reported
+  separately.
+- Feat: add opt-in `--multigraph` builds backed by a persistent directed
+  `MultiDiGraph`. Canonically distinct relations between the same endpoints
+  retain stable keys; exact duplicate occurrences aggregate through
+  `occurrence_count`. Incremental updates, watch/hook rebuilds, cluster-only,
+  no-cluster, graph merges, query/path/explain, HTML, wiki, Obsidian, GraphML,
+  graph databases, MCP, reports, and diagnostics preserve or explicitly reject
+  unsupported simplification. Community detection, cohesion, god nodes, and
+  centrality use an unweighted simple undirected topology projection so
+  multiplicity does not distort analysis. The default remains `Graph`.
+
 ## 0.9.26 (2026-07-25)
 
 - Fix: `graphify query`/`explain` no longer fabricate `indirect_call` edges to class definitions (#2137, thanks @Rishet11). The callable guard admitted classes, so passing a class as a value (`select(Model)`, `db.get(Model, id)`, `except (ErrorA, ErrorB)`, `getattr(obj, "Name", 0)`) produced a false inferred call edge in both the intra-file and cross-file paths. Classes are now tracked separately and excluded from `indirect_call`; direct instantiation still emits its `calls` edge. The suppression is context-blind, so a genuine higher-order class callback that is actually invoked (e.g. `map(Point, coords)`) also loses its edge, which is the intended tradeoff.

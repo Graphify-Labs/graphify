@@ -1,7 +1,9 @@
 """graphdb — moved verbatim from graphify/export.py."""
 from __future__ import annotations
 
+import json
 from graphify.analyze import _node_community_map
+from graphify.build import canonical_edge_key
 import networkx as nx
 import re
 
@@ -59,17 +61,27 @@ def push_to_neo4j(
             )
             nodes_pushed += 1
 
-        for u, v, data in G.edges(data=True):
+        graph_edges = (
+            G.edges(keys=True, data=True)
+            if G.is_multigraph()
+            else ((u, v, canonical_edge_key(u, v, data), data) for u, v, data in G.edges(data=True))
+        )
+        for u, v, edge_key, data in graph_edges:
             rel = _safe_rel(data.get("relation", "RELATED_TO"))
             props = {
                 k: v for k, v in data.items()
                 if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
             }
+            if isinstance(data.get("occurrences"), list):
+                props["occurrences_json"] = json.dumps(
+                    data["occurrences"], ensure_ascii=False, sort_keys=True
+                )
             session.run(
                 f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
-                f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
+                f"MERGE (a)-[r:{rel} {{graphify_key: $edge_key}}]->(b) SET r += $props",
                 src=u,
                 tgt=v,
+                edge_key=str(edge_key),
                 props=props,
             )
             edges_pushed += 1
@@ -157,16 +169,25 @@ def push_to_falkordb(
         )
         nodes_pushed += 1
 
-    for u, v, data in G.edges(data=True):
+    graph_edges = (
+        G.edges(keys=True, data=True)
+        if G.is_multigraph()
+        else ((u, v, canonical_edge_key(u, v, data), data) for u, v, data in G.edges(data=True))
+    )
+    for u, v, edge_key, data in graph_edges:
         rel = _safe_rel(data.get("relation", "RELATED_TO"))
         props = {
             k: v for k, v in data.items()
             if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
         }
+        if isinstance(data.get("occurrences"), list):
+            props["occurrences_json"] = json.dumps(
+                data["occurrences"], ensure_ascii=False, sort_keys=True
+            )
         graph.query(
             f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
-            f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-            {"src": u, "tgt": v, "props": props},
+            f"MERGE (a)-[r:{rel} {{graphify_key: $edge_key}}]->(b) SET r += $props",
+            {"src": u, "tgt": v, "edge_key": str(edge_key), "props": props},
         )
         edges_pushed += 1
 

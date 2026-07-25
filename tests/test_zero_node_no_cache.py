@@ -52,3 +52,15 @@ def test_no_warning_when_all_files_produce_nodes(tmp_path, capsys):
     ex.extract([f], cache_root=tmp_path / "out", parallel=False)
     err = capsys.readouterr().err
     assert "zero nodes" not in err
+
+
+def test_intentional_json_skip_is_cached_and_not_warned(tmp_path, capsys):
+    f = tmp_path / "dataset.json"
+    f.write_text('{"records": [{"id": 1}]}')
+    result = ex.extract([f], cache_root=tmp_path / "out", parallel=False)
+    err = capsys.readouterr().err
+
+    assert "zero nodes" not in err
+    assert result["file_outcomes"][0]["status"] == "skipped_intentional"
+    from graphify.cache import load_cached
+    assert load_cached(f, tmp_path / "out")["status"] == "skipped_intentional"
