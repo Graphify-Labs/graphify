@@ -59,39 +59,40 @@ def test_skill_roundtrip_at_real_destination(platform, project, tmp_path, monkey
     monkeypatch.chdir(project_dir)
 
     with patch("graphify.__main__.Path.home", return_value=home):
-        dst = mainmod._platform_skill_destination(
-            platform, project=project, project_dir=project_dir
-        )
-        # Sanity: a user-scope install must not write under the project dir, and
-        # vice versa, so the two scopes never collide in this test.
-        if project:
-            assert str(dst).startswith(str(project_dir))
-        else:
-            assert str(dst).startswith(str(home))
-
-        returned = mainmod._copy_skill_file(
-            platform, project=project, project_dir=project_dir
-        )
-        assert returned == dst
-        assert dst.exists(), f"{platform} ({'project' if project else 'user'}) skill not installed"
-        assert (dst.parent / ".graphify_version").read_text() == mainmod.__version__
-
-        refs = dst.parent / "references"
-        if _has_real_bundle(platform):
-            assert refs.is_dir(), f"{platform} ships a bundle but no references/ installed"
-            assert (refs / "extraction-spec.md").exists()
-        else:
-            assert not refs.exists(), f"{platform} is monolith but references/ appeared"
-        # No staging dir is ever left behind.
-        assert not (dst.parent / "references.tmp").exists()
-
-        removed = mainmod._remove_skill_file(
-            platform, project=project, project_dir=project_dir
-        )
-        assert removed
-        assert not dst.exists()
-        assert not (dst.parent / ".graphify_version").exists()
-        assert not refs.exists()
+        with patch.dict("os.environ", {"LOCALAPPDATA": str(home / "AppData" / "Local")}):
+            dst = mainmod._platform_skill_destination(
+                platform, project=project, project_dir=project_dir
+            )
+            # Sanity: a user-scope install must not write under the project dir, and
+            # vice versa, so the two scopes never collide in this test.
+            if project and platform not in ("antigravity", "antigravity-windows", "gemini"):
+                assert str(dst).startswith(str(project_dir))
+            else:
+                assert str(dst).startswith(str(home))
+            
+            returned = mainmod._copy_skill_file(
+                platform, project=project, project_dir=project_dir
+            )
+            assert returned == dst
+            assert dst.exists(), f"{platform} ({'project' if project else 'user'}) skill not installed"
+            assert (dst.parent / ".graphify_version").read_text() == mainmod.__version__
+            
+            refs = dst.parent / "references"
+            if _has_real_bundle(platform):
+                assert refs.is_dir(), f"{platform} ships a bundle but no references/ installed"
+                assert (refs / "extraction-spec.md").exists()
+            else:
+                assert not refs.exists(), f"{platform} is monolith but references/ appeared"
+            # No staging dir is ever left behind.
+            assert not (dst.parent / "references.tmp").exists()
+            
+            removed = mainmod._remove_skill_file(
+                platform, project=project, project_dir=project_dir
+            )
+            assert removed
+            assert not dst.exists()
+            assert not (dst.parent / ".graphify_version").exists()
+            assert not refs.exists()
 
 
 def test_amp_user_install_at_corrected_agents_path(tmp_path, monkeypatch):

@@ -66,12 +66,12 @@ def _refresh_all_version_stamps() -> None:
             vf.write_text(__version__, encoding="utf-8")
 def _platform_skill_destination(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Return the skill destination for a platform and scope."""
-    if platform_name == "gemini":
-        if project:
-            return (project_dir or Path(".")) / ".gemini" / "skills" / "graphify" / "SKILL.md"
-        if platform.system() == "Windows":
-            return Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
-        return Path.home() / ".gemini" / "skills" / "graphify" / "SKILL.md"
+    if platform_name in ("gemini", "antigravity", "antigravity-windows"):
+        # Since Antigravity 2.0, the Antigravity IDE, the Antigravity CLI and the
+        # Gemini CLI all read global skills from ~/.gemini/config/skills/ (every
+        # workspace, every OS) — the old ~/.gemini/skills path is not scanned.
+        # Routing gemini here (not ~/.gemini/skills) is the #1185 fix.
+        return Path.home() / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
 
     if platform_name == "opencode":
         if project:
@@ -104,12 +104,6 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
         if project:
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
-
-    if platform_name in ("antigravity", "antigravity-windows"):
-        if project:
-            return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
-        # Global Antigravity skill dir (all workspaces): ~/.gemini/config/skills/
-        return Path.home() / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
 
     cfg = _PLATFORM_CONFIG[platform_name]
     if project:
@@ -995,26 +989,29 @@ def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
         wf_path.unlink()
         print(f"graphify workflow removed from {wf_path.resolve()}")
 
-    # Remove skill file
-    skill_dst = _platform_skill_destination("antigravity", project=project, project_dir=project_dir)
-    if skill_dst.exists():
-        skill_dst.unlink()
-        print(f"graphify skill removed from {skill_dst}")
-    version_file = skill_dst.parent / ".graphify_version"
-    if version_file.exists():
-        version_file.unlink()
-    refs_dir = skill_dst.parent / "references"
-    if refs_dir.exists():
-        shutil.rmtree(refs_dir)
-    for d in (
-        skill_dst.parent,
-        skill_dst.parent.parent,
-        skill_dst.parent.parent.parent,
-    ):
-        try:
-            d.rmdir()
-        except OSError:
-            break
+    # Remove skill file only for global uninstall. The skill lives in the shared
+    # global ~/.gemini/config/skills/ dir, so a project-scope uninstall must not
+    # delete it out from under other workspaces (#1185).
+    if not project:
+        skill_dst = _platform_skill_destination("antigravity", project=project, project_dir=project_dir)
+        if skill_dst.exists():
+            skill_dst.unlink()
+            print(f"graphify skill removed from {skill_dst}")
+        version_file = skill_dst.parent / ".graphify_version"
+        if version_file.exists():
+            version_file.unlink()
+        refs_dir = skill_dst.parent / "references"
+        if refs_dir.exists():
+            shutil.rmtree(refs_dir)
+        for d in (
+            skill_dst.parent,
+            skill_dst.parent.parent,
+            skill_dst.parent.parent.parent,
+        ):
+            try:
+                d.rmdir()
+            except OSError:
+                break
 _CURSOR_RULE_PATH = Path(".cursor") / "rules" / "graphify.mdc"
 _CURSOR_RULE = """\
 ---

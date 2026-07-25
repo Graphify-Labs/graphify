@@ -153,7 +153,7 @@ def test_codex_subcommand_project_install_and_uninstall_are_project_scoped(tmp_p
     assert "graphify" not in hooks_path.read_text()
 
 
-def test_antigravity_install_project_writes_project_skill(tmp_path, monkeypatch):
+def test_antigravity_install_project_writes_global_skill(tmp_path, monkeypatch):
     from graphify.__main__ import main
     home = tmp_path / "home"
     project = tmp_path / "project"
@@ -162,8 +162,8 @@ def test_antigravity_install_project_writes_project_skill(tmp_path, monkeypatch)
     monkeypatch.setattr(sys, "argv", ["graphify", "antigravity", "install", "--project"])
     with patch("graphify.__main__.Path.home", return_value=home):
         main()
-    assert (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
-    assert not (home / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
+    assert (home / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md").exists()
+    assert not (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
 
 
 def test_install_help_does_not_install_default(tmp_path, monkeypatch, capsys):
@@ -225,7 +225,7 @@ def test_codex_skill_uses_graphify_with_existing_graph():
     fast-path block, which jumps straight to the query flow when a graph exists.
     """
     import graphify
-    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
+    skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text(encoding="utf-8")
     assert "Fast path — existing graph" in skill
     assert "skip Steps 1–5 entirely and jump straight to `## For /graphify query`" in skill
     assert "graphify query" in skill
@@ -474,12 +474,11 @@ def test_uninstall_project_without_platform_removes_project_installs(tmp_path, m
     assert not (project / ".claude" / "CLAUDE.md").exists()
 
 
-def test_antigravity_uninstall_project_removes_project_skill_only(tmp_path, monkeypatch):
+def test_antigravity_uninstall_project_preserves_global_skill(tmp_path, monkeypatch):
     from graphify.__main__ import main
     home = tmp_path / "home"
     project = tmp_path / "project"
     project.mkdir()
-    # Global skill lives at ~/.gemini/config/skills/ (per #1079 fix)
     global_skill = home / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
     global_skill.parent.mkdir(parents=True)
     global_skill.write_text("global skill")
@@ -490,7 +489,6 @@ def test_antigravity_uninstall_project_removes_project_skill_only(tmp_path, monk
         monkeypatch.setattr(sys, "argv", ["graphify", "antigravity", "uninstall", "--project"])
         main()
     assert global_skill.exists(), "project uninstall must not touch global skill"
-    assert not (project / ".agents" / "skills" / "graphify" / "SKILL.md").exists()
 
 
 def test_antigravity_global_install_writes_gemini_config_skills(tmp_path, monkeypatch):
@@ -1115,4 +1113,4 @@ def test_hermes_skill_destination_posix_uses_home():
     from graphify.__main__ import _platform_skill_destination
     with patch("graphify.__main__.platform.system", return_value="Linux"):
         dst = _platform_skill_destination("hermes", project=False)
-    assert str(dst).endswith(".hermes/skills/graphify/SKILL.md"), dst
+        assert dst.as_posix().endswith(".hermes/skills/graphify/SKILL.md"), dst
