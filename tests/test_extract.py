@@ -1488,6 +1488,63 @@ def test_extract_parallel_returns_false_on_broken_pool(tmp_path, monkeypatch, ca
     assert "__main__" in out, "warning must hint at the Windows __main__ guard idiom"
 
 
+def test_extract_parallel_skips_pool_when_max_workers_is_one(tmp_path, monkeypatch):
+    """#2173: a resolved worker count of 1 must not spawn a ProcessPoolExecutor.
+
+    The Windows post-commit hook exports GRAPHIFY_MAX_WORKERS=1, so before this the
+    rebuild spawned a one-worker pool for >= _PARALLEL_THRESHOLD files: no
+    parallelism, one process spawn plus an IPC round trip per file, and the only
+    window where the parent's rebuild watchdog (os._exit) can orphan a worker
+    mid-task. _extract_parallel must decline (return False) so the caller extracts
+    sequentially in-process.
+    """
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    spawned = {"count": 0}
+
+    def fake_pool(*args, **kwargs):
+        spawned["count"] += 1
+        raise AssertionError("ProcessPoolExecutor must not be constructed for 1 worker")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", fake_pool)
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "1")
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]  # >= _PARALLEL_THRESHOLD
+    per_file: list = [None] * len(uncached)
+
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert ok is False, "must hand the work back for sequential extraction"
+    assert spawned["count"] == 0, "no pool may be spawned when max_workers resolves to 1"
+
+
+def test_extract_parallel_still_spawns_pool_for_multiple_workers(tmp_path, monkeypatch):
+    """Guard the #2173 skip: >1 worker must still take the pool path."""
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    spawned = {"count": 0}
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            spawned["count"] += 1
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def submit(self, *a, **kw):
+            raise concurrent.futures.process.BrokenProcessPool("stop here")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert spawned["count"] == 1, "multi-worker runs must still use the pool"
+
+
 # ---------------------------------------------------------------------------
 # Bash extractor tests (#866)
 # ---------------------------------------------------------------------------
