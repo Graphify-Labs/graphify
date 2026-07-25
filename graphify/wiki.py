@@ -6,7 +6,22 @@ from pathlib import Path
 from urllib.parse import quote
 import networkx as nx
 
-from graphify.build import edge_data
+from graphify.build import edge_datas
+
+
+def _incident_edges(G: nx.Graph, node_id: str):
+    """Yield (neighbor, attrs) for every incoming and outgoing edge."""
+    if G.is_directed():
+        for neighbor in G.successors(node_id):
+            for attrs in edge_datas(G, node_id, neighbor):
+                yield neighbor, attrs
+        for neighbor in G.predecessors(node_id):
+            for attrs in edge_datas(G, neighbor, node_id):
+                yield neighbor, attrs
+    else:
+        for neighbor in G.neighbors(node_id):
+            for attrs in edge_datas(G, node_id, neighbor):
+                yield neighbor, attrs
 
 
 def _safe_filename(name: str) -> str:
@@ -76,8 +91,7 @@ def _community_article(
     # Edge confidence breakdown
     conf_counts: Counter = Counter()
     for nid in nodes:
-        for neighbor in G.neighbors(nid):
-            ed = edge_data(G, nid, neighbor)
+        for _neighbor, ed in _incident_edges(G, nid):
             conf_counts[ed.get("confidence", "EXTRACTED")] += 1
     total_edges = sum(conf_counts.values()) or 1
 
@@ -146,9 +160,13 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
 
     # Group neighbors by relation type
     by_relation: dict[str, list[str]] = {}
-    for neighbor in sorted(G.neighbors(nid), key=lambda n: G.degree(n), reverse=True):
+    incident = sorted(
+        _incident_edges(G, nid),
+        key=lambda item: G.degree(item[0]),
+        reverse=True,
+    )
+    for neighbor, ed in incident:
         nd = G.nodes[neighbor]
-        ed = edge_data(G, nid, neighbor)
         rel = ed.get("relation", "related")
         neighbor_label = nd.get("label", neighbor)
         conf = ed.get("confidence", "")

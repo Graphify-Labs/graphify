@@ -106,6 +106,39 @@ def test_query_cli_preserves_calls_direction_when_seeded_on_caller(monkeypatch, 
     assert "callee_fn --calls" not in out
 
 
+def test_query_cli_traverses_directed_graph_both_ways_and_lists_parallel_edges(
+    monkeypatch, tmp_path, capsys
+):
+    graph = nx.MultiDiGraph()
+    graph.add_node("caller", label="caller_fn", source_file="a.py", community=0)
+    graph.add_node("callee", label="callee_fn", source_file="b.py", community=1)
+    graph.add_edge(
+        "caller", "callee", key="calls", relation="calls",
+        confidence="EXTRACTED", context="call", source_file="a.py",
+        source_location="L20",
+    )
+    graph.add_edge(
+        "caller", "callee", key="references", relation="references",
+        confidence="EXTRACTED", context="parameter_type", source_file="a.py",
+        source_location="L10", occurrence_count=2,
+    )
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(json_graph.node_link_data(graph, edges="links")))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "query", "callee_fn", "--graph", str(graph_path)],
+    )
+
+    mainmod.main()
+    out = capsys.readouterr().out
+
+    assert "caller_fn --calls" in out
+    assert "caller_fn --references" in out
+    assert "occurrences=2" in out
+
+
 def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys):
     """#F4: query CLI must refuse to parse a graph.json that exceeds the cap."""
     import pytest

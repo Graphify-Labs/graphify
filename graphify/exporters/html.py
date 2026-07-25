@@ -487,21 +487,48 @@ def to_html(
     # canonicalizes endpoint order, which would otherwise flip the arrow
     # for `calls` and `rationale_for` in the rendered graph (#563).
     vis_edges = []
-    for u, v, data in G.edges(data=True):
+    if G.is_multigraph():
+        edge_rows = list(G.edges(keys=True, data=True))
+    else:
+        edge_rows = [(u, v, None, data) for u, v, data in G.edges(data=True)]
+    pair_positions: dict[tuple[str, str], int] = {}
+    for u, v, key, data in edge_rows:
         confidence = data.get("confidence", "EXTRACTED")
         relation = data.get("relation", "")
         true_src = data.get("_src", u)
         true_tgt = data.get("_tgt", v)
-        vis_edges.append({
+        pair = tuple(sorted((str(true_src), str(true_tgt))))
+        position = pair_positions.get(pair, 0)
+        pair_positions[pair] = position + 1
+        context = data.get("context") or ""
+        source_file = data.get("source_file") or ""
+        source_location = data.get("source_location") or ""
+        occurrences = data.get("occurrence_count", 1)
+        details = [f"{relation} [{confidence}]"]
+        if context:
+            details.append(f"context: {context}")
+        if source_file or source_location:
+            details.append(f"source: {source_file}:{source_location}")
+        if occurrences != 1:
+            details.append(f"occurrences: {occurrences}")
+        edge_payload = {
             "from": true_src,
             "to": true_tgt,
             "label": relation,
-            "title": _html.escape(f"{relation} [{confidence}]"),
+            "title": _html.escape("\n".join(details)),
             "dashes": confidence != "EXTRACTED",
             "width": 2 if confidence == "EXTRACTED" else 1,
             "color": {"opacity": 0.7 if confidence == "EXTRACTED" else 0.35},
             "confidence": confidence,
-        })
+        }
+        if key is not None:
+            edge_payload["id"] = str(key)
+            edge_payload["smooth"] = {
+                "enabled": True,
+                "type": "curvedCW" if position % 2 == 0 else "curvedCCW",
+                "roundness": 0.12 + 0.08 * (position // 2),
+            }
+        vis_edges.append(edge_payload)
 
     # Build community legend data
     legend_data = []

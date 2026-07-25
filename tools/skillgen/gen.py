@@ -776,8 +776,9 @@ def _is_directed_fix_line(line: str) -> bool:
     """
     return (
         "build_from_json(" in line and "import" not in line
-    ) or "directed=IS_DIRECTED" in line or (
-        "IS_DIRECTED" in line and "Substitute it everywhere" in line
+    ) or "directed=IS_DIRECTED" in line or "multigraph=IS_MULTIGRAPH" in line or (
+        ("IS_DIRECTED" in line or "IS_MULTIGRAPH" in line)
+        and ("Substitute it everywhere" in line or "Substitute both placeholders" in line)
     )
 
 

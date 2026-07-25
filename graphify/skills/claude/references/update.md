@@ -106,15 +106,16 @@ prune = list(deleted) or None
 # Pass root= so prune_sources (absolute paths from detect_incremental) are
 # relativized to match the graph's relative source_file values; without it
 # nothing is pruned and stale nodes accumulate on every update (#1361).
-# directed=IS_DIRECTED: replace IS_DIRECTED with True if --directed was given, else
-# False. Without it a --directed --update silently rebuilds undirected and collapses
-# reciprocal A<->B edges (#1392).
+# Replace IS_MULTIGRAPH with True for a graph created with --multigraph. It implies
+# directed mode and preserves stable keyed parallel relations across the merge.
+# Replace IS_DIRECTED with True for --directed, otherwise False.
 G = build_merge(
     [new_extraction],
     graph_path='graphify-out/graph.json',
     prune_sources=prune,
     root='INPUT_PATH',
     directed=IS_DIRECTED,
+    multigraph=IS_MULTIGRAPH,
 )
 print(f'[graphify update] Merged: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges')
 
@@ -181,7 +182,11 @@ from pathlib import Path
 # Load old graph (before update) from backup written before merge
 old_data = json.loads(Path('graphify-out/.graphify_old.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_old.json').exists() else None
 new_extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
-G_new = build_from_json(new_extract, directed=IS_DIRECTED)
+G_new = build_from_json(
+    new_extract,
+    directed=IS_DIRECTED,
+    multigraph=IS_MULTIGRAPH,
+)
 
 if old_data:
     G_old = json_graph.node_link_graph(old_data, edges='links')

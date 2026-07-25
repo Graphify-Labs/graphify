@@ -513,8 +513,9 @@ def test_monoliths_carry_the_1392_runbook_fixes():
         # #6/#7 directed propagation: no bare build_from_json call survives, and
         # the IS_DIRECTED substitution instruction is present.
         assert "directed=IS_DIRECTED" in body
+        assert "multigraph=IS_MULTIGRAPH" in body
         assert "build_from_json(extraction)" not in body
-        assert "Substitute it everywhere it appears" in body
+        assert "Substitute both placeholders everywhere they appear" in body
 
         # #10 content-only semantic scope: code is no longer flattened in.
         assert "for cat in ('document', 'paper', 'image')" in body
@@ -526,7 +527,10 @@ def test_monoliths_carry_the_1392_runbook_fixes():
         # #18/#20 zero-node guard before any write, report/analysis gated on
         # to_json's return.
         lines = body.splitlines()
-        build_i = next(i for i, l in enumerate(lines) if "G = build_from_json(extraction, directed=IS_DIRECTED)" in l)
+        build_i = next(
+            i for i, l in enumerate(lines)
+            if "G = build_from_json(extraction, directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)" in l
+        )
         guard_i = next(i for i, l in enumerate(lines[build_i:], build_i) if "number_of_nodes() == 0" in l)
         report_i = next(i for i, l in enumerate(lines[build_i:], build_i) if "GRAPH_REPORT.md').write_text(report)" in l)
         wrote_i = next(i for i, l in enumerate(lines[build_i:], build_i) if l.strip().startswith("wrote = to_json("))

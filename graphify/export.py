@@ -15,7 +15,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
-from graphify.build import edge_data
+from graphify.build import edge_data, edge_datas
 
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -512,11 +512,25 @@ def to_obsidian(
 
     node_filename = _dedup_node_filenames(G, safe_name)
 
+    def _incident(node_id: str):
+        if G.is_directed():
+            for neighbor in G.successors(node_id):
+                for attrs in edge_datas(G, node_id, neighbor):
+                    yield "out", neighbor, attrs
+            for neighbor in G.predecessors(node_id):
+                for attrs in edge_datas(G, neighbor, node_id):
+                    yield "in", neighbor, attrs
+        else:
+            for neighbor in G.neighbors(node_id):
+                for attrs in edge_datas(G, node_id, neighbor):
+                    yield "undirected", neighbor, attrs
+
     # Helper: compute dominant confidence for a node across all its edges
     def _dominant_confidence(node_id: str) -> str:
-        confs = []
-        for u, v, edata in G.edges(node_id, data=True):
-            confs.append(edata.get("confidence", "EXTRACTED"))
+        confs = [
+            edata.get("confidence", "EXTRACTED")
+            for _direction, _neighbor, edata in _incident(node_id)
+        ]
         if not confs:
             return "EXTRACTED"
         return Counter(confs).most_common(1)[0][0]
@@ -567,16 +581,24 @@ def to_obsidian(
             lines.append(f"  - {tag}")
         lines += ["---", "", f"# {label}", ""]
 
-        # Outgoing edges as wikilinks
-        neighbors = list(G.neighbors(node_id))
-        if neighbors:
+        incident = sorted(
+            _incident(node_id),
+            key=lambda item: (
+                G.nodes[item[1]].get("label", item[1]),
+                item[0],
+                item[2].get("relation", ""),
+            ),
+        )
+        if incident:
             lines.append("## Connections")
-            for neighbor in sorted(neighbors, key=lambda n: G.nodes[n].get("label", n)):
-                edata = edge_data(G, node_id, neighbor)
+            for direction, neighbor, edata in incident:
                 neighbor_label = node_filename[neighbor]
                 relation = edata.get("relation", "")
                 confidence = edata.get("confidence", "EXTRACTED")
-                lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
+                arrow = "→" if direction == "out" else "←" if direction == "in" else "—"
+                lines.append(
+                    f"- {arrow} [[{neighbor_label}]] - `{relation}` [{confidence}]"
+                )
             lines.append("")
 
         # Inline tags at bottom of note body (for Obsidian tag panel)
