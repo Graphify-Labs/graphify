@@ -4026,6 +4026,10 @@ _DISPATCH: dict[str, Any] = {
     ".sv": extract_verilog,
     ".svh": extract_verilog,
     ".sql": extract_sql,
+    ".pkb": extract_sql,
+    ".pks": extract_sql,
+    ".pls": extract_sql,
+    ".plb": extract_sql,
     ".md": extract_markdown,
     ".mdx": extract_markdown,
     ".qmd": extract_markdown,
@@ -4069,6 +4073,10 @@ _DISPATCH: dict[str, Any] = {
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
     ".sql": "sql",
+    ".pkb": "sql",
+    ".pks": "sql",
+    ".pls": "sql",
+    ".plb": "sql",
     ".tf": "terraform",
     ".tfvars": "terraform",
     ".hcl": "terraform",
