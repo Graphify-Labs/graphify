@@ -1597,6 +1597,144 @@ def extract_vue(path: Path) -> dict:
     return result
 
 
+# ── HTML with embedded <script> (mapa.html/proyecto.html-style monoliths) ────
+#
+# Masks everything except inline (no src=, no non-JS type=) <script> bodies —
+# same technique as _vue_mask_non_script — so the JS/TS grammar sees a buffer
+# of identical length/line-count to the original file and line numbers land
+# exactly where the real code is. A second pass resolves onclick=/onchange=/
+# oninput= attribute values into `calls` edges from a synthetic DOM node, since
+# those calls live in markup the AST never walks.
+
+_HTML_SCRIPT_RE = re.compile(
+    r"""(<script\b(?:"[^"]*"|'[^']*'|[^>"'])*>)([\s\S]*?)(</script\s*>)""",
+    re.IGNORECASE,
+)
+_HTML_SCRIPT_SRC_ATTR_RE = re.compile(r"""\bsrc\s*=\s*['"]""", re.IGNORECASE)
+_HTML_SCRIPT_TYPE_ATTR_RE = re.compile(r"""\btype\s*=\s*['"]([^'"]*)['"]""", re.IGNORECASE)
+_HTML_NON_JS_SCRIPT_TYPES = {
+    "application/json", "application/ld+json", "importmap",
+    "text/template", "text/x-template", "text/x-handlebars-template",
+}
+
+_HTML_TAG_RE = re.compile(r"<[A-Za-z][A-Za-z0-9:-]*((?:\s+[^<>]*)?)>")
+_HTML_ID_ATTR_RE = re.compile(r"""\bid\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_HTML_EVENT_ATTR_RE = re.compile(
+    r"""\bon(click|change|input|submit)\s*=\s*"([^"]*)"|\bon(click|change|input|submit)\s*=\s*'([^']*)'""",
+    re.IGNORECASE,
+)
+_HTML_CALL_STATEMENT_RE = re.compile(r"""^\s*([A-Za-z_$][\w$]*)\s*\(""")
+
+
+def _html_blank(s: str) -> str:
+    return re.sub(r"[^\r\n]", " ", s)
+
+
+def _html_mask_non_script(src: str) -> str:
+    """Blank markup/external-script text, keep inline <script> bodies verbatim."""
+    out: list[str] = []
+    pos = 0
+    for m in _HTML_SCRIPT_RE.finditer(src):
+        open_tag, body, close_tag = m.group(1), m.group(2), m.group(3)
+        out.append(_html_blank(src[pos:m.start()]))
+        out.append(_html_blank(open_tag))
+        is_external = bool(_HTML_SCRIPT_SRC_ATTR_RE.search(open_tag))
+        type_m = _HTML_SCRIPT_TYPE_ATTR_RE.search(open_tag)
+        is_non_js = bool(type_m and type_m.group(1).strip().lower() in _HTML_NON_JS_SCRIPT_TYPES)
+        out.append(_html_blank(body) if (is_external or is_non_js) else body)
+        out.append(_html_blank(close_tag))
+        pos = m.end()
+    out.append(_html_blank(src[pos:]))
+    return "".join(out)
+
+
+def _split_top_level_statements(js: str) -> list[str]:
+    """Split an attribute-value JS blob on top-level ';' — not inside quotes,
+    parens, brackets, or braces. Deliberately not a full JS parser: good enough
+    for the single/multi-statement onclick="..." handlers HTML actually has."""
+    stmts: list[str] = []
+    depth = 0
+    quote: str | None = None
+    start = 0
+    i = 0
+    n = len(js)
+    while i < n:
+        ch = js[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"', "`"):
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        elif ch == ";" and depth == 0:
+            stmts.append(js[start:i])
+            start = i + 1
+        i += 1
+    stmts.append(js[start:])
+    return [s.strip() for s in stmts if s.strip()]
+
+
+def extract_html(path: Path) -> dict:
+    """Extract functions/imports from inline <script> blocks in an .html file,
+    plus `calls` edges inferred from onclick=/onchange=/oninput=/onsubmit=
+    attributes — the dependency surface tree-sitter's HTML/JS grammars never
+    connect on their own (a DOM attribute calling a function is markup, not code
+    the JS AST walks)."""
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"nodes": [], "edges": []}
+
+    masked = _html_mask_non_script(src)
+    result = _extract_generic(path, _JS_CONFIG, source_override=masked.encode("utf-8"))
+
+    try:
+        existing_ids = {n["id"] for n in result.get("nodes", [])}
+        stem = _file_stem(path)
+        for tag_m in _HTML_TAG_RE.finditer(src):
+            attrs = tag_m.group(1) or ""
+            id_m = _HTML_ID_ATTR_RE.search(attrs)
+            line_no = src.count("\n", 0, tag_m.start()) + 1
+            dom_nid = _make_id(str(path), "dom", id_m.group(1) if id_m else f"L{line_no}")
+            dom_label = f"#{id_m.group(1)}" if id_m else f"{path.name}:L{line_no}"
+            emitted_for_tag = False
+            for ev_m in _HTML_EVENT_ATTR_RE.finditer(attrs):
+                handler = ev_m.group(2) if ev_m.group(2) is not None else ev_m.group(4)
+                event_name = (ev_m.group(1) or ev_m.group(3) or "").lower()
+                if not handler:
+                    continue
+                for stmt in _split_top_level_statements(handler):
+                    call_m = _HTML_CALL_STATEMENT_RE.match(stmt)
+                    if not call_m:
+                        continue
+                    fn_name = call_m.group(1)
+                    target_nid = _make_id(stem, fn_name)
+                    if target_nid not in existing_ids:
+                        continue
+                    if not emitted_for_tag:
+                        result.setdefault("nodes", []).append({
+                            "id": dom_nid, "label": dom_label,
+                            "file_type": "code", "source_file": str(path),
+                            "confidence": "INFERRED",
+                        })
+                        emitted_for_tag = True
+                    result.setdefault("edges", []).append({
+                        "source": dom_nid, "target": target_nid,
+                        "relation": "calls", "confidence": "INFERRED",
+                        "source_file": str(path),
+                        "label": f"on{event_name}",
+                    })
+    except Exception:
+        pass
+    return result
+
+
 def extract_java(path: Path) -> dict:
     """Extract classes, interfaces, methods, constructors, and imports from a .java file."""
     return _extract_generic(path, _JAVA_CONFIG)
@@ -4060,6 +4198,7 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".html": extract_html,
 }
 
 

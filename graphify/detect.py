@@ -35,6 +35,37 @@ IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
 OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
 
+_HTML_SCRIPT_OPEN_TAG_RE = re.compile(
+    r"""<script\b(?:"[^"]*"|'[^']*'|[^>"'])*>""", re.IGNORECASE
+)
+_HTML_SCRIPT_SRC_ATTR_RE = re.compile(r"""\bsrc\s*=\s*['"]""", re.IGNORECASE)
+_HTML_SCRIPT_TYPE_ATTR_RE = re.compile(r"""\btype\s*=\s*['"]([^'"]*)['"]""", re.IGNORECASE)
+# type= values that hold non-JS payloads (JSON config, client-side templates) —
+# an inline <script> with one of these is not code to extract.
+_HTML_NON_JS_SCRIPT_TYPES = {
+    "application/json", "application/ld+json", "importmap",
+    "text/template", "text/x-template", "text/x-handlebars-template",
+}
+
+
+def _html_has_inline_script(path: Path) -> bool:
+    """True if the HTML file has at least one <script> with a real inline body
+    (no src=, no non-JS type=). Read errors are treated as "no inline script"."""
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for m in _HTML_SCRIPT_OPEN_TAG_RE.finditer(src):
+        open_tag = m.group(0)
+        if _HTML_SCRIPT_SRC_ATTR_RE.search(open_tag):
+            continue
+        type_m = _HTML_SCRIPT_TYPE_ATTR_RE.search(open_tag)
+        if type_m and type_m.group(1).strip().lower() in _HTML_NON_JS_SCRIPT_TYPES:
+            continue
+        return True
+    return False
+
+
 CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
 CORPUS_UPPER_THRESHOLD = 500_000  # words - above this, warn about token cost
 FILE_COUNT_UPPER = 500             # files - above this, warn about token cost
@@ -496,6 +527,13 @@ def classify_file(path: Path) -> FileType | None:
     if ext in IMAGE_EXTENSIONS:
         return FileType.IMAGE
     if ext in DOC_EXTENSIONS:
+        # HTML with an inline (no src=) <script> carries real, deterministically
+        # parseable code (GIS-Power's mapa.html/proyecto.html: ~254 functions in
+        # 7 inline blocks). Route those to the AST path; HTML with only external
+        # <script src=…> tags (or no scripts) stays on the LLM document path so
+        # the tool's original doc-analysis use case is unaffected.
+        if ext == ".html" and _html_has_inline_script(path):
+            return FileType.CODE
         # Check if it's a converted paper
         if _looks_like_paper(path):
             return FileType.PAPER
