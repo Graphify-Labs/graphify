@@ -265,10 +265,35 @@ def extract_bash(path: Path) -> dict:
                                         "source_location": f"L{line}",
                                     })
                         else:
-                            tgt_nid = _make_id(raw)
-                            if tgt_nid:
-                                add_edge(file_nid, tgt_nid, "imports", line,
-                                         context="import")
+                            # Bare `source lib.sh` (no leading ./ or /). Bash
+                            # itself resolves such a name via $PATH at runtime,
+                            # but in practice the file sits next to the script,
+                            # so bind it when a sibling of that name exists
+                            # (#2171). Same existence gate as the ./-prefixed
+                            # branch above: a name that resolves to nothing keeps
+                            # the old opaque `imports` edge and records no
+                            # bash_sources entry, so nothing is fabricated.
+                            sibling: Path | None = None
+                            if raw:
+                                try:
+                                    candidate = path.parent / raw
+                                    if candidate.is_file():
+                                        sibling = candidate.resolve()
+                                except OSError:
+                                    sibling = None
+                            if sibling is not None:
+                                add_edge(file_nid, _make_id(str(sibling)),
+                                         "imports_from", line, context="import")
+                                bash_sources.append({
+                                    "target_path": raw,
+                                    "source_file": str_path,
+                                    "source_location": f"L{line}",
+                                })
+                            else:
+                                tgt_nid = _make_id(raw)
+                                if tgt_nid:
+                                    add_edge(file_nid, tgt_nid, "imports", line,
+                                             context="import")
                 elif cmd and cmd not in defined_functions:
                     raw = cmd if cmd.endswith(".sh") else None
                     if cmd in _BASH_SCRIPT_RUNNERS and args:

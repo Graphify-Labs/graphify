@@ -4947,9 +4947,34 @@ def extract(
     # same-named function in an unsourced file. Runs after the id-remap passes
     # above so caller_nids and function node ids are final; dedups the source
     # edge the extractor already emitted via existing_edges.
-    sh_paths = [p for p in paths if p.suffix in (".sh", ".bash")]
-    if sh_paths:
-        sh_results = [r for r, p in zip(per_file, paths) if p.suffix in (".sh", ".bash")]
+    # Selecting by filename suffix alone missed extensionless scripts:
+    # _SHEBANG_DISPATCH routes a `#!/usr/bin/env bash` file with no extension to
+    # extract_bash, so its functions get indexed, but a suffix-only filter left it
+    # out of this pass and calls into it never resolved (#2171). Select by shape
+    # too — the bash extractor tags every node it emits with
+    # metadata.language == "bash" — while keeping the suffix check so an empty
+    # .sh file (no nodes to inspect) still participates.
+    def _looks_like_bash(result: object) -> bool:
+        if not isinstance(result, dict):
+            return False
+        nodes = result.get("nodes")
+        if not isinstance(nodes, list):
+            return False
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            md = n.get("metadata")
+            if isinstance(md, dict) and md.get("language") == "bash":
+                return True
+        return False
+
+    sh_pairs = [
+        (r, p) for r, p in zip(per_file, paths)
+        if p.suffix in (".sh", ".bash") or _looks_like_bash(r)
+    ]
+    if sh_pairs:
+        sh_results = [r for r, _ in sh_pairs]
+        sh_paths = [p for _, p in sh_pairs]
         try:
             all_edges.extend(
                 resolve_bash_source_edges(sh_results, sh_paths, root, existing_edges=all_edges)
