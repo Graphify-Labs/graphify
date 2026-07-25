@@ -91,6 +91,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _js_source_path,
     _js_top_level_function_bodies,
     _load_tsconfig_aliases,
+    _load_tsconfig_base_url,
     _load_workspace_packages,
     _match_tsconfig_alias,
     _merge_decl_def_classes,
@@ -1285,6 +1286,7 @@ def extract_svelte(path: Path) -> dict:
         # endpoint is a phantom node and build_from_json drops the edge (#701).
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
+        base_url = _load_tsconfig_base_url(path.parent)
         for m in _re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
             raw = m.group(1)
             if not raw:
@@ -1302,7 +1304,7 @@ def extract_svelte(path: Path) -> dict:
                 # Check tsconfig.json path aliases (e.g. "$lib/" -> "src/lib/", "@/" -> "src/")
                 # before treating as external. Mirrors _import_js logic so SvelteKit alias
                 # imports resolve to the same file node IDs the extractor creates (#701).
-                resolved_alias = _resolve_tsconfig_alias(raw, aliases)
+                resolved_alias = _resolve_tsconfig_alias(raw, aliases, base_url=base_url)
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
                     node_id = _make_id(str(resolved_alias))
@@ -1360,7 +1362,7 @@ def extract_svelte(path: Path) -> dict:
                     node_id = _make_id(str(resolved))
                     stub_source_file = str(resolved)
                 else:
-                    resolved_alias = _resolve_tsconfig_alias(raw, aliases)
+                    resolved_alias = _resolve_tsconfig_alias(raw, aliases, base_url=base_url)
                     if resolved_alias is not None:
                         node_id = _make_id(str(resolved_alias))
                         stub_source_file = str(resolved_alias)
@@ -1413,6 +1415,7 @@ def extract_astro(path: Path) -> dict:
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
+        base_url = _load_tsconfig_base_url(path.parent)
         # Dynamic imports anywhere in the file: `import('./X.astro')` is legal in
         # frontmatter setup code and inside expression slots.
         for m in _re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
@@ -1425,7 +1428,7 @@ def extract_astro(path: Path) -> dict:
                 node_id = _make_id(str(resolved))
                 stub_source_file = str(resolved)
             else:
-                resolved_alias = _resolve_tsconfig_alias(raw, aliases)
+                resolved_alias = _resolve_tsconfig_alias(raw, aliases, base_url=base_url)
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
                     node_id = _make_id(str(resolved_alias))
@@ -1486,7 +1489,7 @@ def extract_astro(path: Path) -> dict:
                     node_id = _make_id(str(resolved))
                     stub_source_file = str(resolved)
                 else:
-                    resolved_alias = _resolve_tsconfig_alias(raw, aliases)
+                    resolved_alias = _resolve_tsconfig_alias(raw, aliases, base_url=base_url)
                     if resolved_alias is not None:
                         node_id = _make_id(str(resolved_alias))
                         stub_source_file = str(resolved_alias)
@@ -1553,6 +1556,7 @@ def extract_vue(path: Path) -> dict:
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         file_node_id = _make_id(str(path))
         aliases = _load_tsconfig_aliases(path.parent)
+        base_url = _load_tsconfig_base_url(path.parent)
         for m in re.finditer(r"""import\(\s*['"]([^'"]+)['"]\s*\)""", src):
             raw = m.group(1)
             if not raw:
@@ -1563,7 +1567,7 @@ def extract_vue(path: Path) -> dict:
                 node_id = _make_id(str(resolved))
                 stub_source_file = str(resolved)
             else:
-                resolved_alias = _resolve_tsconfig_alias(raw, aliases)
+                resolved_alias = _resolve_tsconfig_alias(raw, aliases, base_url=base_url)
                 if resolved_alias is not None:
                     resolved_alias = _resolve_js_module_path(resolved_alias)
                     node_id = _make_id(str(resolved_alias))
