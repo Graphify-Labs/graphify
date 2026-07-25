@@ -542,3 +542,47 @@ def test_sql_plpgsql_clean_function_not_double_emitted():
     # And nothing else is duplicated either
     ids = [n["id"] for n in r["nodes"]]
     assert len(ids) == len(set(ids))
+
+def test_sql_quoted_plpgsql_routines_are_recovered():
+    """#2180: quoted identifiers must not defeat the ERROR-node name recovery.
+
+    Generated PostgreSQL DDL (Supabase-style dumps, for example) quotes every
+    identifier: CREATE OR REPLACE FUNCTION "public"."fn"(...). The recovery
+    pattern matched a bare [\\w$.]+, which stops at the leading quote, so every
+    routine whose body also failed to parse -- RAISE, PERFORM, :=, IF..THEN,
+    bare NULL; -- was dropped with no warning and exit code 0. The same body
+    with an *unquoted* name recovered fine, which is why the drop looked like it
+    depended only on the body statement.
+    """
+    r = _extract_sql_or_skip("sample_plpgsql_quoted.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    for name in (
+        "raise_exception_fn",
+        "raise_notice_fn",
+        "perform_fn",
+        "assign_fn",
+        "if_then_fn",
+        "null_body_fn",
+        "quoted_proc",
+    ):
+        assert f'"public"."{name}"()' in labels, f"{name} dropped from a quoted-DDL file (#2180)"
+
+def test_sql_quoted_plpgsql_file_stays_clean():
+    """The #2180 recovery must not add junk, duplicates, or drop the tables."""
+    r = _extract_sql_or_skip("sample_plpgsql_quoted.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    # Tables before and after the unparseable routines still extract.
+    assert any("accounts" in l for l in labels)
+    assert any("audit_log" in l for l in labels)
+    # No empty or ERROR labels leaked out of the recovery.
+    for l in labels:
+        assert l, "empty node label"
+        assert l != "ERROR"
+    # Nothing emitted twice (a routine must not come from both paths).
+    ids = [n["id"] for n in r["nodes"]]
+    assert len(ids) == len(set(ids)), "duplicate node ids"
+    assert len(labels) == len(set(labels)), f"duplicate labels: {labels}"
+    # Every recovered routine is reachable from the file node.
+    contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
+    fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
+    assert fn_ids <= contains_targets
