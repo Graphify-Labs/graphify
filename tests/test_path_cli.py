@@ -197,6 +197,9 @@ def test_path_shows_parallel_relation_context_location_and_occurrences(
                 "relation": "references", "confidence": "EXTRACTED",
                 "context": "parameter_type", "source_file": "a.py",
                 "source_location": "L10", "occurrence_count": 6,
+                "occurrences": [
+                    {"source_span": "L10:C5-L10:C9", "parameter": "value"},
+                ],
             },
         ],
     }
@@ -207,6 +210,7 @@ def test_path_shows_parallel_relation_context_location_and_occurrences(
 
     assert "calls:call@a.py:L20" in out
     assert "references:parameter_type@a.py:L10x6" in out
+    assert "L10:C5-L10:C9(value)" in out
 
 
 def test_path_relation_fallback_related_when_missing(monkeypatch, tmp_path, capsys):

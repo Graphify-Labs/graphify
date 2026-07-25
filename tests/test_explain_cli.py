@@ -167,6 +167,12 @@ def test_explain_lists_every_parallel_edge(monkeypatch, tmp_path, capsys):
                 "relation": "references", "confidence": "EXTRACTED",
                 "context": "parameter_type", "source_file": "stage_track_paths.py",
                 "source_location": "L982", "occurrence_count": 6,
+                "occurrences": [
+                    {
+                        "source_span": "L982:C12-L982:C16",
+                        "parameter": "path",
+                    }
+                ],
             },
             {
                 "source": "stage", "target": "path", "key": "calls",
@@ -183,6 +189,7 @@ def test_explain_lists_every_parallel_edge(monkeypatch, tmp_path, capsys):
 
     assert "[references]" in out and "context=parameter_type x6" in out
     assert "stage_track_paths.py:L982" in out
+    assert "L982:C12-L982:C16(path)" in out
     assert "[calls]" in out and "context=call" in out
     assert "stage_track_paths.py:L1002" in out
 

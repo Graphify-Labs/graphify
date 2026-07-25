@@ -400,6 +400,8 @@ merged = {
     'nodes': merged_nodes,
     'edges': merged_edges,
     'hyperedges': merged_hyperedges,
+    'extraction_diagnostics': ast.get('extraction_diagnostics', {}),
+    'file_outcomes': ast.get('file_outcomes', []),
     'input_tokens': sem.get('input_tokens', 0),
     'output_tokens': sem.get('output_tokens', 0),
 }
@@ -493,6 +495,10 @@ flags = [f'{summary[k]} {label}' for k, label in (
     ('missing_endpoint_edges', 'missing-endpoint edges'),
     ('self_loop_edges', 'self-loop edges'),
     ('post_build_lost_distinct_edges', 'distinct relations lost after build'),
+    ('post_normalization_unclassified_duplicates', 'unclassified duplicate occurrences'),
+    ('failed_extraction_files', 'failed extraction files'),
+    ('unexpected_empty_files', 'unexpected empty files'),
+    ('unsupported_extraction_files', 'unsupported extraction files'),
 ) if summary.get(k, 0)]
 if not IS_MULTIGRAPH:
     flags.extend(
@@ -501,7 +507,7 @@ if not IS_MULTIGRAPH:
             ('undirected_same_endpoint_collapsed_edges', 'collapsed (undirected) edges'),
         ) if summary.get(k, 0)
     )
-print('GRAPH HEALTH WARNING: ' + '; '.join(flags) + ' - graph may be incomplete/corrupt.' if flags else 'Graph health: OK (external imports excluded; no unresolved/missing/collapsed edges).')
+print('GRAPH HEALTH WARNING: ' + '; '.join(flags) + ' - graph may be incomplete/corrupt.' if flags else f'Graph health: OK ({summary.get(\"intentionally_skipped_files\", 0)} intentional skips; no unresolved/missing/collapsed edges).')
 "
 ```
 

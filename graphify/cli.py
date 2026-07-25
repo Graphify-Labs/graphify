@@ -85,6 +85,27 @@ def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
 
+def _format_occurrence_details(data: dict, limit: int = 3) -> str:
+    occurrences = data.get("occurrences")
+    if not isinstance(occurrences, list) or not occurrences:
+        return ""
+    rendered = []
+    for occurrence in occurrences[:limit]:
+        if not isinstance(occurrence, dict):
+            continue
+        detail = str(
+            occurrence.get("source_span")
+            or occurrence.get("source_location")
+            or "unlocated"
+        )
+        if occurrence.get("parameter"):
+            detail += f"({occurrence['parameter']})"
+        rendered.append(detail)
+    if len(occurrences) > limit:
+        rendered.append(f"+{len(occurrences) - limit}")
+    return ",".join(rendered)
+
+
 def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
@@ -1199,6 +1220,9 @@ def dispatch_command(cmd: str) -> None:
                     detail += f"@{source_file or ''}{':' + str(location) if location else ''}"
                 if occurrences != 1:
                     detail += f"x{occurrences}"
+                evidence = _format_occurrence_details(data)
+                if evidence:
+                    detail += f"[{evidence}]"
                 relation_details.append(detail)
             rel = " | ".join(relation_details) if relation_details else "related"
             confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
@@ -1312,9 +1336,11 @@ def dispatch_command(cmd: str) -> None:
                 context_text = f" context={context}" if context else ""
                 occurrences = edata.get("occurrence_count", 1)
                 occurrence_text = f" x{occurrences}" if occurrences != 1 else ""
+                evidence = _format_occurrence_details(edata)
+                evidence_text = f" evidence={evidence}" if evidence else ""
                 print(
                     f"  {arrow} {G.nodes[nb].get('label', nb)} "
-                    f"[{rel}] [{conf}]{context_text}{occurrence_text}{at}"
+                    f"[{rel}] [{conf}]{context_text}{occurrence_text}{evidence_text}{at}"
                 )
             if len(connections) > 20:
                 remainder = connections[20:]
@@ -3271,6 +3297,10 @@ def dispatch_command(cmd: str) -> None:
             "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])),
             "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])),
             "hyperedges": list(sem_result.get("hyperedges", [])),
+            "extraction_diagnostics": dict(
+                ast_result.get("extraction_diagnostics", {})
+            ),
+            "file_outcomes": list(ast_result.get("file_outcomes", [])),
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
         }

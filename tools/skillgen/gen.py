@@ -955,6 +955,13 @@ def _is_semantic_cache_scope_fix_line(line: str) -> bool:
     ) or stripped.startswith("saved = save_semantic_cache(")
 
 
+def _is_extraction_outcome_line(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith(
+        ("'extraction_diagnostics': ast.get(", "'file_outcomes': ast.get(")
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -975,6 +982,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
+    _is_extraction_outcome_line,
 )
 
 

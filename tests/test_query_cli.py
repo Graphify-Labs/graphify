@@ -121,6 +121,10 @@ def test_query_cli_traverses_directed_graph_both_ways_and_lists_parallel_edges(
         "caller", "callee", key="references", relation="references",
         confidence="EXTRACTED", context="parameter_type", source_file="a.py",
         source_location="L10", occurrence_count=2,
+        occurrences=[
+            {"source_span": "L10:C5-L10:C9", "parameter": "first"},
+            {"source_span": "L10:C12-L10:C16", "parameter": "second"},
+        ],
     )
     graph_path = tmp_path / "graph.json"
     graph_path.write_text(json.dumps(json_graph.node_link_data(graph, edges="links")))
@@ -137,6 +141,7 @@ def test_query_cli_traverses_directed_graph_both_ways_and_lists_parallel_edges(
     assert "caller_fn --calls" in out
     assert "caller_fn --references" in out
     assert "occurrences=2" in out
+    assert "L10:C5-L10:C9(first)" in out
 
 
 def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys):

@@ -910,11 +910,29 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                 occurrence_suffix = (
                     f" occurrences={occurrence_count}" if occurrence_count != 1 else ""
                 )
+                occurrence_items = d.get("occurrences", [])
+                evidence_parts = []
+                if isinstance(occurrence_items, list):
+                    for occurrence in occurrence_items[:3]:
+                        if not isinstance(occurrence, dict):
+                            continue
+                        evidence = str(
+                            occurrence.get("source_span")
+                            or occurrence.get("source_location")
+                            or "unlocated"
+                        )
+                        if occurrence.get("parameter"):
+                            evidence += f"({occurrence['parameter']})"
+                        evidence_parts.append(evidence)
+                evidence_suffix = (
+                    f" evidence={sanitize_label(','.join(evidence_parts))}"
+                    if evidence_parts else ""
+                )
                 line = (
                     f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
                     f"--{sanitize_label(str(d.get('relation', '')))} "
                     f"[{sanitize_label(str(d.get('confidence', '')))}"
-                    f"{context_suffix}{occurrence_suffix}]--> "
+                    f"{context_suffix}{occurrence_suffix}{evidence_suffix}]--> "
                     f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
                 )
                 lines.append(line)

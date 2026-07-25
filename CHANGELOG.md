@@ -4,6 +4,14 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
+- Fix: AST edges now retain portable token-level occurrence evidence. Python
+  annotations use their real line/column span and parameter name, repeated
+  evidence on one relation is aggregated deterministically, and duplicate
+  emissions introduced by post-resolution endpoint rewrites are suppressed.
+  Diagnostics separate legitimate source repetition from producer defects.
+  Deliberately unindexed data JSON is now a cached intentional skip rather than
+  a recurring zero-node warning, with failures and unsupported files reported
+  separately.
 - Feat: add opt-in `--multigraph` builds backed by a persistent directed
   `MultiDiGraph`. Canonically distinct relations between the same endpoints
   retain stable keys; exact duplicate occurrences aggregate through

@@ -511,6 +511,22 @@ def to_html(
             details.append(f"source: {source_file}:{source_location}")
         if occurrences != 1:
             details.append(f"occurrences: {occurrences}")
+        occurrence_items = data.get("occurrences", [])
+        if isinstance(occurrence_items, list) and occurrence_items:
+            evidence = []
+            for occurrence in occurrence_items:
+                if not isinstance(occurrence, dict):
+                    continue
+                item = str(
+                    occurrence.get("source_span")
+                    or occurrence.get("source_location")
+                    or "unlocated"
+                )
+                if occurrence.get("parameter"):
+                    item += f" ({occurrence['parameter']})"
+                evidence.append(item)
+            if evidence:
+                details.append("evidence: " + ", ".join(evidence))
         edge_payload = {
             "from": true_src,
             "to": true_tgt,

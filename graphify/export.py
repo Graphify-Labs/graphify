@@ -15,7 +15,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
-from graphify.build import edge_data, edge_datas
+from graphify.build import canonical_edge_key, edge_data, edge_datas
 
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -392,17 +392,30 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
         )
         lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}', label: '{label}'}});")
     lines.append("")
-    for u, v, data in G.edges(data=True):
+    graph_edges = (
+        G.edges(keys=True, data=True)
+        if G.is_multigraph()
+        else ((u, v, canonical_edge_key(u, v, data), data) for u, v, data in G.edges(data=True))
+    )
+    for u, v, edge_key, data in graph_edges:
         rel = _cypher_label(
             (data.get("relation", "RELATES_TO") or "RELATES_TO").upper(),
             "RELATES_TO",
         )
+        edge_key_esc = _cypher_escape(str(edge_key))
         conf = _cypher_escape(data.get("confidence", "EXTRACTED"))
+        occurrence_count = int(data.get("occurrence_count", 1) or 1)
+        occurrences_json = _cypher_escape(
+            json.dumps(data.get("occurrences", []), ensure_ascii=False, sort_keys=True)
+        )
         u_esc = _cypher_escape(u)
         v_esc = _cypher_escape(v)
         lines.append(
             f"MATCH (a {{id: '{u_esc}'}}), (b {{id: '{v_esc}'}}) "
-            f"MERGE (a)-[:{rel} {{confidence: '{conf}'}}]->(b);"
+            f"MERGE (a)-[r:{rel} {{graphify_key: '{edge_key_esc}'}}]->(b) "
+            f"SET r.confidence = '{conf}', "
+            f"r.occurrence_count = {occurrence_count}, "
+            f"r.occurrences_json = '{occurrences_json}';"
         )
     with open(output_path, "w", encoding="utf-8") as f:  # nosec
         f.write("\n".join(lines))
@@ -1025,9 +1038,15 @@ def to_graphml(
     for node_id in H.nodes():
         for key, val in list(H.nodes[node_id].items()):
             H.nodes[node_id][key] = _graphml_safe(val)
-    for u, v in H.edges():
-        for key, val in list(H.edges[u, v].items()):
-            H.edges[u, v][key] = _graphml_safe(val)
+    if H.is_multigraph():
+        edge_records = H.edges(keys=True, data=True)
+        for _, _, _, attrs in edge_records:
+            for key, val in list(attrs.items()):
+                attrs[key] = _graphml_safe(val)
+    else:
+        for _, _, attrs in H.edges(data=True):
+            for key, val in list(attrs.items()):
+                attrs[key] = _graphml_safe(val)
 
     # Write atomically: a mid-serialization error otherwise leaves a 0-byte
     # .graphml on disk that downstream tooling mistakes for a completed export

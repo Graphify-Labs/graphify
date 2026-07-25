@@ -2243,6 +2243,123 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
     nodes[:] = [node for node in nodes if node.get("id") not in drop_ids]
 
 
+def _normalize_edge_occurrences(edges: list[dict]) -> dict[str, int]:
+    """Merge source evidence after every resolver has canonicalized endpoints.
+
+    Distinct source tokens on the same line are legitimate occurrences. The
+    same token emitted by two resolver paths is a producer duplicate and is
+    suppressed. Edges without token spans stay auditable through synthetic
+    unlocated occurrences rather than being silently discarded.
+    """
+    grouped: dict[str, dict] = {}
+    seen_occurrences: dict[str, set[str]] = {}
+    suppressed = 0
+    unlocated = 0
+
+    for ordinal, original in enumerate(edges):
+        edge = dict(original)
+        explicit = edge.pop("occurrences", None)
+        span = edge.pop("source_span", None)
+        edge.pop("occurrence_count", None)
+        identity = json.dumps(
+            edge, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+        )
+        is_existing_identity = identity in grouped
+        if not is_existing_identity:
+            grouped[identity] = edge
+            grouped[identity]["occurrences"] = []
+            seen_occurrences[identity] = set()
+
+        occurrences = explicit if isinstance(explicit, list) else None
+        if not occurrences:
+            occurrence = {
+                "source_location": edge.get("source_location"),
+                "kind": edge.get("context") or edge.get("relation") or "relation",
+            }
+            if span:
+                occurrence["source_span"] = span
+            else:
+                occurrence["unlocated"] = True
+                occurrence["_ordinal"] = ordinal
+            occurrences = [occurrence]
+
+        target = grouped[identity]["occurrences"]
+        fingerprints = seen_occurrences[identity]
+        for raw_occurrence in occurrences:
+            occurrence = dict(raw_occurrence)
+            if occurrence.get("unlocated") and any(
+                existing.get("source_location") == occurrence.get("source_location")
+                and existing.get("kind") == occurrence.get("kind")
+                for existing in target
+            ):
+                suppressed += 1
+                continue
+            if occurrence.get("unlocated") and target:
+                unlocated += 1
+            fingerprint_payload = {
+                key: value for key, value in occurrence.items() if key != "_ordinal"
+            }
+            fingerprint = json.dumps(
+                fingerprint_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            )
+            if not occurrence.get("unlocated") and fingerprint in fingerprints:
+                suppressed += 1
+                continue
+            fingerprints.add(fingerprint)
+            target.append(occurrence)
+
+    normalized: list[dict] = []
+    for edge in grouped.values():
+        occurrences = edge["occurrences"]
+        occurrences.sort(
+            key=lambda item: (
+                str(item.get("source_span") or ""),
+                str(item.get("parameter") or ""),
+                str(item.get("kind") or ""),
+                int(item.get("_ordinal", 0)),
+            )
+        )
+        for occurrence in occurrences:
+            occurrence.pop("_ordinal", None)
+        edge["occurrence_count"] = len(occurrences)
+        normalized.append(edge)
+    repeated_groups: Counter[str] = Counter()
+    for edge in normalized:
+        base = {
+            key: value for key, value in edge.items()
+            if key not in {
+                "source_location", "occurrences", "occurrence_count", "_src", "_tgt"
+            }
+        }
+        for occurrence in edge.get("occurrences", []):
+            base["occurrence_owner_location"] = (
+                occurrence.get("owner_location")
+                or occurrence.get("source_location")
+                or edge.get("source_location")
+            )
+            coarse_key = json.dumps(
+                base,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            )
+            repeated_groups[coarse_key] += 1
+    legitimate = sum(max(0, count - 1) for count in repeated_groups.values())
+    edges[:] = normalized
+    return {
+        "legitimate_repeated_source_occurrences": legitimate,
+        "suppressed_producer_duplicate_occurrences": suppressed,
+        "unlocated_duplicate_occurrences": unlocated,
+        "post_normalization_exact_duplicate_edges": 0,
+        "post_normalization_unclassified_duplicates": 0,
+    }
+
+
 def _augment_js_reexport_edges(
     paths: list[Path],
     nodes: list[dict],
@@ -2433,6 +2550,7 @@ def _resolve_swift_member_calls(
             "confidence_score": 1.0 if type_qualified else 0.8,
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
+            "source_span": rc.get("source_span"),
             "weight": 1.0,
         })
 
@@ -2541,6 +2659,7 @@ def _resolve_python_member_calls(
             "confidence_score": 1.0,
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
+            "source_span": rc.get("source_span"),
             "weight": 1.0,
         })
 
@@ -2668,6 +2787,7 @@ def _resolve_typescript_member_calls(
             "confidence_score": 1.0,
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
+            "source_span": rc.get("source_span"),
             "weight": 1.0,
         })
 
@@ -2796,6 +2916,7 @@ def _resolve_cpp_member_calls(
             "confidence_score": 1.0 if type_qualified else 0.8,
             "source_file": src_file,
             "source_location": rc.get("source_location"),
+            "source_span": rc.get("source_span"),
             "weight": 1.0,
         })
 
@@ -2910,6 +3031,7 @@ def _resolve_csharp_member_calls(
             "confidence_score": 1.0 if type_qualified else 0.8,
             "source_file": src_file,
             "source_location": rc.get("source_location"),
+            "source_span": rc.get("source_span"),
             "weight": 1.0,
         })
 
@@ -3109,6 +3231,7 @@ def _resolve_objc_member_calls(
             "confidence_score": 1.0 if type_qualified else 0.8,
             "source_file": src_file,
             "source_location": rc.get("source_location"),
+            "source_span": rc.get("source_span"),
             "weight": 1.0,
         })
 
@@ -4487,7 +4610,11 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     # (e.g. a transient batch/parallel hiccup). Caching it makes the empty
     # byte-stable across runs and silently blinds affected/explain to and
     # through the file (#1666); skipping the write lets a rerun self-heal.
-    if not bypass_cache and "error" not in result and result.get("nodes"):
+    if (
+        not bypass_cache
+        and "error" not in result
+        and (result.get("nodes") or result.get("status") == "skipped_intentional")
+    ):
         save_cached(path, result, root, cache_root=cache_location)
     return idx, result
 
@@ -4617,13 +4744,22 @@ def _extract_sequential(
             )
         extractor = _get_extractor(path)
         if extractor is None:
-            per_file[idx] = {"nodes": [], "edges": []}
+            per_file[idx] = {
+                "nodes": [],
+                "edges": [],
+                "status": "unsupported",
+                "reason": "no structural extractor",
+            }
             continue
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666).
-        if not bypass_cache and "error" not in result and result.get("nodes"):
+        if (
+            not bypass_cache
+            and "error" not in result
+            and (result.get("nodes") or result.get("status") == "skipped_intentional")
+        ):
             save_cached(path, result, root, cache_root=cache_location)
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:
@@ -4740,13 +4876,38 @@ def extract(
         if per_file[i] is None:
             per_file[i] = {"nodes": [], "edges": []}
 
-    # #1666: surface any source file an extractor accepted but that produced zero
+    file_outcomes: list[dict[str, str]] = []
+    for i, path in enumerate(paths):
+        result = per_file[i] or {}
+        if result.get("nodes"):
+            continue
+        status = result.get("status")
+        if status not in {
+            "skipped_intentional", "failed", "unexpected_empty", "unsupported"
+        }:
+            status = "failed" if result.get("error") else "unexpected_empty"
+        file_outcomes.append({
+            "source_file": str(path),
+            "status": status,
+            "reason": str(
+                result.get("reason")
+                or result.get("error")
+                or "extractor returned no nodes"
+            ),
+        })
+
+    # #1666: surface only anomalous empty results. Deliberate data/config skips
+    # are classified and cached, so they neither warn nor retry forever.
     # nodes (not even a file node). Such a file is silently absent from the graph,
     # so affected/explain are blind to and through it with no other signal.
     _empty_sources: list[str] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
-        if _res.get("nodes") or _res.get("error"):
+        if (
+            _res.get("nodes")
+            or _res.get("error")
+            or _res.get("status") in {"skipped_intentional", "unsupported"}
+        ):
             continue
         if _get_extractor(_p) is not None:
             _empty_sources.append(str(_p))
@@ -4759,6 +4920,18 @@ def extract(
             f"(empties are no longer cached); if it persists, please report the "
             f"file(s) (#1666).",
             file=sys.stderr, flush=True,
+        )
+
+    intentional_skips = [
+        outcome for outcome in file_outcomes
+        if outcome["status"] == "skipped_intentional"
+    ]
+    if intentional_skips:
+        print(
+            f"  info: {len(intentional_skips)} source file(s) intentionally skipped "
+            "by structural extraction policy (no graph loss warning).",
+            file=sys.stderr,
+            flush=True,
         )
 
     # #1689: a file counted as code (extension in CODE_EXTENSIONS) but with no AST
@@ -5420,6 +5593,7 @@ def extract(
                     "confidence_score": 0.8,
                     "source_file": rc.get("source_file", ""),
                     "source_location": rc.get("source_location"),
+                    "source_span": rc.get("source_span"),
                     "weight": 1.0,
                 })
             continue
@@ -5456,6 +5630,7 @@ def extract(
                 "confidence_score": confidence_score,
                 "source_file": rc.get("source_file", ""),
                 "source_location": rc.get("source_location"),
+                "source_span": rc.get("source_span"),
                 "weight": 1.0,
             })
 
@@ -5545,6 +5720,8 @@ def extract(
         e.pop("_import_level", None)
         e.pop("_imported_names", None)
 
+    occurrence_diagnostics = _normalize_edge_occurrences(all_edges)
+
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction
     # the watcher drops any AST-marked node missing from the fresh output
@@ -5557,9 +5734,18 @@ def extract(
     for e in all_edges:
         e["_origin"] = "ast"
 
+    for outcome in file_outcomes:
+        outcome_path = Path(outcome["source_file"])
+        try:
+            outcome["source_file"] = outcome_path.resolve().relative_to(root).as_posix()
+        except (ValueError, OSError, RuntimeError):
+            outcome["source_file"] = outcome_path.name
+
     return {
         "nodes": all_nodes,
         "edges": all_edges,
+        "extraction_diagnostics": occurrence_diagnostics,
+        "file_outcomes": file_outcomes,
         "input_tokens": 0,
         "output_tokens": 0,
     }

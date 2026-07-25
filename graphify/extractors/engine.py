@@ -65,7 +65,29 @@ _PYTHON_ANNOTATION_NOISE = frozenset({
     "NonCallableMagicMock", "PropertyMock", "patch", "sentinel",
 })
 
-def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
+def _source_occurrence(node, *, kind: str, parameter: str | None = None) -> dict:
+    """Portable source evidence for one AST token/expression."""
+    occurrence = {
+        "source_location": f"L{node.start_point[0] + 1}",
+        "source_span": (
+            f"L{node.start_point[0] + 1}:C{node.start_point[1] + 1}-"
+            f"L{node.end_point[0] + 1}:C{node.end_point[1] + 1}"
+        ),
+        "kind": kind,
+    }
+    if parameter:
+        occurrence["parameter"] = parameter
+    return occurrence
+
+
+def _python_collect_type_refs(
+    node,
+    source: bytes,
+    generic: bool,
+    out: list[dict],
+    *,
+    parameter: str | None = None,
+) -> None:
     """Walk a Python type annotation; append (name, role) where role is 'type' or 'generic_arg'.
 
     Builtin/typing containers (list, dict, Optional, Union, …) are not emitted as refs themselves,
@@ -77,42 +99,62 @@ def _python_collect_type_refs(node, source: bytes, generic: bool, out: list[tupl
     if t == "type":
         for c in node.children:
             if c.is_named:
-                _python_collect_type_refs(c, source, generic, out)
+                _python_collect_type_refs(c, source, generic, out, parameter=parameter)
         return
     if t == "identifier":
         name = _read_text(node, source)
         if name and name not in _PYTHON_TYPE_CONTAINERS and name not in _PYTHON_ANNOTATION_NOISE:
-            out.append((name, "generic_arg" if generic else "type"))
+            out.append({
+                "name": name,
+                "role": "generic_arg" if generic else "type",
+                "occurrence": _source_occurrence(
+                    node, kind="generic_arg" if generic else "type", parameter=parameter
+                ),
+            })
         return
     if t == "attribute":
         tail = _read_text(node, source).rsplit(".", 1)[-1]
         if tail and tail not in _PYTHON_TYPE_CONTAINERS and tail not in _PYTHON_ANNOTATION_NOISE:
-            out.append((tail, "generic_arg" if generic else "type"))
+            out.append({
+                "name": tail,
+                "role": "generic_arg" if generic else "type",
+                "occurrence": _source_occurrence(
+                    node, kind="generic_arg" if generic else "type", parameter=parameter
+                ),
+            })
         return
     if t == "generic_type":
         for c in node.children:
             if c.type == "identifier":
                 container = _read_text(c, source)
                 if container and container not in _PYTHON_TYPE_CONTAINERS and container not in _PYTHON_ANNOTATION_NOISE:
-                    out.append((container, "generic_arg" if generic else "type"))
+                    out.append({
+                        "name": container,
+                        "role": "generic_arg" if generic else "type",
+                        "occurrence": _source_occurrence(
+                            c, kind="generic_arg" if generic else "type", parameter=parameter
+                        ),
+                    })
             elif c.type == "type_parameter":
                 for sub in c.children:
                     if sub.is_named:
-                        _python_collect_type_refs(sub, source, True, out)
+                        _python_collect_type_refs(
+                            sub, source, True, out, parameter=parameter
+                        )
         return
     if t == "subscript":
         value = node.child_by_field_name("value")
         if value is not None:
-            _python_collect_type_refs(value, source, generic, out)
+            _python_collect_type_refs(value, source, generic, out, parameter=parameter)
         for c in node.children:
             if c is value or not c.is_named:
                 continue
-            _python_collect_type_refs(c, source, True, out)
+            _python_collect_type_refs(c, source, True, out, parameter=parameter)
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _python_collect_type_refs(c, source, generic, out)
+                _python_collect_type_refs(c, source, generic, out, parameter=parameter)
 
 def _csharp_pre_scan_interfaces(root_node, source: bytes) -> set[str]:
     """Return names declared as `interface` in this C# compilation unit."""
@@ -974,15 +1016,23 @@ def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
             if c.is_named:
                 _scala_collect_type_refs(c, source, generic, out)
 
-def _python_collect_param_refs(params_node, source: bytes) -> list[tuple[str, str]]:
+def _python_collect_param_refs(params_node, source: bytes) -> list[dict]:
     """Collect type refs from each typed parameter under a `parameters` node."""
-    out: list[tuple[str, str]] = []
+    out: list[dict] = []
     if params_node is None:
         return out
     for child in params_node.children:
         if child.type in ("typed_parameter", "typed_default_parameter"):
             type_node = child.child_by_field_name("type")
-            _python_collect_type_refs(type_node, source, False, out)
+            name_node = child.child_by_field_name("name")
+            if name_node is None:
+                name_node = next(
+                    (c for c in child.children if c.type == "identifier"), None
+                )
+            parameter = _read_text(name_node, source) if name_node is not None else None
+            _python_collect_type_refs(
+                type_node, source, False, out, parameter=parameter
+            )
     return out
 
 def _python_param_names(params_node, source: bytes) -> set[str]:
@@ -3182,24 +3232,38 @@ def _extract_generic(
 
             if config.ts_module == "tree_sitter_python":
                 params_node = node.child_by_field_name("parameters")
-                for ref_name, role in _python_collect_param_refs(params_node, source):
+                for ref in _python_collect_param_refs(params_node, source):
+                    ref_name, role = ref["name"], ref["role"]
+                    occurrence = dict(ref["occurrence"])
+                    occurrence["owner_location"] = f"L{line}"
                     ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
-                    target_nid = ensure_named_node(ref_name, line)
+                    ref_line = occurrence["source_location"]
+                    target_nid = ensure_named_node(ref_name, int(ref_line[1:]))
                     if target_nid != func_nid:
-                        edges.append(
-                            _semantic_reference_edge(func_nid, target_nid, ctx, str_path, line)
+                        edge = _semantic_reference_edge(
+                            func_nid, target_nid, ctx, str_path, ref_line
                         )
+                        edge["occurrences"] = [occurrence]
+                        edge["occurrence_count"] = 1
+                        edges.append(edge)
                 return_type_node = node.child_by_field_name("return_type")
                 if return_type_node is not None:
-                    return_refs: list[tuple[str, str]] = []
+                    return_refs: list[dict] = []
                     _python_collect_type_refs(return_type_node, source, False, return_refs)
-                    for ref_name, role in return_refs:
+                    for ref in return_refs:
+                        ref_name, role = ref["name"], ref["role"]
+                        occurrence = dict(ref["occurrence"])
+                        occurrence["owner_location"] = f"L{line}"
                         ctx = "generic_arg" if role == "generic_arg" else "return_type"
-                        target_nid = ensure_named_node(ref_name, line)
+                        ref_line = occurrence["source_location"]
+                        target_nid = ensure_named_node(ref_name, int(ref_line[1:]))
                         if target_nid != func_nid:
-                            edges.append(
-                                _semantic_reference_edge(func_nid, target_nid, ctx, str_path, line)
+                            edge = _semantic_reference_edge(
+                                func_nid, target_nid, ctx, str_path, ref_line
                             )
+                            edge["occurrences"] = [occurrence]
+                            edge["occurrence_count"] = 1
+                            edges.append(edge)
 
             if config.ts_module == "tree_sitter_c_sharp":
                 csharp_type_params = _csharp_type_parameters_in_scope(node, source)
@@ -4070,6 +4134,10 @@ def _extract_generic(
                             "confidence": "EXTRACTED",
                             "source_file": str_path,
                             "source_location": f"L{line}",
+                            "occurrences": [
+                                _source_occurrence(node, kind="call")
+                            ],
+                            "occurrence_count": 1,
                             "weight": 1.0,
                         })
                 elif callee_name and not tgt_nid:
@@ -4080,6 +4148,9 @@ def _extract_generic(
                         "is_member_call": is_member_call,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
+                        "source_span": _source_occurrence(
+                            node, kind="call"
+                        )["source_span"],
                         "receiver": swift_receiver or member_receiver,
                     }
                     # Ruby: attach the receiver's inferred type from the method's

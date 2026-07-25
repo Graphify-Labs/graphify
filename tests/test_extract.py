@@ -2151,7 +2151,7 @@ def test_extract_json_large_file_skipped(tmp_path):
     # Write a JSON file just over 1 MiB
     big.write_bytes(b'{"x": "' + b"a" * (1_048_576) + b'"}')
     result = extract_json(big)
-    assert "error" in result
+    assert result["status"] == "skipped_intentional"
     assert result["nodes"] == []
 
 
@@ -2186,6 +2186,15 @@ def test_extract_json_data_file_skipped(tmp_path):
     assert result["nodes"] == []
     assert result["edges"] == []
     assert "skipped" in result
+    assert result["status"] == "skipped_intentional"
+
+
+def test_extract_recognized_large_config_json_fails(tmp_path):
+    config = tmp_path / "tsconfig.json"
+    config.write_bytes(b'{"compilerOptions": {"x": "' + b"a" * 1_048_576 + b'"}}')
+    result = extract_json(config)
+    assert result["status"] == "failed"
+    assert "error" in result
 
 
 def test_extract_json_top_level_array_skipped(tmp_path):

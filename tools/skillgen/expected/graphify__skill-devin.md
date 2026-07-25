@@ -439,6 +439,8 @@ merged = {
     'nodes': merged_nodes,
     'edges': merged_edges,
     'hyperedges': merged_hyperedges,
+    'extraction_diagnostics': ast.get('extraction_diagnostics', {}),
+    'file_outcomes': ast.get('file_outcomes', []),
     'input_tokens': sem.get('input_tokens', 0),
     'output_tokens': sem.get('output_tokens', 0),
 }

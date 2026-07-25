@@ -285,8 +285,36 @@ def diagnose_extraction(
         valid_signatures_by_pair[directed_pair].add(signature)
 
     canonical_distinct_candidate_edges = len(exact_counts)
-    exact_duplicate_occurrences = (
-        _count_extra(exact_counts) + encoded_duplicate_occurrences
+    extraction_diagnostics = extraction.get("extraction_diagnostics", {})
+    suppressed_producer_duplicates = int(
+        extraction_diagnostics.get(
+            "suppressed_producer_duplicate_occurrences", 0
+        ) or 0
+    )
+    if extraction_diagnostics:
+        exact_duplicate_occurrences = (
+            int(
+                extraction_diagnostics.get(
+                    "legitimate_repeated_source_occurrences", 0
+                ) or 0
+            )
+            + suppressed_producer_duplicates
+            + int(
+                extraction_diagnostics.get("unlocated_duplicate_occurrences", 0)
+                or 0
+            )
+        )
+    else:
+        exact_duplicate_occurrences = (
+            _count_extra(exact_counts) + encoded_duplicate_occurrences
+        )
+    file_outcomes = [
+        outcome for outcome in extraction.get("file_outcomes", [])
+        if isinstance(outcome, dict)
+    ]
+    outcome_counts = Counter(
+        str(outcome.get("status") or "unexpected_empty")
+        for outcome in file_outcomes
     )
     distinct_parallel_edge_instances = sum(
         max(0, len(signatures) - 1)
@@ -375,6 +403,31 @@ def diagnose_extraction(
         "exact_duplicate_edges": exact_duplicate_occurrences,
         "canonical_distinct_candidate_edges": canonical_distinct_candidate_edges,
         "exact_duplicate_occurrences": exact_duplicate_occurrences,
+        "legitimate_repeated_source_occurrences": int(
+            extraction_diagnostics.get(
+                "legitimate_repeated_source_occurrences",
+                encoded_duplicate_occurrences,
+            ) or 0
+        ),
+        "suppressed_producer_duplicate_occurrences": suppressed_producer_duplicates,
+        "unlocated_duplicate_occurrences": int(
+            extraction_diagnostics.get("unlocated_duplicate_occurrences", 0) or 0
+        ),
+        "post_normalization_exact_duplicate_edges": int(
+            extraction_diagnostics.get("post_normalization_exact_duplicate_edges", 0)
+            or 0
+        ),
+        "post_normalization_unclassified_duplicates": int(
+            extraction_diagnostics.get(
+                "post_normalization_unclassified_duplicates", 0
+            ) or 0
+        ),
+        "zero_node_files": len(file_outcomes),
+        "intentionally_skipped_files": outcome_counts["skipped_intentional"],
+        "failed_extraction_files": outcome_counts["failed"],
+        "unexpected_empty_files": outcome_counts["unexpected_empty"],
+        "unsupported_extraction_files": outcome_counts["unsupported"],
+        "file_outcome_examples": file_outcomes[:max_examples],
         "distinct_parallel_edge_instances": distinct_parallel_edge_instances,
         "opposite_direction_endpoint_pairs": opposite_direction_endpoint_pairs,
         "directed_unique_endpoint_pairs": len(directed_pairs),
@@ -467,11 +520,15 @@ def format_diagnostic_json(summary: dict[str, Any]) -> dict[str, Any]:
         "summary": {
             key: value
             for key, value in summary.items()
-            if key not in {"examples", "endpoint_examples", "producer_suppression"}
+            if key not in {
+                "examples", "endpoint_examples", "producer_suppression",
+                "file_outcome_examples",
+            }
         },
         "examples": summary.get("examples", []),
         "endpoint_examples": summary.get("endpoint_examples", {}),
         "producer_suppression": summary.get("producer_suppression", {}),
+        "file_outcome_examples": summary.get("file_outcome_examples", []),
         "notes": [
             "Diagnostics are read-only.",
             "A normal graph.json is already post-build and cannot recover raw producer edges.",
@@ -508,6 +565,28 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
             f"{summary.get('canonical_distinct_candidate_edges', 0)}"
         ),
         f"exact_duplicate_occurrences: {summary.get('exact_duplicate_occurrences', 0)}",
+        (
+            "legitimate_repeated_source_occurrences: "
+            f"{summary.get('legitimate_repeated_source_occurrences', 0)}"
+        ),
+        (
+            "suppressed_producer_duplicate_occurrences: "
+            f"{summary.get('suppressed_producer_duplicate_occurrences', 0)}"
+        ),
+        f"unlocated_duplicate_occurrences: {summary.get('unlocated_duplicate_occurrences', 0)}",
+        (
+            "post_normalization_exact_duplicate_edges: "
+            f"{summary.get('post_normalization_exact_duplicate_edges', 0)}"
+        ),
+        (
+            "post_normalization_unclassified_duplicates: "
+            f"{summary.get('post_normalization_unclassified_duplicates', 0)}"
+        ),
+        f"zero_node_files: {summary.get('zero_node_files', 0)}",
+        f"intentionally_skipped_files: {summary.get('intentionally_skipped_files', 0)}",
+        f"failed_extraction_files: {summary.get('failed_extraction_files', 0)}",
+        f"unexpected_empty_files: {summary.get('unexpected_empty_files', 0)}",
+        f"unsupported_extraction_files: {summary.get('unsupported_extraction_files', 0)}",
         (
             "distinct_parallel_edge_instances: "
             f"{summary.get('distinct_parallel_edge_instances', 0)}"

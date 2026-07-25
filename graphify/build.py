@@ -324,7 +324,7 @@ def canonical_edge_key(source: str, target: str, attrs: dict) -> str:
     semantic = {
         key: value
         for key, value in attrs.items()
-        if key not in {"key", "occurrence_count", "_src", "_tgt"}
+        if key not in {"key", "occurrences", "occurrence_count", "_src", "_tgt"}
     }
     payload = {
         "source": source,
@@ -989,6 +989,7 @@ def build_from_json(
                 continue
         if multigraph:
             edge_key = canonical_edge_key(str(src), str(tgt), attrs)
+            incoming_occurrences = attrs.pop("occurrences", [])
             incoming_count = attrs.pop("occurrence_count", 1)
             try:
                 incoming_count = max(1, int(incoming_count))
@@ -996,11 +997,32 @@ def build_from_json(
                 incoming_count = 1
             if G.has_edge(src, tgt, edge_key):
                 existing = G[src][tgt][edge_key]
-                existing["occurrence_count"] = (
-                    int(existing.get("occurrence_count", 1)) + incoming_count
-                )
+                merged_occurrences = list(existing.get("occurrences", []))
+                seen = {
+                    json.dumps(item, sort_keys=True, default=str)
+                    for item in merged_occurrences
+                }
+                for item in incoming_occurrences:
+                    fingerprint = json.dumps(item, sort_keys=True, default=str)
+                    if fingerprint not in seen:
+                        seen.add(fingerprint)
+                        merged_occurrences.append(item)
+                if merged_occurrences:
+                    merged_occurrences.sort(
+                        key=lambda item: json.dumps(item, sort_keys=True, default=str)
+                    )
+                    existing["occurrences"] = merged_occurrences
+                    existing["occurrence_count"] = len(merged_occurrences)
+                else:
+                    existing["occurrence_count"] = (
+                        int(existing.get("occurrence_count", 1)) + incoming_count
+                    )
             else:
-                attrs["occurrence_count"] = incoming_count
+                if incoming_occurrences:
+                    attrs["occurrences"] = incoming_occurrences
+                    attrs["occurrence_count"] = len(incoming_occurrences)
+                else:
+                    attrs["occurrence_count"] = incoming_count
                 G.add_edge(src, tgt, key=edge_key, **attrs)
         else:
             G.add_edge(src, tgt, **attrs)
