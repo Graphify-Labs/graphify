@@ -33,6 +33,7 @@ from graphify.extractors.base import (  # noqa: F401
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
+from graphify.extractors.clojure import extract_clojure  # noqa: F401
 from graphify.extractors.csharp import (
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
@@ -1887,6 +1888,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".zig": "zig",
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
+    ".clj": "clojure", ".cljs": "clojure", ".cljc": "clojure", ".bb": "clojure",
     ".dart": "dart",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
@@ -3995,6 +3997,10 @@ _DISPATCH: dict[str, Any] = {
     ".kts": extract_kotlin,
     ".scala": extract_scala,
     ".php": extract_php,
+    ".clj": extract_clojure,
+    ".cljs": extract_clojure,
+    ".cljc": extract_clojure,
+    ".bb": extract_clojure,
     ".swift": extract_swift,
     ".lua": extract_lua,
     ".luau": extract_lua,
@@ -4068,6 +4074,10 @@ _DISPATCH: dict[str, Any] = {
 # rather than falling back like Pascal does. Used by the #1745 warning in
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
+    ".clj": "clojure",
+    ".cljs": "clojure",
+    ".cljc": "clojure",
+    ".bb": "clojure",
     ".sql": "sql",
     ".tf": "terraform",
     ".tfvars": "terraform",

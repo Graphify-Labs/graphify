@@ -13,6 +13,10 @@ def test_classify_python():
 def test_classify_typescript():
     assert classify_file(Path("bar.ts")) == FileType.CODE
 
+@pytest.mark.parametrize("suffix", [".clj", ".cljs", ".cljc", ".bb"])
+def test_classify_clojure_source(suffix):
+    assert classify_file(Path(f"core{suffix}")) == FileType.CODE
+
 def test_classify_powershell_module():
     # #1315: .psm1 modules were never indexed (CODE_EXTENSIONS gap).
     assert classify_file(Path("Utils.psm1")) == FileType.CODE

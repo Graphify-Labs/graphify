@@ -71,6 +71,9 @@ gemini = ["openai", "tiktoken"]
 openai = ["openai", "tiktoken"]
 chinese = ["jieba"]
 sql = ["tree-sitter-sql"]
+# tree-sitter-clojure-orchard ships as an sdist, so installing it requires a
+# C toolchain. Keep it optional to preserve graphifyy's default wheel-only path.
+clojure = ["tree-sitter-clojure-orchard>=0.2.8,<0.3"]
 # extract_pascal() uses tree-sitter-pascal for AST-quality extraction (more
 # accurate calls/inherits edges) and falls back to a regex extractor when it is
 # absent (#781), so this stays optional. Unlike tree-sitter-dm below, it ships
@@ -81,7 +84,7 @@ pascal = ["tree-sitter-pascal"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-all = ["mcp", "starlette>=1.3.1", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal"]
+all = ["mcp", "starlette>=1.3.1", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-clojure-orchard>=0.2.8,<0.3", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
@@ -103,6 +106,7 @@ dev = [
     "setuptools>=82.0.1",
     "wheel>=0.47.0",
     "tomli>=2.0 ; python_version < '3.11'",
+    "tree-sitter-clojure-orchard>=0.2.8,<0.3",
     "tree-sitter-hcl>=1.2.0",
 ]
 
