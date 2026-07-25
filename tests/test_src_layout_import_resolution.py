@@ -13,6 +13,7 @@ from pathlib import Path
 from graphify.extract import extract
 from graphify.extractors.resolution import _resolve_python_module_path
 from graphify.build import build_from_json
+from graphify.diagnostics import diagnose_extraction
 
 
 _FILES = {
@@ -35,6 +36,31 @@ def _write(base: Path, prefix: str = "") -> list[Path]:
         p.write_text(body, encoding="utf-8")
         written.append(p)
     return written
+
+
+def _write_file(path: Path, body: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _node_id(result: dict, label: str, source_file: str) -> str:
+    matches = [
+        node["id"]
+        for node in result["nodes"]
+        if node.get("label") == label and node.get("source_file") == source_file
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _has_edge(result: dict, source: str, target: str, relation: str) -> bool:
+    return any(
+        edge.get("source") == source
+        and edge.get("target") == target
+        and edge.get("relation") == relation
+        for edge in result["edges"]
+    )
 
 
 def _import_edges(G):
@@ -102,6 +128,9 @@ def test_import_edges_identical_from_root_or_src(tmp_path):
 def test_ambiguous_package_alias_is_not_repointed(tmp_path):
     """A dotted-module id claimed by two different files (two src roots with the
     same package) must stay dangling rather than pick an arbitrary file."""
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='ambiguous'\nversion='1'\n"
+    )
     for sub in ("a", "b"):
         d = tmp_path / sub / "src" / "pkg"
         d.mkdir(parents=True)
@@ -150,4 +179,211 @@ def test_non_python_import_edge_is_not_repointed(tmp_path):
     # repointed to the Python file node src_pkg_mod.
     assert not any(v == "src_pkg_mod" and u == "app_cs" for _, u, v in _import_edges(G)), (
         "non-Python import edge was repointed onto a Python file (#2072 review)"
+    )
+
+
+def test_namespace_package_import_resolves_without_init_file(tmp_path):
+    project = tmp_path / "api"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='api'\nversion='1'\n")
+    model = _write_file(project / "src/models/base.py", "class Base:\n    pass\n")
+    service = _write_file(
+        project / "src/services/use.py", "from models.base import Base\n"
+    )
+
+    result = extract(
+        [model, service],
+        cache_root=tmp_path / "cache",
+        root=tmp_path,
+        parallel=False,
+    )
+    model_id = _node_id(result, "base.py", "api/src/models/base.py")
+    service_id = _node_id(result, "use.py", "api/src/services/use.py")
+
+    assert _has_edge(result, service_id, model_id, "imports_from")
+    summary = diagnose_extraction(result, root=tmp_path)
+    assert summary["unresolved_internal_endpoint_edges"] == 0
+
+
+def test_same_module_name_resolves_inside_each_monorepo_workspace(tmp_path):
+    paths = []
+    expected = []
+    for project_name in ("alpha", "beta"):
+        project = tmp_path / project_name
+        (project / "pyproject.toml").parent.mkdir(parents=True, exist_ok=True)
+        (project / "pyproject.toml").write_text(
+            f"[project]\nname='{project_name}'\nversion='1'\n"
+        )
+        model = _write_file(
+            project / "src/models/base.py",
+            f"class {project_name.title()}Base:\n    pass\n",
+        )
+        service = _write_file(
+            project / "src/services/use.py", "import models.base\n"
+        )
+        paths.extend((model, service))
+        expected.append((project_name, model, service))
+
+    result = extract(
+        paths,
+        cache_root=tmp_path / "cache",
+        root=tmp_path,
+        parallel=False,
+    )
+    for project_name, _, _ in expected:
+        model_id = _node_id(
+            result, "base.py", f"{project_name}/src/models/base.py"
+        )
+        service_id = _node_id(
+            result, "use.py", f"{project_name}/src/services/use.py"
+        )
+        assert _has_edge(result, service_id, model_id, "imports")
+
+
+def test_project_without_manifest_uses_first_scan_root_directory(tmp_path):
+    model = _write_file(
+        tmp_path / "legacy/src/models/base.py", "class Base:\n    pass\n"
+    )
+    service = _write_file(
+        tmp_path / "legacy/src/app.py", "from models.base import Base\n"
+    )
+
+    result = extract(
+        [model, service],
+        cache_root=tmp_path / "cache",
+        root=tmp_path,
+        parallel=False,
+    )
+
+    assert _has_edge(
+        result,
+        _node_id(result, "app.py", "legacy/src/app.py"),
+        _node_id(result, "base.py", "legacy/src/models/base.py"),
+        "imports_from",
+    )
+
+
+def test_python_stub_module_and_external_import_are_classified(tmp_path):
+    project = tmp_path / "typed"
+    (project / "pyproject.toml").parent.mkdir(parents=True, exist_ok=True)
+    (project / "pyproject.toml").write_text("[project]\nname='typed'\nversion='1'\n")
+    stub = _write_file(
+        project / "src/contracts/types.pyi", "class Payload: ...\n"
+    )
+    consumer = _write_file(
+        project / "src/app.py",
+        "from contracts.types import Payload\n"
+        "import pathlib\n"
+        "import third_party_sdk\n",
+    )
+
+    result = extract(
+        [stub, consumer],
+        cache_root=tmp_path / "cache",
+        root=tmp_path,
+        parallel=False,
+    )
+    assert _has_edge(
+        result,
+        _node_id(result, "app.py", "typed/src/app.py"),
+        _node_id(result, "types.pyi", "typed/src/contracts/types.pyi"),
+        "imports_from",
+    )
+    external = [
+        edge for edge in result["edges"]
+        if edge.get("target") in {"pathlib", "third_party_sdk"}
+    ]
+    assert len(external) == 2
+    assert all(edge.get("external") is True for edge in external)
+    summary = diagnose_extraction(result, root=tmp_path)
+    assert summary["external_endpoint_edges"] == 2
+    assert summary["unresolved_internal_endpoint_edges"] == 0
+    assert summary["unclassified_endpoint_edges"] == 0
+
+
+def test_unresolved_relative_import_is_internal_not_external(tmp_path):
+    source = _write_file(
+        tmp_path / "pkg/__init__.py", "from .missing import value\n"
+    )
+
+    result = extract(
+        [source],
+        cache_root=tmp_path / "cache",
+        root=tmp_path,
+        parallel=False,
+    )
+    edge = next(e for e in result["edges"] if e["relation"] == "imports_from")
+    assert edge.get("unresolved_internal") is True
+    assert edge.get("external") is not True
+
+
+def test_imported_symbol_disambiguates_stale_relative_module_path(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='moved-models'\nversion='1'\n"
+    )
+    wrong = _write_file(
+        tmp_path / "models/legacy/scenario.py",
+        "class OtherScenario:\n    pass\n",
+    )
+    intended = _write_file(
+        tmp_path / "models/scenario/scenario.py",
+        "class Scenario:\n    pass\n",
+    )
+    consumer = _write_file(
+        tmp_path / "models/node/node.py",
+        "from .scenario import Scenario\n",
+    )
+
+    result = extract(
+        [wrong, intended, consumer],
+        cache_root=tmp_path / "cache",
+        root=tmp_path,
+        parallel=False,
+    )
+
+    assert _has_edge(
+        result,
+        _node_id(result, "node.py", "models/node/node.py"),
+        _node_id(result, "scenario.py", "models/scenario/scenario.py"),
+        "imports_from",
+    )
+
+
+def test_imported_symbol_disambiguates_absolute_package_facade(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='facades'\nversion='1'\n"
+    )
+    alpha = _write_file(
+        tmp_path / "alpha/models/__init__.py",
+        "from .entity import Alpha\n",
+    )
+    alpha_entity = _write_file(
+        tmp_path / "alpha/models/entity.py",
+        "class Alpha:\n    pass\n",
+    )
+    beta = _write_file(
+        tmp_path / "beta/models/__init__.py",
+        "from .entity import Beta\n",
+    )
+    beta_entity = _write_file(
+        tmp_path / "beta/models/entity.py",
+        "class Beta:\n    pass\n",
+    )
+    consumer = _write_file(
+        tmp_path / "consumer.py",
+        "from models import Beta\n",
+    )
+
+    result = extract(
+        [alpha, alpha_entity, beta, beta_entity, consumer],
+        cache_root=tmp_path / "cache",
+        root=tmp_path,
+        parallel=False,
+    )
+
+    assert _has_edge(
+        result,
+        _node_id(result, "consumer.py", "consumer.py"),
+        "beta_models_init",
+        "imports_from",
     )

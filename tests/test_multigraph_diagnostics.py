@@ -14,6 +14,7 @@ from graphify.diagnostics import (
     format_diagnostic_report,
     scan_producer_suppression_sites,
 )
+from graphify.ids import normalize_id
 
 
 def _diagnostic_fixture() -> dict:
@@ -92,6 +93,10 @@ def test_diagnose_extraction_categorizes_same_endpoint_collapse() -> None:
     assert summary["valid_candidate_edges"] == 5
     assert summary["missing_endpoint_edges"] == 1
     assert summary["dangling_endpoint_edges"] == 1
+    assert summary["unclassified_endpoint_edges"] == 1
+    assert summary["external_endpoint_edges"] == 0
+    assert summary["unresolved_internal_endpoint_edges"] == 0
+    assert summary["malformed_endpoint_edges"] == 0
     assert summary["self_loop_edges"] == 1
     assert summary["exact_duplicate_edges"] == 1
     assert summary["directed_unique_endpoint_pairs"] == 2
@@ -146,8 +151,48 @@ def test_diagnose_extraction_handles_malformed_shapes_without_crashing() -> None
     assert summary["non_object_edges"] == 2
     assert summary["missing_endpoint_edges"] == 1
     assert summary["dangling_endpoint_edges"] == 2
+    assert summary["unclassified_endpoint_edges"] == 2
     assert summary["valid_candidate_edges"] == 1
     assert summary["post_build_error"].startswith("TypeError:")
+
+
+def test_diagnose_extraction_classifies_endpoint_loss_categories(tmp_path: Path) -> None:
+    root_prefix = normalize_id(str(tmp_path))
+    extraction = {
+        "nodes": [{"id": "app", "label": "app.py", "file_type": "code"}],
+        "edges": [
+            {
+                "source": "app",
+                "target": "pathlib",
+                "relation": "imports",
+                "external": True,
+            },
+            {
+                "source": "app",
+                "target": "models_base",
+                "relation": "imports_from",
+                "unresolved_internal": True,
+            },
+            {
+                "source": f"{root_prefix}_pkg_app",
+                "target": "app",
+                "relation": "indirect_call",
+            },
+            {
+                "source": "app",
+                "target": "mystery",
+                "relation": "references",
+            },
+        ],
+    }
+
+    summary = diagnose_extraction(extraction, root=tmp_path)
+
+    assert summary["dangling_endpoint_edges"] == 4
+    assert summary["external_endpoint_edges"] == 1
+    assert summary["unresolved_internal_endpoint_edges"] == 1
+    assert summary["malformed_endpoint_edges"] == 1
+    assert summary["unclassified_endpoint_edges"] == 1
 
 
 def test_diagnose_extraction_handles_non_list_nodes_and_edges() -> None:
@@ -239,7 +284,7 @@ def test_diagnostic_json_report_is_serializable(tmp_path: Path) -> None:
     summary = diagnose_file(graph_path, directed=True)
     payload = format_diagnostic_json(summary)
 
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["summary"]["raw_edge_count"] == 7
     assert "producer_suppression" in payload
     json.dumps(payload)
@@ -399,7 +444,7 @@ def test_diagnose_multigraph_cli_json_output(monkeypatch, tmp_path: Path, capsys
     mainmod.main()
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["summary"]["directed_same_endpoint_collapsed_edges"] == 3
 
 

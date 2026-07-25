@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import networkx as nx
+from graphify.ids import normalize_id
 
 
 _SUPPRESSION_DECL_RE = re.compile(r"^\s*(?P<name>seen_[A-Za-z0-9_]+)\s*[:=]")
@@ -42,7 +43,7 @@ def _node_ids(extraction: dict[str, Any]) -> set[str]:
     }
 
 
-def _canonical_edge(edge: Any) -> dict[str, str]:
+def _canonical_edge(edge: Any) -> dict[str, Any]:
     if not isinstance(edge, dict):
         return {
             "source": "",
@@ -52,6 +53,8 @@ def _canonical_edge(edge: Any) -> dict[str, str]:
             "source_file": "",
             "source_location": "",
             "context": "",
+            "external": False,
+            "unresolved_internal": False,
             "_invalid": "non_object_edge",
         }
     source = edge.get("source", edge.get("from"))
@@ -64,8 +67,31 @@ def _canonical_edge(edge: Any) -> dict[str, str]:
         "source_file": _safe_text(edge.get("source_file")),
         "source_location": _safe_text(edge.get("source_location")),
         "context": _safe_text(edge.get("context")),
+        "external": edge.get("external") is True,
+        "unresolved_internal": edge.get("unresolved_internal") is True,
         "_invalid": "",
     }
+
+
+def _malformed_endpoint(source: str, target: str, root: str | Path | None) -> bool:
+    """Detect machine-absolute endpoint ids that escaped canonical remapping."""
+    endpoints = (source.replace("\\", "/"), target.replace("\\", "/"))
+    if any(
+        value.startswith("/")
+        or re.match(r"^[A-Za-z]:/", value)
+        for value in endpoints
+    ):
+        return True
+    if root is None:
+        return False
+    try:
+        prefix = normalize_id(str(Path(root).resolve()))
+    except OSError:
+        prefix = normalize_id(str(root))
+    return bool(prefix) and any(
+        value == prefix or value.startswith(prefix + "_")
+        for value in endpoints
+    )
 
 
 def _exact_signature(edge: Any) -> str:
@@ -184,8 +210,29 @@ def diagnose_extraction(
     non_object_edges = 0
     missing_endpoint_edges = 0
     dangling_endpoint_edges = 0
+    external_endpoint_edges = 0
+    unresolved_internal_endpoint_edges = 0
+    malformed_endpoint_edges = 0
+    unclassified_endpoint_edges = 0
     self_loop_edges = 0
     valid_candidate_edges = 0
+    endpoint_examples: dict[str, list[dict[str, str]]] = {
+        "external": [],
+        "unresolved_internal": [],
+        "malformed": [],
+        "unclassified": [],
+    }
+
+    def _remember(category: str, edge: dict[str, Any]) -> None:
+        if max_examples <= 0 or len(endpoint_examples[category]) >= max_examples:
+            return
+        endpoint_examples[category].append({
+            "source": edge["source"],
+            "target": edge["target"],
+            "relation": edge["relation"],
+            "source_file": edge["source_file"],
+            "source_location": edge["source_location"],
+        })
 
     for edge in canonical_edges:
         if edge["_invalid"]:
@@ -198,6 +245,18 @@ def diagnose_extraction(
             continue
         if source not in node_ids or target not in node_ids:
             dangling_endpoint_edges += 1
+            if _malformed_endpoint(source, target, root):
+                malformed_endpoint_edges += 1
+                _remember("malformed", edge)
+            elif edge["external"]:
+                external_endpoint_edges += 1
+                _remember("external", edge)
+            elif edge["unresolved_internal"]:
+                unresolved_internal_endpoint_edges += 1
+                _remember("unresolved_internal", edge)
+            else:
+                unclassified_endpoint_edges += 1
+                _remember("unclassified", edge)
             continue
         if source == target:
             self_loop_edges += 1
@@ -252,6 +311,10 @@ def diagnose_extraction(
         "non_object_edges": non_object_edges,
         "missing_endpoint_edges": missing_endpoint_edges,
         "dangling_endpoint_edges": dangling_endpoint_edges,
+        "external_endpoint_edges": external_endpoint_edges,
+        "unresolved_internal_endpoint_edges": unresolved_internal_endpoint_edges,
+        "malformed_endpoint_edges": malformed_endpoint_edges,
+        "unclassified_endpoint_edges": unclassified_endpoint_edges,
         "self_loop_edges": self_loop_edges,
         "valid_candidate_edges": valid_candidate_edges,
         "exact_duplicate_edges": _count_extra(exact_counts),
@@ -274,6 +337,7 @@ def diagnose_extraction(
         "post_build_error": build_error,
         "producer_suppression": scan_producer_suppression_sites(suppression_path),
         "examples": examples,
+        "endpoint_examples": endpoint_examples,
     }
 
 
@@ -329,13 +393,14 @@ def diagnose_file(
 
 def format_diagnostic_json(summary: dict[str, Any]) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "summary": {
             key: value
             for key, value in summary.items()
-            if key not in {"examples", "producer_suppression"}
+            if key not in {"examples", "endpoint_examples", "producer_suppression"}
         },
         "examples": summary.get("examples", []),
+        "endpoint_examples": summary.get("endpoint_examples", {}),
         "producer_suppression": summary.get("producer_suppression", {}),
         "notes": [
             "Diagnostics are read-only.",
@@ -358,6 +423,13 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
         f"valid_candidate_edges: {summary['valid_candidate_edges']}",
         f"missing_endpoint_edges: {summary['missing_endpoint_edges']}",
         f"dangling_endpoint_edges: {summary['dangling_endpoint_edges']}",
+        f"external_endpoint_edges: {summary.get('external_endpoint_edges', 0)}",
+        (
+            "unresolved_internal_endpoint_edges: "
+            f"{summary.get('unresolved_internal_endpoint_edges', 0)}"
+        ),
+        f"malformed_endpoint_edges: {summary.get('malformed_endpoint_edges', 0)}",
+        f"unclassified_endpoint_edges: {summary.get('unclassified_endpoint_edges', 0)}",
         f"self_loop_edges: {summary['self_loop_edges']}",
         f"exact_duplicate_edges: {summary['exact_duplicate_edges']}",
         f"directed_unique_endpoint_pairs: {summary['directed_unique_endpoint_pairs']}",
