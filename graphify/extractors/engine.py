@@ -3581,6 +3581,41 @@ def _extract_generic(
         # node orphaned (#1050). Treat decorated_definition as a transparent
         # wrapper so parent_class_nid propagates to the real function node.
         if t == "decorated_definition":
+            # Applying a decorator emitted no edge to the decorator symbol, so
+            # `affected <decorator>` reported nothing for the functions it wraps
+            # (#2154). Emit the same shape TS/JS already emits in
+            # `_ts_emit_decorator_edges`: a `references` edge (context=
+            # "decorator") from the decorated function/class to each decorator,
+            # resolved via ensure_named_node so an imported decorator becomes a
+            # sourceless stub the corpus rewire collapses onto its definition.
+            # The owner ids mirror the definition branches below/above verbatim,
+            # so the edge lands on the node the walk is about to create.
+            if config.ts_module == "tree_sitter_python":
+                inner = node.child_by_field_name("definition")
+                inner_name = None
+                if inner is not None:
+                    name_node = inner.child_by_field_name("name")
+                    inner_name = _read_text(name_node, source) if name_node else None
+                # A name that normalizes to nothing is skipped by the definition
+                # branches (#1899), so an edge to it would dangle.
+                if inner_name and normalize_id(inner_name):
+                    if inner.type in config.class_types:
+                        owner_nid = _make_id(stem, ".".join(namespace_stack), inner_name)
+                    elif parent_class_nid:
+                        owner_nid = _make_id(parent_class_nid, inner_name)
+                    else:
+                        owner_nid = _make_id(stem, inner_name)
+                    for child in node.children:
+                        if child.type != "decorator":
+                            continue
+                        deco_name = _python_decorator_name(child, source)
+                        if not deco_name:
+                            continue
+                        deco_line = child.start_point[0] + 1
+                        target = ensure_named_node(deco_name, deco_line)
+                        if target != owner_nid:
+                            add_edge(owner_nid, target, "references", deco_line,
+                                     context="decorator")
             for child in node.children:
                 walk(child, parent_class_nid=parent_class_nid)
             return
@@ -4479,6 +4514,28 @@ def _extract_generic(
         if cs_table:
             result["csharp_type_table"] = {"path": str_path, "table": cs_table}
     return result
+
+def _python_decorator_name(deco_node, source: bytes) -> str | None:
+    """Return the head symbol of a Python `decorator` node.
+
+    The Python twin of `_ts_decorator_name`, differing only in grammar node
+    names: `@traced` -> the identifier; `@retry(times=3)` -> the `function` of
+    the `call`; `@app.route("/")` / `@mod.deco` -> the `attribute` (the symbol
+    itself, not the module alias it is reached through).
+    """
+    for child in deco_node.children:
+        if not child.is_named:
+            continue
+        target = child
+        if target.type == "call":
+            target = target.child_by_field_name("function") or target
+        if target.type == "attribute":
+            attr = target.child_by_field_name("attribute")
+            return _read_text(attr, source) if attr else None
+        if target.type == "identifier":
+            return _read_text(target, source)
+        return None
+    return None
 
 def _ts_decorator_name(deco_node, source: bytes) -> str | None:
     """Return the head symbol of a TS `decorator` node.
