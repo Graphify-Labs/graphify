@@ -76,7 +76,7 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
-def global_add(source_path: Path, repo_tag: str) -> dict:
+def global_add(source_path: Path, repo_tag: str, *, multigraph: bool = False) -> dict:
     """Add or update a project graph in the global graph.
 
     Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped.
@@ -112,12 +112,33 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         src_G = _jg.node_link_graph(data, edges="links")
     except TypeError:
         src_G = _jg.node_link_graph(data)
+    if src_G.is_multigraph() and not multigraph:
+        raise ValueError(
+            "source graph is a multigraph; pass --multigraph to preserve "
+            "parallel relations in the global graph"
+        )
 
     # Prefix IDs for cross-project isolation
     prefixed = prefix_graph_for_global(src_G, repo_tag)
 
     # Load global graph and prune stale nodes for this repo
     G = _load_global_graph()
+    if multigraph and not isinstance(G, nx.MultiDiGraph):
+        from graphify.build import canonical_edge_key
+
+        upgraded = nx.MultiDiGraph()
+        upgraded.add_nodes_from(G.nodes(data=True))
+        for source, target, attrs in G.edges(data=True):
+            copied = dict(attrs)
+            true_source = copied.get("_src", source)
+            true_target = copied.get("_tgt", target)
+            upgraded.add_edge(
+                true_source,
+                true_target,
+                key=canonical_edge_key(str(true_source), str(true_target), copied),
+                **copied,
+            )
+        G = upgraded
     removed = prune_repo_from_graph(G, repo_tag)
 
     # Merge external-library nodes (no source_file) by label to avoid duplication
@@ -137,11 +158,27 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     for node, data in prefixed.nodes(data=True):
         if node not in remap:
             G.add_node(node, **data)
-    for u, v, data in prefixed.edges(data=True):
-        u = remap.get(u, u)
-        v = remap.get(v, v)
-        if u != v:  # don't introduce self-loops via remapping
-            G.add_edge(u, v, **data)
+    if G.is_multigraph():
+        if prefixed.is_multigraph():
+            rows = prefixed.edges(keys=True, data=True)
+        else:
+            from graphify.build import canonical_edge_key
+
+            rows = (
+                (u, v, canonical_edge_key(str(u), str(v), attrs), attrs)
+                for u, v, attrs in prefixed.edges(data=True)
+            )
+        for u, v, key, data in rows:
+            u = remap.get(u, u)
+            v = remap.get(v, v)
+            if u != v:
+                G.add_edge(u, v, key=key, **data)
+    else:
+        for u, v, data in prefixed.edges(data=True):
+            u = remap.get(u, u)
+            v = remap.get(v, v)
+            if u != v:  # don't introduce self-loops via remapping
+                G.add_edge(u, v, **data)
 
     added = prefixed.number_of_nodes() - len(remap)
     _save_global_graph(G)

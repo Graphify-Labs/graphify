@@ -99,6 +99,10 @@ def test_diagnose_extraction_categorizes_same_endpoint_collapse() -> None:
     assert summary["malformed_endpoint_edges"] == 0
     assert summary["self_loop_edges"] == 1
     assert summary["exact_duplicate_edges"] == 1
+    assert summary["canonical_distinct_candidate_edges"] == 4
+    assert summary["exact_duplicate_occurrences"] == 1
+    assert summary["distinct_parallel_edge_instances"] == 2
+    assert summary["opposite_direction_endpoint_pairs"] == 0
     assert summary["directed_unique_endpoint_pairs"] == 2
     assert summary["directed_same_endpoint_collapsed_edges"] == 3
     assert summary["same_endpoint_group_count"] == 1
@@ -106,6 +110,20 @@ def test_diagnose_extraction_categorizes_same_endpoint_collapse() -> None:
     assert summary["source_location_variant_groups"] == 1
     assert summary["post_build_graph_type"] == "DiGraph"
     assert summary["post_build_edge_count"] == 2
+    assert summary["post_build_lost_distinct_edges"] == 2
+
+
+def test_diagnose_extraction_multigraph_reports_zero_distinct_loss() -> None:
+    summary = diagnose_extraction(
+        _diagnostic_fixture(),
+        directed=True,
+        multigraph=True,
+    )
+
+    assert summary["post_build_graph_type"] == "MultiDiGraph"
+    assert summary["post_build_edge_count"] == 4
+    assert summary["post_build_preserved_parallel_edges"] == 2
+    assert summary["post_build_lost_distinct_edges"] == 0
 
 
 def test_diagnose_extraction_accepts_node_link_links_key() -> None:

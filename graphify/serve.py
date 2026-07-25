@@ -737,6 +737,22 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     return H
 
 
+def _bidirectional_neighbors(G: nx.Graph, node: str):
+    """Yield each adjacent node once, traversing both directions."""
+    if not G.is_directed():
+        yield from G.neighbors(node)
+        return
+    seen: set[str] = set()
+    for neighbor in G.successors(node):
+        if neighbor not in seen:
+            seen.add(neighbor)
+            yield neighbor
+    for neighbor in G.predecessors(node):
+        if neighbor not in seen:
+            seen.add(neighbor)
+            yield neighbor
+
+
 def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
     # Compute hub threshold: nodes above this degree are not expanded as transit.
     # p99 of degree distribution, floored at 50 to avoid over-blocking small graphs.
@@ -758,7 +774,7 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
             # is the starting node should still be explored).
             if n not in seed_set and G.degree(n) >= hub_threshold:
                 continue
-            for neighbor in G.neighbors(n):
+            for neighbor in _bidirectional_neighbors(G, n):
                 if neighbor not in visited:
                     next_frontier.add(neighbor)
                     edges_seen.append((n, neighbor))
@@ -786,7 +802,7 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
         visited.add(node)
         if node not in seed_set and G.degree(node) >= hub_threshold:
             continue
-        for neighbor in G.neighbors(node):
+        for neighbor in _bidirectional_neighbors(G, node):
             if neighbor not in visited:
                 stack.append((neighbor, d + 1))
                 edges_seen.append((node, neighbor))
@@ -858,39 +874,50 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         lines.append(line)
     for u, v in edges:
         if u in nodes and v in nodes:
-            raw = G[u][v]
-            d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
+            from graphify.build import edge_datas
+
+            oriented_datas: list[tuple[str, str, dict]] = []
+            if G.has_edge(u, v):
+                oriented_datas.extend((u, v, data) for data in edge_datas(G, u, v))
+            if G.is_directed() and G.has_edge(v, u):
+                oriented_datas.extend((v, u, data) for data in edge_datas(G, v, u))
+            for stored_src, stored_tgt, d in oriented_datas:
             # (u, v) is BFS/DFS visit order, not necessarily the true edge
             # direction: on an undirected graph G.neighbors() walks callers
             # and callees alike, so a caller->callee edge renders backwards
             # whenever the callee is visited first. _src/_tgt (stashed on the
             # edge data by the `query` CLI loader) carry the real direction;
             # fall back to (u, v) for graphs/edges that don't set them.
-            src = d.get("_src", u)
-            tgt = d.get("_tgt", v)
+                src = d.get("_src", stored_src)
+                tgt = d.get("_tgt", stored_tgt)
             # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
             # graph.json): only trust them when they name exactly this edge's
             # endpoints, else fall back to (u, v). Without this, G.nodes[src]
             # would KeyError on an unknown id (#2080 review).
-            if {src, tgt} != {u, v}:
-                src, tgt = u, v
-            context = d.get("context")
-            context_suffix = f" context={sanitize_label(str(context))}" if context else ""
+                if {src, tgt} != {u, v}:
+                    src, tgt = stored_src, stored_tgt
+                context = d.get("context")
+                context_suffix = f" context={sanitize_label(str(context))}" if context else ""
             # The relation SITE (call/import/reference line in the source's
             # file), not a def line — so "who calls X" cites a clickable call
             # location, not the caller's def (#BUG1).
-            _loc = str(d.get("source_location") or "")
-            at_suffix = (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
-                if _loc else ""
-            )
-            line = (
-                f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
-                f"--{sanitize_label(str(d.get('relation', '')))} "
-                f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
-            )
-            lines.append(line)
+                _loc = str(d.get("source_location") or "")
+                at_suffix = (
+                    f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
+                    if _loc else ""
+                )
+                occurrence_count = d.get("occurrence_count", 1)
+                occurrence_suffix = (
+                    f" occurrences={occurrence_count}" if occurrence_count != 1 else ""
+                )
+                line = (
+                    f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
+                    f"--{sanitize_label(str(d.get('relation', '')))} "
+                    f"[{sanitize_label(str(d.get('confidence', '')))}"
+                    f"{context_suffix}{occurrence_suffix}]--> "
+                    f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
+                )
+                lines.append(line)
     output = "\n".join(lines)
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
@@ -1394,23 +1421,25 @@ def _build_server(graph_path: str):
                 if loc else ""
             )
         for nb in G.successors(nid):
-            d = edge_data(G, nid, nb)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
+            for d in edge_datas(G, nid, nb):
+                rel = d.get("relation", "")
+                if rel_filter and rel_filter not in rel.lower():
+                    continue
+                lines.append(
+                    f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
+                    f"[{sanitize_label(str(rel))}] "
+                    f"[{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                )
         for nb in G.predecessors(nid):
-            d = edge_data(G, nb, nid)
-            rel = d.get("relation", "")
-            if rel_filter and rel_filter not in rel.lower():
-                continue
-            lines.append(
-                f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
-            )
+            for d in edge_datas(G, nb, nid):
+                rel = d.get("relation", "")
+                if rel_filter and rel_filter not in rel.lower():
+                    continue
+                lines.append(
+                    f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
+                    f"[{sanitize_label(str(rel))}] "
+                    f"[{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                )
         budget = int(arguments.get("token_budget", 2000))
         return _cut_lines_to_budget(
             lines, budget, "Narrow with relation_filter or use get_node for a specific symbol"

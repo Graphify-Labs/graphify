@@ -734,6 +734,7 @@ graphify extract ./docs --api-timeout 900      # longer HTTP timeout for slow lo
 graphify extract ./docs --google-workspace     # export .gdoc/.gsheet/.gslides via gws before extraction
 graphify extract ./src --no-gitignore          # include git-ignored source; still honor .graphifyignore
 graphify extract ./docs --mode deep            # richer semantic extraction via extended system prompt
+graphify extract ./src --multigraph            # preserve directed parallel relations with stable edge keys
 graphify extract ./docs --no-cluster           # raw extraction only, skip clustering
 graphify extract ./docs --timing               # print per-stage wall-clock timings to stderr (also works on cluster-only)
 graphify extract ./docs --force                # overwrite graph.json even if new graph has fewer nodes (use after refactors or to clear ghost duplicates)

@@ -69,6 +69,25 @@ def test_extract_usage_advertises_code_only(tmp_path):
     )
 
 
+def test_extract_multigraph_persists_mode_with_no_cluster(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text(
+        "class B:\n    pass\n\n"
+        "def use(value: B):\n    return B()\n"
+    )
+
+    result = _run(repo, "--code-only", "--multigraph", "--no-cluster")
+
+    assert result.returncode == 0, result.stderr
+    graph = json.loads((repo / "graphify-out" / "graph.json").read_text())
+    assert graph["directed"] is True
+    assert graph["multigraph"] is True
+    assert all("key" in edge for edge in graph["links"])
+    config = json.loads((repo / "graphify-out" / ".graphify_build.json").read_text())
+    assert config["multigraph"] is True
+
+
 def _run_relative_out(repo: Path, *extra: str):
     """Like _run but with a RELATIVE GRAPHIFY_OUT so --out/--output controls the
     parent dir (an absolute GRAPHIFY_OUT would override the flag)."""

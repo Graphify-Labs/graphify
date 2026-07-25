@@ -387,7 +387,7 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ### Step 4 - Build graph, cluster, analyze, generate outputs
 
-**Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source->target), otherwise `False` (the default undirected `Graph`). Substitute it everywhere it appears, the same way you substitute `INPUT_PATH` - do not leave the literal `IS_DIRECTED` in the code.
+**Before starting:** replace `IS_MULTIGRAPH` with `True` when `--multigraph` was given; it implies `IS_DIRECTED=True` and builds a `MultiDiGraph`. Otherwise use `False`. Replace `IS_DIRECTED` with `True` for `--directed`, otherwise `False`. Substitute both placeholders everywhere they appear.
 
 ```bash
 mkdir -p graphify-out
@@ -403,7 +403,7 @@ from pathlib import Path
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 detection  = json.loads(Path('.graphify_detect.json').read_text())
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build_from_json(extraction, directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)
 # Guard BEFORE any write: an empty extraction must not clobber a good graph.json /
 # GRAPH_REPORT.md / analysis sidecar. Check immediately after build (#1392).
 if G.number_of_nodes() == 0:
@@ -464,7 +464,7 @@ extraction = json.loads(Path('.graphify_extract.json').read_text())
 detection  = json.loads(Path('.graphify_detect.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build_from_json(extraction, directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
@@ -502,7 +502,7 @@ extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 labels_raw = json.loads(Path('.graphify_labels.json').read_text()) if Path('.graphify_labels.json').exists() else {}
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build_from_json(extraction, directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 labels = {int(k): v for k, v in labels_raw.items()}
@@ -533,7 +533,7 @@ extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 labels_raw = json.loads(Path('.graphify_labels.json').read_text()) if Path('.graphify_labels.json').exists() else {}
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build_from_json(extraction, directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 labels = {int(k): v for k, v in labels_raw.items()}
 
@@ -556,7 +556,7 @@ from graphify.build import build_from_json
 from graphify.export import to_cypher
 from pathlib import Path
 
-G = build_from_json(json.loads(Path('.graphify_extract.json').read_text()), directed=IS_DIRECTED)
+G = build_from_json(json.loads(Path('.graphify_extract.json').read_text()), directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)
 to_cypher(G, 'graphify-out/cypher.txt')
 print('cypher.txt written - import with: cypher-shell < graphify-out/cypher.txt')
 "
@@ -574,7 +574,7 @@ from pathlib import Path
 
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build_from_json(extraction, directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 
 result = push_to_neo4j(G, uri='NEO4J_URI', user='NEO4J_USER', password='NEO4J_PASSWORD', communities=communities)
@@ -597,7 +597,7 @@ extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 labels_raw = json.loads(Path('.graphify_labels.json').read_text()) if Path('.graphify_labels.json').exists() else {}
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build_from_json(extraction, directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 labels = {int(k): v for k, v in labels_raw.items()}
 
@@ -618,7 +618,7 @@ from pathlib import Path
 extraction = json.loads(Path('.graphify_extract.json').read_text())
 analysis   = json.loads(Path('.graphify_analysis.json').read_text())
 
-G = build_from_json(extraction, directed=IS_DIRECTED)
+G = build_from_json(extraction, directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 
 to_graphml(G, communities, 'graphify-out/graph.graphml')
@@ -824,7 +824,7 @@ G_existing = json_graph.node_link_graph(existing_data, edges='links')
 
 # Load new extraction
 new_extraction = json.loads(Path('.graphify_extract.json').read_text())
-G_new = build_from_json(new_extraction, directed=IS_DIRECTED)
+G_new = build_from_json(new_extraction, directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)
 
 # Merge: new nodes/edges into existing graph
 G_existing.update(G_new)
@@ -848,7 +848,7 @@ from pathlib import Path
 # Load old graph (before update) from backup written before merge
 old_data = json.loads(Path('.graphify_old.json').read_text()) if Path('.graphify_old.json').exists() else None
 new_extract = json.loads(Path('.graphify_extract.json').read_text())
-G_new = build_from_json(new_extract, directed=IS_DIRECTED)
+G_new = build_from_json(new_extract, directed=IS_DIRECTED, multigraph=IS_MULTIGRAPH)
 
 if old_data:
     G_old = json_graph.node_link_graph(old_data, edges='links')
