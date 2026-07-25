@@ -676,3 +676,82 @@ def test_uninstall_removes_merge_driver_keeps_other_attrs(tmp_path):
     content = (repo / ".gitattributes").read_text(encoding="utf-8")
     assert "*.png binary" in content
     assert "merge=graphify" not in content
+
+
+@pytest.mark.parametrize("exe", [
+    r"C:\Users\First Last\AppData\Roaming\uv\tools\graphifyy\Scripts\python.exe",
+    r"C:\Program Files\Python312\python.exe",
+    "/home/first last/.local/share/uv/tools/graphifyy/bin/python",
+])
+def test_pinned_python_accepts_paths_containing_spaces(exe, monkeypatch):
+    """#2166: a space must not empty the pin.
+
+    The install-time allowlist had no space, so `sys.executable` under any Windows
+    profile whose name contains one (`C:\\Users\\First Last\\...`, or the very common
+    `C:\\Program Files\\...`) was rejected wholesale and the hook shipped `_PINNED=''`.
+    Every interpreter probe then failed and each commit no-op'd with the "could not
+    locate a Python" warning, so the graph never rebuilt.
+    """
+    import sys as _sys
+
+    from graphify.hooks import _pinned_python
+
+    monkeypatch.setattr(_sys, "executable", exe)
+    assert _pinned_python() == exe, "a path containing a space must still be pinned"
+
+
+@pytest.mark.parametrize("exe", [
+    r"C:\Users\evil\python.exe; rm -rf /",
+    "/tmp/py`id`",
+    "/tmp/py$(id)",
+    "/tmp/py$IFS",
+    r"C:\Users\ev'il\python.exe",
+    '/tmp/py"quote',
+])
+def test_pinned_python_still_rejects_shell_metacharacters(exe, monkeypatch):
+    """Widening the allowlist for spaces (#2166) must not admit anything that can
+    start a substitution, end the single-quoted assignment, or chain a command."""
+    import sys as _sys
+
+    from graphify.hooks import _pinned_python
+
+    monkeypatch.setattr(_sys, "executable", exe)
+    assert _pinned_python() == "", f"dangerous interpreter path accepted: {exe!r}"
+
+
+def test_merge_driver_quotes_interpreter_with_spaces(tmp_path, monkeypatch):
+    """#2166: git runs the merge driver through a shell, so a pinned path with a
+    space has to be quoted or the driver splits into two words and never runs."""
+    import subprocess
+    import sys as _sys
+
+    from graphify.hooks import install
+
+    exe = r"C:\Users\First Last\AppData\Roaming\uv\tools\graphifyy\Scripts\python.exe"
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(_sys, "executable", exe)
+    install(repo)
+
+    driver = subprocess.run(
+        ["git", "-C", str(repo), "config", "--get", "merge.graphify.driver"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert driver.startswith(f'"{exe}"'), f"interpreter not quoted in merge driver: {driver!r}"
+    assert driver.endswith("-m graphify merge-driver %O %A %B")
+
+
+def test_install_pins_interpreter_path_with_spaces(tmp_path, monkeypatch):
+    """#2166 end to end: the emitted hooks must carry the real interpreter, not ''."""
+    import sys as _sys
+
+    from graphify.hooks import install
+
+    exe = r"C:\Users\First Last\AppData\Roaming\uv\tools\graphifyy\Scripts\python.exe"
+    repo = _make_git_repo(tmp_path)
+    monkeypatch.setattr(_sys, "executable", exe)
+    install(repo)
+
+    for name in ("post-commit", "post-checkout"):
+        script = (repo / ".git" / "hooks" / name).read_text()
+        assert f"_PINNED='{exe}'" in script, f"{name} did not pin the spaced interpreter"
+        assert "_PINNED=''" not in script, f"{name} pinned an empty interpreter (#2166)"
