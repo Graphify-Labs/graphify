@@ -2899,10 +2899,69 @@ def _resolve_objc_member_calls(
         })
 
 
+# Literal HTTP contracts are a high-signal cross-file relationship: a frontend
+# request should connect to the backend route that implements it. Dynamic paths
+# are intentionally skipped rather than guessed.
+_HTTP_ROUTE_RE = re.compile(r"(?:app|router|server)\.(get|post|put|patch|delete)\s*\(\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+_HTTP_CONDITIONAL_ROUTE_RE = re.compile(r"request\.method\s*={2,3}\s*[\"']([A-Z]+)[\"']\s*&&\s*requestUrl\.pathname\s*={2,3}\s*[\"']([^\"']+)[\"']")
+_HTTP_CLIENT_RE = re.compile(r"(?:fetch|[A-Za-z_$][\w$]*(?:Request|Fetch))\s*\(\s*[\"'`](/api/[^\"'`?${}]+)")
+_HTTP_JS_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}
+
+
+def _resolve_javascript_http_contracts(per_file: list[dict], all_nodes: list[dict], all_edges: list[dict]) -> None:
+    """Add endpoint nodes and edges for literal JS/TS API contracts."""
+    file_nodes = {
+        str(node["source_file"]): node["id"] for node in all_nodes
+        if node.get("source_file") and node.get("label") == Path(str(node["source_file"])).name
+    }
+    paths = sorted({Path(source) for source in file_nodes if Path(source).suffix.lower() in _HTTP_JS_SUFFIXES})
+    known_nodes = {node["id"] for node in all_nodes}
+    known_edges = {(edge.get("source"), edge.get("target"), edge.get("relation")) for edge in all_edges}
+    routes: dict[str, set[str]] = {}
+
+    def endpoint_id(method: str, route: str) -> str:
+        return _make_id("http", method.lower(), route)
+
+    def edge(source: str, target: str, relation: str, source_file: str, line: int) -> None:
+        key = (source, target, relation)
+        if key in known_edges:
+            return
+        known_edges.add(key)
+        all_edges.append({"source": source, "target": target, "relation": relation,
+                          "context": "http", "confidence": "EXTRACTED", "confidence_score": 1.0,
+                          "source_file": source_file, "source_location": f"L{line}", "weight": 1.0})
+
+    for path in paths:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        source_file, file_node = str(path), file_nodes[str(path)]
+        for match in list(_HTTP_ROUTE_RE.finditer(text)) + list(_HTTP_CONDITIONAL_ROUTE_RE.finditer(text)):
+            method, route = match.group(1).upper(), match.group(2)
+            if not route.startswith("/api/"):
+                continue
+            routes.setdefault(route, set()).add(method)
+            target, line = endpoint_id(method, route), text.count("\n", 0, match.start()) + 1
+            if target not in known_nodes:
+                known_nodes.add(target)
+                all_nodes.append({"id": target, "label": f"{method} {route}", "file_type": "concept",
+                                  "source_file": source_file, "source_location": f"L{line}"})
+            edge(target, file_node, "implements", source_file, line)
+
+    for path in paths:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        source_file, file_node = str(path), file_nodes[str(path)]
+        for match in _HTTP_CLIENT_RE.finditer(text):
+            route, methods = match.group(1), routes.get(match.group(1), set())
+            if len(methods) == 1:
+                edge(file_node, endpoint_id(next(iter(methods)), route), "calls", source_file, text.count("\n", 0, match.start()) + 1)
+
+
 # Register the cross-file, language-specific member-call resolvers into the shared
 # registry (framework lives in graphify.resolver_registry). A new language plugs in
 # by adding one register() call below — no edits to extract()'s body. Order
 # preserved from the prior inlined wiring: Swift (#1356) before Python (#1446).
+register_language_resolver(
+    LanguageResolver("javascript_http_contracts", frozenset(_HTTP_JS_SUFFIXES), _resolve_javascript_http_contracts)
+)
 register_language_resolver(
     LanguageResolver("swift_member_calls", frozenset({".swift"}), _resolve_swift_member_calls)
 )
