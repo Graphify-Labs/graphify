@@ -1460,6 +1460,18 @@ def _stat_and_hash(path_str: str) -> tuple[str, float, str] | None:
         return None
 
 
+def _nfc(s: str) -> str:
+    """NFC-normalize a path string used as a manifest key.
+
+    On macOS, ``os.walk`` / ``getcwd`` yield NFD paths while path literals
+    and many skill-substituted roots are NFC. Raw string compare then treats
+    every file as both deleted and new, forcing a full re-extract (#2221).
+    Same boundary as the Office sidecar hash fix (#1226).
+    """
+    import unicodedata
+    return unicodedata.normalize("NFC", s)
+
+
 def _to_relative_for_storage(key: str, root: Path) -> str:
     """Return ``key`` as a forward-slash relative path from ``root``.
 
@@ -1517,14 +1529,19 @@ def load_manifest(
     manifests with absolute keys pass through unchanged, so a graphify-out/
     written by an older version (or by a caller that didn't supply ``root``
     to :func:`save_manifest`) remains readable.
+
+    Keys are NFC-normalized on load so a manifest written under one Unicode
+    form still matches a scan that yields the other (#2221).
     """
     try:
         raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     except Exception:
         return {}
-    if root is None or not isinstance(raw, dict):
+    if not isinstance(raw, dict):
         return raw
-    return {_to_absolute_from_storage(k, root): v for k, v in raw.items()}
+    if root is None:
+        return {_nfc(k): v for k, v in raw.items()}
+    return {_nfc(_to_absolute_from_storage(k, root)): v for k, v in raw.items()}
 
 
 def save_manifest(
@@ -1572,26 +1589,39 @@ def save_manifest(
     """
     existing = load_manifest(manifest_path, root=root)
 
-    scan_set: set[str] | None = set(scan_corpus) if scan_corpus is not None else None
-    clear_set: set[str] | None = set(clear_semantic) if clear_semantic is not None else None
+    # Index both raw and NFC forms so scan/clear membership survives the
+    # same NFC/NFD mismatch that breaks manifest lookups (#2221).
+    def _path_index(paths: set[str] | list[str] | None) -> set[str] | None:
+        if paths is None:
+            return None
+        indexed: set[str] = set()
+        for p in paths:
+            indexed.add(p)
+            indexed.add(_nfc(p))
+        return indexed
+
+    scan_set = _path_index(scan_corpus)
+    clear_set = _path_index(clear_semantic)
     try:
         root_res: Path | None = Path(root).resolve() if root is not None else None
     except (OSError, RuntimeError):
         root_res = Path(root) if root is not None else None
 
     def _in_scan(path_str: str) -> bool:
-        if path_str in scan_set:
+        if path_str in scan_set or _nfc(path_str) in scan_set:
             return True
         try:
-            return str(Path(path_str).resolve()) in scan_set
+            resolved = str(Path(path_str).resolve())
+            return resolved in scan_set or _nfc(resolved) in scan_set
         except (OSError, RuntimeError):
             return False
 
     def _in_clear(path_str: str) -> bool:
-        if path_str in clear_set:
+        if path_str in clear_set or _nfc(path_str) in clear_set:
             return True
         try:
-            return str(Path(path_str).resolve()) in clear_set
+            resolved = str(Path(path_str).resolve())
+            return resolved in clear_set or _nfc(resolved) in clear_set
         except (OSError, RuntimeError):
             return False
 
@@ -1657,7 +1687,8 @@ def save_manifest(
         if f not in hashed:
             continue  # file deleted between detect() and manifest write
         mtime, h = hashed[f]
-        prev = _normalise_entry(existing.get(f, {})) or {}
+        key = _nfc(f)
+        prev = _normalise_entry(existing.get(key, {})) or {}
         entry: dict = {"mtime": mtime}
         if kind in ("ast", "both"):
             entry["ast_hash"] = h
@@ -1668,13 +1699,17 @@ def save_manifest(
         else:
             # Preserve semantic_hash only when content is unchanged
             entry["semantic_hash"] = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
-        manifest[f] = entry
+        manifest[key] = entry
     if root is not None:
         # Persist in portable form: forward-slash relative paths. Keys outside
         # ``root`` (out-of-tree symlinked corpora, --include sources) keep
         # their absolute form so the manifest round-trips on the saving
         # machine even when not every entry can be portably encoded.
-        manifest = {_to_relative_for_storage(k, root): v for k, v in manifest.items()}
+        # NFC after relativize so on-disk keys match what load_manifest
+        # re-anchors and compares against (#2221).
+        manifest = {_nfc(_to_relative_for_storage(k, root)): v for k, v in manifest.items()}
+    else:
+        manifest = {_nfc(k): v for k, v in manifest.items()}
     from graphify.paths import write_json_atomic
     # Atomic write: a crash mid-write must not leave a truncated manifest that
     # detect_incremental then fails to parse.
@@ -1740,7 +1775,8 @@ def detect_incremental(
 
     for ftype, file_list in full["files"].items():
         for f in file_list:
-            stored = manifest.get(f)
+            # Manifest keys are NFC; scan paths may arrive NFD (#2221).
+            stored = manifest.get(_nfc(f))
             try:
                 current_mtime = os.stat(_os_path(Path(f))).st_mtime
             except Exception:
@@ -1791,11 +1827,11 @@ def detect_incremental(
     # current scan was EXCLUDED (ignore rules / --exclude changed) and must
     # not be reported as deleted. Mirrors the watch-side excluded-vs-deleted
     # distinction (#1795).
-    current_files = {f for flist in full["files"].values() for f in flist}
+    current_files = {_nfc(f) for flist in full["files"].values() for f in flist}
     deleted_files: list[str] = []
     excluded_files: list[str] = []
     for f in manifest:
-        if f in current_files:
+        if _nfc(f) in current_files:
             continue
         try:
             alive = Path(f).exists()
