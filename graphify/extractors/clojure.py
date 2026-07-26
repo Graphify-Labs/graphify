@@ -2,23 +2,51 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
 from graphify.extractors.base import _make_id
 
+# Separators that always *mean* "_" in a Clojure name, so rewriting them loses
+# nothing: kebab-case words, namespace dots, and the alias slash. `_` itself is
+# not idiomatic inside a Clojure symbol, which is what makes the mapping safe.
+_BENIGN_SEPARATORS = str.maketrans({"-": "_", ".": "_", "/": "_"})
+
 
 def _clojure_id(*parts: str) -> str:
-    """Build a canonical ID while preserving Clojure's case distinctions."""
+    """Build a canonical ID that preserves the distinctions Clojure makes.
+
+    ``normalize_id`` casefolds and collapses every non-word run to ``_``, which
+    erases two things Clojure treats as significant: symbol case (``Foo`` vs
+    ``foo``) and the sigils that separate a predicate or mutating name from its
+    plain counterpart — ``live?``/``live``, ``save!``/``save``, ``x*``/``x``.
+    Both pairs are ordinary in real code (``live?``/``live`` in one namespace is
+    what first tripped this), and an ID built by normalization alone fuses them
+    into a single node, so two different definitions collide.
+
+    Only the separators in ``_BENIGN_SEPARATORS`` are treated as
+    information-preserving. Any *other* divergence between the exact name and
+    its normalized form means the ID cannot round-trip, so the exact name is
+    pinned with a short digest. Names that normalize faithfully — the common
+    case, including every kebab-case function and dotted namespace — keep their
+    readable ID, so only the genuinely ambiguous ones pay for the disambiguation.
+    """
     node_id = _make_id(*parts)
-    exact = "\0".join(parts)
-    if exact == exact.casefold():
+    # Mirror make_id's join (per-part strip, falsy parts dropped) and
+    # normalize_id's trailing collapse/strip, but rewrite ONLY the benign
+    # separators. Whatever still differs from node_id is information that
+    # normalization destroyed — including case, which node_id casefolds away.
+    joined = "_".join(p.strip("_.") for p in parts if p)
+    faithful = joined.translate(_BENIGN_SEPARATORS)
+    faithful = re.sub(r"_+", "_", faithful).strip("_")
+    if faithful == node_id:
         return node_id
     digest = hashlib.sha1(
-        exact.encode("utf-8"),
+        "\0".join(parts).encode("utf-8"),
         usedforsecurity=False,
     ).hexdigest()[:8]
-    return _make_id(node_id, "case", digest)
+    return _make_id(node_id, "sym", digest)
 
 
 def extract_clojure(path: Path) -> dict:

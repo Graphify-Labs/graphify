@@ -204,6 +204,70 @@ def test_clojure_preserves_case_sensitive_symbols(tmp_path):
     assert not graph.has_edge(ids_by_label["call-lower()"], ids_by_label["Foo()"])
 
 
+def test_clojure_distinguishes_sigil_suffixed_symbols(tmp_path):
+    """A predicate/mutating name and its plain counterpart in one namespace are
+    two definitions, not one. Node IDs come from normalize_id, which collapses
+    every non-word run to `_` and strips it, so `live?`, `save!` and `x*` each
+    normalized onto the bare name — the extractor then hit its own ID-collision
+    assertion and dropped the WHOLE file from the graph (nucleus's
+    domain/templates.clj, which defines `live?` beside `live`)."""
+    source = tmp_path / "sigils.clj"
+    source.write_text(
+        """(ns sample.sigils)
+(defn live? [x] (boolean x))
+(defn live [x] x)
+(defn save! [x] x)
+(defn save [x] x)
+(defn check [x] (live? x))
+(defn use-plain [x] (live x))
+(defn persist [x] (save! x))
+""",
+        encoding="utf-8",
+    )
+
+    result = extract_clojure(source)
+    assert not result.get("error"), result.get("error")
+
+    ids_by_label = {node["label"]: node["id"] for node in result["nodes"]}
+    for label in ("live?()", "live()", "save!()", "save()"):
+        assert label in ids_by_label, f"{label} missing — the file was dropped"
+    assert ids_by_label["live?()"] != ids_by_label["live()"]
+    assert ids_by_label["save!()"] != ids_by_label["save()"]
+
+    # The sigil-free name keeps its readable ID; only the ambiguous one pays.
+    assert ids_by_label["live()"] == "sample_sigils_live"
+    assert "_sym_" in ids_by_label["live?()"]
+
+    # Calls must reach the variant actually named at the call site.
+    calls = _calls(result)
+    assert ("check()", "live?()") in calls
+    assert ("check()", "live()") not in calls
+    assert ("use-plain()", "live()") in calls
+    assert ("use-plain()", "live?()") not in calls
+    assert ("persist()", "save!()") in calls
+    assert ("persist()", "save()") not in calls
+
+
+def test_clojure_kebab_and_dotted_names_keep_readable_ids(tmp_path):
+    """The sigil disambiguation must not tax the common case: `-` and `.` are
+    pure separators that always mean `_`, so kebab-case functions and dotted
+    namespaces keep their plain, greppable IDs rather than a hash suffix."""
+    source = tmp_path / "kebab.clj"
+    source.write_text(
+        """(ns sample.store.send-records)
+(defn fetch-record [id] id)
+""",
+        encoding="utf-8",
+    )
+
+    result = extract_clojure(source)
+    assert not result.get("error"), result.get("error")
+    ids_by_label = {node["label"]: node["id"] for node in result["nodes"]}
+    assert ids_by_label["sample.store.send-records"] == "sample_store_send_records"
+    assert ids_by_label["fetch-record()"].endswith("_fetch_record")
+    assert "_sym_" not in ids_by_label["fetch-record()"]
+
+
 def test_clojure_uses_symbol_names_without_metadata(tmp_path):
     source = tmp_path / "metadata.clj"
     source.write_text(
