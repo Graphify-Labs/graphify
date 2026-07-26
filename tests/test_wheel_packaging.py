@@ -82,3 +82,23 @@ def test_skill_artifact_ships_in_wheel(artifact: Path, wheel_namelist: set[str])
         f"`graphify install` would hard-exit for this host. Check the "
         f"[tool.setuptools.package-data] globs in pyproject.toml."
     )
+
+
+def test_svelte_ast_bridge_ships_in_wheel(wheel_namelist: set[str]) -> None:
+    assert "graphify/vendor/svelte_ast_bridge.mjs" in wheel_namelist
+    assert "graphify/vendor/svelte_ast_bridge.mjs.NOTICES.txt" in wheel_namelist
+
+
+def test_svelte_bridge_ignores_local_dependency_tree() -> None:
+    ignore = REPO / "tools" / "svelte-ast-bridge" / ".gitignore"
+
+    assert ignore.read_text(encoding="utf-8").splitlines() == ["node_modules/"]
+
+
+def test_svelte_bridge_bundle_has_non_brittle_growth_guard() -> None:
+    bundle = PKG / "vendor" / "svelte_ast_bridge.mjs"
+
+    # The pinned compiler + TypeScript semantic stack intentionally costs about
+    # 12.5 MB raw. Keep generous headroom for normal dependency updates while
+    # catching accidental double-bundling or an explosive new dependency.
+    assert bundle.stat().st_size < 20 * 1024 * 1024

@@ -1,0 +1,25 @@
+{
+  "name": "@graphify/svelte-ast-bridge",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "npm run typecheck && node build.mjs",
+    "test": "npm run typecheck && node test/run-schema-corpus.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jridgewell/trace-mapping": "0.3.31",
+    "estree-walker": "3.0.3",
+    "svelte": "5.56.6",
+    "svelte2tsx": "0.7.58",
+    "typescript": "5.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "18.19.130",
+    "esbuild": "0.28.1"
+  }
+}

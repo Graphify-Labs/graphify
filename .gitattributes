@@ -4,3 +4,8 @@
 worked/**/*.html linguist-vendored=true
 graphify-out/**/*.html linguist-vendored=true
 *.html linguist-detectable=false
+
+# Generated dependency bundle and verbatim third-party licenses preserve
+# upstream whitespace so deterministic rebuild hashes remain stable.
+graphify/vendor/svelte_ast_bridge.mjs -whitespace
+graphify/vendor/svelte_ast_bridge.mjs.NOTICES.txt -whitespace
