@@ -1486,12 +1486,18 @@ def _to_relative_for_storage(key: str, root: Path) -> str:
     under its own name. Resolving the key would point the stored entry at
     the symlink target, and the original key would then miss on reload and
     re-extract on every incremental run.
+
+    Both sides of ``relpath`` are NFC'd first: stamped keys may already be
+    NFC while ``Path(root).resolve()`` is NFD on macOS, and a mixed-form
+    compare would mark an in-root file as ``../…`` and keep it absolute
+    (#2221 / #777).
     """
     p = Path(key)
     if not p.is_absolute():
         return key
     try:
-        rel = os.path.relpath(p, Path(root).resolve())
+        base = _nfc(str(Path(root).resolve()))
+        rel = os.path.relpath(_nfc(str(p)), base)
     except (ValueError, OSError):
         return key  # outside root (e.g. Windows cross-drive)
     # ``os.path.relpath`` happily produces ``../foo`` for paths outside
@@ -1510,11 +1516,15 @@ def _to_absolute_from_storage(key: str, root: Path) -> str:
     that newly-loaded manifests from before this change remain readable.
     Uses ``Path(root).resolve()`` so the produced absolute path matches
     what :func:`detect` returns (which also resolves the scan root).
+    NFC both sides so a relative key and an NFD-resolved root still join
+    to the same string form the rest of the manifest path uses (#2221).
     """
     p = Path(key)
     if p.is_absolute():
         return str(p)
-    return str(Path(root).resolve() / p)
+    # NFC the joined result so an NFD-resolved root + relative key lands on
+    # the same form load_manifest / detect_incremental compare against.
+    return _nfc(str(Path(root).resolve() / p))
 
 
 def load_manifest(
