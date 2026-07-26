@@ -187,7 +187,46 @@ def _body_content(content: bytes) -> bytes:
 # skip the cache reads and re-dispatch everything when needed (#1894).
 _stat_index: dict[str, dict] = {}
 _stat_index_root: Path | None = None
+# Key anchor for the ON-DISK index (#2199): the first caller's key-root, i.e.
+# the corpus. Distinct from _stat_index_root, which is the cache-FILE location
+# (cache_root, #1774) — the two differ under --out and must not be conflated.
+_stat_index_anchor: Path | None = None
 _stat_index_dirty: bool = False
+
+
+def _stat_key_to_relative(key: str, anchor: Path) -> str:
+    """Return ``key`` as a forward-slash relative path from ``anchor``.
+
+    Local duplicate of :func:`graphify.detect._to_relative_for_storage` —
+    detect imports cache, so cache cannot import detect without a cycle
+    (and pulling detect in during the atexit flush would be fragile).
+    Out-of-anchor and already-relative keys pass through unchanged, and
+    ``..``-escaping relpaths are rejected (kept absolute), mirroring the
+    manifest's portability rules.
+    """
+    p = Path(key)
+    if not p.is_absolute():
+        return key
+    try:
+        rel = os.path.relpath(p, anchor)
+    except (ValueError, OSError):
+        return key  # outside anchor (e.g. Windows cross-drive)
+    if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+        return key  # escaped anchor — keep absolute
+    return rel.replace(os.sep, "/")
+
+
+def _stat_key_to_absolute(key: str, anchor: Path) -> str:
+    """Inverse of :func:`_stat_key_to_relative`.
+
+    Re-anchor a stored relative key against ``anchor``. Already-absolute keys
+    (legacy indexes, out-of-anchor entries) pass through unchanged so an index
+    written by an older graphify remains readable.
+    """
+    p = Path(key)
+    if p.is_absolute():
+        return str(p)
+    return str(anchor / p)
 
 
 def _stat_index_file(root: Path) -> Path:
@@ -197,22 +236,36 @@ def _stat_index_file(root: Path) -> Path:
 
 
 def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
-    global _stat_index, _stat_index_root, _stat_index_dirty
+    global _stat_index, _stat_index_root, _stat_index_anchor, _stat_index_dirty
     if _stat_index_root is not None:
         return
-    # The stat index only determines the cache FILE location (entry keys are
-    # absolute paths), so honoring an explicit cache_root keeps detect()'s
-    # word-count cache under the requested --out dir instead of polluting the
-    # scanned corpus with a stray graphify-out/ (#1747).
+    # _stat_index_root determines the cache FILE location, so honoring an
+    # explicit cache_root keeps detect()'s word-count cache under the requested
+    # --out dir instead of polluting the scanned corpus with a stray
+    # graphify-out/ (#1747). _stat_index_anchor is the separate KEY anchor:
+    # in-memory keys stay absolute, but the on-disk index stores in-anchor keys
+    # relative so a moved/cloned corpus still hits (#2199) — same load/save
+    # re-anchoring the detect manifest uses.
     _stat_index_root = Path(cache_root if cache_root is not None else root).resolve()
+    _stat_index_anchor = Path(root).resolve()
     p = _stat_index_file(_stat_index_root)
+    _stat_index = {}
     if p.exists():
         try:
-            _stat_index = json.loads(p.read_text(encoding="utf-8"))
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if not isinstance(k, str):
+                        continue
+                    if Path(k).is_absolute():
+                        # Legacy/out-of-anchor key: pass through, but never
+                        # clobber a re-anchored relative (new-format) entry
+                        # that resolved to the same absolute path.
+                        _stat_index.setdefault(k, v)
+                    else:
+                        _stat_index[_stat_key_to_absolute(k, _stat_index_anchor)] = v
         except (json.JSONDecodeError, OSError):
             _stat_index = {}
-    else:
-        _stat_index = {}
     atexit.register(_flush_stat_index)
 
 
@@ -221,11 +274,26 @@ def _flush_stat_index() -> None:
     if not _stat_index_dirty or _stat_index_root is None:
         return
     p = _stat_index_file(_stat_index_root)
+    # Build the on-disk form (#2199): prune entries whose file is gone (the
+    # index otherwise grows without bound), then store in-anchor keys as
+    # forward-slash relative paths so the index survives a corpus move/clone.
+    # Out-of-anchor keys stay absolute (same rule as the detect manifest); a
+    # reader tells the formats apart by absoluteness, so no version marker is
+    # needed. In-memory keys are untouched — only the serialization changes.
+    on_disk: dict[str, dict] = {}
+    for k, v in _stat_index.items():
+        try:
+            if not os.path.exists(k):
+                continue
+        except OSError:
+            continue
+        dk = _stat_key_to_relative(k, _stat_index_anchor) if _stat_index_anchor is not None else k
+        on_disk[dk] = v
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=p.parent, prefix="stat-index.", suffix=".tmp")
         try:
-            os.write(fd, json.dumps(_stat_index, separators=(",", ":")).encode())
+            os.write(fd, json.dumps(on_disk, separators=(",", ":")).encode())
             os.close(fd)
             os.replace(tmp, p)
         except Exception:
@@ -278,16 +346,34 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     # graphify-out/cache/stat-index.json inside the analyzed source tree even when
     # the AST cache itself is redirected to CWD (#1774 completion).
     _ensure_stat_index(root, cache_root=cache_root)
-    abs_key = str(p.resolve())
+    resolved = p.resolve()
+    abs_key = str(resolved)
+    # The salt is the path component that enters the digest (relative to root, or
+    # the absolute-path fallback). The stat-index memo MUST be keyed by it too:
+    # the same file hashed under two different roots yields two different digests
+    # (this happens within one `--out` run), and a memo keyed only by absolute
+    # path served whichever was computed first — making file_hash order-dependent
+    # and poisoning the persisted stat-index across runs (#1989). Store one digest
+    # per salt so alternating roots don't force re-reads.
+    try:
+        salt = resolved.relative_to(Path(root).resolve()).as_posix().lower()
+    except ValueError:
+        salt = resolved.as_posix().lower()
+
     st: "os.stat_result | None" = None
     try:
         st = p.stat()
         entry = _stat_index.get(abs_key)
-        if (entry
-                and entry.get("hash") is not None  # word-count-only entries carry no hash
+        if (isinstance(entry, dict)
                 and entry.get("size") == st.st_size
                 and entry.get("mtime_ns") == st.st_mtime_ns):
-            return entry["hash"]
+            hashes = entry.get("hashes")
+            if isinstance(hashes, dict):
+                cached = hashes.get(salt)
+                if isinstance(cached, str):
+                    return cached
+            # Legacy single-digest entries ("hash") don't record which salt
+            # produced them, so they are never trusted (#1989) — recompute once.
     except OSError:
         pass
 
@@ -296,21 +382,23 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
     h = hashlib.sha256()
     h.update(content)
     h.update(b"\x00")
-    try:
-        rel = p.resolve().relative_to(Path(root).resolve())
-        h.update(rel.as_posix().lower().encode())
-    except ValueError:
-        h.update(p.resolve().as_posix().lower().encode())
+    h.update(salt.encode())
     digest = h.hexdigest()
 
     if st is not None:
         entry = _stat_index.get(abs_key)
-        if (entry is not None
+        if (isinstance(entry, dict)
                 and entry.get("size") == st.st_size
                 and entry.get("mtime_ns") == st.st_mtime_ns):
-            entry["hash"] = digest  # preserve a co-located word_count
+            hashes = entry.get("hashes")
+            if not isinstance(hashes, dict):
+                hashes = {}
+                entry["hashes"] = hashes
+            hashes[salt] = digest       # preserve a co-located word_count / other salts
+            entry.pop("hash", None)     # retire the un-salted legacy digest
         else:
-            _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "hash": digest}
+            _stat_index[abs_key] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
+                                    "hashes": {salt: digest}}
         _stat_index_dirty = True
 
     return digest
@@ -401,6 +489,29 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
             if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
                 continue  # escaped root — keep absolute
             item["source_file"] = rel.replace(os.sep, "/")
+
+
+def _normalize_source_file_value(src: "str | Path", root_resolved: Path) -> str:
+    """Return ``src`` in portable form: backslashes flipped to forward slashes,
+    then relativized against ``root_resolved`` when the path is in-root.
+
+    Windows ``detect()`` emits absolute backslash paths, and a semantic
+    fragment carrying one verbatim used to be persisted as-is — poisoning later
+    ``graphify update`` runs with a machine-specific ``source_file`` (#2197).
+    Out-of-root absolute paths pass through (slash-normalized only), same
+    in/out rule and ``..``-rejection as :func:`_relativize_source_files_in`.
+    """
+    s = str(src).replace("\\", "/")
+    p = Path(s)
+    if not p.is_absolute():
+        return s
+    try:
+        rel = os.path.relpath(p, root_resolved)
+    except (ValueError, OSError):
+        return s  # out-of-root (e.g. Windows cross-drive)
+    if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+        return s  # escaped root — keep absolute
+    return rel.replace(os.sep, "/")
 
 
 def _absolutize_source_files_in(payload: dict, root: Path) -> None:
@@ -702,6 +813,7 @@ def check_semantic_cache(
     mode: str | None = None,
     prompt: "str | Path | None" = None,
     prompt_file: "str | Path | None" = None,
+    cache_root: "Path | None" = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[str]]:
     """Check semantic extraction cache for a list of absolute file paths.
 
@@ -724,6 +836,12 @@ def check_semantic_cache(
     vintage is unknowable and dropping them would re-bill a whole corpus — but
     a warning reports how many were served. Omitting ``prompt`` keeps the
     historical behavior for existing callers.
+
+    ``cache_root`` decouples *where* the cache is read from the key-anchor
+    ``root``, mirroring :func:`load_cached` and :func:`save_semantic_cache`
+    (#1774 / #1990). With ``--out``, pass the corpus as ``root`` (so content-hash
+    keys and relative-path resolution stay anchored to the source tree) and the
+    output directory as ``cache_root``. Omitting it keeps ``root`` for both.
     """
     global _legacy_semantic_hits
     kind = "semantic" if mode is None else f"semantic-{mode}"
@@ -737,7 +855,8 @@ def check_semantic_cache(
         p = Path(fpath)
         if not p.is_absolute():
             p = Path(root) / p
-        result = load_cached(p, root, kind=kind, prompt=prompt, prompt_file=prompt_file)
+        result = load_cached(p, root, kind=kind, cache_root=cache_root,
+                             prompt=prompt, prompt_file=prompt_file)
         if result is not None:
             cached_nodes.extend(result.get("nodes", []))
             cached_edges.extend(result.get("edges", []))
@@ -788,6 +907,7 @@ def save_semantic_cache(
     prompt: "str | Path | None" = None,
     prompt_file: "str | Path | None" = None,
     partial_source_files: Iterable[str | Path] | None = None,
+    cache_root: "Path | None" = None,
 ) -> int:
     """Save semantic extraction results to cache, keyed by source_file.
 
@@ -825,26 +945,57 @@ def save_semantic_cache(
     replaying them (#1939). Pass the same prompt here as to
     :func:`check_semantic_cache`, or the write lands in a namespace the next
     read won't consult.
+
+    ``cache_root`` decouples *where* the cache directory is written from the
+    source-key anchor ``root`` — mirroring the same split that :func:`load_cached`
+    and :func:`save_cached` already expose (#1774). When given, cache files land
+    under ``cache_root`` while ``source_file`` paths are still resolved and
+    relativized against ``root``. When omitted, ``root`` is used for both
+    purposes (unchanged behaviour for existing callers). This fixes checkpoints
+    and the final save going to the corpus tree instead of ``--out`` (#1990,
+    #1991).
+
     Returns the number of files cached.
     """
     from collections import defaultdict
 
     kind = "semantic" if mode is None else f"semantic-{mode}"
+    root_path = Path(root).resolve()
+
+    def _normalized(item: dict) -> dict:
+        """Copy of ``item`` with a portable ``source_file`` (#2197).
+
+        Normalizing BEFORE grouping means both the group key and the persisted
+        item carry the relative forward-slash form, so a fragment whose
+        source_file arrived absolute (Windows detect() output) can never be
+        cached verbatim. A shallow copy keeps the caller's dicts untouched —
+        downstream steps may still rely on the original absolute shape (same
+        reasoning as :func:`save_cached`'s on-disk deepcopy).
+        """
+        src = item.get("source_file")
+        if not src:
+            return item
+        norm = _normalize_source_file_value(src, root_path)
+        if norm != src:
+            item = {**item, "source_file": norm}
+        return item
+
     by_file: dict[str, dict] = defaultdict(lambda: {"nodes": [], "edges": [], "hyperedges": []})
     for n in nodes:
+        n = _normalized(n)
         src = n.get("source_file", "")
         if src:
             by_file[src]["nodes"].append(n)
     for e in edges:
+        e = _normalized(e)
         src = e.get("source_file", "")
         if src:
             by_file[src]["edges"].append(e)
     for h in (hyperedges or []):
+        h = _normalized(h)
         src = h.get("source_file", "")
         if src:
             by_file[src]["hyperedges"].append(h)
-
-    root_path = Path(root).resolve()
 
     def resolved_source_path(value: str | Path) -> Path:
         path = Path(value)
@@ -932,6 +1083,7 @@ def save_semantic_cache(
                 ]
 
     saved = 0
+    skipped_not_file = 0
     for fpath, result in by_file.items():
         p = resolved_source_path(fpath)
         if p.is_file():
@@ -955,9 +1107,9 @@ def save_semantic_cache(
                 # markers ride through, so is_partial below re-detects it) rather
                 # than a later clean slice silently replacing it and promoting the
                 # half-file to complete.
-                prev = load_cached(p, root, kind=kind, prompt=prompt,
-                                   prompt_file=prompt_file, allow_legacy=False,
-                                   allow_partial=True)
+                prev = load_cached(p, root, kind=kind, cache_root=cache_root,
+                                   prompt=prompt, prompt_file=prompt_file,
+                                   allow_legacy=False, allow_partial=True)
                 _prev_partial = bool(prev.get("partial")) if prev else False
                 if prev:
                     result = {
@@ -982,6 +1134,19 @@ def save_semantic_cache(
             )
             if is_partial:
                 result = {**result, "partial": True}
-            save_cached(p, result, root, kind=kind, prompt=prompt, prompt_file=prompt_file)
+            save_cached(p, result, root, kind=kind, cache_root=cache_root,
+                        prompt=prompt, prompt_file=prompt_file)
             saved += 1
+        else:
+            skipped_not_file += 1
+    if skipped_not_file and skipped_not_file == len(by_file):
+        warnings.warn(
+            f"save_semantic_cache: all {skipped_not_file} source_file group(s) were "
+            "skipped because their paths do not resolve to real files. This usually "
+            "means ``root`` is anchored to the wrong directory (e.g. the --out "
+            "directory instead of the corpus root). Pass the corpus directory as "
+            "``root`` and the output directory as ``cache_root`` (#1991).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     return saved

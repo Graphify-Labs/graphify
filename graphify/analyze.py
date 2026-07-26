@@ -18,6 +18,14 @@ _BUILTIN_NOISE_LABELS = frozenset({
     "Callable", "Type", "ClassVar", "Final", "Literal", "Protocol",
     "Counter", "defaultdict", "OrderedDict", "datetime", "Enum",
     "os", "sys", "re", "json", "io", "abc", "typing",
+    # Swift / Foundation / SwiftUI framework symbols and module imports that
+    # otherwise dominate god-node rankings on Swift codebases (#2147)
+    "Foundation", "SwiftUI", "UIKit", "AppKit", "Combine",
+    "String", "Int", "Double", "Float", "Bool", "Data", "URL", "Date", "UUID",
+    "Sendable", "Codable", "Decodable", "Encodable", "Equatable", "Hashable",
+    "Identifiable", "Comparable", "AnyObject", "Error", "LocalizedError",
+    "NSObject", "NSString", "NSError", "NSLock",
+    "View", "Color", "Font", "DispatchQueue",
 })
 
 # Language families — extensions sharing a runtime can legitimately call each other
@@ -64,11 +72,12 @@ def _is_file_node(G: nx.Graph, node_id: str) -> bool:
     label = attrs.get("label", "")
     if not label:
         return False
-    # File-level hub: label matches the actual source filename (not just any label ending in .py)
+    # File-level hub: label matches the actual source filename — bare basename OR
+    # the directory-qualified form the #2032 disambiguation pass may assign.
     source_file = attrs.get("source_file", "")
     if source_file:
-        from pathlib import Path as _Path
-        if label == _Path(source_file).name:
+        from graphify.build import _is_file_node_label
+        if _is_file_node_label(label, source_file):
             return True
     # Method stub: AST extractor labels methods as '.method_name()'
     if label.startswith(".") and label.endswith("()"):

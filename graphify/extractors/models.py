@@ -115,5 +115,7 @@ class _SymbolResolutionFacts:
     namespace_exports: list[_NamespaceExportFact] = field(default_factory=list)
     uses: list[_SymbolUseFact] = field(default_factory=list)
     # File-to-file submodule imports from `from pkg import submod` (#1146).
-    # Each entry is (importing_file, submodule_file, line).
-    module_imports: list[tuple[Path, Path, int]] = field(default_factory=list)
+    # Each entry is (importing_file, submodule_file, line, local_name) -- local_name
+    # is the binding introduced in the importing file: the alias when `from pkg
+    # import submod as alias` is used, otherwise the submodule's own name (#2082).
+    module_imports: list[tuple[Path, Path, int, str]] = field(default_factory=list)

@@ -136,7 +136,7 @@ Omit any category with 0 files from the summary.
 
 Then act on it:
 - If `total_files` is 0: stop with "No supported files found in [path]."
-- If `skipped_sensitive` is non-empty: mention file count skipped, not the file names.
+- If `skipped_sensitive` is non-empty: report the count and list the skipped file names, so a wrongly-flagged source or doc is visible and can be renamed or moved (#2106).
 - If `total_words` > 2,000,000 OR `total_files` > 200: show the warning and the top 5 subdirectories by file count, then ask which subfolder to run on. Wait for the user's answer before proceeding.
 - Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
 
@@ -795,10 +795,19 @@ from graphify.detect import save_manifest
 
 # Save manifest for --update
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text())
-save_manifest(detect['files'], root='INPUT_PATH')
+extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
+# Stamp only semantic files that produced output so a failed chunk is re-queued next run, not lost (#2015).
+from graphify.cli import _stamped_manifest_files
+_corpus = detect.get('all_files') or detect['files']
+_manifest_files = _stamped_manifest_files(_corpus, extract, Path('INPUT_PATH'))
+_sem_types = ('document', 'paper', 'image')
+_dispatched = {f for t, fl in detect['files'].items() if t in _sem_types for f in fl}
+_stamped = {f for fl in _manifest_files.values() for f in fl}
+_cleared = _dispatched - _stamped
+_scan = {f for fl in _corpus.values() for f in fl}
+save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
 
 # Update cumulative cost tracker
-extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
 input_tok = extract.get('input_tokens', 0)
 output_tok = extract.get('output_tokens', 0)
 

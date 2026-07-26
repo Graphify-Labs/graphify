@@ -277,6 +277,26 @@ def test_rebuild_honors_persisted_excludes(tmp_path):
     )
 
 
+def test_rebuild_honors_persisted_no_gitignore(tmp_path):
+    import json
+    from graphify.watch import _rebuild_code, _write_build_config
+
+    corpus = tmp_path / "corpus"
+    generated = corpus / "generated"
+    generated.mkdir(parents=True)
+    (corpus / ".gitignore").write_text("generated/\n")
+    (generated / "gen.py").write_text("def generated(): return 1\n")
+    _write_build_config(
+        corpus / "graphify-out", excludes=None, gitignore=False
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    graph = json.loads((corpus / "graphify-out" / "graph.json").read_text())
+    sources = {Path(str(node.get("source_file", ""))).as_posix() for node in graph["nodes"]}
+    assert any(source.endswith("generated/gen.py") for source in sources)
+
+
 def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
     """When the caller supplies an absolute path, ``.graphify_root`` stores
     that absolute form verbatim — preserving explicit-absolute intent."""
@@ -925,9 +945,9 @@ def test_watch_loads_graphifyignore_once(tmp_path, monkeypatch):
     calls = {"n": 0}
     real_loader = detect_mod._load_graphifyignore
 
-    def counting_loader(root):
+    def counting_loader(root, **kwargs):
         calls["n"] += 1
-        return real_loader(root)
+        return real_loader(root, **kwargs)
 
     # Patch the symbol the watch module imported at module-load time.
     monkeypatch.setattr(watch_mod, "_load_graphifyignore", counting_loader)
@@ -1702,6 +1722,48 @@ def _seed_semantic_doc_graph(corpus):
     return graph_path
 
 
+_CONCEPT_ONLY_GUIDE_IDS = {"auth_flow", "session_model"}
+
+
+def _seed_semantic_doc_graph_concept_only(corpus):
+    """Like ``_seed_semantic_doc_graph``, but guide.md's semantic layer is
+    ONLY concept/rationale nodes (no ``file_type=="document"`` node) — the
+    extraction spec's preferred shape for a doc full of named concepts (#1954).
+    """
+    from graphify.watch import _rebuild_code
+
+    corpus.mkdir()
+    (corpus / "app.py").write_text(
+        "def handle_login():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    (corpus / "guide.md").write_text(
+        "# Overview\n\nIntro.\n\n## Setup\n\nSteps.\n\n## Usage\n\nMore.\n",
+        encoding="utf-8",
+    )
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    code_node_id = next(
+        n["id"] for n in data["nodes"] if n.get("source_file") == "app.py"
+    )
+    data["nodes"].extend([
+        {"id": "auth_flow", "label": "Auth Flow", "file_type": "concept",
+         "source_file": "guide.md"},
+        {"id": "session_model", "label": "Session Model", "file_type": "rationale",
+         "source_file": "guide.md"},
+    ])
+    data["links"].extend([
+        {"source": "auth_flow", "target": "session_model", "relation": "explains",
+         "confidence": "INFERRED", "source_file": "guide.md"},
+        {"source": "auth_flow", "target": code_node_id,
+         "relation": "implemented_by", "confidence": "INFERRED",
+         "source_file": "guide.md"},
+    ])
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    return graph_path
+
+
 def test_rebuild_code_semantic_doc_not_double_represented_on_full_rebuild(tmp_path):
     """#1915: a full _rebuild_code must not AST-quick-scan a doc whose semantic
     (LLM) nodes already represent it. Before the fix the quick-scan minted
@@ -1723,6 +1785,31 @@ def test_rebuild_code_semantic_doc_not_double_represented_on_full_rebuild(tmp_pa
     )
     assert len(after["nodes"]) == len(before["nodes"]), (
         f"node count inflated {len(before['nodes'])} -> {len(after['nodes'])} (#1915)"
+    )
+
+
+def test_rebuild_code_concept_only_semantic_doc_not_double_represented_on_full_rebuild(
+    tmp_path,
+):
+    """#1954: a doc represented ONLY by concept/rationale nodes (no
+    file_type=="document" node) must also be recognized as semantic-backed
+    and skipped by the AST quick-scan — not just docs with a "document" node."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    graph_path = _seed_semantic_doc_graph_concept_only(corpus)
+    before = json.loads(graph_path.read_text(encoding="utf-8"))
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_ids = {n["id"] for n in after["nodes"]}
+    assert _CONCEPT_ONLY_GUIDE_IDS <= after_ids, "semantic doc nodes must be preserved"
+    assert not (_AST_GUIDE_IDS & after_ids), (
+        "AST heading nodes minted for a concept-only semantic-backed doc (#1954)"
+    )
+    assert len(after["nodes"]) == len(before["nodes"]), (
+        f"node count inflated {len(before['nodes'])} -> {len(after['nodes'])} (#1954)"
     )
 
 
@@ -1764,6 +1851,47 @@ def test_rebuild_code_incremental_preserves_semantic_doc_nodes_and_edges(
     ), "doc-to-code semantic edge dropped by an incremental rebuild"
     assert not (_AST_GUIDE_IDS & after_ids), (
         "incremental rebuild AST-quick-scanned a semantic-backed doc (#1915)"
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [[Path("guide.md")], [Path("guide.md"), Path("app.py")]],
+    ids=["doc-only", "doc-plus-code"],
+)
+def test_rebuild_code_incremental_preserves_concept_only_semantic_doc_nodes_and_edges(
+    tmp_path, changed
+):
+    """#1954: incremental analogue — a concept/rationale-only semantic doc
+    must not lose its nodes/edges nor get AST-quick-scanned on an incremental
+    rebuild, mirroring the #1915 doc-node case above."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    graph_path = _seed_semantic_doc_graph_concept_only(corpus)
+
+    assert _rebuild_code(
+        corpus, changed_paths=changed, no_cluster=True, acquire_lock=False
+    ) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_ids = {n["id"] for n in after["nodes"]}
+    assert _CONCEPT_ONLY_GUIDE_IDS <= after_ids, (
+        "concept-only semantic doc nodes wiped by an incremental rebuild"
+    )
+    relations = {
+        (e.get("source"), e.get("target"), e.get("relation"))
+        for e in after["links"]
+    }
+    assert ("auth_flow", "session_model", "explains") in relations, (
+        "concept-only semantic doc edge dropped by an incremental rebuild"
+    )
+    assert any(
+        src == "auth_flow" and rel == "implemented_by"
+        for src, _tgt, rel in relations
+    ), "doc-to-code semantic edge dropped by an incremental rebuild"
+    assert not (_AST_GUIDE_IDS & after_ids), (
+        "incremental rebuild AST-quick-scanned a concept-only semantic-backed doc (#1954)"
     )
 
 
@@ -1835,3 +1963,189 @@ def test_rebuild_code_polluted_graph_self_heals_on_full_rebuild(tmp_path):
         "stale AST heading nodes for a semantic-backed doc must self-heal away"
     )
     assert len(after["nodes"]) < nodes_before, "polluted graph should shrink"
+
+
+# ── #2014: code-typed semantic nodes count as a doc's semantic layer ───────────
+
+_CODE_ONLY_GUIDE_IDS = {"parse_config", "load_settings"}
+
+
+def _seed_semantic_doc_graph_code_only(corpus):
+    """Like ``_seed_semantic_doc_graph``, but guide.md's semantic layer is ONLY
+    code-typed nodes — symbols the LLM surfaced from WITHIN the doc (llm.py
+    ``_bind_node_evidence``), with no document/concept node at all (#2014)."""
+    from graphify.watch import _rebuild_code
+
+    corpus.mkdir()
+    (corpus / "app.py").write_text(
+        "def handle_login():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    (corpus / "guide.md").write_text(
+        "# Overview\n\nIntro.\n\n## Setup\n\nSteps.\n\n## Usage\n\nMore.\n",
+        encoding="utf-8",
+    )
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    code_node_id = next(
+        n["id"] for n in data["nodes"] if n.get("source_file") == "app.py"
+    )
+    data["nodes"].extend([
+        {"id": "parse_config", "label": "parse_config()", "file_type": "code",
+         "source_file": "guide.md"},
+        {"id": "load_settings", "label": "load_settings()", "file_type": "code",
+         "source_file": "guide.md"},
+    ])
+    data["links"].append({
+        "source": "parse_config", "target": code_node_id,
+        "relation": "implemented_by", "confidence": "INFERRED",
+        "source_file": "guide.md",
+    })
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    return graph_path
+
+
+def test_rebuild_code_code_only_semantic_doc_not_double_represented_on_full_rebuild(
+    tmp_path,
+):
+    """#2014: a doc represented ONLY by code-typed semantic nodes (symbols
+    surfaced from within it) must be recognized as semantic-backed and skipped
+    by the AST quick-scan. Before the fix "code" was absent from the semantic
+    file_type gate, so the doc was re-AST-scanned — minting heading nodes AND
+    dropping the code-typed semantic nodes (they belonged to a now-rebuilt
+    source), silently losing them."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    graph_path = _seed_semantic_doc_graph_code_only(corpus)
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_ids = {n["id"] for n in after["nodes"]}
+    assert _CODE_ONLY_GUIDE_IDS <= after_ids, (
+        "code-typed semantic doc nodes dropped by a full rebuild (#2014)"
+    )
+    assert not (_AST_GUIDE_IDS & after_ids), (
+        "AST heading nodes minted for a code-only semantic-backed doc (#2014)"
+    )
+
+
+# ── #2051: deleted non-AST sources (docs/papers/images) get evicted ────────────
+
+def test_rebuild_code_evicts_semantic_nodes_from_deleted_non_ast_source(tmp_path):
+    """#2051: a full `graphify update` must evict semantic nodes whose non-AST
+    source file (a .txt/.pdf/.png with no code extractor) was deleted from disk.
+    The corpus sweep used to skip every sourceless-of-extractor node, so those
+    nodes survived forever and were served as authoritative long after the file
+    was gone. Disk absence is the only deletion evidence for such sources."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    # Two non-AST semantic sources: one stays on disk, one gets deleted.
+    (corpus / "kept.txt").write_text("Design rationale that stays.\n", encoding="utf-8")
+    (corpus / "gone.txt").write_text("Rationale that will be deleted.\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    # No LLM in tests, so inject the semantic layer these .txt files would carry.
+    data["nodes"].extend([
+        {"id": "kept_concept", "label": "Kept Concept", "file_type": "concept",
+         "source_file": "kept.txt"},
+        {"id": "gone_concept", "label": "Gone Concept", "file_type": "concept",
+         "source_file": "gone.txt"},
+    ])
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # Delete one non-AST source; the other stays.
+    (corpus / "gone.txt").unlink()
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    after_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "gone_concept" not in after_ids, (
+        "semantic node from a deleted non-AST source must be evicted (#2051)"
+    )
+    assert "kept_concept" in after_ids, (
+        "semantic node from a surviving non-AST source must be preserved"
+    )
+
+
+def test_rebuild_code_preserves_remote_source_across_repeated_updates(tmp_path):
+    """#2051 follow-up: a node whose source_file is a URL/virtual scheme
+    (gdoc://, s3://, http://) must survive REPEATED `graphify update`s. Path
+    normalization on the write side collapses the double slash (`gdoc://x` ->
+    `gdoc:/x`), so a literal `"://"` guard matched on the first update but missed
+    on the second, dropping the node into the disk-absence eviction branch
+    (Path('gdoc:/x').exists() is False) — a data-loss regression from the #2051
+    disk-absence sweep. The scheme is now matched with a regex tolerant of the
+    collapse."""
+    from graphify.watch import _rebuild_code, _is_remote_source
+
+    # unit-level: the guard tolerates the slash collapse and rejects local paths
+    assert _is_remote_source("gdoc://abc")
+    assert _is_remote_source("gdoc:/abc")        # collapsed form
+    assert _is_remote_source("s3://bucket/key")
+    assert _is_remote_source("https://example.com/doc")
+    assert not _is_remote_source("src/app.py")
+    assert not _is_remote_source("notes.txt")
+    assert not _is_remote_source("C:/Users/x/a.py")  # Windows drive != scheme
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["nodes"].append(
+        {"id": "remote_doc", "label": "Remote Spec", "file_type": "document",
+         "source_file": "gdoc://team/spec"}
+    )
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # Three consecutive full updates: the remote node must persist through every
+    # one, even after its stored source_file is normalized to the collapsed form.
+    for i in range(3):
+        assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+        after = json.loads(graph_path.read_text(encoding="utf-8"))
+        ids = {n["id"] for n in after["nodes"]}
+        assert "remote_doc" in ids, f"remote-source node evicted on update #{i + 1} (#2051 follow-up)"
+
+
+# ── #2056: present-but-unextractable files in a change set are not deletions ───
+
+def test_rebuild_code_incremental_preserves_present_non_ast_source(tmp_path):
+    """#2056: an incremental rebuild whose change set names a file that exists but
+    has no AST extractor (a doc/paper/image, or an excluded path) must NOT treat
+    it as deleted. The old change-set loop routed any present-but-untracked file
+    to _add_deleted_source, evicting its semantic nodes AND flipping
+    had_explicit_deletions so the shrink guard waved the loss through."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
+    (corpus / "spec.txt").write_text("A spec with a semantic layer.\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    data["nodes"].append(
+        {"id": "spec_concept", "label": "Spec Concept", "file_type": "concept",
+         "source_file": "spec.txt"}
+    )
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    # spec.txt is present but not AST-extractable; app.py is a real code change.
+    assert _rebuild_code(
+        corpus, changed_paths=[Path("spec.txt"), Path("app.py")],
+        no_cluster=True, acquire_lock=False,
+    ) is True
+
+    after_ids = {n["id"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "spec_concept" in after_ids, (
+        "present-but-unextractable file in change set wrongly evicted as deleted (#2056)"
+    )

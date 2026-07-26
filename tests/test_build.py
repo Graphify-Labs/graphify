@@ -58,6 +58,48 @@ def test_build_from_json_edge_count():
     G = build_from_json(load_extraction())
     assert G.number_of_edges() == 4
 
+def test_null_weight_edge_builds_and_clusters(tmp_path):
+    """#1960: an explicit ``"weight": null`` (JSON null -> None) used to survive
+    ``.get("weight", 1.0)`` and crash Louvain/Leiden modularity with a TypeError.
+    It must now coerce to the 1.0 default, build, and cluster without raising."""
+    from graphify.cluster import cluster
+    extraction = {
+        "nodes": [
+            {"id": "a", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_type": "code", "source_file": "b.py"},
+            {"id": "c", "label": "C", "file_type": "code", "source_file": "c.py"},
+        ],
+        "edges": [
+            {"source": "a", "target": "b", "relation": "references", "weight": None,
+             "confidence_score": None},
+            {"source": "b", "target": "c", "relation": "references", "weight": 2.5},
+        ],
+    }
+    G = build_from_json(extraction)
+    assert G["a"]["b"]["weight"] == 1.0            # null coerced to default
+    assert G["a"]["b"]["confidence_score"] == 1.0  # null confidence_score too
+    assert G["b"]["c"]["weight"] == 2.5            # a valid weight is preserved
+    cluster(G)  # must not raise (Louvain/Leiden modularity)
+
+
+def test_malformed_weights_normalize():
+    """Non-numeric / NaN / inf / negative weights fall back to 1.0 (the backends
+    reject them); a missing weight key is left absent (backends default it)."""
+    extraction = {
+        "nodes": [{"id": f"n{i}", "label": str(i), "file_type": "code",
+                   "source_file": f"{i}.py"} for i in range(4)],
+        "edges": [
+            {"source": "n0", "target": "n1", "relation": "references", "weight": "3.5"},
+            {"source": "n1", "target": "n2", "relation": "references", "weight": float("nan")},
+            {"source": "n2", "target": "n3", "relation": "references", "weight": -4},
+        ],
+    }
+    G = build_from_json(extraction)
+    assert G["n0"]["n1"]["weight"] == 3.5     # numeric string coerces
+    assert G["n1"]["n2"]["weight"] == 1.0     # NaN -> default
+    assert G["n2"]["n3"]["weight"] == 1.0     # negative -> default
+
+
 def test_nodes_have_label():
     G = build_from_json(load_extraction())
     assert G.nodes["n_transformer"]["label"] == "Transformer"
@@ -91,6 +133,145 @@ def test_legacy_edge_from_to_canonicalized():
            "input_tokens": 0, "output_tokens": 0}
     G = build_from_json(ext)
     assert G.number_of_edges() == 1
+
+
+def test_legacy_node_name_path_aliases_folded():
+    """#2194: nodes carrying `name`/`path` instead of `label`/`source_file` must
+    be canonicalized before validation, not enter the graph as label-less
+    ghosts. After build the canonicalized dict also passes validation."""
+    from graphify.validate import validate_extraction
+    ext = {"nodes": [{"id": "n1", "name": "Foo", "path": "a/b.md", "file_type": "concept"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    attrs = G.nodes["n1"]
+    assert attrs["label"] == "Foo"
+    assert attrs["source_file"] == "a/b.md"
+    assert "name" not in attrs
+    assert "path" not in attrs
+    # build_from_json canonicalizes in place; the extraction dict must now be
+    # schema-valid (no missing-field errors for the alias node).
+    assert not [e for e in validate_extraction(ext) if "missing required field" in e]
+
+
+def test_legacy_edge_type_confidence_score_aliases_folded():
+    """#2194: edges carrying `type`/`confidence_score` instead of
+    `relation`/`confidence` fold to canonical fields. Recovery confidence is
+    INFERRED (never EXTRACTED — alias recovery is not provenance) and the
+    companion confidence_score float is retained, not popped."""
+    ext = {"nodes": [{"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+                     {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"}],
+           "edges": [{"source": "n1", "target": "n2", "type": "references",
+                      "confidence_score": 0.9, "source_file": "a.py"}],
+           "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    data = edge_data(G, "n1", "n2")
+    assert data["relation"] == "references"
+    assert data["confidence"] == "INFERRED"
+    assert data["confidence_score"] == 0.9
+    assert "type" not in data
+
+
+def test_node_alias_canonical_field_wins():
+    """#2194: when both the canonical field and its alias are present, the
+    canonical value wins and the alias key is left untouched."""
+    ext = {"nodes": [{"id": "n1", "label": "Real", "name": "Alias",
+                      "file_type": "code", "source_file": "a.py"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    assert G.nodes["n1"]["label"] == "Real"
+    assert G.nodes["n1"]["name"] == "Alias"  # preserved, not consumed
+
+
+def test_alias_node_ghost_merges_into_ast_twin():
+    """#2194: an alias-only semantic node (name/path) must participate in the
+    AST/LLM ghost merge once folded — same label and file as an AST node with a
+    different id collapses into the AST node instead of surviving as a ghost."""
+    ext = {"nodes": [
+        {"id": "src_foo_helper", "label": "helper", "file_type": "code",
+         "source_file": "src/foo.py", "_origin": "ast", "source_location": "L10"},
+        {"id": "helper_ghost", "name": "helper", "path": "src/foo.py",
+         "file_type": "code"},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    assert "src_foo_helper" in G.nodes
+    assert "helper_ghost" not in G.nodes
+    assert G.number_of_nodes() == 1
+
+
+def test_alias_node_gets_nonempty_norm_label(tmp_path):
+    """#2194: a recovered alias node must serialize with a non-empty norm_label
+    so query/explain can find it."""
+    from graphify.export import to_json
+    ext = {"nodes": [{"id": "n1", "name": "Foo", "path": "a/b.md", "file_type": "concept"}],
+           "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext)
+    out = tmp_path / "graph.json"
+    assert to_json(G, {}, str(out))
+    data = json.loads(out.read_text())
+    node = next(n for n in data["nodes"] if n["id"] == "n1")
+    assert node["norm_label"] == "foo"
+
+
+def test_extraction_warning_breakdown_by_cause(capsys):
+    """#2194: a mixed batch of schema errors must report per-cause counts, not
+    just the first error."""
+    ext = {"nodes": [
+        {"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+        {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"},
+        # two nodes missing label (and carrying no name alias)
+        {"id": "x1", "file_type": "code", "source_file": "x.py"},
+        {"id": "x2", "file_type": "code", "source_file": "x.py"},
+    ], "edges": [
+        # three edges missing relation (and carrying no type alias)
+        {"source": "n1", "target": "n2", "confidence": "EXTRACTED", "source_file": "a.py"},
+        {"source": "n2", "target": "n1", "confidence": "EXTRACTED", "source_file": "a.py"},
+        {"source": "n1", "target": "x1", "confidence": "EXTRACTED", "source_file": "a.py"},
+    ], "input_tokens": 0, "output_tokens": 0}
+    build_from_json(ext)
+    err = capsys.readouterr().err
+    assert "2x missing required field 'label'" in err
+    assert "3x missing required field 'relation'" in err
+
+
+def test_absolute_derived_semantic_ids_rekeyed(tmp_path):
+    """#2197: a semantic fragment whose ids were derived from an ABSOLUTE
+    source_file (Windows detect() emits them) must re-key to the canonical
+    repo-relative stem instead of ghosting against the existing graph."""
+    from graphify.ids import make_id
+    (tmp_path / "docs").mkdir()
+    abs_sf = str(tmp_path / "docs" / "DATAFLOW.md")
+    abs_stem = make_id(str(tmp_path / "docs" / "DATAFLOW"))
+    ext = {"nodes": [
+        {"id": abs_stem, "label": "DATAFLOW.md", "file_type": "document",
+         "source_file": abs_sf},
+        {"id": f"{abs_stem}_pipeline", "label": "Pipeline", "file_type": "concept",
+         "source_file": abs_sf},
+    ], "edges": [
+        {"source": abs_stem, "target": f"{abs_stem}_pipeline", "relation": "describes",
+         "confidence": "INFERRED", "source_file": abs_sf, "weight": 1.0},
+    ], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext, root=tmp_path)
+    assert "docs_dataflow" in G.nodes
+    assert "docs_dataflow_pipeline" in G.nodes
+    assert abs_stem not in G.nodes
+    assert G.nodes["docs_dataflow"]["source_file"] == "docs/DATAFLOW.md"
+    assert G.has_edge("docs_dataflow", "docs_dataflow_pipeline")
+
+
+def test_absolute_derived_semantic_ids_rekeyed_backslash(tmp_path):
+    """#2197 (separator variant): the same absolute-derived-id fragment with
+    backslash separators in source_file re-keys identically."""
+    from graphify.ids import make_id
+    (tmp_path / "docs").mkdir()
+    abs_sf = str(tmp_path / "docs" / "DATAFLOW.md").replace("/", "\\")
+    abs_stem = make_id(str(tmp_path / "docs" / "DATAFLOW"))
+    ext = {"nodes": [
+        {"id": f"{abs_stem}_pipeline", "label": "Pipeline", "file_type": "concept",
+         "source_file": abs_sf},
+    ], "edges": [], "input_tokens": 0, "output_tokens": 0}
+    G = build_from_json(ext, root=tmp_path)
+    assert "docs_dataflow_pipeline" in G.nodes
+    assert G.nodes["docs_dataflow_pipeline"]["source_file"] == "docs/DATAFLOW.md"
 
 
 def test_source_file_backslash_normalized():
@@ -228,10 +409,12 @@ def test_ghost_merge_unique_located_node_still_merges():
     assert G.has_edge("caller", "ast_render")
 
 
-def test_ghost_merge_skipped_on_basename_collision():
-    """#1257: when two files with the same basename both define a symbol with the
-    same label, the (basename, label) key is ambiguous and the semantic ghost
-    must not be merged into an arbitrary one of them."""
+def test_ghost_merge_uses_source_file_not_basename():
+    """#2068: the ghost-merge key is the full source_file, not the bare basename.
+    A ghost from src/a/index.ts merges into THAT file's AST node (a_render), never
+    the unrelated same-basename b_render in src/b/index.ts. (Pre-#2068 the
+    (basename, label) key made ('index.ts','render') ambiguous and skipped the
+    merge; the directory-aware key resolves it precisely.)"""
     ext = {
         "nodes": [
             {"id": "a_render", "label": "render", "file_type": "code",
@@ -248,13 +431,36 @@ def test_ghost_merge_skipped_on_basename_collision():
         "input_tokens": 0, "output_tokens": 0,
     }
     G = build_from_json(ext)
-    # The ghost survives: merging it into either a_render or b_render would
-    # pick an arbitrary winner (set iteration order over node_set).
-    assert "ghost_render" in G.nodes()
-    assert G.number_of_nodes() == 4
-    assert G.has_edge("caller", "ghost_render")
-    assert not G.has_edge("caller", "a_render")
+    # Ghost merges into its same-file twin; the edge re-points to a_render only.
+    assert "ghost_render" not in G.nodes()
+    assert G.has_edge("caller", "a_render")
     assert not G.has_edge("caller", "b_render")
+    # The unrelated same-basename node in another directory is untouched.
+    assert "b_render" in G.nodes()
+
+
+def test_ghost_merge_not_across_directories_same_basename():
+    """#2068: two unrelated non-AST nodes with the same basename+label in
+    DIFFERENT directories must NOT be merged onto one survivor (the bug: bare
+    basename collapsed docs/product_a/index.md and docs/product_b/index.md)."""
+    ext = {
+        "nodes": [
+            {"id": "docs_a_index", "label": "Quickstart", "file_type": "document",
+             "source_file": "docs/product_a/index.md", "source_location": "L1"},
+            {"id": "docs_b_index", "label": "Quickstart", "file_type": "document",
+             "source_file": "docs/product_b/index.md"},
+            {"id": "docs_hub", "label": "Docs", "file_type": "concept",
+             "source_file": "docs/hub.md", "source_location": "L1"},
+        ],
+        "edges": [{"source": "docs_hub", "target": "docs_b_index", "relation": "links_to",
+                   "confidence": "INFERRED", "source_file": "docs/hub.md"}],
+        "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(ext, directed=False)
+    # Both docs survive; the edge stays on the file it was authored against.
+    assert "docs_a_index" in G.nodes() and "docs_b_index" in G.nodes()
+    assert G.has_edge("docs_hub", "docs_b_index")
+    assert not G.has_edge("docs_hub", "docs_a_index")
 
 
 def test_ghost_merge_non_ast_different_files_both_survive():

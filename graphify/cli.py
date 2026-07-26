@@ -8,7 +8,9 @@ import of main to avoid a cli<->__main__ import cycle.
 from __future__ import annotations
 import json
 import os
+import re
 import sys
+import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path
 
@@ -34,6 +36,35 @@ _READ_NUDGE = json.dumps({
             'oriented you, or to modify/debug specific lines. This rule applies to '
             'subagents too — include it in every subagent prompt involving code '
             'exploration.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
+_READ_NUDGE_STALE = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "additionalContext": (
+            'graphify-out/graph.json exists but may be STALE for this file (the file '
+            'changed after the last build). Prefer `graphify query "<question>"` for '
+            'orientation, and run `graphify update` to refresh the graph. Reading the '
+            'file directly is fine.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
+# Strict-mode block (opt-in). Claude Code PreToolUse honors
+# hookSpecificOutput.permissionDecision == "deny" and shows permissionDecisionReason
+# to the model. Fires at most once per session (see _mark_session_denied) so it can
+# never strand an agent: the very next read proceeds with the soft nudge.
+_READ_DENY = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            'graphify strict mode: this project has a fresh knowledge graph that covers '
+            'this file. Run `graphify query "<your question>"` (or `graphify explain` / '
+            '`graphify path`) FIRST to orient yourself, then re-issue this Read — it '
+            'will be allowed. This block fires at most once per session; reading raw '
+            'files to modify or debug specific lines is fine after one query. Apply the '
+            'same rule in any subagent prompt that explores code.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -134,9 +165,11 @@ def _stale_graph_sources(
     (--include sources, symlinked external corpora) are never walked by
     detect, so their absence from the corpus is not staleness evidence.
     Relative entries are re-anchored against both the scan root and the
-    graph's own output root (``--out`` extracts store source_files relative
-    to the OUT root, e.g. ``../project/x.py``, #555/#1899); only anchors
-    that land inside the scan root count.
+    graph's own output root; only anchors that land inside the scan root
+    count. Since #1941 extracts always store source_file relative to the SCAN
+    root, so the scan-root anchor is the live one; the out-root anchor stays
+    for graphs written by <=0.9.16, which stored them relative to the OUT root
+    (e.g. ``../project/x.py``, #555/#1899).
     ``seen_files`` must be the FULL detect output including unclassified
     files, so nodes from walked-but-unsupported sources (e.g. introspected
     Cargo.toml manifests) are not misread as stale.
@@ -301,15 +334,90 @@ def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
-def _run_hook_guard(kind: str) -> None:
+def _hook_strict_enabled(flag: bool) -> bool:
+    """Resolve strict mode: GRAPHIFY_HOOK_STRICT env overrides the baked-in flag
+    (truthy forces on without a reinstall, falsy is the kill switch); unset defers
+    to the flag the installed hook command carried."""
+    v = os.environ.get("GRAPHIFY_HOOK_STRICT", "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return flag
+
+
+def _touch_query_stamp(graph_path: "Path") -> None:
+    """Record that graphify oriented the agent recently, next to the queried graph.
+    The strict guard suppresses its block while this stamp is fresh. Fail-silent."""
+    try:
+        from graphify.paths import write_text_atomic
+        stamp = Path(graph_path).parent / "cache" / "last_query_stamp"
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        write_text_atomic(stamp, str(time.time()))
+    except Exception:
+        pass
+
+
+def _query_stamp_fresh() -> bool:
+    """True if a query/explain/path ran within GRAPHIFY_HOOK_STRICT_TTL (default
+    1800s) — recent orientation, so strict mode does not block this read."""
+    from graphify.paths import out_path
+    try:
+        ttl = float(os.environ.get("GRAPHIFY_HOOK_STRICT_TTL", "1800"))
+        return (time.time() - out_path("cache", "last_query_stamp").stat().st_mtime) < ttl
+    except Exception:
+        return False
+
+
+def _mark_session_denied(session_id: str) -> bool:
+    """Atomically claim a one-time strict block for this session. Returns True only
+    on the FIRST call for a given session id (O_EXCL create wins once); every later
+    call — or any error — returns False, so a session is blocked at most once and an
+    agent can never be stranded. Best-effort GC of markers older than 24h."""
+    from graphify.paths import out_path
+    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
+    if not sid:
+        return False
+    try:
+        d = out_path("cache", "hook_sessions")
+        d.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(d / f"{sid}.denied"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.close(fd)
+        try:
+            cutoff = time.time() - 86400
+            for entry in os.scandir(d):
+                try:
+                    if entry.stat().st_mtime < cutoff:
+                        os.unlink(entry.path)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return False
+
+
+def _run_hook_guard(kind: str, strict: bool = False) -> None:
     """Shell-agnostic PreToolUse guard (#522).
 
-    Reads the tool-call JSON from stdin and, when a knowledge graph exists in the
-    current output dir, prints a nudge (`additionalContext`) telling the agent to
-    use graphify instead of grepping/reading raw files. Replaces the old inline
-    bash hooks that failed to parse on Windows. Always fails open: any error, or a
-    non-matching tool call, prints nothing and the caller exits 0, so a legitimate
-    tool call is never blocked. Detection mirrors the previous hooks exactly.
+    Reads the tool-call JSON from stdin and, when a fresh in-project knowledge graph
+    exists, nudges the agent to use graphify instead of grepping/reading raw files.
+    Replaces the old inline bash hooks that failed to parse on Windows.
+
+    Fails open everywhere: any error, or a non-matching tool call, prints nothing
+    and the caller exits 0, so a legitimate tool call is never blocked by a bug.
+
+    In strict mode (opt-in, Claude Code Read only) the FIRST raw read of indexed,
+    in-project, fresh code per session is DENIED with a redirect to `graphify query`
+    (permissionDecision), then downgrades to the soft nudge — it fires at most once
+    per session and can never strand the agent. Search (Bash) and Glob stay
+    nudge-only: a compound shell command has no single parseable target and blocking
+    file listing would strand navigation. #1840: reads of out-of-project files are
+    ignored, and a graph that is stale for the target file softens to a non-mandatory
+    nudge instead of blocking or demanding.
     """
     from graphify.paths import out_path, GRAPHIFY_OUT_NAME
     # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
@@ -336,10 +444,18 @@ def _run_hook_guard(kind: str) -> None:
     try:
         if kind == "search":
             cmd_str = str(t.get("command", "") or "")
-            # Same set the old `case` matched: *grep*, *ripgrep*, and rg/find/fd/
-            # ack/ag as a token (name followed by a space).
-            if any(tok in cmd_str for tok in ("grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag ")) \
-                    and out_path("graph.json").is_file():
+            # Two input shapes reach this guard (matcher "Bash|Grep", #1986):
+            # the Bash tool carries `command`, while Claude Code's dedicated
+            # Grep tool carries `pattern` (plus optional path/glob) and no
+            # command — a Grep call IS a content search by definition, so it
+            # nudges whenever a graph exists. For Bash, keep matching the same
+            # set the old `case` matched: *grep*, *ripgrep*, and rg/find/fd/
+            # ack/ag as a token (name followed by a space). Nudge-only, even in
+            # strict mode — see the docstring.
+            is_grep_tool = not cmd_str and bool(t.get("pattern"))
+            is_bash_search = any(tok in cmd_str for tok in (
+                "grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag "))
+            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
@@ -351,11 +467,98 @@ def _run_hook_guard(kind: str) -> None:
                 if "." in seg
             ]
             under_out = "graphify-out/" in j or (GRAPHIFY_OUT_NAME.lower() + "/") in j
-            if not under_out and any(tl in _HOOK_SOURCE_EXTS for tl in tails) \
-                    and out_path("graph.json").is_file():
-                sys.stdout.write(_READ_NUDGE)
+            if under_out or not any(tl in _HOOK_SOURCE_EXTS for tl in tails):
+                return
+            # #1840 (a): skip files outside the graph's project. cwd (or
+            # CLAUDE_PROJECT_DIR, which Claude Code sets) is the project root, since
+            # the guard only triggers when graph.json exists relative to cwd. A path
+            # candidate that resolves outside that root is out-of-project.
+            root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+            try:
+                root = root.resolve()
+            except (OSError, RuntimeError):
+                pass
+            path_vals = [str(t.get("file_path") or ""), str(t.get("path") or "")]
+            explicit = [v for v in path_vals if v]
+            if explicit:
+                in_project = False
+                for v in explicit:
+                    p = Path(v)
+                    if not p.is_absolute():
+                        in_project = True  # relative -> anchored at cwd == in project
+                        break
+                    try:
+                        p.resolve().relative_to(root)
+                        in_project = True
+                        break
+                    except (ValueError, OSError, RuntimeError):
+                        continue
+                if not in_project:
+                    return
+            # One stat for existence + mtime of the graph.
+            try:
+                gmtime = os.stat(str(out_path("graph.json"))).st_mtime
+            except OSError:
+                return
+            # #1840 (b): stale-for-target -> soften, never block. The target file
+            # changed after the last build, or watch flagged the tree.
+            stale = False
+            fp = str(t.get("file_path") or "")
+            if fp:
+                try:
+                    stale = os.stat(fp).st_mtime > gmtime
+                except OSError:
+                    stale = False
+            try:
+                if out_path("needs_update").exists():
+                    stale = True
+            except Exception:
+                pass
+            if stale:
+                sys.stdout.write(_READ_NUDGE_STALE)
+                return
+            # Strict block: Read tool only, first time per session, not recently
+            # oriented, and the file is demonstrably indexed.
+            tool_name = d.get("tool_name")
+            if _hook_strict_enabled(strict) and tool_name in (None, "Read") \
+                    and not _query_stamp_fresh() \
+                    and _target_is_indexed(fp, root) \
+                    and _mark_session_denied(str(d.get("session_id") or "")):
+                sys.stdout.write(_READ_DENY)
+                return
+            sys.stdout.write(_READ_NUDGE)
     except Exception:
         pass
+
+
+def _target_is_indexed(file_path: str, root: "Path") -> bool:
+    """Guard the strict deny: only block a read of a file the graph actually indexes.
+    Reads manifest.json (cheap, capped); on any doubt (missing/corrupt/oversized
+    manifest, unresolvable path) returns True so the once-per-session deny still
+    applies — that block is self-limiting, so erring toward it is safe."""
+    from graphify.paths import out_path
+    if not file_path:
+        return True
+    try:
+        mp = out_path("manifest.json")
+        st = mp.stat()
+        if st.st_size > 2_000_000:
+            return True
+        manifest = json.loads(mp.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict) or not manifest:
+            return True
+        p = Path(file_path)
+        rels = set()
+        try:
+            rels.add(p.resolve().relative_to(root).as_posix())
+        except (ValueError, OSError, RuntimeError):
+            pass
+        rels.add(p.name)
+        keys = {str(k).replace("\\", "/") for k in manifest}
+        abskey = str(p).replace("\\", "/")
+        return abskey in keys or any(r and (r in keys or any(k.endswith("/" + r) or k == r for k in keys)) for r in rels)
+    except Exception:
+        return True
 def _clone_repo(
     url: str, branch: str | None = None, out_dir: Path | None = None
 ) -> Path:
@@ -615,6 +818,21 @@ def dispatch_command(cmd: str) -> None:
             _raw = _json.loads(gp.read_text(encoding="utf-8"))
             if "links" not in _raw and "edges" in _raw:
                 _raw = dict(_raw, links=_raw["edges"])
+            # `query` deliberately keeps the graph undirected (unlike `path` /
+            # `explain`, which force directed=True): BFS/DFS here must explore
+            # both callers and callees of the seed node to build useful
+            # context, and forcing a DiGraph would make G.neighbors() return
+            # successors only, silently dropping every caller-side result for
+            # a seed with no outgoing edges. Direction is instead preserved
+            # per-edge below (mirrors graphify/build.py's _src/_tgt pattern)
+            # so the *rendering* stays correct without narrowing traversal.
+            _raw = dict(
+                _raw,
+                links=[
+                    {**link, "_src": link.get("source"), "_tgt": link.get("target")}
+                    for link in _raw.get("links", [])
+                ],
+            )
             try:
                 G = json_graph.node_link_graph(_raw, edges="links")
             except TypeError:
@@ -654,6 +872,7 @@ def dispatch_command(cmd: str) -> None:
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )
+        _touch_query_stamp(gp)
         print(_result)
     elif cmd == "affected":
         if len(sys.argv) < 3:
@@ -715,6 +934,61 @@ def dispatch_command(cmd: str) -> None:
                 depth=depth,
             )
         )
+    elif cmd in ("god-nodes", "god_nodes"):
+        # god_nodes has long been an analyzer (analyze.py), an MCP tool, and a
+        # README-advertised capability, but never a CLI subcommand — `graphify
+        # god_nodes` fell through to "unknown command" (#2004). Wire it as a
+        # read-only graph query, mirroring `affected`.
+        from graphify.affected import load_graph
+        from graphify.analyze import god_nodes as _god_nodes
+        from graphify.security import sanitize_label as _sanitize_label
+        graph_path = _default_graph_path()
+        top_n = 10
+        as_json = "--json" in sys.argv
+        args = sys.argv[2:]
+        i = 0
+        while i < len(args):
+            if args[i] == "--graph" and i + 1 < len(args):
+                graph_path = args[i + 1]
+                i += 2
+            elif args[i].startswith("--graph="):
+                graph_path = args[i].split("=", 1)[1]
+                i += 1
+            elif args[i] == "--top" and i + 1 < len(args):
+                try:
+                    top_n = int(args[i + 1])
+                except ValueError:
+                    print("error: --top must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--top="):
+                try:
+                    top_n = int(args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --top must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+            else:
+                i += 1
+        gp = Path(graph_path).resolve()
+        if not gp.exists():
+            print(f"error: graph file not found: {gp}", file=sys.stderr)
+            sys.exit(1)
+        if not gp.suffix == ".json":
+            print("error: graph file must be a .json file", file=sys.stderr)
+            sys.exit(1)
+        try:
+            G = load_graph(gp)
+        except Exception as exc:
+            print(f"error: could not load graph: {exc}", file=sys.stderr)
+            sys.exit(1)
+        gods = _god_nodes(G, top_n=top_n)
+        if as_json:
+            print(json.dumps(gods, indent=2))
+        else:
+            print("God nodes (most connected):")
+            for rank, n in enumerate(gods, 1):
+                print(f"  {rank}. {_sanitize_label(str(n['label']))} - {n['degree']} edges")
     elif cmd == "save-result":
         # graphify save-result --question Q --answer A [--type T] [--nodes N1 N2 ...]
         #                      [--outcome useful|dead_end|corrected] [--correction TEXT]
@@ -829,8 +1103,13 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(gp.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee direction.
-        _raw = {**_raw, "directed": True}
+        # Force directed so the renderer can recover stored caller→callee
+        # direction, and multigraph so exact-pair parallel links (e.g. a
+        # `references` and a `calls` edge between the same two nodes) survive load
+        # instead of being silently collapsed last-writer-wins — otherwise the
+        # printed relation could be one the traversed pair doesn't actually
+        # carry (#2074). Local to this read; serve's shared graph is untouched.
+        _raw = {**_raw, "directed": True, "multigraph": True}
         try:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
@@ -870,26 +1149,38 @@ def dispatch_command(cmd: str) -> None:
                         f"(top score {_top:g}, runner-up {_runner:g})",
                         file=sys.stderr,
                     )
+        # Deterministic shortest path (#2074): to_undirected(as_view=True)
+        # iterates neighbors via a hash-seeded set union, so among equal-length
+        # paths BFS returned an arbitrary route that varied per process. Build a
+        # sorted, materialized undirected graph so neighbor order — and thus the
+        # chosen path — is canonical for a given graph.json.
+        _und = _nx.Graph()
+        _und.add_nodes_from(sorted(G.nodes))
+        _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
         try:
-            path_nodes = _nx.shortest_path(G.to_undirected(as_view=True), src_nid, tgt_nid)
+            path_nodes = _nx.shortest_path(_und, src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
             print(f"No path found between '{source_label}' and '{target_label}'.")
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
-        from graphify.build import edge_data
+        from graphify.build import edge_datas
         for i in range(len(path_nodes) - 1):
             u, v = path_nodes[i], path_nodes[i + 1]
-            # Check which direction the stored edge points.
+            # Report the ACTUAL stored relation(s) of the traversed pair and
+            # direction — never a fabricated `calls` (#2074). A pair may carry
+            # several parallel relations; show all, and fall back to an honest
+            # "related" when the stored edge has no relation.
             if G.has_edge(u, v):
-                edata = edge_data(G, u, v)
+                datas = edge_datas(G, u, v)
                 forward = True
             else:
-                edata = edge_data(G, v, u)
+                datas = edge_datas(G, v, u)
                 forward = False
-            rel = edata.get("relation", "")
-            conf = edata.get("confidence", "")
-            conf_str = f" [{conf}]" if conf else ""
+            rels = sorted({d.get("relation") for d in datas if d.get("relation")})
+            rel = "/".join(rels) if rels else "related"
+            confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
+            conf_str = f" [{'/'.join(confs)}]" if confs else ""
             if i == 0:
                 segments.append(G.nodes[u].get("label", u))
             if forward:
@@ -904,6 +1195,7 @@ def dispatch_command(cmd: str) -> None:
             corpus=str(gp),
             nodes_returned=hops,
         )
+        _touch_query_stamp(gp)
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
@@ -983,9 +1275,35 @@ def dispatch_command(cmd: str) -> None:
                 rel = edata.get("relation", "")
                 conf = edata.get("confidence", "")
                 arrow = "-->" if direction == "out" else "<--"
-                print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]")
+                # Append the edge's location — the actual call/import/reference
+                # SITE (in the caller's file for an incoming call), not a def
+                # line (#BUG1). Labeled by [rel] so the meaning is unambiguous.
+                loc = edata.get("source_location") or ""
+                sfile = edata.get("source_file") or ""
+                at = f" {sfile}:{loc}" if loc else ""
+                print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}")
             if len(connections) > 20:
-                print(f"  ... and {len(connections) - 20} more")
+                remainder = connections[20:]
+                print(f"  ... and {len(remainder)} more")
+                # #2009: a bare count silently hides the answer on high-degree
+                # nodes ("who calls this, what's the impact?"). Group the cut
+                # connections by direction + file so their shape is visible
+                # without falling back to a repo-wide grep.
+                by_file: dict[tuple[str, str], int] = {}
+                for direction, _nb, edata in remainder:
+                    sfile = edata.get("source_file") or "(unknown file)"
+                    key = (direction, sfile)
+                    by_file[key] = by_file.get(key, 0) + 1
+                # Count desc, then (direction, file) so equal-count groups have a
+                # byte-stable order (not the degree-derived insertion order).
+                grouped = sorted(by_file.items(), key=lambda kv: (-kv[1], kv[0]))
+                print("  Grouped by file:")
+                for (direction, sfile), count in grouped[:20]:
+                    arrow = "-->" if direction == "out" else "<--"
+                    noun = "connection" if count == 1 else "connections"
+                    print(f"    {arrow} {sfile}: {count} {noun}")
+                if len(grouped) > 20:
+                    print(f"    ... and {len(grouped) - 20} more files")
         from graphify import querylog
         querylog.log_query(
             kind="explain",
@@ -993,6 +1311,7 @@ def dispatch_command(cmd: str) -> None:
             corpus=str(gp),
             nodes_returned=len(connections),
         )
+        _touch_query_stamp(gp)
 
     elif cmd == "diagnose":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -1290,6 +1609,10 @@ def dispatch_command(cmd: str) -> None:
         # reports real cost instead of a hardcoded zero (#1694). Stays {0, 0} on
         # the reuse / no-label paths, which make no LLM calls.
         label_token_usage = {"input": 0, "output": 0}
+        # #2073: a --no-label run produces only "Community N" placeholders.
+        # Persisting them (plus a matching .sig) made the reuse branch treat them
+        # as fresh forever, permanently blocking real labeling on later runs.
+        placeholder_only = False
         if labels_path.exists() and not force_relabel:
             # Reuse saved labels, but don't blindly trust them: the graph may have
             # been re-scoped/re-clustered since labeling, in which case a cid now
@@ -1318,7 +1641,14 @@ def dispatch_command(cmd: str) -> None:
             hub_labels: dict[int, str] | None = None
             changed = 0
             for cid in communities:
-                have_label = cid in existing_labels
+                # A persisted "Community {cid}" is a placeholder, not an earned
+                # label — treat it as absent so the hub labeler replaces it and an
+                # already-polluted sidecar (e.g. from a prior --no-label run) heals
+                # instead of suppressing real labels forever (#2073).
+                have_label = (
+                    cid in existing_labels
+                    and existing_labels[cid] != f"Community {cid}"
+                )
                 if saved_sigs:
                     # Precise: the membership signature tells us if this exact
                     # community changed since it was labeled.
@@ -1346,6 +1676,7 @@ def dispatch_command(cmd: str) -> None:
                 )
         elif no_label and not force_relabel:
             labels = {cid: f"Community {cid}" for cid in communities}
+            placeholder_only = True
         else:
             # No labels file yet (or `graphify label` forced a refresh). When run
             # standalone there is no orchestrating agent to do skill.md Step 5, so
@@ -1409,13 +1740,18 @@ def dispatch_command(cmd: str) -> None:
             encoding="utf-8",
         )
         to_json(G, communities, str(out / "graph.json"), community_labels=labels)
-        from graphify.paths import write_json_atomic as _wja
-        _wja(labels_path, {str(k): v for k, v in labels.items()}, ensure_ascii=False)
-        # Membership signatures beside the labels so a later cluster-only can detect
-        # which communities changed and avoid reusing a stale label (see reuse above).
-        from graphify.cluster import community_member_sigs as _cms
-        (labels_path.parent / (labels_path.name + ".sig")).write_text(
-            json.dumps({str(k): v for k, v in _cms(communities).items()}), encoding="utf-8")
+        # Don't persist placeholder-only labels (or their .sig): leaving the
+        # sidecar absent lets a later run generate real labels instead of reading
+        # back "Community N" as authoritative (#2073).
+        if not placeholder_only:
+            from graphify.paths import write_json_atomic as _wja
+            _wja(labels_path, {str(k): v for k, v in labels.items()}, ensure_ascii=False)
+            # Membership signatures beside the labels so a later cluster-only can
+            # detect which communities changed and avoid reusing a stale label
+            # (see reuse above).
+            from graphify.cluster import community_member_sigs as _cms
+            (labels_path.parent / (labels_path.name + ".sig")).write_text(
+                json.dumps({str(k): v for k, v in _cms(communities).items()}), encoding="utf-8")
 
         # Mirror watch.py pattern: gate to_html so core outputs (graph.json +
         # GRAPH_REPORT.md) always land. Honor --no-viz explicitly; otherwise
@@ -1507,8 +1843,14 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "hook-guard":
         # Shell-agnostic Claude/Codebuddy PreToolUse guard (#522). Replaces the old
         # inline-bash hooks that failed on Windows. Prints an additionalContext nudge
-        # toward graphify when a graph exists; always exits 0 (never blocks a tool).
-        _run_hook_guard(sys.argv[2] if len(sys.argv) > 2 else "")
+        # toward graphify when a fresh in-project graph exists; always exits 0. In
+        # strict mode (opt-in, `hook-guard read --strict`) it blocks the first raw
+        # read per session via the JSON permissionDecision payload — never via exit
+        # code — and downgrades to the nudge thereafter.
+        _run_hook_guard(
+            sys.argv[2] if len(sys.argv) > 2 else "",
+            strict="--strict" in sys.argv[3:],
+        )
         sys.exit(0)
     elif cmd == "check-update":
         if len(sys.argv) < 3:
@@ -2119,7 +2461,8 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|atlascloud|ollama] "
-                "[--model M] [--mode deep] [--out DIR] [--google-workspace] [--no-cluster] "
+                "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
+                "[--no-gitignore] [--code-only] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -2148,6 +2491,7 @@ def dispatch_command(cmd: str) -> None:
         google_workspace = False
         global_merge = False
         code_only = False
+        no_gitignore = False
         global_repo_tag: str | None = None
         # Performance/tuning knobs (issue #792). None means "use library default".
         cli_max_workers: int | None = None
@@ -2201,9 +2545,12 @@ def dispatch_command(cmd: str) -> None:
                 extract_mode = args[i + 1]; i += 2
             elif a.startswith("--mode="):
                 extract_mode = a.split("=", 1)[1]; i += 1
-            elif a == "--out" and i + 1 < len(args):
+            elif a in ("--out", "--output") and i + 1 < len(args):
+                # --output is an alias of --out (#2004): it was silently dropped
+                # before, and `graphify tree` already documents --output, so the
+                # mistake is natural. (--output= does not startswith --out=.)
                 out_dir = Path(args[i + 1]); i += 2
-            elif a.startswith("--out="):
+            elif a.startswith(("--out=", "--output=")):
                 out_dir = Path(a.split("=", 1)[1]); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
@@ -2213,6 +2560,8 @@ def dispatch_command(cmd: str) -> None:
                 code_only = True; i += 1
             elif a == "--google-workspace":
                 google_workspace = True; i += 1
+            elif a == "--no-gitignore":
+                no_gitignore = True; i += 1
             elif a == "--global":
                 global_merge = True; i += 1
             elif a == "--as" and i + 1 < len(args):
@@ -2290,10 +2639,28 @@ def dispatch_command(cmd: str) -> None:
         out_root = (out_dir.resolve() if out_dir else target)
         graphify_out = out_root / _GRAPHIFY_OUT
         graphify_out.mkdir(parents=True, exist_ok=True)
-        # Persist --exclude so later update/watch/hook rebuilds re-apply it
-        # instead of silently re-including the excluded paths (#1886).
-        from graphify.watch import _write_build_config as _write_build_cfg
-        _write_build_cfg(graphify_out, excludes=cli_excludes or None)
+        # Persist corpus-shaping options so later update/watch/hook rebuilds
+        # use the same file set as the initial extraction (#1886).
+        from graphify.watch import (
+            _write_build_config as _write_build_cfg,
+            _read_build_excludes as _read_build_ex,
+            _read_build_gitignore as _read_build_gi,
+        )
+        # #1971 persistence: an explicit --no-gitignore persists False; a later
+        # flag-less `graphify extract` must NOT clobber it back to True, which
+        # would make the git-ignored code silently disappear again (the exact
+        # complaint #1971 is about). Honor the persisted value for THIS run when
+        # the flag is absent (read before the write below), and write False only
+        # when the flag is set — None leaves the setting as-is, mirroring how
+        # #1886 persists --exclude.
+        _effective_gitignore = False if no_gitignore else _read_build_gi(graphify_out)
+        # An explicit list replaces the persisted one; omission reuses it.
+        _effective_excludes = cli_excludes or _read_build_ex(graphify_out)
+        _write_build_cfg(
+            graphify_out,
+            excludes=cli_excludes or None,
+            gitignore=False if no_gitignore else None,
+        )
 
         stages = _StageTimer(cli_timing)
 
@@ -2326,6 +2693,7 @@ def dispatch_command(cmd: str) -> None:
             )
 
         if not has_path:
+            detection = {}
             code_files = []
             doc_files = []
             paper_files = []
@@ -2341,7 +2709,8 @@ def dispatch_command(cmd: str) -> None:
                 target,
                 manifest_path=str(manifest_path),
                 google_workspace=google_workspace or None,
-                extra_excludes=cli_excludes or None,
+                extra_excludes=_effective_excludes or None,
+                gitignore=_effective_gitignore,
             )
             files_by_type = detection.get("files", {})
             new_by_type = detection.get("new_files", {})
@@ -2364,7 +2733,13 @@ def dispatch_command(cmd: str) -> None:
             )
         else:
             print(f"[graphify extract] scanning {target}")
-            detection = _detect(target, google_workspace=google_workspace or None, extra_excludes=cli_excludes or None, cache_root=out_root)
+            detection = _detect(
+                target,
+                google_workspace=google_workspace or None,
+                extra_excludes=_effective_excludes or None,
+                cache_root=out_root,
+                gitignore=_effective_gitignore,
+            )
             files_by_type = detection.get("files", {})
             code_files = [Path(p) for p in files_by_type.get("code", [])]
             doc_files = [Path(p) for p in files_by_type.get("document", [])]
@@ -2441,6 +2816,19 @@ def dispatch_command(cmd: str) -> None:
             print(
                 f"[graphify extract] {len(_unclassified)} file(s) not classified "
                 f"(no supported extension or shebang), skipped: {_names}{_more}"
+            )
+        # Name the files dropped by the sensitive-file filter so a wrongly-flagged
+        # source/doc is visible, not just a count (#2106). Operational skips
+        # (symlink/office/Workspace) carry a " [reason]" suffix; exclude those here
+        # so this line reports only the security-heuristic drops.
+        _sensitive = detection.get("skipped_sensitive", []) if isinstance(detection, dict) else []
+        _sec = [s for s in _sensitive if " [" not in s]
+        if _sec:
+            _snames = ", ".join(sorted({Path(p).name for p in _sec})[:6])
+            _smore = f" (+{len(_sec) - 6} more)" if len(_sec) > 6 else ""
+            print(
+                f"[graphify extract] {len(_sec)} file(s) skipped as potentially sensitive "
+                f"(rename or move if wrongly flagged): {_snames}{_smore}"
             )
         stages.mark("detect")
 
@@ -2556,7 +2944,9 @@ def dispatch_command(cmd: str) -> None:
             # Anchor the cache at the output root, not the scanned project:
             # with --out, a <target>/graphify-out/cache/ would leak a
             # graphify-out/ dir into a project that asked for external output.
-            ast_kwargs: dict = {"cache_root": out_root}
+            # `root` stays the scanned project so source_file/ids relativize
+            # against it; conflating the two basenamed every node (#1941).
+            ast_kwargs: dict = {"cache_root": out_root, "root": target}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             print(f"[graphify extract] AST extraction on {len(code_files)} code files...")
@@ -2604,8 +2994,8 @@ def dispatch_command(cmd: str) -> None:
                 uncached_paths = list(sem_paths_str)
             else:
                 cached_nodes, cached_edges, cached_hyperedges, uncached_paths = (
-                    _check_semantic_cache(sem_paths_str, root=out_root, mode=sem_cache_mode,
-                                          prompt=sem_prompt)
+                    _check_semantic_cache(sem_paths_str, root=target, cache_root=out_root,
+                                          mode=sem_cache_mode, prompt=sem_prompt)
                 )
             sem_cache_hits = len(semantic_files) - len(uncached_paths)
             sem_cache_misses = len(uncached_paths)
@@ -2621,6 +3011,7 @@ def dispatch_command(cmd: str) -> None:
                     "backend": backend,
                     "model": model,
                     "root": target,
+                    "cache_root": out_root,
                 }
                 if deep_mode:
                     corpus_kwargs["deep_mode"] = True
@@ -2691,7 +3082,8 @@ def dispatch_command(cmd: str) -> None:
                         fresh.get("nodes", []),
                         fresh.get("edges", []),
                         fresh.get("hyperedges", []),
-                        root=out_root,
+                        root=target,
+                        cache_root=out_root,
                         allowed_source_files=uncached_paths,
                         mode=sem_cache_mode,
                         prompt=sem_prompt,
@@ -2716,6 +3108,11 @@ def dispatch_command(cmd: str) -> None:
         # incremental and full branches), NOT the incremental ``semantic_files``
         # changed-subset, which would delete every unchanged doc's valid entry.
         # Best-effort: a prune failure must never break extraction.
+        # Hash keys are anchored to the corpus (``target``) — the same anchor
+        # the cache read/write above use — while the stat-index artifact
+        # follows the cache location (``out_root``). Anchoring these hashes to
+        # ``out_root`` instead would mismatch every key under ``--out`` and
+        # sweep the entire fresh cache as orphaned (#1990/#1991).
         try:
             from graphify.cache import file_hash as _file_hash
             _live_hashes: set[str] = set()
@@ -2723,14 +3120,16 @@ def dispatch_command(cmd: str) -> None:
                 for _fp in files_by_type.get(_kind, []):
                     _abs = Path(_fp)
                     if not _abs.is_absolute():
-                        _abs = Path(out_root) / _abs
+                        _abs = Path(target) / _abs
                     if not _abs.is_file():
                         continue  # deleted/missing — leave out so its entry is pruned
                     try:
-                        _live_hashes.add(_file_hash(_abs, out_root))
+                        _live_hashes.add(_file_hash(_abs, target, cache_root=out_root))
                     except OSError:
                         pass
-            _prune_semantic_cache(out_root, _live_hashes)
+            # A pathless database extraction has no filesystem corpus to sweep.
+            if has_path:
+                _prune_semantic_cache(out_root, _live_hashes)
         except Exception as exc:
             print(f"[graphify extract] warning: could not prune semantic cache: {exc}", file=sys.stderr)
         stages.mark("semantic extract")
@@ -2784,6 +3183,22 @@ def dispatch_command(cmd: str) -> None:
         _manifest_files = _stamped_manifest_files(files_by_type, sem_result, target,
                                                    partial_source_files=_partial_semantic_files)
 
+        # Files dispatched this run but dropped by _stamped_manifest_files
+        # above (failed chunk, LLM omission, or any future exclusion) still
+        # carry a stale semantic_hash from a prior successful run in the
+        # on-disk manifest; save_manifest's seed loop would otherwise copy it
+        # verbatim and mask the omission (#1948). Derived from semantic_files
+        # — what was actually SENT to the backend this run (narrowed by the
+        # incremental gate and --code-only, widened by deep mode) — NOT from
+        # files_by_type: the full live corpus includes untouched files that
+        # were never dispatched, and clearing those would blank the whole
+        # manifest on every partial incremental run, forcing a full-corpus
+        # re-extraction on the next one.
+        _stamped_semantic = {
+            f for _flist in _manifest_files.values() for f in _flist
+        }
+        _cleared_semantic = {str(p) for p in semantic_files} - _stamped_semantic
+
         # Full-scan manifest saves prune rows for in-root files that left the
         # scan corpus but still exist on disk (#1908). The corpus must be the
         # RAW detect output (files_by_type), NOT the #933-stamp-filtered
@@ -2793,6 +3208,15 @@ def dispatch_command(cmd: str) -> None:
             {f for _fl in files_by_type.values() for f in _fl}
             if has_path else None
         )
+
+        def _invalidate_file_manifest_for_db_graph() -> None:
+            if has_path:
+                return
+            try:
+                manifest_path.unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"error: could not invalidate file manifest: {exc}", file=sys.stderr)
+                sys.exit(1)
 
         if no_cluster:
             # --no-cluster: dump the raw merged extraction as graph.json.
@@ -2835,14 +3259,46 @@ def dispatch_command(cmd: str) -> None:
                     "(--no-cluster); outputs left untouched."
                 )
                 try:
-                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus)
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
                 stages.total()
                 sys.exit(0)
 
+            if incremental_mode:
+                # #2169: this raw path used to write ONLY this run's extraction
+                # over graph.json — on an incremental run that is just the
+                # changed files, silently dropping every node/edge owned by an
+                # unchanged file. Merge the existing graph forward first, with
+                # the same replace/prune semantics as the clustered path's
+                # build_merge: re-extracted sources replaced, deleted +
+                # excluded + graph-stale sources pruned, everything else
+                # carried. Survivors are prepended, so the dedupe below keeps
+                # this run's fresh attributes for re-extracted nodes.
+                from graphify.build import merge_raw_extraction as _merge_raw_extraction
+                _raw_prune_sources: list[str] = list(deleted_files)
+                for _src in list(excluded_files) + graph_stale_sources:
+                    if _src not in _raw_prune_sources:
+                        _raw_prune_sources.append(_src)
+                try:
+                    merged = _merge_raw_extraction(
+                        merged,
+                        graph_path=existing_graph_path,
+                        prune_sources=_raw_prune_sources or None,
+                        root=target,
+                    )
+                except RuntimeError as exc:
+                    # Existing graph present but unparseable: refuse to
+                    # raw-dump this run's partial extraction over it.
+                    print(f"error: {exc}", file=sys.stderr)
+                    sys.exit(1)
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
+            # Disambiguate colliding-basename file-node labels (#2032). This raw
+            # --no-cluster path bypasses build_from_json (where the clustered path
+            # gets this), so apply it directly on the merged node list.
+            from graphify.build import disambiguate_file_labels_in_nodes as _disamb_labels
+            _disamb_labels(merged["nodes"])
             # Backfill source_file from endpoint nodes — this raw path bypasses
             # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
             _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}
@@ -2878,8 +3334,19 @@ def dispatch_command(cmd: str) -> None:
                     )
                     sys.exit(1)
             _backup(graphify_out)
+            _invalidate_file_manifest_for_db_graph()
             from graphify.paths import write_json_atomic as _write_json_atomic
             _write_json_atomic(graph_json_path, merged, indent=2)
+            try:
+                # Record the scan root so a later build_merge / update runbook can
+                # relativize deleted-file paths correctly even for a custom --out
+                # (its grandparent-of-graph.json fallback points at the wrong dir
+                # otherwise, and deleted files never prune — #2012/#1571).
+                (graphify_out / ".graphify_root").write_text(
+                    str(Path(target).resolve()), encoding="utf-8"
+                )
+            except OSError:
+                pass
             stages.mark("write")
             cost = _estimate_cost(
                 backend, merged["input_tokens"], merged["output_tokens"]
@@ -2897,7 +3364,8 @@ def dispatch_command(cmd: str) -> None:
                     f"est. cost: ${cost:.4f}"
                 )
             try:
-                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus)
+                if has_path:
+                    _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -2969,6 +3437,7 @@ def dispatch_command(cmd: str) -> None:
 
         from graphify.export import backup_if_protected as _backup
         _backup(graphify_out)
+        _invalidate_file_manifest_for_db_graph()
         # force=True bypasses the #479 shrink guard entirely. A full build
         # legitimately shrinks (fuzzy dedup collapse, deleted code) so it keeps
         # force=True — EXCEPT when this run's extraction was incomplete (an
@@ -3004,6 +3473,14 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        try:
+            # See the --no-cluster path above: persist the scan root so build_merge
+            # can relativize deleted-file paths under a custom --out (#2012/#1571).
+            (graphify_out / ".graphify_root").write_text(
+                str(Path(target).resolve()), encoding="utf-8"
+            )
+        except OSError:
+            pass
         stages.mark("export")
         if merged.get("output_tokens", 0) > 0:
             (graphify_out / ".graphify_semantic_marker").write_text(
@@ -3034,7 +3511,8 @@ def dispatch_command(cmd: str) -> None:
         from graphify.paths import write_json_atomic as _wja
         _wja(analysis_path, analysis, indent=2)
         try:
-            _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus)
+            if has_path:
+                _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 
@@ -3159,12 +3637,15 @@ def dispatch_command(cmd: str) -> None:
             chunk_files.extend(sorted(expanded) if expanded else [arg])
         merged: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
         seen_ids: set[str] = set()
+        valid_chunks = 0
         # These chunk files are untrusted subagent output. load_validated_...
         # stats the file size BEFORE reading it (so a multi-GB chunk can't blow up
         # memory), parses the JSON, and validates the security caps + the node/
         # edge id charset that blocks path traversal (#825) — the same enforcement
         # the skill merge path applies. A bad chunk is skipped with a warning
-        # (filter semantics; never abort). Deliberately NOT wired into
+        # while valid siblings still merge; if every chunk is invalid, fail
+        # closed instead of reporting success and replacing --out with an empty
+        # semantic layer. Deliberately NOT wired into
         # build_from_json/load_graph_json, which must keep loading valid
         # pre-existing graphs. file_type is left to build's coercion (#840).
         from graphify.semantic_cleanup import load_validated_semantic_fragment
@@ -3177,6 +3658,7 @@ def dispatch_command(cmd: str) -> None:
                     file=sys.stderr,
                 )
                 continue
+            valid_chunks += 1
             for n in chunk.get("nodes", []):
                 if n.get("id") not in seen_ids:
                     seen_ids.add(n["id"])
@@ -3189,11 +3671,23 @@ def dispatch_command(cmd: str) -> None:
             for _tok in ("input_tokens", "output_tokens"):
                 _v = chunk.get(_tok, 0)
                 merged[_tok] += _v if isinstance(_v, (int, float)) else 0
+        if not valid_chunks:
+            print(
+                f"[graphify merge-chunks] error: no valid chunks to merge; "
+                f"refusing to write {out_path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, merged, ensure_ascii=False)
+        chunk_summary = (
+            f"{valid_chunks} chunks"
+            if valid_chunks == len(chunk_files)
+            else f"{valid_chunks} of {len(chunk_files)} chunks"
+        )
         print(
-            f"Merged {len(chunk_files)} chunks: {len(merged['nodes'])} nodes, {len(merged['edges'])} edges, "
+            f"Merged {chunk_summary}: {len(merged['nodes'])} nodes, {len(merged['edges'])} edges, "
             f"{merged['input_tokens']:,} in / {merged['output_tokens']:,} out tokens"
         )
 

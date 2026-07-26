@@ -86,7 +86,7 @@ def extract_dm(path: Path) -> dict:
             file_node = node.child_by_field_name("file")
             raw = _read_include_path(file_node)
             if raw:
-                norm = raw.replace("\\", "/").lstrip("./")
+                norm = re.sub(r"^\./", "", raw.replace("\\", "/"))
                 resolved = (path.parent / norm).resolve()
                 edge: dict = {
                     "source": file_nid,

@@ -25,6 +25,7 @@ from graphify.serve import (
     _query_graph_text,
     _resolve_context_filters,
     _subgraph_to_text,
+    _cut_lines_to_budget,
     _load_graph,
     _community_header,
     _search_tokens,
@@ -597,6 +598,32 @@ def test_load_graph_missing_file(tmp_path):
     graphify_dir.mkdir()
     with pytest.raises(SystemExit):
         _load_graph(str(graphify_dir / "nonexistent.json"))
+
+
+def test_load_graph_corrupted_json_prints_recovery_message(tmp_path, capsys):
+    """json.JSONDecodeError is a ValueError subclass, so its except clause
+    must be checked before the bare (ValueError, FileNotFoundError) clause,
+    or the corrupted-graph recovery hint is unreachable (#2005)."""
+    p = tmp_path / "graph.json"
+    p.write_text("{not valid json")
+    with pytest.raises(SystemExit):
+        _load_graph(str(p))
+    err = capsys.readouterr().err
+    assert "graph.json is corrupted" in err
+    assert "Re-run /graphify to rebuild" in err
+
+
+def test_load_graph_generic_value_error_message_unchanged(tmp_path, capsys):
+    """A non-decode ValueError (e.g. a non-.json path) must still print the
+    generic error, not the corrupted-graph hint — pins the except-clause
+    order from #2005 so a future refactor can't collapse them back."""
+    p = tmp_path / "graph.txt"
+    p.write_text("not a graph")
+    with pytest.raises(SystemExit):
+        _load_graph(str(p))
+    err = capsys.readouterr().err
+    assert "must be a .json file" in err
+    assert "corrupted" not in err
 
 
 def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path, capsys):
@@ -1244,3 +1271,118 @@ def test_score_query_collect_per_term_seeds_false_omits_tracking(monkeypatch):
     assert qs.best_seed_by_term == {}
     # And the combined output is still byte-identical to _score_nodes.
     assert qs.ranked == _score_nodes(G, ["foo", "bar", "baz"])
+
+
+# --- BUG2: seed survival, truncation notice, deterministic ordering ----------
+
+def _star_graph(n_spokes=40):
+    """A high-degree hub plus a low-degree answer node, to force the answer past
+    a pure degree-sorted / BFS cut unless seed-first ordering protects it."""
+    G = nx.Graph()
+    G.add_node("hub", label="Hub", source_file="hub.py", source_location="L1", community=0)
+    for i in range(n_spokes):
+        G.add_node(f"s{i}", label=f"spoke{i}", source_file=f"s{i}.py", source_location="L1", community=0)
+        G.add_edge("hub", f"s{i}", relation="calls", confidence="EXTRACTED")
+    # low-degree answer node, attached to one spoke
+    G.add_node("answer", label="CompanySpacingGate", source_file="gate.py",
+               source_location="L12", community=0)
+    G.add_edge("s0", "answer", relation="calls", confidence="EXTRACTED")
+    return G
+
+
+def test_subgraph_to_text_seed_survives_truncation():
+    """BUG2: a low-degree answer node passed as a seed is rendered first and
+    survives a tiny budget, and truncation is announced."""
+    G = _star_graph()
+    nodes = set(G.nodes)
+    text = _subgraph_to_text(G, nodes, list(G.edges()), token_budget=30, seeds=["answer"])
+    assert "CompanySpacingGate" in text, "seed node was cut (BUG2)"
+    node_lines = [l for l in text.splitlines() if l.startswith("NODE ")]
+    assert "CompanySpacingGate" in node_lines[0], "seed must render first"
+    assert "TRUNCATED" in text
+
+
+def test_query_graph_text_passes_seeds_so_answer_survives():
+    """BUG2 regression guard: the query path must pass seeds to the renderer (a
+    branch merge had dropped the argument), so a queried low-degree symbol
+    appears in the body even when the output is truncated."""
+    G = _star_graph()
+    text = _query_graph_text(G, "CompanySpacingGate", mode="bfs", depth=2, token_budget=40)
+    # Present in the body, not merely the Start: header.
+    body = text.split("\n\n", 1)[-1]
+    assert "CompanySpacingGate" in body
+
+
+def test_subgraph_to_text_truncation_notice_at_top():
+    G = _star_graph()
+    text = _subgraph_to_text(G, set(G.nodes), list(G.edges()), token_budget=30, seeds=["answer"])
+    assert text.startswith("[!] TRUNCATED"), f"notice not at top: {text[:60]!r}"
+    assert "of" in text.splitlines()[0] and "nodes" in text.splitlines()[0]
+    assert "truncated" in text  # end marker still present
+
+
+def test_subgraph_to_text_no_notice_when_under_budget():
+    G = _make_graph()
+    text = _subgraph_to_text(G, {"n1", "n2"}, [("n1", "n2")], token_budget=2000)
+    assert "TRUNCATED" not in text and "truncated" not in text
+
+
+def test_subgraph_to_text_order_is_deterministic():
+    """Equal-degree nodes render in a stable order regardless of set iteration."""
+    G = nx.Graph()
+    for i in range(10):
+        G.add_node(f"z{i}", label=f"z{i}", source_file=f"z{i}.py", source_location="L1", community=0)
+    nodes = set(G.nodes)
+    a = _subgraph_to_text(G, nodes, [])
+    b = _subgraph_to_text(G, set(reversed(list(nodes))), [])
+    assert a == b
+
+
+# --- #2069: token budget on get_neighbors / get_community line lists ----------
+
+def test_cut_lines_to_budget_under_budget_is_byte_identical():
+    lines = ["Neighbors of X:", "  --> a [calls] [EXTRACTED]", "  --> b [calls] [EXTRACTED]"]
+    out = _cut_lines_to_budget(lines, token_budget=2000, narrow_hint="use relation_filter")
+    assert out == "\n".join(lines)
+    assert "TRUNCATED" not in out and "truncated" not in out
+
+
+def test_cut_lines_to_budget_over_budget_announces_at_top():
+    lines = [f"  --> node{i} [calls] [EXTRACTED]" for i in range(200)]
+    out = _cut_lines_to_budget(lines, token_budget=20, narrow_hint="use get_node for a specific symbol")
+    # Top notice (silence must not read as absence) + accurate counts + bottom marker + hint.
+    assert out.startswith("[!] TRUNCATED: showing ")
+    first = out.splitlines()[0]
+    assert "of 200 lines" in first
+    assert "use get_node for a specific symbol" in out
+    assert "truncated" in out  # end marker retained
+    # shown count in the notice matches the actual kept line count.
+    import re
+    shown = int(re.search(r"showing (\d+) of", first).group(1))
+    body = out.split("\n\n", 1)[1].split("\n... (truncated", 1)[0]
+    assert body.count("\n") + 1 == shown
+
+
+def test_subgraph_to_text_ignores_dangling_src_tgt(monkeypatch):
+    """#2080 review: a stray/dangling _src/_tgt on an edge (hand-edited or
+    adversarial graph.json) must NOT crash rendering; fall back to (u, v)."""
+    G = nx.Graph()
+    G.add_node("a", label="Alpha", source_file="a.py", source_location="L1", community=0)
+    G.add_node("b", label="Beta", source_file="b.py", source_location="L2", community=0)
+    # _src names a node that doesn't exist -> must be ignored, no KeyError.
+    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED", _src="ghost", _tgt="b")
+    out = _subgraph_to_text(G, {"a", "b"}, [("a", "b")])
+    assert "EDGE" in out and "Alpha" in out and "Beta" in out  # rendered, didn't crash
+
+
+def test_subgraph_to_text_honors_valid_src_tgt_direction():
+    """#2080: a valid _src/_tgt (the stored direction) is honored even when the
+    traversal tuple is reversed."""
+    G = nx.Graph()
+    G.add_node("caller", label="caller", source_file="c.py", source_location="L1", community=0)
+    G.add_node("callee", label="callee", source_file="d.py", source_location="L2", community=0)
+    # Edge collected as (callee, caller) by traversal, but stored direction is caller->callee.
+    G.add_edge("callee", "caller", relation="calls", confidence="EXTRACTED", _src="caller", _tgt="callee")
+    out = _subgraph_to_text(G, {"caller", "callee"}, [("callee", "caller")])
+    edge_line = next(l for l in out.splitlines() if l.startswith("EDGE"))
+    assert "caller --calls" in edge_line and "--> callee" in edge_line
