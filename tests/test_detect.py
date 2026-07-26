@@ -136,6 +136,92 @@ def test_graphifyignore_comments_ignored(tmp_path):
     assert any("other.py" in f for f in result["files"]["code"])
 
 
+def test_graphifyignore_utf8_bom_first_pattern_honored(tmp_path):
+    """A UTF-8 BOM at the start of .graphifyignore must not corrupt the first
+    pattern (#2163): git strips a single leading BOM, so `*.log` on line 1
+    must still exclude app.log."""
+    (tmp_path / ".graphifyignore").write_bytes(b"\xef\xbb\xbf*.log\nbuild/\n")
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "lib.py").write_text("x = 1")
+    (tmp_path / "app.log").write_text("log line")
+    (tmp_path / "main.py").write_text("print('hi')")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("app.log" in f for f in all_files), "BOM'd first pattern was dropped"
+    assert not any("build" in f for f in all_files)
+    assert any("main.py" in f for f in all_files)
+    assert result["graphifyignore_patterns"] == 2
+
+
+def test_gitignore_utf8_bom_matches_git(tmp_path):
+    """A BOM'd .gitignore first pattern must match, exactly like git (#2163)."""
+    (tmp_path / ".gitignore").write_bytes(b"\xef\xbb\xbf*.log\n")
+    (tmp_path / "app.log").write_text("log line")
+    (tmp_path / "main.py").write_text("print('hi')")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("app.log" in f for f in all_files)
+    assert any("main.py" in f for f in all_files)
+
+
+def test_graphifyignore_bom_only_file(tmp_path):
+    """A .graphifyignore containing only a BOM yields zero patterns, not one
+    bogus U+FEFF pattern (#2163)."""
+    (tmp_path / ".graphifyignore").write_bytes(b"\xef\xbb\xbf")
+    (tmp_path / "main.py").write_text("x = 1")
+
+    result = detect(tmp_path)
+    assert result["graphifyignore_patterns"] == 0
+    assert any("main.py" in f for f in result["files"]["code"])
+
+
+def test_graphifyignore_bom_then_comment(tmp_path):
+    """A BOM followed by a comment must still parse as a comment, not become
+    a `\\ufeff# comment` pattern (#2163)."""
+    (tmp_path / ".graphifyignore").write_bytes(b"\xef\xbb\xbf# comment\nmain.py\n")
+    (tmp_path / "main.py").write_text("x = 1")
+    (tmp_path / "other.py").write_text("x = 2")
+
+    result = detect(tmp_path)
+    assert not any("main.py" in f for f in result["files"]["code"])
+    assert any("other.py" in f for f in result["files"]["code"])
+    assert result["graphifyignore_patterns"] == 1, "BOM'd comment became a pattern"
+
+
+def test_nested_gitignore_utf8_bom(tmp_path):
+    """A BOM'd .gitignore below the scan root (loaded live during the walk,
+    #1206 path) must also have its first pattern honored (#2163)."""
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / ".gitignore").write_bytes(b"\xef\xbb\xbf*.log\n")
+    (sub / "app.log").write_text("log line")
+    (sub / "keep.py").write_text("x = 1")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("app.log" in f for f in all_files)
+    assert any("keep.py" in f for f in all_files)
+
+
+def test_git_info_exclude_utf8_bom(tmp_path):
+    """A BOM at the start of $GIT_DIR/info/exclude must not corrupt the first
+    pattern either (#2163) — second read site in _load_graphifyignore."""
+    (tmp_path / ".git" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info" / "exclude").write_bytes(b"\xef\xbb\xbfsecrets/\n")
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "x.py").write_text("token = 'x'")
+    (tmp_path / "real.py").write_text("def real(): pass")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("secrets" in f for f in all_files), "BOM'd info/exclude pattern was dropped"
+    assert any("real.py" in f for f in all_files)
+
+
 def test_detect_follows_symlinked_directory(tmp_path):
     real_dir = tmp_path / "real_lib"
     real_dir.mkdir()

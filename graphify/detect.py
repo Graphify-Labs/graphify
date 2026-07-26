@@ -970,7 +970,7 @@ def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path,
     for fname in ((".gitignore", ".graphifyignore") if gitignore else (".graphifyignore",)):
         ignore_file = d / fname
         if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+            for raw in ignore_file.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
                 line = _parse_gitignore_line(raw)
                 if line:
                     patterns.append((d, line))
@@ -1012,7 +1012,7 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     # re-include still override it (#1810).
     info_exclude = _git_info_exclude(ceiling) if gitignore else None
     if info_exclude is not None:
-        for raw in info_exclude.read_text(encoding="utf-8", errors="ignore").splitlines():
+        for raw in info_exclude.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
             line = _parse_gitignore_line(raw)
             if line:
                 patterns.append((ceiling, line))

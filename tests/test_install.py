@@ -1116,3 +1116,59 @@ def test_hermes_skill_destination_posix_uses_home():
     with patch("graphify.__main__.platform.system", return_value="Linux"):
         dst = _platform_skill_destination("hermes", project=False)
     assert str(dst).endswith(".hermes/skills/graphify/SKILL.md"), dst
+
+
+def _cli_dispatched_commands() -> set[str]:
+    """Subcommand names the CLI actually dispatches.
+
+    `graphify`'s dispatcher is an `elif cmd == "..."` chain rather than a declarative
+    table, so the set is read back out of the source. Used to prove a hook command
+    written by an installer is not a stale/renamed subcommand (#2165).
+    """
+    import re
+    from graphify import cli
+
+    source = Path(cli.__file__).read_text(encoding="utf-8")
+    names = set(re.findall(r'cmd\s*==\s*"([a-z0-9][a-z0-9-]*)"', source))
+    names |= {
+        m
+        for group in re.findall(r'cmd\s+in\s+\(([^)]*)\)', source)
+        for m in re.findall(r'"([a-z0-9][a-z0-9-]*)"', group)
+    }
+    return names
+
+
+def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
+    """#2165: the PreToolUse command in .codex/hooks.json must be a command the CLI
+    dispatches, so a renamed subcommand can never leave a permanently dead hook.
+
+    `hook-check` is intentionally a no-op on Codex (Codex Desktop rejects
+    additionalContext on PreToolUse), but it must still be a *recognized* command --
+    an unrecognized one exits non-zero and would break every Bash tool call.
+    """
+    import json
+
+    from graphify.install import _install_codex_hook
+
+    _install_codex_hook(tmp_path)
+    hooks = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+
+    entries = [
+        h
+        for group in hooks["hooks"]["PreToolUse"]
+        for h in group["hooks"]
+        if "graphify" in h.get("command", "")
+    ]
+    assert entries, "codex install must register a graphify PreToolUse hook"
+
+    dispatched = _cli_dispatched_commands()
+    assert "hook-check" in dispatched, "sanity: parser must find known commands"
+
+    for entry in entries:
+        # command is "<abs exe path> <subcommand> [args...]"
+        parts = entry["command"].split()
+        subcommand = parts[1] if len(parts) > 1 else ""
+        assert subcommand in dispatched, (
+            f"codex hook registers {subcommand!r}, which the CLI does not dispatch "
+            f"(#2165). Known commands: {sorted(dispatched)}"
+        )

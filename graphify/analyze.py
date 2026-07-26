@@ -18,6 +18,14 @@ _BUILTIN_NOISE_LABELS = frozenset({
     "Callable", "Type", "ClassVar", "Final", "Literal", "Protocol",
     "Counter", "defaultdict", "OrderedDict", "datetime", "Enum",
     "os", "sys", "re", "json", "io", "abc", "typing",
+    # Swift / Foundation / SwiftUI framework symbols and module imports that
+    # otherwise dominate god-node rankings on Swift codebases (#2147)
+    "Foundation", "SwiftUI", "UIKit", "AppKit", "Combine",
+    "String", "Int", "Double", "Float", "Bool", "Data", "URL", "Date", "UUID",
+    "Sendable", "Codable", "Decodable", "Encodable", "Equatable", "Hashable",
+    "Identifiable", "Comparable", "AnyObject", "Error", "LocalizedError",
+    "NSObject", "NSString", "NSError", "NSLock",
+    "View", "Color", "Font", "DispatchQueue",
 })
 
 # Language families — extensions sharing a runtime can legitimately call each other
