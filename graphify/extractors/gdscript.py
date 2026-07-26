@@ -1,6 +1,6 @@
 """GDScript (Godot Engine) extractor.
 
-Parses ``.gd`` files with tree-sitter-gdscript and emits Graphify's
+Parses ``.gd`` files with a tree-sitter GDScript grammar and emits Graphify's
 node/edge dicts. Captures:
 
 * ``class_name X`` / inner ``class X`` -> class node
@@ -14,9 +14,9 @@ node/edge dicts. Captures:
 * ``s.connect(handler)`` -> ``connects`` edge
 * ``preload("res://y.gd")`` / ``load("res://y.gd")`` -> ``imports`` edge
 
-Depends on the ``tree_sitter_gdscript`` grammar (Godot extra). If the grammar
-is not installed the extractor degrades to a bare file node so the pipeline
-never crashes.
+Depends on the GDScript grammar from ``tree-sitter-language-pack`` (the Godot
+extra, ``graphify[godot]``). If the grammar is not installed the extractor
+degrades to a bare file node so the pipeline never crashes.
 """
 from __future__ import annotations
 
@@ -36,25 +36,26 @@ def _load_gdscript_parser():
     """Return a tree-sitter Parser for GDScript, or None if no grammar is available.
 
     Tries grammar sources in order of preference:
-      1. ``tree_sitter_gdscript`` — the standalone grammar package (offline,
-         mirrors how every other language is wired here).
-      2. ``tree_sitter_language_pack`` — bundled fallback for environments that
-         install the pack instead of the standalone grammar.
+      1. ``tree_sitter_language_pack`` — the Godot extra (``graphify[godot]``)
+         installs this; it bundles PrestonKnopp's GDScript grammar and is the
+         supported path since the standalone wheel is not on PyPI.
+      2. ``tree_sitter_gdscript`` — the standalone grammar package, used
+         opportunistically if a user has it installed directly.
     """
     try:
         from tree_sitter import Language, Parser
     except Exception:
         return None
-    # 1) standalone grammar package
+    # 1) language-pack (the Godot extra installs this)
+    try:
+        from tree_sitter_language_pack import get_parser
+        return get_parser("gdscript")
+    except Exception:
+        pass
+    # 2) standalone grammar package (opportunistic fallback)
     try:
         import tree_sitter_gdscript as tsg
         return Parser(Language(tsg.language()))
-    except Exception:
-        pass
-    # 2) language-pack fallback
-    try:
-        from tree_sitter_language_pack import get_language
-        return Parser(get_language("gdscript"))
     except Exception:
         pass
     return None
