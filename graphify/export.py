@@ -729,10 +729,14 @@ def to_obsidian(
     # view — but never clobber an existing .obsidian/graph.json graphify doesn't own
     # (the user's graph-view settings live there). _owned_write handles that and
     # creates the .obsidian/ dir only when it actually writes.
+    # The query must be built with the same sanitizer the note tags use (#2204),
+    # otherwise any label carrying a character Obsidian rejects in a tag (`&`,
+    # parentheses, a diacritic) produces a colorGroup that matches no note and the
+    # community renders uncolored in graph view.
     graph_config = {
         "colorGroups": [
             {
-                "query": f"tag:#community/{label.replace(' ', '_')}",
+                "query": f"tag:#community/{_obsidian_tag(label)}",
                 "color": {"a": 1, "rgb": int(COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)].lstrip('#'), 16)}
             }
             for cid, label in sorted((community_labels or {}).items())

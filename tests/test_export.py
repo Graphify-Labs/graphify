@@ -539,6 +539,37 @@ def test_to_obsidian_removed_node_returning_is_writable_again(capsys):
         assert "skipped" not in captured.err.lower()
 
 
+# ── graph-view colorGroups must query the tag the notes actually carry (#2204) ──
+
+def test_to_obsidian_color_groups_match_the_tags_written_into_notes():
+    """#2204: the community tag inside each note goes through _obsidian_tag, so a
+    label with a character outside [A-Za-z0-9_-/] (`&`, `(`, `)`, a diacritic) is
+    stripped. The .obsidian/graph.json colorGroups query must be built the same
+    way, else it matches zero notes and the community renders uncolored in graph
+    view with no warning."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label="Vale", community=0, source_file="app/vale.py", type="code")
+    G.add_node("n2", label="Product", community=0, source_file="app/product.py", type="code")
+    G.add_node("n3", label="Session", community=1, source_file="auth/session.py", type="code")
+    G.add_edge("n1", "n2")
+    communities = {0: ["n1", "n2"], 1: ["n3"]}
+    labels = {0: "Product & Vale Lookup", 1: "Auth (v2)"}
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "obsidian"
+        to_obsidian(G, communities, str(out), community_labels=labels)
+
+        config = json.loads((out / ".obsidian" / "graph.json").read_text(encoding="utf-8"))
+        queried = {g["query"].removeprefix("tag:#") for g in config["colorGroups"]}
+        assert len(queried) == len(labels), config["colorGroups"]
+
+        written = set()
+        for note in out.rglob("*.md"):
+            written.update(re.findall(r"#(community/\S+)", note.read_text(encoding="utf-8")))
+
+        assert queried <= written, f"dead colorGroups: {sorted(queried - written)}"
+
+
 # ── Case-only-distinct labels must not collide on case-insensitive filesystems ──
 
 def _case_collision_graph():
