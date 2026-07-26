@@ -267,6 +267,59 @@ def test_rebuild_code_drops_labels_whose_community_changed(tmp_path):
             )
 
 
+def test_rebuild_code_keeps_a_visualization_when_over_the_viz_cap(tmp_path, monkeypatch):
+    """Crossing the viz node limit must not leave the project with no graph.html.
+    _rebuild_code used to unlink the existing file and write nothing, so a repo
+    that grew past the cap silently lost its visualization — and the file was
+    already gone by the time the user read the message. The export path falls
+    back to the community-aggregation view in exactly this case; the incremental
+    path should too, so the artifact stays both current and present."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    # Several *disconnected* clusters: the aggregator declines to render a
+    # single-community meta-graph, so a ring of mutually-importing modules
+    # would collapse to one community and exercise the wrong path.
+    for g in range(4):
+        for i in range(3):
+            other = (i + 1) % 3
+            (corpus / f"g{g}_m{i}.py").write_text(
+                f"import g{g}_m{other}\n\n"
+                + "".join(f"def g{g}_f{i}_{j}():\n    return {j}\n\n" for j in range(4)),
+                encoding="utf-8",
+            )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    html = corpus / "graphify-out" / "graph.html"
+    assert html.exists(), "expected a normal (under-cap) rebuild to write graph.html"
+    before = html.read_text(encoding="utf-8")
+
+    # Drop the cap below the graph's size but above its community count — the
+    # real shape of this bug. (A cap under the community count would make the
+    # aggregated meta-graph breach it too, which is a different situation.)
+    graph = json.loads((corpus / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+    communities = {n.get("community") for n in graph["nodes"] if n.get("community") is not None}
+    cap = (len(communities) + len(graph["nodes"])) // 2
+    assert len(communities) < cap < len(graph["nodes"]), "test corpus cannot exercise the cap"
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", str(cap))
+    (corpus / "g9_extra.py").write_text("def extra():\n    return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    assert html.exists(), (
+        "graph.html was deleted when the graph exceeded the viz cap — the "
+        "incremental rebuild must fall back to the aggregated view like export does"
+    )
+    after = html.read_text(encoding="utf-8")
+    assert after != before, "graph.html must be re-rendered, not left stale"
+
+    # And the documented kill switch still means "no viz", not "aggregate".
+    monkeypatch.setenv("GRAPHIFY_VIZ_NODE_LIMIT", "0")
+    (corpus / "g9_extra2.py").write_text("def extra2():\n    return 2\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    assert not html.exists(), "GRAPHIFY_VIZ_NODE_LIMIT=0 must disable the HTML viz outright"
+
+
 def test_update_rebuilds_with_nested_star_gitignore(tmp_path):
     """#1880: `graphify update` must not emit 0 nodes (and then refuse to
     overwrite) just because the source tree has a nested `.gitignore` with a

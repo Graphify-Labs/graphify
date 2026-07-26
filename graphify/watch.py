@@ -1359,18 +1359,40 @@ def _rebuild_code(
         except Exception:
             pass
 
-        # to_html raises ValueError for graphs > MAX_NODES_FOR_VIZ (5000).
+        # to_html raises ValueError for graphs > the viz node limit.
         # Wrap so core outputs (graph.json + GRAPH_REPORT.md) always land.
         html_written = False
         if not no_change:
+            html_target = out / "graph.html"
             try:
-                to_html(G, communities, str(out / "graph.html"), community_labels=labels or None)
+                to_html(G, communities, str(html_target), community_labels=labels or None)
                 html_written = True
             except ValueError as viz_err:
-                print(f"[graphify watch] Skipped graph.html: {viz_err}")
-                stale = out / "graph.html"
-                if stale.exists():
-                    stale.unlink()
+                # Over the cap. Deleting was defensible on its own — a kept
+                # graph.html would describe an older, smaller graph — but it
+                # leaves a project that crossed the threshold with no
+                # visualization at all, and the file is gone before the user
+                # sees the message. The export path (#1019) already re-renders
+                # the community-aggregation view in exactly this case, so do
+                # the same here: current AND present beats current OR present.
+                from graphify.exporters.html import _viz_node_limit
+                if html_target.exists():
+                    html_target.unlink()
+                limit = _viz_node_limit()
+                if limit <= 0:
+                    # GRAPHIFY_VIZ_NODE_LIMIT=0 means "no HTML viz" (CI runners),
+                    # so honour it rather than aggregating around it.
+                    print(f"[graphify watch] Skipped graph.html: {viz_err}")
+                else:
+                    try:
+                        to_html(G, communities, str(html_target),
+                                community_labels=labels or None, node_limit=limit)
+                        # The aggregator declines to write a single-community
+                        # graph, so trust the file rather than the call.
+                        html_written = html_target.exists()
+                    except Exception as fallback_err:
+                        print(f"[graphify watch] Skipped graph.html: {viz_err} "
+                              f"(aggregated view also failed: {fallback_err})")
 
         # Regenerate callflow HTML if the user previously generated one —
         # opt-in by existence so users who never ran callflow-html aren't affected.
