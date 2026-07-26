@@ -188,6 +188,85 @@ def test_rebuild_code_writes_community_name(tmp_path):
     )
 
 
+def test_rebuild_code_drops_labels_whose_community_changed(tmp_path):
+    """An incremental rebuild must not reuse a saved label for a community whose
+    membership changed. Labels are keyed by cid, but re-clustering reassigns cids,
+    so after new files land cid N can cover a different community and its old name
+    is then simply wrong. cluster-only guards this with the `.sig` membership
+    fingerprints; _rebuild_code ignored them and hub-filled only *missing* labels,
+    so stale names survived and were written back to labels.json as if current."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = corpus / "graphify-out"
+    labels_file = out / ".graphify_labels.json"
+    sig_file = out / ".graphify_labels.json.sig"
+    assert sig_file.exists(), "rebuild must persist membership signatures beside labels"
+
+    # Stand in for an LLM naming pass: give every community a distinctive name,
+    # leaving the signatures untouched so they still describe THIS clustering.
+    labels = json.loads(labels_file.read_text(encoding="utf-8"))
+    assert labels, "expected the first rebuild to write community labels"
+    labels_file.write_text(
+        json.dumps({cid: f"Named-{cid}" for cid in labels}), encoding="utf-8"
+    )
+
+    # Grow the corpus so clustering changes, then rebuild incrementally.
+    for name in ("b.py", "c.py", "d.py"):
+        (corpus / name).write_text(
+            f"def {name[0]}_one():\n    return {name[0]}_two()\n\n"
+            f"def {name[0]}_two():\n    return 2\n",
+            encoding="utf-8",
+        )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    after = json.loads(labels_file.read_text(encoding="utf-8"))
+    sigs = json.loads(sig_file.read_text(encoding="utf-8"))
+
+    communities = {}
+    for node in graph["nodes"]:
+        cid = node.get("community")
+        if cid is not None:
+            communities.setdefault(str(cid), []).append(node["id"])
+
+    from graphify.cluster import community_member_sigs
+    expected = {
+        str(cid): sig
+        for cid, sig in community_member_sigs(
+            {int(c): m for c, m in communities.items()}
+        ).items()
+    }
+    assert sigs == expected, (
+        "signatures must be rewritten in step with the labels; a drifting sidecar "
+        "leaves the staleness guard nothing accurate to check against"
+    )
+
+    # Any surviving "Named-N" must sit on a community that genuinely did not change.
+    for cid, name in after.items():
+        if name.startswith("Named-"):
+            assert cid in communities, f"label kept for vanished community {cid}"
+            assert sigs[cid] == expected[cid], (
+                f"community {cid} kept the stale label {name!r} after its "
+                f"membership changed"
+            )
+
+    for node in graph["nodes"]:
+        cid = node.get("community")
+        if cid is not None and node.get("community_name", "").startswith("Named-"):
+            assert sigs[str(cid)] == expected[str(cid)], (
+                f"node {node['id']} carries stale community_name "
+                f"{node['community_name']!r}"
+            )
+
+
 def test_update_rebuilds_with_nested_star_gitignore(tmp_path):
     """#1880: `graphify update` must not emit 0 nodes (and then refuse to
     overwrite) just because the source tree has a nested `.gitignore` with a

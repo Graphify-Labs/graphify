@@ -1240,6 +1240,7 @@ def _rebuild_code(
         gods = god_nodes(G)
         surprises = surprising_connections(G, communities)
         labels_file = out / ".graphify_labels.json"
+        sig_file = out / (".graphify_labels.json" + ".sig")
         try:
             raw = json.loads(labels_file.read_text(encoding="utf-8")) if labels_file.exists() else {}
             # Skip persisted "Community N" placeholders so the hub-fill below
@@ -1251,12 +1252,50 @@ def _rebuild_code(
         except Exception:
             raw = {}
             labels = {}
+        # A saved label belongs to a cid, but re-clustering reassigns cids: after a
+        # rebuild that adds nodes, cid 30 can cover a completely different community
+        # and its old name is then simply wrong. Validate every reused label against
+        # the membership signature saved beside the labels — the same guard the
+        # cluster-only path applies — and drop any whose community changed so the
+        # hub-fill below renames it, deterministically and correct-by-construction.
+        # Without this, an incremental `graphify update` launders stale names into
+        # labels.json as though they were current (#label-stale).
+        from graphify.cluster import community_member_sigs
+        cur_sigs = community_member_sigs(communities)
+        saved_sigs: dict[int, str] = {}
+        if sig_file.exists():
+            try:
+                saved_sigs = {
+                    int(k): v for k, v in
+                    json.loads(sig_file.read_text(encoding="utf-8")).items()
+                    if isinstance(v, str)
+                }
+            except Exception:
+                saved_sigs = {}
+        if saved_sigs:
+            # Precise: the signature tells us exactly which communities changed.
+            stale = {cid for cid in labels if saved_sigs.get(cid) != cur_sigs.get(cid)}
+        else:
+            # No sidecar (labels predate it). A differing community COUNT means the
+            # labels describe a different clustering, so no cid's label is trustworthy;
+            # an equal count is the best available "unchanged" signal.
+            stale = set(labels) if len(raw) != len(communities) else set()
+        for cid in stale:
+            del labels[cid]
         missing = {cid: members for cid, members in communities.items() if cid not in labels}
         if missing:
             # Deterministic hub name (highest-degree member) beats a bare "Community N"
             # placeholder for any community without a saved label.
             from graphify.cluster import label_communities_by_hub
             labels.update(label_communities_by_hub(G, missing))
+        if stale:
+            print(
+                f"[graphify watch] community set changed since labeling "
+                f"({len(raw)} saved labels, {len(communities)} communities now; "
+                f"renamed {len(stale)} community(ies) by their hub). "
+                f"Run `graphify label` to refresh names with the LLM.",
+                file=sys.stderr,
+            )
         questions = suggest_questions(G, communities, labels)
         from graphify.report import load_learning_for_report as _llfr
         report = generate(G, communities, cohesion, labels, gods, surprises, detection,
@@ -1301,6 +1340,12 @@ def _rebuild_code(
             graph_tmp.replace(existing_graph)
             report_path.write_text(report, encoding="utf-8")
             labels_file.write_text(labels_json, encoding="utf-8")
+            # Keep the membership signatures in step with the labels we just wrote.
+            # Skipping this was the other half of the stale-label bug: labels.json
+            # advanced every rebuild while the sidecar kept describing an older
+            # clustering, so the guard above had nothing accurate to check against.
+            sig_file.write_text(
+                json.dumps({str(k): v for k, v in cur_sigs.items()}), encoding="utf-8")
 
         (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
 
