@@ -13,6 +13,10 @@ def _clear_backend_env(monkeypatch):
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "MOONSHOT_API_KEY",
+        "MINIMAX_API_KEY",
+        "MINIMAX_BASE_URL",
+        "MINIMAX_MODEL",
+        "GRAPHIFY_MINIMAX_MODEL",
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "DEEPSEEK_API_KEY",
@@ -64,6 +68,26 @@ def test_gemini_accepts_google_api_key(monkeypatch):
 
     assert llm.detect_backend() == "gemini"
     assert llm._get_backend_api_key("gemini") == "google-key"
+
+
+def test_minimax_backend_detected(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+
+    assert llm.detect_backend() == "minimax"
+    assert llm._get_backend_api_key("minimax") == "minimax-key"
+    assert llm._default_model_for_backend("minimax") == "MiniMax-M3"
+
+
+def test_minimax_model_override(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_MINIMAX_MODEL", "MiniMax-M2.7")
+
+    assert llm._default_model_for_backend("minimax") == "MiniMax-M2.7"
+
+
+def test_minimax_backend_supports_vision():
+    assert llm._backend_supports_vision("minimax") is True
 
 
 def test_backend_detection_prefers_gemini(monkeypatch):
@@ -962,7 +986,7 @@ def test_native_extraction_prompt_matches_skill_spec_on_hyperedges():
     assert shared in llm._EXTRACTION_SYSTEM, "native prompt drifted from the skill hyperedge wording"
 
 
-# --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------
+# --- *_BASE_URL env overrides for OpenAI-compatible backends (#1458) -----------
 # BACKENDS reads the env at import time, so each case runs in a fresh interpreter
 # (subprocess) to avoid reload contamination of the test session.
 import subprocess
@@ -983,6 +1007,7 @@ import os  # noqa: E402
 
 @pytest.mark.parametrize("backend,env_var,override", [
     ("kimi", "KIMI_BASE_URL", "https://proxy.example/kimi/v1"),
+    ("minimax", "MINIMAX_BASE_URL", "https://proxy.example/minimax/v1"),
     ("gemini", "GEMINI_BASE_URL", "https://proxy.example/gemini"),
     ("deepseek", "DEEPSEEK_BASE_URL", "https://proxy.example/deepseek"),
 ])
@@ -992,12 +1017,13 @@ def test_base_url_env_overrides(backend, env_var, override):
 
 @pytest.mark.parametrize("backend,default", [
     ("kimi", "https://api.moonshot.ai/v1"),
+    ("minimax", "https://api.minimax.io/v1"),
     ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/"),
     ("deepseek", "https://api.deepseek.com"),
 ])
 def test_base_url_defaults_without_env(backend, default):
     # Ensure the override env vars are unset so the hardcoded default is used.
-    cleared = {k: "" for k in ("KIMI_BASE_URL", "GEMINI_BASE_URL", "DEEPSEEK_BASE_URL")}
+    cleared = {k: "" for k in ("KIMI_BASE_URL", "MINIMAX_BASE_URL", "GEMINI_BASE_URL", "DEEPSEEK_BASE_URL")}
     # empty string would be falsy-but-set; delete instead by reconstructing env without them
     env = {k: v for k, v in os.environ.items() if k not in cleared}
     out = subprocess.run(

@@ -502,6 +502,9 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `OPENAI_MODEL` | Model name for the OpenAI backend — for self-hosted servers, use the model name/alias your server exposes (check its `/v1/models` endpoint), e.g. `LFM2.5-8B-A1B-UD-Q4_K_XL` for llama.cpp | `--backend openai` (default: `gpt-4.1-mini`) |
 | `DEEPSEEK_API_KEY` | DeepSeek backend | `--backend deepseek` |
 | `MOONSHOT_API_KEY` | Kimi Code backend | `--backend kimi` |
+| `MINIMAX_API_KEY` | MiniMax OpenAI-compatible backend | `--backend minimax` |
+| `MINIMAX_BASE_URL` | MiniMax regional OpenAI-compatible endpoint | `--backend minimax` (default: `https://api.minimax.io/v1`; China: `https://api.minimaxi.com/v1`) |
+| `MINIMAX_MODEL` or `GRAPHIFY_MINIMAX_MODEL` | MiniMax model name | `--backend minimax` (default: `MiniMax-M3`; `MiniMax-M2.7` is also supported) |
 | `OLLAMA_BASE_URL` | Ollama local inference URL | `--backend ollama` (default: `http://localhost:11434`) |
 | `OLLAMA_MODEL` | Ollama model name | `--backend ollama` (default: auto-detect) |
 | `GRAPHIFY_OLLAMA_NUM_CTX` | Override Ollama KV-cache window size | optional — auto-sized by default |
@@ -715,7 +718,7 @@ graphify antigravity install       # .agents/rules + .agents/workflows (Google A
 graphify antigravity uninstall
 
 graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
-graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, or claude-cli
+graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, minimax, claude, openai, deepseek, ollama, bedrock, or claude-cli
 graphify extract ./docs --backend gemini --model gemini-3.1-pro-preview
 graphify extract ./docs --backend ollama       # local Ollama (set OLLAMA_BASE_URL / OLLAMA_MODEL) - no API key needed for loopback
 OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_MODEL=my-model graphify extract ./docs --backend openai   # any OpenAI-compatible server (llama.cpp, vLLM, LM Studio)
@@ -740,6 +743,7 @@ graphify extract ./docs --force                # overwrite graph.json even if ne
 graphify extract ./docs --dedup-llm            # LLM tiebreaker for ambiguous entity pairs (uses same API key)
 graphify extract ./docs --global --as myrepo   # extract and register into the cross-project global graph
 GRAPHIFY_MAX_OUTPUT_TOKENS=32768 graphify extract ./docs --backend claude  # raise output cap for dense corpora
+MINIMAX_API_KEY=... graphify extract ./docs --backend minimax             # MiniMax-M3 by default; set GRAPHIFY_MINIMAX_MODEL for MiniMax-M2.7
 
 graphify export callflow-html                       # graphify-out/<project>-callflow.html
 graphify export callflow-html --max-sections 8      # cap generated architecture sections

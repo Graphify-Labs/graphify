@@ -123,6 +123,17 @@ BACKENDS: dict[str, dict] = {
         "temperature": None,  # kimi-k2.6 enforces its own fixed temperature; sending any value raises 400
         "max_tokens": 16384,
     },
+    "minimax": {
+        # MINIMAX_BASE_URL selects the regional OpenAI-compatible endpoint.
+        "base_url": os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/v1"),
+        "default_model": os.environ.get("MINIMAX_MODEL", "MiniMax-M3"),
+        "env_key": "MINIMAX_API_KEY",
+        "model_env_key": "GRAPHIFY_MINIMAX_MODEL",
+        "pricing": {"input": 0.60, "output": 2.40},  # USD per 1M tokens
+        "temperature": 0,
+        "max_tokens": 16384,
+        "vision": True,
+    },
     "ollama": {
         "base_url": _resolve_ollama_base_url("http://localhost:11434/v1"),
         "default_model": os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b"),
@@ -1676,7 +1687,7 @@ def extract_files_direct(
         if backend is None:
             raise ValueError(
                 "No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, "
-                "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, "
+                "OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, MINIMAX_API_KEY, "
                 "AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, "
                 "or AWS credentials. Pass backend= explicitly to select a provider."
             )
@@ -2727,7 +2738,7 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
 def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
-    Priority: gemini → kimi → claude → openai → deepseek → azure → bedrock → ollama (last, opt-in).
+    Priority: gemini → kimi → minimax → claude → openai → deepseek → azure → bedrock → ollama (last, opt-in).
 
     Ollama is intentionally checked LAST so a paid API key (Anthropic/OpenAI/etc.)
     is never silently shadowed by an incidental OLLAMA_BASE_URL in the environment
@@ -2735,7 +2746,7 @@ def detect_backend() -> str | None:
     key now keeps you on the paid backend; remove the paid key (or pass
     --backend ollama explicitly) to route to the local model.
     """
-    for backend in ("gemini", "kimi", "claude", "openai", "deepseek"):
+    for backend in ("gemini", "kimi", "minimax", "claude", "openai", "deepseek"):
         if _get_backend_api_key(backend):
             return backend
     if _get_backend_api_key("azure") and os.environ.get("AZURE_OPENAI_ENDPOINT"):
@@ -2751,7 +2762,7 @@ def detect_backend() -> str | None:
         _validate_ollama_base_url(ollama_url)
         return "ollama"
     for name in BACKENDS:
-        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
+        if name not in ("gemini", "kimi", "minimax", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
             if _get_backend_api_key(name):
                 return name
     return None
