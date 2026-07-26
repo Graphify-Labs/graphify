@@ -105,6 +105,10 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
             "source_file": str_path,
             "source_location": "L1",
             "weight": 1.0,
+            # Dependency package nodes are materialized only when their own
+            # manifest is part of the corpus. Otherwise this is an expected
+            # external endpoint, not lost internal structure.
+            "external": True,
         })
     return {"nodes": nodes, "edges": edges}
 

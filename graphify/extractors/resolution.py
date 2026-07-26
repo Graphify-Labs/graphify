@@ -1694,14 +1694,16 @@ def _probe_python_module_candidate(candidate: Path) -> Path | None:
     """Resolve one module-path candidate to a .py file (dir+__init__, exact, or
     with a .py suffix), or None."""
     if candidate.is_dir():
-        init_path = candidate / "__init__.py"
-        if init_path.is_file():
-            return init_path
+        for init_name in ("__init__.py", "__init__.pyi"):
+            init_path = candidate / init_name
+            if init_path.is_file():
+                return init_path
     if candidate.is_file():
         return candidate
-    py_candidate = candidate.with_suffix(".py")
-    if py_candidate.is_file():
-        return py_candidate
+    for suffix in (".py", ".pyi"):
+        module_candidate = candidate.with_suffix(suffix)
+        if module_candidate.is_file():
+            return module_candidate
     return None
 
 
@@ -1768,7 +1770,9 @@ def _collect_python_symbol_resolution_facts(
     root: Path,
     facts: _SymbolResolutionFacts,
 ) -> None:
-    py_paths = [path for path in paths if path.suffix == ".py"]
+    py_paths = [
+        path for path in paths if path.suffix.lower() in (".py", ".pyi")
+    ]
     if not py_paths:
         return
 

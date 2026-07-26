@@ -184,75 +184,251 @@ def _file_node_id(rel_path: Path) -> str:
 
 
 def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
-    """Repoint Python absolute-import edges to the real file node under a nested
-    (e.g. ``src/``) package root (#2072).
+    """Resolve Python import edges against files in the importer's workspace.
 
-    Absolute imports target an id derived from the dotted module path
-    (``_make_id('pkg.mod')`` -> ``pkg_mod``), but file-node ids are
-    scan-root-relative (``src_pkg_mod`` when the code lives under ``src/``), so
-    the edge dangles and is silently dropped — the graph loses most ``imports``
-    edges purely because of where the scan started. Build an alias map from the
-    dotted-module id to the real file-node id by detecting each ``.py`` file's
-    package root (the contiguous run of ancestor dirs carrying ``__init__.py``)
-    and rewrite matching ``imports``/``imports_from`` edge targets. Guards: never
-    shadow an existing node id, and drop an alias claimed by more than one file
-    (ambiguous -> leave dangling, as before). Files whose package root IS the
-    scan root are skipped (ids already coincide)."""
+    The old alias pass inferred a package root only from a contiguous chain of
+    ``__init__.py`` files. That loses imports in PEP 420 namespace packages and
+    mixed monorepos where each project has its own ``src/`` or application root.
+    Import handlers now retain the original module and relative level as
+    transient metadata. Resolve those specifiers to physical files, then map the
+    files directly to their canonical scan-root-relative node ids.
+
+    A workspace is the nearest Python project manifest. For unconfigured
+    projects it is the first directory below the scan root. Multiple physical
+    matches are never guessed. Unresolved absolute imports whose top-level
+    module is absent from the workspace corpus are explicitly marked external;
+    unresolved relative/local imports remain visible as internal defects."""
     try:
         root = Path(root).resolve()
     except OSError:
         root = Path(root)
-    node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
-    alias_to_files: dict[str, set[str]] = {}
-    for p in paths:
-        if p.suffix.lower() not in (".py", ".pyi"):
-            continue
+
+    python_paths = [
+        Path(p) for p in paths if Path(p).suffix.lower() in (".py", ".pyi")
+    ]
+    if not python_paths:
+        return
+
+    manifests = ("pyproject.toml", "setup.py", "setup.cfg")
+
+    def _workspace_for(path: Path) -> Path:
         try:
-            rel = Path(p).resolve().relative_to(root)
+            current = path.resolve().parent
+        except OSError:
+            current = path.parent
+        for candidate in (current, *current.parents):
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                break
+            if any((candidate / name).is_file() for name in manifests):
+                return candidate
+            if candidate == root:
+                break
+        try:
+            rel = current.relative_to(root)
+        except ValueError:
+            return root
+        return root / rel.parts[0] if rel.parts else root
+
+    def _candidate(path: Path) -> Path | None:
+        if path.is_dir():
+            for init_name in ("__init__.py", "__init__.pyi"):
+                init_path = path / init_name
+                if init_path.is_file():
+                    return init_path.resolve()
+        if path.is_file():
+            return path.resolve()
+        for suffix in (".py", ".pyi"):
+            module_path = path.with_suffix(suffix)
+            if module_path.is_file():
+                return module_path.resolve()
+        return None
+
+    def _module_candidates(
+        module_name: str,
+        current_path: Path,
+        workspace: Path,
+        level: int,
+    ) -> set[Path]:
+        if level > 0:
+            base = current_path.resolve().parent
+            for _ in range(level - 1):
+                base = base.parent
+            candidate = base / module_name.replace(".", "/") if module_name else base
+            hit = _candidate(candidate)
+            return {hit} if hit is not None else set()
+
+        rel_module = module_name.replace(".", "/")
+        search_roots: list[Path] = [workspace]
+        for ancestor in current_path.resolve().parents:
+            try:
+                ancestor.relative_to(workspace)
+            except ValueError:
+                break
+            if ancestor == workspace:
+                continue
+            # An absolute import starts at a sys.path root, not inside a regular
+            # package. Namespace/source roots have no __init__ and are valid.
+            if not (
+                (ancestor / "__init__.py").is_file()
+                or (ancestor / "__init__.pyi").is_file()
+            ):
+                search_roots.append(ancestor)
+        hits = {
+            hit
+            for base in search_roots
+            if (hit := _candidate(base / rel_module)) is not None
+        }
+        return hits
+
+    file_node_by_path: dict[Path, str] = {}
+    workspace_by_path: dict[Path, Path] = {}
+    module_paths_by_workspace: dict[Path, dict[str, set[Path]]] = {}
+    global_module_paths: dict[str, set[Path]] = {}
+    public_names_by_path: dict[Path, set[str]] = {}
+    for path in python_paths:
+        try:
+            resolved = path.resolve()
+            rel = resolved.relative_to(root)
         except (ValueError, OSError):
             continue
-        parts = rel.parts
-        if len(parts) < 2:
-            continue  # top-level file: scan-root-relative id already matches
-        d = Path(p).resolve().parent
-        levels = 0
-        # Bounded by the number of dirs between the file and the scan root, so a
-        # pathological `/__init__.py` chain can't loop forever.
-        while levels < len(parts) - 1 and (d / "__init__.py").is_file():
-            levels += 1
-            d = d.parent
-        if levels == 0:
-            continue  # not inside a package (namespace pkg / loose module)
-        mod_parts = parts[-(levels + 1):]  # package dirs + the file itself
-        if len(mod_parts) == len(parts):
-            continue  # package root == scan root: file-node id already coincides
-        file_node = _file_node_id(rel)
-        alias = _make_id(str(Path(*mod_parts).with_suffix("")))
-        alias_to_files.setdefault(alias, set()).add(file_node)
-        if p.name in ("__init__.py", "__init__.pyi") and len(mod_parts) > 1:
-            # `import pkg` / `from pkg import x` targets the package-dir id.
-            pkg_alias = _make_id(str(Path(*mod_parts[:-1])))
-            alias_to_files.setdefault(pkg_alias, set()).add(file_node)
-    alias_map = {
-        a: next(iter(fs))
-        for a, fs in alias_to_files.items()
-        if len(fs) == 1 and a not in node_ids
-    }
-    if not alias_map:
-        return
-    for e in all_edges:
-        # Only repoint edges emitted from a Python file: a non-Python import edge
-        # (e.g. C# `using Pkg.Mod;`, Java/Go dotted imports) can have a dangling
-        # target string that coincides with a Python alias, and repointing it
-        # would fabricate a cross-language import edge (#2072 review).
-        if (
-            isinstance(e, dict)
-            and e.get("relation") in ("imports", "imports_from")
-            and str(e.get("source_file", "")).lower().endswith((".py", ".pyi"))
+        workspace = _workspace_for(resolved)
+        file_node_by_path[resolved] = _file_node_id(rel)
+        workspace_by_path[resolved] = workspace
+        try:
+            workspace_rel = resolved.relative_to(workspace)
+        except ValueError:
+            workspace_rel = rel
+        module_parts = list(workspace_rel.with_suffix("").parts)
+        if module_parts and module_parts[-1] == "__init__":
+            module_parts.pop()
+        aliases = module_paths_by_workspace.setdefault(workspace, {})
+        for index in range(len(module_parts)):
+            alias = ".".join(module_parts[index:])
+            aliases.setdefault(alias, set()).add(resolved)
+            global_module_paths.setdefault(alias, set()).add(resolved)
+        parsed = _parse_python_tree(resolved)
+        if parsed is not None:
+            parsed_source, tree_root = parsed
+            public_names: set[str] = set()
+            for child in tree_root.children:
+                if child.type in ("class_definition", "function_definition"):
+                    name_node = child.child_by_field_name("name")
+                    if name_node is not None:
+                        public_names.add(_read_text(name_node, parsed_source))
+                elif child.type == "import_from_statement":
+                    public_names.update(
+                        local_name
+                        for _, local_name in _python_imported_names(
+                            child, parsed_source
+                        )
+                    )
+            public_names_by_path[resolved] = public_names
+
+    for edge in all_edges:
+        if not (
+            isinstance(edge, dict)
+            and edge.get("relation") in ("imports", "imports_from")
+            and str(edge.get("source_file", "")).lower().endswith((".py", ".pyi"))
+            and "_import_module" in edge
         ):
-            tgt = e.get("target")
-            if tgt in alias_map:
-                e["target"] = alias_map[tgt]
+            continue
+        module_name = str(edge.pop("_import_module", ""))
+        try:
+            level = int(edge.pop("_import_level", 0))
+        except (TypeError, ValueError):
+            level = 0
+        imported_names = {
+            str(name)
+            for name in edge.pop("_imported_names", [])
+            if name and name != "*"
+        }
+        source_path = Path(str(edge.get("source_file", "")))
+        if not source_path.is_absolute():
+            source_path = root / source_path
+        try:
+            source_path = source_path.resolve()
+        except OSError:
+            pass
+        workspace = workspace_by_path.get(source_path, _workspace_for(source_path))
+        candidates = _module_candidates(module_name, source_path, workspace, level)
+        if level == 0:
+            candidates.update(
+                module_paths_by_workspace.get(workspace, {}).get(module_name, set())
+            )
+            if not candidates:
+                # Explicit runtime path bootstraps are common in monorepos
+                # (one project adds a sibling project's src/ to sys.path). A
+                # unique corpus-wide module is safe to connect; duplicates stay
+                # unresolved rather than crossing projects arbitrarily.
+                candidates.update(global_module_paths.get(module_name, set()))
+        elif not candidates and imported_names:
+            candidates.update(
+                module_paths_by_workspace.get(workspace, {}).get(
+                    module_name.split(".")[-1], set()
+                )
+            )
+        # Importing a module with the same basename as the current file does not
+        # prove a self-import. It is commonly a stdlib/third-party name collision.
+        candidates.discard(source_path)
+
+        top_level = module_name.split(".", 1)[0] if module_name else ""
+        if level == 0 and top_level in getattr(sys, "stdlib_module_names", ()):
+            edge["external"] = True
+            edge.pop("unresolved_internal", None)
+            continue
+
+        if len(candidates) > 1 and imported_names:
+            symbol_matches = [
+                candidate
+                for candidate in candidates
+                if imported_names <= public_names_by_path.get(candidate, set())
+            ]
+            if len(symbol_matches) == 1:
+                candidates = {symbol_matches[0]}
+            elif len(symbol_matches) > 1:
+                package_matches = [
+                    candidate
+                    for candidate in symbol_matches
+                    if candidate.name in ("__init__.py", "__init__.pyi")
+                ]
+                if len(package_matches) == 1:
+                    candidates = {package_matches[0]}
+
+        if len(candidates) == 1:
+            target_path = next(iter(candidates))
+            target_id = file_node_by_path.get(target_path)
+            if target_id is not None:
+                edge["target"] = target_id
+                edge.pop("external", None)
+                edge.pop("unresolved_internal", None)
+                continue
+
+        if level > 0 or candidates:
+            edge["unresolved_internal"] = True
+            edge.pop("external", None)
+            if level > 0:
+                base = source_path.parent
+                for _ in range(level - 1):
+                    base = base.parent
+                unresolved_path = (
+                    base / module_name.replace(".", "/")
+                    if module_name else base
+                )
+                try:
+                    unresolved_rel = unresolved_path.resolve().relative_to(root)
+                    edge["target"] = _make_id(
+                        "ref_local", _file_stem(unresolved_rel)
+                    )
+                except (ValueError, OSError):
+                    pass
+        else:
+            # Both stdlib and third-party packages are intentionally outside the
+            # corpus graph. Marking them makes diagnostics distinguish expected
+            # exclusions from lost internal structure.
+            edge["external"] = True
+            edge.pop("unresolved_internal", None)
 
 
 SEMANTIC_RELATIONS = frozenset({
@@ -327,6 +503,10 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                     "source_file": str_path,
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
+                    # Transient provenance used after all files are known to
+                    # resolve this import inside the importer's workspace.
+                    "_import_module": module_name,
+                    "_import_level": 0,
                 }
                 if raw_alias:
                     # `import pkg.mod as alias` binds the local name `alias`, not
@@ -336,30 +516,43 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                     edge["local_alias"] = raw_alias.strip()
                 edges.append(edge)
     elif t == "import_from_statement":
-        module_node = node.child_by_field_name("module_name")
-        if module_node:
-            raw = _read_text(module_node, source)
-            if raw.startswith("."):
-                # Relative import - resolve to full path so IDs match file node IDs
-                dots = len(raw) - len(raw.lstrip("."))
-                module_name = raw.lstrip(".")
-                base = Path(str_path).parent
-                for _ in range(dots - 1):
-                    base = base.parent
-                rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
-                tgt_nid = _make_id(str(base / rel))
-            else:
-                tgt_nid = _make_id(raw)
-            edges.append({
-                "source": file_nid,
-                "target": tgt_nid,
-                "relation": "imports_from",
-                "context": "import",
-                "confidence": "EXTRACTED",
-                "source_file": str_path,
-                "source_location": f"L{node.start_point[0] + 1}",
-                "weight": 1.0,
-            })
+        parsed_module = _python_import_from_module(node, source)
+        if parsed_module is not None:
+            dots, module_name = parsed_module
+            imported_names = [
+                name for name, _ in _python_imported_names(node, source)
+            ]
+            modules = [module_name]
+            # `from . import services` has no module name before `import`.
+            # Treat imported names as submodule candidates; symbol-only names
+            # that have no file remain classified as unresolved internal.
+            if dots > 0 and not module_name:
+                modules = [name for name, _ in _python_imported_names(node, source)]
+            for imported_module in modules:
+                if dots > 0:
+                    # Relative import - resolve to full path so IDs match file node IDs
+                    module_name = imported_module
+                    base = Path(str_path).parent
+                    for _ in range(dots - 1):
+                        base = base.parent
+                    rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
+                    tgt_nid = _make_id(str(base / rel))
+                else:
+                    module_name = imported_module
+                    tgt_nid = _make_id(module_name)
+                edges.append({
+                    "source": file_nid,
+                    "target": tgt_nid,
+                    "relation": "imports_from",
+                    "context": "import",
+                    "confidence": "EXTRACTED",
+                    "source_file": str_path,
+                    "source_location": f"L{node.start_point[0] + 1}",
+                    "weight": 1.0,
+                    "_import_module": module_name,
+                    "_import_level": dots,
+                    "_imported_names": imported_names,
+                })
 
 
 def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
@@ -410,7 +603,28 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
             # back onto the importer's own variant, a phantom self-loop (#1814).
             if resolved_path is not None:
                 edge["target_file"] = str(resolved_path)
+                if not resolved_path.is_file():
+                    edge["unresolved_internal"] = True
+            else:
+                aliases = _load_tsconfig_aliases(Path(str_path).parent)
+                local_alias = any(
+                    _match_tsconfig_alias(raw, pattern) is not None
+                    for pattern in aliases
+                )
+                workspace_packages = _load_workspace_packages(Path(str_path).parent)
+                local_workspace = any(
+                    raw == name or raw.startswith(name + "/")
+                    for name in workspace_packages
+                )
+                if not raw.startswith((".", "/")) and not local_alias and not local_workspace:
+                    edge["external"] = True
+                else:
+                    edge["unresolved_internal"] = True
             edges.append(edge)
+            if resolved_path is not None and not resolved_path.is_file():
+                # Keep the file-level dangling edge for diagnostics, but do not
+                # synthesize symbol edges for a file that is not in the corpus.
+                resolved_path = None
 
     # Emit symbol-level edges for named imports/re-exports from local/aliased files.
     # e.g. `import { Foo, type Bar } from './bar'` → file → Foo, file → Bar (EXTRACTED)
@@ -3990,6 +4204,7 @@ def extract_xaml(path: Path) -> dict:
 
 _DISPATCH: dict[str, Any] = {
     ".py": extract_python,
+    ".pyi": extract_python,
     ".js": extract_js,
     ".jsx": extract_js,
     ".mjs": extract_js,
@@ -4941,6 +5156,19 @@ def extract(
             if dec is not None:
                 e["target"] = f"{dec[0]}_{dec[1]}"
 
+    # A missing local JS/TS target still carries target_file so diagnostics can
+    # distinguish it from a package import. Canonicalize that path even though
+    # no target node exists; otherwise the dangling endpoint embeds the absolute
+    # checkout prefix and is misclassified as malformed/machine-specific.
+    for edge in all_edges:
+        if not edge.get("unresolved_internal") or not edge.get("target_file"):
+            continue
+        try:
+            target_rel = Path(edge["target_file"]).resolve().relative_to(root)
+        except (ValueError, OSError):
+            continue
+        edge["target"] = _make_id("ref_local", _file_stem(target_rel))
+
     # Repoint Python absolute imports onto the real file nodes under a nested
     # (src/) package root before the resolver/import-evidence passes run, so the
     # graph is identical regardless of scan root (#2072).
@@ -4967,9 +5195,12 @@ def extract(
     _rewire_unique_stub_nodes(all_nodes, all_edges)
 
     # Add cross-file class-level edges (Python only - uses Python parser internally)
-    py_paths = [p for p in paths if p.suffix == ".py"]
+    py_paths = [p for p in paths if p.suffix.lower() in (".py", ".pyi")]
     if py_paths:
-        py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
+        py_results = [
+            r for r, p in zip(per_file, paths)
+            if p.suffix.lower() in (".py", ".pyi")
+        ]
         try:
             cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
             all_edges.extend(cross_file_edges)
@@ -5421,6 +5652,9 @@ def extract(
     # so it cannot be popped at that earlier point without breaking the fix.
     for e in all_edges:
         e.pop("local_alias", None)
+        e.pop("_import_module", None)
+        e.pop("_import_level", None)
+        e.pop("_imported_names", None)
 
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction
