@@ -71,7 +71,7 @@ def run_pipeline(tmp_path: Path) -> dict:
     json_path = tmp_path / "graph.json"
     to_json(G, communities, str(json_path))
     assert json_path.exists()
-    data = json.loads(json_path.read_text())
+    data = json.loads(json_path.read_text(encoding="utf-8"))
     assert "nodes" in data and "links" in data
     assert all("community" in n for n in data["nodes"])
 
@@ -79,7 +79,7 @@ def run_pipeline(tmp_path: Path) -> dict:
     html_path = tmp_path / "graph.html"
     to_html(G, communities, str(html_path), community_labels=labels)
     assert html_path.exists()
-    html = html_path.read_text()
+    html = html_path.read_text(encoding="utf-8")
     assert "vis-network" in html
     assert "RAW_NODES" in html
 
