@@ -3135,6 +3135,31 @@ def _extract_generic(
                                  line, context=ctx)
             # fall through so any call expressions in the initializer get walked
 
+        # Scala: `self: Logging with Database =>` (or `this: T =>`) declares a
+        # structural precondition on the enclosing type, not a mixin/reference.
+        # self_type carries no field names, so the type node is found
+        # positionally: the binder identifier is named[0], the type (when
+        # present) is named[1]. `self =>` binds a name with no type at all, so
+        # len(named) < 2 correctly yields no type node rather than misreading
+        # the binder as a type. _scala_collect_type_refs already handles every
+        # shape a self-type's type position can take (type_identifier,
+        # compound_type for `with`, refinement bodies via compound_type) --
+        # reused unchanged.
+        if (config.ts_module == "tree_sitter_scala"
+                and t == "self_type"
+                and parent_class_nid):
+            named = [c for c in node.children if c.is_named]
+            type_node = named[1] if len(named) >= 2 else None
+            if type_node is not None:
+                line = node.start_point[0] + 1
+                refs: list[tuple[str, str]] = []
+                _scala_collect_type_refs(type_node, source, False, refs)
+                for ref_name, role in refs:
+                    target_nid = ensure_named_node(ref_name, line)
+                    if target_nid != parent_class_nid:
+                        add_edge(parent_class_nid, target_nid, "requires", line)
+            return
+
         if (config.ts_module == "tree_sitter_cpp"
                 and t == "field_declaration"
                 and parent_class_nid):
