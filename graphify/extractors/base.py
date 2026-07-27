@@ -1,6 +1,7 @@
 # DO NOT import from graphify.extract here — direction is extract.py → extractors/ only.
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -179,3 +180,36 @@ def _read_source_text(path: Path, *, warn: bool = True) -> str:
     """
     text = _read_source_bytes(path, warn=warn).decode("utf-8")
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _blank_spans(src: str, pattern: "re.Pattern[str]") -> str:
+    """Replace every match of *pattern* with newlines and spaces of equal length.
+
+    Used to strip comments before a regex-based extractor scans a file, without
+    disturbing byte offsets — so reported ``L<n>`` locations still refer to the
+    real line in the original source. Matters because component docblocks
+    routinely contain example usage (``{# Usage: {% include 'theme:card' %} #}``)
+    that would otherwise be extracted as a real dependency, giving the component
+    a spurious edge to itself.
+    """
+    return pattern.sub(
+        lambda m: "".join("\n" if ch == "\n" else " " for ch in m.group(0)), src
+    )
+
+
+def _corpus_relative_path(resolved: Path, referrer: Path) -> str:
+    """Express *resolved* the same way *referrer* is, for node-ID parity.
+
+    A file node's ID is ``_make_id(str(path))`` for whatever path form the
+    extractor was handed. An extractor that resolves a cross-file reference to an
+    absolute path while the corpus was scanned relatively would mint a second,
+    disconnected node for a file that already has one, so match the referrer's
+    form. Mirrors the inline normalization in ``extract_bash``.
+    """
+    target = resolved.resolve()
+    if not referrer.is_absolute():
+        try:
+            target = target.relative_to(Path.cwd().resolve())
+        except ValueError:
+            pass
+    return str(target)
