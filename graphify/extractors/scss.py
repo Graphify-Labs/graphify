@@ -115,11 +115,16 @@ def extract_scss(path: Path) -> dict:
 
     def add(target_id: str, label: str, relation: str, location: str,
             target_file: "str | None" = None) -> None:
-        if target_id not in seen_nodes:
+        # A reference that resolved to another stylesheet gets NO node here:
+        # that file mints its own file node when extracted, and a second one
+        # with the same id makes _disambiguate_colliding_node_ids rename the
+        # pair apart, severing the very link being drawn. The edge's
+        # target_file stamp canonicalizes it onto the real node instead —
+        # the pattern extract_markdown uses for doc-to-doc links.
+        if target_file is None and target_id not in seen_nodes:
             seen_nodes.add(target_id)
             nodes.append({"id": target_id, "label": label, "file_type": "code",
-                          "source_file": target_file or str_path,
-                          "source_location": None})
+                          "source_file": str_path, "source_location": None})
         # One edge per (target, relation). A stylesheet referencing the same
         # token in 150 declarations is one dependency on it, and duplicate
         # parallel edges trip graphify's same-endpoint-collapse diagnostic.
@@ -127,10 +132,18 @@ def extract_scss(path: Path) -> dict:
         if key in seen_edges:
             return
         seen_edges.add(key)
-        edges.append({"source": file_nid, "target": target_id, "relation": relation,
-                      "confidence": "EXTRACTED", "confidence_score": 1.0,
-                      "source_file": str_path, "source_location": location,
-                      "weight": 1.0})
+        edge = {"source": file_nid, "target": target_id, "relation": relation,
+                "confidence": "EXTRACTED", "confidence_score": 1.0,
+                "source_file": str_path, "source_location": location,
+                "weight": 1.0}
+        # Stamp the resolved path so the target canonicalizes to the imported
+        # stylesheet's real node id; without it the target keeps an
+        # absolute-path derived id that matches no node in the merged graph and
+        # the import edge silently drops (#2211). Only set when the reference
+        # resolved — an unresolvable import must stay dangling.
+        if target_file is not None:
+            edge["target_file"] = target_file
+        edges.append(edge)
 
     for rule in _SCSS_AT_RULE.finditer(src):
         for quoted in _SCSS_QUOTED.finditer(rule.group(2)):
