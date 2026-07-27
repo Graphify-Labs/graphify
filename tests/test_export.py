@@ -429,6 +429,36 @@ def test_to_canvas_never_emits_punctuation_only_filenames():
         assert not bad, f"punctuation-only canvas filenames: {bad}"
 
 
+def test_to_obsidian_leading_dot_labels_are_not_hidden_filenames():
+    """#2205: Obsidian hides notes whose names start with `.` — `.env` must
+    become `dot-env.md` (and canvas must point at the same stem)."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n_env", label=".env", source_file=".env", type="document")
+    G.add_node("n_gi", label=".gitignore", source_file=".gitignore", type="document")
+    G.add_node("n_readme", label="README", source_file="README.md", type="document")
+    G.add_edge("n_readme", "n_env", relation="references")
+    communities = {0: ["n_env", "n_gi", "n_readme"]}
+    with tempfile.TemporaryDirectory() as tmp:
+        to_obsidian(G, communities, tmp)
+        stems = {p.stem for p in Path(tmp).rglob("*.md") if not p.name.startswith("_")}
+        assert "dot-env" in stems, stems
+        assert "dot-gitignore" in stems, stems
+        assert not any(s.startswith(".") for s in stems), stems
+
+        canvas = Path(tmp) / "graph.canvas"
+        to_canvas(G, communities, str(canvas))
+        data = json.loads(canvas.read_text(encoding="utf-8"))
+        file_stems = {
+            Path(n["file"]).stem
+            for n in data["nodes"]
+            if n.get("type") == "file"
+        }
+        assert "dot-env" in file_stems, file_stems
+        assert "dot-gitignore" in file_stems, file_stems
+        assert not any(s.startswith(".") for s in file_stems), file_stems
+
+
 # ── Existing-vault safety: graphify must not clobber user notes / .obsidian (#1506) ──
 
 def _two_node_graph():
