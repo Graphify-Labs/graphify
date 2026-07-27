@@ -49,9 +49,11 @@ from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazaru
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
+from graphify.extractors.scss import extract_scss  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform  # noqa: F401
+from graphify.extractors.twig import extract_twig  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
@@ -1827,6 +1829,11 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".dart": "dart",
     ".sh": "shell", ".bash": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
+    # Template and stylesheet families. Naming them keeps a Twig include stub or
+    # an SCSS mixin stub from being remapped onto a same-labeled function in an
+    # unrelated language, which is what an unknown (None) family permits.
+    ".twig": "twig",
+    ".scss": "sass", ".sass": "sass",
 }
 
 
@@ -4100,6 +4107,9 @@ _DISPATCH: dict[str, Any] = {
     ".cshtml": extract_razor,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    ".twig": extract_twig,
+    ".scss": extract_scss,
+    ".sass": extract_scss,
 }
 
 

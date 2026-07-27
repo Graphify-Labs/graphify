@@ -21,6 +21,16 @@ def test_classify_powershell_manifest():
     # #1331: .psd1 manifests must be classified as CODE so the manifest extractor runs.
     assert classify_file(Path("MyModule.psd1")) == FileType.CODE
 
+def test_classify_twig():
+    # Twig templates carry the composition graph of a Drupal/Symfony/Craft
+    # project, so they must reach the deterministic extractor rather than the
+    # LLM document path.
+    assert classify_file(Path("templates/page.html.twig")) == FileType.CODE
+
+def test_classify_scss():
+    assert classify_file(Path("components/card.scss")) == FileType.CODE
+    assert classify_file(Path("components/card.sass")) == FileType.CODE
+
 def test_classify_markdown():
     assert classify_file(Path("README.md")) == FileType.DOCUMENT
 
