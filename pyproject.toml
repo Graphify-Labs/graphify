@@ -80,13 +80,7 @@ pascal = ["tree-sitter-pascal"]
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-# Godot (Engine) extraction. The standalone `tree-sitter-gdscript` wheel is not
-# on PyPI, so the `.gd` extractor and the `.tscn`/`.tres`/`project.godot` scene
-# extractor both source their grammars (`gdscript` and `godot_resource`, both
-# from PrestonKnopp) from `tree-sitter-language-pack`, matching the `.gd`-only
-# PR #1836. Both extractors degrade gracefully when the grammar is absent (the
-# scene extractor falls back to a dependency-free line parser), so this stays
-# optional like sql / pascal.
+# Godot: `gdscript` + `godot_resource` grammars via tree-sitter-language-pack (optional; degrades gracefully).
 godot = ["tree-sitter-language-pack>=1.12.5,<1.13"]
 all = ["mcp", "starlette>=1.3.1", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-language-pack>=1.12.5,<1.13"]
 

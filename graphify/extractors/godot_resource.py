@@ -1,4 +1,4 @@
-"""Godot scene / resource / project extractor.
+"""Godot resource extractor (.tscn scenes, .tres resources, project.godot).
 
 Parses Godot's text formats for ``.tscn`` (PackedScene), ``.tres`` (Resource)
 and ``project.godot`` and emits Graphify's node/edge dicts:
@@ -222,7 +222,7 @@ def _blocks(text: str) -> list[_Block]:
 # Shared edge builders
 # ---------------------------------------------------------------------------
 
-def extract_godot_scene(path: Path) -> dict:
+def extract_godot_resource(path: Path) -> dict:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:

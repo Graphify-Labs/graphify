@@ -39,7 +39,7 @@ from graphify.extractors.csharp import (
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.gdscript import extract_gdscript  # noqa: F401
-from graphify.extractors.godot_scene import extract_godot_scene  # noqa: F401
+from graphify.extractors.godot_resource import extract_godot_resource  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
 from graphify.extractors.go import extract_go  # noqa: F401
@@ -3893,9 +3893,9 @@ _DISPATCH: dict[str, Any] = {
     ".astro": extract_astro,
     ".dart": extract_dart,
     ".gd": extract_gdscript,
-    ".tscn": extract_godot_scene,
-    ".tres": extract_godot_scene,
-    ".godot": extract_godot_scene,
+    ".tscn": extract_godot_resource,
+    ".tres": extract_godot_resource,
+    ".godot": extract_godot_resource,
     ".v": extract_verilog,
     ".sv": extract_verilog,
     ".svh": extract_verilog,

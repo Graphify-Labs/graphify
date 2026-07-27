@@ -33,6 +33,8 @@ _LANG_FAMILY: dict[str, str] = {
     **{e: "dotnet" for e in (".cs",)},
     **{e: "php" for e in (".php",)},
     **{e: "r" for e in (".r",)},
+    **{e: "gdscript" for e in (".gd",)},
+    **{e: "godot_resource" for e in (".tscn", ".tres", ".godot")},
 }
 
 
