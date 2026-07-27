@@ -29,6 +29,19 @@ def _viz_node_limit() -> int:
     except ValueError:
         return MAX_NODES_FOR_VIZ
 
+
+def _edge_types_default() -> bool:
+    """Whether graph.html starts with relation coloring on (GRAPHIFY_EDGE_TYPES).
+
+    Off by default so a generated report costs nothing until the reader opts in
+    (#2088). Mirrors GRAPHIFY_VIZ_NODE_LIMIT style: unset/empty => False.
+    """
+    import os
+    raw = os.environ.get("GRAPHIFY_EDGE_TYPES")
+    if raw is None or not raw.strip():
+        return False
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
 def _html_styles() -> str:
     return """<style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -67,6 +80,21 @@ def _html_styles() -> str:
   .legend-cb:checked::after, #select-all-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
   #select-all-cb:indeterminate { background: #4E79A7; border-color: #4E79A7; }
   #select-all-cb:indeterminate::after { content: ''; position: absolute; left: 2px; top: 5px; width: 8px; height: 2px; background: #fff; border: none; transform: none; }
+  #edge-types-wrap { border-top: 1px solid #2a2a4e; margin-top: 12px; padding-top: 12px; }
+  #edge-types-wrap h3 { font-size: 13px; color: #aaa; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  #edge-types-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 4px 0; }
+  #edge-types-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #aaa; user-select: none; }
+  #edge-types-controls label:hover { color: #e0e0e0; }
+  .edge-type-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; border-radius: 4px; font-size: 12px; }
+  .edge-type-item:hover { background: #2a2a4e; padding-left: 4px; }
+  .edge-type-item.dimmed { opacity: 0.35; }
+  .edge-type-swatch { width: 14px; height: 3px; border-radius: 1px; flex-shrink: 0; }
+  .edge-type-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid #3a3a5e; border-radius: 3px; background: #0f0f1a; cursor: pointer; position: relative; flex-shrink: 0; }
+  .edge-type-cb:checked { background: #4E79A7; border-color: #4E79A7; }
+  .edge-type-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  #edge-types-enable { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid #3a3a5e; border-radius: 3px; background: #0f0f1a; cursor: pointer; position: relative; flex-shrink: 0; }
+  #edge-types-enable:checked { background: #4E79A7; border-color: #4E79A7; }
+  #edge-types-enable:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
 </style>"""
 
 def _hyperedge_script(hyperedges_json: str) -> str:
@@ -136,15 +164,45 @@ network.on('afterDrawing', function(ctx) {{
 }});
 </script>"""
 
-def _html_script(nodes_json: str, edges_json: str, legend_json: str) -> str:
+def _html_script(
+    nodes_json: str,
+    edges_json: str,
+    legend_json: str,
+    *,
+    show_edge_types: bool = False,
+    edge_types_color_default: bool = False,
+) -> str:
+    show_edge_js = "true" if show_edge_types else "false"
+    edge_color_js = "true" if edge_types_color_default else "false"
     return f"""<script>
 const RAW_NODES = {nodes_json};
 const RAW_EDGES = {edges_json};
 const LEGEND = {legend_json};
+const SHOW_EDGE_TYPES = {show_edge_js};
+const EDGE_TYPES_COLOR_DEFAULT = {edge_color_js};
 
 // HTML-escape helper — prevents XSS when injecting graph data into innerHTML
 function esc(s) {{
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}}
+
+// Stable colour per relation for the Connection Types panel (#2088).
+const _RELATION_COLORS = Object.assign(Object.create(null), {{
+  calls: '#f97316',
+  imports: '#38bdf8',
+  imports_from: '#0ea5e9',
+  contains: '#64748b',
+  references: '#a78bfa',
+  rationale_for: '#f472b6',
+  inherits: '#34d399',
+  implements: '#2dd4bf',
+}});
+function relationColor(rel) {{
+  const key = String(rel || 'unknown');
+  if (_RELATION_COLORS[key]) return _RELATION_COLORS[key];
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (Math.imul(31, h) + key.charCodeAt(i)) >>> 0;
+  return `hsl(${{h % 360}} 65% 55%)`;
 }}
 
 // Build vis datasets
@@ -162,6 +220,8 @@ const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
   dashes: e.dashes,
   width: e.width,
   color: e.color,
+  _relation: e.label || 'unknown',
+  _baseOpacity: (e.color && e.color.opacity != null) ? e.color.opacity : 0.7,
   arrows: {{ to: {{ enabled: true, scaleFactor: 0.5 }} }},
 }})));
 
@@ -299,10 +359,11 @@ function updateSelectAllState() {{
 }}
 
 function toggleAllCommunities(hide) {{
-  document.querySelectorAll('.legend-item').forEach(item => {{
+  // Scope to #legend — a second panel reusing .legend-* must not get rewritten (#2088).
+  document.querySelectorAll('#legend .legend-item').forEach(item => {{
     hide ? item.classList.add('dimmed') : item.classList.remove('dimmed');
   }});
-  document.querySelectorAll('.legend-cb').forEach(cb => {{
+  document.querySelectorAll('#legend .legend-cb').forEach(cb => {{
     cb.checked = !hide;
   }});
   LEGEND.forEach(c => {{
@@ -347,6 +408,99 @@ LEGEND.forEach(c => {{
   }};
   legendEl.appendChild(item);
 }});
+
+// Relation colour/filter panel (#2088). Skipped when SHOW_EDGE_TYPES=false
+// (aggregated meta-graphs whose "relation" is a weight label).
+if (SHOW_EDGE_TYPES) {{
+  const STORAGE_KEY = 'graphify-edge-types-color';
+  const counts = Object.create(null);
+  RAW_EDGES.forEach(e => {{
+    const r = e.label || 'unknown';
+    counts[r] = (counts[r] || 0) + 1;
+  }});
+  const EDGE_TYPES = Object.keys(counts).sort().map(r => ({{
+    relation: r, count: counts[r], color: relationColor(r),
+  }}));
+  const hiddenRelations = new Set();
+  let colorByRelation = EDGE_TYPES_COLOR_DEFAULT;
+  try {{
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored === '1') colorByRelation = true;
+    if (stored === '0') colorByRelation = false;
+  }} catch (_) {{}}
+
+  function edgeColorFor(rel, baseOpacity) {{
+    if (!colorByRelation) return {{ opacity: baseOpacity }};
+    return {{ color: relationColor(rel), opacity: baseOpacity }};
+  }}
+
+  function applyRelation(rel) {{
+    const hidden = hiddenRelations.has(rel);
+    const updates = [];
+    edgesDS.forEach(edge => {{
+      if (edge._relation !== rel) return;
+      updates.push({{
+        id: edge.id,
+        hidden: hidden,
+        color: edgeColorFor(rel, edge._baseOpacity),
+      }});
+    }});
+    if (updates.length) edgesDS.update(updates);
+  }}
+
+  function applyAllRelations() {{
+    EDGE_TYPES.forEach(t => applyRelation(t.relation));
+  }}
+
+  const enableCb = document.getElementById('edge-types-enable');
+  const edgeTypesEl = document.getElementById('edge-types');
+  if (enableCb && edgeTypesEl) {{
+    enableCb.checked = colorByRelation;
+    enableCb.addEventListener('change', () => {{
+      colorByRelation = enableCb.checked;
+      try {{ localStorage.setItem(STORAGE_KEY, colorByRelation ? '1' : '0'); }} catch (_) {{}}
+      applyAllRelations();
+    }});
+
+    EDGE_TYPES.forEach(t => {{
+      const item = document.createElement('div');
+      item.className = 'edge-type-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'edge-type-cb';
+      cb.checked = true;
+      cb.addEventListener('change', (e) => {{
+        e.stopPropagation();
+        if (cb.checked) {{
+          hiddenRelations.delete(t.relation);
+          item.classList.remove('dimmed');
+        }} else {{
+          hiddenRelations.add(t.relation);
+          item.classList.add('dimmed');
+        }}
+        applyRelation(t.relation);
+      }});
+      const swatch = document.createElement('div');
+      swatch.className = 'edge-type-swatch';
+      swatch.style.background = t.color;
+      const label = document.createElement('span');
+      label.className = 'legend-label';
+      label.textContent = t.relation;
+      const count = document.createElement('span');
+      count.className = 'legend-count';
+      count.textContent = String(t.count);
+      item.append(cb, swatch, label, count);
+      item.onclick = (e) => {{
+        if (e.target === cb) return;
+        cb.checked = !cb.checked;
+        cb.dispatchEvent(new Event('change'));
+      }};
+      edgeTypesEl.appendChild(item);
+    }});
+
+    if (colorByRelation) applyAllRelations();
+  }}
+}}
 </script>"""
 
 
@@ -401,15 +555,23 @@ def to_html(
     member_counts: dict[int, int] | None = None,
     node_limit: int | None = None,
     learning_overlay: dict | None = None,
+    edge_types: bool | None = None,
 ) -> bool:
     """Generate an interactive vis.js HTML visualization of the graph.
 
     Features: node size by degree, click-to-inspect panel, search box,
     community filter, physics clustering by community, confidence-styled edges.
+    Optional Connection Types panel colours/filters edges by relation (#2088).
     Raises ValueError if graph exceeds MAX_NODES_FOR_VIZ.
 
     If member_counts is provided (aggregated community view), node sizes are
-    based on community member counts rather than graph degree.
+    based on community member counts rather than graph degree. The Connection
+    Types panel is skipped there — meta-edges are weight labels, not relations.
+
+    ``edge_types`` / ``GRAPHIFY_EDGE_TYPES`` set whether relation colouring
+    starts on; the panel itself is always present on non-aggregated graphs.
+    Readers can flip colouring in the sidebar; the choice persists in
+    ``localStorage``.
 
     If node_limit is set and the graph exceeds it, automatically builds an
     aggregated community-level meta-graph instead of raising ValueError.
@@ -568,11 +730,12 @@ def to_html(
         relation = data.get("relation", "")
         true_src = data.get("_src", u)
         true_tgt = data.get("_tgt", v)
+        rel_label = sanitize_label(str(relation or "")) or "unknown"
         vis_edges.append({
             "from": true_src,
             "to": true_tgt,
-            "label": relation,
-            "title": _html.escape(f"{relation} [{confidence}]"),
+            "label": rel_label,
+            "title": _html.escape(f"{rel_label} [{confidence}]"),
             "dashes": confidence != "EXTRACTED",
             "width": 2 if confidence == "EXTRACTED" else 1,
             "color": {"opacity": 0.7 if confidence == "EXTRACTED" else 0.35},
@@ -597,6 +760,21 @@ def to_html(
     hyperedges_json = _js_safe(getattr(G, "graph", {}).get("hyperedges", []))
     title = _html.escape(sanitize_label(_html_document_title(output_path)))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
+
+    # Aggregated community meta-graphs use weight strings as "relation" — a
+    # Connection Types row per distinct weight is noise (#2088).
+    show_edge_types = member_counts is None
+    color_default = _edge_types_default() if edge_types is None else bool(edge_types)
+    edge_types_panel = ""
+    if show_edge_types:
+        edge_types_panel = """
+    <div id="edge-types-wrap">
+      <h3>Connection Types</h3>
+      <div id="edge-types-controls">
+        <label><input type="checkbox" id="edge-types-enable">Color by relation</label>
+      </div>
+      <div id="edge-types"></div>
+    </div>"""
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -625,10 +803,17 @@ def to_html(
       <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
     </div>
     <div id="legend"></div>
+    {edge_types_panel}
   </div>
   <div id="stats">{stats}</div>
 </div>
-{_html_script(nodes_json, edges_json, legend_json)}
+{_html_script(
+        nodes_json,
+        edges_json,
+        legend_json,
+        show_edge_types=show_edge_types,
+        edge_types_color_default=color_default,
+    )}
 {_hyperedge_script(hyperedges_json)}
 </body>
 </html>"""
