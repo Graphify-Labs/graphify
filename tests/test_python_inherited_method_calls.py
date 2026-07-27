@@ -9,7 +9,7 @@ across modules had no `calls` edge.
 `_resolve_python_member_calls` now walks the caller's class up a single-inheritance chain
 across files and binds the first class that owns `m`. It stops, with no edge, at a class
 with two or more bases (MRO order across files is not modelled), a base the edge list
-cannot show (`mod.Base`, `Generic[T]`), a base outside the corpus, a base the class's
+cannot show (`mod.Base`, a call), a base outside the corpus, a base the class's
 file neither defines nor imports, and `super(Cls, obj)` with arguments.
 """
 from __future__ import annotations
@@ -108,6 +108,16 @@ def test_chains_the_walk_cannot_order_emit_no_edge(tmp_path):
     calls_into = {(nodes[e["source"]]["label"], Path(nodes[e["target"]]["source_file"]).stem)
                   for e in edges if nodes[e["target"]]["label"] in (".m()", ".zzz()")}
     assert not {c for c in calls_into if c[1] in ("base", "other")}, calls_into
+
+
+def test_a_parameterized_base_is_walked_like_a_bare_one(tmp_path):
+    """`class C(Base[int])` has `Base` in its MRO exactly as `class C(Base)` does."""
+    nodes, edges = _calls(tmp_path, {
+        "base.py": "from typing import Generic, TypeVar\nT = TypeVar('T')\n\n"
+                   "class Base(Generic[T]):\n    def m(self):\n        return 1\n",
+        "use.py": "from .base import Base\n\nclass C(Base[int]):\n    def run(self):\n        return self.m()\n",
+    })
+    assert _hits(nodes, edges, "run") == ["base"]
 
 
 def test_a_base_from_outside_or_not_imported_emits_no_edge(tmp_path):

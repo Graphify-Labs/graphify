@@ -2650,6 +2650,18 @@ def _python_is_pytest_fixture(func_node, source: bytes) -> bool:
     return False
 
 
+def _python_base_name_node(arg):
+    """The `identifier` a Python class base names, or None.
+
+    A parameterized base (`Base[T]`, `Repo[User]`) parses as a `subscript`
+    whose `value` field is the base itself; the `[...]` holds only type
+    arguments. `mod.Base`, `mod.Base[T]` and calls stay None.
+    """
+    if arg.type == "subscript":
+        arg = arg.child_by_field_name("value")
+    return arg if arg is not None and arg.type == "identifier" else None
+
+
 def _python_annotation_class(type_node, source: bytes) -> str | None:
     """`Client`, `mod.Client`, or the item of `Iterator[Client]` /
     `Generator[Client, None, None]` (a yield fixture); anything else is None."""
@@ -8053,13 +8065,15 @@ def _extract_generic(
                     ):
                         metadata["ruby_lookup_unsafe"] = True
             if config.ts_module == "tree_sitter_python":
-                # Only a bare-name base becomes an `inherits` edge (below). A base
-                # the edge list cannot show (`mod.Base`, `Generic[T]`, a call) still
-                # sits in the MRO, so the cross-file inherited-method walk must not
-                # read this class's edges as its complete base list.
+                # Only a bare or parameterized name base (`Base`, `Base[T]`) becomes
+                # an `inherits` edge (below). A base the edge list cannot show
+                # (`mod.Base`, a call) still sits in the MRO, so the cross-file
+                # inherited-method walk must not read this class's edges as its
+                # complete base list.
                 _py_bases = node.child_by_field_name("superclasses")
                 if _py_bases is not None and any(
-                    c.is_named and c.type not in ("identifier", "keyword_argument", "comment")
+                    c.is_named and c.type not in ("keyword_argument", "comment")
+                    and _python_base_name_node(c) is None
                     for c in _py_bases.children
                 ):
                     metadata = dict(metadata or {})
@@ -8156,8 +8170,9 @@ def _extract_generic(
                 args = node.child_by_field_name("superclasses")
                 if args:
                     for arg in args.children:
-                        if arg.type == "identifier":
-                            base = _read_text(arg, source)
+                        base_node = _python_base_name_node(arg)
+                        if base_node is not None:
+                            base = _read_text(base_node, source)
                             base_nid = ensure_named_node(base, line)
                             add_edge(class_nid, base_nid, "inherits", line)
 
