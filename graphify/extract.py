@@ -550,6 +550,11 @@ def _import_c(node, source: bytes, file_nid: str, stem: str, edges: list, str_pa
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
                         "weight": 1.0,
+                        # Stamp the resolved target, mirroring _import_python (#1814):
+                        # without it, an include whose header lives outside this
+                        # batch's paths keeps the raw absolute-path id no later pass
+                        # ever learns to relativize (#2243).
+                        "target_file": str(resolved),
                     })
                     break
             module_name = raw.split("/")[-1].split(".")[0]
@@ -4676,6 +4681,30 @@ def extract(
     # subagents generate (#1033). Resolve before relativizing so paths passed in
     # relative form still anchor to the (resolved) root.
     id_remap: dict[str, str] = {}
+    # A target OUTSIDE the scan root (an out-of-root ProjectReference/.sln/bash
+    # `source`/#include/relative import) can't be made relative to root; leaving
+    # it absolute leaked the scan path including the OS username into a
+    # committed graph.json (#1899). Fall back to a walk-up relative form, or the
+    # bare basename when that would still embed foreign path segments (a
+    # far-away or cross-drive target). Shared below by both the target_file
+    # remap loop (edges with no node of their own, #2243) and the node-level
+    # relativization pass further down (#1899/#2195).
+    def _portable_out_of_root_sf(p: Path) -> str:
+        try:
+            rel = os.path.relpath(str(p), str(root)).replace("\\", "/")
+        except ValueError:
+            return p.name  # different Windows drive: no relative path exists
+        updepth = 0
+        for seg in rel.split("/"):
+            if seg == "..":
+                updepth += 1
+            else:
+                break
+        # More than a couple of walk-ups means the target lives well outside the
+        # corpus; its ancestor dirs would embed foreign (possibly user-named)
+        # segments, so collapse to the basename.
+        return p.name if updepth > 3 else rel
+
     # Symbol node IDs embed the file stem as a prefix (_file_node_id of the path
     # the extractor saw). For a root-level file that stem picks up the absolute
     # parent directory name, so a symbol becomes <rootdir>_main_run while the
@@ -4732,7 +4761,25 @@ def extract(
         try:
             _tp.relative_to(root)
         except ValueError:
-            continue  # out-of-root target: leave its ids alone
+            # Out-of-root target: `_file_node_id` (used below for in-root
+            # targets) needs a root-relative path, so it cannot help here.
+            # No node stands for this target either (target_file-stamped
+            # edges intentionally mint no stub node, #2195), so unlike an
+            # out-of-root node the belt-and-braces pass below never learns
+            # this id from anywhere — without registering it here the raw
+            # scan-path slug survives in the edge forever (#2243). Give it
+            # the same portable "ext_" id an out-of-root node would get; a
+            # target that does not actually exist on disk stays dangling,
+            # exactly as before.
+            try:
+                if _tp.is_file():
+                    ext_new_id = _make_id("ext", _portable_out_of_root_sf(_tp))
+                    id_remap[_make_id(str(_tp))] = ext_new_id
+                    if _raw_tp != _tp:
+                        id_remap[_make_id(str(_raw_tp))] = ext_new_id
+            except OSError:
+                pass
+            continue
         try:
             if not _tp.is_file():
                 # Speculatively-resolved target that doesn't exist (e.g. an
@@ -5367,29 +5414,9 @@ def extract(
     run_language_resolvers(paths, per_file, all_nodes, all_edges)
 
     # Relativize source_file fields so paths are portable across machines (#555).
-    # A target OUTSIDE the scan root (an out-of-root ProjectReference/.sln/bash
-    # `source`) can't be made relative to root; leaving it absolute leaked the
-    # scan path including the OS username into a committed graph.json (#1899).
-    # Fall back to a walk-up relative form, or the bare basename when that would
-    # still embed foreign path segments (a far-away or cross-drive target). When
-    # the node's id was itself minted from the absolute path, remap it to a
+    # When the node's id was itself minted from the absolute path, remap it to a
     # portable id and rewrite the edge endpoints that reference it.
-    def _portable_out_of_root_sf(p: Path) -> str:
-        try:
-            rel = os.path.relpath(str(p), str(root)).replace("\\", "/")
-        except ValueError:
-            return p.name  # different Windows drive: no relative path exists
-        updepth = 0
-        for seg in rel.split("/"):
-            if seg == "..":
-                updepth += 1
-            else:
-                break
-        # More than a couple of walk-ups means the target lives well outside the
-        # corpus; its ancestor dirs would embed foreign (possibly user-named)
-        # segments, so collapse to the basename.
-        return p.name if updepth > 3 else rel
-
+    # ``_portable_out_of_root_sf`` is defined above, by ``id_remap`` (#2243).
     ext_id_remap: dict[str, str] = {}
     for item in all_nodes + all_edges:
         sf = item.get("source_file")

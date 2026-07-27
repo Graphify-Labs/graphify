@@ -1029,6 +1029,111 @@ def test_out_of_tree_cache_root_keeps_source_file_relative_to_scan_root(tmp_path
         assert str(tmp_path) not in n["id"]
 
 
+def test_c_include_out_of_root_target_id_is_portable(tmp_path):
+    """#2243 (residual of #1899, in edges not nodes): a `#include "../lib/foo.h"`
+    reaching OUTSIDE the scan root must not leak the absolute scan path
+    (including the OS username) into the edge's target id. #1899's out-of-root
+    fix taught the belt-and-braces pass to catch a NODE whose id was minted from
+    the same absolute path it carries as source_file -- but `_import_c` mints no
+    node of its own for an include target, only an edge, so that pass had
+    nothing to learn from and the raw `_make_id(str(absolute_path))` slug
+    survived untouched."""
+    app = tmp_path / "app"
+    app.mkdir()
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "foo.h").write_text("int foo_compute(int x);\n")
+    (app / "main.c").write_text(
+        '#include "../lib/foo.h"\nint main(void) { return foo_compute(1); }\n'
+    )
+    result = extract([app / "main.c"], cache_root=app)
+    marker = str(tmp_path)
+    for e in result["edges"]:
+        for f in ("source", "target", "source_file"):
+            assert marker not in str(e.get(f, "")), f"leaked into edge {f}: {e}"
+        assert "target_file" not in e, f"transient target_file hint leaked: {e}"
+    include_edges = [e for e in result["edges"] if e["relation"] == "imports"]
+    assert include_edges, "expected an imports edge for the #include"
+    assert include_edges[0]["target"] == "ext_lib_foo_h"
+
+
+def test_c_include_out_of_root_target_id_is_deterministic_across_checkout_paths(tmp_path):
+    """#2243: the SAME corpus, scanned from two differently-named, differently
+    nested checkout locations, must produce a byte-identical edge target id for
+    an out-of-root `#include`. Before the fix each checkout baked its own
+    absolute scan path into the target, so a graph.json committed to git showed
+    a spurious `links` diff on every rebuild even though nothing else changed."""
+
+    def _build(root_dir_name):
+        base = tmp_path / root_dir_name / "deeper" / "nesting"
+        app = base / "app"
+        app.mkdir(parents=True)
+        lib = base / "lib"
+        lib.mkdir()
+        (lib / "foo.h").write_text("int foo_compute(int x);\n")
+        (app / "main.c").write_text(
+            '#include "../lib/foo.h"\nint main(void) { return foo_compute(1); }\n'
+        )
+        result = extract([app / "main.c"], cache_root=app)
+        return [e["target"] for e in result["edges"] if e["relation"] == "imports"][0]
+
+    target_a = _build("checkout_alice")
+    target_b = _build("checkout_bob_at_a_totally_different_nesting_depth")
+    assert target_a == target_b == "ext_lib_foo_h"
+
+
+def test_c_include_in_root_same_batch_still_resolves_to_real_node(tmp_path):
+    """Negative companion to the two tests above: when the included header IS
+    inside the scan root and IS part of the same extraction batch, the edge must
+    keep pointing at the real file node's id -- the out-of-root fix must never
+    fire, or dangle, for a target the scan already covers."""
+    app = tmp_path / "app"
+    app.mkdir()
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "foo.h").write_text("int foo_compute(int x);\n")
+    (app / "main.c").write_text(
+        '#include "../lib/foo.h"\nint main(void) { return foo_compute(1); }\n'
+    )
+    result = extract([app / "main.c", lib / "foo.h"], cache_root=tmp_path, root=tmp_path)
+    header_nodes = [n for n in result["nodes"] if n.get("source_file") == "lib/foo.h"]
+    assert header_nodes, "expected a real node for the in-batch header"
+    include_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "imports" and e.get("source_file") == "app/main.c"
+    ]
+    assert include_edges
+    assert include_edges[0]["target"] == header_nodes[0]["id"]
+    assert not include_edges[0]["target"].startswith("ext_")
+
+
+def test_python_relative_import_out_of_root_target_id_is_portable(tmp_path):
+    """#2243 is not C-specific: it is a gap in the shared target_file remap path
+    every language resolver funnels through. Python's cross-directory relative
+    import already stamped `target_file` (#1814/#2169) -- but for a genuinely
+    out-of-root target that stamp was still discarded ("out-of-root target:
+    leave its ids alone") with no fallback, so the raw absolute-path id leaked
+    exactly as it did for C. Covering this second, independent consumer of the
+    same remap path guards against a fix that only special-cased `_import_c`."""
+    app = tmp_path / "app"
+    app.mkdir()
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (app / "__init__.py").write_text("")
+    (lib / "__init__.py").write_text("")
+    (lib / "mod.py").write_text("def compute(x):\n    return x + 1\n")
+    (app / "main.py").write_text(
+        "from ..lib.mod import compute\n\ndef run():\n    return compute(1)\n"
+    )
+    result = extract([app / "main.py", app / "__init__.py"], cache_root=app)
+    marker = str(tmp_path)
+    for e in result["edges"]:
+        assert marker not in str(e.get("target", "")), f"leaked into edge target: {e}"
+    import_edges = [e for e in result["edges"] if e["relation"] == "imports_from"]
+    assert import_edges
+    assert import_edges[0]["target"] == "ext_lib_mod_py"
+
+
 def test_python_module_qualified_call_resolves_extracted(tmp_path):
     """`module.func()` where `module` is imported resolves to the callable that
     module contains, with an EXTRACTED `calls` edge (#1883). A lowercase module
