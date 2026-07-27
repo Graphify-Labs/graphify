@@ -14,21 +14,27 @@ def _write(root: Path, rel: str, body: str) -> Path:
 
 
 def _rel_targets(r, relation: str) -> set[str]:
+    """Readable name of every target reached by *relation*.
+
+    An import that resolved to another stylesheet has no node here (that file
+    owns its own), so its name comes from the edge's ``target_file`` stamp; an
+    unresolved one is named by its stub node.
+    """
     lab = {n["id"]: n["label"] for n in r["nodes"]}
-    return {
-        lab.get(e["target"], e["target"])
-        for e in r["edges"]
-        if e["relation"] == relation
-    }
+    out = set()
+    for e in r["edges"]:
+        if e["relation"] != relation:
+            continue
+        if "target_file" in e:
+            out.add(Path(e["target_file"]).name)
+        else:
+            out.add(lab.get(e["target"], e["target"]))
+    return out
 
 
 def _target_files(r, relation: str) -> set[str]:
-    by_id = {n["id"]: n for n in r["nodes"]}
-    return {
-        by_id[e["target"]]["source_file"]
-        for e in r["edges"]
-        if e["relation"] == relation
-    }
+    return {e["target_file"] for e in r["edges"]
+            if e["relation"] == relation and "target_file" in e}
 
 
 # --- module graph -----------------------------------------------------------
@@ -205,6 +211,42 @@ def test_every_edge_is_extracted_with_full_confidence(tmp_path):
     for e in r["edges"]:
         assert e["confidence"] == "EXTRACTED"
         assert e["confidence_score"] == 1.0
+
+
+def test_resolved_import_stamps_target_file(tmp_path):
+    """Without the stamp the import target never canonicalizes onto the real
+    stylesheet node and the edge silently drops from the merged graph (#2211)."""
+    _write(tmp_path, "tokens/_breakpoints.scss", "$tablet: 768px;\n")
+    sheet = _write(tmp_path, "tokens/all.scss", "@use 'breakpoints';\n")
+
+    r = extract_scss(sheet)
+
+    edge = next(e for e in r["edges"] if e["relation"] == "imports")
+    assert edge["target_file"] == str(
+        (tmp_path / "tokens/_breakpoints.scss").resolve())
+
+
+def test_unresolved_import_is_left_dangling(tmp_path):
+    sheet = _write(tmp_path, "main.scss", "@use 'sass:math';\n")
+
+    r = extract_scss(sheet)
+
+    edge = next(e for e in r["edges"] if e["relation"] == "imports")
+    assert "target_file" not in edge
+
+
+def test_token_and_mixin_edges_are_never_stamped(tmp_path):
+    """Token and mixin nodes are file-independent by design — they are shared
+    across every consumer, so they must not be pinned to one file."""
+    sheet = _write(tmp_path, "card.scss",
+                   "@mixin m { }\n.c { @include m; color: var(--brand); }\n")
+
+    r = extract_scss(sheet)
+
+    for e in r["edges"]:
+        if e["relation"] in {"uses_token", "defines_token",
+                             "uses_mixin", "defines_mixin"}:
+            assert "target_file" not in e
 
 
 def test_unreadable_file_reports_an_error(tmp_path):
