@@ -1,4 +1,5 @@
 """Tests for graphify.wiki — Wikipedia-style article generation."""
+import os
 import re
 import urllib.parse
 import pytest
@@ -62,6 +63,29 @@ def test_to_wiki_god_node_article_created(tmp_path):
     G = _make_graph()
     to_wiki(G, COMMUNITIES, tmp_path, community_labels=LABELS, god_nodes_data=GOD_NODES)
     assert (tmp_path / "parse.md").exists()
+
+
+def test_to_wiki_respects_target_filesystem_name_max(tmp_path, monkeypatch):
+    """#2109: article filenames honor a lower runtime NAME_MAX such as eCryptfs."""
+    monkeypatch.setattr(os, "pathconf", lambda _path, _name: 143)
+    long_community = "c" * 170
+    long_god = "g" * 170
+    gods = [{"id": "n1", "label": long_god, "degree": 2}]
+
+    to_wiki(
+        _make_graph(),
+        COMMUNITIES,
+        tmp_path,
+        community_labels={0: long_community, 1: "Rendering Layer"},
+        god_nodes_data=gods,
+    )
+
+    article_names = [p.name for p in tmp_path.glob("*.md")]
+    assert article_names
+    assert max(len(name.encode("utf-8")) for name in article_names) <= 143
+    for article in tmp_path.glob("*.md"):
+        for _, target in _inline_links(article.read_text()):
+            assert (tmp_path / target).exists(), (article.name, target)
 
 
 def test_index_links_all_communities(tmp_path):
