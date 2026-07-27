@@ -692,3 +692,180 @@ def test_dedup_fills_explicit_none_attribute():
     result, _ = deduplicate_entities([dict(n) for n in nodes], [], communities={})
     assert len(result) == 1
     assert result[0].get("source_location") == "L7", "explicit-None must be filled from the loser"
+
+
+# ── #2182: cross-file exact-duplicate concepts must merge ─────────────────────
+
+def test_crossfile_identical_concepts_merge_and_rewire():
+    """Two `concept` nodes whose labels are byte-identical after _norm() but
+    live in different files must merge (#2182). Pass 1 used to defer them to
+    Pass 2, whose norm-unique candidate filter (`seen_norms`) structurally
+    cannot form an equal-norm pair — so exact cross-file duplicates were the
+    one class of duplicate that never merged, while a one-char-different
+    fuzzy pair did."""
+    nodes = [
+        {"id": "sz_intl", "label": "SHENZHEN INTERNATIONAL",
+         "file_type": "concept", "source_file": "doc1.md"},
+        {"id": "shenzhen_international_holdings", "label": "Shenzhen international",
+         "file_type": "concept", "source_file": "doc2.md"},
+        {"id": "port_ops", "label": "Port Operations",
+         "file_type": "concept", "source_file": "doc2.md"},
+    ]
+    edges = [{"source": "shenzhen_international_holdings", "target": "port_ops",
+              "relation": "operates"}]
+    result_nodes, result_edges = deduplicate_entities(nodes, edges, communities={})
+    ids = {n["id"] for n in result_nodes}
+    assert len(result_nodes) == 2
+    # _pick_winner prefers the shorter, non-chunk-suffixed id.
+    assert "sz_intl" in ids
+    assert "shenzhen_international_holdings" not in ids
+    # The loser's edge is rewired to the winner.
+    assert result_edges == [
+        {"source": "sz_intl", "target": "port_ops", "relation": "operates"}]
+
+
+def test_crossfile_one_char_typo_concepts_still_merge():
+    """Non-regression: the near-identical (one-char-different) cross-file pair
+    that already merged via Pass 2 fuzzy matching must keep merging (#2182)."""
+    nodes = [
+        {"id": "g1", "label": "Authentication Manager",
+         "file_type": "concept", "source_file": "a.md"},
+        {"id": "g2", "label": "Authentication Managr",
+         "file_type": "concept", "source_file": "b.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+_RATIONALE_BOILER = ("Django app config for apps.platform.cards. No business "
+                     "logic here. Domain services live in services.py.")
+
+
+@pytest.mark.parametrize("a,b", [
+    ({"id": "d1", "label": "Getting Started Installation Guide",
+      "file_type": "document", "source_file": "docs/a.md"},
+     {"id": "d2", "label": "Getting Started Installation Guide",
+      "file_type": "document", "source_file": "docs/b.md"}),
+    ({"id": "r1", "label": _RATIONALE_BOILER,
+      "file_type": "rationale", "source_file": "apps/platform/cards/apps.py"},
+     {"id": "r2", "label": _RATIONALE_BOILER,
+      "file_type": "rationale", "source_file": "apps/platform/cores/apps.py"}),
+    ({"id": "backend_a_render_frame", "label": "render_frame",
+      "file_type": "code", "source_file": "backend_a.py"},
+     {"id": "backend_b_render_frame", "label": "render_frame",
+      "file_type": "code", "source_file": "backend_b.py"}),
+    ({"id": "web_logo", "label": "logo.png",
+      "file_type": "image", "source_file": "web/assets/logo.png"},
+     {"id": "docs_logo", "label": "logo.png",
+      "file_type": "image", "source_file": "docs/img/logo.png"}),
+    ({"id": "logo_concept", "label": "logo.png",
+      "file_type": "concept", "source_file": "doc1.md"},
+     {"id": "logo_image", "label": "logo.png",
+      "file_type": "image", "source_file": "assets/logo.png"}),
+    ({"id": "shenzhen_a", "label": "Shenzhen International",
+      "file_type": "concept", "source_file": ""},
+     {"id": "shenzhen_b", "label": "Shenzhen International",
+      "file_type": "concept", "source_file": ""}),
+    ({"id": "api_a", "label": "API",
+      "file_type": "concept", "source_file": "doc1.md"},
+     {"id": "api_b", "label": "API",
+      "file_type": "concept", "source_file": "doc2.md"}),
+], ids=["document", "rationale", "code", "image-basename", "concept-image-mixed",
+        "empty-source-file", "low-entropy-concept"])
+def test_crossfile_identical_labels_stay_distinct_for_guarded_types(a, b):
+    """The #2182 fix is gated to high-entropy `concept` nodes with provenance
+    on BOTH sides. Identical labels must NOT merge for: file-anchored types
+    (document/rationale, #1284), code (#1205), images sharing a basename in
+    different dirs, mixed concept+image pairs, provenance-less nodes (#1178),
+    and low-entropy generic labels."""
+    result_nodes, _ = deduplicate_entities([dict(a), dict(b)], [], communities={})
+    assert len(result_nodes) == 2, (
+        f"guarded pair ({a['id']}, {b['id']}) was merged — #2182 fix leaked "
+        f"past its concept-only gate"
+    )
+
+
+def test_cross_repo_guard_still_raises():
+    """The cross-repo guard is untouched by #2182: identical concepts from
+    different repos must still raise, never merge."""
+    nodes = [
+        {"id": "c1", "label": "Shenzhen International", "file_type": "concept",
+         "source_file": "doc1.md", "repo": "repo-a"},
+        {"id": "c2", "label": "Shenzhen International", "file_type": "concept",
+         "source_file": "doc2.md", "repo": "repo-b"},
+    ]
+    with pytest.raises(ValueError, match="multiple repos"):
+        deduplicate_entities(nodes, [], communities={})
+
+
+def test_crossfile_concept_merge_is_order_independent():
+    """Three identical-norm concepts across three files: every input order must
+    yield the same single survivor (#2182). Winner ids differ in length so
+    _pick_winner has a unique minimum."""
+    import itertools
+    base = [
+        {"id": "shenzhen", "label": "SHENZHEN INTERNATIONAL",
+         "file_type": "concept", "source_file": "doc1.md"},
+        {"id": "shenzhen_intl", "label": "Shenzhen international",
+         "file_type": "concept", "source_file": "doc2.md"},
+        {"id": "shenzhen_international", "label": "shenzhen-international",
+         "file_type": "concept", "source_file": "doc3.md"},
+    ]
+    survivors = set()
+    for perm in itertools.permutations(base):
+        out, _ = deduplicate_entities([dict(n) for n in perm], [], communities={})
+        assert len(out) == 1
+        survivors.add(out[0]["id"])
+    assert survivors == {"shenzhen"}, f"non-deterministic survivor: {survivors}"
+
+
+def test_crossfile_concept_merge_deterministic_across_hash_seeds():
+    """#2182 determinism, #1753/#2074 precedent: the survivor must not depend on
+    PYTHONHASHSEED. pytest fixes the seed per process, so run out-of-process
+    with shuffled input."""
+    import os
+    import subprocess
+    import sys
+    script = (
+        "import random, sys\n"
+        "from graphify.dedup import deduplicate_entities\n"
+        "nodes = [\n"
+        "    {'id': 'shenzhen', 'label': 'SHENZHEN INTERNATIONAL',\n"
+        "     'file_type': 'concept', 'source_file': 'doc1.md'},\n"
+        "    {'id': 'shenzhen_intl', 'label': 'Shenzhen international',\n"
+        "     'file_type': 'concept', 'source_file': 'doc2.md'},\n"
+        "    {'id': 'shenzhen_international', 'label': 'shenzhen-international',\n"
+        "     'file_type': 'concept', 'source_file': 'doc3.md'},\n"
+        "]\n"
+        "random.Random(int(sys.argv[1])).shuffle(nodes)\n"
+        "out, _ = deduplicate_entities(nodes, [], communities={})\n"
+        "print(len(out), sorted(n['id'] for n in out)[0])\n"
+    )
+    results = set()
+    for seed in ("0", "1", "2", "3"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        r = subprocess.run(
+            [sys.executable, "-c", script, seed],
+            capture_output=True, text=True, env=env,
+        )
+        assert r.returncode == 0, r.stderr
+        results.add(r.stdout.strip().splitlines()[-1])
+    assert results == {"1 shenzhen"}, (
+        f"non-deterministic dedup across hash seeds: {results}"
+    )
+
+
+def test_crossfile_concept_merge_is_transitive():
+    """Exact cross-file matches and a punctuation variant collapse to one
+    survivor: {'Acme Corp' doc1, 'Acme Corp' doc2, 'Acme Corp.' doc3} all
+    normalize to 'acme corp' and must transitively union (#2182)."""
+    nodes = [
+        {"id": "acme_corp_one", "label": "Acme Corp",
+         "file_type": "concept", "source_file": "doc1.md"},
+        {"id": "acme_corp_two", "label": "Acme Corp",
+         "file_type": "concept", "source_file": "doc2.md"},
+        {"id": "acme_corp_three", "label": "Acme Corp.",
+         "file_type": "concept", "source_file": "doc3.md"},
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1

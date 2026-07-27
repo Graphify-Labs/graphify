@@ -1488,6 +1488,63 @@ def test_extract_parallel_returns_false_on_broken_pool(tmp_path, monkeypatch, ca
     assert "__main__" in out, "warning must hint at the Windows __main__ guard idiom"
 
 
+def test_extract_parallel_skips_pool_when_max_workers_is_one(tmp_path, monkeypatch):
+    """#2173: a resolved worker count of 1 must not spawn a ProcessPoolExecutor.
+
+    The Windows post-commit hook exports GRAPHIFY_MAX_WORKERS=1, so before this the
+    rebuild spawned a one-worker pool for >= _PARALLEL_THRESHOLD files: no
+    parallelism, one process spawn plus an IPC round trip per file, and the only
+    window where the parent's rebuild watchdog (os._exit) can orphan a worker
+    mid-task. _extract_parallel must decline (return False) so the caller extracts
+    sequentially in-process.
+    """
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    spawned = {"count": 0}
+
+    def fake_pool(*args, **kwargs):
+        spawned["count"] += 1
+        raise AssertionError("ProcessPoolExecutor must not be constructed for 1 worker")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", fake_pool)
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "1")
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]  # >= _PARALLEL_THRESHOLD
+    per_file: list = [None] * len(uncached)
+
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert ok is False, "must hand the work back for sequential extraction"
+    assert spawned["count"] == 0, "no pool may be spawned when max_workers resolves to 1"
+
+
+def test_extract_parallel_still_spawns_pool_for_multiple_workers(tmp_path, monkeypatch):
+    """Guard the #2173 skip: >1 worker must still take the pool path."""
+    import concurrent.futures
+    from graphify import extract as extract_mod
+
+    spawned = {"count": 0}
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            spawned["count"] += 1
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def submit(self, *a, **kw):
+            raise concurrent.futures.process.BrokenProcessPool("stop here")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert spawned["count"] == 1, "multi-worker runs must still use the pool"
+
+
 # ---------------------------------------------------------------------------
 # Bash extractor tests (#866)
 # ---------------------------------------------------------------------------
@@ -1956,6 +2013,62 @@ def test_extract_bash_call_to_external_command_stays_unlinked(tmp_path):
     assert ("a_main", "b_deploy") not in calls, sorted(calls)
 
 
+def test_extract_bash_call_into_extensionless_sourced_lib_resolves(tmp_path):
+    """#2171: a sourced lib with a bash shebang but no extension must resolve.
+
+    _SHEBANG_DISPATCH already routes an extensionless `#!/usr/bin/env bash` file to
+    extract_bash, so its functions are indexed, but the cross-file source pass
+    selected participants by filename suffix only — so the lib was left out and
+    calls into it never bound.
+    """
+    lib = tmp_path / "mylib"
+    lib.write_text("#!/usr/bin/env bash\nlib_helper() { echo ok; }\n", encoding="utf-8")
+    (tmp_path / "a.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        "source ./mylib\n"
+        "main() { lib_helper; }\n",
+        encoding="utf-8",
+    )
+    result = extract([tmp_path / "a.sh", lib], cache_root=tmp_path)
+    calls = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+    assert ("a_main", "mylib_lib_helper") in calls, sorted(calls)
+
+
+def test_extract_bash_bare_source_name_resolves_to_sibling(tmp_path):
+    """#2171: `source lib.sh` with no ./ prefix must bind to the sibling file.
+
+    Only the ``./``/``/``-prefixed branch recorded bash_sources; a bare name fell
+    through to the opaque ``imports`` fallback, so neither the source edge nor
+    calls into the lib resolved even though the file sits next to the script.
+    """
+    (tmp_path / "lib.sh").write_text(
+        "#!/usr/bin/env bash\nbare_helper() { echo ok; }\n", encoding="utf-8"
+    )
+    (tmp_path / "a.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        "source lib.sh\n"
+        "main() { bare_helper; }\n",
+        encoding="utf-8",
+    )
+    result = extract([tmp_path / "a.sh", tmp_path / "lib.sh"], cache_root=tmp_path)
+    imports = [(e["source"], e["target"]) for e in result["edges"]
+               if e["relation"] == "imports_from"]
+    assert ("a", "lib") in imports, imports
+    calls = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+    assert ("a_main", "lib_bare_helper") in calls, sorted(calls)
+
+
+def test_extract_bash_bare_source_missing_file_fabricates_nothing(tmp_path):
+    """The #2171 bare-name branch keeps the existence gate: a name that resolves to
+    no sibling must not produce an imports_from edge or a bash_sources entry."""
+    script = tmp_path / "a.sh"
+    script.write_text("#!/usr/bin/env bash\nsource nope.sh\n", encoding="utf-8")
+    result = extract_bash(script)
+    assert result["bash_sources"] == [], result["bash_sources"]
+    imports_from = [e for e in result["edges"] if e["relation"] == "imports_from"]
+    assert imports_from == [], imports_from
+
+
 def test_bash_var_sourced_function_call_resolves(tmp_path):
     """End-to-end integration of #2079 + #2141 (#2157/#2139): a library sourced
     via the canonical ``${VAR}`` idiom must feed ``bash_sources`` so that
@@ -2057,6 +2170,75 @@ def test_extract_bash_source_suffix_guard_rejects_traversal(tmp_path):
                   if e["relation"] in ("imports", "imports_from")]
     assert fabricated == [], fabricated
     assert result["bash_sources"] == [], result["bash_sources"]
+
+
+def test_extract_bash_var_source_uses_tracked_assignment_base(tmp_path):
+    """#2172: `${VAR}` must resolve against the variable's tracked base.
+
+    #2079 always resolved the literal suffix against the script's own directory.
+    That is right for `DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`, but
+    when the variable points elsewhere -- here ROOT is the script dir's parent --
+    and a same-named decoy exists under the script dir, the edge bound to the
+    decoy: a wrong edge to a real node.
+    """
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "utils.sh").write_text(
+        "#!/usr/bin/env bash\nreal_util() { echo real; }\n", encoding="utf-8"
+    )
+    scripts = tmp_path / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    decoy = scripts / "lib" / "utils.sh"
+    decoy.write_text(
+        "#!/usr/bin/env bash\ndecoy_util() { echo decoy; }\n", encoding="utf-8"
+    )
+    script = scripts / "deploy.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"\n'
+        'source "${ROOT}/lib/utils.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [str(s["target_path"]) for s in result["bash_sources"]]
+    assert targets, "the ${VAR} source must still resolve"
+    for t in targets:
+        assert Path(t).resolve() == (tmp_path / "lib" / "utils.sh").resolve(), t
+        assert Path(t).resolve() != decoy.resolve(), f"bound to the decoy: {t}"
+
+
+def test_extract_bash_var_source_script_dir_idiom_still_resolves(tmp_path):
+    """The canonical script-dir idiom must keep working (#2079 regression guard)."""
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "x.sh").write_text(
+        "#!/usr/bin/env bash\nx_fn() { :; }\n", encoding="utf-8"
+    )
+    script = tmp_path / "bench.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        'BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'source "${BENCH_DIR}/lib/x.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (tmp_path / "lib" / "x.sh").resolve() in targets, targets
+
+
+def test_extract_bash_var_source_untracked_var_keeps_script_dir_guess(tmp_path):
+    """An untracked variable (assigned from the environment, or not assigned in
+    this file at all) keeps the #2079 script-dir guess rather than binding
+    nowhere -- the fallback must survive the #2172 change."""
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "y.sh").write_text("#!/usr/bin/env bash\ny_fn() { :; }\n", encoding="utf-8")
+    script = tmp_path / "run.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\nsource "${SOME_EXTERNAL_DIR}/lib/y.sh"\n',
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    targets = [Path(s["target_path"]).resolve() for s in result["bash_sources"]]
+    assert (lib / "y.sh").resolve() in targets, targets
 
 
 # ---------------------------------------------------------------------------

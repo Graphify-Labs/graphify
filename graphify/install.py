@@ -20,6 +20,7 @@ import shlex
 import shutil
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 try:
     from importlib.metadata import version as _pkg_version
@@ -743,23 +744,63 @@ def gemini_install(project_dir: Path | None = None, *, project: bool = False) ->
     print()
     print("Gemini CLI will now check the knowledge graph before answering")
     print("codebase questions and rebuild it after code changes.")
+def _refuse_to_modify(settings_path: Path) -> "NoReturn":
+    """Abort a hook install rather than clobber a config file we can't parse (#2167)."""
+    print(
+        f"[graphify] refusing to modify {settings_path}: not valid JSON "
+        "(fix or move it and re-run)",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+def _read_settings_for_merge(settings_path: Path) -> dict:
+    """Load an existing settings/hooks JSON file for a read-modify-write merge.
+
+    A missing file yields a fresh ``{}`` (first install). An existing file that
+    cannot be parsed as a JSON object aborts via ``_refuse_to_modify`` instead of
+    silently falling back to ``{}`` — the old fallback rewrote the whole file and
+    destroyed every setting the user had (#2167). Reads with ``utf-8-sig`` so a
+    UTF-8 BOM (the most likely parse-error trigger, same class as #2163) is
+    tolerated rather than fatal.
+    """
+    if not settings_path.exists():
+        return {}
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        settings = None
+    if not isinstance(settings, dict):
+        _refuse_to_modify(settings_path)
+    return settings
+def _write_settings_with_backup(settings_path: Path, settings: dict) -> None:
+    """Serialize ``settings`` to ``settings_path``, backing up the previous file.
+
+    Skips the write entirely when the output is identical to what is on disk
+    (idempotent re-install: no backup churn, no mtime churn). Otherwise copies
+    the existing file to ``<name>.graphify-bak`` (single rolling backup) before
+    overwriting, so one bad merge can never destroy the user's config (#2167).
+    """
+    output = json.dumps(settings, indent=2)
+    if settings_path.exists():
+        if settings_path.read_text(encoding="utf-8") == output:
+            return
+        backup = settings_path.with_name(settings_path.name + ".graphify-bak")
+        shutil.copy2(settings_path, backup)
+    settings_path.write_text(output, encoding="utf-8")
 def _install_gemini_hook(project_dir: Path) -> None:
     settings_path = project_dir / ".gemini" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        settings = (
-            json.loads(settings_path.read_text(encoding="utf-8"))
-            if settings_path.exists()
-            else {}
-        )
-    except json.JSONDecodeError:
-        settings = {}
-    before_tool = settings.setdefault("hooks", {}).setdefault("BeforeTool", [])
-    settings["hooks"]["BeforeTool"] = [
+    settings = _read_settings_for_merge(settings_path)
+    hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        _refuse_to_modify(settings_path)
+    before_tool = hooks.setdefault("BeforeTool", [])
+    if not isinstance(before_tool, list):
+        _refuse_to_modify(settings_path)
+    hooks["BeforeTool"] = [
         h for h in before_tool if "graphify" not in str(h)
     ]
-    settings["hooks"]["BeforeTool"].append(_gemini_hook())
-    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    hooks["BeforeTool"].append(_gemini_hook())
+    _write_settings_with_backup(settings_path, settings)
     print("  .gemini/settings.json  ->  BeforeTool hook registered")
 def _uninstall_gemini_hook(project_dir: Path) -> None:
     settings_path = project_dir / ".gemini" / "settings.json"
@@ -776,10 +817,22 @@ def _uninstall_gemini_hook(project_dir: Path) -> None:
     settings["hooks"]["BeforeTool"] = filtered
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     print("  .gemini/settings.json  ->  BeforeTool hook removed")
-def gemini_uninstall(project_dir: Path | None = None, *, project: bool = False) -> None:
-    """Remove the graphify section from GEMINI.md, uninstall hook, and remove skill file."""
+def gemini_uninstall(project_dir: Path | None = None, *, project: bool = False, remove_user_skill: bool | None = None) -> None:
+    """Remove the graphify section from GEMINI.md, uninstall hook, and remove skill file.
+
+    Scope rules (#2215): a bare call removes the user-global skill; passing
+    ``project_dir`` (or ``project=True``) scopes skill removal to that project
+    and leaves the global tree untouched, unless ``remove_user_skill=True``
+    explicitly opts back into the global delete (as ``uninstall_all`` does).
+    """
+    explicit_dir = project_dir is not None
     project_dir = project_dir or Path(".")
-    _remove_skill_file("gemini", project=project, project_dir=project_dir)
+    if remove_user_skill is None:
+        remove_user_skill = not project and not explicit_dir
+    if project or (explicit_dir and not remove_user_skill):
+        _remove_skill_file("gemini", project=True, project_dir=project_dir)
+    if remove_user_skill:
+        _remove_skill_file("gemini", project=False)
 
     target = project_dir / "GEMINI.md"
     if not target.exists():
@@ -1590,13 +1643,7 @@ def _install_codex_hook(project_dir: Path) -> None:
     hooks_path = project_dir / ".codex" / "hooks.json"
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if hooks_path.exists():
-        try:
-            existing = json.loads(hooks_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            existing = {}
-    else:
-        existing = {}
+    existing = _read_settings_for_merge(hooks_path)
 
     graphify_exe = _resolve_graphify_exe()
     hook_entry = {
@@ -1610,11 +1657,22 @@ def _install_codex_hook(project_dir: Path) -> None:
         }
     }
 
-    pre_tool = existing.setdefault("hooks", {}).setdefault("PreToolUse", [])
-    existing["hooks"]["PreToolUse"] = [h for h in pre_tool if "graphify" not in str(h)]
-    existing["hooks"]["PreToolUse"].extend(hook_entry["hooks"]["PreToolUse"])
-    hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-    print(f"  .codex/hooks.json  ->  PreToolUse hook registered ({graphify_exe} hook-check)")
+    hooks = existing.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        _refuse_to_modify(hooks_path)
+    pre_tool = hooks.setdefault("PreToolUse", [])
+    if not isinstance(pre_tool, list):
+        _refuse_to_modify(hooks_path)
+    hooks["PreToolUse"] = [h for h in pre_tool if "graphify" not in str(h)]
+    hooks["PreToolUse"].extend(hook_entry["hooks"]["PreToolUse"])
+    _write_settings_with_backup(hooks_path, existing)
+    print(
+        f"  .codex/hooks.json  ->  PreToolUse hook registered ({graphify_exe} hook-check"
+        " - intentional no-op; Codex Desktop rejects additionalContext on PreToolUse,"
+        " so graph guidance comes from AGENTS.md)"
+    )
+
+
 def _uninstall_codex_hook(project_dir: Path) -> None:
     """Remove graphify PreToolUse hook from .codex/hooks.json."""
     hooks_path = project_dir / ".codex" / "hooks.json"
@@ -1784,7 +1842,9 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         if not removed:
             print("nothing to remove")
     elif platform_name == "codebuddy":
-        codebuddy_uninstall(project_dir)
+        # project=True keeps `uninstall --project` project-scoped; previously
+        # this deleted the user-global codebuddy skill (#2215).
+        codebuddy_uninstall(project_dir, project=True)
     else:
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
 def _project_uninstall_all(project_dir: Path | None = None) -> None:
@@ -1900,20 +1960,18 @@ def _install_claude_hook(project_dir: Path, strict: bool = False) -> None:
     settings_path = project_dir / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            settings = {}
-    else:
-        settings = {}
+    settings = _read_settings_for_merge(settings_path)
 
     hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        _refuse_to_modify(settings_path)
     pre_tool = hooks.setdefault("PreToolUse", [])
+    if not isinstance(pre_tool, list):
+        _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict))
-    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
     print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob){_mode}")
 def _uninstall_claude_hook(project_dir: Path) -> None:
@@ -1946,10 +2004,12 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     pd = project_dir or Path(".")
     print("Uninstalling graphify from all detected platforms...\n")
 
-    # Skill-file / config-section uninstallers
-    claude_uninstall(pd)
-    codebuddy_uninstall(pd)
-    gemini_uninstall(pd)
+    # Skill-file / config-section uninstallers. remove_user_skill=True keeps the
+    # historical `graphify uninstall` behavior: global skill delete plus md/hook
+    # cleanup at the project dir (#2215).
+    claude_uninstall(pd, remove_user_skill=True)
+    codebuddy_uninstall(pd, remove_user_skill=True)
+    gemini_uninstall(pd, remove_user_skill=True)
     vscode_uninstall(pd)
     _cursor_uninstall(pd)
     _kiro_uninstall(pd)
@@ -1986,7 +2046,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
             print(f"\n  {_GRAPHIFY_OUT}/  ->  not found (nothing to purge)")
 
     print("\nDone. Run 'pip uninstall graphifyy' to remove the package itself.")
-def claude_uninstall(project_dir: Path | None = None, *, project: bool = False) -> None:
+def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, remove_user_skill: bool | None = None) -> None:
     """Remove the graphify skill tree (SKILL.md + references/) and the graphify
     section from CLAUDE.md and its local-only variants, plus the PreToolUse hook.
 
@@ -1997,9 +2057,20 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False) 
     A user may relocate the section/hook into the local-only files Claude Code
     supports so they are not committed to a shared repo, so uninstall also cleans
     CLAUDE.local.md, .claude/CLAUDE.local.md and .claude/settings.local.json (#1731).
+
+    Scope rules (#2215): a bare call removes the user-global skill; passing
+    ``project_dir`` (or ``project=True``) scopes skill removal to that project
+    and leaves the global tree untouched, unless ``remove_user_skill=True``
+    explicitly opts back into the global delete (as ``uninstall_all`` does).
     """
+    explicit_dir = project_dir is not None
     project_dir = project_dir or Path(".")
-    _remove_skill_file("claude", project=project, project_dir=project_dir)
+    if remove_user_skill is None:
+        remove_user_skill = not project and not explicit_dir
+    if project or (explicit_dir and not remove_user_skill):
+        _remove_skill_file("claude", project=True, project_dir=project_dir)
+    if remove_user_skill:
+        _remove_skill_file("claude", project=False)
 
     md_targets = [
         project_dir / "CLAUDE.md",
@@ -2073,20 +2144,18 @@ def _install_codebuddy_hook(project_dir: Path) -> None:
     settings_path = project_dir / ".codebuddy" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            settings = {}
-    else:
-        settings = {}
+    settings = _read_settings_for_merge(settings_path)
 
     hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        _refuse_to_modify(settings_path)
     pre_tool = hooks.setdefault("PreToolUse", [])
+    if not isinstance(pre_tool, list):
+        _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
+    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "graphify" in str(h))]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks())
-    settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    _write_settings_with_backup(settings_path, settings)
     print(f"  .codebuddy/settings.json  ->  PreToolUse hooks registered")
 def _uninstall_codebuddy_hook(project_dir: Path) -> None:
     """Remove graphify PreToolUse hook from .codebuddy/settings.json."""
@@ -2104,10 +2173,22 @@ def _uninstall_codebuddy_hook(project_dir: Path) -> None:
     settings["hooks"]["PreToolUse"] = filtered
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     print(f"  .codebuddy/settings.json  ->  PreToolUse hook removed")
-def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = False) -> None:
-    """Remove the graphify skill tree (SKILL.md + references/) and the CODEBUDDY.md section."""
+def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = False, remove_user_skill: bool | None = None) -> None:
+    """Remove the graphify skill tree (SKILL.md + references/) and the CODEBUDDY.md section.
+
+    Scope rules (#2215): a bare call removes the user-global skill; passing
+    ``project_dir`` (or ``project=True``) scopes skill removal to that project
+    and leaves the global tree untouched, unless ``remove_user_skill=True``
+    explicitly opts back into the global delete (as ``uninstall_all`` does).
+    """
+    explicit_dir = project_dir is not None
     project_dir = project_dir or Path(".")
-    _remove_skill_file("codebuddy", project=project, project_dir=project_dir)
+    if remove_user_skill is None:
+        remove_user_skill = not project and not explicit_dir
+    if project or (explicit_dir and not remove_user_skill):
+        _remove_skill_file("codebuddy", project=True, project_dir=project_dir)
+    if remove_user_skill:
+        _remove_skill_file("codebuddy", project=False)
     target = project_dir / "CODEBUDDY.md"
 
     if not target.exists():

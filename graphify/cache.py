@@ -187,7 +187,46 @@ def _body_content(content: bytes) -> bytes:
 # skip the cache reads and re-dispatch everything when needed (#1894).
 _stat_index: dict[str, dict] = {}
 _stat_index_root: Path | None = None
+# Key anchor for the ON-DISK index (#2199): the first caller's key-root, i.e.
+# the corpus. Distinct from _stat_index_root, which is the cache-FILE location
+# (cache_root, #1774) — the two differ under --out and must not be conflated.
+_stat_index_anchor: Path | None = None
 _stat_index_dirty: bool = False
+
+
+def _stat_key_to_relative(key: str, anchor: Path) -> str:
+    """Return ``key`` as a forward-slash relative path from ``anchor``.
+
+    Local duplicate of :func:`graphify.detect._to_relative_for_storage` —
+    detect imports cache, so cache cannot import detect without a cycle
+    (and pulling detect in during the atexit flush would be fragile).
+    Out-of-anchor and already-relative keys pass through unchanged, and
+    ``..``-escaping relpaths are rejected (kept absolute), mirroring the
+    manifest's portability rules.
+    """
+    p = Path(key)
+    if not p.is_absolute():
+        return key
+    try:
+        rel = os.path.relpath(p, anchor)
+    except (ValueError, OSError):
+        return key  # outside anchor (e.g. Windows cross-drive)
+    if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+        return key  # escaped anchor — keep absolute
+    return rel.replace(os.sep, "/")
+
+
+def _stat_key_to_absolute(key: str, anchor: Path) -> str:
+    """Inverse of :func:`_stat_key_to_relative`.
+
+    Re-anchor a stored relative key against ``anchor``. Already-absolute keys
+    (legacy indexes, out-of-anchor entries) pass through unchanged so an index
+    written by an older graphify remains readable.
+    """
+    p = Path(key)
+    if p.is_absolute():
+        return str(p)
+    return str(anchor / p)
 
 
 def _stat_index_file(root: Path) -> Path:
@@ -197,22 +236,36 @@ def _stat_index_file(root: Path) -> Path:
 
 
 def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
-    global _stat_index, _stat_index_root, _stat_index_dirty
+    global _stat_index, _stat_index_root, _stat_index_anchor, _stat_index_dirty
     if _stat_index_root is not None:
         return
-    # The stat index only determines the cache FILE location (entry keys are
-    # absolute paths), so honoring an explicit cache_root keeps detect()'s
-    # word-count cache under the requested --out dir instead of polluting the
-    # scanned corpus with a stray graphify-out/ (#1747).
+    # _stat_index_root determines the cache FILE location, so honoring an
+    # explicit cache_root keeps detect()'s word-count cache under the requested
+    # --out dir instead of polluting the scanned corpus with a stray
+    # graphify-out/ (#1747). _stat_index_anchor is the separate KEY anchor:
+    # in-memory keys stay absolute, but the on-disk index stores in-anchor keys
+    # relative so a moved/cloned corpus still hits (#2199) — same load/save
+    # re-anchoring the detect manifest uses.
     _stat_index_root = Path(cache_root if cache_root is not None else root).resolve()
+    _stat_index_anchor = Path(root).resolve()
     p = _stat_index_file(_stat_index_root)
+    _stat_index = {}
     if p.exists():
         try:
-            _stat_index = json.loads(p.read_text(encoding="utf-8"))
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if not isinstance(k, str):
+                        continue
+                    if Path(k).is_absolute():
+                        # Legacy/out-of-anchor key: pass through, but never
+                        # clobber a re-anchored relative (new-format) entry
+                        # that resolved to the same absolute path.
+                        _stat_index.setdefault(k, v)
+                    else:
+                        _stat_index[_stat_key_to_absolute(k, _stat_index_anchor)] = v
         except (json.JSONDecodeError, OSError):
             _stat_index = {}
-    else:
-        _stat_index = {}
     atexit.register(_flush_stat_index)
 
 
@@ -221,11 +274,26 @@ def _flush_stat_index() -> None:
     if not _stat_index_dirty or _stat_index_root is None:
         return
     p = _stat_index_file(_stat_index_root)
+    # Build the on-disk form (#2199): prune entries whose file is gone (the
+    # index otherwise grows without bound), then store in-anchor keys as
+    # forward-slash relative paths so the index survives a corpus move/clone.
+    # Out-of-anchor keys stay absolute (same rule as the detect manifest); a
+    # reader tells the formats apart by absoluteness, so no version marker is
+    # needed. In-memory keys are untouched — only the serialization changes.
+    on_disk: dict[str, dict] = {}
+    for k, v in _stat_index.items():
+        try:
+            if not os.path.exists(k):
+                continue
+        except OSError:
+            continue
+        dk = _stat_key_to_relative(k, _stat_index_anchor) if _stat_index_anchor is not None else k
+        on_disk[dk] = v
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=p.parent, prefix="stat-index.", suffix=".tmp")
         try:
-            os.write(fd, json.dumps(_stat_index, separators=(",", ":")).encode())
+            os.write(fd, json.dumps(on_disk, separators=(",", ":")).encode())
             os.close(fd)
             os.replace(tmp, p)
         except Exception:
@@ -421,6 +489,29 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
             if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
                 continue  # escaped root — keep absolute
             item["source_file"] = rel.replace(os.sep, "/")
+
+
+def _normalize_source_file_value(src: "str | Path", root_resolved: Path) -> str:
+    """Return ``src`` in portable form: backslashes flipped to forward slashes,
+    then relativized against ``root_resolved`` when the path is in-root.
+
+    Windows ``detect()`` emits absolute backslash paths, and a semantic
+    fragment carrying one verbatim used to be persisted as-is — poisoning later
+    ``graphify update`` runs with a machine-specific ``source_file`` (#2197).
+    Out-of-root absolute paths pass through (slash-normalized only), same
+    in/out rule and ``..``-rejection as :func:`_relativize_source_files_in`.
+    """
+    s = str(src).replace("\\", "/")
+    p = Path(s)
+    if not p.is_absolute():
+        return s
+    try:
+        rel = os.path.relpath(p, root_resolved)
+    except (ValueError, OSError):
+        return s  # out-of-root (e.g. Windows cross-drive)
+    if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+        return s  # escaped root — keep absolute
+    return rel.replace(os.sep, "/")
 
 
 def _absolutize_source_files_in(payload: dict, root: Path) -> None:
@@ -869,21 +960,42 @@ def save_semantic_cache(
     from collections import defaultdict
 
     kind = "semantic" if mode is None else f"semantic-{mode}"
+    root_path = Path(root).resolve()
+
+    def _normalized(item: dict) -> dict:
+        """Copy of ``item`` with a portable ``source_file`` (#2197).
+
+        Normalizing BEFORE grouping means both the group key and the persisted
+        item carry the relative forward-slash form, so a fragment whose
+        source_file arrived absolute (Windows detect() output) can never be
+        cached verbatim. A shallow copy keeps the caller's dicts untouched —
+        downstream steps may still rely on the original absolute shape (same
+        reasoning as :func:`save_cached`'s on-disk deepcopy).
+        """
+        src = item.get("source_file")
+        if not src:
+            return item
+        norm = _normalize_source_file_value(src, root_path)
+        if norm != src:
+            item = {**item, "source_file": norm}
+        return item
+
     by_file: dict[str, dict] = defaultdict(lambda: {"nodes": [], "edges": [], "hyperedges": []})
     for n in nodes:
+        n = _normalized(n)
         src = n.get("source_file", "")
         if src:
             by_file[src]["nodes"].append(n)
     for e in edges:
+        e = _normalized(e)
         src = e.get("source_file", "")
         if src:
             by_file[src]["edges"].append(e)
     for h in (hyperedges or []):
+        h = _normalized(h)
         src = h.get("source_file", "")
         if src:
             by_file[src]["hyperedges"].append(h)
-
-    root_path = Path(root).resolve()
 
     def resolved_source_path(value: str | Path) -> Path:
         path = Path(value)

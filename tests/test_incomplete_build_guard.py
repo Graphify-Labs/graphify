@@ -146,8 +146,12 @@ def _arm_no_cluster(monkeypatch, tmp_path, *, extra_argv=()):
 
 
 def test_no_cluster_incomplete_build_refuses_to_shrink(tmp_path, monkeypatch, capsys):
+    # --force: the non-incremental raw-dump path, where the shrink guard is the
+    # only thing standing between a partial 1-node extraction and the existing
+    # complete 5-node graph. (Incremental runs merge the existing graph forward
+    # first — #2169 — so a partial run no longer shrinks there; see below.)
     import json
-    graph = _arm_no_cluster(monkeypatch, tmp_path)
+    graph = _arm_no_cluster(monkeypatch, tmp_path, extra_argv=["--force"])
 
     with pytest.raises(SystemExit) as exc:
         mainmod.main()
@@ -158,9 +162,29 @@ def test_no_cluster_incomplete_build_refuses_to_shrink(tmp_path, monkeypatch, ca
     assert len(json.loads(graph.read_text())["nodes"]) == 5
 
 
+def test_no_cluster_incremental_incomplete_build_carries_existing_nodes(
+    tmp_path, monkeypatch
+):
+    """#2169: an INCREMENTAL --no-cluster run merges the existing graph forward,
+    so even an incomplete extraction does not shrink the graph — the existing
+    nodes are carried and this run's partial chunk is added, no guard refusal."""
+    import json
+    graph = _arm_no_cluster(monkeypatch, tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+
+    assert exc.value.code == 0  # the raw --no-cluster path exits 0 on success
+    ids = {n["id"] for n in json.loads(graph.read_text())["nodes"]}
+    assert {f"keep{i}" for i in range(5)} <= ids, ids
+    assert "s1" in ids, ids
+
+
 def test_no_cluster_allow_partial_overwrites(tmp_path, monkeypatch):
     import json
-    graph = _arm_no_cluster(monkeypatch, tmp_path, extra_argv=["--allow-partial"])
+    graph = _arm_no_cluster(
+        monkeypatch, tmp_path, extra_argv=["--force", "--allow-partial"]
+    )
 
     with pytest.raises(SystemExit) as exc:
         mainmod.main()
@@ -175,8 +199,10 @@ def test_no_cluster_incomplete_build_fails_closed_on_malformed_existing_graph(
     """A present-but-unparseable existing graph.json (corrupt or mid-write) could
     be hiding a complete graph, so an incomplete --no-cluster build must refuse
     to overwrite it — matching to_json's #479 fail-closed handling, not the
-    fail-open 'proceed when we can't count' path."""
-    graph = _arm_no_cluster(monkeypatch, tmp_path)
+    fail-open 'proceed when we can't count' path. --force: the non-incremental
+    raw-dump path (the incremental path fails even earlier, at the forward
+    merge — see the test below)."""
+    graph = _arm_no_cluster(monkeypatch, tmp_path, extra_argv=["--force"])
     graph.write_text("{corrupt json", encoding="utf-8")  # non-empty, unparseable
 
     with pytest.raises(SystemExit) as exc:
@@ -185,4 +211,22 @@ def test_no_cluster_incomplete_build_fails_closed_on_malformed_existing_graph(
     assert exc.value.code == 1
     assert "unparseable" in capsys.readouterr().err
     # The corrupt file is left untouched rather than clobbered by the partial build.
+    assert graph.read_text() == "{corrupt json"
+
+
+def test_no_cluster_incremental_malformed_existing_graph_refuses_merge(
+    tmp_path, monkeypatch, capsys
+):
+    """#2169: an incremental --no-cluster run must hard-fail on an unparseable
+    existing graph.json (build_merge's message) instead of raw-dumping this
+    run's chunks over it."""
+    graph = _arm_no_cluster(monkeypatch, tmp_path)
+    graph.write_text("{corrupt json", encoding="utf-8")  # non-empty, unparseable
+
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+
+    assert exc.value.code == 1
+    assert "Cannot read" in capsys.readouterr().err
+    # The corrupt file is left untouched rather than clobbered.
     assert graph.read_text() == "{corrupt json"

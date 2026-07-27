@@ -29,6 +29,45 @@ def _bash_source_suffix(raw: str) -> str | None:
     return suffix
 
 
+# Name of the leading variable of a `source` argument: `${ROOT}/lib/x.sh` -> ROOT.
+_BASH_LEADING_VAR = re.compile(
+    r"^\$\{([A-Za-z_][A-Za-z0-9_]*)[^}]*\}|^\$([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+# The `$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)` idiom, capturing the
+# trailing `/..` hops applied to the dirname result.
+_BASH_DIRNAME_IDIOM = re.compile(r"dirname[^)]*\)((?:/\.\.)*)")
+
+
+def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
+    """Resolve a top-level assignment's value to a directory, or None if untracked.
+
+    Covers the two forms that make a ``source "${VAR}/lib/x.sh"`` target knowable
+    statically (#2172):
+
+    * the script-dir idiom ``"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"``,
+      including any number of trailing ``/..`` hops (and the ``$0`` spelling)
+    * a literal path, absolute or relative to the script's own directory
+
+    Anything else -- a value built from other variables, or command substitution
+    we do not model -- is left untracked so the caller keeps its previous
+    script-dir guess rather than binding somewhere invented.
+    """
+    val = value.strip().strip("'\"")
+    if not val:
+        return None
+    if "dirname" in val and ("BASH_SOURCE" in val or "$0" in val):
+        m = _BASH_DIRNAME_IDIOM.search(val)
+        base = script_dir
+        for _ in range((m.group(1).count("..") if m else 0)):
+            base = base.parent
+        return base
+    if "$" in val or "`" in val:
+        return None
+    candidate = Path(val)
+    return candidate if candidate.is_absolute() else script_dir / candidate
+
+
 def extract_bash(path: Path) -> dict:
     """Extract functions, source imports, and cross-function calls from a .sh file."""
     try:
@@ -249,7 +288,16 @@ def extract_bash(path: Path) -> dict:
                             # never a dead id.
                             suffix = _bash_source_suffix(raw)
                             if suffix:
-                                resolved = (path.parent / suffix).resolve()
+                                # Resolve against the variable's tracked base when
+                                # we know it, else fall back to the script's own
+                                # directory as before (#2172).
+                                base = path.parent
+                                var_match = _BASH_LEADING_VAR.match(raw)
+                                if var_match:
+                                    var_name = var_match.group(1) or var_match.group(2)
+                                    if var_name in var_bases:
+                                        base = var_bases[var_name]
+                                resolved = (base / suffix).resolve()
                                 if resolved.is_file():
                                     add_edge(file_nid, _make_id(str(resolved)),
                                              "imports_from", line,
@@ -265,10 +313,39 @@ def extract_bash(path: Path) -> dict:
                                         "source_location": f"L{line}",
                                     })
                         else:
-                            tgt_nid = _make_id(raw)
-                            if tgt_nid:
-                                add_edge(file_nid, tgt_nid, "imports", line,
-                                         context="import")
+                            # Bare `source lib.sh` (no leading ./ or /). Bash
+                            # itself resolves such a name via $PATH at runtime,
+                            # but in practice the file sits next to the script,
+                            # so bind it when a sibling of that name exists
+                            # (#2171). Same existence gate as the ./-prefixed
+                            # branch above: a name that resolves to nothing keeps
+                            # the old opaque `imports` edge and records no
+                            # bash_sources entry, so nothing is fabricated.
+                            sibling: Path | None = None
+                            if raw:
+                                try:
+                                    candidate = path.parent / raw
+                                    if candidate.is_file():
+                                        sibling = candidate.resolve()
+                                except OSError:
+                                    sibling = None
+                            if sibling is not None:
+                                # A bare `source lib.sh` resolves via $PATH at
+                                # runtime; binding it to the sibling of that name
+                                # is a heuristic, so mark it INFERRED (#2171).
+                                add_edge(file_nid, _make_id(str(sibling)),
+                                         "imports_from", line,
+                                         confidence="INFERRED", context="import")
+                                bash_sources.append({
+                                    "target_path": raw,
+                                    "source_file": str_path,
+                                    "source_location": f"L{line}",
+                                })
+                            else:
+                                tgt_nid = _make_id(raw)
+                                if tgt_nid:
+                                    add_edge(file_nid, tgt_nid, "imports", line,
+                                             context="import")
                 elif cmd and cmd not in defined_functions:
                     raw = cmd if cmd.endswith(".sh") else None
                     if cmd in _BASH_SCRIPT_RUNNERS and args:
@@ -321,6 +398,27 @@ def extract_bash(path: Path) -> dict:
                 _prescan_functions(child)
 
     _prescan_functions(root)
+    # Bases for `source "${VAR}/lib/x.sh"` resolution (#2172). #2079 always resolved
+    # the literal suffix against the script's own directory, which is right for the
+    # `DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` idiom but wrong whenever
+    # the variable points elsewhere -- e.g. ROOT=".../scripts/.." with a same-named
+    # decoy under the script dir bound to the decoy. Track top-level assignments so
+    # the real base is used; untracked variables keep the script-dir guess.
+    var_bases: dict[str, Path] = {}
+    for _assign in root.children:
+        if _assign.type != "variable_assignment":
+            continue
+        _name_node = _assign.child_by_field_name("name")
+        _value_node = _assign.child_by_field_name("value")
+        if _name_node is None or _value_node is None:
+            continue
+        _name = _read_text(_name_node, source).strip()
+        if not _name:
+            continue
+        _base = _bash_assignment_base(_read_text(_value_node, source), path.parent)
+        if _base is not None:
+            var_bases[_name] = _base
+
     walk(root, file_nid)
 
     # Second pass: cross-function calls
