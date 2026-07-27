@@ -117,7 +117,7 @@ def _ensure_stat_index(root: Path) -> None:
 
 
 def _flush_stat_index() -> None:
-    global _stat_index_dirty, _stat_index_root
+    global _stat_index_dirty
     if not _stat_index_dirty or _stat_index_root is None:
         return
     p = _stat_index_file(_stat_index_root)
