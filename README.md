@@ -59,7 +59,7 @@ That's it. You get **three files**:
 
 ```
 graphify-out/
-├── graph.html       open in any browser — click nodes, filter, search
+├── graph.html       open in any browser — click nodes, filter, search (`--viz 3d` for the WebGL 3D view)
 ├── GRAPH_REPORT.md  the highlights: key concepts, surprising connections, suggested questions
 └── graph.json       the full graph — query it anytime without re-reading your files
 ```
@@ -378,6 +378,7 @@ You can also set `GRAPHIFY_GOOGLE_WORKSPACE=1`. Graphify exports shortcuts into
 /graphify . --cluster-only --resolution 1.5      # more granular communities
 /graphify . --cluster-only --exclude-hubs 99     # suppress utility super-hubs from god-node rankings
 /graphify . --no-viz               # skip the HTML, just the report + JSON
+/graphify . --viz 3d               # render graph.html as a navigable WebGL 3D view
 /graphify . --wiki                 # build a markdown wiki from the graph
 graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-regenerates on every git commit if hook is installed)
 

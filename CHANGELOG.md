@@ -83,6 +83,9 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.39 (2026-08-10)
 
+- Feature: `--viz 3d` renders `graph.html` as a navigable WebGL view. The default
+  2D renderer remains unchanged.
+
 - Fix: `affected` now traverses a dynamic `import('…')` made inside a function or at module scope (#2584, thanks @phudayyy). The 0.9.38 dedupe keyed only on the target, so an in-function dynamic import (whose symbol-level edge is anchored on the enclosing function) suppressed the file-level edge `affected` follows; the dedupe now keys on the importing file, emitting one file-level `dynamic_import` edge per file/target while keeping the call-site edge.
 - Fix: a Python member call on an untyped receiver (`x.get(...)`) no longer binds by name alone to a same-named module-level function, fabricating a false high-confidence `calls` edge and a god node (#2417, #2586, thanks @EZZEASY). Such a call is now resolved only with receiver-type, import, or `self`/`cls`/`super` evidence, matching the TypeScript fix from 0.9.37; `super().method()` still resolves.
 - Fix: fuzzy dedup no longer over-merges two distinct entities in the same file whose long labels differ by a content word (#2576, thanks @wilyan09007). A one-token difference is judged on the differing tokens rather than the prefix-weighted whole-label similarity, so `asset contribution flow` and `asset consumption flow` stay separate while genuine typo and whitespace/case variants still collapse.
@@ -183,7 +186,6 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: committed `.env.example` / `.env.sample` / `.env.template` templates are indexed instead of dropped by the sensitive-file filter, while real `.env` files (and templates under a secrets directory) stay excluded (#2184, thanks @SyedFahad7).
 - Fix: Obsidian export no longer hides notes whose label starts with a dot (`.env` -> `dot-env`); an all-dot label falls back to `unnamed` (#2205, thanks @SyedFahad7).
 - Fix: Scala `self`-type annotations (`self: A with B =>`) now emit `requires` edges to the required traits (#2052, thanks @Yyunozor).
-
 ## 0.9.28 (2026-07-27)
 
 - Fix: incremental extraction no longer drops cross-file edges whose target file wasn't in the batch (#2211, #2213). Python relative imports and markdown reference links emitted absolute-path-derived target ids without the `target_file` stamp the incremental canonicalization needs, so a re-extracted file's imports/references dangled or vanished; both now stamp the resolved target and canonicalize to the root-relative node.
