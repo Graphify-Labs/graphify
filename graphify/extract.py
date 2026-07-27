@@ -339,6 +339,7 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
         module_node = node.child_by_field_name("module_name")
         if module_node:
             raw = _read_text(module_node, source)
+            target_path: "Path | None" = None
             if raw.startswith("."):
                 # Relative import - resolve to full path so IDs match file node IDs
                 dots = len(raw) - len(raw.lstrip("."))
@@ -347,10 +348,11 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 for _ in range(dots - 1):
                     base = base.parent
                 rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
-                tgt_nid = _make_id(str(base / rel))
+                target_path = base / rel
+                tgt_nid = _make_id(str(target_path))
             else:
                 tgt_nid = _make_id(raw)
-            edges.append({
+            edge = {
                 "source": file_nid,
                 "target": tgt_nid,
                 "relation": "imports_from",
@@ -359,7 +361,22 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 "source_file": str_path,
                 "source_location": f"L{node.start_point[0] + 1}",
                 "weight": 1.0,
-            })
+            }
+            # Stamp the resolved target file (mirroring _import_js, #1814) so
+            # the #2169 remap pass can canonicalize this edge's target on an
+            # incremental run where the target file itself is not in the
+            # batch — without it the target keeps an absolute-path-derived id
+            # that matches no node in the merged graph and dangles (#2213).
+            # Existence-gated: a speculative import of a nonexistent sibling
+            # must stay dangling, exactly as before. The stamp is transient
+            # and popped before graph.json ships.
+            if target_path is not None:
+                try:
+                    if target_path.is_file():
+                        edge["target_file"] = str(target_path)
+                except OSError:
+                    pass
+            edges.append(edge)
 
 
 def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
@@ -4698,11 +4715,18 @@ def extract(
         _tf = _e.get("target_file")
         if not _tf:
             continue
+        _raw_tp = Path(_tf)
         try:
-            _tp = Path(_tf).resolve()
+            _tp = _raw_tp.resolve()
         except (OSError, RuntimeError):
             continue
         if _tp in _remap_seen:
+            # Already covered: either the target is in this batch (its input
+            # form is the same form the extractors minted ids from, and the
+            # per-path loop registers both that and the resolved form) or an
+            # earlier stamped edge registered it. Re-appending it here would
+            # re-run its per-path iteration AFTER later batch files and could
+            # flip the last-writer of a colliding old-id key.
             continue
         _remap_seen.add(_tp)
         try:
@@ -4719,6 +4743,16 @@ def extract(
         except OSError:
             continue
         remap_paths.append(_tp)
+        # Also register the AS-STAMPED (unresolved) form. The edge target id
+        # was minted from the stamped path exactly as written (e.g.
+        # ``str(base / rel)`` for a Python relative import), which under a
+        # symlinked root (macOS /tmp -> /private/tmp) or relative inputs
+        # differs from the resolved form; the per-path loop below derives the
+        # old ids from whichever Path it is given, so a missing form would
+        # leave the edge target unmapped and dangling.
+        if _raw_tp != _tp:
+            _remap_seen.add(_raw_tp)
+            remap_paths.append(_raw_tp)
     for path in remap_paths:
         old_id = _make_id(str(path))
         try:

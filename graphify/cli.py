@@ -299,6 +299,7 @@ def _stale_graph_sources(
     graph_path: Path,
     scan_root: Path,
     seen_files: set[str],
+    detection: dict | None = None,
 ) -> list[str]:
     """Source files graph.json still references but the current scan no longer
     contains (#1909).
@@ -323,7 +324,22 @@ def _stale_graph_sources(
     ``seen_files`` must be the FULL detect output including unclassified
     files, so nodes from walked-but-unsupported sources (e.g. introspected
     Cargo.toml manifests) are not misread as stale.
+
+    Paths are compared NFC-normalized on both sides: macOS reports NFD
+    filenames while graph ``source_file`` entries are typically NFC, and a
+    raw-string membership test misread every accented live file as stale
+    (#2210; same class as the manifest-layer #2221/#2224).
+
+    Fail-closed liveness guard (#2210, mirrors watch.py's excluded-vs-deleted
+    distinction): a source missing from the scan corpus is only pruned when
+    the file is gone from disk, or when its exclusion is PROVABLE from the
+    same scan that produced ``seen_files`` — ``detection``'s ``ignored`` /
+    ``pruned_noise_dirs`` / ``skipped_sensitive`` output, or detect's
+    sensitivity predicate. An alive file that merely failed the membership
+    test (path-spelling drift the normalization didn't cover, walk errors,
+    …) is KEPT and reported, never mass-evicted.
     """
+    from graphify.paths import nfc
     try:
         data = json.loads(graph_path.read_text(encoding="utf-8"))
     except Exception:
@@ -353,15 +369,57 @@ def _stale_graph_sources(
         except (ValueError, OSError, RuntimeError):
             return False
 
+    seen_nfc = {nfc(s) for s in seen_files}
+    seen_basenames = {nfc(os.path.basename(s)) for s in seen_files}
+
     def _in_seen(p: Path) -> bool:
-        if str(p) in seen_files:
+        if nfc(str(p)) in seen_nfc:
             return True
         try:
-            return str(p.resolve()) in seen_files
+            return nfc(str(p.resolve())) in seen_nfc
         except (OSError, RuntimeError):
             return False
 
+    # Provable-exclusion evidence from the scan that produced seen_files:
+    # individually ignored files are exact entries; ignored/noise-pruned
+    # directories are recorded once with a trailing separator and cover
+    # their whole subtree. skipped_sensitive entries may carry a
+    # " [reason]" suffix.
+    excluded_exact: set[str] = set()
+    excluded_prefixes: list[str] = []
+    if detection:
+        for entry in list(detection.get("ignored", [])) + list(
+            detection.get("pruned_noise_dirs", [])
+        ):
+            e = nfc(str(entry))
+            if e.endswith(os.sep) or e.endswith("/"):
+                excluded_prefixes.append(e)
+            else:
+                excluded_exact.add(e)
+        for entry in detection.get("skipped_sensitive", []):
+            excluded_exact.add(nfc(str(entry).split(" [", 1)[0]))
+
+    def _provably_excluded(c: Path) -> bool:
+        spellings = [nfc(str(c))]
+        try:
+            spellings.append(nfc(str(c.resolve())))
+        except (OSError, RuntimeError):
+            pass
+        for s in spellings:
+            if s in excluded_exact:
+                return True
+            if any(s.startswith(pref) for pref in excluded_prefixes):
+                return True
+        try:
+            from graphify.detect import _is_sensitive as _det_sensitive
+            if _det_sensitive(c):
+                return True
+        except Exception:
+            pass
+        return False
+
     stale: list[str] = []
+    kept_alive: list[str] = []
     checked: set[str] = set()
     for n in data.get("nodes", []):
         if not isinstance(n, dict):
@@ -388,7 +446,37 @@ def _stale_graph_sources(
             continue  # out-of-root under every anchor: never prune
         if any(_in_seen(c) for c in in_root):
             continue  # still part of the scan corpus
+        # Fail-closed liveness guard (#2210): absence from the corpus is
+        # only deletion evidence when the file is actually gone from disk.
+        alive = []
+        for c in in_root:
+            try:
+                if c.exists():
+                    alive.append(c)
+            except OSError:
+                pass
+        if alive:
+            if all(_provably_excluded(c) for c in alive):
+                stale.append(sf)  # alive but excluded under current rules (#1909)
+            else:
+                kept_alive.append(sf)
+            continue
+        # No anchored candidate exists, but a legacy bare-basename spelling
+        # can't be anchored reliably — a live corpus file with the same name
+        # means deletion is unproven; keep.
+        rel_sf = sf.replace("\\", "/")
+        if "/" not in rel_sf and nfc(rel_sf) in seen_basenames:
+            kept_alive.append(sf)
+            continue
         stale.append(sf)
+    if kept_alive:
+        print(
+            f"[graphify] fail-closed: kept node(s) from {len(kept_alive)} "
+            "source file(s) that left the scan corpus but still exist on disk "
+            "(ignore rules or filters changed?). Run a full re-extraction to "
+            "purge them if the exclusion is intentional.",
+            file=sys.stderr,
+        )
     return stale
 
 
@@ -2205,10 +2293,10 @@ def dispatch_command(cmd: str) -> None:
                     f"graph.json {p} is {size} bytes, exceeds {_MERGE_MAX_BYTES}-byte cap"
                 )
             data = json.loads(path_obj.read_text(encoding="utf-8"))
-            try:
-                return _jg.node_link_graph(data, edges="links"), data
-            except TypeError:
-                return _jg.node_link_graph(data), data
+            # A committed raw (--no-cluster) graph stores edges under "edges";
+            # parse via the shared links/edges-normalizing loader (#2212).
+            from graphify.paths import load_node_link_graph as _lnlg
+            return _lnlg(data), data
         try:
             G_cur, _ = _load_graph(_current_path)
             G_oth, _ = _load_graph(_other_path)
@@ -2987,7 +3075,7 @@ def dispatch_command(cmd: str) -> None:
             _seen_files = {f for _fl in files_by_type.values() for f in _fl}
             _seen_files.update(detection.get("unclassified", []))
             graph_stale_sources = _stale_graph_sources(
-                existing_graph_path, target, _seen_files
+                existing_graph_path, target, _seen_files, detection=detection
             )
         else:
             print(f"[graphify extract] scanning {target}")

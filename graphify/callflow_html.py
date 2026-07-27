@@ -227,12 +227,13 @@ def _node_link_payload(data: dict) -> tuple[list, list] | None:
         return None
 
     try:
-        from networkx.readwrite import json_graph
+        # Shared loader normalizes the raw writer's "edges" key to "links"
+        # before parsing; without it an edges-keyed payload raised
+        # KeyError: 'links' and this function silently returned None even
+        # though the shape check above accepts "edges" (#2212).
+        from graphify.paths import load_node_link_graph
 
-        try:
-            graph = json_graph.node_link_graph(data, edges="links")
-        except TypeError:
-            graph = json_graph.node_link_graph(data)
+        graph = load_node_link_graph(data)
     except Exception:
         return None
 

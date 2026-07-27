@@ -3101,6 +3101,22 @@ def _extract_generic(
             prop_name = _swift_property_name(node, source)
             if prop_name and prop_type:
                 type_table[prop_name] = prop_type
+            # #2181: a computed property (`var body: some View { … }`) or an
+            # observed one (`willSet`/`didSet`) carries a body that the branches
+            # above never emitted — so the property node AND every call inside it
+            # were dropped. For SwiftUI this erases the whole view layer, since
+            # `body` is a computed property. Emit a function-like member node and
+            # defer its body to the call-walk via function_bodies (mirroring how
+            # methods register their bodies). Stored properties have no such body
+            # child, so their behaviour is unchanged (no regression).
+            comp_bodies = [c for c in node.children
+                           if c.type in ("computed_property", "willset_didset_block")]
+            if comp_bodies and prop_name:
+                prop_nid = _make_id(parent_class_nid, prop_name)
+                add_node(prop_nid, f".{prop_name}", line)
+                add_edge(parent_class_nid, prop_nid, "method", line)
+                for body_block in comp_bodies:
+                    function_bodies.append((prop_nid, body_block))
             return
 
         if (config.ts_module == "tree_sitter_scala"

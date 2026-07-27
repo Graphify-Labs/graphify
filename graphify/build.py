@@ -1497,7 +1497,8 @@ def build_merge(
         n_nodes = len(to_remove)
         if n_nodes:
             print(
-                f"[graphify] Pruned {n_nodes} node(s) from {n_files} deleted source file(s).",
+                f"[graphify] Pruned {n_nodes} node(s) from {n_files} deleted or "
+                f"excluded source file(s).",
                 file=sys.stderr,
             )
 
@@ -1514,14 +1515,15 @@ def build_merge(
         if edges_to_remove:
             G.remove_edges_from(edges_to_remove)
             print(
-                f"[graphify] Pruned {len(edges_to_remove)} edge(s) from deleted source file(s).",
+                f"[graphify] Pruned {len(edges_to_remove)} edge(s) from deleted or "
+                f"excluded source file(s).",
                 file=sys.stderr,
             )
 
         if not n_nodes and not edges_to_remove:
             print(
-                f"[graphify] {n_files} source file(s) deleted since last run — "
-                f"no matching nodes or edges in graph, already clean.",
+                f"[graphify] {n_files} source file(s) deleted or excluded since "
+                f"last run — no matching nodes or edges in graph, already clean.",
                 file=sys.stderr,
             )
 
