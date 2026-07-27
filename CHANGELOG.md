@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: `--viz 3d` renders `graph.html` as a navigable WebGL view (three.js + d3-force-3d via a version-pinned, sha384-SRI `3d-force-graph` bundle, same supply-chain posture as the existing vis-network tag). Available on `/graphify`, `cluster-only`/`label` and `graphify export html`, or via `GRAPHIFY_VIZ_MODE`. The vis.js canvas renderer tops out around a few thousand nodes and offers pan/zoom as its only navigation; WebGL raises that ceiling by roughly an order of magnitude. The layout runs its simulation before the first frame and the camera is framed once at startup, so the graph opens already spread out and never moves on its own.
+- Feature: 3D navigation — search, click-to-inspect with neighbour links, community filters, a single "Show" control that isolates 1-6 hops around the selection, an opt-in name overlay (hover names the node either way), and `/` `F` `L` `R` `Space` `Esc` shortcuts. Learning-overlay status is painted onto the node rather than ringing it, and hyperedges render as clickable hub nodes instead of shaded hulls.
+- Refactor: `to_html()` now builds a renderer-agnostic view model (nodes, edges, legend, hyperedges) that both the 2D and 3D renderers consume, so the two views always describe the same graph. The default stays 2D and its output is byte-identical to before, guarded by a test.
+
 ## 0.9.28 (2026-07-27)
 
 - Fix: incremental extraction no longer drops cross-file edges whose target file wasn't in the batch (#2211, #2213). Python relative imports and markdown reference links emitted absolute-path-derived target ids without the `target_file` stamp the incremental canonicalization needs, so a re-extracted file's imports/references dangled or vanished; both now stamp the resolved target and canonicalize to the root-relative node.
