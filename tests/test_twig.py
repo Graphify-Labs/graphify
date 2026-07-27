@@ -14,22 +14,27 @@ def _write(root: Path, rel: str, body: str) -> Path:
 
 
 def _rel_targets(r, relation: str) -> set[str]:
-    """Labels of every node reached by *relation*."""
+    """Readable name of every target reached by *relation*.
+
+    A reference that resolved to another file has no node here (that file owns
+    its own), so its name comes from the edge's ``target_file`` stamp; an
+    unresolved one is named by its stub node.
+    """
     lab = {n["id"]: n["label"] for n in r["nodes"]}
-    return {
-        lab.get(e["target"], e["target"])
-        for e in r["edges"]
-        if e["relation"] == relation
-    }
+    out = set()
+    for e in r["edges"]:
+        if e["relation"] != relation:
+            continue
+        if "target_file" in e:
+            out.add(Path(e["target_file"]).name)
+        else:
+            out.add(lab.get(e["target"], e["target"]))
+    return out
 
 
 def _target_files(r, relation: str) -> set[str]:
-    by_id = {n["id"]: n for n in r["nodes"]}
-    return {
-        by_id[e["target"]]["source_file"]
-        for e in r["edges"]
-        if e["relation"] == relation
-    }
+    return {e["target_file"] for e in r["edges"]
+            if e["relation"] == relation and "target_file" in e}
 
 
 def _theme(tmp_path: Path) -> Path:
@@ -209,6 +214,37 @@ def test_every_edge_is_extracted_with_full_confidence(tmp_path):
     for e in r["edges"]:
         assert e["confidence"] == "EXTRACTED"
         assert e["confidence_score"] == 1.0
+
+
+def test_resolved_reference_stamps_target_file(tmp_path):
+    """The stamp is what lets the target canonicalize to the real file node.
+
+    Without it the target keeps an absolute-path-derived id that matches no node
+    in the merged graph, and every template->template edge silently drops
+    (#2211, the same failure fixed for Python imports and markdown refs).
+    """
+    root = _theme(tmp_path)
+    page = _write(root, "templates/page.html.twig",
+                  "{% include 'mytheme:card' %}\n")
+
+    r = extract_twig(page)
+
+    edge = next(e for e in r["edges"] if e["relation"] == "includes")
+    assert edge["target_file"] == str(
+        (root / "components/molecules/card/card.twig").resolve())
+
+
+def test_unresolved_reference_is_left_dangling(tmp_path):
+    root = _theme(tmp_path)
+    page = _write(root, "templates/page.html.twig",
+                  "{% include 'mytheme:nope' %}\n")
+
+    r = extract_twig(page)
+
+    edge = next(e for e in r["edges"] if e["relation"] == "includes")
+    # No file to canonicalize onto, so no stamp — mirrors markdown's
+    # existence-gated behavior for links to nonexistent docs.
+    assert "target_file" not in edge
 
 
 def test_unreadable_file_reports_an_error(tmp_path):

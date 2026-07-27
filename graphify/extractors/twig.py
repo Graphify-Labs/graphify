@@ -188,11 +188,20 @@ def extract_twig(path: Path) -> dict:
 
     def add(target_id: str, label: str, relation: str, location: str,
             target_file: "str | None" = None) -> None:
-        if target_id not in seen_nodes:
+        """Emit one edge, and a node for the target only when we own it.
+
+        A reference that resolved to another file in the corpus gets NO node
+        here: that file mints its own file node when it is extracted, and
+        emitting a second one with the same id makes
+        ``_disambiguate_colliding_node_ids`` rename the pair apart, which severs
+        exactly the link we were trying to draw. Instead the edge carries a
+        ``target_file`` stamp and the target canonicalizes onto the real node
+        downstream — the pattern `extract_markdown` uses for doc-to-doc links.
+        """
+        if target_file is None and target_id not in seen_nodes:
             seen_nodes.add(target_id)
             nodes.append({"id": target_id, "label": label, "file_type": "code",
-                          "source_file": target_file or str_path,
-                          "source_location": None})
+                          "source_file": str_path, "source_location": None})
         # One edge per (target, relation): a template that includes the same
         # component twice is one dependency, and duplicate parallel edges trip
         # graphify's own same-endpoint-collapse diagnostic.
@@ -200,10 +209,13 @@ def extract_twig(path: Path) -> dict:
         if key in seen_edges:
             return
         seen_edges.add(key)
-        edges.append({"source": file_nid, "target": target_id, "relation": relation,
-                      "confidence": "EXTRACTED", "confidence_score": 1.0,
-                      "source_file": str_path, "source_location": location,
-                      "weight": 1.0})
+        edge = {"source": file_nid, "target": target_id, "relation": relation,
+                "confidence": "EXTRACTED", "confidence_score": 1.0,
+                "source_file": str_path, "source_location": location,
+                "weight": 1.0}
+        if target_file is not None:
+            edge["target_file"] = target_file
+        edges.append(edge)
 
     def add_template_ref(raw: str, relation: str, offset: int) -> None:
         raw = raw.strip()

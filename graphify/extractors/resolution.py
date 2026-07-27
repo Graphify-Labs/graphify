@@ -652,6 +652,22 @@ def _node_disambiguation_source_key(node: dict, root: Path) -> str:
         return _source_key(source_file, root)
     return _source_key(str(node.get("origin_file", "")), root)
 
+# Relations whose target is a FILE node, so a `target_file` stamp on the edge
+# must key the target's salt. Template composition belongs here for the same
+# reason imports do, and the need is sharper: a Single Directory Component keeps
+# `card.twig` and `card.scss` side by side, so every component's file id
+# collides across extensions and is salted apart. An `includes` edge that fell
+# back to the importer's own source_key would then look up an id that
+# disambiguation has already retired, and the edge would dangle.
+_TEMPLATE_TARGET_RELATIONS = frozenset({
+    "includes", "embeds", "extends", "imports_macro", "uses_template",
+})
+
+_FILE_TARGET_RELATIONS = frozenset({
+    "imports", "imports_from", "re_exports",
+}) | _TEMPLATE_TARGET_RELATIONS
+
+
 def _disambiguate_colliding_node_ids(
     nodes: list[dict],
     edges: list[dict],
@@ -751,6 +767,24 @@ def _disambiguate_colliding_node_ids(
                     header_remaps[old_id] = new_id
                     break
 
+    # The same shape, for template composition. A Single Directory Component
+    # keeps `card.twig` beside `card.scss`, so the two collapse to one `card`
+    # file id and disambiguation salts them apart. An `{% include %}` from a
+    # THIRD template carries neither salt's source_key, so the
+    # (target, edge_source_key) lookup misses and the edge dangles on the now
+    # dead `card` id — the #1475 failure exactly. An include always targeted the
+    # template, so repoint to the template variant.
+    _TEMPLATE_SUFFIXES = (".twig",)
+    template_remaps: dict[str, str] = {}
+    for old_id in ambiguous_ids:
+        for node in by_id.get(old_id, []):
+            sk = _node_disambiguation_source_key(node, root)
+            if sk and Path(sk).suffix.lower() in _TEMPLATE_SUFFIXES:
+                new_id = remap.get((old_id, sk))
+                if new_id:
+                    template_remaps[old_id] = new_id
+                    break
+
     for edge in edges:
         edge_source_key = _source_key(str(edge.get("source_file", "")), root)
         source_key = (edge.get("source", ""), edge_source_key)
@@ -763,7 +797,7 @@ def _disambiguate_colliding_node_ids(
         # every language and to re_exports. `pop` it as we consume it: this is the
         # hint's only reader, and its absolute path must not persist into graph.json.
         target_file = edge.pop("target_file", None)
-        if target_file and edge.get("relation") in ("imports", "imports_from", "re_exports"):
+        if target_file and edge.get("relation") in _FILE_TARGET_RELATIONS:
             target_edge_key = _source_key(str(target_file), root)
         else:
             target_edge_key = edge_source_key
@@ -780,6 +814,9 @@ def _disambiguate_colliding_node_ids(
         if (edge.get("relation") in ("imports", "imports_from")
                 and edge.get("target") in header_remaps):
             edge["target"] = header_remaps[str(edge["target"])]
+        elif (edge.get("relation") in _TEMPLATE_TARGET_RELATIONS
+                and edge.get("target") in template_remaps):
+            edge["target"] = template_remaps[str(edge["target"])]
         elif target_key in remap:
             edge["target"] = remap[target_key]
         elif edge.get("target") in unambiguous_remaps:
