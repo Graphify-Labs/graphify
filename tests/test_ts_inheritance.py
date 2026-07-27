@@ -56,6 +56,42 @@ def test_class_extends_same_file(tmp_path):
     assert _has_inherits(result, "src/a.ts", "Dog", "src/a.ts", "Animal")
 
 
+def test_js_class_extends_same_file(tmp_path):
+    """`class Dog extends Animal {}` in a plain .js file must emit an inherits edge.
+
+    The JavaScript grammar stores the base identifier directly under the
+    `class_heritage` node (no `extends_clause` wrapper as in the TypeScript
+    grammar), so the heritage walk dropped the edge for .js classes while the
+    equivalent .ts file (test_class_extends_same_file) already worked.
+    """
+    f = _write(tmp_path / "src" / "a.js",
+               "class Animal {}\n"
+               "class Dog extends Animal {}\n")
+    result = extract([f], cache_root=tmp_path)
+    assert _has_inherits(result, "src/a.js", "Dog", "src/a.js", "Animal")
+
+
+def test_js_class_extends_imported(tmp_path):
+    """The JavaScript grammar path must retain import-guided resolution."""
+    base = _write(tmp_path / "src" / "base.js", "export class Animal {}\n")
+    derived = _write(tmp_path / "src" / "derived.js",
+                     "import { Animal } from './base.js';\n"
+                     "export class Dog extends Animal {}\n")
+    result = extract([derived, base], cache_root=tmp_path)
+    assert _has_inherits(result, "src/derived.js", "Dog", "src/base.js", "Animal")
+
+
+def test_js_dynamic_class_base_does_not_fabricate_inherits(tmp_path):
+    """A runtime base expression has no statically resolvable parent symbol."""
+    f = _write(tmp_path / "src" / "a.js",
+               "class Animal {}\n"
+               "function mixin(base) { return class extends base {}; }\n"
+               "class Dog extends mixin(Animal) {}\n")
+    result = extract([f], cache_root=tmp_path)
+    assert not _has_inherits(result, "src/a.js", "Dog", "src/a.js", "Animal")
+    assert not _has_inherits(result, "src/a.js", "Dog", "src/a.js", "mixin")
+
+
 def test_interface_extends_generic_base_same_file(tmp_path):
     f = _write(tmp_path / "src" / "a.ts",
                "interface Base<T> { x: T; }\n"
