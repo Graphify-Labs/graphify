@@ -99,11 +99,13 @@ def _resolve_ollama_base_url(default: str) -> str:
 
 BACKENDS: dict[str, dict] = {
     "claude": {
+        # Recommended for best diagram / UI / chart understanding in 2026+.
+        # Use ANTHROPIC_MODEL=claude-opus-5 or latest sonnet for max quality.
         # ANTHROPIC_BASE_URL points the backend at any Anthropic-compatible
         # server (LiteLLM proxy, gateways, ...); ANTHROPIC_MODEL overrides the
         # default model. Mirrors the OPENAI_BASE_URL / OPENAI_MODEL pattern.
         "base_url": os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
-        "default_model": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+        "default_model": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5"),
         "env_key": "ANTHROPIC_API_KEY",
         "pricing": {"input": 3.0, "output": 15.0},  # USD per 1M tokens
         "temperature": 0,
@@ -136,7 +138,7 @@ BACKENDS: dict[str, dict] = {
         # Gemini models (LiteLLM, self-hosted proxy, ...). Falls back to Google's
         # official OpenAI-compatible endpoint.
         "base_url": os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"),
-        "default_model": "gemini-3-flash-preview",
+        "default_model": "gemini-3.5-flash",
         "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "model_env_key": "GRAPHIFY_GEMINI_MODEL",
         "pricing": {"input": 0.50, "output": 3.00},  # USD per 1M tokens
@@ -146,18 +148,19 @@ BACKENDS: dict[str, dict] = {
         "vision": True,
     },
     "openai": {
+        # For best vision results use GPT-5.6 / o-series or later models via OPENAI_MODEL.
         # OPENAI_BASE_URL points the backend at any OpenAI-compatible server
         # (llama.cpp, vLLM, LM Studio, ...); OPENAI_MODEL overrides the default
         # model. GRAPHIFY_OPENAI_MODEL still wins over OPENAI_MODEL when both
         # are set (via model_env_key).
         "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-        "default_model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
+        "default_model": os.environ.get("OPENAI_MODEL", "gpt-5.6-mini"),
         "env_key": "OPENAI_API_KEY",
         "model_env_key": "GRAPHIFY_OPENAI_MODEL",
         "max_tokens": 16384,
         "pricing": {"input": 0.40, "output": 1.60},  # USD per 1M tokens
-        # Default (gpt-4.1-mini) accepts temperature=0. Reasoning models
-        # (o1/o3/o4/gpt-5) reject any explicit temperature and have it omitted
+        # Default (gpt-5.6-mini) accepts temperature=0. Reasoning models
+        # (o1/o3/o4/gpt-5 and later) reject any explicit temperature and have it omitted
         # automatically by _resolve_temperature; GRAPHIFY_LLM_TEMPERATURE
         # overrides either way (#1191).
         "temperature": 0,
@@ -187,15 +190,15 @@ BACKENDS: dict[str, dict] = {
         #           AZURE_OPENAI_DEPLOYMENT or GRAPHIFY_AZURE_MODEL (deployment name).
         # base_url is intentionally absent — prevents accidental routing through
         # _call_openai_compat, which requires it and uses the wrong SDK client class.
-        "default_model": os.environ.get("AZURE_OPENAI_DEPLOYMENT", os.environ.get("GRAPHIFY_AZURE_MODEL", "gpt-4o")),
+        "default_model": os.environ.get("AZURE_OPENAI_DEPLOYMENT", os.environ.get("GRAPHIFY_AZURE_MODEL", "gpt-5.6")),
         "env_key": "AZURE_OPENAI_API_KEY",
         "model_env_key": "GRAPHIFY_AZURE_MODEL",
-        "pricing": {"input": 2.50, "output": 10.00},  # USD per 1M tokens (gpt-4o; may mis-estimate other deployments)
+        "pricing": {"input": 2.50, "output": 10.00},  # USD per 1M tokens (use GRAPHIFY_AZURE_MODEL for modern deployment e.g. gpt-5.6 or claude via proxy)
         "temperature": 0,
         "max_tokens": 16384,
     },
     "bedrock": {
-        "default_model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "default_model": "anthropic.claude-sonnet-5",
         "model_env_key": "GRAPHIFY_BEDROCK_MODEL",
         "pricing": {"input": 3.0, "output": 15.0},  # USD per 1M tokens
         "temperature": 0,
@@ -350,7 +353,7 @@ def _resolve_temperature(default: float | None, model: str = "") -> float | None
            - a numeric value (e.g. "0", "0.2", "1") is used verbatim;
            - the literal "none"/"omit"/"default" (case-insensitive) means
              "omit the temperature parameter entirely" (-> None).
-      2. Otherwise, reasoning models (o1/o3/o4/gpt-5) get None — the parameter
+      2. Otherwise, reasoning models (o1/o3/o4/gpt-5 and later) get None — the parameter
          must be omitted or the API rejects the request.
       3. Otherwise, the backend config default (`default`, usually 0).
 
@@ -733,23 +736,85 @@ _IMAGE_MEDIA_TYPES = {
     ".gif": "image/gif",
     ".webp": "image/webp",
 }
-# Per-image byte ceiling. Anthropic caps a request at 32 MB and Bedrock images
-# at ~5 MB; 5 MB per image keeps every backend within limits. Oversized images
-# fall back to a text reference (the node is still created, just unseen).
-_MAX_IMAGE_BYTES = 5 * 1024 * 1024
-# Flat token estimate per image for chunk packing. Vision models bill an image
-# at a roughly fixed cost regardless of file size, so estimating by byte size
-# (as the generic path does) would force every large PNG into its own chunk.
+# ── Vision image limits (now configurable + auto-tuned) ───────────────────────
+# Per-image byte ceiling for base64/inline backends.
+# Raised default for modern models (Claude 4+, GPT-4.1+, Gemini 3.5+ families
+# routinely handle 20-50+ MB images with good downsampling).
+# Oversized images still produce a graph node (as text reference).
+#
+# Configure with GRAPHIFY_MAX_IMAGE_MB (e.g. 50). Path-based backends
+# (claude-cli) ignore this and let the server downsample.
+_MAX_IMAGE_BYTES = 32 * 1024 * 1024
+
+
+def _get_max_image_bytes() -> int:
+    """Resolve per-image byte limit, preferring env override then modern default."""
+    raw = os.environ.get("GRAPHIFY_MAX_IMAGE_MB", "").strip()
+    if raw:
+        try:
+            mb = int(raw)
+            if mb > 0:
+                return mb * 1024 * 1024
+        except (ValueError, TypeError):
+            print(
+                f"[graphify] GRAPHIFY_MAX_IMAGE_MB={raw!r} is not a positive integer; "
+                f"using default {_MAX_IMAGE_BYTES // (1024*1024)}MB",
+                file=sys.stderr,
+            )
+    return _get_max_image_bytes()
+
+
+# Flat token estimate per image for chunk packing.
 _IMAGE_TOKEN_ESTIMATE = 1_600
-# Hard cap on images per chunk, independent of the token budget. A large
-# token budget would otherwise pack hundreds of images into one request —
-# past provider per-request image limits (Anthropic allows 100), and far too
-# many for the claude-cli Read-tool loop to work through. Keeps memory and
-# request size bounded on image-dense corpora.
-_MAX_IMAGES_PER_CHUNK = 20
+
+
+def _get_max_images_per_chunk(backend: str | None = None, token_budget: int | None = None) -> int:
+    """Auto-compute a good max images per chunk.
+
+    The program tries to best-fit rather than forcing a conservative static cap.
+    Priority:
+      1. GRAPHIFY_get_max_images_per_chunk() env var (explicit user override)
+      2. Backend-aware sensible defaults for modern vision models
+      3. Token-budget aware soft cap (don't waste most of the budget on images)
+      4. Hard safety floor
+
+    claude-cli is kept lower because each image becomes a Read tool call.
+    High-capacity backends (current Claude/OpenAI/Gemini) support 40-100+.
+    """
+    # Explicit override wins (user says "don't leave it to the user unless necessary")
+    raw = os.environ.get("GRAPHIFY_get_max_images_per_chunk()", "").strip()
+    if raw:
+        try:
+            val = int(raw)
+            if val > 0:
+                return val
+        except (ValueError, TypeError):
+            print(f"[graphify] GRAPHIFY_get_max_images_per_chunk()={raw!r} ignored", file=sys.stderr)
+
+    # Backend-aware defaults (2026-era vision models)
+    backend = (backend or "").lower()
+    if backend == "claude-cli":
+        base = 15  # practical limit for repeated Read tool calls in one turn
+    elif backend in ("claude", "bedrock"):
+        base = 60  # modern Anthropic supports high image counts
+    elif backend in ("openai", "gemini", "azure", "kimi"):
+        base = 50
+    else:
+        base = 30
+
+    # Best-fit against token budget when available
+    if token_budget and token_budget > 0:
+        # Leave headroom for text + output tokens. Images are expensive but fixed-cost.
+        budget_headroom = max(8000, int(token_budget * 0.35))
+        from_budget = max(5, budget_headroom // _IMAGE_TOKEN_ESTIMATE)
+        base = min(base, from_budget)
+
+    return max(5, min(base, 100))  # absolute sanity bounds
+
+
 # Backends that read an image by file path (claude-cli's Read tool)
 # instead of inlining base64. They open the file themselves and downsample as
-# needed, so `_MAX_IMAGE_BYTES` does not apply and the bytes never need loading.
+# needed, so image byte limits do not apply and the bytes never need loading.
 _PATH_IMAGE_BACKENDS = {"claude-cli"}
 
 
@@ -757,7 +822,7 @@ _PATH_IMAGE_BACKENDS = {"claude-cli"}
 class _ImageRef:
     """A single image destined for a vision request.
 
-    `raw` is None when the image is unreadable or exceeds `_MAX_IMAGE_BYTES`, or
+    `raw` is None when the image is unreadable or exceeds the configured per-image limit (_get_max_image_bytes), or
     when the target backend has no vision support — in every such case the
     renderers emit a text reference instead of pixels, so the image still
     becomes a graph node.
@@ -799,7 +864,7 @@ def _build_image_refs(image_files: list[Path], root: Path, *, read_bytes: bool =
     """Build `_ImageRef`s for raster images.
 
     `read_bytes=True` (base64 backends) loads the pixels and drops any image over
-    `_MAX_IMAGE_BYTES` to a reference, because a base64 request body has a hard
+    `_get_max_image_bytes()` to a reference, because a base64 request body has a hard
     size ceiling. `read_bytes=False` (path-based backends — claude-cli)
     skips the read entirely: those backends open the file themselves and
     downsample as needed, so there is no per-image size limit and no reason to
@@ -1821,7 +1886,13 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
 def _pack_chunks_by_tokens(
     files: "list[Path | FileSlice]",
     token_budget: int,
+    *,
+    backend: str | None = None,
 ) -> "list[list[Path | FileSlice]]":
+    """Greedily pack files/slices into chunks that fit a token budget.
+
+    Image count per chunk is auto-tuned (see _get_max_images_per_chunk).
+    """
     """Greedily pack files/slices into chunks that fit a token budget.
 
     Units are first grouped by parent directory so related artifacts share a
@@ -1849,7 +1920,7 @@ def _pack_chunks_by_tokens(
             cost = _estimate_file_tokens(unit)
             is_image = not isinstance(unit, FileSlice) and _is_vision_image(unit)
             over_budget = current_tokens + cost > token_budget
-            over_images = is_image and current_images >= _MAX_IMAGES_PER_CHUNK
+            over_images = is_image and current_images >= _get_max_images_per_chunk(backend=backend, token_budget=token_budget)
             if current and (over_budget or over_images):
                 chunks.append(current)
                 current = []
@@ -2214,7 +2285,7 @@ def extract_corpus_parallel(
     # silently dropped (#1369). Files at/under the cap pass through unchanged.
     files = expand_oversized_files(files, _FILE_CHAR_CAP)
     if token_budget is not None:
-        chunks = _pack_chunks_by_tokens(files, token_budget=token_budget)
+        chunks = _pack_chunks_by_tokens(files, token_budget=token_budget, backend=backend)
     else:
         chunks = [files[i:i + chunk_size] for i in range(0, len(files), chunk_size)]
 

@@ -127,7 +127,7 @@ Every system ran on the same harness with the same model and budgets, scored by 
 
 | Requirement | Minimum | Check | Install |
 |---|---|---|---|
-| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| Python | 3.14+ | `python --version` | [python.org](https://www.python.org/downloads/) |
 | uv *(recommended)* | any | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | pipx *(alternative)* | any | `pipx --version` | `pip install pipx` |
 
@@ -250,7 +250,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
 | `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
-| `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
+| `leiden` | Leiden community detection | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
 | `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
@@ -337,7 +337,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Package manifests | `apm.yml` `pyproject.toml` `go.mod` `pom.xml` — one canonical package node per package (by name) plus `depends_on` edges, so a package referenced from many manifests is a single hub |
 | Docs | `.md .mdx .qmd .html .txt .rst .yaml .yml` (markdown `[text](./other.md)` links and `[[wikilinks]]` become `references` edges between docs) |
-| Office | `.docx .xlsx` (requires `uv tool install graphifyy[office]`) |
+| Office | `.pptx` (built in); `.docx .xlsx` (require `uv tool install graphifyy[office]`) |
 | Google Workspace | `.gdoc .gsheet .gslides` (opt-in; requires `gws` auth and `--google-workspace`; Sheets need `uv tool install graphifyy[google]`) |
 | PDFs | `.pdf` |
 | Images | `.png .jpg .webp .gif` |
@@ -345,6 +345,14 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | YouTube / URLs | any video URL (requires `uv tool install graphifyy[video]`) |
 
 Code is extracted **locally with no API calls** (AST via tree-sitter). Everything else goes through your AI assistant's model API.
+
+PowerPoint extraction preserves slide order, sections, hidden-slide state, text
+and bullets, speaker notes, comments, tables, chart data, SmartArt/native diagram
+relationships, hyperlinks, alt text, layout/master evidence, custom XML, and
+embedded package objects. Embedded images are sent through the normal vision
+path. Embedded audio and video are extracted with slide provenance and transcribed
+locally when `graphifyy[video]` is installed; external media links are recorded but
+never fetched automatically.
 
 Google Drive for desktop `.gdoc`, `.gsheet`, and `.gslides` files are shortcut
 pointers, not document content. To include native Google Docs, Sheets, and Slides
@@ -495,11 +503,11 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Claude (Anthropic) backend | `--backend claude` |
 | `ANTHROPIC_BASE_URL` | Anthropic-compatible endpoint URL (LiteLLM proxy, gateways, ...) | `--backend claude` (default: `https://api.anthropic.com`) |
-| `ANTHROPIC_MODEL` | Model name for the Claude backend — for custom endpoints, use the model name/alias your server exposes | `--backend claude` (default: `claude-sonnet-4-6`) |
+| `ANTHROPIC_MODEL` | Model name for the Claude backend — for custom endpoints, use the model name/alias your server exposes | `--backend claude` (default: `claude-sonnet-5`) |
 | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Google Gemini backend | `--backend gemini` |
 | `OPENAI_API_KEY` | OpenAI or OpenAI-compatible APIs | `--backend openai` (local servers accept any non-empty value) |
 | `OPENAI_BASE_URL` | OpenAI-compatible server URL (llama.cpp, vLLM, LM Studio, ...) | `--backend openai` (default: `https://api.openai.com/v1`) |
-| `OPENAI_MODEL` | Model name for the OpenAI backend — for self-hosted servers, use the model name/alias your server exposes (check its `/v1/models` endpoint), e.g. `LFM2.5-8B-A1B-UD-Q4_K_XL` for llama.cpp | `--backend openai` (default: `gpt-4.1-mini`) |
+| `OPENAI_MODEL` | Model name for the OpenAI backend — for self-hosted servers, use the model name/alias your server exposes (check its `/v1/models` endpoint), e.g. `LFM2.5-8B-A1B-UD-Q4_K_XL` for llama.cpp | `--backend openai` (default: `gpt-5.6-mini`) |
 | `DEEPSEEK_API_KEY` | DeepSeek backend | `--backend deepseek` |
 | `MOONSHOT_API_KEY` | Kimi Code backend | `--backend kimi` |
 | `OLLAMA_BASE_URL` | Ollama local inference URL | `--backend ollama` (default: `http://localhost:11434`) |
@@ -509,7 +517,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI Service backend | `--backend azure` |
 | `AZURE_OPENAI_ENDPOINT` | Azure resource endpoint URL | `--backend azure` (required alongside API key) |
 | `AZURE_OPENAI_API_VERSION` | Azure API version override | optional — default `2024-12-01-preview` |
-| `AZURE_OPENAI_DEPLOYMENT` or `GRAPHIFY_AZURE_MODEL` | Azure deployment name | optional — default `gpt-4o` |
+| `AZURE_OPENAI_DEPLOYMENT` or `GRAPHIFY_AZURE_MODEL` | Azure deployment name | optional — default `gpt-5.6` |
 | `AWS_*` / `~/.aws/credentials` | AWS Bedrock — standard credential chain | `--backend bedrock` (no API key, uses IAM) |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
@@ -525,6 +533,8 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_QUERY_LOG_RESPONSES` | When the log is enabled, also record full subgraph responses (off by default) | optional |
 | `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
+| `GRAPHIFY_MAX_IMAGE_MB` | Max size (MB) for inline images sent to vision models (base64 backends). Larger images become text-reference nodes but are still graphed. Path backends (claude-cli) bypass. | optional — default 32 (raised for modern models) |
+| `GRAPHIFY_MAX_IMAGES_PER_CHUNK` | Hard cap on images per LLM call (mostly for safety/tool-call practicality). Normally auto-tuned by backend + token budget for best fit. | optional — only set if auto behavior is insufficient |
 
 ---
 
@@ -865,3 +875,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities and how to ad
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
   <a href="https://safishamsi.gumroad.com/l/qetvlo"><img src="https://img.shields.io/badge/Book-The%20Memory%20Layer-2ea44f?style=flat&logo=gitbook&logoColor=white" alt="The Memory Layer"/></a>
 </p>
+
+## Vision models for images & diagrams (PPTX, EPUB, standalone images)
+
+Graphify sends embedded and standalone images through your chosen LLM's native vision capability (no separate OCR step). The model is instructed to describe what the image depicts (diagram, screenshot, UI, chart, photo, etc.) and create edges to related nodes.
+
+**For best results:** Prefer newest vision models (Claude Sonnet 5, GPT-5.6, Gemini 3.5+). Override with ANTHROPIC_MODEL / OPENAI_MODEL etc.
+
+Image size limit is now 32MB default (configurable via GRAPHIFY_MAX_IMAGE_MB). Per-chunk image count is auto-tuned by backend + token budget (see GRAPHIFY_MAX_IMAGES_PER_CHUNK only if you need to override).
+

@@ -19,6 +19,242 @@ def _make_corpus(tmp_path):
     return tmp_path
 
 
+def test_headless_extract_transcribes_detected_media_before_semantic_dispatch(
+    monkeypatch, tmp_path
+):
+    """Audio/video must become transcript documents in the headless CLI too."""
+    media = tmp_path / "deck-slide-0001-audio-01-contenthash.mp3"
+    media.write_bytes(b"ID3 fake test audio")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    transcribe_call = {}
+
+    def _fake_transcribe_all(
+        video_files, output_dir=None, initial_prompt=None, force=False
+    ):
+        from graphify.transcribe import transcript_path_for
+
+        transcribe_call["video_files"] = list(video_files)
+        transcribe_call["output_dir"] = output_dir
+        assert output_dir is not None
+        output_dir.mkdir(parents=True, exist_ok=True)
+        transcript = transcript_path_for(media, output_dir, initial_prompt)
+        transcript.write_text("The experiment supports the causal claim.", encoding="utf-8")
+        return [transcript]
+
+    dispatched = []
+
+    def _capture_semantic(paths, **kwargs):
+        dispatched.extend(str(path) for path in paths)
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
+        return {
+            "nodes": [],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+
+    monkeypatch.setattr("graphify.transcribe.transcribe_all", _fake_transcribe_all)
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _capture_semantic)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        [
+            "graphify",
+            "extract",
+            str(tmp_path),
+            "--backend",
+            "claude",
+            "--out",
+            str(out_dir),
+            "--whisper-model",
+            "tiny",
+            "--no-cluster",
+        ],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0)
+
+    assert transcribe_call["video_files"] == [media]
+    assert transcribe_call["output_dir"] == out_dir / "graphify-out" / "transcripts"
+    assert os.environ["GRAPHIFY_WHISPER_MODEL"] == "tiny"
+    assert not any(path.endswith(".mp3") for path in dispatched)
+    assert any(media.stem in path and path.endswith(".txt") for path in dispatched)
+
+
+@pytest.mark.parametrize("no_cluster", [False, True])
+def test_incremental_extract_preserves_unchanged_transcript_nodes(
+    monkeypatch, tmp_path, no_cluster
+):
+    """Generated transcript nodes remain live when their media source is unchanged."""
+    import json
+
+    media = tmp_path / "deck-slide-0001-video-01-contenthash.mp4"
+    media.write_bytes(b"\x00\x00\x00\x18ftypmp42 fake video")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    transcribe_calls = []
+
+    def _fake_transcribe_all(
+        video_files, output_dir=None, initial_prompt=None, force=False
+    ):
+        from graphify.transcribe import transcript_path_for
+
+        transcribe_calls.append(list(video_files))
+        assert output_dir is not None
+        output_dir.mkdir(parents=True, exist_ok=True)
+        transcript = transcript_path_for(media, output_dir, initial_prompt)
+        transcript.write_text("A durable video-derived claim.", encoding="utf-8")
+        return [transcript]
+
+    semantic_calls = []
+
+    def _semantic(paths, **kwargs):
+        paths = list(paths)
+        semantic_calls.append([str(path) for path in paths])
+        transcript = next(path for path in paths if str(path).endswith(".txt"))
+        on_chunk = kwargs.get("on_chunk_done")
+        result = {
+            "nodes": [
+                {
+                    "id": "video-derived-claim",
+                    "label": "Video-derived claim",
+                    "type": "Claim",
+                    "description": "A durable video-derived claim.",
+                    "source_file": str(transcript),
+                    "source_location": "transcript",
+                }
+            ],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 10,
+            "output_tokens": 5,
+        }
+        if on_chunk:
+            on_chunk(0, 1, result)
+        return result
+
+    monkeypatch.setattr("graphify.transcribe.transcribe_all", _fake_transcribe_all)
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _semantic)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = [
+        "graphify",
+        "extract",
+        str(tmp_path),
+        "--backend",
+        "claude",
+        "--out",
+        str(out_dir),
+    ]
+    if no_cluster:
+        argv.append("--no-cluster")
+
+    monkeypatch.setattr(mainmod.sys, "argv", argv)
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0)
+
+    monkeypatch.setattr(mainmod.sys, "argv", argv)
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0)
+
+    graph = json.loads((out_dir / "graphify-out" / "graph.json").read_text())
+    from graphify.detect import detect_incremental
+
+    incremental = detect_incremental(
+        tmp_path,
+        manifest_path=str(out_dir / "graphify-out" / "manifest.json"),
+        transcript_root=out_dir / "graphify-out" / "transcripts",
+    )
+    assert len(transcribe_calls) == 1
+    assert len(semantic_calls) == 1
+    assert not any(path.endswith(".txt") for path in incremental["excluded_files"])
+    assert any(node["id"] == "video-derived-claim" for node in graph["nodes"])
+
+
+def test_failed_media_transcription_is_retried_incrementally(monkeypatch, tmp_path):
+    media = tmp_path / "retry.mp4"
+    media.write_bytes(b"\x00\x00\x00\x18ftypmp42 retry video")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    transcribe_calls = []
+
+    def _transcribe(video_files, output_dir=None, initial_prompt=None, force=False):
+        from graphify.transcribe import transcript_path_for
+
+        transcribe_calls.append(list(video_files))
+        if len(transcribe_calls) == 1:
+            return []
+        assert output_dir is not None
+        output_dir.mkdir(parents=True, exist_ok=True)
+        transcript = transcript_path_for(media, output_dir, initial_prompt)
+        transcript.write_text("Recovered transcript.", encoding="utf-8")
+        return [transcript]
+
+    semantic_calls = []
+
+    def _semantic(paths, **kwargs):
+        paths = list(paths)
+        semantic_calls.append(paths)
+        transcript = next(path for path in paths if str(path).endswith(".txt"))
+        result = {
+            "nodes": [
+                {
+                    "id": "recovered-transcript",
+                    "label": "Recovered transcript",
+                    "type": "Claim",
+                    "source_file": str(transcript),
+                }
+            ],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 1,
+            "output_tokens": 1,
+        }
+        on_chunk = kwargs.get("on_chunk_done")
+        if on_chunk:
+            on_chunk(0, 1, result)
+        return result
+
+    monkeypatch.setattr("graphify.transcribe.transcribe_all", _transcribe)
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _semantic)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    argv = [
+        "graphify",
+        "extract",
+        str(tmp_path),
+        "--backend",
+        "claude",
+        "--out",
+        str(out_dir),
+        "--no-cluster",
+    ]
+
+    for _ in range(2):
+        monkeypatch.setattr(mainmod.sys, "argv", argv)
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            assert exc.code in (None, 0)
+
+    assert transcribe_calls == [[media], [media]]
+    assert len(semantic_calls) == 1
+    graph = __import__("json").loads(
+        (out_dir / "graphify-out" / "graph.json").read_text(encoding="utf-8")
+    )
+    assert any(node["id"] == "recovered-transcript" for node in graph["nodes"])
+
+
 def test_extract_exits_nonzero_when_all_semantic_chunks_fail(
     monkeypatch, tmp_path, capsys
 ):

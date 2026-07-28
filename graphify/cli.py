@@ -2552,7 +2552,7 @@ def dispatch_command(cmd: str) -> None:
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
-                "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
+                "[--api-timeout S] [--whisper-model M] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -2586,6 +2586,7 @@ def dispatch_command(cmd: str) -> None:
         cli_token_budget: int | None = None
         cli_max_concurrency: int | None = None
         cli_api_timeout: float | None = None
+        cli_whisper_model: str | None = None
         # Clustering tuning knobs
         cli_resolution: float = 1.0
         cli_exclude_hubs: float | None = None
@@ -2670,6 +2671,10 @@ def dispatch_command(cmd: str) -> None:
                 cli_api_timeout = _parse_float("--api-timeout", args[i + 1]); i += 2
             elif a.startswith("--api-timeout="):
                 cli_api_timeout = _parse_float("--api-timeout", a.split("=", 1)[1]); i += 1
+            elif a == "--whisper-model" and i + 1 < len(args):
+                cli_whisper_model = args[i + 1]; i += 2
+            elif a.startswith("--whisper-model="):
+                cli_whisper_model = a.split("=", 1)[1]; i += 1
             elif a == "--resolution" and i + 1 < len(args):
                 cli_resolution = _parse_float("--resolution", args[i + 1]); i += 2
             elif a.startswith("--resolution="):
@@ -2726,6 +2731,10 @@ def dispatch_command(cmd: str) -> None:
         # the skill.md pipeline.
         out_root = (out_dir.resolve() if out_dir else target)
         graphify_out = out_root / _GRAPHIFY_OUT
+        if cli_whisper_model:
+            # Set before incremental detection: transcript cache identity includes
+            # the model, so liveness must be computed under the requested model.
+            os.environ["GRAPHIFY_WHISPER_MODEL"] = cli_whisper_model
         graphify_out.mkdir(parents=True, exist_ok=True)
         # Persist corpus-shaping options so later update/watch/hook rebuilds
         # use the same file set as the initial extraction (#1886).
@@ -2786,6 +2795,7 @@ def dispatch_command(cmd: str) -> None:
             doc_files = []
             paper_files = []
             image_files = []
+            video_files = []
             deleted_files = []
             excluded_files = []
             graph_stale_sources = []
@@ -2799,6 +2809,7 @@ def dispatch_command(cmd: str) -> None:
                 google_workspace=google_workspace or None,
                 extra_excludes=_effective_excludes or None,
                 gitignore=_effective_gitignore,
+                transcript_root=graphify_out / "transcripts",
             )
             files_by_type = detection.get("files", {})
             new_by_type = detection.get("new_files", {})
@@ -2806,6 +2817,7 @@ def dispatch_command(cmd: str) -> None:
             doc_files = [Path(p) for p in new_by_type.get("document", [])]
             paper_files = [Path(p) for p in new_by_type.get("paper", [])]
             image_files = [Path(p) for p in new_by_type.get("image", [])]
+            video_files = [Path(p) for p in new_by_type.get("video", [])]
             deleted_files = list(detection.get("deleted_files", []))
             excluded_files = list(detection.get("excluded_files", []))
             unchanged_total = sum(len(v) for v in detection.get("unchanged_files", {}).values())
@@ -2833,26 +2845,55 @@ def dispatch_command(cmd: str) -> None:
             doc_files = [Path(p) for p in files_by_type.get("document", [])]
             paper_files = [Path(p) for p in files_by_type.get("paper", [])]
             image_files = [Path(p) for p in files_by_type.get("image", [])]
+            video_files = [Path(p) for p in files_by_type.get("video", [])]
             deleted_files = []
             excluded_files = []
             graph_stale_sources = []
             unchanged_total = 0
+
+        if deep_mode and incremental_mode and not code_only:
+            # Deep mode widens all semantic sources below, so transcribe all live
+            # media and let Whisper's derivative cache decide whether work is due.
+            video_files = [Path(p) for p in files_by_type.get("video", [])]
+
+        transcript_files: list[Path] = []
+        media_files_due = list(video_files)
+        if not code_only and video_files:
+            from graphify.transcribe import transcribe_all
+
+            transcript_files = transcribe_all(
+                video_files,
+                output_dir=graphify_out / "transcripts",
+                force=force,
+            )
+            doc_files.extend(transcript_files)
+            files_by_type.setdefault("document", []).extend(
+                str(path) for path in transcript_files
+            )
+            if len(transcript_files) != len(video_files):
+                print(
+                    f"[graphify extract] warning: transcribed {len(transcript_files)} of "
+                    f"{len(video_files)} video/audio file(s); install graphifyy[video] "
+                    "and check media format errors for full semantic extraction",
+                    file=sys.stderr,
+                )
 
         semantic_files = doc_files + paper_files + image_files
         # --code-only: index code (pure local AST, no key) and skip the semantic
         # (doc/paper/image) pass entirely, so a mixed repo doesn't hard-fail when no
         # LLM backend is configured (#1734). Report what was skipped rather than
         # silently dropping it.
-        if code_only and semantic_files:
+        if code_only and (semantic_files or video_files):
             print(
-                f"[graphify extract] --code-only: skipping {len(semantic_files)} "
+                f"[graphify extract] --code-only: skipping {len(semantic_files) + len(video_files)} "
                 f"non-code file(s) ({len(doc_files)} docs, {len(paper_files)} papers, "
-                f"{len(image_files)} images) — no LLM extraction"
+                f"{len(image_files)} images, {len(video_files)} video/audio) — no LLM extraction"
             )
             semantic_files = []
             doc_files = []
             paper_files = []
             image_files = []
+            video_files = []
         if deep_mode and incremental_mode and not code_only:
             # Deep mode reads/writes its own cache namespace
             # (cache/semantic-deep/), so the manifest's changed-file gate is
@@ -2884,7 +2925,8 @@ def dispatch_command(cmd: str) -> None:
             _excl_note = f"; {len(excluded_files)} excluded" if excluded_files else ""
             print(
                 f"[graphify extract] {len(code_files)} code, {len(doc_files)} docs, "
-                f"{len(paper_files)} papers, {len(image_files)} images changed; "
+                f"{len(paper_files)} papers, {len(image_files)} images, "
+                f"{len(video_files)} video/audio changed; "
                 f"{unchanged_total} unchanged; {len(deleted_files)} deleted"
                 f"{_excl_note}"
             )
@@ -2892,7 +2934,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 f"[graphify extract] found {len(code_files)} code, "
                 f"{len(doc_files)} docs, {len(paper_files)} papers, "
-                f"{len(image_files)} images"
+                f"{len(image_files)} images, {len(video_files)} video/audio"
             )
         # Surface files that were seen but not classified (extensionless non-shebang
         # project files like Dockerfile/Makefile, or unsupported extensions), so they
@@ -3269,6 +3311,33 @@ def dispatch_command(cmd: str) -> None:
         # absolute file lists.
         _manifest_files = _stamped_manifest_files(files_by_type, sem_result, target,
                                                    partial_source_files=_partial_semantic_files)
+        # A media file is semantically complete only when its exact content/
+        # model/prompt-addressed transcript produced semantic output. Merely
+        # attempting transcription must not stamp corrupt media or a missing
+        # faster-whisper installation as successful forever.
+        _stamped_documents = set(_manifest_files.get("document", []))
+        _failed_media: set[str] = set()
+        if media_files_due:
+            from graphify.transcribe import transcript_path_for as _transcript_path_for
+
+            for _media in media_files_due:
+                try:
+                    _expected_transcript = str(
+                        _transcript_path_for(
+                            _media,
+                            output_dir=graphify_out / "transcripts",
+                        )
+                    )
+                except OSError:
+                    _expected_transcript = ""
+                if _expected_transcript not in _stamped_documents:
+                    _failed_media.add(str(_media))
+            if _failed_media:
+                _manifest_files["video"] = [
+                    path
+                    for path in _manifest_files.get("video", [])
+                    if str(path) not in _failed_media
+                ]
 
         # Files dispatched this run but dropped by _stamped_manifest_files
         # above (failed chunk, LLM omission, or any future exclusion) still
@@ -3284,7 +3353,9 @@ def dispatch_command(cmd: str) -> None:
         _stamped_semantic = {
             f for _flist in _manifest_files.values() for f in _flist
         }
-        _cleared_semantic = {str(p) for p in semantic_files} - _stamped_semantic
+        _cleared_semantic = (
+            {str(p) for p in semantic_files} - _stamped_semantic
+        ) | _failed_media
 
         # Full-scan manifest saves prune rows for in-root files that left the
         # scan corpus but still exist on disk (#1908). The corpus must be the

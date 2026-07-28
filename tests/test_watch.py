@@ -48,6 +48,13 @@ def test_watched_extensions_includes_images():
     assert ".png" in _WATCHED_EXTENSIONS
     assert ".jpg" in _WATCHED_EXTENSIONS
 
+
+def test_watched_extensions_includes_audio_video_and_office():
+    assert ".mp4" in _WATCHED_EXTENSIONS
+    assert ".mp3" in _WATCHED_EXTENSIONS
+    assert ".wav" in _WATCHED_EXTENSIONS
+    assert ".pptx" in _WATCHED_EXTENSIONS
+
 def test_watched_extensions_excludes_noise():
     # .json is now indexed (bash/JSON extractors added in #866)
     assert ".json" in _WATCHED_EXTENSIONS
