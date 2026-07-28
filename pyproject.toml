@@ -52,7 +52,10 @@ Issues = "https://github.com/Graphify-Labs/graphify/issues"
 # starlette is pulled in transitively by mcp, but graphify/serve.py imports it
 # directly for the HTTP transport, so declare it here and floor it above the
 # CVE-2026-48818 / CVE-2026-54283 fixes (both resolved by 1.3.1) (#1391, #1396).
-mcp = ["mcp", "starlette>=1.3.1"]
+mcp = [
+    "mcp<=1.27.1",
+    "starlette>=1.3.1",
+]
 neo4j = ["neo4j"]
 falkordb = ["falkordb"]
 pdf = ["pypdf>=6.12.0", "markdownify"]
