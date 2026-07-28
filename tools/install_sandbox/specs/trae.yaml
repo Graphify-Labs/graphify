@@ -1,0 +1,21 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    effects:
+      - kind: skill
+        root: home
+        path: .trae/skills/graphify/SKILL.md
+        source: graphify/skill-trae.md
+        reference_bundle: trae
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .trae/skills/graphify/SKILL.md
+        source: graphify/skill-trae.md
+        reference_bundle: trae
+      - kind: section
+        root: project
+        path: AGENTS.md
+        marker: "## graphify"
+        source: graphify/always_on/agents-md.md

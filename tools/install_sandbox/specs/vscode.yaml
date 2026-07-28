@@ -1,0 +1,30 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    install_mode: direct
+    uninstall_mode: direct
+    effects:
+      - kind: skill
+        root: home
+        path: .copilot/skills/graphify/SKILL.md
+        source: graphify/skill-vscode.md
+        reference_bundle: vscode
+      - kind: section
+        root: user_cwd
+        path: .github/copilot-instructions.md
+        marker: "## graphify"
+        source: graphify/always_on/vscode-instructions.md
+  project:
+    install_mode: direct
+    uninstall_mode: direct
+    effects:
+      - kind: skill
+        root: home
+        path: .copilot/skills/graphify/SKILL.md
+        source: graphify/skill-vscode.md
+        reference_bundle: vscode
+      - kind: section
+        root: project
+        path: .github/copilot-instructions.md
+        marker: "## graphify"
+        source: graphify/always_on/vscode-instructions.md

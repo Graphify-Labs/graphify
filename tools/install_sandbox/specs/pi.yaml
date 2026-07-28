@@ -1,0 +1,17 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    uninstall_mode: direct
+    effects:
+      - kind: skill
+        root: home
+        path: .pi/agent/skills/graphify/SKILL.md
+        source: graphify/skill-pi.md
+        reference_bundle: pi
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .pi/agent/skills/graphify/SKILL.md
+        source: graphify/skill-pi.md
+        reference_bundle: pi
