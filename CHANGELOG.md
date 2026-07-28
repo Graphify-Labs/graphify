@@ -9,6 +9,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - New: `auto_links.packages` connects a member's direct package dependencies to their unique provider in another member (ambiguous matches are warned and skipped; declared links take precedence). Package-manifest nodes now carry normalized `package_key`/`dependency_keys` identities.
 - New: `affected` traverses `calls_api`/`mirrors` relations by default, so impact analysis crosses repo boundaries; when several parallel relations match a hop, all are listed.
 - New: multigraph mode — `graphify extract --multigraph` (and `graph_mode: "multi"` clusters) builds keyed MultiDiGraphs that preserve parallel relations end to end: build/merge, incremental updates and watch, community detection (parallel weights aggregate), graph diff, MCP/query output, and GraphML/Cypher/Canvas exports. The format persists across rebuilds (including `--force`); `--no-multigraph` converts back with a warning.
+- Fix: `--graph=PATH` is now honored by `query`/`path`/`explain`, not just `affected`. The three surfaces parsed only the space-separated `--graph PATH` form, so the `=` form was silently dropped: the explicit graph was ignored *and* the `--graph`/`--cluster` mutual-exclusion check never fired, leaving the user querying the cluster graph with no warning. All four surfaces now share one option parser.
 - Fix: `graphify watch` now passes the project root through to the graph builder, aligning watch rebuilds with `graphify build`'s root-relative `source_file` paths (#932).
 ## 0.9.29 (2026-07-28)
 

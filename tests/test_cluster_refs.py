@@ -554,3 +554,97 @@ def test_marker_fields_are_sanitized_in_hook_and_hints(tmp_path, built_cluster, 
         assert "\x1b" not in text and "\x07" not in text
         assert "A" * 300 not in text
     assert "(? members)" in cluster_hint_line(refs)
+
+
+# ---------------------------------------------------------------------------
+# Characterization: graph/cluster option parsing across all four query surfaces
+#
+# query/affected/path/explain each parsed --graph and --cluster in their own
+# near-duplicate block (two different styles), so option handling could drift
+# per command. These pin the contract for all four before it is consolidated.
+# ---------------------------------------------------------------------------
+
+# (command, argv prefix) — positionals differ: path takes two, the rest one.
+_GRAPH_SURFACES = [
+    ("query", ["query", "server"]),
+    ("affected", ["affected", "beta::server"]),
+    ("path", ["path", "app.ts", "server.ts"]),
+    ("explain", ["explain", "server"]),
+]
+_SURFACE_IDS = [name for name, _ in _GRAPH_SURFACES]
+
+
+@pytest.mark.parametrize(("name", "argv"), _GRAPH_SURFACES, ids=_SURFACE_IDS)
+def test_cluster_flag_resolves_on_every_surface(
+    tmp_path, built_cluster, monkeypatch, capsys, name, argv
+):
+    """Bare --cluster reaches the cluster graph from inside a member repo."""
+    monkeypatch.chdir(tmp_path / "alpha")
+    code, out, err = _dispatch(argv + ["--cluster"], monkeypatch, capsys)
+    assert code == 0, f"{name}: {err}"
+    # The local member graph has no 'server' node; the cluster graph does.
+    assert "No unique node match" not in out
+    assert "No node matching" not in out
+    assert "No matching nodes found." not in out
+
+
+@pytest.mark.parametrize(("name", "argv"), _GRAPH_SURFACES, ids=_SURFACE_IDS)
+def test_cluster_name_forms_resolve_on_every_surface(
+    tmp_path, built_cluster, monkeypatch, capsys, name, argv
+):
+    """--cluster NAME and --cluster=NAME are equivalent on every surface."""
+    monkeypatch.chdir(tmp_path / "alpha")
+    spaced = _dispatch(argv + ["--cluster", "test-cluster"], monkeypatch, capsys)
+    equals = _dispatch(argv + ["--cluster=test-cluster"], monkeypatch, capsys)
+    assert spaced[0] == 0, f"{name} (--cluster NAME): {spaced[2]}"
+    assert equals[0] == 0, f"{name} (--cluster=NAME): {equals[2]}"
+    assert spaced[1] == equals[1], f"{name}: name forms diverged"
+
+
+@pytest.mark.parametrize(("name", "argv"), _GRAPH_SURFACES, ids=_SURFACE_IDS)
+def test_empty_cluster_value_is_an_error_on_every_surface(
+    tmp_path, built_cluster, monkeypatch, capsys, name, argv
+):
+    monkeypatch.chdir(tmp_path / "alpha")
+    code, _out, err = _dispatch(argv + ["--cluster="], monkeypatch, capsys)
+    assert code == 1, name
+    assert "requires a cluster name" in err, name
+
+
+@pytest.mark.parametrize(("name", "argv"), _GRAPH_SURFACES, ids=_SURFACE_IDS)
+def test_graph_and_cluster_are_mutually_exclusive_on_every_surface(
+    tmp_path, built_cluster, monkeypatch, capsys, name, argv
+):
+    monkeypatch.chdir(tmp_path / "alpha")
+    code, _out, err = _dispatch(
+        argv + ["--cluster", "--graph", "x.json"], monkeypatch, capsys
+    )
+    assert code == 1, name
+    assert "mutually exclusive" in err, name
+
+
+@pytest.mark.parametrize(("name", "argv"), _GRAPH_SURFACES, ids=_SURFACE_IDS)
+def test_graph_equals_form_is_honored_on_every_surface(
+    tmp_path, built_cluster, monkeypatch, capsys, name, argv
+):
+    """`--graph=PATH` must behave like `--graph PATH`.
+
+    Only `affected` parsed the `=` form; the other three silently dropped the
+    token, so the explicit graph was ignored AND the --cluster exclusivity
+    check never fired. Both halves are pinned here.
+    """
+    monkeypatch.chdir(tmp_path / "alpha")
+    missing = tmp_path / "nope.json"
+
+    # Honored: an explicit missing graph must fail, not fall back to the default.
+    code, out, err = _dispatch(argv + [f"--graph={missing}"], monkeypatch, capsys)
+    assert code != 0 or "not found" in (out + err).lower(), (
+        f"{name}: --graph={{PATH}} was ignored"
+    )
+
+    # And it must trip mutual exclusion just like the spaced form.
+    code, _out, err = _dispatch(
+        argv + ["--cluster", f"--graph={missing}"], monkeypatch, capsys
+    )
+    assert code == 1, name
+    assert "mutually exclusive" in err, name

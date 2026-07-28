@@ -89,7 +89,7 @@ def _clean(value) -> str:
     return sanitize_label(str(value))
 
 
-def _member_count(ref: dict) -> "int | str":
+def member_count(ref: dict) -> "int | str":
     raw = ref.get("member_count", 0)
     try:
         count = int(raw)
@@ -108,7 +108,7 @@ def cluster_hint_line(refs: list[dict]) -> str:
         ref = refs[0]
         return (
             f"note: this repo is member '{_clean(ref['self_tag'])}' of cluster "
-            f"'{_clean(ref['cluster_name'])}' ({_member_count(ref)} members) — "
+            f"'{_clean(ref['cluster_name'])}' ({member_count(ref)} members) — "
             "cross-repo answers may need the cluster graph; re-run with --cluster"
         )
     names = ", ".join(sorted(_clean(ref["cluster_name"]) for ref in refs))
@@ -123,7 +123,7 @@ def unresolvable_message(ref: dict) -> str:
     name = _clean(ref["cluster_name"])
     base = (
         f"this repo is member '{_clean(ref['self_tag'])}' of cluster "
-        f"'{name}' ({_member_count(ref)} members) "
+        f"'{name}' ({member_count(ref)} members) "
         "but the cluster isn't available locally"
     )
     url = _clean(ref.get("cluster_url") or "")

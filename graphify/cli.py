@@ -91,10 +91,9 @@ def _hook_cluster_line() -> str:
     tags, URLs, and paths are never interpolated here.
     """
     try:
-        from graphify.cluster_ref import load_cluster_refs
-        from graphify.paths import GRAPHIFY_OUT
+        from graphify.cluster_ref import load_cluster_refs, member_count
 
-        refs = load_cluster_refs(Path(GRAPHIFY_OUT))
+        refs = load_cluster_refs(Path(_GRAPHIFY_OUT))
         if not refs:
             return ""
         if len(refs) > 1:
@@ -104,18 +103,8 @@ def _hook_cluster_line() -> str:
                 "query/path/explain/affected."
             )
         ref = refs[0]
-        raw_count = ref.get("member_count", 0)
-        try:
-            parsed_count = int(raw_count)
-        except (TypeError, ValueError):
-            parsed_count = 0
-        member_count: "int | str" = (
-            parsed_count
-            if not isinstance(raw_count, bool) and 1 <= parsed_count <= 100_000
-            else "?"
-        )
         return (
-            f" This repo belongs to a cluster ({member_count} members); for "
+            f" This repo belongs to a cluster ({member_count(ref)} members); for "
             f"cross-repo questions add --cluster to graphify "
             f"query/path/explain/affected."
         )
@@ -233,6 +222,66 @@ def _parse_cluster_option(args: list[str], index: int) -> tuple[bool, str | None
     if index + 1 < len(args) and not args[index + 1].startswith("--"):
         return True, args[index + 1], 2
     return True, None, 1
+
+
+def _parse_graph_selection(
+    args: list[str],
+) -> tuple[str, bool, bool, "str | None", list[str]]:
+    """Strip the graph/cluster selection options out of ``args``.
+
+    Returns ``(graph_path, graph_given, use_cluster, cluster_name, remaining)``.
+    ``remaining`` keeps every other token in order so each command can run its
+    own flag loop over it (``--budget``/``--context``, ``--depth``/``--relation``).
+
+    query/path/explain/affected each grew their own copy of this parsing in two
+    different styles, and only ``affected`` ever handled the ``--graph=PATH``
+    form — the others silently dropped it, so an explicit graph was ignored AND
+    the ``--cluster`` exclusivity check never fired. One parser keeps the four
+    surfaces honest.
+
+    Positionals are sliced off by the caller before this runs, so a bare token
+    after ``--cluster`` is safely a cluster name (see _parse_cluster_option).
+    A trailing valueless ``--graph`` is passed through untouched, matching the
+    prior lenient behavior on every surface.
+    """
+    graph_path = _default_graph_path()
+    graph_given = False
+    use_cluster = False
+    cluster_name: "str | None" = None
+    remaining: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--graph" and i + 1 < len(args):
+            graph_path = args[i + 1]
+            graph_given = True
+            i += 2
+            continue
+        if arg.startswith("--graph="):
+            graph_path = arg.split("=", 1)[1]
+            graph_given = True
+            i += 1
+            continue
+        parsed_cluster = _parse_cluster_option(args, i)
+        if parsed_cluster is not None:
+            use_cluster, cluster_name, consumed = parsed_cluster
+            i += consumed
+            continue
+        remaining.append(arg)
+        i += 1
+    return graph_path, graph_given, use_cluster, cluster_name, remaining
+
+
+def _resolve_selected_graph_or_exit(
+    graph_path: str, graph_given: bool, use_cluster: bool, cluster_name: "str | None"
+) -> str:
+    """Enforce --graph/--cluster exclusivity, then resolve the cluster graph."""
+    if use_cluster and graph_given:
+        print("error: --graph and --cluster are mutually exclusive", file=sys.stderr)
+        sys.exit(1)
+    if use_cluster:
+        return _resolve_cluster_graph_or_exit(cluster_name)
+    return graph_path
 
 
 def _stamped_manifest_files(
@@ -1034,12 +1083,10 @@ def dispatch_command(cmd: str) -> None:
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
         budget = 2000
-        graph_path = _default_graph_path()
-        graph_given = False
-        use_cluster = False
-        cluster_name: str | None = None
         context_filters: list[str] = []
-        args = sys.argv[3:]
+        graph_path, graph_given, use_cluster, cluster_name, args = (
+            _parse_graph_selection(sys.argv[3:])
+        )
         i = 0
         while i < len(args):
             if args[i] == "--budget" and i + 1 < len(args):
@@ -1062,20 +1109,11 @@ def dispatch_command(cmd: str) -> None:
             elif args[i].startswith("--context="):
                 context_filters.append(args[i].split("=", 1)[1])
                 i += 1
-            elif args[i] == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-                graph_given = True
-                i += 2
-            elif (parsed_cluster := _parse_cluster_option(args, i)) is not None:
-                use_cluster, cluster_name, consumed = parsed_cluster
-                i += consumed
             else:
                 i += 1
-        if use_cluster and graph_given:
-            print("error: --graph and --cluster are mutually exclusive", file=sys.stderr)
-            sys.exit(1)
-        if use_cluster:
-            graph_path = _resolve_cluster_graph_or_exit(cluster_name)
+        graph_path = _resolve_selected_graph_or_exit(
+            graph_path, graph_given, use_cluster, cluster_name
+        )
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1163,27 +1201,14 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
         query = sys.argv[2]
-        graph_path = _default_graph_path()
-        graph_given = False
-        use_cluster = False
-        cluster_name: str | None = None
         depth = 2
         relations: list[str] = []
-        args = sys.argv[3:]
+        graph_path, graph_given, use_cluster, cluster_name, args = (
+            _parse_graph_selection(sys.argv[3:])
+        )
         i = 0
         while i < len(args):
-            if args[i] == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-                graph_given = True
-                i += 2
-            elif args[i].startswith("--graph="):
-                graph_path = args[i].split("=", 1)[1]
-                graph_given = True
-                i += 1
-            elif (parsed_cluster := _parse_cluster_option(args, i)) is not None:
-                use_cluster, cluster_name, consumed = parsed_cluster
-                i += consumed
-            elif args[i] == "--depth" and i + 1 < len(args):
+            if args[i] == "--depth" and i + 1 < len(args):
                 try:
                     depth = int(args[i + 1])
                 except ValueError:
@@ -1205,11 +1230,9 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             else:
                 i += 1
-        if use_cluster and graph_given:
-            print("error: --graph and --cluster are mutually exclusive", file=sys.stderr)
-            sys.exit(1)
-        if use_cluster:
-            graph_path = _resolve_cluster_graph_or_exit(cluster_name)
+        graph_path = _resolve_selected_graph_or_exit(
+            graph_path, graph_given, use_cluster, cluster_name
+        )
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1389,30 +1412,12 @@ def dispatch_command(cmd: str) -> None:
 
         source_label = sys.argv[2]
         target_label = sys.argv[3]
-        graph_path = _default_graph_path()
-        graph_given = False
-        use_cluster = False
-        cluster_name: str | None = None
-        args = sys.argv[4:]
-        i = 0
-        while i < len(args):
-            a = args[i]
-            if a == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-                graph_given = True
-                i += 2
-                continue
-            parsed_cluster = _parse_cluster_option(args, i)
-            if parsed_cluster is not None:
-                use_cluster, cluster_name, consumed = parsed_cluster
-                i += consumed
-                continue
-            i += 1
-        if use_cluster and graph_given:
-            print("error: --graph and --cluster are mutually exclusive", file=sys.stderr)
-            sys.exit(1)
-        if use_cluster:
-            graph_path = _resolve_cluster_graph_or_exit(cluster_name)
+        graph_path, graph_given, use_cluster, cluster_name, _rest = (
+            _parse_graph_selection(sys.argv[4:])
+        )
+        graph_path = _resolve_selected_graph_or_exit(
+            graph_path, graph_given, use_cluster, cluster_name
+        )
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1530,30 +1535,12 @@ def dispatch_command(cmd: str) -> None:
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
-        graph_path = _default_graph_path()
-        graph_given = False
-        use_cluster = False
-        cluster_name: str | None = None
-        args = sys.argv[3:]
-        i = 0
-        while i < len(args):
-            a = args[i]
-            if a == "--graph" and i + 1 < len(args):
-                graph_path = args[i + 1]
-                graph_given = True
-                i += 2
-                continue
-            parsed_cluster = _parse_cluster_option(args, i)
-            if parsed_cluster is not None:
-                use_cluster, cluster_name, consumed = parsed_cluster
-                i += consumed
-                continue
-            i += 1
-        if use_cluster and graph_given:
-            print("error: --graph and --cluster are mutually exclusive", file=sys.stderr)
-            sys.exit(1)
-        if use_cluster:
-            graph_path = _resolve_cluster_graph_or_exit(cluster_name)
+        graph_path, graph_given, use_cluster, cluster_name, _rest = (
+            _parse_graph_selection(sys.argv[3:])
+        )
+        graph_path = _resolve_selected_graph_or_exit(
+            graph_path, graph_given, use_cluster, cluster_name
+        )
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
