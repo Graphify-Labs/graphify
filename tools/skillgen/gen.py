@@ -954,6 +954,24 @@ def _is_semantic_cache_scope_fix_line(line: str) -> bool:
     ) or stripped.startswith("saved = save_semantic_cache(")
 
 
+_CLOJURE_CODE_EXTS = "'.clj','.cljs','.cljc','.bb',"
+_CLOJURE_CODE_EXTS_BASELINES = frozenset({
+    "code_exts = {'.py','.ts','.js','.go','.rs','.java','.cpp','.c','.rb',"
+    "'.swift','.kt','.cs','.scala','.php','.cc','.cxx','.hpp','.h','.kts'}",
+    "code_exts = {'.py','.ts','.js','.go','.rs','.java','.cpp','.c','.rb',"
+    "'.swift','.kt','.cs','.scala','.php','.cc','.cxx','.hpp','.h','.kts',"
+    "'.lua','.toc'}",
+})
+
+
+def _is_clojure_code_exts_line(line: str) -> bool:
+    """Whether a monolith code-extension line only adds Clojure sources."""
+    stripped = line.strip()
+    if stripped.count(_CLOJURE_CODE_EXTS) > 1:
+        return False
+    return stripped.replace(_CLOJURE_CODE_EXTS, "") in _CLOJURE_CODE_EXTS_BASELINES
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -974,6 +992,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
+    _is_clojure_code_exts_line,
 )
 
 

@@ -40,6 +40,7 @@ _LANG_FAMILY: dict[str, str] = {
     **{e: "swift" for e in (".swift",)},
     **{e: "dotnet" for e in (".cs",)},
     **{e: "php" for e in (".php",)},
+    **{e: "clojure" for e in (".clj", ".cljs", ".cljc", ".bb")},
     **{e: "r" for e in (".r",)},
 }
 

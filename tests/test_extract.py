@@ -2829,6 +2829,20 @@ def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
     assert "#1745" not in err
 
 
+def test_extract_warns_when_clojure_extra_missing(tmp_path, capsys, monkeypatch):
+    monkeypatch.setitem(sys.modules, "tree_sitter_clojure_orchard", None)
+    source = tmp_path / "core.clj"
+    source.write_text("(ns sample.core)\n(defn run [] :ok)\n", encoding="utf-8")
+
+    extract([source], root=tmp_path, cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "1 .clj file(s)" in err
+    assert "tree-sitter-clojure-orchard not installed" in err
+    assert "graphifyy[clojure]" in err
+    assert "#1745" in err
+
+
 def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsys):
     # #1693: intermediate progress lines count against uncached_work; the final
     # "100%" line must NOT switch to total_files (which includes cached hits and

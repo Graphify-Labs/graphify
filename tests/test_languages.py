@@ -9,8 +9,9 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_verilog,
-    extract_powershell_manifest,
+    extract_powershell_manifest, extract_clojure, extract, collect_files,
 )
+from graphify.build import build_from_json
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -75,6 +76,310 @@ def _edge_labels(result: dict, relation: str, context: str | None = None) -> set
             continue
         pairs.add((labels.get(edge["source"], edge["source"]), labels.get(edge["target"], edge["target"])))
     return pairs
+
+
+# ── Clojure ──────────────────────────────────────────────────────────────────
+
+def test_clojure_extracts_namespace_and_common_definitions():
+    result = extract_clojure(FIXTURES / "sample.clj")
+
+    assert "error" not in result
+    assert {
+        "sample.core",
+        "default-role",
+        "User",
+        "Store",
+        "Cache",
+        "normalize-name()",
+        "enrich-user()",
+        "with-user()",
+        "render()",
+        "render :user",
+        "handle-request()",
+    } <= set(_labels(result))
+
+
+def test_clojure_extracts_require_and_import_edges():
+    result = extract_clojure(FIXTURES / "sample.clj")
+
+    require_targets = {
+        edge["target"]
+        for edge in _edges_with_relation(result, "imports_from")
+    }
+    import_targets = {
+        edge["target"]
+        for edge in _edges_with_relation(result, "imports")
+    }
+    import_edges = _edges_with_relation(result, "imports", "imports_from")
+
+    assert {"sample_db", "clojure_string", "sample_audit"} <= require_targets
+    assert "java_time_instant" in import_targets
+    assert all(edge.get("context") == "import" for edge in import_edges)
+
+
+def test_clojure_extracts_same_file_calls_without_quoted_forms():
+    result = extract_clojure(FIXTURES / "sample.clj")
+    calls = _calls(result)
+
+    assert ("enrich-user()", "normalize-name()") in calls
+    assert ("render :user", "enrich-user()") in calls
+    assert ("handle-request()", "render()") in calls
+    assert ("handle-request()", "normalize-name()") in calls
+    assert not any(source == "quoted-example()" for source, _ in calls)
+    assert not any(source == "syntax-quoted-example()" for source, _ in calls)
+    assert not any(source == "var-quoted-example()" for source, _ in calls)
+    assert not any(source == "comment-example()" for source, _ in calls)
+    assert not any(source == "discarded-example()" for source, _ in calls)
+
+
+def test_clojure_extracts_protocol_methods():
+    result = extract_clojure(FIXTURES / "sample.clj")
+
+    assert {
+        ("Store", "fetch-user"),
+        ("Store", "save-user!"),
+    } <= _edge_labels(result, "method")
+
+
+def test_clojure_extracts_record_and_type_implementations():
+    result = extract_clojure(FIXTURES / "sample.clj")
+
+    assert {
+        ("User", "Store"),
+        ("Cache", "Store"),
+    } <= _edge_labels(result, "implements")
+    assert {
+        ("User", "fetch-user"),
+        ("User", "save-user!"),
+        ("Cache", "fetch-user"),
+        ("Cache", "save-user!"),
+    } <= _edge_labels(result, "method")
+    assert ("fetch-user", "normalize-name") in _edge_labels(result, "calls")
+
+
+def test_clojure_relates_multimethod_implementations_to_defmulti():
+    result = extract_clojure(FIXTURES / "sample.clj")
+
+    assert {
+        ("render", "render :user"),
+        ("render", "render :admin"),
+    } <= _edge_labels(result, "method")
+
+
+def test_clojure_preserves_case_sensitive_symbols(tmp_path):
+    source = tmp_path / "case_sensitive.clj"
+    source.write_text(
+        """(ns sample.case)
+(defn Foo [] :upper)
+(defn foo [] :lower)
+(defn call-upper [] (Foo))
+(defn call-lower [] (foo))
+""",
+        encoding="utf-8",
+    )
+
+    result = extract(
+        collect_files(tmp_path),
+        root=tmp_path,
+        cache_root=tmp_path,
+    )
+    ids_by_label = {node["label"]: node["id"] for node in result["nodes"]}
+    calls = _calls(result)
+
+    assert ids_by_label["Foo()"] != ids_by_label["foo()"]
+    assert ("call-upper()", "Foo()") in calls
+    assert ("call-lower()", "foo()") in calls
+    assert ("call-upper()", "foo()") not in calls
+    assert ("call-lower()", "Foo()") not in calls
+
+    graph = build_from_json(result)
+    ids_by_label = {
+        attributes["label"]: node_id
+        for node_id, attributes in graph.nodes(data=True)
+    }
+    assert ids_by_label["Foo()"] != ids_by_label["foo()"]
+    assert graph.has_edge(ids_by_label["call-upper()"], ids_by_label["Foo()"])
+    assert graph.has_edge(ids_by_label["call-lower()"], ids_by_label["foo()"])
+    assert not graph.has_edge(ids_by_label["call-upper()"], ids_by_label["foo()"])
+    assert not graph.has_edge(ids_by_label["call-lower()"], ids_by_label["Foo()"])
+
+
+def test_clojure_distinguishes_sigil_suffixed_symbols(tmp_path):
+    """A predicate/mutating name and its plain counterpart in one namespace are
+    two definitions, not one. Node IDs come from normalize_id, which collapses
+    every non-word run to `_` and strips it, so `live?`, `save!` and `x*` each
+    normalized onto the bare name — the extractor then hit its own ID-collision
+    assertion and dropped the WHOLE file from the graph (nucleus's
+    domain/templates.clj, which defines `live?` beside `live`)."""
+    source = tmp_path / "sigils.clj"
+    source.write_text(
+        """(ns sample.sigils)
+(defn live? [x] (boolean x))
+(defn live [x] x)
+(defn save! [x] x)
+(defn save [x] x)
+(defn check [x] (live? x))
+(defn use-plain [x] (live x))
+(defn persist [x] (save! x))
+""",
+        encoding="utf-8",
+    )
+
+    result = extract_clojure(source)
+    assert not result.get("error"), result.get("error")
+
+    ids_by_label = {node["label"]: node["id"] for node in result["nodes"]}
+    for label in ("live?()", "live()", "save!()", "save()"):
+        assert label in ids_by_label, f"{label} missing — the file was dropped"
+    assert ids_by_label["live?()"] != ids_by_label["live()"]
+    assert ids_by_label["save!()"] != ids_by_label["save()"]
+
+    # The sigil-free name keeps its readable ID; only the ambiguous one pays.
+    assert ids_by_label["live()"] == "sample_sigils_live"
+    assert "_sym_" in ids_by_label["live?()"]
+
+    # Calls must reach the variant actually named at the call site.
+    calls = _calls(result)
+    assert ("check()", "live?()") in calls
+    assert ("check()", "live()") not in calls
+    assert ("use-plain()", "live()") in calls
+    assert ("use-plain()", "live?()") not in calls
+    assert ("persist()", "save!()") in calls
+    assert ("persist()", "save()") not in calls
+
+
+def test_clojure_kebab_and_dotted_names_keep_readable_ids(tmp_path):
+    """The sigil disambiguation must not tax the common case: `-` and `.` are
+    pure separators that always mean `_`, so kebab-case functions and dotted
+    namespaces keep their plain, greppable IDs rather than a hash suffix."""
+    source = tmp_path / "kebab.clj"
+    source.write_text(
+        """(ns sample.store.send-records)
+(defn fetch-record [id] id)
+""",
+        encoding="utf-8",
+    )
+
+    result = extract_clojure(source)
+    assert not result.get("error"), result.get("error")
+    ids_by_label = {node["label"]: node["id"] for node in result["nodes"]}
+    assert ids_by_label["sample.store.send-records"] == "sample_store_send_records"
+    assert ids_by_label["fetch-record()"].endswith("_fetch_record")
+    assert "_sym_" not in ids_by_label["fetch-record()"]
+
+
+def test_clojure_uses_symbol_names_without_metadata(tmp_path):
+    source = tmp_path / "metadata.clj"
+    source.write_text(
+        """(ns sample.metadata)
+(defn ^String format-name [^String name] name)
+(def ^:private default-name "Guest")
+""",
+        encoding="utf-8",
+    )
+
+    result = extract_clojure(source)
+
+    assert {"format-name()", "default-name"} <= set(_labels(result))
+    assert all("^" not in label for label in _labels(result))
+
+
+def test_clojure_source_extensions_dispatch_through_extract(tmp_path):
+    expected_namespaces = set()
+    for suffix in (".clj", ".cljs", ".cljc", ".bb"):
+        namespace = f"sample.source{suffix[1:]}"
+        expected_namespaces.add(namespace)
+        (tmp_path / f"source{suffix}").write_text(
+            f"(ns {namespace})\n(defn run [] :ok)\n",
+            encoding="utf-8",
+        )
+
+    files = collect_files(tmp_path)
+    result = extract(files, root=tmp_path, cache_root=tmp_path)
+
+    assert {path.suffix for path in files} == {".clj", ".cljs", ".cljc", ".bb"}
+    assert expected_namespaces <= set(_labels(result))
+
+
+def test_clojure_walks_reader_conditional_branches(tmp_path):
+    source = tmp_path / "shared.cljc"
+    source.write_text(
+        """(ns sample.shared
+  #?(:clj (:require [sample.jvm :as platform])
+     :cljs (:require [sample.js :as platform])))
+#?(:clj (defn platform-name [] :clj)
+   :cljs (defn platform-name [] :cljs))
+#?@(:clj [(defn shared-helper [] (platform-name))])
+(defn jvm-helper [] :jvm)
+(defn js-helper [] :js)
+(defn platform-handler []
+  #?(:clj (jvm-helper)
+     :cljs (js-helper)))
+(defn mixed-handler []
+  (jvm-helper)
+  #?(:cljs (jvm-helper)))
+""",
+        encoding="utf-8",
+    )
+
+    result = extract_clojure(source)
+
+    assert {"platform-name()", "shared-helper()"} <= set(_labels(result))
+    assert ("shared-helper()", "platform-name()") in _calls(result)
+    assert set(_node_by_label(result, "platform-name")["reader_features"]) == {
+        ":clj",
+        ":cljs",
+    }
+    assert _node_by_label(result, "shared-helper")["reader_features"] == [":clj"]
+    dependency_features = {
+        edge["target"]: edge["reader_features"]
+        for edge in _edges_with_relation(result, "imports_from")
+    }
+    assert dependency_features == {
+        "sample_jvm": [":clj"],
+        "sample_js": [":cljs"],
+    }
+    node_ids = {
+        _normalize_symbol_label(node["label"]): node["id"]
+        for node in result["nodes"]
+    }
+    call_features = {
+        edge["target"]: edge["reader_features"]
+        for edge in _edges_with_relation(result, "calls")
+        if edge["source"] == node_ids["platform-handler"]
+    }
+    assert call_features == {
+        node_ids["jvm-helper"]: [":clj"],
+        node_ids["js-helper"]: [":cljs"],
+    }
+    mixed_edge = next(
+        edge
+        for edge in _edges_with_relation(result, "calls")
+        if edge["source"] == node_ids["mixed-handler"]
+        and edge["target"] == node_ids["jvm-helper"]
+    )
+    assert "reader_features" not in mixed_edge
+
+
+def test_clojure_extracts_top_level_script_dependencies(tmp_path):
+    source = tmp_path / "task.bb"
+    source.write_text(
+        """(require '[babashka.fs :as fs] 'clojure.string)
+(import '[java.time Instant ZoneId] 'java.util.UUID)
+""",
+        encoding="utf-8",
+    )
+
+    result = extract_clojure(source)
+    require_targets = {
+        edge["target"] for edge in _edges_with_relation(result, "imports_from")
+    }
+    import_targets = {
+        edge["target"] for edge in _edges_with_relation(result, "imports")
+    }
+
+    assert {"babashka_fs", "clojure_string"} <= require_targets
+    assert {"java_time_instant", "java_time_zoneid", "java_util_uuid"} <= import_targets
 
 
 # ── Java ──────────────────────────────────────────────────────────────────────
