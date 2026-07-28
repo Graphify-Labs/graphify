@@ -2569,3 +2569,30 @@ def test_sensitive_env_template_inside_secrets_dir_still_dropped(path):
     """Stage 1 dir guard runs before the Stage 2 template exemption: anything
     under a secrets/credentials dir stays excluded, template suffix or not."""
     assert _is_sensitive(Path(path)), f"{path} is under a secrets dir, must stay excluded (#2184)"
+
+def test_graphifyignore_excludes_memory_tree(tmp_path):
+    """#2267: .graphifyignore must reach graphify-out/memory/.
+
+    The memory tree (query results filed back into the graph) was exempt
+    from the ignore check, so a user could never exclude their own Q&A
+    output. After the fix, a pattern covering graphify-out/memory/ is
+    honored like every other path.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+
+    # First detect seeds graphify-out/memory/ (the feedback loop).
+    detect(tmp_path)
+
+    memory = tmp_path / "graphify-out" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "query_1.md").write_text("# Query\nThe calc module adds numbers.\n")
+
+    # User tries to exclude their own Q&A output.
+    (tmp_path / ".graphifyignore").write_text("graphify-out/memory/\n")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    memory_hits = [f for f in all_files if "graphify-out" in f.replace("\\", "/")]
+    assert not memory_hits, \
+        "memory tree must be excludable via .graphifyignore, but got: %s" % memory_hits
