@@ -2530,3 +2530,42 @@ def test_sensitive_bare_keyword_prose_still_dropped():
     assert _is_sensitive(Path("secrets.md"))
     assert _is_sensitive(Path("token.rst"))
     assert not _is_sensitive(Path("token-lifecycle.md"))  # multi-word slug indexed
+
+
+# ── #2232 / #2184: committed dotenv templates (.env.example etc.) are graphable ──
+
+@pytest.mark.parametrize("path", [
+    ".env.example",
+    ".env.sample",
+    ".env.template",
+    ".env.dist",
+    ".ENV.EXAMPLE",              # case-insensitive, real on macOS/Windows
+    ".envrc.sample",             # direnv template
+    ".env.production.example",   # per-environment template
+])
+def test_sensitive_filter_indexes_env_templates(path):
+    """Placeholder-only committed templates must not be treated as live secrets."""
+    assert not _is_sensitive(Path(path)), f"{path} is a committed template, must be indexed (#2184)"
+
+
+@pytest.mark.parametrize("path", [
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".envrc",
+    ".env.example.local",   # template suffix not final -> a real local override
+    ".env.example.bak",     # backup of a (possibly filled-in) env file
+])
+def test_sensitive_filter_still_excludes_real_env_files(path):
+    """The template carve-out is suffix-anchored; live env files stay excluded."""
+    assert _is_sensitive(Path(path)), f"{path} is a live env file, must stay excluded (#2184)"
+
+
+@pytest.mark.parametrize("path", [
+    "secrets/.env.example",
+    "deploy/credentials/.env.example",
+])
+def test_sensitive_env_template_inside_secrets_dir_still_dropped(path):
+    """Stage 1 dir guard runs before the Stage 2 template exemption: anything
+    under a secrets/credentials dir stays excluded, template suffix or not."""
+    assert _is_sensitive(Path(path)), f"{path} is under a secrets dir, must stay excluded (#2184)"
