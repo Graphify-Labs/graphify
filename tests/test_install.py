@@ -836,6 +836,120 @@ def test_cursor_uninstall_noop_if_not_installed(tmp_path):
     _cursor_uninstall(tmp_path)  # should not raise
 
 
+# ── Windsurf ──────────────────────────────────────────────────────────────────
+
+
+def test_windsurf_install_writes_config(tmp_path):
+    """windsurf install writes .codeium/config.json."""
+    from graphify.__main__ import _windsurf_install
+    import json
+
+    _windsurf_install(tmp_path)
+    config_file = tmp_path / ".codeium" / "config.json"
+    assert config_file.exists()
+
+    with open(config_file, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    assert config.get("version") == "1.0"
+    agent = config.get("agent", {})
+    rules = agent.get("rules", [])
+    assert len(rules) == 2
+    assert "Prioritize semantic knowledge graphs located in graphify-out/graph.json" in rules[0]
+    assert "Use graphify-out/graph_report.md" in rules[1]
+    assert "graphify-out/graph.json" in agent.get("context_paths", [])
+
+
+def test_windsurf_install_merges_existing_config(tmp_path):
+    """windsurf install merges with an existing config.json."""
+    from graphify.__main__ import _windsurf_install
+    import json
+
+    config_dir = tmp_path / ".codeium"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "config.json"
+
+    original_config = {
+        "version": "1.1",
+        "other_setting": True,
+        "agent": {
+            "rules": ["custom-rule"],
+            "context_paths": ["custom-path"]
+        }
+    }
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(original_config, f)
+
+    _windsurf_install(tmp_path)
+
+    with open(config_file, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    assert config.get("version") == "1.1"
+    assert config.get("other_setting") is True
+    agent = config.get("agent", {})
+    rules = agent.get("rules", [])
+    assert "custom-rule" in rules
+    assert len(rules) == 3
+    assert "graphify-out/graph.json" in agent.get("context_paths", [])
+    assert "custom-path" in agent.get("context_paths", [])
+
+
+def test_windsurf_uninstall_cleans_config(tmp_path):
+    """windsurf uninstall removes graphify settings but preserves others."""
+    from graphify.__main__ import _windsurf_install, _windsurf_uninstall
+    import json
+
+    # Write a config with other settings first
+    config_dir = tmp_path / ".codeium"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "config.json"
+
+    original_config = {
+        "version": "1.0",
+        "other_setting": True,
+        "agent": {
+            "rules": ["custom-rule"]
+        }
+    }
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(original_config, f)
+
+    _windsurf_install(tmp_path)
+    _windsurf_uninstall(tmp_path)
+
+    assert config_file.exists()
+    with open(config_file, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    assert config.get("version") == "1.0"
+    assert config.get("other_setting") is True
+    agent = config.get("agent", {})
+    assert "rules" in agent
+    assert agent["rules"] == ["custom-rule"]
+    assert "context_paths" not in agent
+
+
+def test_windsurf_uninstall_removes_file_if_empty(tmp_path):
+    """windsurf uninstall removes config file and empty dir if no other settings remain."""
+    from graphify.__main__ import _windsurf_install, _windsurf_uninstall
+
+    _windsurf_install(tmp_path)
+    config_file = tmp_path / ".codeium" / "config.json"
+    assert config_file.exists()
+
+    _windsurf_uninstall(tmp_path)
+    assert not config_file.exists()
+    assert not (tmp_path / ".codeium").exists()
+
+
+def test_windsurf_uninstall_noop_if_not_installed(tmp_path):
+    """windsurf uninstall does nothing if config was never written."""
+    from graphify.__main__ import _windsurf_uninstall
+
+    _windsurf_uninstall(tmp_path)  # should not raise
+
+
 # ── Gemini CLI ────────────────────────────────────────────────────────────────
 
 

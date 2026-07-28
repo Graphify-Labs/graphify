@@ -739,12 +739,15 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if platform == "cursor":
         _cursor_install(Path("."))
         return
+    if platform == "windsurf":
+        _windsurf_install(Path("."))
+        return
     # On Windows, antigravity needs the PowerShell skill, not the bash one
     if platform == "antigravity" and sys.platform == "win32":
         platform = "antigravity-windows"
     if platform not in _PLATFORM_CONFIG:
         print(
-            f"error: unknown platform '{platform}'. Choose from: {', '.join(_PLATFORM_CONFIG)}, gemini, cursor",
+            f"error: unknown platform '{platform}'. Choose from: {', '.join(_PLATFORM_CONFIG)}, gemini, cursor, windsurf",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -817,7 +820,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
 
 
 def _print_install_usage() -> None:
-    platforms = ", ".join([*_PLATFORM_CONFIG, "gemini", "cursor"])
+    platforms = ", ".join([*_PLATFORM_CONFIG, "gemini", "cursor", "windsurf"])
     print("Usage: graphify install [--project] [--platform P|P]")
     print(f"Platforms: {platforms}")
 
@@ -1308,6 +1311,119 @@ def _devin_rules_uninstall(project_dir: Path) -> None:
         return
     rules_path.unlink()
     print(f"  rules removed  ->  {rules_path}")
+
+
+def _windsurf_install(project_dir: Path) -> None:
+    """Write/Update .codeium/config.json with Windsurf configuration."""
+    config_dir = (project_dir or Path(".")) / ".codeium"
+    config_file = config_dir / "config.json"
+
+    rules_to_add = [
+        "Prioritize semantic knowledge graphs located in graphify-out/graph.json for codebase context.",
+        "Use graphify-out/graph_report.md to understand overarching module dependencies before refactoring."
+    ]
+    context_path_to_add = "graphify-out/graph.json"
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    config = {}
+    if config_file.exists():
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            config = {}
+
+    if not isinstance(config, dict):
+        config = {}
+
+    if "version" not in config:
+        config["version"] = "1.0"
+
+    if "agent" not in config or not isinstance(config["agent"], dict):
+        config["agent"] = {}
+
+    agent = config["agent"]
+
+    if "rules" not in agent or not isinstance(agent["rules"], list):
+        agent["rules"] = []
+
+    if "context_paths" not in agent or not isinstance(agent["context_paths"], list):
+        agent["context_paths"] = []
+
+    # Merge rules without duplicating
+    for rule in rules_to_add:
+        if rule not in agent["rules"]:
+            agent["rules"].append(rule)
+
+    # Merge context paths without duplicating
+    abs_path = str(((project_dir or Path(".")) / context_path_to_add).resolve())
+    if context_path_to_add not in agent["context_paths"] and abs_path not in agent["context_paths"]:
+        agent["context_paths"].append(context_path_to_add)
+
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4)
+
+    print(f"  config.json      ->  Windsurf integration configured at {config_file}")
+
+
+def _windsurf_uninstall(project_dir: Path) -> None:
+    """Remove graphify configurations from .codeium/config.json."""
+    config_dir = (project_dir or Path(".")) / ".codeium"
+    config_file = config_dir / "config.json"
+
+    if not config_file.exists():
+        return
+
+    try:
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception:
+        config_file.unlink(missing_ok=True)
+        if config_dir.exists() and not any(config_dir.iterdir()):
+            config_dir.rmdir()
+        print(f"  config.json      ->  Removed corrupt config at {config_file}")
+        return
+
+    if not isinstance(config, dict):
+        config = {}
+
+    rules_to_remove = {
+        "Prioritize semantic knowledge graphs located in graphify-out/graph.json for codebase context.",
+        "Use graphify-out/graph_report.md to understand overarching module dependencies before refactoring."
+    }
+
+    if "agent" in config and isinstance(config["agent"], dict):
+        agent = config["agent"]
+        if "rules" in agent and isinstance(agent["rules"], list):
+            agent["rules"] = [r for r in agent["rules"] if r not in rules_to_remove]
+            if not agent["rules"]:
+                del agent["rules"]
+
+        context_path_to_remove = "graphify-out/graph.json"
+        abs_path_to_remove = str(((project_dir or Path(".")) / context_path_to_remove).resolve())
+        if "context_paths" in agent and isinstance(agent["context_paths"], list):
+            agent["context_paths"] = [
+                p for p in agent["context_paths"]
+                if p != context_path_to_remove and p != abs_path_to_remove
+            ]
+            if not agent["context_paths"]:
+                del agent["context_paths"]
+
+        if not agent:
+            del config["agent"]
+
+    remaining_keys = set(config.keys())
+    if not remaining_keys or remaining_keys == {"version"}:
+        config_file.unlink(missing_ok=True)
+        print(f"  config.json      ->  Windsurf integration removed from {config_file}")
+    else:
+        with open(config_file, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=4)
+        print(f"  config.json      ->  Windsurf integration cleaned in {config_file}")
+
+    if config_dir.exists() and not any(config_dir.iterdir()):
+        config_dir.rmdir()
 
 
 _KILO_PLUGIN_JS = """\
@@ -1807,6 +1923,8 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         gemini_uninstall(project_dir, project=True)
     elif platform_name == "cursor":
         _cursor_uninstall(project_dir)
+    elif platform_name == "windsurf":
+        _windsurf_uninstall(project_dir)
     elif platform_name == "kiro":
         _kiro_uninstall(project_dir)
     elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
@@ -2005,6 +2123,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     gemini_uninstall(pd)
     vscode_uninstall(pd)
     _cursor_uninstall(pd)
+    _windsurf_uninstall(pd)
     _kiro_uninstall(pd)
     _antigravity_uninstall(pd)
     # AGENTS.md covers: codex, aider, opencode, claw, droid, trae, trae-cn, hermes, copilot
@@ -2261,7 +2380,7 @@ def main() -> None:
         print("Usage: graphify <command>")
         print()
         print("Commands:")
-        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
+        print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|windsurf|antigravity|hermes|kiro|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
@@ -2380,6 +2499,8 @@ def main() -> None:
         print("  gemini uninstall        remove GEMINI.md section + BeforeTool hook")
         print("  cursor install          write .cursor/rules/graphify.mdc (Cursor)")
         print("  cursor uninstall        remove .cursor/rules/graphify.mdc")
+        print("  windsurf install        write .codeium/config.json (Windsurf)")
+        print("  windsurf uninstall      remove .codeium/config.json")
         print("  claude install          write graphify section to CLAUDE.md + PreToolUse hook (Claude Code)")
         print("  claude uninstall        remove graphify section from CLAUDE.md + PreToolUse hook")
         print("  codebuddy install       write graphify section to CODEBUDDY.md + PreToolUse hook (CodeBuddy)")
@@ -2572,6 +2693,15 @@ def main() -> None:
             _cursor_uninstall(Path("."))
         else:
             print("Usage: graphify cursor [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "windsurf":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            _windsurf_install(Path("."))
+        elif subcmd == "uninstall":
+            _windsurf_uninstall(Path("."))
+        else:
+            print("Usage: graphify windsurf [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "vscode":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
