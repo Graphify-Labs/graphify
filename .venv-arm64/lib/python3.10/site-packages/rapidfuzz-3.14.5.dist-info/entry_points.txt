@@ -1,3 +1,0 @@
-[pyinstaller40]
-tests = rapidfuzz.__pyinstaller:get_PyInstaller_tests
-

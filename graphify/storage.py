@@ -782,7 +782,7 @@ def cluster_on_files(
         node_label=_NODE_LABEL,
         edge_label=_EDGE_LABEL,
         resolution=resolution,
-        weight="weight",
+        weight=None,
     )
 
     # 5. Write community to TempFile nodes (for analysis queries)
@@ -1643,7 +1643,7 @@ def _delta_analyze_file_level(
         node_label=_NODE_LABEL,
         edge_label=_EDGE_LABEL,
         resolution=resolution,
-        weight="weight",
+        weight=None,
         initial_community_property="delta_comm",
     )
     # file_results: {file_path: (new_cid, prev_cid)}

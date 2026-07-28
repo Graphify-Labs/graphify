@@ -1,5 +1,6 @@
 venv/
 .venv/
+.venv-arm64/
 env/
 __pycache__/
 *.pyc

@@ -1,2 +1,0 @@
-[console_scripts]
-tabulate = tabulate:_main

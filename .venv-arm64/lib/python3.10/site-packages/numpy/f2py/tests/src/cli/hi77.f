@@ -1,3 +1,0 @@
-      SUBROUTINE HI
-        PRINT*, "HELLO WORLD"
-      END SUBROUTINE

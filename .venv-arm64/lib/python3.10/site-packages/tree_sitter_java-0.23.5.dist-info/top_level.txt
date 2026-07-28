@@ -1,2 +1,0 @@
-_binding
-tree_sitter_java

@@ -1,6 +1,0 @@
-#!/Users/bingqing_1/Documents/projects/moran/tmp/graphify/.venv-arm64/bin/python3.10
-import sys
-from _pytest.config import _console_main
-if __name__ == '__main__':
-    sys.argv[0] = sys.argv[0].removesuffix('.exe')
-    sys.exit(_console_main())

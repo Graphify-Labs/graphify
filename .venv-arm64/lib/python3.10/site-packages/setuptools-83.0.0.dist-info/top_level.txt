@@ -1,2 +1,0 @@
-_distutils_hack
-setuptools

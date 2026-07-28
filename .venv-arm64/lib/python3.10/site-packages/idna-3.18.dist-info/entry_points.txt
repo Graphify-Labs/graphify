@@ -1,3 +1,0 @@
-[console_scripts]
-idna=idna.cli:main
-
