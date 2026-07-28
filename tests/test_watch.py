@@ -59,7 +59,8 @@ def test_watched_extensions_excludes_noise():
 # --- watch() import error without watchdog ---
 
 def test_check_update_no_flag_returns_true(tmp_path):
-    """check_update returns True and is silent when needs_update flag is absent."""
+    """check_update returns True and reports up-to-date when nothing is pending
+    and there's no manifest yet to diff against."""
     from graphify.watch import check_update
     assert check_update(tmp_path) is True
 
@@ -84,6 +85,40 @@ def test_check_update_does_not_clear_flag(tmp_path):
     flag.write_text("1")
     check_update(tmp_path)
     assert flag.exists()
+
+
+def test_check_update_reports_new_file_absent_from_manifest(tmp_path, capsys):
+    """A file created after the last extract has no manifest row at all — the
+    old flag-only check never caught this since only a running `graphify
+    watch` daemon set the flag. check_update must now detect it directly by
+    diffing the corpus against the manifest (#1765)."""
+    from graphify.watch import check_update
+    from graphify.detect import save_manifest
+
+    (tmp_path / "existing.py").write_text("pass\n")
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    save_manifest({"code": [str(tmp_path / "existing.py")]}, str(manifest_path), root=tmp_path)
+
+    (tmp_path / "new_module.py").write_text("pass\n")
+
+    assert check_update(tmp_path) is True
+    out = capsys.readouterr().out
+    assert "1 new/changed" in out
+    assert "graphify --update" in out
+
+
+def test_check_update_reports_up_to_date_when_manifest_matches_corpus(tmp_path, capsys):
+    """No drift, no pending flag -> explicit up-to-date status, not silence."""
+    from graphify.watch import check_update
+    from graphify.detect import save_manifest
+
+    (tmp_path / "existing.py").write_text("pass\n")
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    save_manifest({"code": [str(tmp_path / "existing.py")]}, str(manifest_path), root=tmp_path)
+
+    assert check_update(tmp_path) is True
+    out = capsys.readouterr().out
+    assert "Up to date" in out
 
 
 def test_watch_raises_without_watchdog(tmp_path, monkeypatch):
