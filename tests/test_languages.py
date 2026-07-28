@@ -22,6 +22,10 @@ _needs_dm = pytest.mark.skipif(
     _ilu.find_spec("tree_sitter_dm") is None,
     reason="tree-sitter-dm not installed (optional [dm] extra)",
 )
+_needs_commonlisp = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_commonlisp") is None,
+    reason="tree-sitter-commonlisp not installed (optional [commonlisp] extra)",
+)
 
 
 def _labels(r):
@@ -3002,16 +3006,19 @@ def test_decldef_merge_does_not_merge_same_name_same_dir_distinct_files():
 
 # ── Common Lisp ──────────────────────────────────────────────────────────────
 
+@_needs_commonlisp
 def test_cl_finds_package():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     assert "error" not in r
     assert "http-server" in _labels(r)
 
+@_needs_commonlisp
 def test_cl_finds_class():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     assert "server" in _labels(r)
     assert "ssl-server" in _labels(r)
 
+@_needs_commonlisp
 def test_cl_finds_defun():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     labels = _labels(r)
@@ -3019,14 +3026,17 @@ def test_cl_finds_defun():
     assert any("start" in l for l in labels)
     assert any("stop" in l for l in labels)
 
+@_needs_commonlisp
 def test_cl_finds_generic():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     assert any("process-request" in l for l in _labels(r))
 
+@_needs_commonlisp
 def test_cl_finds_macro():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     assert any("with-server" in l and "macro" in l for l in _labels(r))
 
+@_needs_commonlisp
 def test_cl_emits_calls():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     calls = _calls(r)
@@ -3036,12 +3046,14 @@ def test_cl_emits_calls():
     assert any("with-server" in src and "make-server" in tgt for src, tgt in calls)
     assert any("with-server" in src and "start" in tgt for src, tgt in calls)
 
+@_needs_commonlisp
 def test_cl_calls_are_extracted():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     for e in r["edges"]:
         if e["relation"] == "calls":
             assert e["confidence"] == "EXTRACTED"
 
+@_needs_commonlisp
 def test_cl_no_dangling_edges():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     node_ids = {n["id"] for n in r["nodes"]}
@@ -3049,6 +3061,7 @@ def test_cl_no_dangling_edges():
         if e["relation"] in ("contains", "method", "calls"):
             assert e["source"] in node_ids
 
+@_needs_commonlisp
 def test_cl_docstrings():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     rationale_edges = [e for e in r["edges"] if e["relation"] == "rationale_for"]
@@ -3056,6 +3069,7 @@ def test_cl_docstrings():
     labels = _labels(r)
     assert any("Process an incoming" in l for l in labels)
 
+@_needs_commonlisp
 def test_cl_method_specializers():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     spec_edges = [e for e in r["edges"] if e["relation"] == "specializes"]
@@ -3063,12 +3077,14 @@ def test_cl_method_specializers():
     # process-request specializes on server
     assert any("process_request" in e["source"] and "server" in e["target"] for e in spec_edges)
 
+@_needs_commonlisp
 def test_cl_inherits():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     inherit_edges = [e for e in r["edges"] if e["relation"] == "inherits"]
     assert len(inherit_edges) >= 1
     assert any("ssl_server" in e["source"] and "server" in e["target"] for e in inherit_edges)
 
+@_needs_commonlisp
 def test_cl_imports():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     import_edges = [e for e in r["edges"] if e["relation"] == "imports"]
@@ -3076,10 +3092,12 @@ def test_cl_imports():
     assert "cl" in targets
     assert "alexandria" in targets
 
+@_needs_commonlisp
 def test_cl_finds_deftype():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     assert "port-number" in _labels(r)
 
+@_needs_commonlisp
 def test_cl_finds_defstruct():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     labels = _labels(r)
@@ -3087,6 +3105,7 @@ def test_cl_finds_defstruct():
     # defstruct with options form: (defstruct (name ...) ...)
     assert "connection" in labels
 
+@_needs_commonlisp
 def test_cl_finds_defvar_defparameter_defconstant():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     labels = _labels(r)
@@ -3094,10 +3113,12 @@ def test_cl_finds_defvar_defparameter_defconstant():
     assert "*default-port*" in labels
     assert "+max-headers+" in labels
 
+@_needs_commonlisp
 def test_cl_finds_define_condition():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     assert "server-error" in _labels(r)
 
+@_needs_commonlisp
 def test_cl_finds_custom_definer():
     """The def-prefix heuristic should catch definline / definline-maybe."""
     r = extract_commonlisp(FIXTURES / "sample.lisp")
@@ -3106,6 +3127,7 @@ def test_cl_finds_custom_definer():
     assert "header=()" in labels
     assert "header<()" in labels
 
+@_needs_commonlisp
 def test_cl_custom_definer_in_call_graph():
     """Functions defined via custom definers should appear in the call graph."""
     r = extract_commonlisp(FIXTURES / "sample.lisp")
@@ -3114,6 +3136,7 @@ def test_cl_custom_definer_in_call_graph():
     assert any("compare-headers" in src and "header=" in tgt for src, tgt in calls)
     assert any("compare-headers" in src and "header<" in tgt for src, tgt in calls)
 
+@_needs_commonlisp
 def test_cl_operator_names_disambiguated():
     """upi=, upi<, upi> must produce distinct ids (operator chars matter)."""
     r = extract_commonlisp(FIXTURES / "sample.lisp")
@@ -3124,6 +3147,7 @@ def test_cl_operator_names_disambiguated():
     assert len(lt_ids) == 1
     assert eq_ids[0] != lt_ids[0]
 
+@_needs_commonlisp
 def test_cl_default_value_not_treated_as_definition():
     """The def-prefix heuristic must not match denylisted symbols."""
     import tempfile
@@ -3140,6 +3164,7 @@ def test_cl_default_value_not_treated_as_definition():
     finally:
         path.unlink()
 
+@_needs_commonlisp
 def test_cl_defs_inside_wrapper_macro():
     """Definitions nested inside wrapper macros like (optimizing ...) or
     (eval-when ...) must be extracted. Many CL codebases wrap hot-path
@@ -3167,6 +3192,7 @@ def test_cl_defs_inside_wrapper_macro():
     finally:
         path.unlink()
 
+@_needs_commonlisp
 def test_cl_defs_inside_reader_conditional():
     """#+feature / #-feature reader conditionals wrap their guarded form
     in an include_reader_macro AST node, which the walker must descend
@@ -3189,6 +3215,7 @@ def test_cl_defs_inside_reader_conditional():
     finally:
         path.unlink()
 
+@_needs_commonlisp
 def test_cl_defparameter_string_value_not_docstring():
     """For defvar/defparameter/defconstant, a string literal in the VALUE
     position must not be wrongly captured as a docstring node."""
