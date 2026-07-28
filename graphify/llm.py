@@ -26,7 +26,10 @@ from graphify.file_slice import (
 
 # `_read_files` truncates each file at this many characters before joining into
 # the user message. Token estimates use the same cap so packing matches reality.
-_FILE_CHAR_CAP = 20_000
+# The 20k default keeps cost/context bounded, but silently drops the tail of any
+# file longer than it — corpora of large individual files (e.g. concatenated chat
+# logs) lose most of their content. Override with GRAPHIFY_FILE_CHAR_CAP to raise it.
+_FILE_CHAR_CAP = int(os.environ.get("GRAPHIFY_FILE_CHAR_CAP", "20000"))
 # `_read_files` wraps each file in an `<untrusted_source path=... sha256=...>`
 # delimiter block (see issue #1210); this is roughly the per-file overhead in
 # characters that wrapper adds (open tag + 64-char sha + close tag + newlines).
