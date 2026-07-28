@@ -294,3 +294,27 @@ def test_apostrophe_in_markup_text_does_not_swallow_later_components(tmp_path):
     )
     result = extract_svelte(path)
     assert [e["symbol"] for e in _edges(result, "uses", "renders")] == ["Icon"]
+
+
+def test_call_sites_are_reported_at_file_lines_not_block_lines(tmp_path):
+    """A `<script module>` block pushes the instance script down the file.
+
+    tree-sitter line numbers are relative to the parsed block, so without the
+    offset every call site in such a file is reported several lines too high.
+    """
+    path = _write(
+        tmp_path / "Run.svelte",
+        '<script module lang="ts">\n'      # 1
+        "  const started = new Set()\n"    # 2
+        "</script>\n"                      # 3
+        "\n"                               # 4
+        '<script lang="ts">\n'             # 5
+        "  function helper() { return 1 }\n"   # 6
+        "  function go() {\n"              # 7
+        "    return helper()\n"            # 8  <- the call site
+        "  }\n"                            # 9
+        "</script>\n",
+    )
+    result = extract_svelte(path)
+    call = next(e for e in _edges(result, "calls") if e.get("context") == "call")
+    assert call["source_location"] == "L8"

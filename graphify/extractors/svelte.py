@@ -54,7 +54,7 @@ from graphify.extractors.base import (
 )
 from graphify.extractors.resolution import _resolve_js_import_target
 
-EXTRACTOR_VERSION = "airpipe-svelte-1.0.0"
+EXTRACTOR_VERSION = "airpipe-svelte-1.1.0"
 
 # Runes that BIND a value to a name. The dict maps the callee text to the node
 # kind; the exact spelling is kept on the node as `rune` so `$state` and
@@ -361,7 +361,11 @@ def extract_svelte(path: Path) -> dict:
     scripts, template = _scan_regions(raw_src)
 
     # Function bodies to sweep for calls, as (owner_nid, node, source_bytes).
-    bodies: list[tuple[str, object, bytes]] = []
+    # (owner, node, source, line_offset). The offset is essential: tree-sitter
+    # line numbers are relative to the SCRIPT BLOCK, and a file with a
+    # `<script module>` block first puts the instance script several lines down.
+    # Without it every call site in such a file is reported at the wrong line.
+    bodies: list[tuple[str, object, bytes, int]] = []
 
     for block in scripts:
         body_text = raw_src[block["start"]:block["end"]]
@@ -448,7 +452,7 @@ def extract_svelte(path: Path) -> dict:
                 ):
                     nid = declare(nm, L(dec), "function", label=f"{nm}()",
                                   scope=scope, exported=exported or None)
-                    bodies.append((nid, value, source))
+                    bodies.append((nid, value, source, line_offset))
                 elif exported:
                     # Only exported plain values are worth a node; local scalars
                     # are the noise both reviewers told us to skip.
@@ -482,7 +486,7 @@ def extract_svelte(path: Path) -> dict:
                                   scope=scope, exported=exported or None)
                     body = node.child_by_field_name("body")
                     if body is not None:
-                        bodies.append((nid, body, source))
+                        bodies.append((nid, body, source, line_offset))
                 return
             if t == "class_declaration":
                 nm_node = node.child_by_field_name("name")
@@ -508,7 +512,7 @@ def extract_svelte(path: Path) -> dict:
                 child = node.children[0] if node.children else None
                 if child is not None and child.type == "call_expression":
                     if _callee_text(child, source) in _STATEMENT_RUNES:
-                        bodies.append((file_nid, child, source))
+                        bodies.append((file_nid, child, source, line_offset))
                 return
 
         for child in root.children:
@@ -678,7 +682,7 @@ def extract_svelte(path: Path) -> dict:
     # ── call sweep inside function bodies ─────────────────────────────────────
     seen_call_pairs: set[tuple[str, str]] = set()
 
-    def walk_calls(node, owner_nid: str, source: bytes) -> None:
+    def walk_calls(node, owner_nid: str, source: bytes, line_offset: int = 0) -> None:
         if node.type == "call_expression":
             fn = node.child_by_field_name("function")
             callee = None
@@ -703,7 +707,7 @@ def extract_svelte(path: Path) -> dict:
                             "source": owner_nid, "target": target, "relation": "calls",
                             "context": "call", "confidence": "EXTRACTED",
                             "source_file": str_path, "weight": 1.0,
-                            "source_location": f"L{node.start_point[0] + 1}",
+                            "source_location": f"L{node.start_point[0] + 1 + line_offset}",
                         })
                 elif callee in imported:
                     sym = symbol_target(callee)
@@ -719,7 +723,7 @@ def extract_svelte(path: Path) -> dict:
                             "source": owner_nid, "target": target_nid, "relation": "calls",
                             "context": "call", "confidence": "EXTRACTED",
                             "source_file": str_path, "weight": 1.0,
-                            "source_location": f"L{node.start_point[0] + 1}",
+                            "source_location": f"L{node.start_point[0] + 1 + line_offset}",
                         }
                         if tfile is not None:
                             edge["target_file"] = tfile
@@ -730,13 +734,13 @@ def extract_svelte(path: Path) -> dict:
                         "callee": callee,
                         "is_member_call": is_member,
                         "source_file": str_path,
-                        "source_location": f"L{node.start_point[0] + 1}",
+                        "source_location": f"L{node.start_point[0] + 1 + line_offset}",
                     })
         for child in node.children:
-            walk_calls(child, owner_nid, source)
+            walk_calls(child, owner_nid, source, line_offset)
 
-    for owner_nid, body, source in bodies:
-        walk_calls(body, owner_nid, source)
+    for owner_nid, body, source, line_offset in bodies:
+        walk_calls(body, owner_nid, source, line_offset)
 
     # Drop edges whose endpoints never materialised, mirroring go.py. Import and
     # cross-file `uses`/`calls` edges keep their stamped target for the
