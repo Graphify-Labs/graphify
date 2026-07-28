@@ -162,6 +162,32 @@ _cleared = _dispatched - _stamped
 _scan = {f for fl in incremental['files'].values() for f in fl}
 save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
 print('[graphify update] Manifest saved.')
+
+# Append this run to the cumulative cost tracker. The initial full build
+# (core skill Step 8) does this, but --update has its own extraction path
+# and skipped it entirely, so cost.json only ever held the first run's
+# entry no matter how many incremental updates followed (#1769).
+from datetime import datetime, timezone
+input_tok = new_extraction.get('input_tokens', 0)
+output_tok = new_extraction.get('output_tokens', 0)
+
+cost_path = Path('graphify-out/cost.json')
+if cost_path.exists():
+    cost = json.loads(cost_path.read_text(encoding=\"utf-8\"))
+else:
+    cost = {'runs': [], 'total_input_tokens': 0, 'total_output_tokens': 0}
+
+cost['runs'].append({
+    'date': datetime.now(timezone.utc).isoformat(),
+    'input_tokens': input_tok,
+    'output_tokens': output_tok,
+    'files': incremental.get('new_total', 0),
+})
+cost['total_input_tokens'] += input_tok
+cost['total_output_tokens'] += output_tok
+cost_path.write_text(json.dumps(cost, indent=2, ensure_ascii=False), encoding=\"utf-8\")
+print(f'[graphify update] This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
+print(f'[graphify update] All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
 "
 ```
 
