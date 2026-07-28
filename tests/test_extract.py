@@ -2774,18 +2774,19 @@ def test_case_insensitive_suffix_filtering(tmp_path):
 
 
 def test_extract_warns_on_code_files_with_no_ast_extractor(tmp_path, capsys):
-    # #1689: .r/.R is in CODE_EXTENSIONS (counted as code) but has no AST extractor,
-    # so R files silently contribute nothing. extract() must surface that instead of
-    # reporting success as if the language were mapped.
-    r1 = tmp_path / "analysis.R"; r1.write_text("f <- function(x) x + 1\n")
-    r2 = tmp_path / "helper.r"; r2.write_text("g <- function(y) y * 2\n")
+    # #1689: .ejs is in CODE_EXTENSIONS (counted as code) but has no AST extractor,
+    # so such files silently contribute nothing. extract() must surface that instead
+    # of reporting success as if the language were mapped. (.R was the original
+    # motivating case but now has extract_r; .ejs is the canonical no-extractor one.)
+    r1 = tmp_path / "view.ejs"; r1.write_text("<p><%= name %></p>\n")
+    r2 = tmp_path / "page.ejs"; r2.write_text("<h1>Title</h1>\n")
     py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
 
     result = extract([r1, r2, py], cache_root=tmp_path)
     err = capsys.readouterr().err
 
     assert "no AST extractor" in err
-    assert ".r (2)" in err            # both R files grouped under the lowercased ext
+    assert ".ejs (2)" in err
     assert "#1689" in err
     # the Python file still extracts normally
     labels = [n.get("label") for n in result["nodes"]]
@@ -2829,6 +2830,38 @@ def test_extract_no_missing_dep_warning_when_sql_installed(tmp_path, capsys):
     assert "#1745" not in err
 
 
+def test_extract_warns_when_r_extra_missing(tmp_path, capsys, monkeypatch):
+    # #1745: .r HAS a dispatch entry, so the #1689 warning can't fire, and
+    # extract_r returns an "error" result when tree-sitter-language-pack is
+    # absent, so the files must not vanish silently — extract() surfaces them
+    # with the [r] extra named.
+    monkeypatch.setitem(sys.modules, "tree_sitter_language_pack", None)
+    r1 = tmp_path / "analysis.R"; r1.write_text("f <- function(x) x + 1\n")
+    r2 = tmp_path / "helper.r"; r2.write_text("g <- function(y) y * 2\n")
+    py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
+
+    result = extract([r1, r2, py], cache_root=tmp_path)
+    err = capsys.readouterr().err
+
+    assert "2 .r file(s)" in err
+    assert "tree-sitter-language-pack not installed" in err
+    assert 'graphifyy[r]' in err
+    assert "#1745" in err
+    assert "#1689" not in err  # .r/.R is now mapped; no #1689 no-extractor warning
+    # the Python file still extracts normally
+    labels = [n.get("label") for n in result["nodes"]]
+    assert any(str(l).startswith("main") for l in labels)
+
+
+def test_extract_no_warning_when_r_extra_installed(tmp_path, capsys):
+    pytest.importorskip("tree_sitter_language_pack")
+    r = tmp_path / "module.R"; r.write_text("f <- function(x) x + 1\n")
+    extract([r], cache_root=tmp_path)
+    err = capsys.readouterr().err
+    assert "#1745" not in err
+    assert "no AST extractor" not in err
+
+
 def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsys):
     # #1693: intermediate progress lines count against uncached_work; the final
     # "100%" line must NOT switch to total_files (which includes cached hits and
@@ -2836,8 +2869,8 @@ def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsy
     for i in range(100):
         (tmp_path / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n")
     for i in range(5):
-        (tmp_path / f"s{i}.r").write_text(f"g{i} <- function(x) x\n")  # no extractor
-    paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.r"))  # total 105
+        (tmp_path / f"s{i}.ejs").write_text(f"hello {i}\n")  # no extractor
+    paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.ejs"))  # total 105
 
     extract(paths, cache_root=tmp_path, parallel=False)
     out = capsys.readouterr().out
