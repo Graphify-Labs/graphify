@@ -4037,29 +4037,6 @@ def extract_xaml(path: Path) -> dict:
 # block defined in the corpus (count.index, each.key, self.*, path.module, ...).
 
 
-# ── Main extract and collect_files ────────────────────────────────────────────
-
-
-def _check_tree_sitter_version() -> None:
-    """Raise a clear error if tree-sitter is too old for the new Language API."""
-    try:
-        from tree_sitter import LANGUAGE_VERSION
-    except ImportError:
-        raise ImportError(
-            "tree-sitter is not installed. Run: pip install 'tree-sitter>=0.23.0'"
-        )
-    # Language API v2 starts at LANGUAGE_VERSION 14
-    if LANGUAGE_VERSION < 14:
-        import tree_sitter as _ts
-        raise RuntimeError(
-            f"tree-sitter {getattr(_ts, '__version__', 'unknown')} is too old. "
-            f"graphify requires tree-sitter >= 0.23.0 (Language API v2). "
-            f"Run: pip install --upgrade tree-sitter"
-        )
-
-
-
-
 _DISPATCH: dict[str, Any] = {
     ".py": extract_python,
     ".js": extract_js,
