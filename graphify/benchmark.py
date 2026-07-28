@@ -1,12 +1,12 @@
 """Token-reduction benchmark - measures how much context graphify saves vs naive full-corpus approach."""
 from __future__ import annotations
-import json
 import sys
 from pathlib import Path
 
 from graphify.build import edge_data
 from graphify.serve import _query_terms
 from graphify.store import open_store
+from graphify.paths import default_graph_json as _default_graph_json
 
 
 _CHARS_PER_TOKEN = 4  # standard approximation
@@ -84,7 +84,7 @@ _SAMPLE_QUESTIONS = [
 
 
 def run_benchmark(
-    graph_path: str = "graphify-out/graph.json",
+    graph_path: str | None = None,
     corpus_words: int | None = None,
     questions: list[str] | None = None,
 ) -> dict:
@@ -97,7 +97,10 @@ def run_benchmark(
 
     Returns dict with: corpus_tokens, avg_query_tokens, reduction_ratio, per_question
     """
-    resolved = Path(graph_path)
+    # FalkorDB-only: graph_path is the legacy graph.json location; its parent dir
+    # holds the pointer to the actual graph, so no file parsing (and no "edges"
+    # vs "links" key normalization, #2212) is involved.
+    resolved = Path(graph_path or _default_graph_json())
     out_dir = resolved.parent if resolved.suffix else resolved
     G = open_store(out_dir, create=False)
 

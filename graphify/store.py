@@ -109,7 +109,15 @@ def open_store(
         except Exception:
             name = None
     if not name:
-        root = Path(out_dir).resolve().parent
+        # Standard layout is <project>/graphify-out, and the name is derived from
+        # the PROJECT dir so it stays stable if the output dir is recreated. For a
+        # non-standard dir (an explicit --graph elsewhere) derive from the dir
+        # itself: deriving from its parent would give every sibling graph dir the
+        # same name, silently pointing two different graphs at one FalkorDB graph.
+        from graphify.paths import GRAPHIFY_OUT as _OUT
+
+        resolved_out = Path(out_dir).resolve()
+        root = resolved_out.parent if resolved_out.name == Path(_OUT).name else resolved_out
         name = graph_name_for(root)
         if create:
             Path(out_dir).mkdir(parents=True, exist_ok=True)
@@ -411,6 +419,19 @@ class MemGraph:
 
     def has_directed_edge(self, u, v):
         return any(a == u and b == v for a, b, _ in self._esorted)
+
+    def edge_attrs_all(self, u, v) -> list[dict]:
+        """Every stored edge between u and v, forward-preferred.
+
+        ``self.edges[u, v]`` returns only the first match, which collapses
+        parallel links (a `references` and a `calls` edge between the same pair)
+        and lets `path` print a relation the traversed pair doesn't carry
+        (#2074). Callers that must report all relations use this instead.
+        """
+        fwd = [attrs for a, b, attrs in self._esorted if a == u and b == v]
+        if fwd:
+            return fwd
+        return [attrs for a, b, attrs in self._esorted if a == v and b == u]
 
     def neighbors(self, node_id):
         out = set()
@@ -853,9 +874,15 @@ class GraphStore:
         edge-existence check) — endpoints must already exist."""
         by_rel: dict[str, list[dict]] = {}
         for u, v, attrs in rows:
-            rel = _safe_rel(str(attrs.get("relation", "RELATED_TO")))
+            rel = _safe_rel(str(attrs.get("relation") or ""))
             props = _scalar_props(attrs)
-            props.setdefault("relation", attrs.get("relation", rel))
+            # The Cypher relationship TYPE always needs a value (_safe_rel falls
+            # back to RELATED_TO), but the `relation` PROPERTY must stay absent
+            # when the edge genuinely carried none — otherwise a reader can't
+            # distinguish "no relation" from a real one and prints a fabricated
+            # label instead of the honest "related" fallback (#2074).
+            if attrs.get("relation"):
+                props.setdefault("relation", attrs["relation"])
             by_rel.setdefault(rel, []).append({"src": u, "tgt": v, "props": props})
         for rel, batch in by_rel.items():
             verb = "CREATE" if fresh else "MERGE"
@@ -914,6 +941,25 @@ class GraphStore:
         """True only if an edge is stored in the u -> v orientation."""
         return bool(self._rows(
             "MATCH (a:Entity {id:$u})-[]->(b:Entity {id:$v}) RETURN 1 LIMIT 1", {"u": u, "v": v}))
+
+    def edge_attrs_all(self, u: str, v: str) -> list[dict]:
+        """Every stored edge between u and v, forward-preferred.
+
+        ``_edge_attrs`` uses LIMIT 1, which collapses parallel links (a
+        `references` and a `calls` edge between the same pair) and lets `path`
+        print a relation the traversed pair doesn't carry (#2074). Callers that
+        must report all relations use this instead.
+        """
+        rows = self._rows(
+            "MATCH (a:Entity {id:$u})-[r]->(b:Entity {id:$v}) RETURN properties(r)",
+            {"u": u, "v": v}, timeout=_QUERY_TIMEOUT_MS,
+        )
+        if not rows:
+            rows = self._rows(
+                "MATCH (a:Entity {id:$u})<-[r]-(b:Entity {id:$v}) RETURN properties(r)",
+                {"u": u, "v": v}, timeout=_QUERY_TIMEOUT_MS,
+            )
+        return [dict(r[0]) for r in rows]
 
     def number_of_nodes(self) -> int:
         # count() is uncapped and cheap — independent of the read cache.
@@ -1056,12 +1102,22 @@ class GraphStore:
         eattrs: dict = {}
         pairs = [[u, v] for u, v in edge_pairs if u in nodes and v in nodes]
         if pairs:
-            for u, v, rel, conf, ctx in self._rows(
+            # startNode(r) recovers the STORED orientation: the pair (p[0], p[1])
+            # is traversal visit order, so rendering it as-is prints a
+            # caller→callee edge backwards whenever the callee was visited first.
+            # r.source_file/source_location are the relation SITE, which the
+            # renderer cites instead of a def line (#BUG1).
+            for u, v, rel, conf, ctx, src, sf, loc in self._rows(
                 "UNWIND $pairs AS p MATCH (a:Entity {id: p[0]})-[r]-(b:Entity {id: p[1]}) "
-                "RETURN p[0], p[1], r.relation, r.confidence, r.context",
+                "RETURN p[0], p[1], r.relation, r.confidence, r.context, "
+                "startNode(r).id, r.source_file, r.source_location",
                 {"pairs": pairs}, timeout=_QUERY_TIMEOUT_MS,
             ):
-                eattrs.setdefault((u, v), {"relation": rel, "confidence": conf, "context": ctx})
+                eattrs.setdefault((u, v), {
+                    "relation": rel, "confidence": conf, "context": ctx,
+                    "_src": src, "_tgt": (v if src == u else u),
+                    "source_file": sf, "source_location": loc,
+                })
         return nodes, eattrs, total
 
     def node_detail(self, node_id: str):
@@ -1078,20 +1134,29 @@ class GraphStore:
 
     def node_connections(self, node_id: str) -> list[dict]:
         """All edges incident to a node (both directions) with neighbor label +
-        degree + relation/confidence — one scoped query, no full-graph load."""
+        degree + relation/confidence — one scoped query, no full-graph load.
+
+        Also returns each edge's own source_file/source_location: that is the
+        call/import/reference SITE (in the caller's file for an incoming call),
+        which `explain` prints per connection (#BUG1). Reading it from the edge
+        — not the neighbor node — is what makes it a site rather than a def line.
+        """
         rows = self._rows(
             "MATCH (n:Entity {id:$id})-[r]->(m:Entity) "
             "RETURN 'out' AS dir, m.id AS mid, m.label AS mlabel, r.relation AS rel, "
-            "r.confidence AS conf, size((m)--()) AS mdeg "
+            "r.confidence AS conf, size((m)--()) AS mdeg, "
+            "r.source_file AS rsf, r.source_location AS rloc "
             "UNION ALL "
             "MATCH (n:Entity {id:$id})<-[r]-(m:Entity) "
             "RETURN 'in' AS dir, m.id AS mid, m.label AS mlabel, r.relation AS rel, "
-            "r.confidence AS conf, size((m)--()) AS mdeg",
+            "r.confidence AS conf, size((m)--()) AS mdeg, "
+            "r.source_file AS rsf, r.source_location AS rloc",
             {"id": node_id}, timeout=_QUERY_TIMEOUT_MS,
         )
         return [
             {"dir": r[0], "id": r[1], "label": r[2] or r[1], "relation": r[3] or "",
-             "confidence": r[4] or "", "degree": int(r[5])}
+             "confidence": r[4] or "", "degree": int(r[5]),
+             "source_file": r[6] or "", "source_location": r[7] or ""}
             for r in rows
         ]
 
@@ -1165,16 +1230,36 @@ class GraphStore:
         return [r[0] for r in self._rows(q, {"v": v}, timeout=_QUERY_TIMEOUT_MS)]
 
     def incoming_edges(self, frontier_ids, relations) -> list:
-        """All (frontier_id, src_id, relation) incoming edges for a frontier whose
-        relation is in `relations` — one query for the whole frontier level."""
+        """All (frontier_id, src_id, relation, source_file, source_location)
+        incoming edges for a frontier whose relation is in `relations` — one query
+        for the whole frontier level.
+
+        The edge's own source_file/source_location is the call/import/reference
+        SITE in the SOURCE's file, which `affected` reports instead of the node's
+        definition line (#BUG1)."""
         if not frontier_ids:
             return []
         return self._rows(
             "UNWIND $f AS fid MATCH (src:Entity)-[r]->(n:Entity {id: fid}) "
-            "WHERE r.relation IN $rels RETURN fid, src.id, r.relation",
+            "WHERE r.relation IN $rels "
+            "RETURN fid, src.id, r.relation, r.source_file, r.source_location",
             {"f": list(frontier_ids), "rels": list(relations)},
             timeout=_QUERY_TIMEOUT_MS,
         )
+
+    def member_nodes(self, node_id: str) -> list:
+        """Node ids one outward `method`/`contains` hop from `node_id`.
+
+        A caller can bind to a class's method node rather than the class node
+        itself, so those callers are unreachable from the class in a reverse walk
+        (#1669/#1634). `affected` uses these as extra BFS seeds only."""
+        return [
+            r[0] for r in self._rows(
+                "MATCH (n:Entity {id:$id})-[r]->(m:Entity) "
+                "WHERE r.relation IN ['method','contains'] RETURN m.id",
+                {"id": node_id}, timeout=_QUERY_TIMEOUT_MS,
+            )
+        ]
 
     def node_attrs_batch(self, ids) -> dict:
         """Fetch properties for many node ids in one query."""

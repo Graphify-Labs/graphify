@@ -14,7 +14,7 @@ Each subagent writes its result to its own `graphify-out/.graphify_chunk_NN.json
 
 CHUNK_PATH must be an **absolute** path — derive it before dispatching:
 ```bash
-PROJECT_ROOT=$(cat graphify-out/.graphify_root)
+PROJECT_ROOT=$(pwd)  # cwd — where Part C globs graphify-out/ (NOT .graphify_root/scan dir, #1392)
 # Then for chunk N: CHUNK_PATH="${PROJECT_ROOT}/graphify-out/.graphify_chunk_0N.json"
 ```
 

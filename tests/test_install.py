@@ -359,6 +359,41 @@ def test_codebuddy_install_writes_hook(tmp_path):
     assert any("graphify" in str(h) for h in hooks)
 
 
+def test_claude_hook_is_shell_agnostic(tmp_path):
+    # #522: the installed PreToolUse hooks must be plain exe invocations, not
+    # POSIX bash (which fails on Windows cmd.exe/PowerShell).
+    import json as _json
+    from graphify.__main__ import _install_claude_hook
+    _install_claude_hook(tmp_path)
+    hooks = _json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]["PreToolUse"]
+    matchers = {h["matcher"] for h in hooks}
+    assert {"Bash|Grep", "Read|Glob"} <= matchers  # Grep in the search matcher: #1986
+    for h in hooks:
+        cmd = h["hooks"][0]["command"]
+        for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):
+            assert token not in cmd, f"shell syntax {token!r} in {cmd!r}"
+        assert "graphify" in cmd and "hook-guard" in cmd
+
+
+def test_claude_hook_install_idempotent_and_replaces_old_bash_hook(tmp_path):
+    import json as _json
+    from graphify.__main__ import _install_claude_hook
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    # Pre-seed a legacy bash-style graphify hook (the thing #522 shipped before).
+    settings_path.write_text(_json.dumps({"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command",
+         "command": "[ -f graphify-out/graph.json ] && echo '{...}' || true"}]},
+    ]}}), encoding="utf-8")
+    _install_claude_hook(tmp_path)
+    _install_claude_hook(tmp_path)  # second install must not duplicate
+    hooks = _json.loads(settings_path.read_text())["hooks"]["PreToolUse"]
+    graphify_hooks = [h for h in hooks if "graphify" in str(h)]
+    assert len(graphify_hooks) == 2, "exactly the Bash + Read|Glob guards, no dupes"
+    # the legacy bash payload must be gone
+    assert not any("[ -f graphify-out" in h["hooks"][0]["command"] for h in graphify_hooks)
+
+
 def test_codebuddy_install_idempotent(tmp_path):
     from graphify.__main__ import codebuddy_install
     codebuddy_install(tmp_path)
@@ -588,6 +623,65 @@ def test_agents_uninstall_no_op_when_not_installed(tmp_path, capsys):
     assert "nothing to do" in out
 
 
+def test_remove_marker_section_matches_exact_heading_only(tmp_path):
+    """#2062: the strip helper must match graphify's own `## graphify` heading
+    exactly, never a substring inside a user's `### graphify` H3."""
+    from graphify.install import _remove_marker_section
+    m = "## graphify"
+
+    # Only a user H3 mention -> no exact marker line -> None (file left untouched).
+    assert _remove_marker_section("# Doc\n\n### graphify\n\nmy notes\n", m) is None
+    # An inline/bullet mention is likewise not a section.
+    assert _remove_marker_section("see the ## graphify bullet\n", m) is None
+
+    # A real H2 section alongside a user H3: remove only the H2 section.
+    content = "# Doc\n\n### graphify\n\nmy notes\n\n## graphify\n\ngraphify stuff\n"
+    out = _remove_marker_section(content, m)
+    assert out is not None
+    assert "### graphify" in out and "my notes" in out
+    assert not any(l.strip() == "## graphify" for l in out.splitlines())
+    assert "graphify stuff" not in out
+
+    # The section runs to the next H2 (not stopping at a `###` inside it).
+    c2 = "## graphify\n\nintro\n\n### sub\n\ninner\n\n## Keep\n\nkeep me\n"
+    out2 = _remove_marker_section(c2, m)
+    assert "## Keep" in out2 and "keep me" in out2
+    assert "inner" not in out2 and "intro" not in out2
+
+
+def test_agents_uninstall_preserves_user_h3_graphify_heading(tmp_path):
+    """#2062 end-to-end: uninstall strips graphify's own H2 section but leaves a
+    user-authored `### graphify` H3 (and everything else) byte-intact."""
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text(
+        "# My rules\n\n"
+        "### graphify\n\n"
+        "My own notes on how I use graphify. Keep this.\n\n"
+        "## Other\n\nUnrelated content.\n"
+    )
+    _agents_install(tmp_path, "codex")  # appends a genuine `## graphify` H2 section
+    assert "## graphify" in agents_md.read_text()
+
+    _agents_uninstall(tmp_path)
+    content = agents_md.read_text()
+    assert "### graphify" in content, "user's H3 heading was deleted (#2062)"
+    assert "My own notes on how I use graphify. Keep this." in content
+    assert "## Other" in content and "Unrelated content." in content
+    assert not any(l.strip() == "## graphify" for l in content.splitlines())
+
+
+def test_uninstall_untouched_when_only_user_h3_present(tmp_path, capsys):
+    """#2062: a file with only a user `### graphify` H3 (graphify never installed)
+    must be left byte-identical, not stripped."""
+    agents_md = tmp_path / "AGENTS.md"
+    original = "# My rules\n\n### graphify\n\nHand-written. Do not touch.\n"
+    agents_md.write_text(original)
+    before = agents_md.read_bytes()
+    _agents_uninstall(tmp_path)
+    assert agents_md.read_bytes() == before
+    assert "nothing to do" in capsys.readouterr().out
+
+
 # --- OpenCode plugin tests ---
 
 
@@ -597,6 +691,40 @@ def test_opencode_agents_install_writes_plugin(tmp_path):
     plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
     assert plugin.exists()
     assert "tool.execute.before" in plugin.read_text()
+
+
+def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
+    """The bash reminder string must not contain backticks or $(...) (regression test for #1413).
+
+    The plugin prepends `echo "<reminder>" && <cmd>` to the user's bash command.
+    Backticks or $() inside the reminder trigger bash command substitution
+    when the echo runs, which both corrupts tool output and silently executes
+    the very graphify command we are only suggesting.
+    """
+    _agents_install(tmp_path, "opencode")
+    plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
+    body = plugin.read_text()
+    # Extract the echoed reminder string literal between the double-quotes
+    # of the `output.args.command = 'echo "..." && ' +` line.
+    import re
+
+    m = re.search(r'echo "([^"]*)"', body)
+    assert m, "echo reminder not found in plugin body"
+    reminder = m.group(1)
+    assert "`" not in reminder, f"backtick in reminder would trigger command substitution: {reminder!r}"
+    assert "$(" not in reminder, f"$() in reminder would trigger command substitution: {reminder!r}"
+
+
+def test_opencode_plugin_uses_semicolon_not_ampersand(tmp_path):
+    """The reminder must be joined to the user's command with ';', not '&&'
+    (#1646). Windows PowerShell 5.1 rejects '&&' as a statement separator, which
+    broke the first bash command of every OpenCode session on Windows. ';' works
+    in PowerShell 5.1, Bash, and POSIX shells."""
+    _agents_install(tmp_path, "opencode")
+    body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
+    # The prepend line ends with the separator before `' +`.
+    assert '" ; \' +' in body or '." ; \' +' in body, "reminder should join with ';'"
+    assert '" && \' +' not in body, "'&&' breaks PowerShell 5.1 (#1646)"
 
 
 def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
@@ -970,3 +1098,77 @@ def test_uninstall_all_removes_amp_user_skill(tmp_path, monkeypatch):
         main()
 
     assert not skill.exists()
+
+
+def test_hermes_skill_destination_windows_uses_localappdata():
+    """#1403: on Windows, Hermes scans %LOCALAPPDATA%\\hermes\\skills, so the global
+    skill must land there — not ~/.hermes/skills (the POSIX path)."""
+    from graphify.__main__ import _platform_skill_destination
+    with patch("graphify.__main__.platform.system", return_value="Windows"), \
+         patch.dict(os.environ, {"LOCALAPPDATA": str(Path("/tmp/AppDataLocal"))}):
+        dst = _platform_skill_destination("hermes", project=False)
+    assert dst == Path("/tmp/AppDataLocal") / "hermes" / "skills" / "graphify" / "SKILL.md", dst
+
+
+def test_hermes_skill_destination_posix_uses_home():
+    """Non-Windows hermes destination is unchanged (~/.hermes/skills)."""
+    from graphify.__main__ import _platform_skill_destination
+    with patch("graphify.__main__.platform.system", return_value="Linux"):
+        dst = _platform_skill_destination("hermes", project=False)
+    assert str(dst).endswith(".hermes/skills/graphify/SKILL.md"), dst
+
+
+def _cli_dispatched_commands() -> set[str]:
+    """Subcommand names the CLI actually dispatches.
+
+    `graphify`'s dispatcher is an `elif cmd == "..."` chain rather than a declarative
+    table, so the set is read back out of the source. Used to prove a hook command
+    written by an installer is not a stale/renamed subcommand (#2165).
+    """
+    import re
+    from graphify import cli
+
+    source = Path(cli.__file__).read_text(encoding="utf-8")
+    names = set(re.findall(r'cmd\s*==\s*"([a-z0-9][a-z0-9-]*)"', source))
+    names |= {
+        m
+        for group in re.findall(r'cmd\s+in\s+\(([^)]*)\)', source)
+        for m in re.findall(r'"([a-z0-9][a-z0-9-]*)"', group)
+    }
+    return names
+
+
+def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
+    """#2165: the PreToolUse command in .codex/hooks.json must be a command the CLI
+    dispatches, so a renamed subcommand can never leave a permanently dead hook.
+
+    `hook-check` is intentionally a no-op on Codex (Codex Desktop rejects
+    additionalContext on PreToolUse), but it must still be a *recognized* command --
+    an unrecognized one exits non-zero and would break every Bash tool call.
+    """
+    import json
+
+    from graphify.install import _install_codex_hook
+
+    _install_codex_hook(tmp_path)
+    hooks = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
+
+    entries = [
+        h
+        for group in hooks["hooks"]["PreToolUse"]
+        for h in group["hooks"]
+        if "graphify" in h.get("command", "")
+    ]
+    assert entries, "codex install must register a graphify PreToolUse hook"
+
+    dispatched = _cli_dispatched_commands()
+    assert "hook-check" in dispatched, "sanity: parser must find known commands"
+
+    for entry in entries:
+        # command is "<abs exe path> <subcommand> [args...]"
+        parts = entry["command"].split()
+        subcommand = parts[1] if len(parts) > 1 else ""
+        assert subcommand in dispatched, (
+            f"codex hook registers {subcommand!r}, which the CLI does not dispatch "
+            f"(#2165). Known commands: {sorted(dispatched)}"
+        )

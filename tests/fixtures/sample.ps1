@@ -30,3 +30,19 @@ class DataProcessor {
         Set-Content -Path $path -Value $this.Source
     }
 }
+
+class Shape {
+    [string]$Kind
+
+    [double] Area() {
+        return 0.0
+    }
+}
+
+class Circle : Shape {
+    [double]$Radius
+
+    [double] Area() {
+        return 3.14159 * $this.Radius * $this.Radius
+    }
+}

@@ -1,0 +1,19 @@
+<UserControl x:Class="Demo.ToolkitView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:i="http://schemas.microsoft.com/xaml/behaviors"
+             xmlns:vm="clr-namespace:Demo.ViewModels">
+    <UserControl.DataContext>
+        <vm:ToolkitViewModel />
+    </UserControl.DataContext>
+    <Grid>
+        <TextBlock Text="{Binding UserName}" />
+        <TextBlock Text="{Binding Email}" />
+        <i:Interaction.Triggers>
+            <i:EventTrigger EventName="Loaded">
+                <i:InvokeCommandAction Command="{Binding SaveCommand}" />
+                <i:InvokeCommandAction Command="{Binding RefreshCommand}" />
+            </i:EventTrigger>
+        </i:Interaction.Triggers>
+    </Grid>
+</UserControl>

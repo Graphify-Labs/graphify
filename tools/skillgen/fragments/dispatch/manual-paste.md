@@ -8,7 +8,7 @@ For each chunk of uncached files (20-25 per chunk), give a subagent the extracti
 
 ```bash
 # After pasting a subagent's JSON for chunk N, save it (replace N and PASTED_JSON):
-PROJECT_ROOT=$(cat graphify-out/.graphify_root)
+PROJECT_ROOT=$(pwd)  # cwd — where Part C globs graphify-out/ (NOT .graphify_root/scan dir, #1392)
 cat > "${PROJECT_ROOT}/graphify-out/.graphify_chunk_0N.json" <<'CHUNK_JSON'
 PASTED_JSON
 CHUNK_JSON

@@ -81,6 +81,24 @@ class DiGraph(_MutableGraph):
         super().__init__(directed=True)
 
 
+def node_link_data(G, edges: str = "links") -> dict:
+    """Serialize to networkx's node-link dict shape (the graph.json on-disk form).
+
+    Stands in for ``networkx.readwrite.json_graph.node_link_data`` so tests can
+    write a graph.json fixture without importing networkx. ``edges`` names the
+    key the link list lands under, matching the nx keyword of the same name.
+    """
+    return {
+        "directed": G.is_directed(),
+        "multigraph": False,
+        "graph": dict(G.graph),
+        "nodes": [{**data, "id": nid} for nid, data in G.nodes(data=True)],
+        edges: [
+            {**data, "source": u, "target": v} for u, v, data in G.edges(data=True)
+        ],
+    }
+
+
 def relabel_nodes(G, mapping):
     """Return a new graph with node ids remapped via `mapping` (unmapped ids kept)."""
     out = DiGraph() if G.is_directed() else Graph()

@@ -346,10 +346,36 @@ def test_rust_supertrait_emits_inherits():
     assert ("Logger", "Processor") in _edge_labels(r, "inherits")
 
 
+def test_rust_enum_variant_references():
+    """Enum variant payload types must emit `references` edges.
+
+    Tuple variants (`Click(T)`) and struct variants (`Resize { x: T }`) nest
+    their field types under enum_variant_list -> enum_variant; that path was
+    never traversed, so every enum-variant type reference was dropped.
+    """
+    r = extract_rust(FIXTURES / "sample.rs")
+    refs = _edge_labels(r, "references")
+    assert ("GraphEvent", "Graph") in refs, "tuple-variant reference missing"
+    assert ("GraphEvent", "DataProcessor") in refs, "struct-variant reference missing"
+
+
 def test_rust_struct_field_emits_field_context():
     r = extract_rust(FIXTURES / "sample.rs")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
     assert ("DataProcessor", "DataProcessor") not in _edge_labels(r, "references", "field")
+
+
+def test_rust_tuple_struct_field_references():
+    """Tuple struct fields (`struct Wrapper(A, B);`) nest their positional types
+    under ordered_field_declaration_list with no field_declaration wrapper -- the
+    same shape as tuple enum variants. That path was not traversed for structs, so
+    tuple-struct field type references were silently dropped.
+    """
+    r = extract_rust(FIXTURES / "sample.rs")
+    field_refs = _edge_labels(r, "references", "field")
+    assert ("GraphPair", "Graph") in field_refs, "tuple-struct field reference missing"
+    assert ("GraphPair", "Result") in field_refs, "tuple-struct generic field reference missing"
+    assert ("GraphPair", "DataProcessor") in _edge_labels(r, "references", "generic_arg")
 
 
 def test_rust_method_parameter_return_and_generic_contexts():
@@ -487,3 +513,76 @@ def test_sql_schema_qualified_alter_fk():
     for e in fk_edges:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
         assert e["target"] in node_ids, f"dangling target: {e['target']}"
+
+def test_sql_plpgsql_functions_survive_parse_errors():
+    """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
+    must still be extracted (#1910), without cascading into later statements."""
+    r = _extract_sql_or_skip("sample_plpgsql.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    # Both PL/pgSQL functions extracted, schema-qualified name kept whole
+    assert "exposed.important_function()" in labels
+    assert "tagged_quote_fn()" in labels
+    # Tables before and after the broken functions still extract
+    assert any("accounts" in l for l in labels)
+    assert any("audit_log" in l for l in labels)
+    # No spurious or empty nodes from the error recovery
+    for l in labels:
+        assert l, "empty node label"
+        assert l != "ERROR"
+    # Every function got a contains edge from the file node
+    contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
+    fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
+    assert fn_ids <= contains_targets
+
+def test_sql_plpgsql_clean_function_not_double_emitted():
+    """A cleanly-parsed LANGUAGE sql function in the same file is emitted once."""
+    r = _extract_sql_or_skip("sample_plpgsql.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    assert labels.count("plain_sql_fn()") == 1
+    # And nothing else is duplicated either
+    ids = [n["id"] for n in r["nodes"]]
+    assert len(ids) == len(set(ids))
+
+def test_sql_quoted_plpgsql_routines_are_recovered():
+    """#2180: quoted identifiers must not defeat the ERROR-node name recovery.
+
+    Generated PostgreSQL DDL (Supabase-style dumps, for example) quotes every
+    identifier: CREATE OR REPLACE FUNCTION "public"."fn"(...). The recovery
+    pattern matched a bare [\\w$.]+, which stops at the leading quote, so every
+    routine whose body also failed to parse -- RAISE, PERFORM, :=, IF..THEN,
+    bare NULL; -- was dropped with no warning and exit code 0. The same body
+    with an *unquoted* name recovered fine, which is why the drop looked like it
+    depended only on the body statement.
+    """
+    r = _extract_sql_or_skip("sample_plpgsql_quoted.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    for name in (
+        "raise_exception_fn",
+        "raise_notice_fn",
+        "perform_fn",
+        "assign_fn",
+        "if_then_fn",
+        "null_body_fn",
+        "quoted_proc",
+    ):
+        assert f'"public"."{name}"()' in labels, f"{name} dropped from a quoted-DDL file (#2180)"
+
+def test_sql_quoted_plpgsql_file_stays_clean():
+    """The #2180 recovery must not add junk, duplicates, or drop the tables."""
+    r = _extract_sql_or_skip("sample_plpgsql_quoted.sql")
+    labels = [n["label"] for n in r["nodes"]]
+    # Tables before and after the unparseable routines still extract.
+    assert any("accounts" in l for l in labels)
+    assert any("audit_log" in l for l in labels)
+    # No empty or ERROR labels leaked out of the recovery.
+    for l in labels:
+        assert l, "empty node label"
+        assert l != "ERROR"
+    # Nothing emitted twice (a routine must not come from both paths).
+    ids = [n["id"] for n in r["nodes"]]
+    assert len(ids) == len(set(ids)), "duplicate node ids"
+    assert len(labels) == len(set(labels)), f"duplicate labels: {labels}"
+    # Every recovered routine is reachable from the file node.
+    contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
+    fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
+    assert fn_ids <= contains_targets

@@ -1,0 +1,55 @@
+name: Publish to PyPI
+
+# Publishes graphifyy to PyPI via OpenID Connect (trusted publishing) — no API
+# token or password. Fires when a GitHub Release is published (i.e. after
+# `gh release create ... --latest`), builds the sdist + wheel, guards that the
+# package version matches the release tag, then uploads with an OIDC token.
+#
+# One-time PyPI setup (Manage project -> Publishing -> Add a GitHub publisher):
+#   Owner:            Graphify-Labs
+#   Repository:       graphify
+#   Workflow name:    publish.yml
+#   Environment name: pypi
+on:
+  release:
+    types: [published]
+  # Manual re-run escape hatch (still requires the release tag to be checked out).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish graphifyy
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/graphifyy/
+    permissions:
+      id-token: write   # REQUIRED: mint the OIDC token PyPI verifies. Nothing else.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Build sdist + wheel
+        run: uv build --sdist --wheel
+
+      - name: Guard — package version must match the release tag
+        if: github.event_name == 'release'
+        run: |
+          VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/^version = "(.*)"/\1/')
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "pyproject version: $VERSION | release tag: $TAG"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "::error::pyproject version ($VERSION) does not match release tag ($TAG); refusing to publish."
+            exit 1
+          fi
+
+      - name: Twine metadata check
+        run: uvx twine check dist/*
+
+      - name: Publish to PyPI (trusted publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1

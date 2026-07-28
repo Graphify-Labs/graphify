@@ -85,3 +85,74 @@ def test_assert_valid_raises_on_errors():
 
 def test_assert_valid_passes_silently():
     assert_valid(VALID)  # should not raise
+
+
+def test_legacy_aliases_valid_after_build_canonicalization():
+    # #2194: build_from_json folds legacy aliases (name->label,
+    # path->source_file, type->relation, confidence_score->confidence) in
+    # place BEFORE validation, so an alias-only extraction that fails
+    # validation raw is fully schema-valid after canonicalization.
+    from graphify.build import build_from_json
+    data = {
+        "nodes": [
+            {"id": "n1", "name": "Foo", "path": "a/b.md", "file_type": "concept"},
+            {"id": "n2", "label": "Bar", "file_type": "code", "source_file": "bar.py"},
+        ],
+        "edges": [
+            {"source": "n1", "target": "n2", "type": "references",
+             "confidence_score": 0.9, "source_file": "a/b.md"},
+        ],
+    }
+    assert any("missing required field" in e for e in validate_extraction(data))
+    build_from_json(data)
+    assert validate_extraction(data) == []
+
+
+def test_non_hashable_node_id_reported_not_raised():
+    # A malformed LLM extraction can emit a list-valued id. The validator must
+    # report it as an error string (its documented contract) rather than crash
+    # with TypeError: unhashable type on set construction.
+    data = {
+        "nodes": [
+            {"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": ["x", "y"], "label": "B", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [],
+    }
+    errors = validate_extraction(data)
+    assert any("non-hashable id" in e for e in errors)
+
+
+def test_non_hashable_edge_endpoint_reported_not_raised():
+    # A list-valued edge source/target must be reported, not crash the
+    # membership test against the node-id set.
+    data = {
+        "nodes": [
+            {"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": "n2", "label": "B", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "n1", "target": ["n2", "n3"], "relation": "calls",
+             "confidence": "INFERRED", "source_file": "a.py"},
+        ],
+    }
+    errors = validate_extraction(data)
+    assert any("target" in e and "non-hashable" in e for e in errors)
+
+
+def test_non_hashable_node_id_does_not_mask_valid_ids():
+    # The valid node id must still be collected so a legitimately-dangling edge
+    # is still flagged even when a sibling node has a bad id.
+    data = {
+        "nodes": [
+            {"id": "n1", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": {"oops": 1}, "label": "B", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [
+            {"source": "n1", "target": "ghost", "relation": "calls",
+             "confidence": "EXTRACTED", "source_file": "a.py"},
+        ],
+    }
+    errors = validate_extraction(data)
+    assert any("non-hashable id" in e for e in errors)
+    assert any("target" in e and "ghost" in e for e in errors)

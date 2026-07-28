@@ -30,6 +30,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from html import escape
 
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME
+
 
 # ──────────────────────────────────────────────
 # 1. CSS template (fixed, project-agnostic)
@@ -221,6 +223,9 @@ def _node_link_payload(data: dict) -> tuple[list, list] | None:
     """Parse a node-link graph.json dict directly (no NetworkX)."""
     if not isinstance(data.get("nodes"), list):
         return None
+    # Accept the raw writer's "edges" key as well as node-link "links"; without
+    # the fallback an edges-keyed payload silently returned None even though the
+    # shape check accepts it (#2212). Parsed inline — no NetworkX loader needed.
     links = data.get("links")
     if not isinstance(links, list):
         links = data.get("edges")
@@ -400,7 +405,7 @@ def infer_project_name(graph_path: str, meta: dict) -> str:
     if meta.get("project_name"):
         return meta["project_name"]
     path = Path(graph_path).resolve()
-    if path.parent.name == "graphify-out" and len(path.parents) > 1:
+    if path.parent.name == GRAPHIFY_OUT_NAME and len(path.parents) > 1:
         return path.parents[1].name
     return path.parent.name or "Project"
 
@@ -415,9 +420,9 @@ def resolve_graphify_paths(args) -> dict:
     elif (base / "graph.json").exists():
         graphify_out = base
     else:
-        graphify_out = base / "graphify-out"
+        graphify_out = base / GRAPHIFY_OUT
 
-    project_root = graphify_out.parent if graphify_out.name == "graphify-out" else base
+    project_root = graphify_out.parent if graphify_out.name == GRAPHIFY_OUT_NAME else base
     graph = Path(args.graph).expanduser() if args.graph else graphify_out / "graph.json"
     report = Path(args.report).expanduser() if args.report else graphify_out / "GRAPH_REPORT.md"
     labels = Path(args.labels).expanduser() if args.labels else graphify_out / ".graphify_labels.json"

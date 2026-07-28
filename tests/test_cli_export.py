@@ -236,6 +236,26 @@ def test_query_uses_graphify_out_env(tmp_path):
     assert len(r.stdout) > 0
 
 
+def test_extract_writes_to_graphify_out_env(tmp_path):
+    """#1423: `graphify extract` honours GRAPHIFY_OUT for where it WRITES, not only
+    where readers look — previously it hardcoded graphify-out/ and ignored the
+    override. Code-only corpus, so no LLM backend is needed."""
+    (tmp_path / "m.py").write_text("def a():\n    return b()\n\n\ndef b():\n    return 1\n")
+    env = os.environ.copy()
+    env["GRAPHIFY_OUT"] = "custom-out"
+
+    r = _run(["extract", "."], tmp_path, env=env)
+
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "custom-out" / "graph.json").exists(), r.stdout
+    assert (tmp_path / "custom-out" / "manifest.json").exists()
+    # The default dir must NOT be created when the override is set.
+    assert not (tmp_path / "graphify-out").exists(), "extract ignored GRAPHIFY_OUT and wrote graphify-out/"
+    # Manifest keys are relative to the scan root (portable) — #1417.
+    keys = list(json.loads((tmp_path / "custom-out" / "manifest.json").read_text()).keys())
+    assert keys == ["m.py"], keys
+
+
 # ── graphify path ────────────────────────────────────────────────────────────
 
 def test_path_runs_without_error(tmp_path):
@@ -331,7 +351,73 @@ def test_cluster_only_creates_output_dir_when_missing(tmp_path):
     assert (tmp_path / "graphify-out" / "GRAPH_REPORT.md").exists()
 
 
+def test_cluster_only_graph_in_graphify_out_writes_beside_it(tmp_path):
+    """#1747 Case 2: `cluster-only --graph <elsewhere>/graphify-out/graph.json`
+    must write GRAPH_REPORT.md and the re-clustered graph beside that graph, not
+    into a stray graphify-out/ in the CWD."""
+    project = tmp_path / "project"
+    project.mkdir()
+    out_dir = _make_graph(project)  # project/graphify-out/graph.json
+
+    cwd = tmp_path / "elsewhere"
+    cwd.mkdir()
+    r = _run(
+        ["cluster-only", ".", "--graph", str(out_dir / "graph.json"), "--no-viz", "--no-label"],
+        cwd,
+    )
+    assert r.returncode == 0, r.stderr
+    assert (out_dir / "GRAPH_REPORT.md").exists()          # beside --graph
+    assert not (cwd / "graphify-out").exists()             # no CWD pollution
+
+
+def test_extract_out_does_not_pollute_corpus(tmp_path):
+    """#1747 Case 1: `extract <corpus> --out <elsewhere>` must not leave a stray
+    graphify-out/ (cache, stat-index) inside the scanned corpus."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def main():\n    return 1\n")
+    out = tmp_path / "scratch"
+
+    r = _run(
+        ["extract", str(corpus), "--out", str(out), "--no-cluster", "--code-only"],
+        tmp_path,
+    )
+    assert r.returncode == 0, r.stderr
+    assert (out / "graphify-out" / "graph.json").exists()   # graph in --out
+    assert not (corpus / "graphify-out").exists()           # corpus untouched
+
+
 # Regression test for #1027 - cluster-only must remap labels via node overlap
+
+def test_cluster_only_persists_analysis_sidecar(tmp_path):
+    """cluster-only must refresh .graphify_analysis.json alongside graph.json.
+
+    Downstream export commands use the sidecar for community membership and
+    should not see stale or missing community analysis after a recluster.
+    """
+    out = _make_graph(tmp_path)
+    analysis_path = out / ".graphify_analysis.json"
+    analysis_path.unlink()
+
+    r = _run(["cluster-only", ".", "--no-viz"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert analysis_path.exists()
+
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    assert analysis["communities"]
+    assert analysis["cohesion"]
+    assert "gods" in analysis
+    assert "surprises" in analysis
+    assert "questions" in analysis
+
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    graph_cids = {
+        str(node["community"])
+        for node in graph.get("nodes", [])
+        if node.get("community") is not None
+    }
+    assert graph_cids == set(analysis["communities"])
+
 
 def test_cluster_only_remaps_labels_to_previous_cids(tmp_path):
     """cluster-only must invoke remap_communities_to_previous so the existing
@@ -464,3 +550,24 @@ def test_export_html_no_community_data_at_all_still_succeeds(tmp_path):
     # code stays clean — same behaviour as the pre-fallback empty-communities
     # path, just no longer silently failing on the common case.
     assert r.returncode == 0, r.stderr
+
+
+def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
+    """#1789: the committed graph.json's node ids must be relative to the scan
+    root — not embed the absolute path — so the same repo yields identical ids
+    on any machine/checkout and leaks no local username/home."""
+    def _build(root: Path):
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "mod.py").write_text("def f(): return 1\n")
+        (root / "pkg" / "app.py").write_text("from pkg.mod import f\ndef g(): return f()\n")
+        r = _run(["extract", ".", "--code-only", "--no-cluster"], root)
+        assert r.returncode == 0, r.stderr
+        data = json.loads((root / "graphify-out" / "graph.json").read_text())
+        return sorted(n["id"] for n in data["nodes"])
+
+    a = _build(tmp_path / "alice_home" / "proj")
+    b = _build(tmp_path / "bob_elsewhere" / "checkout" / "proj")
+    assert a == b, f"node ids differ across checkout paths: {a} vs {b}"
+    leak = {"alice_home", "bob_elsewhere", "checkout", "tmp", "private", "users", "home", "var"}
+    assert not any(part in leak for ident in a for part in ident.split("_")), \
+        f"node id embeds an absolute-path component: {a}"

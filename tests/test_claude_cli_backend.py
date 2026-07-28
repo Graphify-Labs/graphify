@@ -117,6 +117,100 @@ def test_no_session_persistence_flag_in_subprocess(fake_claude):
     assert "--no-session-persistence" in call_args
 
 
+# ---------- extraction instructions delivered in the user turn ----------
+# Newer Claude Code CLIs (>= ~2.1) do not honour a --system-prompt that asks
+# for raw JSON: they keep their coding-agent context and reply conversationally
+# to a bare file dump, which parses to zero nodes and gets bisected forever.
+# The instructions must ride in the user turn instead. See the fix for the
+# "hollow response" / infinite-bisection failure on Claude Code 2.1.x.
+
+
+def test_no_system_prompt_flag_in_subprocess(fake_claude):
+    """--system-prompt must NOT be used: the CLI ignores its 'raw JSON only'
+    directive and replies with prose, breaking extraction."""
+    llm._call_claude_cli("dummy source", max_tokens=8192)
+    argv = fake_claude.call_args.args[0]
+    assert "--system-prompt" not in argv
+
+
+def test_extraction_instructions_ride_in_user_turn(fake_claude):
+    """The full extraction schema, an explicit imperative, and the source must
+    all be delivered via stdin (the user turn)."""
+    llm._call_claude_cli("UNIQUE_SOURCE_MARKER", max_tokens=8192)
+    sent = fake_claude.call_args.kwargs["input"]
+    # schema text from _extraction_system
+    assert "graphify semantic extraction agent" in sent
+    # explicit imperative appended before the source
+    assert "output ONLY the JSON object" in sent
+    # the caller's source payload is preserved
+    assert "UNIQUE_SOURCE_MARKER" in sent
+
+
+def test_user_turn_preserves_untrusted_source_guardrails(fake_claude):
+    """The <untrusted_source> guardrails from _extraction_system must survive
+    the move into the user turn (prompt-injection defence is unchanged)."""
+    llm._call_claude_cli("dummy", max_tokens=8192)
+    sent = fake_claude.call_args.kwargs["input"]
+    assert "untrusted_source" in sent
+
+
+# ---------- structured output via --json-schema (#2076) ----------
+# Newer Claude Code CLIs treat a bare file-dump prompt as an agentic task and
+# REPORT the extraction in prose instead of returning JSON, so the graph comes
+# out empty and adaptive-retry bisects forever. When the CLI supports
+# `--json-schema`, graphify constrains the output shape structurally so the
+# model must emit the object regardless of framing. Older CLIs that predate the
+# flag fall back to the user-turn prompt, unchanged.
+
+
+def test_json_schema_flag_added_when_cli_supports_it(monkeypatch, fake_claude):
+    """When the CLI advertises --json-schema, it is passed with a schema that
+    pins the top-level {nodes, edges} shape graphify parses."""
+    monkeypatch.setattr(llm, "_claude_cli_supports_json_schema", lambda cmd: True)
+    llm._call_claude_cli("dummy source", max_tokens=8192)
+    argv = fake_claude.call_args.args[0]
+    assert "--json-schema" in argv
+    schema = json.loads(argv[argv.index("--json-schema") + 1])
+    assert schema["type"] == "object"
+    assert set(schema["required"]) == {"nodes", "edges"}
+
+
+def test_json_schema_flag_absent_when_cli_lacks_it(monkeypatch, fake_claude):
+    """Older CLIs without --json-schema must not receive the flag (it would be
+    an unknown option) — extraction falls back to the user-turn prompt."""
+    monkeypatch.setattr(llm, "_claude_cli_supports_json_schema", lambda cmd: False)
+    result = llm._call_claude_cli("dummy source", max_tokens=8192)
+    argv = fake_claude.call_args.args[0]
+    assert "--json-schema" not in argv
+    assert len(result["nodes"]) == 2  # result envelope still carries the JSON
+
+
+def test_supports_json_schema_detects_flag_in_help():
+    llm._JSON_SCHEMA_SUPPORT.clear()
+    help_text = "Options:\n  --json-schema <schema>  JSON Schema for structured output\n"
+    completed = MagicMock(returncode=0, stdout=help_text, stderr="")
+    with patch("subprocess.run", return_value=completed):
+        assert llm._claude_cli_supports_json_schema("/fake/claude-new") is True
+
+
+def test_supports_json_schema_false_when_flag_absent():
+    llm._JSON_SCHEMA_SUPPORT.clear()
+    help_text = "Options:\n  --output-format <format>  text|json|stream-json\n"
+    completed = MagicMock(returncode=0, stdout=help_text, stderr="")
+    with patch("subprocess.run", return_value=completed):
+        assert llm._claude_cli_supports_json_schema("/fake/claude-old") is False
+
+
+def test_supports_json_schema_false_and_cached_on_probe_error():
+    """A probe that fails to run is treated as unsupported (safe fallback) and
+    cached so it is not re-probed for every chunk."""
+    llm._JSON_SCHEMA_SUPPORT.clear()
+    with patch("subprocess.run", side_effect=OSError("boom")) as run:
+        assert llm._claude_cli_supports_json_schema("/fake/claude-broken") is False
+        assert llm._claude_cli_supports_json_schema("/fake/claude-broken") is False
+    assert run.call_count == 1
+
+
 # ---------- Windows path resolution (#1072) ----------
 
 
@@ -255,3 +349,35 @@ def test_simple_completion_resolves_cmd_shim_on_windows(monkeypatch):
 
     assert out == "ok"
     assert captured["argv0"] == r"C:\npm\claude.cmd"
+
+
+def test_prefers_structured_output_over_prose_result(monkeypatch):
+    """#2076 review: with --json-schema the CLI puts the constrained object in
+    `structured_output` while `result` may be prose (a 'reporting' turn). The
+    backend must parse the structured object; parsing the prose would read as an
+    empty/hollow extraction and bisect forever."""
+    envelope = {
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "Knowledge graph extracted successfully: 2 nodes, 1 edge.",  # prose only
+        "structured_output": {
+            "nodes": [
+                {"id": "foo_module", "label": "Foo", "file_type": "document", "source_file": "foo.md"},
+                {"id": "foo_greet", "label": "greet", "file_type": "code", "source_file": "foo.md"},
+            ],
+            "edges": [
+                {"source": "foo_module", "target": "foo_greet",
+                 "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0},
+            ],
+            "hyperedges": [],
+        },
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 6, "output_tokens": 11},
+        "modelUsage": {"claude-opus-4-7[1m]": {}},
+    }
+    completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        result = llm._call_claude_cli("dummy", max_tokens=8192)
+    assert len(result["nodes"]) == 2, "must parse structured_output, not the prose result"
+    assert len(result["edges"]) == 1
+    assert result["finish_reason"] == "stop"

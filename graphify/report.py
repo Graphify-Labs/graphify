@@ -11,6 +11,62 @@ def _safe_community_name(label: str) -> str:
     return cleaned or "unnamed"
 
 
+def load_learning_for_report(graph_path) -> dict | None:
+    """Assemble the report's work-memory inputs from sibling artifacts.
+
+    Reads the ``.graphify_learning.json`` overlay (preferred sources) next to
+    ``graph_path`` and re-aggregates the memory docs for the query-scoped
+    dead-ends. Best-effort: returns None if neither is available, so the report
+    simply omits the section. Never raises.
+    """
+    from pathlib import Path as _Path
+    try:
+        gp = _Path(graph_path)
+        from graphify.reflect import load_learning_overlay, load_memory_docs, aggregate_lessons
+        overlay = load_learning_overlay(gp)
+        dead_ends: list[dict] = []
+        mem = gp.parent / "memory"
+        if mem.is_dir():
+            agg = aggregate_lessons(load_memory_docs(mem))
+            dead_ends = agg.get("dead_ends", [])
+        if not overlay and not dead_ends:
+            return None
+        return {"overlay": overlay, "dead_ends": dead_ends}
+    except Exception:
+        return None
+
+
+def _learning_section(lines: list, learning: dict | None, top_n: int = 10) -> None:
+    """Append the ``## Work-memory lessons`` section, or nothing when empty."""
+    if not learning:
+        return
+    overlay = learning.get("overlay") or {}
+    dead_ends = learning.get("dead_ends") or []
+    preferred = [
+        (nid, e) for nid, e in overlay.items()
+        if isinstance(e, dict) and e.get("status") == "preferred"
+    ]
+    # Most-corroborated first (uses desc), then by score, then id for stability.
+    preferred.sort(key=lambda kv: (-kv[1].get("uses", 0),
+                                   -float(kv[1].get("score", 0) or 0), kv[0]))
+    if not preferred and not dead_ends:
+        return
+    lines += ["", "## Work-memory lessons"]
+    if preferred:
+        lines += ["", "**Preferred sources** — corroborated by past sessions; start here."]
+        for nid, e in preferred[:top_n]:
+            label = e.get("label") or nid
+            stale = " _(code changed — re-verify)_" if e.get("stale") else ""
+            lines.append(f"- `{label}` ({e.get('uses', 0)}× useful, "
+                         f"score={e.get('score', 0)}){stale}")
+    if dead_ends:
+        lines += ["", "**Known dead ends** — questions that led nowhere; don't re-derive."]
+        for d in dead_ends:
+            nodes = ", ".join(f"`{n}`" for n in d.get("nodes", []))
+            lines.append(f"- \"{d.get('question', '')}\""
+                         + (f" -> {nodes}" if nodes else ""))
+
+
 def generate(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -24,6 +80,8 @@ def generate(
     suggested_questions: list[dict] | None = None,
     min_community_size: int = 3,
     built_at_commit: str | None = None,
+    learning: dict | None = None,
+    obsidian: bool = False,
 ) -> str:
     today = date.today().isoformat()
 
@@ -82,14 +140,21 @@ def generate(
             "- Run `graphify update .` after code changes (no API cost).",
         ]
 
-    # Community hub navigation - links to _COMMUNITY_*.md files in the Obsidian vault.
-    # Without these, GRAPH_REPORT.md is a dead-end and the vault splits into disconnected components.
+    # Community hub navigation. The `_COMMUNITY_*.md` notes these wikilinks target
+    # are only created by the opt-in `--obsidian` export, and the report is written
+    # at build time (before any export runs), so emitting wikilinks by default left
+    # every link dangling — polluting an Obsidian vault's graph view and rendering as
+    # literal brackets everywhere else (#1712). Emit wikilinks only when the caller
+    # signals Obsidian output; otherwise a plain list, which navigates nowhere-to-break.
     if non_empty:
         lines += ["", "## Community Hubs (Navigation)"]
         for cid in non_empty:
             label = community_labels.get(cid, f"Community {cid}")
-            safe = _safe_community_name(label)
-            lines.append(f"- [[_COMMUNITY_{safe}|{label}]]")
+            if obsidian:
+                safe = _safe_community_name(label)
+                lines.append(f"- [[_COMMUNITY_{safe}|{label}]]")
+            else:
+                lines.append(f"- {label}")
 
     lines += [
         "",
@@ -118,20 +183,30 @@ def generate(
     else:
         lines.append("- None detected - all connections are within the same source files.")
 
-    # Circular imports surfaced from file-level dependency graph.
-    from .analyze import find_import_cycles
-    cycles = find_import_cycles(G)
-    lines += ["", "## Import Cycles"]
-    if cycles:
-        for c in cycles:
-            cycle = c.get("cycle", [])
-            length = c.get("length", len(cycle))
-            if not cycle:
-                continue
-            cycle_path = " -> ".join(cycle + [cycle[0]])
-            lines.append(f"- {length}-file cycle: `{cycle_path}`")
-    else:
-        lines.append("- None detected.")
+    # Circular imports surfaced from file-level dependency graph. Only meaningful
+    # for code — a documents-only corpus has no imports, so the section is pure
+    # noise there ("None detected" on every run). Emit it only when the graph
+    # actually contains code (#1657).
+    _has_code = any(
+        d.get("file_type") == "code" for _, d in G.nodes(data=True)
+    ) or any(
+        d.get("relation") in ("imports", "imports_from")
+        for *_e, d in G.edges(data=True)
+    )
+    if _has_code:
+        from .analyze import find_import_cycles
+        cycles = find_import_cycles(G)
+        lines += ["", "## Import Cycles"]
+        if cycles:
+            for c in cycles:
+                cycle = c.get("cycle", [])
+                length = c.get("length", len(cycle))
+                if not cycle:
+                    continue
+                cycle_path = " -> ".join(cycle + [cycle[0]])
+                lines.append(f"- {length}-file cycle: `{cycle_path}`")
+        else:
+            lines.append("- None detected.")
 
     hyperedges = G.graph.get("hyperedges", [])
     if hyperedges:
@@ -200,6 +275,13 @@ def generate(
             lines.append(f"- **{len(thin_communities)} thin communities (<{min_community_size} nodes) omitted from report** — run `graphify query` to explore isolated nodes.")
         if amb_pct > 20:
             lines.append(f"- **High ambiguity: {amb_pct}% of edges are AMBIGUOUS.** Review the Ambiguous Edges section above.")
+
+    # --- Work-memory lessons (derived overlay) ---
+    # Preferred sources come from the .graphify_learning.json sidecar; the
+    # query-scoped dead-ends come from the reflect aggregate. Section omitted
+    # entirely when neither is present, so a graph with no work-memory is
+    # byte-identical to the pre-feature report.
+    _learning_section(lines, learning)
 
     if suggested_questions:
         lines += ["", "## Suggested Questions"]

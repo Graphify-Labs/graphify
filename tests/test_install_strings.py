@@ -12,12 +12,13 @@ from __future__ import annotations
 import json
 
 from graphify.__main__ import (
-    _SETTINGS_HOOK,
-    _READ_SETTINGS_HOOK,
+    _SEARCH_NUDGE,
+    _READ_NUDGE,
+    _skill_registration,
     _CLAUDE_MD_SECTION,
     _AGENTS_MD_SECTION,
     _GEMINI_MD_SECTION,
-    _GEMINI_HOOK,
+    _GEMINI_NUDGE_TEXT,
     _VSCODE_INSTRUCTIONS_SECTION,
     _ANTIGRAVITY_RULES,
     _KIRO_STEERING,
@@ -31,12 +32,12 @@ from graphify.__main__ import (
 # Hook constants are dicts/JSON; serialize them so we can do substring checks
 # against the actual payload text the assistant will receive.
 _INSTALL_TEXTS: dict[str, str] = {
-    "_SETTINGS_HOOK": json.dumps(_SETTINGS_HOOK),
-    "_READ_SETTINGS_HOOK": json.dumps(_READ_SETTINGS_HOOK),
+    "_SEARCH_NUDGE": _SEARCH_NUDGE,
+    "_READ_NUDGE": _READ_NUDGE,
     "_CLAUDE_MD_SECTION": _CLAUDE_MD_SECTION,
     "_AGENTS_MD_SECTION": _AGENTS_MD_SECTION,
     "_GEMINI_MD_SECTION": _GEMINI_MD_SECTION,
-    "_GEMINI_HOOK": json.dumps(_GEMINI_HOOK),
+    "_GEMINI_NUDGE_TEXT": _GEMINI_NUDGE_TEXT,
     "_VSCODE_INSTRUCTIONS_SECTION": _VSCODE_INSTRUCTIONS_SECTION,
     "_ANTIGRAVITY_RULES": _ANTIGRAVITY_RULES,
     "_KIRO_STEERING": _KIRO_STEERING,
@@ -125,6 +126,19 @@ def test_report_is_still_referenced_as_fallback():
 def test_agents_section_does_not_skip_dirty_graph_output():
     assert "Dirty graphify-out/ files are expected" in _AGENTS_MD_SECTION
     assert "not a reason to skip graphify" in _AGENTS_MD_SECTION
+
+
+def test_agents_section_uses_generic_graphify_instruction():
+    assert "`skill` tool" not in _AGENTS_MD_SECTION
+    assert 'skill: "graphify"' not in _AGENTS_MD_SECTION
+    assert "use the installed graphify skill" in _AGENTS_MD_SECTION
+
+
+def test_skill_registration_uses_host_generic_instruction():
+    reg = _skill_registration()
+    assert 'skill: "graphify"' not in reg
+    assert "Skill tool" not in reg
+    assert "use the installed graphify skill or instructions" in reg
 
 
 def test_how_it_works_clarifies_code_only_semantic_extraction():

@@ -166,6 +166,14 @@ def diagnose_extraction(
     raw_edges = _edge_list(extraction)
     canonical_edges = [_canonical_edge(edge) for edge in raw_edges]
 
+    # Code-typed semantic nodes the extractor could not verify against the source
+    # it read (#1949): likely-inferred (or hallucinated) symbols surfaced from a
+    # document. Count them so the flag on graph.json nodes is actually surfaced.
+    unverified_node_count = sum(
+        1 for n in extraction.get("nodes", [])
+        if isinstance(n, dict) and n.get("verification") == "unverified"
+    )
+
     exact_counts: Counter[str] = Counter(_exact_signature(edge) for edge in raw_edges)
     directed_pairs: Counter[tuple[str, str]] = Counter()
     undirected_pairs: Counter[tuple[str, str]] = Counter()
@@ -237,6 +245,7 @@ def diagnose_extraction(
 
     return {
         "node_count": len(node_ids),
+        "unverified_node_count": unverified_node_count,
         "raw_edge_count": len(raw_edges),
         "non_object_edges": non_object_edges,
         "missing_endpoint_edges": missing_endpoint_edges,
@@ -272,7 +281,13 @@ def _read_json_file(path: str | Path) -> dict[str, Any]:
 
     json_path = Path(path)
     check_graph_file_size_cap(json_path)
-    data = json.loads(json_path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"Cannot parse {json_path}: {exc}. "
+            "The file may be corrupted — re-run 'graphify extract'."
+        ) from exc
     if not isinstance(data, dict):
         raise ValueError("diagnostic input must be a JSON object")
     return data
@@ -336,6 +351,7 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
         "input_stage: provided JSON (normal graph.json is post-build)",
         f"effective_directed: {summary.get('effective_directed', '<direct-call>')}",
         f"nodes: {summary['node_count']}",
+        f"unverified_code_nodes: {summary.get('unverified_node_count', 0)}",
         f"raw_edges: {summary['raw_edge_count']}",
         f"valid_candidate_edges: {summary['valid_candidate_edges']}",
         f"missing_endpoint_edges: {summary['missing_endpoint_edges']}",
