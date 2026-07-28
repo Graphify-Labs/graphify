@@ -1,0 +1,4 @@
+config_version=5
+
+[autoload]
+Analytics="*res://analytics.gd"

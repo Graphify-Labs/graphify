@@ -1,0 +1,7 @@
+config_version=5
+
+[application]
+run/main_scene="res://scenes/Main.tscn"
+
+[autoload]
+GameState="*res://scripts/game_state.gd"
