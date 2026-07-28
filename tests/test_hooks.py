@@ -248,10 +248,10 @@ def test_hooks_do_not_use_nohup(name, script):
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
 def test_hooks_use_cross_platform_detach(name, script):
     """The replacement detaches via Python: start_new_session on POSIX and
-    DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP on Windows (#1161)."""
+    CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP on Windows (#1161)."""
     assert "subprocess.Popen" in script
     assert "start_new_session=True" in script, f"{name} missing POSIX detach"
-    assert "0x00000008" in script, f"{name} missing Windows DETACHED_PROCESS flag"
+    assert "0x08000000" in script, f"{name} missing Windows CREATE_NO_WINDOW flag"
     assert "0x00000200" in script, f"{name} missing CREATE_NEW_PROCESS_GROUP flag"
 
 
