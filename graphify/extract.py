@@ -905,7 +905,16 @@ _KOTLIN_CONFIG = LanguageConfig(
 
 _SCALA_CONFIG = LanguageConfig(
     ts_module="tree_sitter_scala",
-    class_types=frozenset({"class_definition", "object_definition"}),
+    # trait_definition is its own tree-sitter-scala node kind, distinct from
+    # class_definition/object_definition, so a `trait` never entered the class
+    # branch below: no node for the trait itself, and every member under it
+    # walked with parent_class_nid reset to None by the generic recurse
+    # fallback (fields/methods misattributed to file scope, extends_clause
+    # heritage never evaluated). Traits use the same template_body shape
+    # already declared in body_fallback_child_types, so no other config
+    # change is needed for the existing class-node/heritage/field-reference
+    # handling to pick them up.
+    class_types=frozenset({"class_definition", "object_definition", "trait_definition"}),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),
