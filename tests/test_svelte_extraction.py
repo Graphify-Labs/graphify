@@ -228,3 +228,69 @@ def test_scalar_locals_and_anonymous_effects_are_not_nodes(tmp_path):
     assert _by_kind(result, "state") == {"n"}
     # One component node plus the single rune binding.
     assert len(result["nodes"]) == 2
+
+
+def test_recursive_component_records_a_self_edge(tmp_path):
+    """`import Self from './ChainTree.svelte'` used as <Self /> is recursion."""
+    path = _write(
+        tmp_path / "ChainTree.svelte",
+        "<script>\n"
+        "  import Self from './ChainTree.svelte'\n"
+        "  let { nodes } = $props()\n"
+        "</script>\n"
+        "{#each nodes as n}<Self nodes={n.children} />{/each}\n",
+    )
+    result = extract_svelte(path)
+    uses = _edges(result, "uses", "renders")
+    assert [e["symbol"] for e in uses] == ["Self"]
+    # Self-import: source and target are the same component node.
+    assert uses[0]["source"] == uses[0]["target"]
+
+
+def test_quoted_prop_key_keeps_only_the_prop_name(tmp_path):
+    """A hyphenated prop must be quoted; the quotes are syntax, not the name."""
+    path = _write(
+        tmp_path / "Slot.svelte",
+        "<script>\n"
+        '  let { "data-slot": dataSlot = "textarea" } = $props()\n'
+        "</script>\n",
+    )
+    result = extract_svelte(path)
+    assert _by_kind(result, "prop") == {"data-slot"}
+    prop = next(n for n in result["nodes"] if n.get("kind") == "prop")
+    assert prop["local_name"] == "dataSlot"
+
+
+def test_regex_literal_in_an_expression_does_not_swallow_later_components(tmp_path):
+    """A miscounted brace is not a local error — it drops the rest of the file.
+
+    `replace(/^https?:\\/\\//, '')` puts two adjacent slashes inside an
+    expression; reading them as a comment used to pin the depth above zero so
+    every following component silently vanished.
+    """
+    _write(tmp_path / "Icon.svelte", "<i></i>\n")
+    path = _write(
+        tmp_path / "Host.svelte",
+        "<script>\n"
+        "  import Icon from './Icon.svelte'\n"
+        "  let { site } = $props()\n"
+        "</script>\n"
+        "<span>{site.replace(/^https?:\\/\\//, '')}</span>\n"
+        "<Icon />\n",
+    )
+    result = extract_svelte(path)
+    assert [e["symbol"] for e in _edges(result, "uses", "renders")] == ["Icon"]
+
+
+def test_apostrophe_in_markup_text_does_not_swallow_later_components(tmp_path):
+    _write(tmp_path / "Icon.svelte", "<i></i>\n")
+    path = _write(
+        tmp_path / "Text.svelte",
+        "<script>\n"
+        "  import Icon from './Icon.svelte'\n"
+        "</script>\n"
+        "<p>Don't panic</p>\n"
+        "<Icon />\n",
+    )
+    result = extract_svelte(path)
+    assert [e["symbol"] for e in _edges(result, "uses", "renders")] == ["Icon"]
