@@ -80,12 +80,17 @@ sql = ["tree-sitter-sql"]
 # absent (#781), so this stays optional. Unlike tree-sitter-dm below, it ships
 # prebuilt wheels for every platform (win/macOS/Linux), so no C toolchain needed.
 pascal = ["tree-sitter-pascal"]
+# extract_dart() uses tree-sitter-dart for AST-quality extraction with real
+# source_location line anchors on every symbol, and falls back to the regex
+# extractor when it is absent, so this stays optional. Ships prebuilt wheels
+# for every platform (win/macOS/Linux x86+arm); 0.1.x is young, so pinned <0.2.
+dart = ["tree-sitter-dart>=0.1,<0.2"]
 # tree-sitter-dm (BYOND DreamMaker) ships only a Windows wheel, so on Linux/Mac it
 # must compile from source (needs a C toolchain + python3-dev). Keeping it optional
 # avoids breaking the default `uv tool install graphifyy` for everyone (#1104).
 dm = ["tree-sitter-dm"]
 terraform = ["tree-sitter-hcl"]
-all = ["mcp>=1,<2", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal"]
+all = ["mcp>=1,<2", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.12.0", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.6.9", "matplotlib", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-dart>=0.1,<0.2"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
