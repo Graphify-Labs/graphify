@@ -330,6 +330,85 @@ def test_call_bedrock_sends_raw_image_bytes(tmp_path, monkeypatch):
     assert img_block["image"]["source"]["bytes"] == _PNG_BYTES
 
 
+# ── Converse content-block selection ─────────────────────────────────────────
+# Converse returns a LIST of blocks and does not promise text is first: a
+# reasoning-capable model emits reasoningContent ahead of the answer. Selection
+# must key on block shape, not position, or those models yield no text at all.
+
+def _bedrock_resp(blocks: list) -> dict:
+    return {"output": {"message": {"content": blocks}}}
+
+
+def test_bedrock_response_text_single_text_block_unchanged():
+    resp = _bedrock_resp([{"text": _NODE_JSON}])
+    assert llm._bedrock_response_text(resp) == _NODE_JSON
+
+
+def test_bedrock_response_text_skips_leading_reasoning_block():
+    resp = _bedrock_resp([
+        {"reasoningContent": {"reasoningText": {"text": "deliberating"}}},
+        {"text": _NODE_JSON},
+    ])
+    assert llm._bedrock_response_text(resp, default="{}") == _NODE_JSON
+
+
+@pytest.mark.parametrize("leading", [
+    {"reasoningContent": {}},
+    {"toolUse": {"name": "x", "input": {}}},
+    {"someFutureBlockType": {"a": 1}},
+    {"text": "   "},
+])
+def test_bedrock_response_text_skips_non_text_leading_blocks(leading):
+    resp = _bedrock_resp([leading, {"text": _NODE_JSON}])
+    assert llm._bedrock_response_text(resp, default="{}") == _NODE_JSON
+
+
+@pytest.mark.parametrize("resp", [
+    {"output": {"message": {"content": []}}},
+    {"output": {"message": {"content": [{"reasoningContent": {}}]}}},
+    {"output": {"message": {"content": "not-a-list"}}},
+    {"output": {}},
+    {},
+])
+def test_bedrock_response_text_falls_back_without_text(resp):
+    assert llm._bedrock_response_text(resp, default="SENTINEL") == "SENTINEL"
+
+
+def test_bedrock_response_text_tolerates_malformed_blocks():
+    resp = _bedrock_resp(["not-a-dict", {"text": 123}, {"text": _NODE_JSON}])
+    assert llm._bedrock_response_text(resp, default="{}") == _NODE_JSON
+
+
+def test_call_bedrock_parses_reasoning_model_response(monkeypatch):
+    """End-to-end: a reasoning-model response must not look hollow."""
+    def _fake(monkeypatch):
+        class _Client:
+            def converse(self, **kw):
+                return {
+                    "output": {"message": {"content": [
+                        {"reasoningContent": {"reasoningText": {"text": "think"}}},
+                        {"text": _NODE_JSON},
+                    ]}},
+                    "usage": {"inputTokens": 1, "outputTokens": 2},
+                    "stopReason": "end_turn",
+                }
+        boto3 = types.ModuleType("boto3")
+        boto3.Session = lambda **kw: SimpleNamespace(client=lambda svc, **kwargs: _Client())
+        monkeypatch.setitem(sys.modules, "boto3", boto3)
+        botocore = types.ModuleType("botocore")
+        exc = types.ModuleType("botocore.exceptions")
+        exc.ClientError = type("ClientError", (Exception,), {})
+        botocore.exceptions = exc
+        monkeypatch.setitem(sys.modules, "botocore", botocore)
+        monkeypatch.setitem(sys.modules, "botocore.exceptions", exc)
+
+    _fake(monkeypatch)
+    result = llm._call_bedrock("model", "CORPUS")
+    assert len(result["nodes"]) == 1
+    # Hard-indexing block 0 yielded "{}" -> zero nodes -> relabelled "length".
+    assert result["finish_reason"] == "stop"
+
+
 # ── CLI backends (mocked subprocess) ──────────────────────────────────────────
 
 

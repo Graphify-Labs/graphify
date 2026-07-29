@@ -1044,6 +1044,30 @@ def _parse_llm_json(raw: str) -> dict:
     return {"nodes": [], "edges": [], "hyperedges": []}
 
 
+def _bedrock_response_text(resp: dict, default: str = "") -> str:
+    """Return the first Converse content block that carries text.
+
+    Converse returns ``output.message.content`` as a list of blocks, and the
+    API does not promise a text block is first: reasoning-capable models emit a
+    ``reasoningContent`` block ahead of the answer, and ``toolUse`` or future
+    block types can precede it too. Indexing position 0 therefore yields no text
+    at all for those models, which reads downstream as a hollow response, gets
+    reclassified as truncation, and sends the chunk into bisection that cannot
+    converge. Select on the block's shape instead of its position so this holds
+    for any model; a response whose first block is already text is unaffected.
+    """
+    content = resp.get("output", {}).get("message", {}).get("content", [])
+    if not isinstance(content, list):
+        return default
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+    return default
+
+
 def _response_is_hollow(raw_content: str | None, parsed: dict) -> bool:
     """Detect a successful HTTP response that yielded no usable extraction.
 
@@ -1632,7 +1656,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
         msg = exc.response["Error"]["Message"]
         raise RuntimeError(f"Bedrock API error ({code}): {msg}") from exc
 
-    text = resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "{}")
+    text = _bedrock_response_text(resp, default="{}")
     result = _parse_llm_json(text)
     usage = resp.get("usage", {})
     result["input_tokens"] = usage.get("inputTokens", 0)
@@ -2579,7 +2603,7 @@ def _call_llm(
         bu = resp.get("usage") or {}
         if bu:
             _rec(bu.get("inputTokens", 0), bu.get("outputTokens", 0))
-        return resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
+        return _bedrock_response_text(resp, default="")
 
     if backend == "azure":
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
