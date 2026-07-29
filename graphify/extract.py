@@ -287,7 +287,9 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
             elif stem_to_file_nodes and tgt in stem_to_file_nodes:
                 candidates = stem_to_file_nodes[tgt]
                 if len(candidates) == 1:
-                    e["target"] = next(iter(candidates))
+                    cand = next(iter(candidates))
+                    if cand != e.get("source"):
+                        e["target"] = cand
 
 
 SEMANTIC_RELATIONS = frozenset({
