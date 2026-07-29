@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source_dir="$repo_root/curriculum-skill"
+codex_root="${CODEX_HOME:-$HOME/.codex}"
+destination="${GRAPHIFY_SKILL_DESTINATION:-$codex_root/skills/graphify}"
+staging=$(mktemp -d "${TMPDIR:-/tmp}/graphify-curriculum-skill.XXXXXX")
+trap 'rm -rf "$staging"' EXIT
+
+cp -a "$source_dir/." "$staging/"
+rm -f "$staging/README.md"
+
+mkdir -p "$(dirname "$destination")"
+backup="${destination}.previous"
+rm -rf "$backup"
+if [[ -d "$destination" ]]; then
+  mv "$destination" "$backup"
+fi
+mv "$staging" "$destination"
+trap - EXIT
+
+tracked_hashes=$(mktemp "${TMPDIR:-/tmp}/graphify-tracked-hashes.XXXXXX")
+active_hashes=$(mktemp "${TMPDIR:-/tmp}/graphify-active-hashes.XXXXXX")
+trap 'rm -f "$tracked_hashes" "$active_hashes"' EXIT
+
+(
+  cd "$source_dir"
+  find . -type f ! -name README.md -print0 |
+    sort -z |
+    xargs -0 sha256sum
+) >"$tracked_hashes"
+(
+  cd "$destination"
+  find . -type f -print0 |
+    sort -z |
+    xargs -0 sha256sum
+) >"$active_hashes"
+
+if ! cmp -s "$tracked_hashes" "$active_hashes"; then
+  echo "error: installed Graphify curriculum skill does not match maintained source" >&2
+  diff -u "$tracked_hashes" "$active_hashes" >&2 || true
+  exit 1
+fi
+
+rm -rf "$backup"
+echo "Installed and verified Graphify curriculum skill at $destination"
