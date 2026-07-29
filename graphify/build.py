@@ -1545,15 +1545,20 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
     """Return a copy of G with all node IDs prefixed with repo_tag::.
 
     Labels are preserved unchanged (for display). A 'local_id' attribute
-    is added to each node so the original ID can be recovered. Edges are
-    rewritten to match the new prefixed IDs. The 'repo' attribute is set
-    on every node.
+    is added to each node so the original ID can be recovered. Edges and
+    their directional attributes (_src/_tgt) are rewritten to match the new
+    prefixed IDs. The 'repo' attribute is set on every node.
     """
     relabel = {n: f"{repo_tag}::{n}" for n in G.nodes}
     H = nx.relabel_nodes(G, relabel, copy=True)
     for node, data in H.nodes(data=True):
         data["repo"] = repo_tag
         data.setdefault("local_id", node.split("::", 1)[1])
+    for u, v, data in H.edges(data=True):
+        if "_src" in data and data["_src"] in relabel:
+            data["_src"] = relabel[data["_src"]]
+        if "_tgt" in data and data["_tgt"] in relabel:
+            data["_tgt"] = relabel[data["_tgt"]]
     return H
 
 
@@ -1593,7 +1598,11 @@ def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
 
 
 def load_graph_json(
-    path: Path, *, preserve_type: bool = False, directed: bool = False
+    path: Path,
+    *,
+    preserve_type: bool = False,
+    directed: bool = False,
+    preserve_direction: bool = False,
 ) -> nx.Graph:
     """Load persisted node-link JSON, optionally preserving its graph type.
 
@@ -1608,6 +1617,12 @@ def load_graph_json(
     attrs), so an undirected round-trip re-emits endpoints by node insertion
     order and silently flips caller/callee — the #760 failure mode. Callers
     that re-serialize a composed graph must load members directed.
+
+    preserve_direction=True keeps the graph undirected but stashes the stored
+    endpoints on each edge as ``_src``/``_tgt`` first, so direction survives
+    the round-trip for callers that must compose into an undirected graph and
+    cannot switch type (#2261, merge-graphs). Mirrors export.py's marker
+    convention; use ``directed`` instead when the caller can hold a DiGraph.
     """
     from networkx.readwrite import json_graph as _jg
     from .security import check_graph_file_size_cap
@@ -1654,6 +1669,14 @@ def load_graph_json(
 
         if links_key == "edges":
             data = dict(data, links=links)
+        if preserve_direction:
+            data = dict(
+                data,
+                links=[
+                    {**link, "_src": link.get("source"), "_tgt": link.get("target")}
+                    for link in links
+                ],
+            )
         if directed:
             data = dict(data, directed=True)
         try:

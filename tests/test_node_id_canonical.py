@@ -115,6 +115,63 @@ def test_bash_source_incremental_target_canonicalizes(tmp_path):
     assert not any("target_file" in e for e in full["edges"])
 
 
+def test_tsx_nested_handler_calls_source_is_canonical(tmp_path):
+    """#2262: a .tsx component with a JSX-returning nested arrow component
+    defined BEFORE its handlers used to be parsed with the plain TypeScript
+    grammar; tree-sitter's error recovery floated the nested handlers to top
+    level, minting `calls` edge SOURCES from the absolute path — ids that own
+    no node and that no remap ever learns. Every calls edge source must be a
+    real node id and no endpoint may carry the scan-root slug."""
+    root = _real(tmp_path)
+    (root / "row.tsx").write_text(
+        "export const constructRowWithId = (id: string) => {\n"
+        "  return { id };\n"
+        "};\n"
+    )
+    (root / "panel.tsx").write_text(
+        'import { constructRowWithId } from "./row";\n'
+        "\n"
+        "export const PrepayBalanceContainer = () => {\n"
+        "  const InvoiceBalanceSubsection = () => {\n"
+        '    return <section className="invoice">\n'
+        "      <header>Balance</header>\n"
+        '      <span data-testid="row">{constructRowWithId("invoice").id}</span>\n'
+        "    </section>;\n"
+        "  };\n"
+        '  const handleApply = () => constructRowWithId("apply");\n'
+        "  const handleTabClick = (tab: string) => {\n"
+        "    return constructRowWithId(tab);\n"
+        "  };\n"
+        "  return <InvoiceBalanceSubsection />;\n"
+        "};\n"
+    )
+
+    result = extract(
+        [root / "panel.tsx", root / "row.tsx"], cache_root=tmp_path, root=root
+    )
+
+    # (a) no scan-root slug in any node id or edge endpoint (source AND target).
+    _assert_no_slug(result, _slug(root))
+
+    node_ids = {n["id"] for n in result["nodes"]}
+    calls = [
+        e for e in result["edges"] if e["relation"] in ("calls", "indirect_call")
+    ]
+    # (b) the call edges into the imported symbol target its canonical id.
+    imported_targets = {
+        e["target"] for e in calls if e["target"].endswith("constructrowwithid")
+    }
+    assert imported_targets == {"row_constructrowwithid"}, (
+        f"imported-symbol call target must be canonical; got {imported_targets}"
+    )
+    # (c) every calls edge SOURCE is a real node — a node-less source id can
+    # never be canonicalized and leaks the machine slug.
+    bad_sources = [
+        (e["source"], e["target"]) for e in calls if e["source"] not in node_ids
+    ]
+    assert not bad_sources, f"calls edges with node-less sources: {bad_sources}"
+
+
 def test_extract_invariant_no_absolute_root_slug_anywhere(tmp_path):
     """General invariant: extracting a mixed corpus (python module-level
     dispatch + bash source + a normal import) from ABSOLUTE input paths leaves

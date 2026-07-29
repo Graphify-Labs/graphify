@@ -2340,8 +2340,11 @@ def dispatch_command(cmd: str) -> None:
             # load_graph_json enforces the size cap, normalizes the legacy
             # "edges" key (#738), and coerces directed/multi inputs to a plain
             # undirected Graph so nx.compose never sees mixed types (#1606).
+            # preserve_direction stashes the stored endpoints as _src/_tgt so
+            # the undirected round-trip can't flip caller/callee (#2261) — the
+            # merged graph stays a plain Graph, as compose requires.
             try:
-                graphs.append(_load_graph(gp))
+                graphs.append(_load_graph(gp, preserve_direction=True))
             except ValueError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 sys.exit(1)
@@ -2360,6 +2363,13 @@ def dispatch_command(cmd: str) -> None:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
             out_data = _jg.node_link_data(merged)
+        # Restore original edge direction from _src/_tgt markers (same pattern as export.py #563/#2261)
+        for link in out_data.get("links", []):
+            tsrc = link.pop("_src", None)
+            ttgt = link.pop("_tgt", None)
+            if tsrc is not None and ttgt is not None:
+                link["source"] = tsrc
+                link["target"] = ttgt
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, out_data, indent=2)
