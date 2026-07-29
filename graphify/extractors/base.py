@@ -48,6 +48,16 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
     "NSObject", "NSString", "NSError", "NSLock", "NSAttributedString",
     "DispatchQueue", "DispatchGroup", "OperationQueue", "RunLoop",
     "View", "Color", "Font",
+    # Go predeclared functions. The Go resolver looks a callee up by bare name,
+    # so an unexported method that happens to share a builtin's name (e.g.
+    # `func (h *history) append(...)`) absorbs every builtin call in the repo:
+    # on a 8.9k-node Go codebase one such method collected 330 phantom
+    # inbound edges, inventing a database -> service layering violation.
+    # Builtin *types* are deliberately not listed: Go conversions are
+    # call-shaped too, but they produced no phantom edges on that corpus, and
+    # listing them would suppress genuine constructor-like calls.
+    "append", "cap", "clear", "close", "complex", "copy", "delete", "imag",
+    "make", "new", "panic", "println", "real", "recover",
 })
 
 
