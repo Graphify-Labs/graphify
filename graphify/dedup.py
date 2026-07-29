@@ -411,8 +411,10 @@ def deduplicate_entities(
     for key, group in norm_to_nodes.items():
         if len(group) <= 1:
             continue
-        # Partition by source_file — only merge within the same file in Pass 1.
-        # Cross-file matches fall through to Pass 2 fuzzy matching.
+        # Partition by source_file — same-file exact matches always merge here.
+        # Cross-file exact matches are handled just below, gated to `concept`
+        # nodes only: Pass 2 cannot form them because its candidate list keeps a
+        # single node per normalized label (#2182).
         by_file: dict[str, list[dict]] = defaultdict(list)
         for node in group:
             sf = node.get("source_file") or ""
@@ -427,6 +429,26 @@ def deduplicate_entities(
                 for node in file_group:
                     uf.union(winner["id"], node["id"])
                 exact_merges += len(file_group) - 1
+        # Cross-file residue: union exact matches across files, but only where
+        # it is provably safe (#2182). `concept` is the one file_type meant to
+        # unify across files (#1284) — code is keyed by ID (#1205), rationale/
+        # document are file-anchored (#1284), and image/paper labels are often
+        # shared basenames (logo.png). Provenance is required (#1178), and the
+        # entropy gate mirrors Pass 2 so short generic labels ("API") stay
+        # distinct. Sorting by id keeps the winner order-independent.
+        mergeable = sorted(
+            (n for n in group
+             if n.get("file_type") == "concept"
+             and (n.get("source_file") or "")
+             and _entropy(n.get("label", "")) >= _ENTROPY_THRESHOLD),
+            key=lambda n: n["id"],
+        )
+        if len(mergeable) > 1:
+            winner = _pick_winner(mergeable)
+            for node in mergeable:
+                if uf.find(winner["id"]) != uf.find(node["id"]):
+                    uf.union(winner["id"], node["id"])
+                    exact_merges += 1
 
     # ── pass 2: MinHash/LSH + Jaro-Winkler (high-entropy nodes only) ─────────
     candidates: list[dict] = []
@@ -522,10 +544,14 @@ def deduplicate_entities(
                     score += _COMMUNITY_BOOST
 
                 if score >= _MERGE_THRESHOLD:
-                    # Identical labels across different source files almost always
-                    # means same-named-but-different symbols (trait impls, wrapper
-                    # methods, common type names). Mirror Pass 1's source_file
-                    # partition for this sub-case. (#1046, leaks #895's fix)
+                    # Belt-and-braces (#1046, narrowed by #2182): candidates are
+                    # norm-unique (`seen_norms` above), so two candidates can
+                    # never share a normalized label and this branch is
+                    # unreachable today. Retained in case candidate selection
+                    # changes. Equal-norm cross-file pairs are handled in Pass 1
+                    # instead, gated to `concept` nodes — the original #1046
+                    # rationale (same-named code symbols) was obsoleted by code
+                    # being excluded from label matching entirely (#1205, #1247).
                     if norm_label == neighbor_norm:
                         sf_a = node.get("source_file") or ""
                         sf_b = neighbor.get("source_file") or ""

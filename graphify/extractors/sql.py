@@ -200,9 +200,17 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             # several statements, so scan for every CREATE in it. We deliberately
             # do not scan the body for FROM/JOIN references: PL/pgSQL loop
             # variables and locals would produce junk reads_from targets.
+            #
+            # Each name part is either a bare identifier or a double-quoted
+            # (delimited) one, so schema-qualified generated DDL such as
+            # CREATE OR REPLACE FUNCTION "public"."fn"(...) is recovered too.
+            # A bare [\w$.]+ stops dead at the leading quote, which silently
+            # dropped every quoted PL/pgSQL routine (#2180).
             text = _read(node)
             for m in re.finditer(
-                r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+([\w$.]+)",
+                r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
+                r"(?:IF\s+NOT\s+EXISTS\s+)?"
+                r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
                 text, re.IGNORECASE,
             ):
                 name = m.group(1)
@@ -291,5 +299,34 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             if (tbl_nid, ref_nid) not in emitted:
                 _add_edge(tbl_nid, ref_nid, "references", tbl_line)
                 emitted.add((tbl_nid, ref_nid))
+
+    # Global regex fallback for routines (#2180). PL/pgSQL bodies break the parse
+    # in more than one shape, and only the first was recovered before:
+    #   1. the whole CREATE lands in one ERROR node          -> handled in walk()
+    #   2. the statement is shredded into loose top-level tokens
+    #      (keyword_create/keyword_function/object_reference/... ) and the ERROR
+    #      node holds only the offending body line, e.g. `PERFORM x();` or
+    #      `x := 1;` -- so no CREATE text is inside any ERROR node at all
+    #   3. the name is a quoted identifier ("public"."fn"), which a bare
+    #      [\w$.]+ pattern cannot match
+    # Shapes 2 and 3 silently dropped the routine: no node, no warning, exit 0.
+    # Scanning the raw source catches all three, and _add_node dedupes by id so
+    # routines already recovered from the tree are not emitted twice.
+    #
+    # Gate on a failed parse: a cleanly-parsing file must NOT have routines
+    # fabricated from commented-out DDL, DDL inside EXECUTE '...' string bodies,
+    # or MySQL `CREATE FUNCTION IF NOT EXISTS` (which would capture `IF`). Every
+    # observed drop shape leaves an ERROR node in the tree, so has_error loses
+    # nothing while protecting clean corpora (#2180 follow-up).
+    if root.has_error:
+        for m in re.finditer(
+            r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
+            r"(?:IF\s+NOT\s+EXISTS\s+)?"
+            r"((?:\"[^\"\n]+\"|[\w$]+)(?:\s*\.\s*(?:\"[^\"\n]+\"|[\w$]+))*)",
+            src_text, re.IGNORECASE,
+        ):
+            fn_name = m.group(1)
+            fn_line = src_text[: m.start()].count("\n") + 1
+            _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
 
     return {"nodes": nodes, "edges": edges}
