@@ -3306,6 +3306,15 @@ def _ruby_const_last_name(node, source: bytes) -> str:
     return ""
 
 
+def _ruby_const_full_name(node, source: bytes) -> str:
+    """Full constant path of a ``constant`` or ``scope_resolution`` (``A::B::C`` -> ``A::B::C``)."""
+    if node is None:
+        return ""
+    if node.type in ("constant", "scope_resolution"):
+        return _read_text(node, source).strip()
+    return ""
+
+
 # `Const = <factory>(...)` shapes that define a lightweight class named after the
 # constant. tree-sitter parses each as an `assignment`, not a `class`, so the
 # generic class branch never saw them (#1640).
@@ -3315,7 +3324,7 @@ _RUBY_CLASS_FACTORIES = frozenset({("Struct", "new"), ("Class", "new"), ("Data",
 def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
                      parent_class_nid: str | None, add_node, add_edge, walk,
-                     callable_def_nids: set) -> bool:
+                     callable_def_nids: set, ruby_namespace: list[str]) -> bool:
     """Ruby: a constant assignment whose RHS is ``Struct.new(...)``,
     ``Class.new(Super)`` or ``Data.define(...)`` defines a class named after the
     constant (#1640). Synthesize the class node, attach block-defined methods via
@@ -3338,6 +3347,11 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     const_name = _read_text(left, source)
     if not const_name:
         return False
+
+    segments = const_name.split("::")
+    fq_const_name = "::".join(ruby_namespace + segments)
+    const_name = fq_const_name
+
     line = node.start_point[0] + 1
     class_nid = _make_id(stem, const_name)
     add_node(class_nid, const_name, line)
@@ -3373,9 +3387,15 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     # with a dot-less label.
     block = next((c for c in right.children if c.type in ("do_block", "block")), None)
     if block is not None:
-        body = next((c for c in block.children if c.type == "body_statement"), block)
-        for child in body.children:
-            walk(child, parent_class_nid=class_nid)
+        ruby_namespace.extend(segments)
+        try:
+            body = next((c for c in block.children if c.type == "body_statement"), block)
+            for child in body.children:
+                walk(child, parent_class_nid=class_nid)
+        finally:
+            for _ in range(len(segments)):
+                if ruby_namespace:
+                    ruby_namespace.pop()
     return True
 
 
@@ -3428,6 +3448,7 @@ def _extract_generic(
     edges: list[dict] = []
     seen_ids: set[str] = set()
     namespace_stack: list[str] = []
+    ruby_namespace: list[str] = []
     scope_stack: list[str] = []
     function_bodies: list[tuple[str, object]] = []
     # nids of function / method / class definitions in this file. The indirect-
@@ -3587,6 +3608,13 @@ def _extract_generic(
             if not name_node:
                 return
             class_name = _read_text(name_node, source)
+
+            segments = []
+            if config.ts_module == "tree_sitter_ruby":
+                segments = class_name.split("::")
+                class_name = "::".join(ruby_namespace + segments)
+                ruby_namespace.extend(segments)
+
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
             line = node.start_point[0] + 1
             metadata = None
@@ -3843,7 +3871,7 @@ def _extract_generic(
                         for _arg in _args.children:
                             if _arg.type not in ("constant", "scope_resolution"):
                                 continue
-                            _mod = _ruby_const_last_name(_arg, source)
+                            _mod = _ruby_const_full_name(_arg, source)
                             if _mod:
                                 _ruby_mixin_calls.append({
                                     "caller_nid": class_nid,
@@ -4118,6 +4146,11 @@ def _extract_generic(
             if body:
                 for child in body.children:
                     walk(child, parent_class_nid=class_nid)
+
+            if config.ts_module == "tree_sitter_ruby":
+                for _ in range(len(segments)):
+                    if ruby_namespace:
+                        ruby_namespace.pop()
             return
 
         # Event listener property arrays: $listen = [Event::class => [Listener::class]]
@@ -4792,7 +4825,7 @@ def _extract_generic(
             if _ruby_extra_walk(node, source, file_nid, stem, str_path,
                                 nodes, edges, seen_ids, function_bodies,
                                 parent_class_nid, add_node, add_edge, walk,
-                                callable_def_nids):
+                                callable_def_nids, ruby_namespace):
                 return
 
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the
