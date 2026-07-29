@@ -965,7 +965,15 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     return exclude if exclude.is_file() else None
 
 
-def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path, str]]:
+_IGNORE_SOURCE_GITIGNORE = "gitignore"
+_IGNORE_SOURCE_GRAPHIFYIGNORE = "graphifyignore"
+_IGNORE_SOURCE_INFO_EXCLUDE = "info_exclude"
+_IGNORE_SOURCE_CLI_EXCLUDE = "cli_exclude"
+
+
+def _load_dir_own_ignore(
+    d: Path, *, gitignore: bool = True
+) -> list[tuple[Path, str, str]]:
     """Read .gitignore/.graphifyignore directly inside *d* (not its ancestors).
 
     Merges .gitignore and .graphifyignore for this one directory (#1363):
@@ -975,25 +983,36 @@ def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path,
     .gitignore-excluded file (#945 kept: a dir with only a .gitignore still
     gets sensible defaults).
 
+    Each pattern is tagged with its source so callers can apply only a subset
+    of origins — e.g. memory-tree files should respect ``.graphifyignore``
+    but NOT ``.gitignore`` (generated output like ``graphify-out/`` is
+    typically gitignored, and honouring that there would silently drop memory
+    files).
+
     Shared by `_load_graphifyignore` (ancestor chain, loaded once before the
     scan) and the live os.walk loop in `detect()` (called per-directory as
     each descendant is visited), so nested ignore files *below* the scan
     root are honored too — previously only the scan root and its ancestors
     were read, so e.g. `vendor/sub/.gitignore` was silently ignored (#1206).
     """
-    patterns: list[tuple[Path, str]] = []
-    for fname in ((".gitignore", ".graphifyignore") if gitignore else (".graphifyignore",)):
+    patterns: list[tuple[Path, str, str]] = []
+    for fname, source in (
+        ((".gitignore", _IGNORE_SOURCE_GITIGNORE),
+         (".graphifyignore", _IGNORE_SOURCE_GRAPHIFYIGNORE))
+        if gitignore
+        else ((".graphifyignore", _IGNORE_SOURCE_GRAPHIFYIGNORE),)
+    ):
         ignore_file = d / fname
         if ignore_file.exists():
             for raw in ignore_file.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
                 line = _parse_gitignore_line(raw)
                 if line:
-                    patterns.append((d, line))
+                    patterns.append((d, line, source))
     return patterns
 
 
-def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Path, str]]:
-    """Read .graphifyignore files and return (anchor_dir, pattern) pairs.
+def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Path, str, str]]:
+    """Read .graphifyignore files and return (anchor_dir, pattern, source) triples.
 
     Patterns are returned outer-first so that inner (closer) rules are
     appended last and win via last-match-wins semantics — matching gitignore
@@ -1005,6 +1024,9 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     Covers the scan root and its ancestors only — directories *below* the
     scan root are picked up live during the os.walk in `detect()` instead,
     since they aren't known until the walk reaches them (#1206).
+
+    The third element of each tuple records provenance so callers can apply
+    only patterns from a specific origin (see ``_IGNORE_SOURCE_*`` constants).
     """
     root = root.resolve()
     ceiling = _find_vcs_root(root) or root
@@ -1019,7 +1041,7 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
         current = current.parent
     dirs.reverse()  # ceiling first, scan root last
 
-    patterns: list[tuple[Path, str]] = []
+    patterns: list[tuple[Path, str, str]] = []
 
     # $GIT_DIR/info/exclude is repo-root-scoped and, per git, ranks below every
     # per-directory .gitignore/.graphifyignore — so load it first (lowest priority
@@ -1030,7 +1052,7 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
         for raw in info_exclude.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
             line = _parse_gitignore_line(raw)
             if line:
-                patterns.append((ceiling, line))
+                patterns.append((ceiling, line, _IGNORE_SOURCE_INFO_EXCLUDE))
 
     for d in dirs:
         patterns.extend(_load_dir_own_ignore(d, gitignore=gitignore))
@@ -1068,11 +1090,12 @@ def _match_anchored_ignore_pattern(path: str, pattern: str) -> bool:
 def _is_ignored(
     path: Path,
     root: Path,
-    patterns: list[tuple[Path, str]],
+    patterns: list[tuple[Path, str, str]],
     *,
     _cache: dict[Path, bool] | None = None,
+    sources: set[str] | None = None,
 ) -> bool:
-    """Return True if the path should be ignored per .graphifyignore patterns.
+    """Return True if the path should be ignored per ignore patterns.
 
     Uses gitignore last-match-wins semantics: all patterns are evaluated in
     order; the final matching pattern determines the result. Negation patterns
@@ -1084,6 +1107,12 @@ def _is_ignored(
     _cache: optional dict shared across calls within the same scan. Ancestor
     directory results are memoised so files under the same subtree don't
     re-evaluate the same patterns repeatedly.
+
+    sources: optional set of provenance tags to filter by. When given, only
+    patterns whose third element is in ``sources`` are evaluated; all others
+    are skipped. Used to apply ONLY ``.graphifyignore``-sourced patterns to
+    the memory tree (so a gitignored ``graphify-out/`` doesn't silently drop
+    memory files) while keeping full ``.gitignore`` respect for the code tree.
     """
     if not patterns:
         return False
@@ -1108,7 +1137,12 @@ def _is_ignored(
             return False
 
         result = False
-        for anchor, pattern in patterns:
+        for entry in patterns:
+            anchor, pattern = entry[0], entry[1]
+            if sources is not None:
+                source = entry[2] if len(entry) > 2 else None
+                if source not in sources:
+                    continue
             negated = pattern.startswith("!")
             raw = pattern[1:] if negated else pattern
             directory_only = raw.endswith("/")
@@ -1231,7 +1265,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         for pat in extra_excludes:
             line = _parse_gitignore_line(pat)
             if line:
-                ignore_patterns.append((root, line))
+                ignore_patterns.append((root, line, _IGNORE_SOURCE_CLI_EXCLUDE))
 
     # Always include graphify-out/memory/ - query results filed back into the graph
     memory_dir = root / GRAPHIFY_OUT / "memory"
@@ -1334,9 +1368,21 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
                 continue
-        if _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
-            ignored.append(str(p))
-            continue
+        # Memory-tree files respect ONLY .graphifyignore patterns — not
+        # .gitignore or $GIT_DIR/info/exclude. ``graphify-out/`` is generated
+        # output and is commonly gitignored; applying .gitignore to memory
+        # would silently drop every memory file (#2267).
+        if in_memory:
+            if _is_ignored(
+                p, root, ignore_patterns, _cache=ignore_cache,
+                sources={_IGNORE_SOURCE_GRAPHIFYIGNORE},
+            ):
+                ignored.append(str(p))
+                continue
+        else:
+            if _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
+                ignored.append(str(p))
+                continue
         if not _resolves_under_root(p, root):
             skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
             continue
