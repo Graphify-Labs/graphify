@@ -1609,6 +1609,7 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     """Call AWS Bedrock via boto3 Converse API using the standard AWS credential chain."""
     try:
         import boto3
+        import botocore.config
         import botocore.exceptions
     except ImportError as exc:
         raise ImportError(
@@ -1618,7 +1619,19 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
     profile = os.environ.get("AWS_PROFILE")
     session = boto3.Session(profile_name=profile, region_name=region)
-    client = session.client("bedrock-runtime")
+    # Wire GRAPHIFY_API_TIMEOUT into the botocore read timeout. Without an
+    # explicit config, Converse uses botocore's 60s default and a long
+    # generation dies with "Read timeout on endpoint URL" no matter what the
+    # env var / --api-timeout is set to — the same gap #1112/#1442 closed for
+    # the claude-cli and secondary-dispatch paths, on the last cloud backend.
+    client = session.client(
+        "bedrock-runtime",
+        config=botocore.config.Config(
+            read_timeout=_resolve_api_timeout(),
+            connect_timeout=10,
+            retries={"max_attempts": _resolve_max_retries(), "mode": "adaptive"},
+        ),
+    )
 
     try:
         resp = client.converse(
@@ -2565,12 +2578,20 @@ def _call_llm(
     if backend == "bedrock":
         try:
             import boto3
+            import botocore.config
         except ImportError as exc:
             raise ImportError(_backend_pkg_hint("boto3", "bedrock")) from exc
         region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
         profile = os.environ.get("AWS_PROFILE")
         session = boto3.Session(profile_name=profile, region_name=region)
-        client = session.client("bedrock-runtime")
+        client = session.client(
+            "bedrock-runtime",
+            config=botocore.config.Config(
+                read_timeout=_resolve_api_timeout(),
+                connect_timeout=10,
+                retries={"max_attempts": _resolve_max_retries(), "mode": "adaptive"},
+            ),
+        )
         resp = client.converse(
             modelId=mdl,
             messages=[{"role": "user", "content": [{"text": prompt}]}],

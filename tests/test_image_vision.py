@@ -279,15 +279,37 @@ def _fake_boto3(monkeypatch, captured):
                 "usage": {"inputTokens": 1, "outputTokens": 2},
                 "stopReason": "end_turn",
             }
+
+    def _make_client(svc, **kw):
+        # Record the client-construction kwargs (notably config=) separately so
+        # they don't collide with the converse() call kwargs captured above.
+        captured["_client_service"] = svc
+        captured["_client_config"] = kw.get("config")
+        return _Client()
+
     boto3 = types.ModuleType("boto3")
-    boto3.Session = lambda **kw: SimpleNamespace(client=lambda svc: _Client())
+    boto3.Session = lambda **kw: SimpleNamespace(client=_make_client)
     monkeypatch.setitem(sys.modules, "boto3", boto3)
+
     botocore = types.ModuleType("botocore")
     exc = types.ModuleType("botocore.exceptions")
     exc.ClientError = type("ClientError", (Exception,), {})
+    config_mod = types.ModuleType("botocore.config")
+
+    class _Config:
+        def __init__(self, **kw):
+            # Mirror botocore.config.Config: expose the kwargs as attributes so
+            # tests can assert read_timeout/connect_timeout/retries were wired.
+            self.read_timeout = kw.get("read_timeout")
+            self.connect_timeout = kw.get("connect_timeout")
+            self.retries = kw.get("retries")
+
+    config_mod.Config = _Config
     botocore.exceptions = exc
+    botocore.config = config_mod
     monkeypatch.setitem(sys.modules, "botocore", botocore)
     monkeypatch.setitem(sys.modules, "botocore.exceptions", exc)
+    monkeypatch.setitem(sys.modules, "botocore.config", config_mod)
 
 
 # ── backend payload shape (mocked) ────────────────────────────────────────────
@@ -328,6 +350,32 @@ def test_call_bedrock_sends_raw_image_bytes(tmp_path, monkeypatch):
     content = captured["messages"][0]["content"]
     img_block = next(b for b in content if "image" in b)
     assert img_block["image"]["source"]["bytes"] == _PNG_BYTES
+
+
+def test_call_bedrock_honors_api_timeout(monkeypatch):
+    # GRAPHIFY_API_TIMEOUT must reach the botocore client's read_timeout; else
+    # Converse falls back to botocore's 60s default and a long generation dies
+    # with "Read timeout on endpoint URL" regardless of the env var.
+    monkeypatch.setenv("GRAPHIFY_API_TIMEOUT", "1800")
+    monkeypatch.delenv("GRAPHIFY_MAX_RETRIES", raising=False)
+    captured: dict = {}
+    _fake_boto3(monkeypatch, captured)
+    llm._call_bedrock("model", "CORPUS")
+    cfg = captured["_client_config"]
+    assert cfg is not None, "bedrock client built without a botocore config"
+    assert cfg.read_timeout == 1800.0
+    assert cfg.connect_timeout == 10
+    assert cfg.retries == {"max_attempts": 6, "mode": "adaptive"}
+
+
+def test_call_bedrock_api_timeout_defaults_when_unset(monkeypatch):
+    # With no override the client still gets an explicit 600s read timeout,
+    # not botocore's silent 60s default.
+    monkeypatch.delenv("GRAPHIFY_API_TIMEOUT", raising=False)
+    captured: dict = {}
+    _fake_boto3(monkeypatch, captured)
+    llm._call_bedrock("model", "CORPUS")
+    assert captured["_client_config"].read_timeout == 600.0
 
 
 # ── CLI backends (mocked subprocess) ──────────────────────────────────────────
