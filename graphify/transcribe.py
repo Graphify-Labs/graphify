@@ -5,7 +5,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from graphify.paths import out_path as _out_path
+from graphify.paths import (
+    glob_paths as _glob_paths,
+    io_path as _io_path,
+    make_dirs as _make_dirs,
+    out_path as _out_path,
+    path_exists as _path_exists,
+    write_text as _write_file_text,
+)
 
 
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
@@ -56,7 +63,7 @@ def download_audio(url: str, output_dir: Path) -> Path:
     from graphify.security import validate_url
     validate_url(url)  # blocks private IPs, bad schemes before yt-dlp runs
     yt_dlp = _get_yt_dlp()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    _make_dirs(output_dir, exist_ok=True)
 
     # yt-dlp uses %(title)s which can be long/weird — use a stable name based on URL hash
     import hashlib
@@ -66,7 +73,7 @@ def download_audio(url: str, output_dir: Path) -> Path:
     # Check for already-downloaded file
     for ext in ('.m4a', '.opus', '.mp3', '.ogg', '.wav', '.webm'):
         candidate = output_dir / f"yt_{url_hash}{ext}"
-        if candidate.exists():
+        if _path_exists(candidate):
             print(f"  cached audio: {candidate.name}")
             return candidate
 
@@ -84,9 +91,9 @@ def download_audio(url: str, output_dir: Path) -> Path:
         info = ydl.extract_info(url, download=True)
         ext = info.get('ext', 'm4a')
         downloaded = output_dir / f"yt_{url_hash}.{ext}"
-        if not downloaded.exists():
+        if not _path_exists(downloaded):
             # yt-dlp may have picked a different extension
-            for p in output_dir.glob(f"yt_{url_hash}.*"):
+            for p in _glob_paths(output_dir, f"yt_{url_hash}.*"):
                 downloaded = p
                 break
         return downloaded
@@ -131,7 +138,7 @@ def transcribe(
     force: re-transcribe even if transcript already exists.
     """
     out_dir = Path(output_dir) if output_dir else Path(_TRANSCRIPTS_DIR)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _make_dirs(out_dir, exist_ok=True)
 
     if is_url(str(video_path)):
         audio_path = download_audio(str(video_path), out_dir / "downloads")
@@ -139,7 +146,7 @@ def transcribe(
         audio_path = Path(video_path)
 
     transcript_path = out_dir / (audio_path.stem + ".txt")
-    if transcript_path.exists() and not force:
+    if _path_exists(transcript_path) and not force:
         return transcript_path
 
     WhisperModel = _get_whisper()
@@ -149,7 +156,7 @@ def transcribe(
     print(f"  transcribing {audio_path.name} (model={model_name}) ...", flush=True)
     model = WhisperModel(model_name, device="cpu", compute_type="int8")
     segments, info = model.transcribe(
-        str(audio_path),
+        _io_path(audio_path),
         beam_size=5,
         initial_prompt=prompt,
     )
@@ -157,7 +164,7 @@ def transcribe(
     lines = [segment.text.strip() for segment in segments if segment.text.strip()]
     transcript = "\n".join(lines)
 
-    transcript_path.write_text(transcript, encoding="utf-8")
+    _write_file_text(transcript_path, transcript, encoding="utf-8")
     lang = info.language if hasattr(info, "language") else "unknown"
     print(f"  transcript saved -> {transcript_path} (lang={lang}, {len(lines)} segments)")
     return transcript_path

@@ -5,7 +5,15 @@ import re
 
 from pathlib import Path
 from typing import Any
+
 from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.paths import (
+    path_exists as _path_exists,
+    path_stat as _path_stat,
+    read_bytes as _read_file_bytes,
+    read_text as _read_file_text,
+    resolve_path as _resolve_path,
+)
 
 
 def extract_dm(path: Path) -> dict:
@@ -18,7 +26,7 @@ def extract_dm(path: Path) -> dict:
     try:
         language = Language(tsdm.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_file_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -87,18 +95,18 @@ def extract_dm(path: Path) -> dict:
             raw = _read_include_path(file_node)
             if raw:
                 norm = re.sub(r"^\./", "", raw.replace("\\", "/"))
-                resolved = (path.parent / norm).resolve()
+                resolved = _resolve_path(path.parent / norm)
                 edge: dict = {
                     "source": file_nid,
-                    "target": _make_id(str(resolved)) if resolved.exists() else _make_id(norm),
-                    "relation": "imports_from" if resolved.exists() else "imports",
+                    "target": _make_id(str(resolved)) if _path_exists(resolved) else _make_id(norm),
+                    "relation": "imports_from" if _path_exists(resolved) else "imports",
                     "context": "import",
                     "confidence": "EXTRACTED",
                     "source_file": str_path,
                     "source_location": f"L{line}",
                     "weight": 1.0,
                 }
-                if not resolved.exists():
+                if not _path_exists(resolved):
                     edge["external"] = True
                 edges.append(edge)
             return
@@ -275,7 +283,7 @@ def _read_dmi_description(data: bytes) -> str:
 def extract_dmi(path: Path) -> dict:
     """Extract icon state names from a .dmi (BYOND PNG icon sheet)."""
     try:
-        data = path.read_bytes()
+        data = _read_file_bytes(path)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
@@ -364,9 +372,9 @@ def _dmm_type_path(entry: str) -> str:
 def extract_dmm(path: Path) -> dict:
     """Extract type-path references from a .dmm map file's tile dictionary."""
     try:
-        if path.stat().st_size > 50 * 1024 * 1024:
+        if _path_stat(path).st_size > 50 * 1024 * 1024:
             return {"nodes": [], "edges": [], "error": "file too large (>50 MB)"}
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = _read_file_text(path, encoding="utf-8", errors="replace")
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
@@ -436,7 +444,7 @@ _DMF_TYPE_RE = re.compile(r'^\s*type\s*=\s*(\S+)\s*$')
 def extract_dmf(path: Path) -> dict:
     """Extract windows and controls from a .dmf interface file."""
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = _read_file_text(path, encoding="utf-8", errors="replace")
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 

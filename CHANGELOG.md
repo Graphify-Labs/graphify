@@ -2,6 +2,15 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Fix: Windows scans no longer skip deeply nested local or UNC files when their paths
+  cross the legacy `MAX_PATH` boundary. Filesystem calls now use extended-length paths
+  only at the I/O boundary while graph IDs, manifests, cache keys, and diagnostics retain
+  ordinary paths; discovery, hashing, extraction, incremental rebuilds, and document/media
+  readers share the same cross-platform adapter. A focused Ubuntu/macOS/Windows CI matrix
+  exercises 300+ character paths and verifies that the adapter remains a no-op off Windows.
+
 ## 0.9.30 (2026-07-29)
 
 - Fix: pin `mcp` below 2.0 so a fresh `graphifyy[mcp]` / `graphifyy[all]` install works again (#2277, #2279, #2291). The `mcp` 2.0.0 major dropped the `mcp.types.AnyUrl` re-export and the `Server` decorator-registration API that `graphify/serve.py` uses, so an unpinned resolve broke `graphify-mcp` on every new install with an `ImportError`. The `mcp` and `all` extras now require `mcp>=1,<2` (resolving to 1.29.0) and `starlette>=1.3.1,<2`. Adapting to the mcp 2.x API is tracked as a follow-up.

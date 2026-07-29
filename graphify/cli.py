@@ -11,7 +11,17 @@ import os
 import re
 import sys
 import time
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import (
+    GRAPHIFY_OUT as _GRAPHIFY_OUT,
+    make_dirs as _make_dirs,
+    path_exists as _path_exists,
+    path_is_file as _path_is_file,
+    path_stat as _path_stat,
+    read_text as _read_text,
+    resolve_path as _resolve_path,
+    unlink_path as _unlink_path,
+    write_text as _write_text,
+)
 from pathlib import Path
 
 
@@ -123,7 +133,7 @@ def _stamped_manifest_files(
         if not p.is_absolute():
             p = root / p
         try:
-            return p.resolve()
+            return _resolve_path(p)
         except (OSError, RuntimeError):
             return p
 
@@ -191,19 +201,19 @@ def _stale_graph_sources(
     """
     from graphify.paths import nfc
     try:
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        data = json.loads(_read_text(graph_path, encoding="utf-8"))
     except Exception:
         return []
     if not isinstance(data, dict):
         return []
     try:
-        root_res = scan_root.resolve()
+        root_res = _resolve_path(scan_root)
     except (OSError, RuntimeError):
         root_res = scan_root
     # <out>/graphify-out/graph.json — relative source_files may be anchored here.
     out_base = graph_path.parent.parent
     try:
-        out_base = out_base.resolve()
+        out_base = _resolve_path(out_base)
     except (OSError, RuntimeError):
         pass
 
@@ -214,7 +224,7 @@ def _stale_graph_sources(
         except ValueError:
             pass
         try:
-            p.resolve().relative_to(root_res)
+            _resolve_path(p).relative_to(root_res)
             return True
         except (ValueError, OSError, RuntimeError):
             return False
@@ -226,7 +236,7 @@ def _stale_graph_sources(
         if nfc(str(p)) in seen_nfc:
             return True
         try:
-            return nfc(str(p.resolve())) in seen_nfc
+            return nfc(str(_resolve_path(p))) in seen_nfc
         except (OSError, RuntimeError):
             return False
 
@@ -252,7 +262,7 @@ def _stale_graph_sources(
     def _provably_excluded(c: Path) -> bool:
         spellings = [nfc(str(c))]
         try:
-            spellings.append(nfc(str(c.resolve())))
+            spellings.append(nfc(str(_resolve_path(c))))
         except (OSError, RuntimeError):
             pass
         for s in spellings:
@@ -301,7 +311,7 @@ def _stale_graph_sources(
         alive = []
         for c in in_root:
             try:
-                if c.exists():
+                if _path_exists(c):
                     alive.append(c)
             except OSError:
                 pass
@@ -563,7 +573,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # candidate that resolves outside that root is out-of-project.
             root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
             try:
-                root = root.resolve()
+                root = _resolve_path(root)
             except (OSError, RuntimeError):
                 pass
             path_vals = [str(t.get("file_path") or ""), str(t.get("path") or "")]
@@ -576,7 +586,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                         in_project = True  # relative -> anchored at cwd == in project
                         break
                     try:
-                        p.resolve().relative_to(root)
+                        _resolve_path(p).relative_to(root)
                         in_project = True
                         break
                     except (ValueError, OSError, RuntimeError):
@@ -585,7 +595,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     return
             # One stat for existence + mtime of the graph.
             try:
-                gmtime = os.stat(str(out_path("graph.json"))).st_mtime
+                gmtime = _path_stat(out_path("graph.json")).st_mtime
             except OSError:
                 return
             # #1840 (b): stale-for-target -> soften, never block. The target file
@@ -594,11 +604,11 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             fp = str(t.get("file_path") or "")
             if fp:
                 try:
-                    stale = os.stat(fp).st_mtime > gmtime
+                    stale = _path_stat(fp).st_mtime > gmtime
                 except OSError:
                     stale = False
             try:
-                if out_path("needs_update").exists():
+                if _path_exists(out_path("needs_update")):
                     stale = True
             except Exception:
                 pass
@@ -629,16 +639,16 @@ def _target_is_indexed(file_path: str, root: "Path") -> bool:
         return True
     try:
         mp = out_path("manifest.json")
-        st = mp.stat()
+        st = _path_stat(mp)
         if st.st_size > 2_000_000:
             return True
-        manifest = json.loads(mp.read_text(encoding="utf-8"))
+        manifest = json.loads(_read_text(mp, encoding="utf-8"))
         if not isinstance(manifest, dict) or not manifest:
             return True
         p = Path(file_path)
         rels = set()
         try:
-            rels.add(p.resolve().relative_to(root).as_posix())
+            rels.add(_resolve_path(p).relative_to(root).as_posix())
         except (ValueError, OSError, RuntimeError):
             pass
         rels.add(p.name)
@@ -1482,7 +1492,7 @@ def dispatch_command(cmd: str) -> None:
             summary = diagnose_file(
                 graph_path,
                 directed=directed,
-                root=Path(".").resolve(),
+                root=_resolve_path(Path(".")),
                 max_examples=max_examples,
                 extract_path=extract_path,
             )
@@ -1532,7 +1542,7 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "watch":
         watch_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(".")
-        if not watch_path.exists():
+        if not _path_exists(watch_path):
             print(f"error: path not found: {watch_path}", file=sys.stderr)
             sys.exit(1)
         from graphify.watch import watch as _watch
@@ -1606,7 +1616,7 @@ def dispatch_command(cmd: str) -> None:
         if watch_path is None:
             watch_path = Path(".")
         graph_json = graph_override if graph_override is not None else watch_path / _GRAPHIFY_OUT / "graph.json"
-        if not graph_json.exists():
+        if not _path_exists(graph_json):
             print(
                 f"error: no graph found at {graph_json} — run /graphify first",
                 file=sys.stderr,
@@ -1636,7 +1646,7 @@ def dispatch_command(cmd: str) -> None:
         except ValueError:
             _over_cap = True
             try:
-                _over_cap_bytes = graph_json.stat().st_size
+                _over_cap_bytes = _path_stat(graph_json).st_size
             except OSError:
                 _over_cap_bytes = -1
             print(
@@ -1644,7 +1654,7 @@ def dispatch_command(cmd: str) -> None:
                 f"falling back to community-aggregation view (node_limit=5000)",
                 file=sys.stderr,
             )
-        _raw = json.loads(graph_json.read_text(encoding="utf-8"))
+        _raw = json.loads(_read_text(graph_json, encoding="utf-8"))
         _directed = bool(_raw.get("directed", False))
         G = build_from_json(_raw, directed=_directed)
         print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
@@ -1892,11 +1902,11 @@ def dispatch_command(cmd: str) -> None:
         else:
             # Try to recover the scan root saved by the last full build
             saved = Path(_GRAPHIFY_OUT) / ".graphify_root"
-            if saved.exists():
-                watch_path = Path(saved.read_text(encoding="utf-8").strip())
+            if _path_exists(saved):
+                watch_path = Path(_read_text(saved, encoding="utf-8").strip())
             else:
                 watch_path = Path(".")
-        if not watch_path.exists():
+        if not _path_exists(watch_path):
             print(f"error: path not found: {watch_path}", file=sys.stderr)
             sys.exit(1)
         from graphify.watch import _rebuild_code
@@ -1946,7 +1956,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         from graphify.watch import check_update
 
-        check_update(Path(sys.argv[2]).resolve())
+        check_update(_resolve_path(sys.argv[2]))
         sys.exit(0)
     elif cmd == "tree":
         # Emit a D3 v7 collapsible-tree HTML view of graph.json:
@@ -2576,10 +2586,10 @@ def dispatch_command(cmd: str) -> None:
         has_path = True
         if sys.argv[2].startswith("-"):
             has_path = False
-            target = Path(".").resolve()
+            target = _resolve_path(Path("."))
         else:
-            target = Path(sys.argv[2]).resolve()
-            if not target.exists():
+            target = _resolve_path(Path(sys.argv[2]))
+            if not _path_exists(target):
                 print(f"error: path not found: {target}", file=sys.stderr)
                 sys.exit(1)
 
@@ -2740,9 +2750,9 @@ def dispatch_command(cmd: str) -> None:
         # Resolve output dir. The user-facing contract is "<out>/graphify-out/"
         # so a fresh checkout writes graphify-out/ at the project root, matching
         # the skill.md pipeline.
-        out_root = (out_dir.resolve() if out_dir else target)
+        out_root = (_resolve_path(out_dir) if out_dir else target)
         graphify_out = out_root / _GRAPHIFY_OUT
-        graphify_out.mkdir(parents=True, exist_ok=True)
+        _make_dirs(graphify_out, exist_ok=True)
         # Persist corpus-shaping options so later update/watch/hook rebuilds
         # use the same file set as the initial extraction (#1886).
         from graphify.watch import (
@@ -2783,13 +2793,13 @@ def dispatch_command(cmd: str) -> None:
         # and genuinely-deleted sources against the current corpus, so doc/
         # paper/image nodes survive a --code-only rebuild instead of being
         # dropped with the rest of the committed graph.
-        incremental_mode = existing_graph_path.exists() if has_path else False
+        incremental_mode = _path_exists(existing_graph_path) if has_path else False
         # --force: full scan, not the manifest-gated incremental diff — a warm
         # unchanged tree would otherwise dispatch zero files (#1894).
         incremental_mode = incremental_mode and not force
         if force:
             print("[graphify extract] --force: full re-scan, semantic cache reads skipped")
-        elif incremental_mode and not manifest_path.exists():
+        elif incremental_mode and not _path_exists(manifest_path):
             print(
                 "[graphify extract] manifest.json missing; using existing "
                 "graph.json as the incremental baseline (all files re-checked; "
@@ -3224,7 +3234,7 @@ def dispatch_command(cmd: str) -> None:
                     _abs = Path(_fp)
                     if not _abs.is_absolute():
                         _abs = Path(target) / _abs
-                    if not _abs.is_file():
+                    if not _path_is_file(_abs):
                         continue  # deleted/missing — leave out so its entry is pruned
                     try:
                         _live_hashes.add(_file_hash(_abs, target, cache_root=out_root))
@@ -3316,7 +3326,7 @@ def dispatch_command(cmd: str) -> None:
             if has_path:
                 return
             try:
-                manifest_path.unlink(missing_ok=True)
+                _unlink_path(manifest_path, missing_ok=True)
             except OSError as exc:
                 print(f"error: could not invalidate file manifest: {exc}", file=sys.stderr)
                 sys.exit(1)
@@ -3445,8 +3455,10 @@ def dispatch_command(cmd: str) -> None:
                 # relativize deleted-file paths correctly even for a custom --out
                 # (its grandparent-of-graph.json fallback points at the wrong dir
                 # otherwise, and deleted files never prune — #2012/#1571).
-                (graphify_out / ".graphify_root").write_text(
-                    str(Path(target).resolve()), encoding="utf-8"
+                _write_text(
+                    graphify_out / ".graphify_root",
+                    str(_resolve_path(target)),
+                    encoding="utf-8",
                 )
             except OSError:
                 pass
@@ -3579,15 +3591,19 @@ def dispatch_command(cmd: str) -> None:
         try:
             # See the --no-cluster path above: persist the scan root so build_merge
             # can relativize deleted-file paths under a custom --out (#2012/#1571).
-            (graphify_out / ".graphify_root").write_text(
-                str(Path(target).resolve()), encoding="utf-8"
+            _write_text(
+                graphify_out / ".graphify_root",
+                str(_resolve_path(target)),
+                encoding="utf-8",
             )
         except OSError:
             pass
         stages.mark("export")
         if merged.get("output_tokens", 0) > 0:
-            (graphify_out / ".graphify_semantic_marker").write_text(
-                json.dumps({"output_tokens": merged["output_tokens"]}), encoding="utf-8"
+            _write_text(
+                graphify_out / ".graphify_semantic_marker",
+                json.dumps({"output_tokens": merged["output_tokens"]}),
+                encoding="utf-8",
             )
         if global_merge:
             from graphify.global_graph import global_add as _global_add
@@ -3698,19 +3714,20 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             else:
                 i += 1
-        files = [f for f in files_from.read_text(encoding="utf-8").splitlines() if f.strip()]
+        files = [f for f in _read_text(files_from, encoding="utf-8").splitlines() if f.strip()]
         cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(
             files, root, mode=cache_mode, prompt_file=prompt_file
         )
         out = root / _GRAPHIFY_OUT
-        out.mkdir(parents=True, exist_ok=True)
+        _make_dirs(out, exist_ok=True)
         if cached_nodes or cached_edges or cached_hyperedges:
-            (out / ".graphify_cached.json").write_text(
+            _write_text(
+                out / ".graphify_cached.json",
                 json.dumps({"nodes": cached_nodes, "edges": cached_edges, "hyperedges": cached_hyperedges},
                            ensure_ascii=False),
                 encoding="utf-8",
             )
-        (out / ".graphify_uncached.txt").write_text("\n".join(uncached), encoding="utf-8")
+        _write_text(out / ".graphify_uncached.txt", "\n".join(uncached), encoding="utf-8")
         print(f"Cache: {len(files) - len(uncached)} hit, {len(uncached)} miss")
 
     elif cmd == "merge-chunks":
@@ -3818,8 +3835,16 @@ def dispatch_command(cmd: str) -> None:
             print("error: --out <path> required", file=sys.stderr)
             sys.exit(1)
         empty: dict = {"nodes": [], "edges": [], "hyperedges": []}
-        cached_data = json.loads(cached_path.read_text(encoding="utf-8")) if cached_path and cached_path.exists() else empty
-        new_data = json.loads(new_path.read_text(encoding="utf-8")) if new_path and new_path.exists() else empty
+        cached_data = (
+            json.loads(_read_text(cached_path, encoding="utf-8"))
+            if cached_path and _path_exists(cached_path)
+            else empty
+        )
+        new_data = (
+            json.loads(_read_text(new_path, encoding="utf-8"))
+            if new_path and _path_exists(new_path)
+            else empty
+        )
         seen_ids2: set[str] = set()
         all_nodes: list[dict] = []
         for n in cached_data.get("nodes", []) + new_data.get("nodes", []):
@@ -3831,12 +3856,16 @@ def dispatch_command(cmd: str) -> None:
             "edges": cached_data.get("edges", []) + new_data.get("edges", []),
             "hyperedges": cached_data.get("hyperedges", []) + new_data.get("hyperedges", []),
         }
-        out_path2.parent.mkdir(parents=True, exist_ok=True)
+        _make_dirs(out_path2.parent, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path2, merged2, ensure_ascii=False)
         print(f"Merged: {len(merged2['nodes'])} nodes, {len(merged2['edges'])} edges")
 
-    elif Path(cmd).exists() or cmd in (".", "..") or cmd.startswith(("./", "../", "/", "~")):
+    elif (
+        _path_exists(Path(cmd).expanduser())
+        or cmd in (".", "..")
+        or cmd.startswith(("./", "../", "/", "~"))
+    ):
         # User ran `graphify <path>` directly — treat as `graphify extract <path>`.
         # Common when following the PowerShell note in README (`graphify .`) or
         # copy-pasting skill invocations without the leading slash.

@@ -11,6 +11,11 @@ from typing import Any
 
 import networkx as nx
 
+from graphify.paths import (
+    path_exists as _path_exists,
+    read_text as _read_file_text,
+)
+
 
 _SUPPRESSION_DECL_RE = re.compile(r"^\s*(?P<name>seen_[A-Za-z0-9_]+)\s*[:=]")
 _TYPE_TUPLE_RE = re.compile(r"set\[tuple\[(?P<inside>[^\]]+)\]\]")
@@ -122,7 +127,7 @@ def _tuple_arity_from_annotation(line: str) -> int:
 def scan_producer_suppression_sites(path: str | Path) -> dict[str, Any]:
     """Find likely `seen_*` producer-suppression sets in an extractor file."""
     source_path = Path(path)
-    if not source_path.exists():
+    if not _path_exists(source_path):
         return {
             "path": str(source_path),
             "total_sites": 0,
@@ -131,7 +136,7 @@ def scan_producer_suppression_sites(path: str | Path) -> dict[str, Any]:
         }
 
     sites: list[dict[str, Any]] = []
-    lines = source_path.read_text(encoding="utf-8").splitlines()
+    lines = _read_file_text(source_path, encoding="utf-8").splitlines()
     for lineno, line in enumerate(lines, start=1):
         match = _SUPPRESSION_DECL_RE.match(line)
         if not match:
@@ -284,7 +289,7 @@ def _read_json_file(path: str | Path) -> dict[str, Any]:
     json_path = Path(path)
     check_graph_file_size_cap(json_path)
     try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
+        data = json.loads(_read_file_text(json_path, encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         raise RuntimeError(
             f"Cannot parse {json_path}: {exc}. "

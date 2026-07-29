@@ -78,6 +78,40 @@ jobs:
           uv run --frozen graphify --help
           uv run --frozen graphify install
 
+  platform-paths:
+    # Keep the filesystem boundary honest on every supported desktop OS.  The
+    # Windows run creates and extracts a real 300+ character source path; the
+    # same tests verify that the adapter remains a no-op on Linux and macOS.
+    name: Filesystem paths (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Exercise logical and extended path boundaries
+        run: >-
+          uv run --frozen pytest
+          tests/test_windows_long_paths.py
+          tests/test_long_path_hashing.py
+          tests/test_paths.py
+          tests/test_atomic_writes.py
+          tests/test_google_workspace.py
+          tests/test_cargo_introspect.py
+          tests/test_cpp_preprocess.py
+          -q --tb=short
+
   security-scan:
     # The dev deps include bandit and pip-audit. Run them in CI so a new
     # HIGH-severity finding or vulnerable dependency is caught on the PR that

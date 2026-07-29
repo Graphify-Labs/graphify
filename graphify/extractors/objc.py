@@ -5,6 +5,7 @@ from graphify.extractors.base import _file_stem, _make_id, _read_text
 from graphify.extractors.engine import _cpp_declarator_name, _semantic_reference_edge
 from graphify.extractors.resolution import _resolve_c_include_path
 from pathlib import Path
+from graphify.paths import read_bytes as _read_file_bytes
 from typing import Any
 
 
@@ -51,7 +52,7 @@ def extract_objc(path: Path) -> dict:
     try:
         language = Language(tsobjc.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_file_bytes(path)
         # tree-sitter-objc cannot expand these argument-less annotation macros (no
         # trailing ';'), and their presence before @interface makes the parser fail to
         # emit a class_interface node (#1475). Blank them to equal-length spaces so byte

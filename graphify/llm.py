@@ -16,6 +16,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from graphify.paths import (
+    path_is_file as _path_is_file,
+    path_stat as _path_stat,
+    read_bytes as _read_file_bytes,
+    read_text as _read_file_text,
+    resolve_path as _resolve_path,
+)
+
 from graphify.file_slice import (
     FileSlice,
     bisect_slice,
@@ -269,7 +277,7 @@ def _load_custom_providers() -> dict[str, dict]:
     local_path = _custom_providers_path(global_=False)
     global_path = _custom_providers_path(global_=True)
     allow_local = os.environ.get("GRAPHIFY_ALLOW_LOCAL_PROVIDERS", "").strip().lower() in ("1", "true", "yes")
-    if local_path.is_file() and not allow_local:
+    if _path_is_file(local_path) and not allow_local:
         print(
             f"[graphify] WARNING: ignoring project-local {local_path} (custom providers control "
             "where your corpus and API key are sent). Set GRAPHIFY_ALLOW_LOCAL_PROVIDERS=1 to load it.",
@@ -279,9 +287,9 @@ def _load_custom_providers() -> dict[str, dict]:
     providers: dict[str, dict] = {}
     paths = [local_path, global_path] if allow_local else [global_path]
     for path in paths:
-        if path.is_file():
+        if _path_is_file(path):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(_read_file_text(path, encoding="utf-8"))
                 if isinstance(data, dict):
                     for name, cfg in data.items():
                         if not (isinstance(name, str) and isinstance(cfg, dict)):
@@ -505,14 +513,14 @@ def _file_to_text(path: Path) -> str:
     if path.suffix.lower() == ".pdf":
         from graphify.detect import extract_pdf_text
         return extract_pdf_text(path)
-    return path.read_text(encoding="utf-8", errors="replace")
+    return _read_file_text(path, encoding="utf-8", errors="replace")
 
 
 def _resolve_under_root(path: Path, root: Path) -> Path | None:
     """Return the resolved path only when it stays inside ``root``."""
     try:
-        resolved_root = root.resolve()
-        resolved_path = path.resolve()
+        resolved_root = _resolve_path(root)
+        resolved_path = _resolve_path(path)
         resolved_path.relative_to(resolved_root)
     except (OSError, RuntimeError, ValueError):
         return None
@@ -698,7 +706,7 @@ def _bind_node_evidence(result: dict, text_units: "list[Path | FileSlice]", root
         if not p.is_absolute():
             p = root / p
         try:
-            key = p.resolve()
+            key = _resolve_path(p)
         except (OSError, RuntimeError):
             continue
         src = source_by_path.get(key)
@@ -819,7 +827,7 @@ def _build_image_refs(image_files: list[Path], root: Path, *, read_bytes: bool =
         raw: bytes | None = None
         if read_bytes:
             try:
-                raw = abs_path.read_bytes()
+                raw = _read_file_bytes(abs_path)
             except OSError as exc:
                 print(f"[graphify] could not read image {rel}: {exc}", file=sys.stderr)
                 raw = None
@@ -1842,14 +1850,14 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
         return _IMAGE_TOKEN_ESTIMATE
     if _TOKENIZER is None:
         try:
-            size = path.stat().st_size
+            size = _path_stat(path).st_size
         except OSError:
             return 0
         chars = min(size, _FILE_CHAR_CAP) + _PER_FILE_OVERHEAD_CHARS
         return chars // _CHARS_PER_TOKEN
 
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
+        content = _read_file_text(path, encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
     except OSError:
         return 0
     return len(_TOKENIZER.encode(content, disallowed_special=())) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
@@ -2407,7 +2415,7 @@ def extract_corpus_parallel(
         if not p.is_absolute():
             p = root / p
         try:
-            return p.resolve()
+            return _resolve_path(p)
         except (OSError, RuntimeError):
             return p
 
@@ -2418,7 +2426,7 @@ def extract_corpus_parallel(
         if not sf:
             return False
         p = _resolve_against_root(sf)
-        return p.is_file() and p not in _dispatched_resolved
+        return _path_is_file(p) and p not in _dispatched_resolved
 
     dropped_ids: set = set()
     dropped_files: set[str] = set()
@@ -2466,7 +2474,7 @@ def extract_corpus_parallel(
             covered.add(p if p.is_absolute() else (root / p))
     uncovered = sorted(
         p for p in dispatched
-        if p.resolve() not in {c.resolve() for c in covered}
+        if _resolve_path(p) not in {_resolve_path(c) for c in covered}
     )
     merged["uncovered_files"] = [str(p) for p in uncovered]
     if uncovered:

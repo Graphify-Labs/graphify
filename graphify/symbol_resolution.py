@@ -5,10 +5,15 @@ from __future__ import annotations
 import ast
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Sequence
 from typing import Any
+
+from graphify.paths import (
+    read_text as _read_file_text,
+    resolve_path as _resolve_path,
+)
 
 from graphify.ids import make_id as _shared_make_id
 from graphify.paths import disambiguate_ambiguous_candidates
@@ -135,7 +140,7 @@ def parse_python_import_aliases(path: Path) -> dict[str, ImportedSymbol]:
     """
 
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        source = _read_file_text(path, encoding="utf-8", errors="replace")
         tree = ast.parse(source)
     except (OSError, SyntaxError):
         return {}
@@ -395,7 +400,7 @@ def _file_node_id_for_path(path: Path, root: Path) -> str:
     # node instead of an orphan. _bash_make_id / _bash_file_stem are exact copies
     # of extract._make_id / extract._file_stem, so IDs match.
     try:
-        rel = path.resolve().relative_to(root.resolve())
+        rel = _resolve_path(path).relative_to(_resolve_path(root))
     except ValueError:
         return _bash_make_id(str(path))  # path outside root: hash absolute path as fallback
     return _bash_make_id(_bash_file_stem(rel))
@@ -427,7 +432,7 @@ def resolve_bash_source_edges(
         - Inputs of type ``str`` and ``pathlib.Path`` are processed.
           Anything else is silently skipped.
     """
-    path_by_index = [Path(p).resolve() for p in paths]
+    path_by_index = [_resolve_path(p) for p in paths]
     file_nid_by_path = {p: _file_node_id_for_path(p, root) for p in path_by_index}  # resolved paths only
 
     functions_by_file: dict[str, dict[str, str]] = {}
@@ -478,7 +483,7 @@ def resolve_bash_source_edges(
             if not candidate.is_absolute():
                 candidate = path.parent / candidate
             try:
-                target_path = candidate.resolve()
+                target_path = _resolve_path(candidate)
             except (OSError, RuntimeError):
                 continue
             target_file_nid = file_nid_by_path.get(target_path)

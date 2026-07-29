@@ -5,6 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from graphify.paths import (
+    glob_paths as _glob_paths,
+    io_path as _io_path,
+    path_is_file as _path_is_file,
+    resolve_path as _resolve_path,
+)
+
 
 _CONFIDENCE_EXTRACTED = "EXTRACTED"
 
@@ -20,7 +27,7 @@ def _load_toml(path: Path) -> dict[str, Any]:
                 "--cargo on Python 3.10 needs tomli. Install with: pip install tomli"
             ) from None
 
-    with path.open("rb") as manifest:
+    with open(_io_path(path), "rb") as manifest:
         return tomllib.load(manifest)
 
 
@@ -37,16 +44,16 @@ def _member_manifest_paths(root: Path, root_data: dict[str, Any]) -> list[Path]:
     for pattern in members:
         if not isinstance(pattern, str):
             continue
-        for member in sorted(root.glob(pattern)):
+        for member in sorted(_glob_paths(root, pattern)):
             manifest = member / "Cargo.toml"
-            if manifest.is_file() and manifest not in paths:
+            if _path_is_file(manifest) and manifest not in paths:
                 paths.append(manifest)
     return paths
 
 
 def introspect_cargo(root: str | Path) -> dict[str, Any]:
     """Return crate nodes and internal dependency edges from Cargo manifests."""
-    root_path = Path(root).resolve()
+    root_path = _resolve_path(root)
     root_manifest = root_path / "Cargo.toml"
     root_data = _load_toml(root_manifest)
 

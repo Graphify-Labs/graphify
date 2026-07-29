@@ -3,6 +3,7 @@ from __future__ import annotations
 
 
 from pathlib import Path
+from graphify.paths import read_bytes as _read_file_bytes, read_text as _read_file_text
 from typing import Any
 from graphify.extractors.base import _file_stem, _make_id
 
@@ -30,7 +31,7 @@ def extract_lazarus_form(path: Path) -> dict:
     - component --references--> event handler (context: "event")
     """
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = _read_file_text(path, encoding="utf-8", errors="replace")
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
@@ -116,7 +117,7 @@ def extract_delphi_form(path: Path) -> dict:
     (`contains`) and event handler references (`references`, context "event").
     """
     try:
-        raw = path.read_bytes()
+        raw = _read_file_bytes(path)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 

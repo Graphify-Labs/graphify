@@ -15,7 +15,22 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
+from graphify.paths import (
+    GRAPHIFY_OUT,
+    GRAPHIFY_OUT_NAME,
+    io_path as _os_path,
+    make_dirs as _make_dirs,
+    out_path,
+    path_exists as _path_exists,
+    path_is_dir as _path_is_dir,
+    path_is_file as _path_is_file,
+    path_is_symlink as _path_is_symlink,
+    path_stat as _path_stat,
+    read_text as _read_text,
+    resolve_path as _resolve_path,
+    walk_path as _walk_path,
+    write_text as _write_text,
+)
 
 
 class FileType(str, Enum):
@@ -52,7 +67,7 @@ _OFFICE_MAX_COMPRESSION_RATIO = 200                 # uncompressed : compressed
 def _file_within_size_cap(path: Path, cap: int = _OFFICE_MAX_RAW_BYTES) -> bool:
     """True if *path* exists and its on-disk size is within *cap*."""
     try:
-        return path.stat().st_size <= cap
+        return _path_stat(path).st_size <= cap
     except OSError:
         return False
 
@@ -72,7 +87,7 @@ def _zip_within_caps(path: Path) -> bool:
     if not _file_within_size_cap(path):
         return False
     try:
-        with zipfile.ZipFile(path) as zf:
+        with zipfile.ZipFile(_os_path(path)) as zf:
             infos = zf.infolist()
             compressed = sum(i.compress_size for i in infos) or 1
             declared = sum(i.file_size for i in infos)
@@ -296,7 +311,7 @@ def _looks_like_paper(path: Path) -> bool:
     """Heuristic: does this text file read like an academic paper?"""
     try:
         # Only scan first 3000 chars for speed
-        text = path.read_text(encoding="utf-8", errors="ignore")[:3000]
+        text = _read_text(path, encoding="utf-8", errors="ignore")[:3000]
         hits = sum(1 for pattern in _PAPER_SIGNALS if pattern.search(text))
         return hits >= _PAPER_SIGNAL_THRESHOLD
     except Exception:
@@ -460,7 +475,7 @@ def _shebang_interpreter(path: Path) -> str | None:
     no shebang / the file is unreadable / parsing fails.
     """
     try:
-        with path.open("rb") as f:
+        with open(_os_path(path), "rb") as f:
             first = f.read(256)
         if not first.startswith(b"#!"):
             return None
@@ -530,7 +545,7 @@ def extract_pdf_text(path: Path) -> str:
         return ""
     try:
         from pypdf import PdfReader
-        reader = PdfReader(str(path))
+        reader = PdfReader(_os_path(path))
         pages = []
         for page in reader.pages:
             text = page.extract_text()
@@ -548,7 +563,7 @@ def docx_to_markdown(path: Path) -> str:
     try:
         from docx import Document
         from docx.oxml.ns import qn
-        doc = Document(str(path))
+        doc = Document(_os_path(path))
         lines = []
         for para in doc.paragraphs:
             style = para.style.name if para.style else ""
@@ -589,7 +604,7 @@ def xlsx_to_markdown(path: Path) -> str:
         return ""
     try:
         import openpyxl
-        wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+        wb = openpyxl.load_workbook(_os_path(path), read_only=True, data_only=True)
         sections = []
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
@@ -630,7 +645,7 @@ def xlsx_extract_structure(path: Path) -> dict:
         return {"nodes": [], "edges": []}
 
     try:
-        wb = openpyxl.load_workbook(str(path), read_only=False, data_only=True)
+        wb = openpyxl.load_workbook(_os_path(path), read_only=False, data_only=True)
     except Exception:
         return {"nodes": [], "edges": []}
 
@@ -722,7 +737,7 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
     if not text.strip():
         return None
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _make_dirs(out_dir, exist_ok=True)
     # Use a stable name derived from the original path to avoid collisions.
     # Hash the path RELATIVE to the scan root, not the absolute path: the
     # absolute form salts the name with the checkout location, so the same
@@ -741,12 +756,12 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
         # Default layout: out_dir is <root>/<graphify-out>/converted.
         root = out_dir.parent.parent
     try:
-        key = path.resolve().relative_to(Path(root).resolve()).as_posix()
+        key = _resolve_path(path).relative_to(_resolve_path(root)).as_posix()
     except (ValueError, OSError):
         # Not under the scan root (custom GRAPHIFY_OUT layouts, --include
         # sources, direct API callers): keep the previous absolute form rather
         # than guessing, so behavior is unchanged for those cases.
-        key = str(path.resolve())
+        key = str(_resolve_path(path))
     normalized_path = unicodedata.normalize("NFC", key)
     name_hash = hashlib.sha256(normalized_path.encode()).hexdigest()[:8]
     out_path = out_dir / f"{path.stem}_{name_hash}.md"
@@ -758,12 +773,16 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
     # incremental hash check then correctly picks up. An unchanged source keeps
     # its (newer-or-equal) sidecar untouched so it never churns (#1226).
     try:
-        if out_path.exists() and os.stat(_os_path(out_path)).st_mtime >= os.stat(_os_path(path)).st_mtime:
+        if (
+            _path_exists(out_path)
+            and _path_stat(out_path).st_mtime >= _path_stat(path).st_mtime
+        ):
             return out_path
     except OSError:
-        if out_path.exists():
+        if _path_exists(out_path):
             return out_path
-    out_path.write_text(
+    _write_text(
+        out_path,
         f"<!-- converted from {path.name} -->\n\n{text}",
         encoding="utf-8",
     )
@@ -835,13 +854,19 @@ def _has_venv_markers(d: "Path") -> bool:
     ``conda-meta/`` (``conda create -p ./env`` writes no pyvenv.cfg).
     """
     try:
-        if (d / "pyvenv.cfg").is_file():
+        if _path_is_file(d / "pyvenv.cfg"):
             return True
-        if (d / "bin" / "activate").is_file() or (d / "Scripts" / "activate").is_file():
+        if _path_is_file(d / "bin" / "activate") or _path_is_file(
+            d / "Scripts" / "activate"
+        ):
             return True
-        if next(d.glob("lib/python*"), None) is not None:
-            return True
-        if (d / "conda-meta").is_dir():
+        try:
+            with os.scandir(_os_path(d / "lib")) as entries:
+                if any(entry.name.startswith("python") for entry in entries):
+                    return True
+        except OSError:
+            pass
+        if _path_is_dir(d / "conda-meta"):
             return True
     except OSError:
         pass
@@ -866,8 +891,9 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         if parent.name in _JS_SNAPSHOT_TEST_ROOTS:
             return True
         try:
-            if next(snap_dir.glob("*.snap"), None) is not None:
-                return True
+            with os.scandir(_os_path(snap_dir)) as entries:
+                if any(entry.name.endswith(".snap") for entry in entries):
+                    return True
         except OSError:
             pass
         return False
@@ -912,10 +938,10 @@ def _parse_gitignore_line(raw: str) -> str:
 
 def _find_vcs_root(start: Path) -> Path | None:
     """Walk upward from start; return the first directory containing a VCS marker."""
-    current = start.resolve()
+    current = _resolve_path(start)
     home = Path.home()
     while True:
-        if any((current / m).exists() for m in _VCS_MARKERS):
+        if any(_path_exists(current / m) for m in _VCS_MARKERS):
             return current
         parent = current.parent
         if parent == current or current == home:
@@ -936,33 +962,33 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     """
     dot_git = vcs_root / ".git"
     git_dir: Path | None = None
-    if dot_git.is_dir():
+    if _path_is_dir(dot_git):
         git_dir = dot_git
-    elif dot_git.is_file():
+    elif _path_is_file(dot_git):
         try:
-            content = dot_git.read_text(encoding="utf-8", errors="ignore").strip()
+            content = _read_text(dot_git, encoding="utf-8", errors="ignore").strip()
         except OSError:
             content = ""
         if content.startswith("gitdir:"):
             gd = Path(content[len("gitdir:"):].strip())
             if not gd.is_absolute():
-                gd = (vcs_root / gd).resolve()
+                gd = _resolve_path(vcs_root / gd)
             git_dir = gd
             # A linked worktree's gitdir holds a `commondir` file pointing at the
             # shared git dir, where info/exclude actually lives.
             commondir = gd / "commondir"
-            if commondir.exists():
+            if _path_exists(commondir):
                 try:
-                    cd_raw = commondir.read_text(encoding="utf-8", errors="ignore").strip()
+                    cd_raw = _read_text(commondir, encoding="utf-8", errors="ignore").strip()
                 except OSError:
                     cd_raw = ""
                 if cd_raw:
                     cd = Path(cd_raw)
-                    git_dir = cd if cd.is_absolute() else (gd / cd).resolve()
+                    git_dir = cd if cd.is_absolute() else _resolve_path(gd / cd)
     if git_dir is None:
         return None
     exclude = git_dir / "info" / "exclude"
-    return exclude if exclude.is_file() else None
+    return exclude if _path_is_file(exclude) else None
 
 
 def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path, str]]:
@@ -984,8 +1010,8 @@ def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path,
     patterns: list[tuple[Path, str]] = []
     for fname in ((".gitignore", ".graphifyignore") if gitignore else (".graphifyignore",)):
         ignore_file = d / fname
-        if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+        if _path_exists(ignore_file):
+            for raw in _read_text(ignore_file, encoding="utf-8-sig", errors="ignore").splitlines():
                 line = _parse_gitignore_line(raw)
                 if line:
                     patterns.append((d, line))
@@ -1006,7 +1032,7 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     scan root are picked up live during the os.walk in `detect()` instead,
     since they aren't known until the walk reaches them (#1206).
     """
-    root = root.resolve()
+    root = _resolve_path(root)
     ceiling = _find_vcs_root(root) or root
 
     # Collect ancestor dirs from ceiling down to root (outer → inner)
@@ -1027,7 +1053,7 @@ def _load_graphifyignore(root: Path, *, gitignore: bool = True) -> list[tuple[Pa
     # re-include still override it (#1810).
     info_exclude = _git_info_exclude(ceiling) if gitignore else None
     if info_exclude is not None:
-        for raw in info_exclude.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+        for raw in _read_text(info_exclude, encoding="utf-8-sig", errors="ignore").splitlines():
             line = _parse_gitignore_line(raw)
             if line:
                 patterns.append((ceiling, line))
@@ -1129,7 +1155,7 @@ def _is_ignored(
                 continue  # target outside this pattern's anchor: cannot match
             if rel_anchor != ".":
                 matched = _matches(rel_anchor, p, path_relative=path_relative)
-                if matched and directory_only and not target.is_dir():
+                if matched and directory_only and not _path_is_dir(target):
                     matched = False
 
             if matched:
@@ -1163,9 +1189,10 @@ def _auto_follow_symlinks(root: Path) -> bool:
     explicit opt-in, and out-of-root symlink targets are never indexed.
     """
     try:
-        for p in root.iterdir():
-            if p.is_symlink():
-                return True
+        with os.scandir(_os_path(root)) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    return True
     except (OSError, PermissionError):
         pass
     return False
@@ -1174,19 +1201,19 @@ def _auto_follow_symlinks(root: Path) -> bool:
 def _resolves_under_root(path: Path, root: Path) -> bool:
     """True when ``path`` resolves to a target inside ``root``."""
     try:
-        path.resolve().relative_to(root.resolve())
+        _resolve_path(path).relative_to(_resolve_path(root))
     except (OSError, RuntimeError, ValueError):
         return False
     return True
 
 
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
-    root = root.resolve()
+    root = _resolve_path(root)
     # .graphifyinclude support was removed (#2112): its loader and matchers had
     # no consumers, so the file has been a silent no-op since dot directories
     # became indexed by default (#873). Surface that once per scan so a
     # leftover allowlist file is not a silent behavior change.
-    if (root / ".graphifyinclude").is_file():
+    if _path_is_file(root / ".graphifyinclude"):
         import sys as _sys
         print(
             "[graphify] WARNING: .graphifyinclude is no longer supported "
@@ -1236,7 +1263,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     # Always include graphify-out/memory/ - query results filed back into the graph
     memory_dir = root / GRAPHIFY_OUT / "memory"
     scan_paths = [root]
-    if memory_dir.exists():
+    if _path_exists(memory_dir):
         scan_paths.append(memory_dir)
 
     seen: set[Path] = set()
@@ -1261,14 +1288,20 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         )
 
     for scan_root in scan_paths:
-        in_memory_tree = memory_dir.exists() and str(scan_root).startswith(str(memory_dir))
-        for dirpath, dirnames, filenames in os.walk(
+        in_memory_tree = _path_exists(memory_dir) and str(scan_root).startswith(
+            str(memory_dir)
+        )
+        for dirpath, dirnames, filenames in _walk_path(
             scan_root, followlinks=follow_symlinks, onerror=_on_walk_error
         ):
             dp = Path(dirpath)
-            if follow_symlinks and os.path.islink(dirpath):
-                real = os.path.realpath(dirpath)
-                parent_real = os.path.realpath(os.path.dirname(dirpath))
+            # os.walk must stay in the extended Windows namespace so every
+            # recursive scandir call can reach long descendants.  Convert the
+            # yielded path back immediately: graph/cache identities must use the
+            # ordinary UNC/drive spelling, not the transport-only \\?\ prefix.
+            if follow_symlinks and _path_is_symlink(dp):
+                real = str(_resolve_path(dp))
+                parent_real = str(_resolve_path(dp.parent))
                 if parent_real == real or parent_real.startswith(real + os.sep):
                     dirnames.clear()
                     continue
@@ -1310,7 +1343,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     safe_dirs: list[str] = []
                     for d in dirnames:
                         child = dp / d
-                        if child.is_symlink() and not _resolves_under_root(child, root):
+                        if _path_is_symlink(child) and not _resolves_under_root(child, root):
                             skipped_sensitive.append(str(child) + " [symlink target outside scan root]")
                             continue
                         safe_dirs.append(d)
@@ -1329,7 +1362,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
 
     for p in all_files:
         # For memory dir files, skip hidden/noise filtering
-        in_memory = memory_dir.exists() and str(p).startswith(str(memory_dir))
+        in_memory = _path_exists(memory_dir) and str(p).startswith(str(memory_dir))
         if not in_memory:
             # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
@@ -1421,36 +1454,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         "ignored": sorted(ignored),
         "pruned_noise_dirs": sorted(pruned_noise),
         "graphifyignore_patterns": len(ignore_patterns),
-        "scan_root": str(root.resolve()),
+        "scan_root": str(_resolve_path(root)),
     }
-
-
-def _os_path(path: Path) -> str:
-    r"""Return an OS path string safe for open()/stat() on Windows long paths.
-
-    On win32, paths longer than the legacy MAX_PATH (260 chars) are rejected by
-    the plain file APIs unless prefixed with the extended-length marker ``\\?\``
-    (which also requires a fully-qualified path). Without it, _md5_file /
-    save_manifest / count_words silently fail to hash deeply-nested files, so
-    their manifest entry never stabilizes and detect_incremental re-flags them
-    as changed on every run (#1655). cache._normalize_path strips this prefix
-    for stable KEYS; this adds it for I/O. Non-win32 and already-prefixed paths
-    pass through unchanged.
-    """
-    import sys
-    if sys.platform != "win32":
-        return str(path)
-    s = str(path)
-    if s.startswith("\\\\?\\"):
-        return s
-    try:
-        s = os.path.abspath(s)  # \\?\ requires a fully-qualified path
-    except Exception:
-        return str(path)
-    if s.startswith("\\\\"):
-        # UNC share \\server\share -> \\?\UNC\server\share
-        return "\\\\?\\UNC\\" + s[2:]
-    return "\\\\?\\" + s
 
 
 def _md5_file(path: Path) -> str:
@@ -1470,7 +1475,7 @@ def _stat_and_hash(path_str: str) -> tuple[str, float, str] | None:
     """Stat + MD5 a single file; returns None on OSError (e.g. deleted mid-run)."""
     try:
         p = Path(path_str)
-        return path_str, os.stat(_os_path(p)).st_mtime, _md5_file(p)
+        return path_str, _path_stat(p).st_mtime, _md5_file(p)
     except OSError:
         return None
 
@@ -1511,7 +1516,7 @@ def _to_relative_for_storage(key: str, root: Path) -> str:
     if not p.is_absolute():
         return key
     try:
-        base = _nfc(str(Path(root).resolve()))
+        base = _nfc(str(_resolve_path(root)))
         rel = os.path.relpath(_nfc(str(p)), base)
     except (ValueError, OSError):
         return key  # outside root (e.g. Windows cross-drive)
@@ -1539,7 +1544,7 @@ def _to_absolute_from_storage(key: str, root: Path) -> str:
         return str(p)
     # NFC the joined result so an NFD-resolved root + relative key lands on
     # the same form load_manifest / detect_incremental compare against.
-    return _nfc(str(Path(root).resolve() / p))
+    return _nfc(str(_resolve_path(root) / p))
 
 
 def load_manifest(
@@ -1559,7 +1564,7 @@ def load_manifest(
     form still matches a scan that yields the other (#2221).
     """
     try:
-        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        raw = json.loads(_read_text(manifest_path, encoding="utf-8"))
     except Exception:
         return {}
     if not isinstance(raw, dict):
@@ -1628,7 +1633,7 @@ def save_manifest(
     scan_set = _path_index(scan_corpus)
     clear_set = _path_index(clear_semantic)
     try:
-        root_res: Path | None = Path(root).resolve() if root is not None else None
+        root_res: Path | None = _resolve_path(root) if root is not None else None
     except (OSError, RuntimeError):
         root_res = Path(root) if root is not None else None
 
@@ -1636,7 +1641,7 @@ def save_manifest(
         if path_str in scan_set or _nfc(path_str) in scan_set:
             return True
         try:
-            resolved = str(Path(path_str).resolve())
+            resolved = str(_resolve_path(path_str))
             return resolved in scan_set or _nfc(resolved) in scan_set
         except (OSError, RuntimeError):
             return False
@@ -1645,7 +1650,7 @@ def save_manifest(
         if path_str in clear_set or _nfc(path_str) in clear_set:
             return True
         try:
-            resolved = str(Path(path_str).resolve())
+            resolved = str(_resolve_path(path_str))
             return resolved in clear_set or _nfc(resolved) in clear_set
         except (OSError, RuntimeError):
             return False
@@ -1662,7 +1667,7 @@ def save_manifest(
         except ValueError:
             pass
         try:
-            p.resolve().relative_to(root_res)
+            _resolve_path(p).relative_to(root_res)
             return True
         except (ValueError, OSError, RuntimeError):
             return False
@@ -1689,7 +1694,7 @@ def save_manifest(
         if normalised is None:
             continue
         try:
-            if not Path(f).exists():
+            if not _path_exists(f):
                 continue
         except OSError:
             continue
@@ -1803,7 +1808,7 @@ def detect_incremental(
             # Manifest keys are NFC; scan paths may arrive NFD (#2221).
             stored = manifest.get(_nfc(f))
             try:
-                current_mtime = os.stat(_os_path(Path(f))).st_mtime
+                current_mtime = _path_stat(f).st_mtime
             except Exception:
                 current_mtime = 0
 
@@ -1859,7 +1864,7 @@ def detect_incremental(
         if _nfc(f) in current_files:
             continue
         try:
-            alive = Path(f).exists()
+            alive = _path_exists(f)
         except OSError:
             alive = False
         (excluded_files if alive else deleted_files).append(f)

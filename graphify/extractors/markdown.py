@@ -5,6 +5,7 @@ import re
 import os
 
 from pathlib import Path
+from graphify.paths import read_text as _read_file_text, path_is_file as _path_is_file
 from graphify.extractors.base import _file_stem, _make_id
 
 
@@ -77,7 +78,7 @@ def extract_markdown(path: Path) -> dict:
     No tree-sitter dependency — pure line-by-line parsing.
     """
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        source = _read_file_text(path, encoding="utf-8", errors="replace")
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
@@ -134,7 +135,7 @@ def extract_markdown(path: Path) -> dict:
         # and popped before graph.json ships.
         target_file = None
         try:
-            if resolved.is_file():
+            if _path_is_file(resolved):
                 target_file = str(resolved)
         except OSError:
             pass

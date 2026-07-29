@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
+from graphify.paths import read_bytes as _read_file_bytes
 from typing import Any
 from graphify.extractors.base import _file_stem, _make_id, _read_text
 
@@ -19,7 +20,7 @@ def extract_powershell(path: Path) -> dict:
     try:
         language = Language(tsps.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_file_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -370,7 +371,7 @@ def extract_powershell_manifest(path: Path) -> dict:
     try:
         language = Language(tsps.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_file_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

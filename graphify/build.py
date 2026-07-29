@@ -30,7 +30,12 @@ import unicodedata
 from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
-from .paths import default_graph_json as _default_graph_json
+from .paths import (
+    default_graph_json as _default_graph_json,
+    path_exists as _path_exists,
+    read_text as _read_text,
+    resolve_path as _resolve_path,
+)
 from .validate import validate_extraction
 
 
@@ -178,7 +183,7 @@ def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
             # matching. Only the slow path resolves, so the common lexical match
             # stays filesystem-free.
             try:
-                p = Path(p).resolve().relative_to(Path(root).resolve()).as_posix()
+                p = _resolve_path(p).relative_to(_resolve_path(root)).as_posix()
             except (ValueError, OSError):
                 pass
     return p
@@ -202,7 +207,7 @@ def _abs_identity(p: str | None, root: str | None = None) -> str | None:
     if not pp.is_absolute() and root:
         pp = Path(root) / q
     try:
-        return pp.resolve().as_posix()
+        return _resolve_path(pp).as_posix()
     except OSError:
         return pp.as_posix()
 
@@ -292,14 +297,14 @@ def _infer_merge_root(graph_path: Path) -> str | None:
     """
     try:
         marker = graph_path.parent / ".graphify_root"
-        if marker.exists():
-            recorded = marker.read_text(encoding="utf-8").strip()
+        if _path_exists(marker):
+            recorded = _read_text(marker, encoding="utf-8").strip()
             if recorded:
-                return str(Path(recorded).resolve())
+                return str(_resolve_path(recorded))
     except OSError:
         pass
     try:
-        return str(graph_path.parent.parent.resolve())
+        return str(_resolve_path(graph_path.parent.parent))
     except Exception:
         return None
 
@@ -544,7 +549,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     root: if given, absolute source_file paths from semantic subagents are made
         relative to root so all nodes share a consistent path key (#932).
     """
-    _root = str(Path(root).resolve()) if root else None
+    _root = str(_resolve_path(root)) if root else None
     # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
     if "edges" not in extraction and "links" in extraction:
         extraction = dict(extraction, edges=extraction["links"])
@@ -1140,12 +1145,12 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list] | None":
     exists but cannot be parsed — callers must refuse to overwrite rather
     than silently replace a possibly-recoverable graph.
     """
-    if not graph_path.exists():
+    if not _path_exists(graph_path):
         return None
     from graphify.security import check_graph_file_size_cap
     check_graph_file_size_cap(graph_path)
     try:
-        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        data = json.loads(_read_text(graph_path, encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         raise RuntimeError(
             f"Cannot read {graph_path} for incremental merge: {exc}. "
@@ -1196,7 +1201,7 @@ def merge_raw_extraction(
     existing_nodes, existing_edges, existing_hyperedges = loaded
 
     _eff_root = (
-        str(Path(root).resolve()) if root is not None
+        str(_resolve_path(root)) if root is not None
         else _infer_merge_root(graph_path)
     )
 
@@ -1293,7 +1298,7 @@ def build_merge(
     # absolute deleted-file paths never matched the relative node keys and their
     # nodes survived as ghosts).
     _eff_root = (
-        str(Path(root).resolve()) if root is not None
+        str(_resolve_path(root)) if root is not None
         else _infer_merge_root(graph_path)
     )
 
@@ -1434,7 +1439,7 @@ def build_merge(
 
     # Safety check: refuse to shrink the graph silently (#479)
     # Skip when dedup or prune_sources is active — shrinkage is intentional there.
-    if graph_path.exists() and not dedup and not prune_sources:
+    if _path_exists(graph_path) and not dedup and not prune_sources:
         existing_n = len(existing_nodes)
         new_n = G.number_of_nodes()
         if new_n < existing_n:
