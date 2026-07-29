@@ -43,7 +43,7 @@ from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
-from graphify.extractors.go import extract_go  # noqa: F401
+from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
@@ -5321,6 +5321,13 @@ def extract(
         # to external commands that merely share a name with a function elsewhere
         # in the corpus — exactly what #2141 must not do.
         if rc.get("language") == "bash":
+            continue
+        # A Go predeclared function is never a cross-file call: the extractor
+        # already drops bare `append(s, x)` (extractors/go.py), so this is the
+        # backstop for Go raw_calls minted on any other path. Language-gated
+        # rather than folded into _LANGUAGE_BUILTIN_GLOBALS because `new`,
+        # `close` and `delete` are ordinary method names elsewhere (#2296).
+        if rc.get("language") == "go" and callee in _GO_PREDECLARED_FUNCS:
             continue
         # Exact-case match first (case is semantic). Fold only when the CALLING
         # file's language is case-insensitive, and only against the folded index of
