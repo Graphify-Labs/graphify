@@ -1773,9 +1773,10 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
         # phantom god-nodes. Bodies of arrow functions are walked separately
         # via function_bodies, so we never need to emit nodes for locals here.
         parent = node.parent
+        is_exported = parent is not None and parent.type == "export_statement"
         is_module_level = parent is not None and (
             parent.type == "program"
-            or (parent.type == "export_statement"
+            or (is_exported
                 and parent.parent is not None
                 and parent.parent.type == "program")
         )
@@ -1787,9 +1788,15 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
             for child in node.children:
                 if child.type == "variable_declarator":
                     value = child.child_by_field_name("value")
+                    name_node = child.child_by_field_name("name")
+                    is_exported_scalar_binding = (
+                        is_exported
+                        and name_node is not None
+                        and name_node.type == "identifier"
+                        and bool(normalize_id(_read_text(name_node, source)))
+                    )
                     if value and value.type in _JS_FUNCTION_VALUE_TYPES:
                         # `const f = () => {}` and `const f = function(){}`
-                        name_node = child.child_by_field_name("name")
                         if name_node:
                             func_name = _read_text(name_node, source)
                             line = child.start_point[0] + 1
@@ -1809,11 +1816,15 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                             if body:
                                 function_bodies.append((func_nid, body))
                             arrow_found = True
-                    elif value and value.type in (
-                        "object", "array", "as_expression", "call_expression", "new_expression",
+                    elif value and (
+                        is_exported_scalar_binding
+                        or value.type in (
+                            "object", "array", "as_expression", "call_expression",
+                            "new_expression",
+                        )
                     ):
-                        # Module-level const with literal/object/array/factory value
-                        name_node = child.child_by_field_name("name")
+                        # Simple exported identifiers are part of the module API
+                        # regardless of initializer shape. Keep other scalar noise suppressed.
                         if name_node:
                             const_name = _read_text(name_node, source)
                             line = child.start_point[0] + 1
