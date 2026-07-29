@@ -1289,7 +1289,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _find_node
+        from graphify.serve import _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -1316,6 +1316,14 @@ def dispatch_command(cmd: str) -> None:
         if not matches:
             print(f"No node matching '{label}' found.")
             sys.exit(0)
+        rivals = find_node_ambiguity(G, label)
+        if rivals:
+            print(f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.")
+            for rival in rivals:
+                print(f"  {G.nodes[rival].get('source_file') or rival}")
+                print(f"    id: {rival}")
+            print("Retry with the repo-relative path or the full node id.")
+            sys.exit(1)
         nid = matches[0]
         d = G.nodes[nid]
         print(f"Node: {d.get('label', nid)}")
