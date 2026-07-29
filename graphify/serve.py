@@ -188,6 +188,10 @@ _EXACT_MATCH_BONUS = 1000.0
 _PREFIX_MATCH_BONUS = 100.0
 _SUBSTRING_MATCH_BONUS = 1.0
 _SOURCE_MATCH_BONUS = 0.5
+# Below the label substring tier (the node's own name is still the stronger
+# signal) but above the source-path tier: `rationale` is authored prose about
+# the node, whereas a path fragment is incidental. See `_node_rationale_text`.
+_RATIONALE_MATCH_BONUS = 0.75
 
 
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
@@ -222,11 +226,39 @@ def _trigrams(text: str) -> set[str]:
     return {text[i:i + 3] for i in range(len(text) - 2)}
 
 
+def _node_rationale_text(data: dict) -> str:
+    """A node's ``rationale`` prose, normalized the way labels are.
+
+    The extraction spec stores WHY a decision was made as a ``rationale``
+    *attribute* on the concept node rather than as a node of its own, so for a
+    "why does X ..." question this text is frequently the only place the
+    question's own wording occurs. Scoring it is what lets such a question reach
+    the node that answers it; without it the rationale is reachable only by
+    already knowing the label it hangs on — which is the thing the asker does
+    not know.
+
+    Kept as one helper because both the scorer and the trigram index must read
+    exactly the same text: if the index covered less, a node the scorer *would*
+    match could never become a candidate (see `_node_search_text`).
+    """
+    rationale = data.get("rationale")
+    if not rationale:
+        return ""
+    if isinstance(rationale, (list, tuple)):
+        rationale = " ".join(str(part) for part in rationale)
+    return _strip_diacritics(str(rationale)).lower()
+
+
 def _node_search_text(data: dict, nid: str) -> str:
     """Concatenate every field _score_nodes / _find_node match a query against, so
     one trigram index over this text is a complete candidate generator for both.
 
     - `norm_label` and `source_file` feed _score_nodes' per-term substring tiers.
+    - `rationale` feeds _score_nodes' rationale tier. _find_node does NOT match
+      it (finding a node *named* X must not surface nodes merely discussing X),
+      but including it here only ever widens the candidate superset, which
+      _find_node then rejects with its own predicates — so its results are
+      unchanged.
     - `label_tokens` (the space-joined token form) feeds _find_node's
       `term in label_tokens` branch, where a multi-word `term` can span a token
       boundary that punctuation hides in `norm_label` (e.g. query "foo bar" matches
@@ -242,7 +274,10 @@ def _node_search_text(data: dict, nid: str) -> str:
     label_tokens = " ".join(_search_tokens(data.get("label") or ""))
     source = (data.get("source_file") or "").lower()
     source_tokens = " ".join(_search_tokens(data.get("source_file") or ""))
-    return "\x00".join((norm_label, label_tokens, str(nid).lower(), source, source_tokens))
+    return "\x00".join((
+        norm_label, label_tokens, str(nid).lower(), source, source_tokens,
+        _node_rationale_text(data),
+    ))
 
 
 def _get_trigram_index(G: nx.Graph) -> dict:
@@ -418,6 +453,7 @@ def _score_query(
         # driver".
         label_tokens = " ".join(_search_tokens(data.get("label") or ""))
         source = (data.get("source_file") or "").lower()
+        rationale = _node_rationale_text(data)
         # `nid_lower` is needed both by the full-query tier (`if joined`) and by
         # the per-token singleton tier (joined-singlet exact-match check). When
         # neither runs (`joined` empty AND not collecting seeds) skip the call;
@@ -464,6 +500,7 @@ def _score_query(
             tier_value = 0.0
             substr_value = 0.0
             source_value = 0.0
+            rationale_value = 0.0
             if t == norm_label or t == bare_label:
                 tier_value = _EXACT_MATCH_BONUS * w
                 matched += 1
@@ -477,6 +514,14 @@ def _score_query(
             if t in source:
                 source_value = _SOURCE_MATCH_BONUS * w
                 score += source_value
+            # Deliberately does NOT count toward `matched`, for the same reason
+            # the source tier does not: coverage scales the exact/prefix tiers,
+            # and a long rationale mentioning several query words must not win
+            # back an exact-label tier it did not earn. It adds recall, never
+            # precedence — a label match still outranks a rationale match.
+            if t in rationale:
+                rationale_value = _RATIONALE_MATCH_BONUS * w
+                score += rationale_value
             tiered += tier_value
             if collect_per_term_seeds and best_by_term is not None:
                 # Singleton score for [t] on this node, mirroring
@@ -495,7 +540,7 @@ def _score_query(
                     singleton = _PREFIX_MATCH_BONUS * 10 * w
                 else:
                     singleton = 0.0
-                singleton += tier_value + substr_value + source_value
+                singleton += tier_value + substr_value + source_value + rationale_value
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum

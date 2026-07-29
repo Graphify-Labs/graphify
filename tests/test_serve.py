@@ -1386,3 +1386,88 @@ def test_subgraph_to_text_honors_valid_src_tgt_direction():
     out = _subgraph_to_text(G, {"caller", "callee"}, [("callee", "caller")])
     edge_line = next(l for l in out.splitlines() if l.startswith("EDGE"))
     assert "caller --calls" in edge_line and "--> callee" in edge_line
+
+
+def _make_rationale_graph() -> nx.Graph:
+    """A concept node whose WHY lives in its `rationale` attribute, plus a
+    same-topic code node whose label carries the query's noun.
+
+    This is the shape the extraction spec prescribes: rationale is an attribute
+    on the concept, not a node, so the wording of a "why" question occurs
+    nowhere in any label.
+    """
+    G = nx.Graph()
+    # ISOLATION: no content word of the "why" question below occurs in this
+    # node's label, id or path — only in its rationale. Without that, the test
+    # would pass on the UNPATCHED scorer via an incidental label hit and prove
+    # nothing. ("version"/"pin" are in the label and are deliberately avoided.)
+    G.add_node(
+        "ci_npm_pin", label="CI npm Version Pin", file_type="rationale",
+        source_file=".github/workflows/ci.yml", community=0,
+        rationale=("Node 24 ships a floating toolchain build, so it is frozen to one "
+                   "exact release in every job and the lockfile stays reproducible."),
+    )
+    G.add_node("workflow", label="ci.yml", file_type="code",
+               source_file=".github/workflows/ci.yml", community=0)
+    G.add_node("unrelated", label="pricing", file_type="code",
+               source_file="src/pricing.ts", community=1)
+    G.add_edge("ci_npm_pin", "workflow", relation="documents", confidence="EXTRACTED")
+    return G
+
+
+def test_score_nodes_matches_rationale_attribute():
+    """The WHY text is searchable: a question worded from the rationale reaches
+    the node, which before scored 0 and was unreachable except by its label."""
+    G = _make_rationale_graph()
+    terms = _query_terms("why is the toolchain frozen")
+    # Guard the guard: the question must be unanswerable from the label alone,
+    # or this test would still pass with the rationale tier removed.
+    assert not any(t in "ci npm version pin ci_npm_pin .github/workflows/ci.yml"
+                   for t in terms)
+    assert "ci_npm_pin" in [nid for _, nid in _score_nodes(G, terms)]
+
+
+def test_score_nodes_rationale_never_outranks_a_label_match():
+    """Recall, not precedence: `pricing` matches a label exactly, so it must
+    still outrank a node that merely mentions the word in its rationale."""
+    G = _make_rationale_graph()
+    G.nodes["ci_npm_pin"]["rationale"] += " This does not affect pricing at all."
+    scored = _score_nodes(G, ["pricing"])
+    assert scored[0][1] == "unrelated"
+
+
+def test_score_nodes_rationale_does_not_count_toward_term_coverage():
+    """Coverage scales the exact/prefix tiers; a rationale mentioning several
+    query words must not win back a tier the label did not earn."""
+    G = _make_rationale_graph()
+    G.add_node("exact", label="frozen", file_type="code",
+               source_file="src/other.ts", community=2)
+    scored = dict((nid, s) for s, nid in _score_nodes(G, ["frozen", "toolchain", "lockfile"]))
+    assert scored["exact"] > scored["ci_npm_pin"]
+
+
+def test_score_nodes_rationale_prefilter_is_identical_to_full_scan(monkeypatch):
+    """The trigram index must cover rationale text too — otherwise a node the
+    scorer would match can never become a candidate."""
+    G = _make_rationale_graph()
+    terms = _query_terms("why is the toolchain frozen")
+    fast = _score_nodes(G, terms)
+    _force_full_scan(monkeypatch)
+    full = _score_nodes(G, terms)
+    monkeypatch.undo()
+    assert fast == full
+
+
+def test_find_node_ignores_rationale():
+    """Finding a node *named* X must not surface nodes merely discussing X:
+    the widened trigram candidate set is re-filtered by _find_node's own
+    predicates, so its results are unchanged."""
+    G = _make_rationale_graph()
+    assert _find_node(G, "toolchain") == []
+
+
+def test_node_search_text_includes_rationale():
+    G = _make_rationale_graph()
+    text = _node_search_text(G.nodes["ci_npm_pin"], "ci_npm_pin")
+    assert "floating toolchain" in text
+    assert "\x00" in text  # still field-separated
