@@ -103,6 +103,16 @@ def run_benchmark(
     resolved = Path(graph_path or _default_graph_json())
     out_dir = resolved.parent if resolved.suffix else resolved
     G = open_store(out_dir, create=False)
+    if G.number_of_nodes() == 0:
+        # Back-compat, matching serve._connect_graph and affected.connect_graph:
+        # an empty store may still have a node-link graph.json beside it (a
+        # pre-FalkorDB project, or a `--no-cluster` run that only wrote JSON).
+        # Import it so `graphify benchmark` works on the same graphs the read
+        # commands already accept.
+        from graphify.serve import _import_graph_json_into_store
+
+        gj = resolved if resolved.suffix == ".json" else (out_dir / "graph.json")
+        _import_graph_json_into_store(gj, G)
 
     if corpus_words is None:
         # Rough estimate: each node label is ~3 words, plus source context

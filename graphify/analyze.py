@@ -712,7 +712,14 @@ def find_import_cycles(
     multi_edges = [(a, b) for a, b in file_edges if a != b]
     for f in self_loops:
         cycles.append([f])
-    for cycle in G.simple_cycles(sorted(multi_edges), max_cycle_length):
+    # Prefer the backend's own enumeration (FalkorDB runs it as a server-side
+    # UDF); otherwise fall back to the pure-Python one. The fallback keeps this
+    # working for a plain NetworkX graph passed in by a library caller, which has
+    # no .simple_cycles() method (networkx exposes it as a module function).
+    _cycles = getattr(G, "simple_cycles", None)
+    if _cycles is None:
+        from graphify.store import simple_cycles_from_edges as _cycles
+    for cycle in _cycles(sorted(multi_edges), max_cycle_length):
         if len(cycle) <= max_cycle_length:
             cycles.append(cycle)
         if len(cycles) >= top_n * 10:

@@ -81,6 +81,41 @@ def graph_name_for(path: str | Path) -> str:
     return f"graphify_{base}_{digest}"
 
 
+def simple_cycles_from_edges(edges, max_len: int = 5) -> list[list[str]]:
+    """Directed simple cycles up to ``max_len``, over an explicit edge list.
+
+    Pure-Python counterpart of ``GraphStore.simple_cycles`` (which runs the
+    FalkorDB UDF). Depends only on the edge list, not on the graph object, so
+    callers work against a store, a MemGraph, or a plain NetworkX graph handed
+    in by a library user. Each cycle is returned once, rotated to start at its
+    smallest node, so the output is canonical and order-independent.
+    """
+    adj: dict = {}
+    for u, v in edges:
+        adj.setdefault(str(u), []).append(str(v))
+    for succs in adj.values():
+        succs.sort()
+    seen: set[tuple] = set()
+    out: list[list[str]] = []
+
+    def _walk(start: str, node: str, path: list[str]) -> None:
+        for nxt in adj.get(node, ()):
+            if nxt == start and len(path) > 1:
+                lo = path.index(min(path))
+                canon = tuple(path[lo:] + path[:lo])
+                if canon not in seen:
+                    seen.add(canon)
+                    out.append(list(canon))
+            elif nxt not in path and len(path) < max_len and nxt > start:
+                # `nxt > start` keeps each cycle to the single traversal that
+                # begins at its smallest member — no duplicate rotations.
+                _walk(start, nxt, path + [nxt])
+
+    for n in sorted(adj):
+        _walk(n, n, [n])
+    return out
+
+
 def pointer_path(out_dir: str | Path = "graphify-out") -> Path:
     """Path of the FalkorDB pointer file that records the graph name + URI."""
     return Path(out_dir) / "falkordb.json"
@@ -419,6 +454,9 @@ class MemGraph:
 
     def has_directed_edge(self, u, v):
         return any(a == u and b == v for a, b, _ in self._esorted)
+
+    def simple_cycles(self, edges, max_len: int = 5):
+        return simple_cycles_from_edges(edges, max_len)
 
     def edge_attrs_all(self, u, v) -> list[dict]:
         """Every stored edge between u and v, forward-preferred.

@@ -1337,7 +1337,10 @@ def _build_server(graph_path: str):
             try:
                 new_G = _connect_graph(path)
             except SystemExit as e:  # _connect_graph exits on missing/empty graph
-                raise RuntimeError(f"could not connect to graph at {path}") from e
+                # Phrased as not-found because that is what it is: no graph has
+                # been built for that project. Raised (not exited) so a bad
+                # project_path is one tool error, not a dead server.
+                raise RuntimeError(f"graph not found for {path} (no graph built there)") from e
             # Warm the trigram index before exposing the graph so the first query
             # against it is fast (same rationale as the original startup warm-up).
             # Skipped for store-backed graphs: they prefilter with an in-engine

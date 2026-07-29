@@ -36,8 +36,16 @@ def _edge_key(e: dict):
     return (e.get("source"), e.get("target"), e.get("relation"))
 
 
-def merge_node_link(graphs: list[dict]) -> dict:
-    """Union several node-link dicts. Later graphs win on node/edge attr conflicts."""
+def merge_node_link(graphs: list[dict], *, directed: bool | None = None) -> dict:
+    """Union several node-link dicts. Later graphs win on node/edge attr conflicts.
+
+    ``directed`` sets the merged graph's flag. None (the default) inherits the
+    first input's, so merging two versions of the same graph round-trips. The
+    cross-repo `merge-graphs` view passes False: per-repo graphs are written by
+    different extract paths and may disagree on directedness, and the combined
+    view is undirected — what the old nx.compose path produced by normalizing
+    every input to a plain Graph (#1606).
+    """
     nodes: dict = {}
     edges: dict = {}
     for g in graphs:
@@ -48,8 +56,10 @@ def merge_node_link(graphs: list[dict]) -> dict:
             nodes[nid] = {**nodes.get(nid, {}), **n}
         for e in g.get("links", []):
             edges[_edge_key(e)] = e
+    if directed is None:
+        directed = bool(graphs[0].get("directed", True)) if graphs else True
     return {
-        "directed": True,
+        "directed": directed,
         "multigraph": False,
         "graph": {},
         "nodes": list(nodes.values()),

@@ -1070,6 +1070,15 @@ def build_from_json(
         if kept_hyperedges:
             store.graph["hyperedges"] = kept_hyperedges
             store.save_meta()
+    # Record the scan root on the graph itself. This is the FalkorDB replacement
+    # for the committed `graphify-out/.graphify_root` marker: a later build_merge
+    # called WITHOUT root (the skill's --update runbook does exactly that) reads
+    # it back to relativize absolute prune_sources against the stored relative
+    # source_file keys. Without it those paths never match and a deleted file's
+    # nodes survive as ghosts (#1571).
+    if _root:
+        store.graph["scan_root"] = _root
+        store.save_meta()
     # Warm + persist the hub-threshold (p99 degree) so query traversals don't
     # recompute it on every invocation.
     try:
@@ -1358,11 +1367,15 @@ def build_merge(
     had_graph = bool(existing_nodes)
 
     # Effective root for relativizing absolute source_file / prune paths back to
-    # the stored relative source_file keys. The graph lives in FalkorDB, so there
-    # is no graph.json whose sibling `.graphify_root` marker could supply a
-    # recorded scan root (#1571); callers that need normalization pass root
-    # explicitly — cli's extract path and the skill's --update runbook both do.
-    _eff_root = str(Path(root).resolve()) if root is not None else None
+    # the stored relative source_file keys. When the caller passes root we use it;
+    # otherwise fall back to the scan root the graph recorded at build time — the
+    # FalkorDB replacement for the `.graphify_root` marker. Without that fallback
+    # a root-less call (the skill's --update runbook) never matches absolute
+    # prune_sources and the deleted files' nodes survive as ghosts (#1571).
+    _eff_root = (
+        str(Path(root).resolve()) if root is not None
+        else (store.graph.get("scan_root") or None)
+    )
 
     # Re-extracted files REPLACE their prior contribution (#1344/#1007). Every
     # source_file present in new_chunks is dropped from the loaded base before

@@ -104,14 +104,27 @@ def test_to_graphml_tolerates_dict_and_list_attribute_values():
     metadata, or the graph-level hyperedges list) used to crash the whole export.
     to_graphml must JSON-serialize them across graph/node/edge scopes (#1831)."""
     import networkx as nx
-    G = make_graph()
-    communities = cluster(G)
-    a_node = next(iter(G.nodes()))
-    G.nodes[a_node]["metadata"] = {"kind": "file", "size": 12}
-    G.nodes[a_node]["tags"] = ["x", "y"]
-    if G.number_of_edges():
-        u, v = next(iter(G.edges()))
-        G.edges[u, v]["ctx"] = {"k": "v"}
+
+    from graphify.store import MemGraph
+
+    # Built as a MemGraph rather than a FalkorDB-backed store: the engine only
+    # stores scalar properties, so a dict/list attribute can only ever reach
+    # to_graphml through the in-memory graph (the aggregated-view and library
+    # paths). Attributes are set at construction because a store's node view
+    # hands back a snapshot — assigning into it would not persist.
+    a_node, b_node = "n_meta", "n_other"
+    G = MemGraph(
+        [
+            (a_node, {"label": "A", "source_file": "a.py",
+                      "metadata": {"kind": "file", "size": 12}, "tags": ["x", "y"]}),
+            (b_node, {"label": "B", "source_file": "b.py"}),
+        ],
+        [(a_node, b_node, {"relation": "calls", "confidence": "EXTRACTED",
+                           "ctx": {"k": "v"}})],
+    )
+    # A literal mapping rather than cluster(): community detection runs in the
+    # engine, and this test is about GraphML serialization, not clustering.
+    communities = {0: [a_node, b_node]}
     G.graph["hyperedges"] = [{"nodes": [a_node], "label": "h"}]
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.graphml"

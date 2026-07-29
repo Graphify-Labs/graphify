@@ -2309,19 +2309,22 @@ def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
 
     extracted = extract([package_json, tsconfig], cache_root=tmp_path, parallel=False)
     graph = build_from_json(extracted, directed=True)
+    # Edges are stored in their native source->target orientation, so the (u, v)
+    # yielded by edges() IS the direction — the old _src/_tgt markers that the
+    # undirected NetworkX storage needed no longer exist.
     import_targets = {
-        graph.nodes[data["_tgt"]]["label"]
-        for _, _, data in graph.edges(data=True)
+        graph.nodes[v]["label"]
+        for _, v, data in graph.edges(data=True)
         if data.get("relation") == "imports"
     }
     extends_targets = {
-        graph.nodes[data["_tgt"]]["label"]
-        for _, _, data in graph.edges(data=True)
+        graph.nodes[v]["label"]
+        for _, v, data in graph.edges(data=True)
         if data.get("relation") == "extends"
     }
     self_loops = [
-        data for _, _, data in graph.edges(data=True)
-        if data.get("relation") in {"imports", "extends"} and data["_src"] == data["_tgt"]
+        data for u, v, data in graph.edges(data=True)
+        if data.get("relation") in {"imports", "extends"} and u == v
     ]
     assert self_loops == []
     assert {"left-pad", "bats"} <= import_targets

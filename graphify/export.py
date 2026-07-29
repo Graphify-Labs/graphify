@@ -1026,11 +1026,25 @@ def to_graphml(
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">',
     ]
+    # Graph-level attributes (notably the `hyperedges` list attached by
+    # attach_hyperedges) are part of the export too — dropping them would lose
+    # the hypergraph layer entirely. Same scalar coercion as nodes/edges (#1831).
+    graph_rows = {
+        k: _graphml_safe(v) for k, v in getattr(G, "graph", {}).items()
+        if not k.startswith("_")
+    }
     for name, gtype in node_keys.items():
         lines.append(f'  <key id="n_{esc(name)}" for="node" attr.name="{esc(name)}" attr.type="{gtype}"/>')
     for name, gtype in edge_keys.items():
         lines.append(f'  <key id="e_{esc(name)}" for="edge" attr.name="{esc(name)}" attr.type="{gtype}"/>')
+    for name, val in graph_rows.items():
+        lines.append(
+            f'  <key id="g_{esc(name)}" for="graph" attr.name="{esc(name)}" '
+            f'attr.type="{_graphml_type(val)}"/>'
+        )
     lines.append('  <graph edgedefault="directed">')
+    for name, val in graph_rows.items():
+        lines.append(f'    <data key="g_{esc(name)}">{esc(val)}</data>')
     for nid, attrs in node_rows:
         lines.append(f'    <node id="{esc(nid)}">')
         for k, v in attrs.items():

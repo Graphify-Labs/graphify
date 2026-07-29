@@ -1999,9 +1999,10 @@ def dispatch_command(cmd: str) -> None:
         naive_tags = [gp.parent.parent.name for gp in graph_paths]
         if len(set(naive_tags)) != len(naive_tags):
             print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
-        merged = merge_node_link([
-            prefix_node_link(data, repo_tag) for data, repo_tag in zip(datas, repo_tags)
-        ])
+        merged = merge_node_link(
+            [prefix_node_link(data, repo_tag) for data, repo_tag in zip(datas, repo_tags)],
+            directed=False,  # the combined cross-repo view is undirected (#1606)
+        )
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, merged, indent=2)
