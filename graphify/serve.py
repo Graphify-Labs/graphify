@@ -1067,12 +1067,15 @@ def _query_graph_text(
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
 
 
-def _find_node(G: nx.Graph, label: str) -> list[str]:
-    """Return node IDs whose label or ID matches the search term (diacritic-insensitive).
+def _find_node_tiers(
+    G: nx.Graph, label: str
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Return match tiers in precedence order: (source_exact, exact, prefix, substring).
 
-    Results are ordered by precedence: exact source-file path match first, then
-    exact (label/ID) match, then prefix match, then substring match. Node-ID exact
-    matches are grouped with label exact matches.
+    Split out of `_find_node` so callers that must not guess between equally-good
+    matches can inspect the winning tier alone. `_find_node` flattens these, and
+    its consumers take `[0]` — which resolves by graph-iteration order when one
+    tier holds several nodes from different files. See `find_node_ambiguity`.
     """
     term = " ".join(_search_tokens(label))
     if not term:
@@ -1134,7 +1137,45 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
         if len(preferred) == 1:
             source_exact = preferred + [nid for nid in source_exact if nid != preferred[0]]
 
+    return source_exact, exact, prefix, substring
+
+
+def _find_node(G: nx.Graph, label: str) -> list[str]:
+    """Return node IDs whose label or ID matches the search term (diacritic-insensitive).
+
+    Results are ordered by precedence: exact source-file path match first, then
+    exact (label/ID) match, then prefix match, then substring match. Node-ID exact
+    matches are grouped with label exact matches.
+    """
+    source_exact, exact, prefix, substring = _find_node_tiers(G, label)
     return source_exact + exact + prefix + substring
+
+
+def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
+    """Return rival candidates when the winning match tier spans several source files.
+
+    `_find_node` ranks matches but never reports that a tie was broken, so callers
+    taking `[0]` present one arbitrary file as the answer. Two workspaces that each
+    define `MetricsPort` put both nodes in the same `exact` tier, separated only by
+    `G.nodes()` iteration order — reorder the graph and the same query answers with
+    a different file, equally confidently.
+
+    Returns one representative node id per distinct source file when the winning
+    tier is split that way, else `[]`. Several matches *within one file* (a file
+    node plus its members) are ordinary precedence, not ambiguity, and return `[]`.
+
+    `_disambiguate_file_node_labels` (#2032) already relabels colliding *file*
+    nodes; this covers the symbol case it does not reach.
+    """
+    for tier in _find_node_tiers(G, label):
+        if not tier:
+            continue
+        by_source: dict[str, str] = {}
+        for nid in tier:
+            source = str(G.nodes[nid].get("source_file") or "")
+            by_source.setdefault(source, nid)
+        return list(by_source.values()) if len(by_source) > 1 else []
+    return []
 
 
 def _filter_blank_stdin() -> None:
@@ -1448,6 +1489,16 @@ def _build_server(graph_path: str):
         matches = _find_node(G, label)
         if not matches:
             return f"No node matching '{label}' found."
+        rivals = find_node_ambiguity(G, label)
+        if rivals:
+            listing = "\n".join(
+                f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
+            )
+            return (
+                f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
+                f"{listing}\n"
+                "Retry with the repo-relative path or the full node id."
+            )
         nid = matches[0]
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
         def _edge_at(d: dict) -> str:
