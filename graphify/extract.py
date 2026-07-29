@@ -239,8 +239,36 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
         for a, fs in alias_to_files.items()
         if len(fs) == 1 and a not in node_ids
     }
-    if not alias_map:
+
+    # Index canonical Python file nodes by stem for bare import resolution (#2280).
+    # Maps module stem id -> set of canonical file node IDs.
+    stem_to_file_nodes: dict[str, set[str]] = {}
+    for n in all_nodes:
+        if not isinstance(n, dict) or n.get("file_type") != "code":
+            continue
+        if n.get("_callable") or n.get("_callable_class"):
+            continue
+        sf = str(n.get("source_file", ""))
+        if not sf.lower().endswith((".py", ".pyi")):
+            continue
+        label = n.get("label", "")
+        try:
+            sf_name = Path(sf).name
+        except Exception:
+            continue
+        if label != sf_name:
+            continue
+        nid = n.get("id")
+        if not nid:
+            continue
+        stem = Path(sf).stem
+        if stem and stem != "__init__":
+            stem_id = _make_id(stem)
+            stem_to_file_nodes.setdefault(stem_id, set()).add(nid)
+
+    if not alias_map and not stem_to_file_nodes:
         return
+
     for e in all_edges:
         # Only repoint edges emitted from a Python file: a non-Python import edge
         # (e.g. C# `using Pkg.Mod;`, Java/Go dotted imports) can have a dangling
@@ -252,8 +280,14 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
             and str(e.get("source_file", "")).lower().endswith((".py", ".pyi"))
         ):
             tgt = e.get("target")
-            if tgt in alias_map:
+            if not tgt:
+                continue
+            if alias_map and tgt in alias_map:
                 e["target"] = alias_map[tgt]
+            elif stem_to_file_nodes and tgt in stem_to_file_nodes:
+                candidates = stem_to_file_nodes[tgt]
+                if len(candidates) == 1:
+                    e["target"] = next(iter(candidates))
 
 
 SEMANTIC_RELATIONS = frozenset({
