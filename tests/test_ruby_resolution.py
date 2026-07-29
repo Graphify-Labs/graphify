@@ -374,3 +374,19 @@ def test_ruby_compact_mixin_and_phantom_hub(tmp_path: Path) -> None:
         assert tgt != "Concern", f"Spurious mixin to Concern found: {src} -> {tgt}"
         if src in ("ArchivableConcern", "Billing::TotalsConcern", "Naming::Concern"):
             assert tgt != "Naming::Concern", f"Phantom hub edge found: {src} -> {tgt}"
+def test_rake_files_extract_and_resolve_like_rb(tmp_path):
+    """#1784: `.rake` files are plain Ruby and must route to the Ruby extractor
+    and participate in Ruby cross-file resolution exactly like `.rb`."""
+    rake = _write(tmp_path, "ops.rake",
+                  "class RakeHelper\n  def self.run\n    Widget.tally\n  end\nend\n")
+    rb = _write(tmp_path, "widget.rb",
+                "class Widget\n  def self.tally\n    42\n  end\nend\n")
+    result = extract([rake, rb], cache_root=tmp_path / ".cache")
+    label = {n["id"]: n.get("label") for n in result["nodes"]}
+    labels = set(label.values())
+    # the .rake file's symbols are extracted
+    assert "RakeHelper" in labels and ".run()" in labels
+    # and the cross-file member call resolves .rake -> .rb
+    calls = {(label.get(e["source"]), label.get(e["target"]))
+             for e in result["edges"] if e["relation"] == "calls"}
+    assert (".run()", ".tally()") in calls

@@ -29,6 +29,25 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
     "print", "open", "isinstance", "type", "super", "sorted", "reversed",
     "any", "all", "abs", "round", "next", "iter", "hash", "id", "repr",
     "callable", "getattr", "setattr", "hasattr", "delattr", "vars", "dir",
+    # Swift standard library / Foundation / SwiftUI (#2147). Value-type
+    # initializers (Data(x), Int(x), UUID()) and protocol conformance targets
+    # appear from virtually every file of a Swift codebase, exactly like the
+    # ECMAScript constructors above. String/Date/URL/Error are already listed.
+    "Int", "Int8", "Int16", "Int32", "Int64",
+    "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
+    "Double", "Float", "Bool", "Character",
+    "Sendable", "Codable", "Decodable", "Encodable", "Equatable", "Hashable",
+    "Identifiable", "Comparable", "CaseIterable", "RawRepresentable",
+    "CustomStringConvertible", "CustomDebugStringConvertible", "AnyObject",
+    "LocalizedError",
+    "Data", "UUID", "Decimal", "Calendar", "Locale", "TimeZone", "Bundle",
+    "IndexPath", "IndexSet", "NotificationCenter", "UserDefaults",
+    "FileManager", "URLSession", "URLRequest", "URLComponents",
+    "JSONDecoder", "JSONEncoder", "DateFormatter", "NumberFormatter",
+    "ISO8601DateFormatter",
+    "NSObject", "NSString", "NSError", "NSLock", "NSAttributedString",
+    "DispatchQueue", "DispatchGroup", "OperationQueue", "RunLoop",
+    "View", "Color", "Font",
 })
 
 

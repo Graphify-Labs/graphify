@@ -82,6 +82,7 @@ def generate(
     min_community_size: int = 3,
     built_at_commit: str | None = None,
     learning: dict | None = None,
+    obsidian: bool = False,
 ) -> str:
     today = date.today().isoformat()
 
@@ -140,14 +141,21 @@ def generate(
             "- Run `graphify update .` after code changes (no API cost).",
         ]
 
-    # Community hub navigation - links to _COMMUNITY_*.md files in the Obsidian vault.
-    # Without these, GRAPH_REPORT.md is a dead-end and the vault splits into disconnected components.
+    # Community hub navigation. The `_COMMUNITY_*.md` notes these wikilinks target
+    # are only created by the opt-in `--obsidian` export, and the report is written
+    # at build time (before any export runs), so emitting wikilinks by default left
+    # every link dangling — polluting an Obsidian vault's graph view and rendering as
+    # literal brackets everywhere else (#1712). Emit wikilinks only when the caller
+    # signals Obsidian output; otherwise a plain list, which navigates nowhere-to-break.
     if non_empty:
         lines += ["", "## Community Hubs (Navigation)"]
         for cid in non_empty:
             label = community_labels.get(cid, f"Community {cid}")
-            safe = _safe_community_name(label)
-            lines.append(f"- [[_COMMUNITY_{safe}|{label}]]")
+            if obsidian:
+                safe = _safe_community_name(label)
+                lines.append(f"- [[_COMMUNITY_{safe}|{label}]]")
+            else:
+                lines.append(f"- {label}")
 
     lines += [
         "",

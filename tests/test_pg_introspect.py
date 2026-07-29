@@ -24,6 +24,8 @@ def _make_mock_psycopg(tables, views, routines, fks,
     ``connect_raises``, if set, is an exception *instance* raised by connect().
     """
 
+    executed_queries: list[str] = []
+
     class MockCursor:
         def __enter__(self):
             return self
@@ -33,6 +35,7 @@ def _make_mock_psycopg(tables, views, routines, fks,
 
         def execute(self, query, params=None):
             self.query = query
+            executed_queries.append(query)
 
         def fetchall(self):
             q = self.query.strip().lower()
@@ -42,7 +45,7 @@ def _make_mock_psycopg(tables, views, routines, fks,
                 return views
             elif "information_schema.routines" in q:
                 return routines
-            elif "information_schema.referential_constraints" in q:
+            elif "pg_constraint" in q:
                 return fks
             return []
 
@@ -75,6 +78,7 @@ def _make_mock_psycopg(tables, views, routines, fks,
         "host": host,
         "dbname": dbname,
     }
+    mock_psycopg._executed_queries = executed_queries
     return mock_psycopg
 
 
@@ -244,6 +248,89 @@ def test_pg_introspect_composite_fk():
     )
 
 
+def test_pg_introspect_fk_query_avoids_privilege_filtered_view():
+    """#1746: information_schema.referential_constraints only shows constraints
+    where the current user has WRITE access to the referencing table (owner or
+    a privilege other than SELECT). A read-only introspection role therefore
+    gets zero FK rows — while tables/views/routines all still appear, since
+    SELECT is enough for those views — and the graph silently loses every
+    'references' edge. The FK query must read pg_catalog.pg_constraint, which
+    is not privilege-filtered."""
+    mock_tables = [
+        ("public", "users", "BASE TABLE"),
+        ("public", "orders", "BASE TABLE"),
+    ]
+    mock_fks = [
+        ("fk_orders_user_id", "public", "orders", ["user_id"], "public", "users", ["id"]),
+    ]
+
+    mock_psycopg = _make_mock_psycopg(mock_tables, [], [], mock_fks)
+
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        res = introspect_postgres("postgresql://readonly:secret@myhost/mydb")
+
+    constraint_queries = [
+        q for q in mock_psycopg._executed_queries if "constraint" in q.lower()
+    ]
+    assert constraint_queries, "no FK query was executed"
+    assert all(
+        "referential_constraints" not in q.lower() for q in constraint_queries
+    ), "FK query must not read information_schema.referential_constraints (privilege-filtered, #1746)"
+    assert any("pg_constraint" in q.lower() for q in constraint_queries)
+
+    # And the FK still becomes a references edge end-to-end
+    ref_edges = [e for e in res["edges"] if e["relation"] == "references"]
+    assert len(ref_edges) == 1
+
+
+def test_pg_introspect_fk_edges_survive_unparseable_function_stubs():
+    """#1854: FK edges must survive routines whose reconstructed DDL the SQL
+    grammar cannot parse.
+
+    A C-language routine's "body" from information_schema.routines is just the
+    C symbol name, so its reconstructed stub —
+        CREATE FUNCTION "public"."levenshtein"() RETURNS void
+            AS $gfx$ levenshtein $gfx$ LANGUAGE c;
+    — is unparseable, and tree-sitter's error recovery consumes the statements
+    that follow it. With FK ALTER TABLEs emitted after the function DDL, every
+    'references' edge was silently lost on any DB with a common extension
+    installed (uuid-ossp, pgcrypto, pg_trgm, fuzzystrmatch, …). FKs must be
+    emitted before the routine DDL so an unparseable stub can only damage
+    what follows it."""
+    n = 6
+    mock_tables = [("public", f"t{i}", "BASE TABLE") for i in range(n + 1)]
+    mock_views = []
+    # One C-language extension routine (unparseable stub) + one plpgsql routine
+    mock_routines = [
+        ("public", "levenshtein", "FUNCTION", "levenshtein", "C"),
+        ("public", "trigfunc", "FUNCTION", "BEGIN SELECT 1; END;", "PLPGSQL"),
+    ]
+    mock_fks = [
+        (f"fk{i}", "public", f"t{i}", ["ref_id"], "public", f"t{i+1}", ["id"])
+        for i in range(n)
+    ]
+
+    mock_psycopg = _make_mock_psycopg(mock_tables, mock_views, mock_routines, mock_fks)
+
+    with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+        res = introspect_postgres("postgresql://myuser:secret@myhost/mydb")
+
+    errors = validate_extraction(res)
+    assert errors == [], f"Validation errors: {errors}"
+
+    ids_to_labels = {node["id"]: node["label"] for node in res["nodes"]}
+    ref_pairs = {
+        (ids_to_labels[e["source"]], ids_to_labels[e["target"]])
+        for e in res["edges"]
+        if e["relation"] == "references"
+    }
+    expected = {(_q("public", f"t{i}"), _q("public", f"t{i+1}")) for i in range(n)}
+    assert ref_pairs == expected, (
+        f"FK edges lost to parser error recovery: expected {n}, "
+        f"got {len(ref_pairs)}: {sorted(ref_pairs)}"
+    )
+
+
 def test_pg_introspect_connection_error():
     """A psycopg.OperationalError must be re-raised as ConnectionError with a
     sanitized message (no DSN/credentials) and no stack-trace noise."""
@@ -274,8 +361,10 @@ def test_pg_introspect_connection_error():
 def test_pg_introspect_import_error():
     """If psycopg is missing, introspect_postgres raises ImportError."""
     with patch.dict("sys.modules", {"psycopg": None}):
-        with pytest.raises(ImportError, match="psycopg is required"):
+        with pytest.raises(ImportError, match="psycopg is required") as exc_info:
             introspect_postgres("postgresql://localhost/db")
+    # #1906: the PyPI package is graphifyy (double-y), so the install hint must match
+    assert "graphifyy[postgres]" in str(exc_info.value)
 
 
 def test_pg_introspect_uri_forward_slashes():

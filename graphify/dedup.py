@@ -187,6 +187,134 @@ def _is_code(node: dict) -> bool:
     return node.get("file_type") == "code"
 
 
+# ── ID collisions ─────────────────────────────────────────────────────────────
+
+_ID_SEGMENT = re.compile(r"[^a-z0-9]+")
+_EXTENSION = re.compile(r"\.[^./]+$")
+
+
+def _id_prefixes(source_file: str) -> set[str]:
+    """The ID prefixes a node extracted from ``source_file`` may legitimately mint.
+
+    An ID is ``<path>_<entity>``, where the path is the extension-stripped source
+    path, each segment slugified and joined with ``_``. Every trailing slice of the
+    path counts as a prefix: the stored path may be absolute or repo-relative, and
+    graphs built under the pre-#1504 scheme keyed off the bare filename stem.
+    """
+    stem = _EXTENSION.sub("", source_file.replace("\\", "/"))
+    segments = [s for s in (_ID_SEGMENT.sub("_", p.casefold()).strip("_")
+                            for p in stem.split("/")) if s]
+    return {"_".join(segments[i:]) for i in range(len(segments))}
+
+
+def _defines_id(node: dict) -> bool:
+    """True when the node's own source_file is the file its ID encodes.
+
+    A doc that *references* an entity mints the ID of the entity's own file, not one
+    derived from the doc's path — so the referencing node collides with the defining
+    node by construction. This separates the two: the definer owns the ID.
+    """
+    nid = node.get("id") or ""
+    source_file = node.get("source_file") or ""
+    if not nid or not source_file:
+        return False
+    # `nid == prefix` covers a bare file-level node whose id is exactly the
+    # slugified path with no `_entity` suffix (a semantic node for the file
+    # itself); `startswith(prefix + "_")` covers the usual `<path>_<entity>` id.
+    return any(nid == prefix or nid.startswith(f"{prefix}_")
+               for prefix in _id_prefixes(source_file))
+
+
+def _collision_rank(node: dict) -> tuple:
+    """A total order for choosing the survivor of an ID collision, independent of
+    the order the colliding nodes arrive in.
+
+    The winner is the node with the SMALLEST rank. A node whose ``source_file``
+    defines the ID always outranks a mere reference; among equally-(non-)defining
+    nodes it prefers the shorter, more canonical label over a longer qualified
+    variant, then breaks any remaining tie lexically on label and then source_file
+    (so the lexically-first path wins) — fully deterministic regardless of order.
+    """
+    label = node.get("label") or ""
+    return (
+        not _defines_id(node),  # definers (False) sort before references (True)
+        len(label),             # shorter, more canonical label first
+        label,                  # lexical tiebreak
+        node.get("source_file") or "",  # lexically-first source path wins
+    )
+
+
+def _same_source_entity(survivor: dict, duplicate: dict) -> bool:
+    """True when exact-ID records came from the same source file.
+
+    Exact IDs can also collide across files through references or slugged-path
+    ambiguity (#1504).  Keep those records isolated rather than importing
+    attributes whose provenance belongs to another file.
+    """
+    keep_file = survivor.get("source_file") or ""
+    lose_file = duplicate.get("source_file") or ""
+    # Require a non-empty source_file: two provenance-less records ("" == "")
+    # are NOT proof of the same symbol (#1178), and merging their attributes
+    # would be a cross-pollination bug in the opposite direction (#2091 review).
+    return bool(keep_file) and keep_file == lose_file
+
+
+def _merge_missing_attributes(survivor: dict, duplicate: dict) -> dict:
+    """Fill the survivor's absent/None attributes from a same-source duplicate,
+    without overriding values the survivor already has (#2091)."""
+    merged = dict(survivor)
+    for key, value in duplicate.items():
+        # Never inherit a provenance tag from a dropped record: a false
+        # _origin="ast" on an LLM survivor is read as an authority signal by the
+        # ghost-merge (#2068) and watch deletion logic (#2091 review).
+        if key == "_origin":
+            continue
+        if value is None:
+            continue
+        # Treat an explicit None on the survivor as absent — the codebase emits
+        # `source_location: None`, and that is exactly the attribute #2091 loses.
+        if merged.get(key) is None:
+            merged[key] = value
+    return merged
+
+
+def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
+    """Report an ID collision in proportion to what dropping the loser actually costs.
+
+    Cross-reference to a defining node: the structural entity and its edges survive;
+    foreign-file attributes stay isolated, so no collision warning is needed. Same
+    file, different labels: the extractor emitted two labels for one entity and one is
+    discarded — note it. Two files that both encode this ID: they are distinct entities
+    and one is genuinely lost — warn, and point at the extraction split that keeps them
+    apart (#1504).
+    """
+    keep_file = survivor.get("source_file") or ""
+    keep_label = survivor.get("label") or ""
+    for loser in losers:
+        lose_file = loser.get("source_file") or ""
+        lose_label = loser.get("label") or ""
+        if lose_file == keep_file:
+            if _norm(lose_label) != _norm(keep_label):
+                print(
+                    f"[graphify] note: node '{nid}' was extracted twice from "
+                    f"'{keep_file}' under different labels — keeping '{keep_label}', "
+                    f"dropping '{lose_label}'.",
+                    file=sys.stderr,
+                )
+        elif _defines_id(survivor) and not _defines_id(loser):
+            continue  # the loser only references the entity the survivor defines
+        else:
+            print(
+                f"[graphify] WARNING: node '{nid}' is minted by two different files — "
+                f"keeping '{keep_label}' from '{keep_file}', dropping '{lose_label}' "
+                f"from '{lose_file}'. An ID is derived from the source path plus the "
+                f"entity name, so this one does not identify a single entity and the "
+                f"dropped node is lost. To keep them distinct, run 'graphify extract' "
+                f"per subfolder and merge with 'graphify merge-graphs'.",
+                file=sys.stderr,
+            )
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 def deduplicate_entities(
@@ -220,29 +348,48 @@ def deduplicate_entities(
     if len(nodes) <= 1:
         return nodes, edges
 
-    # Pre-deduplicate: keep first occurrence of each id.
-    # Warn when two nodes share an ID but originate from different source files —
-    # this indicates a cross-chunk ID collision (#1504) where silent data loss occurs.
+    # Pre-deduplicate: one node per ID. The survivor is the node that *defines* the
+    # ID (its source_file is the file the ID encodes), not merely the first seen —
+    # otherwise chunk order decides whether an entity keeps its own attributes or a
+    # passing cross-reference's. Missing attributes from same-source records are
+    # retained so AST structure and semantic enrichment can coexist (#2091).
+    # Genuine cross-file ID collisions stay isolated and are reported below (#1504).
     seen_ids: dict[str, dict] = {}
+    dropped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
         nid = node.get("id", "")
         if not nid:
             continue
-        if nid not in seen_ids:
+        incumbent = seen_ids.get(nid)
+        if incumbent is None:
             seen_ids[nid] = node
+        elif _collision_rank(node) < _collision_rank(incumbent):
+            # Smallest-ranked node wins; the min over a total order is independent
+            # of the order nodes arrive in, so the survivor no longer depends on
+            # chunk ordering (#1851).
+            seen_ids[nid] = node
+            dropped[nid].append(incumbent)
         else:
-            existing_sf = seen_ids[nid].get("source_file") or ""
-            new_sf = node.get("source_file") or ""
-            if existing_sf != new_sf:
-                print(
-                    f"[graphify] WARNING: node '{nid}' from '{new_sf}' collides with "
-                    f"node from '{existing_sf}' — the second node will be dropped. "
-                    f"This is a cross-chunk ID collision caused by two files with the "
-                    f"same name in different directories. To avoid data loss, run "
-                    f"'graphify extract' per subfolder and merge with "
-                    f"'graphify merge-graphs'.",
-                    file=sys.stderr,
-                )
+            dropped[nid].append(node)
+
+    # Gap-fill each survivor from its SAME-SOURCE losers, applied in deterministic
+    # _collision_rank order (best loser first). Merging here — not incrementally in
+    # the loop above — keeps the merged attributes independent of chunk arrival
+    # order with 3+ colliding records, preserving the #1851 order-independence
+    # contract (#2091 review).
+    for nid, losers in dropped.items():
+        survivor = seen_ids[nid]
+        same_source = sorted(
+            (l for l in losers if _same_source_entity(survivor, l)),
+            key=_collision_rank,
+        )
+        for loser in same_source:
+            survivor = _merge_missing_attributes(survivor, loser)
+        seen_ids[nid] = survivor
+
+    for nid, losers in dropped.items():
+        _report_id_collision(nid, seen_ids[nid], losers)
+
     unique_nodes = list(seen_ids.values())
 
     if len(unique_nodes) <= 1:
@@ -264,8 +411,10 @@ def deduplicate_entities(
     for key, group in norm_to_nodes.items():
         if len(group) <= 1:
             continue
-        # Partition by source_file — only merge within the same file in Pass 1.
-        # Cross-file matches fall through to Pass 2 fuzzy matching.
+        # Partition by source_file — same-file exact matches always merge here.
+        # Cross-file exact matches are handled just below, gated to `concept`
+        # nodes only: Pass 2 cannot form them because its candidate list keeps a
+        # single node per normalized label (#2182).
         by_file: dict[str, list[dict]] = defaultdict(list)
         for node in group:
             sf = node.get("source_file") or ""
@@ -280,6 +429,26 @@ def deduplicate_entities(
                 for node in file_group:
                     uf.union(winner["id"], node["id"])
                 exact_merges += len(file_group) - 1
+        # Cross-file residue: union exact matches across files, but only where
+        # it is provably safe (#2182). `concept` is the one file_type meant to
+        # unify across files (#1284) — code is keyed by ID (#1205), rationale/
+        # document are file-anchored (#1284), and image/paper labels are often
+        # shared basenames (logo.png). Provenance is required (#1178), and the
+        # entropy gate mirrors Pass 2 so short generic labels ("API") stay
+        # distinct. Sorting by id keeps the winner order-independent.
+        mergeable = sorted(
+            (n for n in group
+             if n.get("file_type") == "concept"
+             and (n.get("source_file") or "")
+             and _entropy(n.get("label", "")) >= _ENTROPY_THRESHOLD),
+            key=lambda n: n["id"],
+        )
+        if len(mergeable) > 1:
+            winner = _pick_winner(mergeable)
+            for node in mergeable:
+                if uf.find(winner["id"]) != uf.find(node["id"]):
+                    uf.union(winner["id"], node["id"])
+                    exact_merges += 1
 
     # ── pass 2: MinHash/LSH + Jaro-Winkler (high-entropy nodes only) ─────────
     candidates: list[dict] = []
@@ -375,10 +544,14 @@ def deduplicate_entities(
                     score += _COMMUNITY_BOOST
 
                 if score >= _MERGE_THRESHOLD:
-                    # Identical labels across different source files almost always
-                    # means same-named-but-different symbols (trait impls, wrapper
-                    # methods, common type names). Mirror Pass 1's source_file
-                    # partition for this sub-case. (#1046, leaks #895's fix)
+                    # Belt-and-braces (#1046, narrowed by #2182): candidates are
+                    # norm-unique (`seen_norms` above), so two candidates can
+                    # never share a normalized label and this branch is
+                    # unreachable today. Retained in case candidate selection
+                    # changes. Equal-norm cross-file pairs are handled in Pass 1
+                    # instead, gated to `concept` nodes — the original #1046
+                    # rationale (same-named code symbols) was obsoleted by code
+                    # being excluded from label matching entirely (#1205, #1247).
                     if norm_label == neighbor_norm:
                         sf_a = node.get("source_file") or ""
                         sf_b = neighbor.get("source_file") or ""
@@ -417,11 +590,16 @@ def deduplicate_entities(
 
     total = len(remap)
     msg = f"[graphify] Deduplicated {total} node(s)"
+    # Both counters are reported when non-zero. Previous form nested the fuzzy
+    # branch inside `if exact_merges`, silently dropping the fuzzy count on
+    # doc/semantic-heavy runs where Pass 1 finds nothing (#1857).
+    parts: list[str] = []
     if exact_merges:
-        msg += f" ({exact_merges} exact"
-        if fuzzy_merges:
-            msg += f", {fuzzy_merges} fuzzy"
-        msg += ")"
+        parts.append(f"{exact_merges} exact")
+    if fuzzy_merges:
+        parts.append(f"{fuzzy_merges} fuzzy")
+    if parts:
+        msg += f" ({', '.join(parts)})"
     print(msg + ".", flush=True)
 
     deduped_nodes = [n for n in unique_nodes if n["id"] not in remap]

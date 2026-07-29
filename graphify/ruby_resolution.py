@@ -44,7 +44,7 @@ def _ruby_raw_calls(per_file: list[dict]) -> list[dict]:
             if not isinstance(rc, dict):
                 continue
             sf = str(rc.get("source_file", ""))
-            if sf.endswith(".rb"):
+            if sf.endswith((".rb", ".rake")):
                 calls.append(rc)
     return calls
 
@@ -83,7 +83,7 @@ def resolve_ruby_member_calls(
     for n in all_nodes:
         nid = n.get("id")
         sf = str(n.get("source_file", ""))
-        if nid and sf.endswith(".rb") and _BARE_CONST_RE.match(str(n.get("label", ""))):
+        if nid and sf.endswith((".rb", ".rake")) and _BARE_CONST_RE.match(str(n.get("label", ""))):
             class_def_nids.setdefault(_key(n.get("label", "")), []).append(str(nid))
     for k in list(class_def_nids):
         class_def_nids[k] = sorted(set(class_def_nids[k]))
