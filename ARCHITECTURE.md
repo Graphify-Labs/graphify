@@ -57,8 +57,8 @@ Every extractor returns:
 
 ## Adding a new language extractor
 
-1. Add a `extract_<lang>(path: Path) -> dict` function in `extract.py` following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges).
-2. Register the file suffix in `extract()` dispatch and `collect_files()`.
+1. Add a `graphify/extractors/<lang>.py` module with an `extract_<lang>(path: Path) -> dict` function following the existing pattern (tree-sitter parse → walk nodes → collect `nodes` and `edges` → call-graph second pass for INFERRED `calls` edges). New extractors go in the `extractors/` package, not `extract.py` — the monolith is being split (`graphify/extractors/MIGRATION.md` has the porting playbook and current status).
+2. Re-export the function from `extract.py` (`from graphify.extractors.<lang> import extract_<lang>  # noqa: F401`) and register the file suffix in `extract()` dispatch and `collect_files()`.
 3. Add the suffix to `CODE_EXTENSIONS` in `detect.py` and `_WATCHED_EXTENSIONS` in `watch.py`.
 4. Add the tree-sitter package to `pyproject.toml` dependencies.
 5. Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py`.
