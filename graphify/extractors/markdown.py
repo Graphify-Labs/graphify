@@ -151,7 +151,7 @@ def extract_markdown(path: Path) -> dict:
         # Skip over fenced code blocks so their contents are not parsed as
         # headings, but do not emit nodes/edges for them (#1077).
         stripped = line_text.strip()
-        if stripped.startswith("```"):
+        if stripped.startswith(("```", "~~~")):
             in_code_block = not in_code_block
             continue
 
