@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: the MCP server is dual-compatible with SDK 1.x AND 2.x (`mcp>=1,<3`, lifting the `<2` cap 0.9.30 introduced). The 2.0 SDK removed the low-level decorator API (`Server.list_tools`/`call_tool`/...); `_build_server` now binds the same handlers via the 1.x decorators or the 2.x `on_*` constructor callbacks, picked at runtime. Also adapted: `Tool.inputSchema` attribute access (snake_case in 2.x), `Resource.uri` (plain `str` in 2.x, which rejects `AnyUrl` objects), and the `AnyUrl` import (dropped as a re-export in 2.0, falls back to pydantic's). Verified with full stdio handshakes and the serve/HTTP test suites under both mcp 1.29 and 2.0.
+
 ## 0.9.30 (2026-07-29)
 
 - Fix: pin `mcp` below 2.0 so a fresh `graphifyy[mcp]` / `graphifyy[all]` install works again (#2277, #2279, #2291). The `mcp` 2.0.0 major dropped the `mcp.types.AnyUrl` re-export and the `Server` decorator-registration API that `graphify/serve.py` uses, so an unpinned resolve broke `graphify-mcp` on every new install with an `ImportError`. The `mcp` and `all` extras now require `mcp>=1,<2` (resolving to 1.29.0) and `starlette>=1.3.1,<2`. Adapting to the mcp 2.x API is tracked as a follow-up.

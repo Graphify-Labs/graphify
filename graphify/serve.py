@@ -1246,9 +1246,10 @@ def _build_server(graph_path: str):
         G, communities = _load_ctx(path)
         active_graph_path = str(Path(path).resolve())
 
-    server = Server("graphify")
-
-    @server.list_tools()
+    # NOTE: no decorators here — the handlers below are plain coroutines,
+    # bound to the Server at the END of this function in a version-aware way:
+    # mcp 1.x exposes the @server.list_tools()/... decorator API, mcp 2.x
+    # replaced it with on_list_tools=/... constructor callbacks.
     async def list_tools() -> list[types.Tool]:
         _tools = [
             types.Tool(
@@ -1380,7 +1381,12 @@ def _build_server(graph_path: str):
         # stays in lockstep as tools are added. Omitting it keeps the historical
         # single-graph behaviour, so this is purely additive for existing callers.
         for _t in _tools:
-            _t.inputSchema.setdefault("properties", {})["project_path"] = {
+            # The constructor accepts the camelCase alias in both majors, but
+            # attribute access is inputSchema on mcp 1.x and input_schema on 2.x.
+            _schema = getattr(_t, "inputSchema", None)
+            if _schema is None:
+                _schema = _t.input_schema
+            _schema.setdefault("properties", {})["project_path"] = {
                 "type": "string",
                 "description": (
                     "Absolute path to a project directory containing "
@@ -1690,18 +1696,18 @@ def _build_server(graph_path: str):
                 pass
         return {cid: f"Community {cid}" for cid in communities}
 
-    @server.list_resources()
     async def list_resources() -> list[types.Resource]:
+        # Plain-string URIs on purpose: mcp 1.x types the field as AnyUrl and
+        # coerces strings, mcp 2.x types it as str and REJECTS AnyUrl objects.
         return [
-            types.Resource(uri=AnyUrl("graphify://report"), name="Graph Report", description="Full GRAPH_REPORT.md", mimeType="text/markdown"),
-            types.Resource(uri=AnyUrl("graphify://stats"), name="Graph Stats", description="Node/edge/community counts and confidence breakdown", mimeType="text/plain"),
-            types.Resource(uri=AnyUrl("graphify://god-nodes"), name="God Nodes", description="Top 10 most-connected nodes", mimeType="text/plain"),
-            types.Resource(uri=AnyUrl("graphify://surprises"), name="Surprising Connections", description="Cross-community surprising connections", mimeType="text/plain"),
-            types.Resource(uri=AnyUrl("graphify://audit"), name="Confidence Audit", description="EXTRACTED/INFERRED/AMBIGUOUS edge breakdown", mimeType="text/plain"),
-            types.Resource(uri=AnyUrl("graphify://questions"), name="Suggested Questions", description="Suggested questions for this codebase", mimeType="text/plain"),
+            types.Resource(uri="graphify://report", name="Graph Report", description="Full GRAPH_REPORT.md", mimeType="text/markdown"),
+            types.Resource(uri="graphify://stats", name="Graph Stats", description="Node/edge/community counts and confidence breakdown", mimeType="text/plain"),
+            types.Resource(uri="graphify://god-nodes", name="God Nodes", description="Top 10 most-connected nodes", mimeType="text/plain"),
+            types.Resource(uri="graphify://surprises", name="Surprising Connections", description="Cross-community surprising connections", mimeType="text/plain"),
+            types.Resource(uri="graphify://audit", name="Confidence Audit", description="EXTRACTED/INFERRED/AMBIGUOUS edge breakdown", mimeType="text/plain"),
+            types.Resource(uri="graphify://questions", name="Suggested Questions", description="Suggested questions for this codebase", mimeType="text/plain"),
         ]
 
-    @server.read_resource()
     async def read_resource(uri: AnyUrl) -> str:
         _select_graph(None)  # resources read the server's default graph
         uri_str = str(uri)
@@ -1753,7 +1759,6 @@ def _build_server(graph_path: str):
                 return f"Could not generate questions: {exc}"
         raise ValueError(f"Unknown resource: {uri_str}")
 
-    @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         arguments = dict(arguments or {})
         project_path = arguments.pop("project_path", None)
@@ -1765,6 +1770,49 @@ def _build_server(graph_path: str):
             return [types.TextContent(type="text", text=handler(arguments))]
         except Exception as exc:
             return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
+
+    if hasattr(Server, "list_tools"):
+        # mcp 1.x: decorator-based registration. The SDK wraps the raw returns
+        # (list[Tool] -> ListToolsResult, str -> resource contents) itself.
+        server = Server("graphify")
+        server.list_tools()(list_tools)
+        server.call_tool()(call_tool)
+        server.list_resources()(list_resources)
+        server.read_resource()(read_resource)
+    else:
+        # mcp 2.x: handlers ride the Server constructor as on_* callbacks with
+        # the (ctx, params) -> Result contract, so wrap the same impls and
+        # build the result models the 1.x decorators used to build for us.
+        async def _on_list_tools(ctx, params) -> types.ListToolsResult:
+            return types.ListToolsResult(tools=await list_tools())
+
+        async def _on_call_tool(ctx, params) -> types.CallToolResult:
+            content = await call_tool(params.name, dict(params.arguments or {}))
+            return types.CallToolResult(content=content)
+
+        async def _on_list_resources(ctx, params) -> types.ListResourcesResult:
+            return types.ListResourcesResult(resources=await list_resources())
+
+        async def _on_read_resource(ctx, params) -> types.ReadResourceResult:
+            text = await read_resource(params.uri)
+            mime = "text/markdown" if str(params.uri).startswith("graphify://report") else "text/plain"
+            return types.ReadResourceResult(
+                contents=[types.TextResourceContents(uri=params.uri, mimeType=mime, text=text)]
+            )
+
+        try:
+            from importlib.metadata import version as _pkg_version
+            _version = _pkg_version("graphifyy")
+        except Exception:
+            _version = "0"
+        server = Server(
+            "graphify",
+            version=_version,
+            on_list_tools=_on_list_tools,
+            on_call_tool=_on_call_tool,
+            on_list_resources=_on_list_resources,
+            on_read_resource=_on_read_resource,
+        )
 
     return server
 
