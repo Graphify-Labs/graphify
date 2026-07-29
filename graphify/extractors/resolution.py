@@ -19,9 +19,12 @@ import sys
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 
+# compilerOptions.baseUrl per config path, as an absolute dir (#2153).
+_TSCONFIG_BASEURL_CACHE: "dict[str, Path | None]" = {}
+
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 
-_JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs")
+_JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs", ".cjs")
 
 _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.jsx", "index.mjs")
 
@@ -164,23 +167,82 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
 
     return aliases
 
+def _read_json_config(path: Path) -> "dict | None":
+    """Parse a tsconfig/jsconfig as JSON, falling back to JSONC (#2153).
+
+    Mirrors the read/parse handling in `_read_tsconfig_aliases`; returns None on
+    any unreadable or unparseable file so a malformed config degrades to "no
+    baseUrl" instead of raising.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for candidate in (raw, _strip_jsonc(raw)):
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        return data if isinstance(data, dict) else None
+    return None
+
+def _find_js_config(start_dir: Path) -> "tuple[Path, Path] | None":
+    """Nearest tsconfig.json/jsconfig.json walking up from start_dir.
+
+    `jsconfig.json` is the plain-JS spelling of the same file (already indexed by
+    json_config.py) and was never probed here, so a Rails/webpacker project that
+    configures resolution in jsconfig.json got no aliases at all (#2153).
+    tsconfig.json wins when both sit in one directory, matching tsc and editors,
+    which consult jsconfig.json only when there is no tsconfig.json.
+    """
+    current = start_dir.resolve()
+    for candidate in [current, *current.parents]:
+        for name in ("tsconfig.json", "jsconfig.json"):
+            config = candidate / name
+            if config.exists():
+                return config, candidate
+    return None
+
 def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
-    """Walk up from start_dir to find tsconfig.json and return compilerOptions.paths aliases.
+    """Walk up from start_dir to find tsconfig/jsconfig.json and return compilerOptions.paths aliases.
 
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
-    Result is cached by tsconfig path string.
+    Result is cached by config path string.
     """
-    current = start_dir.resolve()
-    for candidate in [current, *current.parents]:
-        tsconfig = candidate / "tsconfig.json"
-        if tsconfig.exists():
-            key = str(tsconfig)
-            if key not in _TSCONFIG_ALIAS_CACHE:
-                _TSCONFIG_ALIAS_CACHE[key] = _read_tsconfig_aliases(tsconfig, candidate, seen=set())
-            return _TSCONFIG_ALIAS_CACHE[key]
-    return {}
+    found = _find_js_config(start_dir)
+    if found is None:
+        return {}
+    config, candidate = found
+    key = str(config)
+    if key not in _TSCONFIG_ALIAS_CACHE:
+        _TSCONFIG_ALIAS_CACHE[key] = _read_tsconfig_aliases(config, candidate, seen=set())
+    return _TSCONFIG_ALIAS_CACHE[key]
+
+def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
+    """`compilerOptions.baseUrl` of the nearest config, as an absolute directory.
+
+    baseUrl was only ever used as the base that `paths` targets resolve against,
+    so a config declaring baseUrl and NO paths yielded an empty alias map and
+    every non-relative import went unresolved (#2153). Exposed separately so it
+    can act as a resolution root of last resort, after all declared aliases miss.
+    Returns None when no config declares baseUrl.
+    """
+    found = _find_js_config(start_dir)
+    if found is None:
+        return None
+    config, candidate = found
+    key = str(config)
+    if key not in _TSCONFIG_BASEURL_CACHE:
+        base_url = None
+        data = _read_json_config(config)
+        if data is not None:
+            raw_base = data.get("compilerOptions", {}).get("baseUrl")
+            if isinstance(raw_base, str) and raw_base:
+                base_url = Path(os.path.normpath(candidate / raw_base))
+        _TSCONFIG_BASEURL_CACHE[key] = base_url
+    return _TSCONFIG_BASEURL_CACHE[key]
 
 def _match_tsconfig_alias(raw: str, pattern: str) -> "tuple[tuple[int, int], str, bool] | None":
     """Return (specificity, captured text, is_wildcard) when pattern matches raw.
@@ -208,12 +270,21 @@ def _match_tsconfig_alias(raw: str, pattern: str) -> "tuple[tuple[int, int], str
         return (2, -len(prefix)), raw[len(prefix):].lstrip("/"), False
     return None
 
-def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]]) -> "Path | None":
+def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]],
+                            base_url: "Path | None" = None) -> "Path | None":
     """Resolve `raw` against the most specific matching tsconfig alias pattern.
 
     Within that pattern, try targets in declared order and return the first whose
     candidate resolves to a real file. If none exist, return the first candidate
     so existing phantom/external-edge behavior stays unchanged.
+
+    `base_url` is a resolution root of last resort, tried only when NO declared
+    alias matches (#2153). It must not participate in the specificity contest:
+    a bare `*` alias would score (1, 0) and so beat a declared non-wildcard
+    directory-prefix alias at (2, -len), silently shadowing it and regressing
+    #1269. Unlike the alias path this returns a candidate only when it is a real
+    file on disk, so a genuine external package (`import React from 'react'`)
+    still resolves to nothing instead of a fabricated <baseUrl>/react edge.
     """
     best: "tuple[tuple[int, int], str, bool, list[str]] | None" = None
     for pattern, targets in aliases.items():
@@ -225,6 +296,11 @@ def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]]) -> "Path | 
             best = specificity, captured, is_wildcard, targets
 
     if best is None:
+        if base_url is not None:
+            candidate = Path(os.path.normpath(base_url / raw))
+            resolved = _resolve_js_import_path(candidate)
+            if resolved.is_file():
+                return resolved
         return None
 
     _, captured, is_wildcard, targets = best
@@ -442,7 +518,8 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
         return _resolve_js_import_path(start_dir / raw)
 
     aliases = _load_tsconfig_aliases(start_dir)
-    hit = _resolve_tsconfig_alias(raw, aliases)
+    hit = _resolve_tsconfig_alias(raw, aliases,
+                                  base_url=_load_tsconfig_base_url(start_dir))
     if hit is not None:
         return _resolve_js_import_path(hit)
 
@@ -637,6 +714,12 @@ def _disambiguate_colliding_node_ids(
                 node["id"] = new_id
 
     if not remap:
+        # No colliding ids to salt apart, but the transient `target_file` hint an
+        # importer stamps on every resolved import (#1814) still has to be dropped
+        # here — this early exit skips the edge loop below, so without it a
+        # non-colliding import would carry its absolute path into graph.json.
+        for edge in edges:
+            edge.pop("target_file", None)
         return
 
     unambiguous_remaps: dict[str, str] = {}
@@ -671,7 +754,20 @@ def _disambiguate_colliding_node_ids(
     for edge in edges:
         edge_source_key = _source_key(str(edge.get("source_file", "")), root)
         source_key = (edge.get("source", ""), edge_source_key)
-        target_key = (edge.get("target", ""), edge_source_key)
+        # An import/re-export edge's target is a FILE node that can collapse with a
+        # same-basename cross-extension sibling (foo.ts vs foo.mjs, #1814). Keying
+        # its target salt by the IMPORTER's own source_file mis-points it back at the
+        # importer's variant (a self-loop). When the emitter stamped the resolved
+        # target file, key the target salt by THAT file so the salt lands on the
+        # correct sibling. Generalizes the #1475 C/ObjC header carve-out (below) to
+        # every language and to re_exports. `pop` it as we consume it: this is the
+        # hint's only reader, and its absolute path must not persist into graph.json.
+        target_file = edge.pop("target_file", None)
+        if target_file and edge.get("relation") in ("imports", "imports_from", "re_exports"):
+            target_edge_key = _source_key(str(target_file), root)
+        else:
+            target_edge_key = edge_source_key
+        target_key = (edge.get("target", ""), target_edge_key)
         if source_key in remap:
             edge["source"] = remap[source_key]
         elif edge.get("source") in unambiguous_remaps:
@@ -777,12 +873,12 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None) -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
         existing_edges.add(key)
-        edges.append({
+        edge = {
             "source": source,
             "target": target,
             "relation": relation,
@@ -791,7 +887,18 @@ def _apply_symbol_resolution_facts(
             "source_file": str(source_path),
             "source_location": f"L{line}",
             "weight": 1.0,
-        })
+        }
+        # A re-export edge's target is a FILE node that can collapse with a
+        # same-basename cross-extension sibling; stamp the resolved target file so
+        # the id-disambiguation salt is keyed by the TARGET, not the importer (#1814).
+        if target_file is not None:
+            edge["target_file"] = target_file
+        # The local name this import bound in the importing file, when it differs
+        # from the target's own name (`from pkg import mod as alias`) -- lets the
+        # cross-file member-call resolver match `alias.func()` (#2082).
+        if local_alias is not None:
+            edge["local_alias"] = local_alias
+        edges.append(edge)
 
     for declaration in facts.declarations:
         ensure_symbol_node(declaration.file_path, declaration.name, declaration.line)
@@ -837,6 +944,7 @@ def _apply_symbol_resolution_facts(
                 "export",
                 star_fact.line,
                 star_fact.file_path,
+                target_file=str(path_by_resolved.get(target_path, target_path)),
             )
 
     for namespace_fact in facts.namespace_exports:
@@ -867,6 +975,7 @@ def _apply_symbol_resolution_facts(
                 "export",
                 namespace_fact.line,
                 namespace_fact.file_path,
+                target_file=str(path_by_resolved.get(target_path, target_path)),
             )
 
     for export_fact in facts.exports:
@@ -891,6 +1000,7 @@ def _apply_symbol_resolution_facts(
                     "export",
                     export_fact.line,
                     export_fact.file_path,
+                    target_file=str(path_by_resolved.get(origin[0], origin[0])),
                 )
 
     def resolve_exported_origin(target_path: Path, imported_name: str, seen: set[tuple[Path, str]] | None = None) -> tuple[Path, str]:
@@ -934,7 +1044,7 @@ def _apply_symbol_resolution_facts(
         )
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
-    for from_path, to_path, line in facts.module_imports:
+    for from_path, to_path, line, local_name in facts.module_imports:
         try:
             from_rel = from_path.relative_to(root)
             to_rel = to_path.relative_to(root)
@@ -942,7 +1052,10 @@ def _apply_symbol_resolution_facts(
             continue
         source_id = _make_id(_file_stem(from_rel))
         target_id = _make_id(_file_stem(to_rel))
-        add_edge(source_id, target_id, "imports_from", "submodule_import", line, from_path)
+        add_edge(
+            source_id, target_id, "imports_from", "submodule_import", line, from_path,
+            local_alias=local_name if local_name != to_path.stem else None,
+        )
 
     for use_fact in facts.uses:
         file_path = use_fact.file_path.resolve()
@@ -1577,15 +1690,9 @@ def _python_imported_names(node, source: bytes) -> list[tuple[str, str]]:
             names.append((name, local))
     return names
 
-def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
-    if level > 0:
-        base = current_path.parent
-        for _ in range(level - 1):
-            base = base.parent
-        candidate = base / module_name.replace(".", "/") if module_name else base
-    else:
-        candidate = root / module_name.replace(".", "/")
-
+def _probe_python_module_candidate(candidate: Path) -> Path | None:
+    """Resolve one module-path candidate to a .py file (dir+__init__, exact, or
+    with a .py suffix), or None."""
     if candidate.is_dir():
         init_path = candidate / "__init__.py"
         if init_path.is_file():
@@ -1595,6 +1702,45 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
     py_candidate = candidate.with_suffix(".py")
     if py_candidate.is_file():
         return py_candidate
+    return None
+
+
+def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
+    if level > 0:
+        base = current_path.parent
+        for _ in range(level - 1):
+            base = base.parent
+        candidate = base / module_name.replace(".", "/") if module_name else base
+        return _probe_python_module_candidate(candidate)
+
+    # Absolute import. Probe the scan root first (unchanged for the common
+    # root-is-package-root layout), then walk up from the importing file toward
+    # the root so a `src/` (or otherwise nested) package root resolves regardless
+    # of where the scan started — `import pkg.mod` from src/pkg/app.py must find
+    # src/pkg/mod.py whether the scan root is the repo or src/ (#2072). Mirrors
+    # the upward walk already used for Lua (_resolve_lua_import_target, #1075).
+    rel = module_name.replace(".", "/")
+    hit = _probe_python_module_candidate(root / rel)
+    if hit is not None:
+        return hit
+    for anc in current_path.parents:
+        try:
+            anc.relative_to(root)
+        except ValueError:
+            break  # left the scan root; stop walking up
+        if anc == root:
+            continue  # already probed root/rel above
+        # Only probe sys.path-root candidates — dirs that are NOT themselves part
+        # of a package. Probing a package dir would resolve an absolute
+        # `from helpers import x` to a sibling in the current package (Python-2
+        # implicit-relative semantics), fabricating edges to what may be an
+        # external dependency (#2072 review). A src-layout root (src/, no
+        # __init__.py) is still probed.
+        if (anc / "__init__.py").is_file():
+            continue
+        cand = _probe_python_module_candidate(anc / rel)
+        if cand is not None:
+            return cand
     return None
 
 def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
@@ -1656,7 +1802,7 @@ def _collect_python_symbol_resolution_facts(
                     sub_pkg = pkg_dir / imported_name / "__init__.py"
                     submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
                     if submodule is not None:
-                        facts.module_imports.append((path, submodule, line))
+                        facts.module_imports.append((path, submodule, line, local_name))
                         continue
                 facts.imports.append(
                     _SymbolImportFact(path, local_name, target_path, imported_name, line)
@@ -2212,6 +2358,270 @@ def _resolve_java_type_references(
         node for node in all_nodes
         if node.get("id") not in repointed_from or node.get("id") in still_referenced
     ]
+
+
+_PHP_SUPERTYPE_RELATIONS = ("inherits", "implements", "mixes_in")
+_PHP_REPOINT_RELATIONS = frozenset({"inherits", "implements", "mixes_in", "imports", "references"})
+
+
+def _php_fqn_from_raw(raw: str, ns: str, uses: dict[str, str]) -> str:
+    """Resolve a raw (possibly qualified) PHP class reference to an FQN.
+
+    PHP name-resolution for class names:
+      \\A\\B -> absolute: A\\B
+      A\\B   -> first segment through the `use` map (group-prefix semantics),
+                else relative to the current namespace
+      B      -> `use` map, else current namespace (class names do NOT fall
+                back to the global namespace)
+    """
+    raw = raw.strip()
+    if raw.startswith("\\"):
+        return raw[1:]
+    if "\\" in raw:
+        first, rest = raw.split("\\", 1)
+        mapped = uses.get(first.lower())
+        if mapped:
+            return f"{mapped}\\{rest}"
+        return f"{ns}\\{raw}" if ns else raw
+    mapped = uses.get(raw.lower())
+    if mapped:
+        return mapped
+    return f"{ns}\\{raw}" if ns else raw
+
+
+def _resolve_php_type_references(
+    per_file: list[dict],
+    paths: list[Path],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Disambiguate PHP inherits/implements/mixes_in/imports/references targets
+    using each file's ``namespace`` declaration and ``use`` imports (#1923).
+
+    Mirrors ``_resolve_java_type_references`` (a re-parse pass), but MUST run
+    BEFORE ``_rewire_unique_stub_nodes``: the false edge is manufactured by the
+    rewire itself — a bare ``Page`` stub collapses onto the only internal class
+    labeled ``Page`` even though the referencing file ``use``d a different
+    namespace (``Filament\\Pages\\Page`` vs ``App\\Models\\Page``). References
+    proven external by a ``use`` FQN or a qualified name are re-pointed to an
+    FQN-labeled sourceless stub, which the bare-label rewire cannot collapse.
+    References with no namespace facts are left untouched so the unique-label
+    rewire keeps handling plain (non-namespaced) PHP as before.
+    """
+    try:
+        import tree_sitter_php as tsphp
+        from tree_sitter import Language, Parser
+    except ImportError:
+        return
+
+    lang_fn = getattr(tsphp, "language_php", None) or getattr(tsphp, "language", None)
+    if lang_fn is None:
+        return
+    language = Language(lang_fn())
+    parser = Parser(language)
+
+    ns_by_file: dict[str, str] = {}
+    uses_by_file: dict[str, dict[str, str]] = {}                     # lower alias -> FQN
+    raw_by_file: dict[str, dict[tuple[str, str], str | None]] = {}  # (relation, lower bare) -> raw | None(ambiguous)
+
+    for path, result in zip(paths, per_file):
+        srcs = {n.get("source_file") for n in result.get("nodes", []) if n.get("source_file")}
+        if not srcs:
+            continue
+        try:
+            source = path.read_bytes()
+            tree = parser.parse(source)
+        except Exception:
+            continue
+
+        namespaces: list[str] = []
+        uses: dict[str, str] = {}
+        raws: dict[tuple[str, str], str | None] = {}
+
+        def _record_raw(relation: str, raw: str) -> None:
+            bare = raw.rsplit("\\", 1)[-1].strip().lower()
+            if not bare:
+                return
+            key = (relation, bare)
+            if key in raws and raws[key] != raw:
+                raws[key] = None  # e.g. `implements A\I, B\I` — never guess
+            else:
+                raws.setdefault(key, raw)
+
+        def _record_use_clause(clause, prefix: str) -> None:
+            target = None
+            alias = None
+            saw_as = False
+            for c in clause.children:
+                if c.type in ("function", "const"):
+                    return  # not a class import
+                if c.type == "as":
+                    saw_as = True
+                elif c.type in ("qualified_name", "name"):
+                    if saw_as:
+                        alias = _read_text(c, source)
+                    elif target is None:
+                        target = _read_text(c, source)
+            if not target:
+                return
+            fqn = (f"{prefix}\\{target}" if prefix else target).lstrip("\\")
+            key = (alias or fqn.rsplit("\\", 1)[-1]).strip().lower()
+            if key:
+                uses.setdefault(key, fqn)
+
+        def walk(n) -> None:
+            t = n.type
+            if t == "namespace_definition":
+                for c in n.children:
+                    if c.type == "namespace_name":
+                        namespaces.append(_read_text(c, source))
+                        break
+            elif t == "namespace_use_declaration":
+                prefix = ""
+                group = None
+                for c in n.children:
+                    if c.type == "namespace_name":
+                        prefix = _read_text(c, source)          # group-use prefix
+                    elif c.type == "namespace_use_group":
+                        group = c
+                    elif c.type == "namespace_use_clause":
+                        _record_use_clause(c, "")
+                if group is not None:
+                    for c in group.children:
+                        if c.type == "namespace_use_clause":
+                            _record_use_clause(c, prefix)
+                return
+            elif t == "class_declaration":
+                for child in n.children:
+                    if child.type == "base_clause":
+                        for sub in child.children:
+                            if sub.type in ("name", "qualified_name"):
+                                _record_raw("inherits", _read_text(sub, source))
+                    elif child.type == "class_interface_clause":
+                        for sub in child.children:
+                            if sub.type in ("name", "qualified_name"):
+                                _record_raw("implements", _read_text(sub, source))
+                    elif child.type == "declaration_list":
+                        for member in child.children:
+                            if member.type != "use_declaration":
+                                continue
+                            for sub in member.children:
+                                if sub.type in ("name", "qualified_name"):
+                                    _record_raw("mixes_in", _read_text(sub, source))
+            for child in n.children:
+                walk(child)
+
+        walk(tree.root_node)
+        if len(set(namespaces)) > 1:
+            continue  # multi-namespace file (PSR-1 violation): keep legacy behavior
+        ns = namespaces[0] if namespaces else ""
+        for s in srcs:
+            ns_by_file[s] = ns
+            uses_by_file[s] = uses
+            raw_by_file[s] = raws
+
+    if not ns_by_file:
+        return
+
+    # lower FQN -> definition node id (PHP class names are case-insensitive).
+    fqn_to_id: dict[str, str] = {}
+    for node in all_nodes:
+        label = node.get("label", "")
+        src = node.get("source_file", "")
+        nid = node.get("id", "")
+        if not (label and src and nid) or src not in ns_by_file:
+            continue
+        if label.endswith(")") or "." in label:  # methods / file nodes
+            continue
+        ns = ns_by_file[src]
+        fqn = f"{ns}\\{label}" if ns else label
+        fqn_to_id.setdefault(fqn.lower(), nid)
+
+    node_ids = {n.get("id") for n in all_nodes if n.get("id")}
+    stub_label: dict[str, str] = {
+        n["id"]: n.get("label", "")
+        for n in all_nodes
+        if n.get("id") and not n.get("source_file") and n.get("label")
+    }
+
+    external_stub_ids: dict[str, str] = {}
+    new_nodes: list[dict] = []
+
+    def _external_stub(fqn: str) -> str:
+        key = fqn.lower()
+        nid = external_stub_ids.get(key)
+        if nid:
+            return nid
+        nid = _make_id(fqn)
+        if nid not in node_ids:
+            new_nodes.append({
+                "id": nid,
+                "label": fqn,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+            })
+            node_ids.add(nid)
+        external_stub_ids[key] = nid
+        return nid
+
+    repointed_from: set[str] = set()
+    for edge in all_edges:
+        relation = edge.get("relation")
+        if relation not in _PHP_REPOINT_RELATIONS:
+            continue
+        ref_file = edge.get("source_file", "")
+        if ref_file not in ns_by_file:
+            continue
+        tgt = edge.get("target")
+        label = stub_label.get(tgt)
+        if not label:
+            continue
+        bare = label.strip().lower()
+        ns = ns_by_file[ref_file]
+        uses = uses_by_file.get(ref_file, {})
+
+        raw = None
+        if relation in _PHP_SUPERTYPE_RELATIONS:
+            raw = raw_by_file.get(ref_file, {}).get((relation, bare))
+
+        explicit = False
+        if raw and "\\" in raw:
+            fqn = _php_fqn_from_raw(raw, ns, uses)
+            explicit = True
+        elif bare in uses:
+            fqn = uses[bare]
+            explicit = True
+        elif ns:
+            fqn = f"{ns}\\{label}"
+        else:
+            continue  # no namespace facts: legacy unique-label rewire applies
+
+        resolved = fqn_to_id.get(fqn.lower())
+        if resolved and resolved != tgt:
+            edge["target"] = resolved
+            repointed_from.add(tgt)
+        elif explicit and resolved is None:
+            # Proven external: park the edge on an FQN-labeled stub the
+            # bare-name rewire cannot collapse (this is the #1923 fix).
+            edge["target"] = _external_stub(fqn)
+            repointed_from.add(tgt)
+        # non-explicit miss: leave the bare stub for the legacy rewire
+
+    if new_nodes:
+        all_nodes.extend(new_nodes)
+    if not repointed_from:
+        return
+
+    still_referenced: set[str] = set()
+    for edge in all_edges:
+        still_referenced.add(edge.get("source"))
+        still_referenced.add(edge.get("target"))
+    all_nodes[:] = [
+        n for n in all_nodes
+        if n.get("id") not in repointed_from or n.get("id") in still_referenced
+    ]
+
 
 _pascal_unit_cache: dict[str, dict[str, str]] = {}
 

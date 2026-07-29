@@ -279,6 +279,280 @@ def test_corpus_parallel_continues_after_chunk_failure(tmp_path, capsys):
     assert "failed" in err and "simulated API error" in err
 
 
+def test_checkpoint_scopes_cache_writes_to_chunk_files(tmp_path):
+    """#1757: the per-chunk incremental checkpoint must not let a chunk's
+    mis-attributed node clobber another corpus file's semantic cache. A chunk
+    processing only A.py that returns a node attributed to B.py must leave B.py's
+    existing cache entry untouched. Guards the call site the original fix missed."""
+    from graphify.llm import extract_corpus_parallel
+    from graphify.cache import save_semantic_cache, load_cached
+
+    a = tmp_path / "A.py"; a.write_text("def a(): pass")
+    b = tmp_path / "B.py"; b.write_text("def b(): pass")
+
+    # Seed B.py's legitimate semantic cache (a full, correct entry).
+    save_semantic_cache(
+        [{"id": "b_real", "source_file": "B.py", "file_type": "code"}],
+        [], [], root=tmp_path,
+    )
+    before = load_cached(b, tmp_path, kind="semantic")
+    assert before and [n["id"] for n in before["nodes"]] == ["b_real"]
+
+    # The chunk dispatches only A.py, but the (untrusted) model result attributes
+    # a stray node to B.py — the #1757 mis-attribution.
+    def stray(chunk, **kwargs):
+        return {
+            "nodes": [
+                {"id": "a_ok", "source_file": "A.py", "file_type": "code"},
+                {"id": "b_stray", "source_file": "B.py", "file_type": "code"},
+            ],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 1, "output_tokens": 1,
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stray):
+        extract_corpus_parallel(
+            [a], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+        )
+
+    # B.py's cache is unchanged: the stray node was rejected, not merged in.
+    after = load_cached(b, tmp_path, kind="semantic")
+    assert [n["id"] for n in after["nodes"]] == ["b_real"], (
+        f"B.py cache was clobbered by an out-of-chunk node: {after}"
+    )
+    # A.py (the actual chunk file) was legitimately cached. The checkpoint stamps
+    # entries with the prompt that produced them (#1939), so read that namespace.
+    from graphify.llm import _extraction_system
+
+    a_cache = load_cached(a, tmp_path, kind="semantic", prompt=_extraction_system())
+    assert a_cache and any(n["id"] == "a_ok" for n in a_cache["nodes"])
+
+
+def test_truncated_chunk_is_cached_partial_and_missed_on_reload(tmp_path):
+    """A single-file chunk that stays truncated is checkpointed as a PARTIAL
+    entry, so reloading it is a cache miss (the file re-dispatches next run)
+    instead of serving the incomplete node set forever."""
+    from graphify.llm import extract_corpus_parallel, _extraction_system
+    from graphify.cache import load_cached
+
+    doc = tmp_path / "doc.md"; doc.write_text("# Heading\nlots of prose\n")
+
+    def truncated(chunk, **kwargs):
+        return {
+            "nodes": [{"id": "n1", "source_file": "doc.md", "file_type": "document"}],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 1, "output_tokens": 1,
+            "finish_reason": "length",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=truncated):
+        extract_corpus_parallel(
+            [doc], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+        )
+
+    # The entry was written but stamped partial, so load_cached rejects it.
+    assert load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system()) is None
+
+
+def test_checkpoint_writes_deep_namespace_in_deep_mode(tmp_path):
+    """#1894: the per-chunk checkpoint must follow the run's mode — a
+    deep_mode=True run checkpoints into cache/semantic-deep/, leaving the
+    standard cache/semantic/ namespace untouched (and vice versa)."""
+    from graphify.llm import extract_corpus_parallel, _extraction_system
+    from graphify.cache import load_cached
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc\n\nsome content\n")
+
+    def ok(chunk, **kwargs):
+        return {
+            "nodes": [{"id": "d1", "source_file": "doc.md", "file_type": "document"}],
+            "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1,
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=ok):
+        extract_corpus_parallel(
+            [doc], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+            deep_mode=True,
+        )
+
+    # The checkpoint also stamps entries with the prompt that produced them
+    # (#1939) — a deep run's prompt carries the deep suffix.
+    deep = load_cached(doc, tmp_path, kind="semantic-deep",
+                       prompt=_extraction_system(deep=True))
+    assert deep and [n["id"] for n in deep["nodes"]] == ["d1"], (
+        "deep-mode checkpoint must land in cache/semantic-deep/"
+    )
+    assert load_cached(doc, tmp_path, kind="semantic",
+                       prompt=_extraction_system(deep=False)) is None, (
+        "deep-mode checkpoint must not write the standard semantic namespace"
+    )
+
+
+def test_omitted_documents_are_reconciled_and_warned(tmp_path, capsys):
+    """#1890: a chunk can return a clean, non-empty response that omits some of the
+    documents it was given. Those docs must not vanish silently — the run reports
+    them in `uncovered_files` and warns, instead of dropping them with no signal."""
+    from graphify.llm import extract_corpus_parallel
+
+    docs = []
+    for i in range(4):
+        f = tmp_path / f"doc{i}.md"
+        f.write_text(f"# Doc {i}\n\nsome content\n", encoding="utf-8")
+        docs.append(f)
+
+    def omit_odd(chunk, **kwargs):
+        # Return nodes only for even-numbered docs; a clean response, not a failure.
+        nodes = []
+        for u in chunk:
+            name = getattr(u, "path", u).name
+            idx = int(name[len("doc")])
+            if idx % 2 == 0:
+                nodes.append({"id": f"n{idx}", "source_file": name, "file_type": "document"})
+        return {"nodes": nodes, "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm.extract_files_direct", side_effect=omit_odd):
+        result = extract_corpus_parallel(
+            docs, backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+        )
+
+    uncovered = {Path(p).name for p in result.get("uncovered_files", [])}
+    assert uncovered == {"doc1.md", "doc3.md"}, f"reconciliation missed omissions: {uncovered}"
+    err = capsys.readouterr().err
+    assert "produced no nodes" in err and "doc1.md" in err
+
+
+def test_out_of_scope_nodes_are_dropped_from_merged_result(tmp_path, capsys):
+    """#1895: the #1757 cache guard skips the CACHE write for a node attributed
+    to a real corpus file that was not dispatched, but the node itself still
+    flowed into merged["nodes"] and landed in graph.json. The merged result must
+    drop such nodes (and edges/hyperedges touching them), warn once, and record
+    the count — while keeping in-scope sibling attributions (a node attributed
+    to a different dispatched file in the same chunk) and non-file concept
+    source_files, mirroring the #1757 `.is_file()` condition."""
+    from graphify.llm import extract_corpus_parallel
+
+    a = tmp_path / "A.md"; a.write_text("# a\n")
+    c = tmp_path / "C.md"; c.write_text("# c\n")
+    # B.py exists on disk but is NOT dispatched — the #1895 out-of-scope case.
+    b = tmp_path / "B.py"; b.write_text("def b(): pass\n")
+
+    def stray(chunk, **kwargs):
+        return {
+            "nodes": [
+                {"id": "a_ok", "source_file": "A.md", "file_type": "document"},
+                # sibling attribution: a different dispatched file in the same chunk
+                {"id": "c_sibling", "source_file": "C.md", "file_type": "document"},
+                # out-of-scope: real file on disk, never dispatched
+                {"id": "b_stray", "source_file": "B.py", "file_type": "code"},
+                # concept node: source_file is not a file — must survive
+                {"id": "auth_flow", "source_file": "auth flow", "file_type": "concept"},
+            ],
+            "edges": [
+                {"source": "a_ok", "target": "c_sibling", "source_file": "A.md"},
+                {"source": "a_ok", "target": "b_stray", "source_file": "A.md"},
+            ],
+            "hyperedges": [
+                {"id": "h_bad", "nodes": ["a_ok", "c_sibling", "b_stray"], "source_file": "A.md"},
+                {"id": "h_ok", "nodes": ["a_ok", "c_sibling", "auth_flow"], "source_file": "A.md"},
+            ],
+            "input_tokens": 1, "output_tokens": 1,
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stray):
+        result = extract_corpus_parallel(
+            [a, c], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=2, max_concurrency=1,
+        )
+
+    ids = {n["id"] for n in result["nodes"]}
+    assert "b_stray" not in ids, "out-of-scope node leaked into the merged graph (#1895)"
+    assert {"a_ok", "c_sibling", "auth_flow"} <= ids, (
+        f"in-scope sibling/concept attributions must be kept: {ids}"
+    )
+    assert result["out_of_scope_dropped"] == 1
+    # Edges/hyperedges referencing the dropped node id are gone; in-scope ones stay.
+    assert all(
+        "b_stray" not in (e.get("source"), e.get("target")) for e in result["edges"]
+    ), f"edge to dropped node survived: {result['edges']}"
+    assert any(
+        e["source"] == "a_ok" and e["target"] == "c_sibling" for e in result["edges"]
+    )
+    assert [h["id"] for h in result["hyperedges"]] == ["h_ok"]
+    err = capsys.readouterr().err
+    assert "out-of-scope" in err and "B.py" in err
+    # The dispatched files all produced nodes — reconciliation sees no gaps.
+    assert result["uncovered_files"] == []
+
+
+def test_out_of_scope_drop_count_is_zero_when_all_in_scope(tmp_path, capsys):
+    """Counter-test: a clean run records out_of_scope_dropped == 0 and no warning."""
+    from graphify.llm import extract_corpus_parallel
+
+    a = tmp_path / "A.md"; a.write_text("# a\n")
+
+    def clean(chunk, **kwargs):
+        return {
+            "nodes": [{"id": "a_ok", "source_file": "A.md", "file_type": "document"}],
+            "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1,
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=clean):
+        result = extract_corpus_parallel(
+            [a], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+        )
+
+    assert result["out_of_scope_dropped"] == 0
+    assert [n["id"] for n in result["nodes"]] == ["a_ok"]
+    assert "out-of-scope" not in capsys.readouterr().err
+
+
+def test_checkpoint_caches_sliced_document_chunks(tmp_path, capsys):
+    """#1870: the checkpoint's allowlist must resolve a FileSlice to its parent
+    path (via unit_path), not read a non-existent `.rel`. An oversized doc is
+    split into FileSlice units; before the fix each sliced chunk leaked the
+    FileSlice object into the allowlist, so save_semantic_cache raised TypeError,
+    the best-effort except swallowed it, and the slice was never checkpointed."""
+    from graphify.llm import (
+        extract_corpus_parallel, expand_oversized_files, _FILE_CHAR_CAP, _extraction_system,
+    )
+    from graphify.file_slice import FileSlice
+    from graphify.cache import load_cached
+
+    doc = tmp_path / "big.md"
+    doc.write_text("# Title\n" + ("word " * 12000) + "\n## Section\n" + ("more " * 12000))
+    # sanity: the doc really does slice into FileSlice units
+    units = expand_oversized_files([doc], _FILE_CHAR_CAP)
+    assert len(units) > 1 and all(isinstance(u, FileSlice) for u in units)
+
+    def sliced(chunk, **kwargs):
+        assert any(isinstance(c, FileSlice) for c in chunk)
+        return {
+            "nodes": [{"id": "big_title", "source_file": "big.md", "file_type": "document"}],
+            "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1,
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=sliced):
+        extract_corpus_parallel(
+            [doc], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+        )
+
+    assert "incremental cache checkpoint failed" not in capsys.readouterr().err, (
+        "checkpoint raised on a FileSlice chunk (#1870)"
+    )
+    # The checkpoint stamps entries with the prompt that produced them (#1939).
+    cached = load_cached(doc, tmp_path, kind="semantic", prompt=_extraction_system())
+    assert cached and any(n["id"] == "big_title" for n in cached["nodes"]), (
+        "sliced document was never checkpointed (#1870)"
+    )
+
+
 def test_corpus_parallel_legacy_mode_when_token_budget_is_none(tmp_path):
     """token_budget=None should fall back to legacy fixed-count chunking."""
     from graphify.llm import extract_corpus_parallel
@@ -463,6 +737,68 @@ def test_adaptive_retry_single_file_truncation_does_not_recurse(tmp_path, capsys
     assert calls == [1], f"single-file chunk recursed; calls = {calls}"
     err = capsys.readouterr().err
     assert "single-file chunk" in err and "truncated" in err
+
+
+def test_adaptive_retry_marks_single_file_truncation_partial(tmp_path):
+    """A non-splittable single-file truncation keeps its partial result but
+    marks every item ``_partial`` so it is not cached as complete."""
+    from graphify.llm import _extract_with_adaptive_retry
+
+    f = tmp_path / "huge.py"; f.write_text("x")
+
+    def stub(chunk, **kwargs):
+        return _stub_with_finish(len(chunk), finish_reason="length")
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        result = _extract_with_adaptive_retry(
+            [f], backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    assert result["nodes"], "the partial result should still be returned"
+    assert all(n.get("_partial") for n in result["nodes"])
+
+
+def test_adaptive_retry_marks_max_depth_giveup_partial(tmp_path):
+    """When recursion caps at max_depth with everything still truncated, the
+    merged partial result is marked ``_partial`` on every item."""
+    from graphify.llm import _extract_with_adaptive_retry
+
+    files = [tmp_path / f"f{i}.py" for i in range(8)]
+    for f in files:
+        f.write_text("x")
+
+    def stub(chunk, **kwargs):
+        return _stub_with_finish(len(chunk), finish_reason="length")
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        result = _extract_with_adaptive_retry(
+            files, backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=2
+        )
+
+    assert result["nodes"]
+    assert all(n.get("_partial") for n in result["nodes"])
+
+
+def test_adaptive_retry_successful_split_is_not_marked_partial(tmp_path):
+    """A truncation that IS recovered by splitting yields a complete result —
+    it must NOT carry the partial marker."""
+    from graphify.llm import _extract_with_adaptive_retry
+
+    files = [tmp_path / f"f{i}.py" for i in range(4)]
+    for f in files:
+        f.write_text("x")
+
+    def stub(chunk, **kwargs):
+        finish = "length" if len(chunk) == 4 else "stop"
+        return _stub_with_finish(len(chunk), finish_reason=finish)
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        result = _extract_with_adaptive_retry(
+            files, backend="kimi", api_key=None, model=None, root=tmp_path, max_depth=3
+        )
+
+    assert result["nodes"]
+    assert not any(n.get("_partial") for n in result["nodes"])
 
 
 def test_corpus_parallel_uses_adaptive_retry(tmp_path):

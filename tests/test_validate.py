@@ -87,6 +87,27 @@ def test_assert_valid_passes_silently():
     assert_valid(VALID)  # should not raise
 
 
+def test_legacy_aliases_valid_after_build_canonicalization():
+    # #2194: build_from_json folds legacy aliases (name->label,
+    # path->source_file, type->relation, confidence_score->confidence) in
+    # place BEFORE validation, so an alias-only extraction that fails
+    # validation raw is fully schema-valid after canonicalization.
+    from graphify.build import build_from_json
+    data = {
+        "nodes": [
+            {"id": "n1", "name": "Foo", "path": "a/b.md", "file_type": "concept"},
+            {"id": "n2", "label": "Bar", "file_type": "code", "source_file": "bar.py"},
+        ],
+        "edges": [
+            {"source": "n1", "target": "n2", "type": "references",
+             "confidence_score": 0.9, "source_file": "a/b.md"},
+        ],
+    }
+    assert any("missing required field" in e for e in validate_extraction(data))
+    build_from_json(data)
+    assert validate_extraction(data) == []
+
+
 def test_non_hashable_node_id_reported_not_raised():
     # A malformed LLM extraction can emit a list-valued id. The validator must
     # report it as an error string (its documented contract) rather than crash

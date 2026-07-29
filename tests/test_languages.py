@@ -553,6 +553,39 @@ def test_java_enum_and_annotation_declarations_are_type_nodes(tmp_path):
     assert definitions["Audited"].get("source_file") == str(source)
 
 
+def test_nested_types_contained_by_enclosing_type(tmp_path):
+    """#2040: a nested class/object/trait's `contains` edge sources from its
+    ENCLOSING type, not the file node; top-level types still source from the file
+    (keeping the tree connected: file -> Outer -> Inner)."""
+    # Java inner class
+    j = tmp_path / "Outer.java"
+    j.write_text("class Outer {\n  class Inner { void m() {} }\n}\n")
+    cj = _edge_labels(extract_java(j), "contains")
+    assert ("Outer.java", "Outer") in cj      # top-level still file-sourced
+    assert ("Outer", "Inner") in cj           # nested sourced from enclosing type
+    assert ("Outer.java", "Inner") not in cj  # NOT from the file (the bug)
+
+    # Scala nested class + object (the issue's repro shape)
+    s = tmp_path / "Outer.scala"
+    s.write_text("class Outer {\n  class Inner\n  object Obj\n}\n")
+    cs = _edge_labels(extract_scala(s), "contains")
+    assert ("Outer.scala", "Outer") in cs
+    assert ("Outer", "Inner") in cs
+    assert ("Outer", "Obj") in cs
+    assert ("Outer.scala", "Inner") not in cs
+
+
+def test_csharp_nested_type_gets_containment_edge(tmp_path):
+    """#2040 for C#: the nested type now gets a real `contains` edge from its
+    enclosing type (the is_nested_type flag it already carried is retained and
+    covered by test_csharp_type_resolution)."""
+    c = tmp_path / "N.cs"
+    c.write_text("namespace N {\n  class Outer {\n    class Inner {}\n  }\n}\n")
+    cc = _edge_labels(extract_csharp(c), "contains")
+    assert ("Outer", "Inner") in cc
+    assert ("N.cs", "Inner") not in cc
+
+
 def test_csharp_field_type_references_have_field_context():
     r = extract_csharp(FIXTURES / "sample.cs")
     refs = _references(r)
@@ -655,6 +688,27 @@ def test_kotlin_parameter_return_generic_and_field_contexts():
     assert ("run", "Result") in _edge_labels(r, "references", "return_type")
     assert ("run", "DataProcessor") in _edge_labels(r, "references", "generic_arg")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
+
+def test_kotlin_builtin_types_not_emitted_as_references():
+    # kotlin.* scalar/collection/core types used as parameter, return, or field
+    # types carry no useful graph meaning: they never resolve to a project node,
+    # so emitting `references` edges to them is pure noise (mirrors the Java
+    # _JAVA_BUILTIN_TYPES / Python _PYTHON_ANNOTATION_NOISE handling).
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    ref_targets = {target for (_, target) in _edge_labels(r, "references")}
+    for builtin in ("String", "Int"):
+        assert builtin not in ref_targets, (
+            f"builtin type {builtin!r} should not be a references target"
+        )
+
+def test_kotlin_user_types_still_emit_references():
+    # Guard against over-filtering: a user-defined class sharing its name with a
+    # common domain-modeling identifier (Result) must still resolve to a real
+    # edge - the builtin filter is a fixed name list, so it must stay narrow
+    # enough not to swallow common user-chosen names like a sealed-class "Result".
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
+    assert ("run", "DataProcessor") in _edge_labels(r, "references", "parameter_type")
 
 
 # ── Scala ─────────────────────────────────────────────────────────────────────

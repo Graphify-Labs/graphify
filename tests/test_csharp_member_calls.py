@@ -143,6 +143,190 @@ def test_unqualified_call_still_resolves(tmp_path):
     assert any("_r_a" in s and "helper" in t for s, t in calls), "no regression on unqualified calls"
 
 
+# ── Namespace-aware receiver typing + shadow poisoning (#1620) ────────────────
+
+_NS_AB = {
+    "A.cs": "namespace A { public class Svc { public bool Do() => true; } }\n",
+    "B.cs": "namespace B { public class Svc { public bool Do() => false; } }\n",
+}
+
+
+def test_namespace_using_directive_disambiguates_receiver_type(tmp_path):
+    """`Svc` exists in namespaces A and B; a caller file `using A;` must bind an
+    `A.Svc`-typed receiver to A.Svc.Do — before #1620 the corpus-wide bare-name
+    ambiguity made the resolver bail (missing edge)."""
+    calls, r = _calls(tmp_path, {
+        **_NS_AB,
+        "Caller.cs": (
+            "using A;\n"
+            "namespace App {\n"
+            "    public class Runner { public bool Go(Svc s) { return s.Do(); } }\n"
+            "}\n"
+        ),
+    })
+    a_do = _find(r, ".Do()", "a_a_svc")
+    b_do = _find(r, ".Do()", "b_b_svc")
+    runner_go = _find(r, ".Go()", "runner")
+    assert (runner_go, a_do) in calls, "using A; must resolve Svc to A.Svc"
+    assert (runner_go, b_do) not in calls, "must NOT bind to the same-named B.Svc"
+
+
+def test_namespace_using_directive_resolves_to_other_namespace(tmp_path):
+    calls, r = _calls(tmp_path, {
+        **_NS_AB,
+        "Caller.cs": (
+            "using B;\n"
+            "namespace App {\n"
+            "    public class Runner { public bool Go(Svc s) { return s.Do(); } }\n"
+            "}\n"
+        ),
+    })
+    a_do = _find(r, ".Do()", "a_a_svc")
+    b_do = _find(r, ".Do()", "b_b_svc")
+    runner_go = _find(r, ".Go()", "runner")
+    assert (runner_go, b_do) in calls, "using B; must resolve Svc to B.Svc"
+    assert (runner_go, a_do) not in calls
+
+
+def test_namespace_ambiguous_without_using_bails(tmp_path):
+    """No using directive and `Svc` in two foreign namespaces: genuinely
+    ambiguous — no edge to either candidate (never a guess)."""
+    calls, r = _calls(tmp_path, {
+        **_NS_AB,
+        "Caller.cs": (
+            "namespace App {\n"
+            "    public class Runner { public bool Go(Svc s) { return s.Do(); } }\n"
+            "}\n"
+        ),
+    })
+    assert not any("runner" in s and "svc_do" in t for s, t in calls), \
+        "ambiguous cross-namespace type must produce no edge"
+
+
+def test_same_namespace_receiver_resolves_without_using(tmp_path):
+    """A caller in namespace A resolves `Svc` to A.Svc even though B.Svc also
+    exists — same-namespace visibility needs no using directive."""
+    calls, r = _calls(tmp_path, {
+        **_NS_AB,
+        "A2.cs": (
+            "namespace A {\n"
+            "    public class Client { public bool Go(Svc s) { return s.Do(); } }\n"
+            "}\n"
+        ),
+    })
+    a_do = _find(r, ".Do()", "a_a_svc")
+    b_do = _find(r, ".Do()", "b_b_svc")
+    client_go = _find(r, ".Go()", "client")
+    assert (client_go, a_do) in calls
+    assert (client_go, b_do) not in calls
+
+
+def test_local_shadowing_field_of_different_type_poisons_name(tmp_path):
+    """A local `Other x` shadowing a field `Server x` makes the name's type
+    conflicting — the binding is poisoned and `x.Run()` emits NO edge, instead
+    of first-binding-wins mis-binding to Server.Run (a wrong edge)."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Run() => true; }\n"
+            "public class Other  { public bool Run() => false; }\n"
+            "public class Holder {\n"
+            "    private Server x = new Server();\n"
+            "    public bool A() { Other x = new Other(); return x.Run(); }\n"
+            "}\n"
+        )
+    })
+    holder_a = _find(r, ".A()", "holder")
+    server_run = _find(r, ".Run()", "server")
+    other_run = _find(r, ".Run()", "other")
+    assert (holder_a, server_run) not in calls, \
+        "shadowed field's type must not win (wrong edge)"
+    assert (holder_a, other_run) not in calls, \
+        "conflicting bindings poison the name entirely (conservative: no edge)"
+
+
+def test_untyped_redeclaration_poisons_typed_field(tmp_path):
+    """`var x = Compute();` (untypable) redeclaring a typed field poisons the
+    name: `x.Run()` must not bind to the field's type."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Run() => true; }\n"
+            "public class Holder {\n"
+            "    private Server x = new Server();\n"
+            "    public object Compute() => new object();\n"
+            "    public bool A() { var x = Compute(); return x.Run(); }\n"
+            "}\n"
+        )
+    })
+    assert not any("holder_a" in s and "run" in t.lower() for s, t in calls)
+
+
+def test_this_field_receiver_resolves(tmp_path):
+    """`this._s.Save()` types the field exactly like a bare `_s.Save()`."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Save() => true; }\n"
+            "public class Cache  { public bool Save() => false; }\n"
+            "public class Repo {\n"
+            "    private Server _s = new Server();\n"
+            "    public bool Commit() { return this._s.Save(); }\n"
+            "}\n"
+        )
+    })
+    commit = _find(r, ".Commit()", "commit")
+    server_save = _find(r, ".Save()", "server")
+    cache_save = _find(r, ".Save()", "cache")
+    assert (commit, server_save) in calls
+    assert (commit, cache_save) not in calls
+
+
+def test_base_receiver_resolves_to_base_class_method(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "Base.cs": "public class BaseSvc { public bool Ping() => true; }\n",
+        "Sub.cs": (
+            "public class Sub : BaseSvc {\n"
+            "    public bool Go() { return base.Ping(); }\n"
+            "}\n"
+        ),
+    })
+    sub_go = _find(r, ".Go()", "sub")
+    ping = _find(r, ".Ping()", "basesvc")
+    assert (sub_go, ping) in calls, "base.Ping() must resolve to the base class method"
+
+
+def test_inherited_method_resolves_through_base_chain(tmp_path):
+    """A method not declared on the receiver's type but inherited from a
+    resolvable in-corpus base resolves to the base's declaration."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class BaseSvc { public bool Ping() => true; }\n"
+            "public class Derived : BaseSvc { }\n"
+            "public class User {\n"
+            "    public bool Use(Derived d) { return d.Ping(); }\n"
+            "}\n"
+        )
+    })
+    use = _find(r, ".Use()", "user")
+    ping = _find(r, ".Ping()", "basesvc")
+    assert (use, ping) in calls
+
+
+def test_unresolved_base_poisons_inherited_member_lookup(tmp_path):
+    """The receiver's type inherits from an out-of-corpus base: a method missing
+    on the type may live on that base, so the lookup is poisoned — and it must
+    NOT fall back to an unrelated same-named in-corpus method."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Save() => true; }\n"
+            "public class Ext : NotInCorpus { }\n"
+            "public class User {\n"
+            "    public bool U(Ext e) { return e.Save(); }\n"
+            "}\n"
+        )
+    })
+    assert not any("user_u" in s and "save" in t.lower() for s, t in calls), \
+        "unresolved base chain must bail, not mis-bind to Server.Save"
+
+
 def test_method_chained_off_new_expression_resolves(tmp_path):
     """#1770: a method invoked directly on a `new X(...)` object-creation
     expression (no intermediate variable) must still emit a calls edge to the

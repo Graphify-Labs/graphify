@@ -248,6 +248,31 @@ def test_cross_file_imported_callback_emits_indirect_call(tmp_path):
             assert e["confidence"] == "INFERRED"
 
 
+def test_cross_file_class_ref_is_not_indirect_call(tmp_path):
+    """The cross-file resolver guard in extract.py must suppress indirect_call edges
+    whose target is a class imported from another module (a descriptor, not an
+    invocation), while a genuine imported function callback still emits its edge.
+    This exercises the _callable_class exclusion on the CROSS-FILE path, which the
+    intra-file test (test_class_ref_is_not_indirect_call) does not reach."""
+    r, nid = _extract_dir(tmp_path, {
+        "models.py": (
+            "class Widget:\n    pass\n\n\n"
+            "def on_event(x):\n    return x\n"
+        ),
+        "scheduler.py": (
+            "from models import Widget, on_event\n\n\n"
+            "def schedule(pool, db, i):\n"
+            "    db.get(Widget, i)          # imported class as descriptor -> no edge\n"
+            "    pool.submit(on_event)      # imported fn callback -> indirect_call\n"
+        ),
+    })
+    indirect = _rels(r, "indirect_call")
+    # imported class is never an indirect_call target across files
+    assert all(t != nid["Widget"] for _s, t in indirect)
+    # genuine imported function callback still emits its edge
+    assert (nid["schedule"], nid["on_event"]) in indirect
+
+
 def test_cross_file_affected_includes_importing_dispatcher(tmp_path):
     r, nid = _extract_dir(tmp_path, {
         "handlers.py": "def on_event(x):\n    return x\n",
@@ -504,3 +529,42 @@ def test_typescript_typed_params_and_arrow_consts(tmp_path):
     assert (nid["via"], nid["handler"]) in indirect
     assert (file_nid, nid["handler"]) in indirect
     assert (file_nid, nid["cb"]) in indirect
+
+
+def test_class_ref_is_not_indirect_call(tmp_path):
+    """A class referenced BY NAME as a value is a descriptor, not an invocation, so it
+    must NOT emit an indirect_call edge — across all three symptom families of #2137:
+    ORM args (`select(Model)`, `db.get(Model, id)`), exception tuples
+    (`except (ErrorA, ErrorB)`), and string-literal getattr resolving to a same-named
+    class. A real function callback in the same file still emits its edge."""
+    src = (
+        "class ErrorA(Exception):\n    pass\n"
+        "class ErrorB(Exception):\n    pass\n"
+        "class KbArticle:\n    pass\n"
+        "\n"
+        "def handler(x):\n    return x\n"
+        "\n"
+        "def use_except():\n"
+        "    try:\n        pass\n"
+        "    except (ErrorA, ErrorB) as e:   # exception tuple -> classes, not calls\n"
+        "        return e\n"
+        "\n"
+        "def use_getattr(run):\n"
+        '    return getattr(run, "KbArticle", 0)   # literal resolving to a class\n'
+        "\n"
+        "def use_orm(db, i):\n"
+        "    db.get(KbArticle, i)            # class as descriptor\n"
+        "    return select(KbArticle)        # class as descriptor\n"
+        "\n"
+        "def register(pool):\n"
+        "    pool.submit(handler)            # real fn callback -> indirect_call\n"
+    )
+    (tmp_path / "orm.py").write_text(src)
+    r = extract_python(tmp_path / "orm.py")
+    nid = {n["label"].rstrip("()"): n["id"] for n in r["nodes"]}
+    indirect = _rels(r, "indirect_call")
+    class_ids = {nid["ErrorA"], nid["ErrorB"], nid["KbArticle"]}
+    # no class is ever an indirect_call target (except-tuple, getattr, or ORM arg)
+    assert not any(t in class_ids for _, t in indirect)
+    # genuine function callback preserved
+    assert (nid["register"], nid["handler"]) in indirect
