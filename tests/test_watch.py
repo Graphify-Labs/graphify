@@ -2281,3 +2281,124 @@ def test_rebuild_code_incremental_preserves_present_non_ast_source(tmp_path):
     assert "spec_concept" in after_ids, (
         "present-but-unextractable file in change set wrongly evicted as deleted (#2056)"
     )
+
+
+# --- #2251: fail-closed load of the existing graph ---
+
+
+def _seed_graph_with_semantic_layer(corpus: Path) -> Path:
+    """Build a real graph for one code file, then inject two semantic nodes
+    (no _origin marker) sourced from a non-AST notes.txt, plus a semantic link.
+    Returns the graph.json path."""
+    from graphify.watch import _rebuild_code
+
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (corpus / "notes.txt").write_text("Design notes with a semantic layer.\n",
+                                      encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert data["nodes"], "seed rebuild must produce AST code nodes"
+    data["nodes"].extend([
+        {"id": "notes_doc", "label": "Design Notes", "file_type": "document",
+         "source_file": "notes.txt"},
+        {"id": "notes_concept", "label": "Design Concept", "file_type": "concept",
+         "source_file": "notes.txt"},
+    ])
+    data["links"].append({
+        "source": "notes_concept", "target": "notes_doc",
+        "relation": "described_in", "confidence": "INFERRED",
+        "source_file": "notes.txt",
+    })
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+    return graph_path
+
+
+def test_rebuild_refuses_overwrite_when_existing_graph_over_size_cap(
+    tmp_path, monkeypatch, capsys
+):
+    """#2251: an existing graph.json over GRAPHIFY_MAX_GRAPH_BYTES could not be
+    READ, which is not license to overwrite it. The old code swallowed the cap
+    ValueError, treated the baseline as empty, and collapsed the graph to
+    code-only output."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    graph_path = _seed_graph_with_semantic_layer(corpus)
+    before = graph_path.read_bytes()
+    assert len(before) > 100
+
+    monkeypatch.setenv("GRAPHIFY_MAX_GRAPH_BYTES", "100")
+    assert _rebuild_code(
+        corpus, changed_paths=[Path("a.py")], no_cluster=True, acquire_lock=False,
+    ) is False
+    assert graph_path.read_bytes() == before, (
+        "graph.json must be byte-identical after a refused over-cap rebuild"
+    )
+    assert "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("no_cluster", [True, False],
+                         ids=["no-cluster", "clustered"])
+def test_rebuild_refuses_overwrite_when_existing_graph_corrupt(
+    tmp_path, capsys, no_cluster
+):
+    """#2251: unparseable graph.json (e.g. truncated by a crash) must fail the
+    rebuild closed on both write paths, not be overwritten as if absent."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    graph_path = _seed_graph_with_semantic_layer(corpus)
+    truncated = graph_path.read_text(encoding="utf-8")[:40]
+    graph_path.write_text(truncated, encoding="utf-8")
+
+    assert _rebuild_code(
+        corpus, changed_paths=[Path("a.py")],
+        no_cluster=no_cluster, acquire_lock=False,
+    ) is False
+    assert graph_path.read_text(encoding="utf-8") == truncated, (
+        "corrupt graph.json must be left untouched for manual recovery"
+    )
+    assert "error:" in capsys.readouterr().err
+
+
+def test_rebuild_force_does_not_clobber_unreadable_graph(tmp_path, capsys):
+    """#2251: --force means \"accept a shrink\", not \"overwrite a graph that
+    could not be read\"."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    graph_path = _seed_graph_with_semantic_layer(corpus)
+    truncated = graph_path.read_text(encoding="utf-8")[:40]
+    graph_path.write_text(truncated, encoding="utf-8")
+
+    assert _rebuild_code(
+        corpus, changed_paths=[Path("a.py")], force=True,
+        no_cluster=True, acquire_lock=False,
+    ) is False
+    assert graph_path.read_text(encoding="utf-8") == truncated
+    assert "error:" in capsys.readouterr().err
+
+
+def test_rebuild_readable_graph_still_preserves_semantic_nodes(tmp_path):
+    """Happy-path regression for the #2251 fix: a valid existing graph under the
+    default cap still reconciles — the rebuild succeeds and the semantic layer
+    survives an incremental code-only update."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    graph_path = _seed_graph_with_semantic_layer(corpus)
+
+    assert _rebuild_code(
+        corpus, changed_paths=[Path("a.py")], no_cluster=True, acquire_lock=False,
+    ) is True
+    after = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_ids = {n["id"] for n in after["nodes"]}
+    assert {"notes_doc", "notes_concept"} <= after_ids, (
+        "semantic nodes must survive an incremental rebuild with a readable graph"
+    )
+    assert any(
+        e.get("source") == "notes_concept" and e.get("target") == "notes_doc"
+        for e in after["links"]
+    ), "semantic link must survive an incremental rebuild"

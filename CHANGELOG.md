@@ -8,6 +8,17 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Feature: 3D navigation — search, click-to-inspect with neighbour links, community filters, a single "Show" control that isolates 1-6 hops around the selection, an opt-in name overlay (hover names the node either way), and `/` `F` `L` `R` `Space` `Esc` shortcuts. Learning-overlay status is painted onto the node rather than ringing it, and hyperedges render as clickable hub nodes instead of shaded hulls.
 - Refactor: `to_html()` now builds a renderer-agnostic view model (nodes, edges, legend, hyperedges) that both the 2D and 3D renderers consume, so the two views always describe the same graph. The default stays 2D and its output is byte-identical to before, guarded by a test.
 
+## 0.9.29 (2026-07-28)
+
+- Fix: absolute-path / machine-slug node ids no longer leak into edge endpoints (#2231, #2243). Module-top-level `indirect_call` sources, bash `source`/script-invocation targets, and other producers that minted an id from an absolute path are now canonicalized to the root-relative node id by a general backstop, so `graph.json` link endpoints are portable across machines and clones.
+- Fix: the post-commit hook no longer overwrites an existing `graph.json` it merely failed to read (#2251). If the existing graph is over the size cap or unparseable, the rebuild now refuses to write (matching the CLI) instead of silently replacing it with a code-only extraction; the `--no-cluster` write is also atomic with a protected-graph backup.
+- Fix: false `indirect_call` edges from JS/TS closure arguments are gone (#2241, thanks @Yyunozor). A closure parameter (`rows.map(r => ...)`) now shadows outer names, so `r` no longer binds to a corpus-wide callable of the same name.
+- Fix: the post-commit hook launcher no longer pops a focus-stealing console window on Windows (#2253, thanks @hopstreax); it uses `CREATE_NO_WINDOW`.
+- Fix: rationale node labels are normalized (whitespace collapsed) before the 80-character truncation, so labels are clean and filenames aren't malformed (#2206, thanks @Yyunozor).
+- Fix: committed `.env.example` / `.env.sample` / `.env.template` templates are indexed instead of dropped by the sensitive-file filter, while real `.env` files (and templates under a secrets directory) stay excluded (#2184, thanks @SyedFahad7).
+- Fix: Obsidian export no longer hides notes whose label starts with a dot (`.env` -> `dot-env`); an all-dot label falls back to `unnamed` (#2205, thanks @SyedFahad7).
+- Fix: Scala `self`-type annotations (`self: A with B =>`) now emit `requires` edges to the required traits (#2052, thanks @Yyunozor).
+
 ## 0.9.28 (2026-07-27)
 
 - Fix: incremental extraction no longer drops cross-file edges whose target file wasn't in the batch (#2211, #2213). Python relative imports and markdown reference links emitted absolute-path-derived target ids without the `target_file` stamp the incremental canonicalization needs, so a re-extracted file's imports/references dangled or vanished; both now stamp the resolved target and canonicalize to the root-relative node.

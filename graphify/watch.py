@@ -463,14 +463,27 @@ def _reconcile_existing_graph(
     if not existing_graph.exists():
         return result, existing_graph_data
 
+    # Fail-closed load (#2251): reuse build._load_existing_graph, which raises
+    # ValueError when the file exceeds the size cap and RuntimeError when it
+    # exists but cannot be parsed. Those failures must PROPAGATE to the caller
+    # — swallowing them here left existing_graph_data == {}, which _check_shrink
+    # reads as "no baseline, write allowed", so the hook overwrote a graph it
+    # merely failed to READ. A missing file (None) keeps first-build behavior:
+    # reconcile proceeds with an empty baseline and the write is allowed.
+    from graphify.build import _load_existing_graph
+    if _load_existing_graph(existing_graph) is None:
+        return result, existing_graph_data
+    # Cap + parse validated above. Reload as the full dict — reconcile needs
+    # top-level keys (hyperedges, per-node community for _node_community_map,
+    # topology compare) the (nodes, edges, hyperedges) tuple does not carry.
+    # A failure here (e.g. a race rewriting the file) still propagates,
+    # staying fail-closed.
+    existing = json.loads(existing_graph.read_text(encoding="utf-8"))
+    existing_graph_data = existing
+
     try:
         from graphify.build import _norm_source_file as _nsf
         from graphify.extract import _get_extractor
-        from graphify.security import check_graph_file_size_cap
-
-        check_graph_file_size_cap(existing_graph)
-        existing = json.loads(existing_graph.read_text(encoding="utf-8"))
-        existing_graph_data = existing
         source_paths = _StoredSourcePaths(
             existing,
             out=out,
@@ -627,7 +640,16 @@ def _reconcile_existing_graph(
             "input_tokens": 0,
             "output_tokens": 0,
         }, existing_graph_data
-    except Exception:
+    except Exception as exc:
+        # Post-load reconciliation failure: fall back to the fresh extraction
+        # while keeping the loaded baseline, so _check_shrink still guards the
+        # write against a collapse. Say so — this used to be silent (#2251).
+        print(
+            "[graphify watch] reconcile of existing graph failed "
+            f"({exc.__class__.__name__}: {exc}); proceeding with fresh "
+            "extraction only.",
+            file=sys.stderr,
+        )
         return result, existing_graph_data
 
 
@@ -1107,18 +1129,29 @@ def _rebuild_code(
         # When the caller supplied changed_paths, also evict preserved nodes whose
         # source_file matches a path that was changed (re-extracted) or deleted —
         # otherwise the old nodes for those files would survive forever.
-        result, existing_graph_data = _reconcile_existing_graph(
-            existing_graph,
-            result,
-            out=out,
-            project_root=project_root,
-            watch_root=watch_root,
-            code_files=code_files,
-            extract_targets=extract_targets,
-            full_rebuild=changed_paths is None,
-            deleted_paths=deleted_paths,
-            deleted_source_identities=deleted_source_identities,
-        )
+        try:
+            result, existing_graph_data = _reconcile_existing_graph(
+                existing_graph,
+                result,
+                out=out,
+                project_root=project_root,
+                watch_root=watch_root,
+                code_files=code_files,
+                extract_targets=extract_targets,
+                full_rebuild=changed_paths is None,
+                deleted_paths=deleted_paths,
+                deleted_source_identities=deleted_source_identities,
+            )
+        except (RuntimeError, ValueError) as exc:
+            # Existing graph present but unreadable — over the size cap
+            # (ValueError) or unparseable JSON (RuntimeError, both via
+            # build._load_existing_graph). Refuse to overwrite a graph we
+            # merely failed to READ (#2251), mirroring the CLI's fail-closed
+            # contract (#2169). --force deliberately does NOT bypass this:
+            # force means "accept a shrink", not "clobber an unreadable
+            # graph".
+            print(f"error: {exc}", file=sys.stderr)
+            return False
 
         _relativize_source_files(result, project_root, scope=watch_root)
         # Source files re-extracted this run — their symbol sets may legitimately
@@ -1152,6 +1185,19 @@ def _rebuild_code(
                 try:
                     check_graph_file_size_cap(existing_graph)
                     existing_payload = json.loads(existing_graph.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    # A load failure is NOT "graph changed" (#2251): refuse to
+                    # overwrite a graph we merely failed to read. Normally
+                    # unreachable — the reconcile load above already failed
+                    # closed — but a race rewriting the file can land here.
+                    print(
+                        f"error: Cannot read {existing_graph}: {exc}. "
+                        "Refusing to overwrite; delete the file and run a "
+                        "full rebuild.",
+                        file=sys.stderr,
+                    )
+                    return False
+                try:
                     same_graph = (
                         json.dumps(_canonical_graph_for_compare(existing_payload), sort_keys=True, ensure_ascii=False)
                         == json.dumps(_canonical_graph_for_compare(candidate_graph_data), sort_keys=True, ensure_ascii=False)
@@ -1165,7 +1211,13 @@ def _rebuild_code(
                     rebuilt_sources=rebuilt_sources,
                 ):
                     return False
-                existing_graph.write_text(candidate_graph_text, encoding="utf-8")
+                from graphify.export import backup_if_protected as _backup
+                _backup(out)
+                # Atomic replace via tmp file, matching the clustered path: a
+                # crash mid-write must not leave a truncated graph.json.
+                graph_tmp = out / ".graph.tmp.json"
+                graph_tmp.write_text(candidate_graph_text, encoding="utf-8")
+                graph_tmp.replace(existing_graph)
 
             # Write the user-supplied path only after the candidate graph is
             # accepted, so a refused shrink cannot mismatch graph and marker.
@@ -1314,6 +1366,20 @@ def _rebuild_code(
             try:
                 check_graph_file_size_cap(existing_graph)
                 existing_payload = json.loads(existing_graph.read_text(encoding="utf-8"))
+            except Exception as exc:
+                # A load failure is NOT "graph changed" (#2251): refuse to
+                # overwrite a graph we merely failed to read. Normally
+                # unreachable — the reconcile load above already failed
+                # closed — but a race rewriting the file can land here.
+                graph_tmp.unlink(missing_ok=True)
+                print(
+                    f"error: Cannot read {existing_graph}: {exc}. "
+                    "Refusing to overwrite; delete the file and run a "
+                    "full rebuild.",
+                    file=sys.stderr,
+                )
+                return False
+            try:
                 same_graph = (
                     json.dumps(_canonical_graph_for_compare(existing_payload), sort_keys=True, ensure_ascii=False)
                     == json.dumps(_canonical_graph_for_compare(candidate_graph_data), sort_keys=True, ensure_ascii=False)

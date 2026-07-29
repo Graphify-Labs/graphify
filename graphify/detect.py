@@ -129,6 +129,19 @@ _SENSITIVE_PATTERNS = [
     # google/oauth2/service_account.py and prose like aws_credentials_rotation.md.
 ]
 
+# Committed dotenv / envrc templates — placeholders only, not live secrets.
+# Stage 2's `.env.` regex otherwise treats these like `.env.local` (#2184).
+_ENV_TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
+
+
+def _is_env_template(name: str) -> bool:
+    """True for `.env.example` / `.envrc.sample` style committed templates (#2184)."""
+    lower = name.lower()
+    if not lower.endswith(_ENV_TEMPLATE_SUFFIXES):
+        return False
+    # Basename must still be an .env* / .envrc* file (not e.g. secrets.example).
+    return bool(re.match(r"\.(env|envrc)\.", lower))
+
 # Generic keyword patterns - these only count when the keyword is LOAD-BEARING
 # in the filename (see _generic_keyword_hit), because a keyword buried mid-phrase
 # in a long descriptive slug names a topic, not a credential store:
@@ -258,9 +271,11 @@ def _is_sensitive(path: Path) -> bool:
         return True
     if any(part.lower() in _AMBIGUOUS_SENSITIVE_DIRS for part in parents) and not _is_graphable_source(path):
         return True
-    # Stage 2: filename pattern match
+    # Stage 2: filename pattern match. Template suffixes (.example/.sample/…)
+    # on .env / .envrc are the usual "safe to commit" convention — keep them
+    # in the graph without opening a broad Stage 2 allowlist (#2184 / #1921).
     name = path.name
-    if any(p.search(name) for p in _SENSITIVE_PATTERNS):
+    if any(p.search(name) for p in _SENSITIVE_PATTERNS) and not _is_env_template(name):
         return True
     # Stage 3: generic keywords, only when load-bearing in the name. Do NOT let a
     # bare name keyword silently drop a genuine programming-language source file:
