@@ -2,7 +2,7 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.31 (unreleased)
+## 0.9.31 (2026-07-30)
 
 - Feature: the MCP server is dual-compatible with SDK 1.x AND 2.x (#2308, thanks @NiSHoW), lifting the `mcp<2` cap 0.9.30 introduced to `mcp>=1,<3`. The 2.0 SDK removed the low-level decorator API (`Server.list_tools`/`call_tool`/...); `_build_server` now binds the same handlers via the 1.x decorators or the 2.x `on_*` constructor callbacks, picked at runtime, and adapts `Tool.inputSchema`, `Resource.uri` (plain `str` in 2.x), and the dropped `AnyUrl` re-export. Verified with full stdio handshakes under both mcp 1.29 and 2.0.
 - Fix: C# member calls on a typed receiver no longer drop true `calls` edges when the same local name is reused across methods (#2299, thanks @JensD-git). Receiver typing was per-file and poisoned a name on any conflicting/untypable rebind anywhere in the file; it is now per-method (mirroring the Java resolver), so an untypable `var x = ...` in one method can't delete a typed-parameter call edge in another.
