@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from graphify.analyze import _node_community_map
-import networkx as nx
 import re
 
 

@@ -10,8 +10,7 @@ from collections import OrderedDict
 from pathlib import Path
 import threading
 from typing import NamedTuple
-import networkx as nx
-from networkx.readwrite import json_graph
+from .store import open_store, MemGraph
 from graphify.security import sanitize_label, check_graph_file_size_cap
 from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
@@ -22,48 +21,138 @@ except ImportError:
     _jieba = None
 
 
-def _load_graph(graph_path: str) -> nx.Graph:
+def _connect_graph(graph_path: str):
+    """Open a connection to the FalkorDB-backed graph for the output dir containing
+    `graph_path`. Cache-free: this returns a store handle (a connection), it does
+    NOT load the graph into memory.
+
+    `graph_path` is the legacy graph.json location; its parent directory holds the
+    FalkorDB pointer (falkordb.json). CLI flavor: prints and exits 1 when no graph
+    has been built. The MCP server uses `_connect_graph_or_raise` instead, where a
+    bad client path must surface as one tool error rather than kill the process.
+    """
     try:
-        resolved = Path(graph_path).resolve()
-        if resolved.suffix != ".json":
-            raise ValueError(f"Graph path must be a .json file, got: {graph_path!r}")
-        if not resolved.exists():
-            raise FileNotFoundError(f"Graph file not found: {resolved}")
-        check_graph_file_size_cap(resolved)
-        safe = resolved
-        data = json.loads(safe.read_text(encoding="utf-8"))
-        if "links" not in data and "edges" in data:
-            data = dict(data, links=data["edges"])
-        data = {**data, "directed": True}
-        try:
-            from graphify.build import graph_has_legacy_ids as _legacy
-            if _legacy(data.get("nodes", [])):
-                print(
-                    "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
-                    "rebuild with `graphify extract --force` for path-qualified IDs.",
-                    file=sys.stderr,
-                )
-        except Exception:
-            pass
-        try:
-            G = json_graph.node_link_graph(data, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(data)
-        # Attach the work-memory overlay (derived sidecar next to graph.json) so
-        # the query/MCP read surface can annotate NODE lines display-only. Empty
-        # when no sidecar exists, leaving un-annotated output byte-identical.
-        try:
-            from graphify.reflect import load_learning_overlay as _llo
-            G.graph["_learning_overlay"] = _llo(resolved)
-        except Exception:
-            G.graph["_learning_overlay"] = {}
-        return G
-    except json.JSONDecodeError as exc:
-        print(f"error: graph.json is corrupted ({exc}). Re-run /graphify to rebuild.", file=sys.stderr)
-        sys.exit(1)
+        return _connect_graph_or_raise(graph_path)
     except (ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+def _connect_graph_or_raise(graph_path: str):
+    """`_connect_graph` without the exit: raises ValueError / FileNotFoundError.
+
+    Keeping the exception (rather than an exit code plus a printed line) is what
+    lets a caller distinguish "no graph built here" from "the graph.json present
+    here is corrupt" and report the right one.
+    """
+    resolved = Path(graph_path).resolve()
+    out_dir = resolved.parent if resolved.suffix else resolved
+    store = open_store(out_dir, create=False)
+    if store.number_of_nodes() == 0:
+        # Back-compat: the FalkorDB store is empty but a node-link graph.json
+        # may still hold the graph — an existing pre-FalkorDB project, or a
+        # `--no-cluster` run that only wrote JSON. Import it into the store on
+        # first use so query/path/explain/export work without forcing a
+        # rebuild, preserving the previous workflow.
+        gj = resolved if resolved.suffix == ".json" else (out_dir / "graph.json")
+        _import_graph_json_into_store(gj, store)
+        if store.number_of_nodes() == 0 and gj.exists():
+            # The file is there but contributed nothing — corrupt/mid-write,
+            # or structurally wrong. Say that instead of "no graph found",
+            # which would send the user to rebuild a graph they do have.
+            raise ValueError(
+                f"could not load graph.json at {gj} — it may be corrupted. "
+                "Re-run /graphify to rebuild."
+            )
+    if store.number_of_nodes() == 0:
+        raise FileNotFoundError(
+            f"graph not found for {out_dir} (FalkorDB graph empty). Re-run /graphify to build."
+        )
+    # Nudge when the graph still uses pre-#1504 node IDs, as the old json
+    # loader did. Sampled via a scoped file-level query so this stays cheap.
+    try:
+        from graphify.build import graph_has_legacy_ids as _legacy
+        if _legacy(_file_level_sample(store)):
+            print(
+                "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
+                "rebuild with `graphify extract --force` for path-qualified IDs.",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
+    # Attach the work-memory overlay (derived sidecar next to graph.json) so
+    # the query/MCP read surface can annotate NODE lines display-only. Empty
+    # when no sidecar exists, leaving un-annotated output byte-identical.
+    # The `_` prefix keeps save_meta from persisting it into the graph.
+    try:
+        from graphify.reflect import load_learning_overlay as _llo
+        store.graph["_learning_overlay"] = _llo(resolved)
+    except Exception:
+        store.graph["_learning_overlay"] = {}
+    return store
+
+
+def _file_level_sample(store, limit: int = 300) -> list[dict]:
+    """Up to `limit` file-level nodes (``source_location == 'L1'``) as plain dicts.
+
+    ``graph_has_legacy_ids`` only inspects file-level nodes, so fetching just
+    those keeps the pre-#1504 ID check to one scoped query rather than streaming
+    the whole graph on every connect.
+    """
+    rows = getattr(store, "_rows", None)
+    if rows is not None:
+        try:
+            return [
+                {"id": r[0], "source_file": r[1], "source_location": r[2]}
+                for r in rows(
+                    "MATCH (n:Entity) WHERE n.source_location = 'L1' "
+                    "RETURN n.id, n.source_file, n.source_location LIMIT $lim",
+                    {"lim": limit},
+                )
+            ]
+        except Exception:
+            pass
+    sample: list[dict] = []
+    for nid, attrs in store.nodes(data=True):
+        if str(attrs.get("source_location") or "") != "L1":
+            continue
+        sample.append({**attrs, "id": nid})
+        if len(sample) >= limit:
+            break
+    return sample
+
+
+def _import_graph_json_into_store(gj_path: Path, store) -> bool:
+    """One-time import of a node-link ``graph.json`` into an empty FalkorDB store.
+
+    Back-compat for projects built before the FalkorDB backend (and for
+    ``--no-cluster`` output, which writes only JSON): rather than erroring with
+    "graph empty", load the JSON so existing graphs stay queryable without a
+    rebuild. Returns True if any nodes were imported.
+    """
+    if not gj_path.exists():
+        return False
+    # This is the one path that still parses an arbitrary graph.json, so it keeps
+    # the file-size cap the FalkorDB loaders no longer need (#F4). Raised, not
+    # swallowed, so an oversized file is refused loudly rather than silently
+    # importing nothing and reporting "graph empty".
+    check_graph_file_size_cap(gj_path)
+    try:
+        data = json.loads(gj_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    nodes = data.get("nodes") or []
+    if not nodes:
+        return False
+    edges = data.get("links", data.get("edges", []))
+    from graphify.build import build_from_json
+    build_from_json({"nodes": nodes, "edges": edges}, store=store)
+    print(
+        f"[graphify] Imported {len(nodes)} nodes from {gj_path.name} into FalkorDB "
+        "(one-time migration from a pre-FalkorDB / --no-cluster graph).",
+        file=sys.stderr,
+    )
+    return True
 
 
 def _communities_from_graph(G: nx.Graph) -> dict[int, list[str]]:
@@ -102,51 +191,64 @@ class _GraphContextCache:
         self._pinned: dict[str, dict] = {}
         self._lock = threading.Lock()
 
-    def _load_entry(self, resolved_path: str, key: tuple[int, int]) -> dict:
-        """Build one entry for an already-resolved path and known file key.
+    @staticmethod
+    def _key(G) -> tuple[int, int]:
+        """Cache-validity key for a connected store.
 
-        ``_load_graph`` is also used by the CLI, where invalid input terminates
-        the process. A client-supplied ``project_path`` must instead become a
-        tool error, so the shared MCP server can continue serving other graphs.
+        The store is a live connection, so node/edge reads are never stale and
+        there is no file mtime to watch (a FalkorDB-only project may have no
+        graph.json at all). Only the DERIVED `communities` map can go stale, so
+        key on the graph's size: a rebuild underneath us changes it and forces a
+        recompute. Two cheap count queries, never a full-graph read.
+        """
+        return (G.number_of_nodes(), G.number_of_edges())
+
+    def _load_entry(self, resolved_path: str) -> dict:
+        """Build one entry for an already-resolved path.
+
+        ``_connect_graph`` is also used by the CLI, where invalid input
+        terminates the process. A client-supplied ``project_path`` must instead
+        become a tool error, so the shared MCP server can continue serving other
+        graphs.
         """
         try:
-            graph = _load_graph(resolved_path)
-        except SystemExit as exc:
-            raise RuntimeError(f"could not load graph.json at {resolved_path}") from exc
+            graph = _connect_graph_or_raise(resolved_path)
+        except (ValueError, FileNotFoundError) as exc:
+            # Surface the underlying message verbatim so the client can tell a
+            # never-built project ("graph not found") from a corrupt artifact
+            # ("could not load graph.json") — and raise rather than exit, so one
+            # bad project_path is a tool error, not a dead server.
+            raise RuntimeError(str(exc)) from exc
         # Warm the index before exposing the graph so its first query does not
-        # pay the expensive build cost.
-        _get_trigram_index(graph)
-        communities = _communities_from_graph(graph)
-        entry = {
-            "key": key,
+        # pay the expensive build cost. Skipped for store-backed graphs: they
+        # prefilter with an in-engine search_nodes query, and building the index
+        # would read every node out of the engine.
+        if not hasattr(graph, "search_nodes"):
+            _get_trigram_index(graph)
+        return {
+            "key": self._key(graph),
             "G": graph,
-            "communities": communities,
+            "communities": _communities_from_graph(graph),
         }
-        return entry
 
-    def load(self, resolved_path: str, *, pinned: bool = False) -> tuple[nx.Graph, dict[int, list[str]]]:
+    def load(self, resolved_path: str, *, pinned: bool = False) -> tuple:
         """Return a fresh context, retaining project contexts by LRU order.
 
-        ``resolved_path`` is resolved by the caller, making this method the
-        sole owner of file statting and cache-key construction.
+        ``resolved_path`` is resolved by the caller, making this method the sole
+        owner of cache-key construction.
 
         ``pinned=True`` is reserved for the server's configured default graph;
         it remains warm without consuming a project-cache slot.
         """
         with self._lock:
-            try:
-                stat_result = Path(resolved_path).stat()
-            except FileNotFoundError:
-                raise FileNotFoundError(f"graph.json not found: {resolved_path}") from None
-            key = (stat_result.st_mtime_ns, stat_result.st_size)
             entries = self._pinned if pinned else self._entries
             entry = entries.get(resolved_path)
-            if entry is not None and entry["key"] == key:
+            if entry is not None and entry["key"] == self._key(entry["G"]):
                 if not pinned:
                     self._entries.move_to_end(resolved_path)
                 return entry["G"], entry["communities"]
 
-            entry = self._load_entry(resolved_path, key)
+            entry = self._load_entry(resolved_path)
             entries[resolved_path] = entry
             if not pinned:
                 self._entries.move_to_end(resolved_path)
@@ -284,16 +386,17 @@ def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
     N = G.number_of_nodes() or 1
     uncached = [t for t in terms if t not in cache]
     if uncached:
-        df: dict[str, int] = {t: 0 for t in uncached}
-        for _, data in G.nodes(data=True):
-            norm_label = (
-                data.get("norm_label") or _strip_diacritics(data.get("label") or "")
-            ).lower()
-            for t in uncached:
-                if t in norm_label:
-                    df[t] += 1
+        if hasattr(G, "doc_freqs"):
+            df = G.doc_freqs(uncached)  # in-engine count per term, no full scan
+        else:
+            df = {t: 0 for t in uncached}
+            for _, data in G.nodes(data=True):
+                norm_label = (data.get("norm_label") or _strip_diacritics(data.get("label") or "")).lower()
+                for t in uncached:
+                    if t in norm_label:
+                        df[t] += 1
         for t in uncached:
-            cache[t] = math.log(1 + N / (1 + df[t]))
+            cache[t] = math.log(1 + N / (1 + df.get(t, 0)))
     return {t: cache.get(t, math.log(1 + N)) for t in terms}
 
 
@@ -471,15 +574,38 @@ def _score_query(
     # Weight the full-query bonus by the rarest constituent term so a specific
     # multi-word label still outweighs common-token noise; floor at 1.0.
     joined_w = max((idf.get(t, 1.0) for t in norm_terms), default=1.0)
-    # Trigram prefilter: score only nodes whose text could match a term, falling
-    # back to the whole graph when the index isn't selective. The result is
-    # identical either way — the per-node scoring below is unchanged and a
-    # non-candidate node always scores 0. (IDF above stays a whole-graph statistic.)
-    candidate_ids = _trigram_candidates(G, norm_terms + ([joined] if joined else []))
-    node_iter = (
-        G.nodes(data=True) if candidate_ids is None
-        else ((nid, G.nodes[nid]) for nid in candidate_ids)
-    )
+    # Candidate prefilter: score only nodes whose text could match a term. The
+    # result is identical to scanning everything — the per-node scoring below is
+    # unchanged and a non-candidate node always scores 0. (IDF above stays a
+    # whole-graph statistic.) Both branches yield (nid, attrs) pairs so the
+    # scoring loop is backend-agnostic.
+    _label_by_id: dict[str, str] | None = None
+    if hasattr(G, "search_nodes"):
+        # FalkorDB-native: a node scores > 0 only if some term matches its label
+        # or source, so prefilter those candidates in-engine instead of scanning
+        # every node in Python. Caching the labels here also keeps the tie-break
+        # sort below from issuing a per-node query.
+        _seen: set = set()
+        _cands: list[tuple[str, dict]] = []
+        for _c in G.search_nodes(norm_terms + ([joined] if joined else [])):
+            if _c["id"] in _seen:
+                continue
+            _seen.add(_c["id"])
+            _cands.append((_c["id"], {
+                "label": _c["label"],
+                "norm_label": _c["norm_label"] or _strip_diacritics(_c["label"]).lower(),
+                "source_file": _c["source_file"],
+            }))
+        node_iter = iter(_cands)
+        _label_by_id = {nid: attrs["label"] for nid, attrs in _cands}
+    else:
+        # Trigram prefilter, falling back to the whole graph when the index isn't
+        # selective.
+        candidate_ids = _trigram_candidates(G, norm_terms + ([joined] if joined else []))
+        node_iter = (
+            G.nodes(data=True) if candidate_ids is None
+            else ((nid, G.nodes[nid]) for nid in candidate_ids)
+        )
     # Per-token best tracking, only when the caller (the query path) wants the
     # seed metadata. The key tuple is the full multi-key tie-break
     # (`(-singleton_score, -degree, label_len, nid)`), so `min` over the
@@ -593,7 +719,14 @@ def _score_query(
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
     # match beats a longer superset that happens to share the same score.
-    scored.sort(key=lambda s: (-s[0], len(G.nodes[s[1]].get("label") or s[1]), s[1]))
+    # Label lookup for the tie-break: prefer the prefilter's cached labels so the
+    # store path doesn't issue a per-node query for every tied candidate.
+    def _label_of(nid: str) -> str:
+        if _label_by_id is not None:
+            return _label_by_id.get(nid) or nid
+        return G.nodes[nid].get("label") or nid
+
+    scored.sort(key=lambda s: (-s[0], len(_label_of(s[1])), s[1]))
     best_seed_by_term: dict[str, str] = {}
     if collect_per_term_seeds and best_by_term:
         best_seed_by_term = {t: nid for t, (_key, nid) in best_by_term.items()}
@@ -802,25 +935,36 @@ def _resolve_context_filters(question: str, explicit_filters: list[str] | None =
     return [], None
 
 
+def _confidence_distribution(G) -> tuple[dict, int]:
+    """(counts_by_confidence, total_edges). Uses the store's in-engine aggregation
+    when available so graph_stats/audit never stream every edge into Python; falls
+    back to an nx/MemGraph edge scan otherwise."""
+    if hasattr(G, "confidence_counts"):
+        counts = G.confidence_counts()
+    else:
+        counts: dict = {}
+        for _, _, d in G.edges(data=True):
+            k = d.get("confidence", "EXTRACTED")
+            counts[k] = counts.get(k, 0) + 1
+    return counts, (sum(counts.values()) or 1)
+
+
 def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> nx.Graph:
     filters = set(_normalize_context_filters(context_filters))
     if not filters:
         return G
-    H = G.__class__()
-    H.add_nodes_from(G.nodes(data=True))
-    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
-        for u, v, key, data in G.edges(keys=True, data=True):
-            if data.get("context") in filters:
-                H.add_edge(u, v, key=key, **data)
-    else:
-        for u, v, data in G.edges(data=True):
-            if data.get("context") in filters:
-                H.add_edge(u, v, **data)
-    return H
+    nodes = list(G.nodes(data=True))
+    edges = [(u, v, data) for u, v, data in G.edges(data=True) if data.get("context") in filters]
+    return MemGraph(nodes, edges, directed=G.is_directed())
 
 
-def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
-    # Compute hub threshold: nodes above this degree are not expanded as transit.
+def _bfs(G: nx.Graph, start_nodes: list[str], depth: int, contexts: list[str] | None = None) -> tuple[set[str], list[tuple]]:
+    # FalkorDB-native: traverse in the engine, one query per level (no graph load).
+    # `contexts` scopes the walk to matching edge-contexts in-engine, so context
+    # filtering never copies the graph into Python.
+    if hasattr(G, "bfs"):
+        return G.bfs(start_nodes, depth, contexts=contexts)
+    # In-memory fallback (context-filtered MemGraph / nx). Compute hub threshold:
     # p99 of degree distribution, floored at 50 to avoid over-blocking small graphs.
     degrees = [G.degree(n) for n in G.nodes()]
     if degrees:
@@ -849,7 +993,9 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
+def _dfs(G: nx.Graph, start_nodes: list[str], depth: int, contexts: list[str] | None = None) -> tuple[set[str], list[tuple]]:
+    if hasattr(G, "dfs"):
+        return G.dfs(start_nodes, depth, contexts=contexts)
     degrees = [G.degree(n) for n in G.nodes()]
     if degrees:
         degrees_sorted = sorted(degrees)
@@ -887,36 +1033,65 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     # Empty when no sidecar exists, so un-annotated output stays byte-identical.
     overlay = getattr(G, "graph", {}).get("_learning_overlay", {}) or {}
     seed_set = set(seeds or [])
-    seed_hits = [n for n in (seeds or []) if n in nodes]
+    total_nodes = len(nodes)
+
+    # FalkorDB-native: fetch node attrs+degree and edge attrs in batched queries
+    # instead of ~per-element scoped lookups. Fallback for MemGraph/nx.
+    if hasattr(G, "subgraph_render_data"):
+        # Only fetch attrs for as many nodes as the char budget can possibly
+        # render (each NODE line is >~20 chars). Without this cap a hub query
+        # whose BFS reaches tens of thousands of nodes would pull every node's
+        # attributes out of the engine only to discard all but the top slice.
+        render_limit = max(50, char_budget // 20)
+        nattrs, eattrs, total_nodes = G.subgraph_render_data(
+            nodes, [(u, v) for u, v in edges],
+            limit=render_limit, seeds=list(seeds or []),
+        )
+        kept = set(nattrs)
+        def _n(nid):
+            return nattrs.get(nid, {})
+        def _deg(nid):
+            return nattrs.get(nid, {}).get("degree", 0)
+        def _e(u, v):
+            return eattrs.get((u, v), {})
+    else:
+        kept = set(nodes)
+        def _n(nid):
+            return G.nodes[nid]
+        def _deg(nid):
+            return G.degree(nid)
+        def _e(u, v):
+            return G[u][v]
+
+    seed_hits = [n for n in (seeds or []) if n in kept]
     # Rank non-seed nodes by hop distance from the seeds so the node that answers
     # the query (a direct hit or its close neighbors) survives the budget cut
     # instead of being pushed past it by incidental high-degree hubs (#BUG2). BFS
     # discovery order was discarded upstream (_bfs returns a set), so recompute
-    # layers here over BOTH edge directions. Deterministic: neighbor iteration is
-    # insertion-ordered and the sort key ends in str(n) (no hash-order).
-    def _adj(n):
-        if G.is_directed():
-            yield from G.successors(n)
-            yield from G.predecessors(n)
-        else:
-            yield from G.neighbors(n)
+    # layers here from the subgraph's own edge list — it already covers both
+    # directions and costs no per-node neighbor query against the store.
+    # Deterministic: adjacency is insertion-ordered and the sort key ends in str(n).
+    _adj_map: dict[str, list[str]] = {}
+    for _u, _v in edges:
+        _adj_map.setdefault(_u, []).append(_v)
+        _adj_map.setdefault(_v, []).append(_u)
     dist: dict[str, int] = {n: 0 for n in seed_hits}
     frontier, hop = seed_hits, 0
     while frontier:
         hop += 1
         nxt = []
         for n in frontier:
-            for nb in _adj(n):
-                if nb in nodes and nb not in dist:
+            for nb in _adj_map.get(n, ()):
+                if nb in kept and nb not in dist:
                     dist[nb] = hop
                     nxt.append(nb)
         frontier = nxt
     ordered = seed_hits + sorted(
-        nodes - seed_set,
-        key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
+        kept - seed_set,
+        key=lambda n: (dist.get(n, 1 << 30), -_deg(n), str(n)),
     )
     for nid in ordered:
-        d = G.nodes[nid]
+        d = _n(nid)
         # Every LLM-derived field passes through sanitize_label before being
         # concatenated into MCP tool output (F-010): an attacker who controls a
         # corpus document can otherwise inject ANSI escapes, fake graphify-out
@@ -939,21 +1114,20 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         )
         lines.append(line)
     for u, v in edges:
-        if u in nodes and v in nodes:
-            raw = G[u][v]
-            d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
+        if u in kept and v in kept:
+            d = _e(u, v)
             # (u, v) is BFS/DFS visit order, not necessarily the true edge
-            # direction: on an undirected graph G.neighbors() walks callers
-            # and callees alike, so a caller->callee edge renders backwards
-            # whenever the callee is visited first. _src/_tgt (stashed on the
-            # edge data by the `query` CLI loader) carry the real direction;
-            # fall back to (u, v) for graphs/edges that don't set them.
+            # direction: traversal walks callers and callees alike, so a
+            # caller->callee edge renders backwards whenever the callee is
+            # visited first. _src/_tgt carry the stored orientation (set from
+            # startNode(r) by the batched fetch); fall back to (u, v) for
+            # graphs/edges that don't set them.
             src = d.get("_src", u)
             tgt = d.get("_tgt", v)
             # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
             # graph.json): only trust them when they name exactly this edge's
-            # endpoints, else fall back to (u, v). Without this, G.nodes[src]
-            # would KeyError on an unknown id (#2080 review).
+            # endpoints, else fall back to (u, v). Without this, _n(src) would
+            # render an empty label for an unknown id (#2080 review).
             if {src, tgt} != {u, v}:
                 src, tgt = u, v
             context = d.get("context")
@@ -967,13 +1141,16 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                 if _loc else ""
             )
             line = (
-                f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
+                f"EDGE {sanitize_label(_n(src).get('label', src))} "
                 f"--{sanitize_label(str(d.get('relation', '')))} "
                 f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
+                f"{sanitize_label(_n(tgt).get('label', tgt))}{at_suffix}"
             )
             lines.append(line)
     output = "\n".join(lines)
+    # shown_nodes = NODE lines that survive the char budget; cut_count counts
+    # against the FULL subgraph (total_nodes), so nodes dropped by the render
+    # limit are reported as cut too — never silently omitted.
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
         cut_at = cut_at if cut_at > 0 else char_budget
@@ -984,9 +1161,15 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         if seed_hits:
             seed_block_end = sum(len(lines[i]) + 1 for i in range(len(seed_hits))) - 1
             cut_at = max(cut_at, min(seed_block_end, len(output)))
-        total_nodes = sum(1 for l in lines if l.startswith("NODE "))
-        shown_nodes = output[:cut_at].count("\nNODE ") + (1 if output.startswith("NODE ") else 0)
-        cut_count = total_nodes - shown_nodes
+        output = output[:cut_at]
+        shown_nodes = output.count("\nNODE ") + (1 if output.startswith("NODE ") else 0)
+    else:
+        shown_nodes = sum(1 for l in lines if l.startswith("NODE "))
+    # total_nodes is the FULL subgraph count, so nodes dropped by the render
+    # limit before any line was built are reported as cut too. That also means
+    # cut_count can be > 0 on output that fit the char budget.
+    cut_count = total_nodes - shown_nodes
+    if cut_count > 0:
         # Prominent notice at the TOP so a truncated answer can never be mistaken
         # for a complete one — silence used to read as absence (#BUG2). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
@@ -997,7 +1180,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"{cut_count} cut nodes — raise the token budget (CLI: --budget) or "
             f"narrow the query (e.g. context_filter=['call'], or get_node for a "
             f"specific symbol).\n\n"
-            + output[:cut_at]
+            + output
             + f"\n... (truncated — {cut_count} more nodes cut by ~{token_budget}-token budget."
             f" Narrow with context_filter=['call'] or use get_node for a specific symbol)"
         )
@@ -1051,8 +1234,17 @@ def _query_graph_text(
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
-    traversal_graph = _filter_graph_by_context(G, resolved_filters)
-    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    if resolved_filters and hasattr(G, "bfs"):
+        # Store-backed: apply the context filter inside the traversal query and
+        # render against the live store — never materialize a filtered copy.
+        traversal_graph = G
+        contexts = resolved_filters
+    else:
+        # nx/MemGraph fallback: build the filtered in-memory view as before.
+        traversal_graph = _filter_graph_by_context(G, resolved_filters)
+        contexts = None
+    nodes, edges = (_dfs(traversal_graph, start_nodes, depth, contexts)
+                    if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth, contexts))
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
@@ -1088,13 +1280,29 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
     exact: list[str] = []
     prefix: list[str] = []
     substring: list[str] = []
-    # Trigram prefilter (graph-iteration order preserved so exact/prefix/substring
-    # ordering — and thus matches[0] — is byte-identical to the full scan).
-    candidate_ids = _trigram_candidates(G, [term, norm_query])
-    node_iter = (
-        G.nodes(data=True) if candidate_ids is None
-        else ((nid, G.nodes[nid]) for nid in candidate_ids)
-    )
+    # Candidate prefilter; tiering below runs in Python over (nid, attrs) pairs.
+    if hasattr(G, "search_nodes"):
+        # FalkorDB-native: prefilter in-engine, no full scan.
+        seen: set[str] = set()
+        _cands: list[tuple[str, dict]] = []
+        for c in G.search_nodes([term, norm_query]):
+            if c["id"] in seen:
+                continue
+            seen.add(c["id"])
+            _cands.append((c["id"], {
+                "label": c["label"],
+                "norm_label": c["norm_label"] or _strip_diacritics(c["label"]).lower(),
+                "source_file": c["source_file"],
+            }))
+        node_iter = iter(_cands)
+    else:
+        # Trigram prefilter (graph-iteration order preserved so exact/prefix/substring
+        # ordering — and thus matches[0] — is byte-identical to the full scan).
+        candidate_ids = _trigram_candidates(G, [term, norm_query])
+        node_iter = (
+            G.nodes(data=True) if candidate_ids is None
+            else ((nid, G.nodes[nid]) for nid in candidate_ids)
+        )
     for nid, d in node_iter:
         norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
         bare_label = norm_label.rstrip("()")
@@ -1119,11 +1327,14 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
             prefix.append(nid)
         elif term in norm_label or term in label_tokens or norm_query in norm_label:
             substring.append(nid)
-
+    # Sort within each tier by node id so the result is deterministic and
+    # independent of the backend's row order (FalkorDB scan order vs. in-memory
+    # iteration). Without this, an ambiguous label that matches several nodes in
+    # the same tier could surface a different top match per backend/run (#1175).
     if source_exact:
         query_basename = _strip_diacritics(Path(label).name).lower()
         preferred = []
-        for nid in source_exact:
+        for nid in sorted(source_exact):
             if str(G.nodes[nid].get("source_location", "")) != "L1":
                 continue
             # File-node label is the bare basename OR a directory-qualified form
@@ -1131,10 +1342,13 @@ def _find_node(G: nx.Graph, label: str) -> list[str]:
             lbl = _strip_diacritics(str(G.nodes[nid].get("label") or "")).lower()
             if lbl == query_basename or lbl.endswith("/" + query_basename):
                 preferred.append(nid)
+        source_exact = sorted(source_exact)
+        # A single unambiguous file-node match is promoted ahead of the rest;
+        # the remainder stays id-sorted so the tail is still backend-stable.
         if len(preferred) == 1:
             source_exact = preferred + [nid for nid in source_exact if nid != preferred[0]]
 
-    return source_exact + exact + prefix + substring
+    return source_exact + sorted(exact) + sorted(prefix) + sorted(substring)
 
 
 def _filter_blank_stdin() -> None:
@@ -1184,8 +1398,9 @@ def _build_server(graph_path: str):
 
     All graph query tools and resources are registered here over a single
     ``mcp.server.Server`` instance; the caller picks the transport (stdio or
-    Streamable HTTP) and runs it. Hot-reload of graph.json works the same way
-    regardless of transport, since reloads happen inside the tool handlers.
+    Streamable HTTP) and runs it. Hot-reload (reconnecting to the store when the
+    graph.json change-sentinel is rewritten on disk) works the same way regardless
+    of transport, since the reconnect happens inside the tool handlers.
     """
     try:
         from mcp.server import Server
@@ -1205,7 +1420,7 @@ def _build_server(graph_path: str):
     def _load_ctx(path: str):
         """Return the current default or project graph context as a tool error.
 
-        Unlike ``_load_graph``, this never lets a missing or corrupt client
+        Unlike ``_connect_graph``, this never lets a missing or empty client
         graph terminate the MCP process; it raises so other projects remain
         available on the same server.
         """
@@ -1232,7 +1447,7 @@ def _build_server(graph_path: str):
     except (FileNotFoundError, RuntimeError):
         # No default graph at startup → run as a pure multi-project server. Tools
         # then require project_path; a call without one gets a clear error rather
-        # than the process refusing to start (which is what _load_graph would do).
+        # than the process refusing to start (which is what _connect_graph would do).
         G, communities = None, {}
 
     def _select_graph(project_path) -> None:
@@ -1415,12 +1630,18 @@ def _build_server(graph_path: str):
         return result
 
     def _tool_get_node(arguments: dict) -> str:
-        label = arguments["label"].lower()
-        matches = [(nid, d) for nid, d in G.nodes(data=True)
-                   if label in (d.get("label") or "").lower() or label == nid.lower()]
+        label = arguments["label"]
+        # Use the candidate prefilter (in-engine for the store) instead of scanning
+        # every node, then fetch just the matched node's attrs+degree.
+        matches = _find_node(G, label)
         if not matches:
             return f"No node matching '{label}' found."
-        nid, d = matches[0]
+        nid = matches[0]
+        if hasattr(G, "node_detail"):
+            detail = G.node_detail(nid)
+            d, deg = detail if detail else ({}, 0)
+        else:
+            d, deg = G.nodes[nid], G.degree(nid)
         # Sanitise every LLM-derived field before concatenation (F-010).
         return "\n".join([
             f"Node: {sanitize_label(d.get('label', nid))}",
@@ -1428,7 +1649,7 @@ def _build_server(graph_path: str):
             f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
-            f"  Degree: {G.degree(nid)}",
+            f"  Degree: {deg}",
         ])
 
     def _tool_get_neighbors(arguments: dict) -> str:
@@ -1497,15 +1718,14 @@ def _build_server(graph_path: str):
         return "\n".join(lines)
 
     def _tool_graph_stats(_: dict) -> str:
-        confs = [d.get("confidence", "EXTRACTED") for _, _, d in G.edges(data=True)]
-        total = len(confs) or 1
+        confs, total = _confidence_distribution(G)
         return (
             f"Nodes: {G.number_of_nodes()}\n"
             f"Edges: {G.number_of_edges()}\n"
             f"Communities: {len(communities)}\n"
-            f"EXTRACTED: {round(confs.count('EXTRACTED')/total*100)}%\n"
-            f"INFERRED: {round(confs.count('INFERRED')/total*100)}%\n"
-            f"AMBIGUOUS: {round(confs.count('AMBIGUOUS')/total*100)}%\n"
+            f"EXTRACTED: {round(confs.get('EXTRACTED', 0)/total*100)}%\n"
+            f"INFERRED: {round(confs.get('INFERRED', 0)/total*100)}%\n"
+            f"AMBIGUOUS: {round(confs.get('AMBIGUOUS', 0)/total*100)}%\n"
         )
 
     def _tool_shortest_path(arguments: dict) -> str:
@@ -1540,16 +1760,12 @@ def _build_server(graph_path: str):
                         f"(top score {top:g}, runner-up {runner:g})"
                     )
         max_hops = int(arguments.get("max_hops", 8))
-        try:
-            # Deterministic path (#2074): the hash-seeded undirected view picked an
-            # arbitrary route among equal-length paths. Build a sorted, materialized
-            # undirected graph so the chosen path is canonical. Serve's shared G is
-            # left untouched (its degree feeds query-seed tie-breaks).
-            _und = nx.Graph()
-            _und.add_nodes_from(sorted(G.nodes))
-            _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
-            path_nodes = nx.shortest_path(_und, src_nid, tgt_nid)
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
+        # Undirected shortest path (works regardless of query src/tgt order).
+        # Deterministic (#2074): the store's BFS walks a sorted adjacency, so the
+        # route chosen among equal-length paths is canonical — no sorted scratch
+        # copy needed, and serve's shared G is left untouched.
+        path_nodes = G.shortest_path(src_nid, tgt_nid, max_hops=max_hops)
+        if not path_nodes:
             return f"No path found between '{G.nodes[src_nid].get('label', src_nid)}' and '{G.nodes[tgt_nid].get('label', tgt_nid)}'."
         hops = len(path_nodes) - 1
         if hops > max_hops:
@@ -1559,7 +1775,8 @@ def _build_server(graph_path: str):
             u, v = path_nodes[i], path_nodes[i + 1]
             # Report the actual stored relation(s), never a fabricated `calls`;
             # fall back to an honest "related" when the edge has no relation (#2074).
-            if G.has_edge(u, v):
+            # has_directed_edge, not has_edge: the store keeps native orientation.
+            if G.has_directed_edge(u, v):
                 datas = edge_datas(G, u, v)
                 forward = True
             else:
@@ -1722,13 +1939,13 @@ def _build_server(graph_path: str):
             except Exception as exc:
                 return f"Could not compute surprising connections: {exc}"
         if uri_str == "graphify://audit":
-            confs = [d.get("confidence", "EXTRACTED") for _, _, d in G.edges(data=True)]
-            total = len(confs) or 1
+            confs, total = _confidence_distribution(G)
+            e, i, a = confs.get("EXTRACTED", 0), confs.get("INFERRED", 0), confs.get("AMBIGUOUS", 0)
             return (
                 f"Total edges: {total}\n"
-                f"EXTRACTED: {confs.count('EXTRACTED')} ({round(confs.count('EXTRACTED')/total*100)}%)\n"
-                f"INFERRED: {confs.count('INFERRED')} ({round(confs.count('INFERRED')/total*100)}%)\n"
-                f"AMBIGUOUS: {confs.count('AMBIGUOUS')} ({round(confs.count('AMBIGUOUS')/total*100)}%)\n"
+                f"EXTRACTED: {e} ({round(e/total*100)}%)\n"
+                f"INFERRED: {i} ({round(i/total*100)}%)\n"
+                f"AMBIGUOUS: {a} ({round(a/total*100)}%)\n"
             )
         if uri_str == "graphify://questions":
             try:

@@ -47,6 +47,19 @@ _MCP_HEADERS = {
 
 
 def _graph_file(tmp_path: Path) -> str:
+    """Seed the FalkorDB graph for tmp_path so the server's loader finds it."""
+    from graphify.store import open_store
+
+    store = open_store(tmp_path, create=True)
+    store.clear()
+    store.add_nodes_from([
+        (n["id"], dict({k: v for k, v in n.items() if k != "id"}, file_type="code"))
+        for n in SAMPLE_GRAPH["nodes"]
+    ])
+    store.add_edges_from([
+        (e["source"], e["target"], {k: v for k, v in e.items() if k not in ("source", "target")})
+        for e in SAMPLE_GRAPH["edges"]
+    ])
     p = tmp_path / "graph.json"
     p.write_text(json.dumps(SAMPLE_GRAPH), encoding="utf-8")
     return str(p)
@@ -242,7 +255,10 @@ def test_max_server_contexts_parsing(monkeypatch, value, expected):
 def test_project_context_cache_is_lru_and_pins_default_graph(tmp_path, monkeypatch):
     """Project contexts hit, promote, and evict without evicting the default."""
     monkeypatch.setenv("GRAPHIFY_MAX_CONTEXTS", "2")
-    original_load = serve_mod._load_graph
+    # _connect_graph_or_raise is the FalkorDB equivalent of the old _load_graph:
+    # the single entry point the context cache calls on a miss, so counting it
+    # still measures cache hits/misses rather than tool calls.
+    original_load = serve_mod._connect_graph_or_raise
     loads: dict[str, int] = {}
 
     def counting_load(path: str):
@@ -250,7 +266,7 @@ def test_project_context_cache_is_lru_and_pins_default_graph(tmp_path, monkeypat
         loads[resolved] = loads.get(resolved, 0) + 1
         return original_load(path)
 
-    monkeypatch.setattr(serve_mod, "_load_graph", counting_load)
+    monkeypatch.setattr(serve_mod, "_connect_graph_or_raise", counting_load)
     projects = [
         _project_with_graph(tmp_path, node_count=i + 3, name=f"project-{i}")
         for i in range(3)

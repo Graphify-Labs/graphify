@@ -52,6 +52,22 @@ jobs:
       matrix:
         python-version: ["3.10", "3.12"]
 
+    # FalkorDB is the graph backend; without a reachable instance the conftest
+    # session fixture skips every graph-dependent test, so CI would go green
+    # without exercising the engine at all. Run it as a service container — the
+    # fixtures connect to localhost:6379 by default (overridable via FALKORDB_*).
+    services:
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6379:6379
+        # falkordb is redis-based, so redis-cli ping gates readiness before tests.
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v6
         with:

@@ -279,9 +279,9 @@ _HOOK_SCRIPT = """\
 # Auto-rebuilds the knowledge graph after each commit (code files only, no LLM needed).
 # Installed by: graphify hook install
 
-# Deterministic clustering: networkx louvain iterates string-keyed sets whose
-# order is randomized per-process by PYTHONHASHSEED, so community assignments
-# churn run-to-run. Pinning it makes graphify-out reproducible.
+# Deterministic clustering: string-keyed set/dict iteration is randomized
+# per-process by PYTHONHASHSEED, so community assignments churn run-to-run.
+# Pinning it makes graphify-out reproducible.
 export PYTHONHASHSEED=0
 
 # Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
@@ -334,9 +334,9 @@ _CHECKOUT_SCRIPT = """\
 # Auto-rebuilds the knowledge graph (code only) when switching branches.
 # Installed by: graphify hook install
 
-# Deterministic clustering: networkx louvain iterates string-keyed sets whose
-# order is randomized per-process by PYTHONHASHSEED, so community assignments
-# churn run-to-run. Pinning it makes graphify-out reproducible.
+# Deterministic clustering: string-keyed set/dict iteration is randomized
+# per-process by PYTHONHASHSEED, so community assignments churn run-to-run.
+# Pinning it makes graphify-out reproducible.
 export PYTHONHASHSEED=0
 
 # Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients

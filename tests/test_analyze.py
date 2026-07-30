@@ -1,6 +1,6 @@
 """Tests for analyze.py."""
 import json
-import networkx as nx
+from tests import nxcompat as nx
 import pytest
 from pathlib import Path
 from graphify.build import build_from_json
@@ -60,9 +60,9 @@ def test_surprising_connections_excludes_concept_nodes():
     assert "Abstract Concept" not in labels
 
 
-def test_surprising_connections_single_file_uses_community_bridges():
+def test_surprising_connections_single_file_uses_community_bridges(store):
     """Single-file graph: should return cross-community edges, not empty list."""
-    G = nx.Graph()
+    G = store
     # Build a graph with 2 clear communities + 1 bridge edge
     for i in range(5):
         G.add_node(f"a{i}", label=f"A{i}", file_type="code", source_file="single.py",
@@ -625,46 +625,39 @@ def _make_file_node(path: str) -> tuple[str, dict]:
     return nid, {"label": Path(path).name, "source_file": path, "file_type": "code"}
 
 
-def _make_cycle_graph_directed() -> nx.DiGraph:
-    G = nx.DiGraph()
-
+def _make_cycle_graph_directed(store):
     a_id, a = _make_file_node("src/a.ts")
     b_id, b = _make_file_node("src/b.ts")
     c_id, c = _make_file_node("src/c.ts")
     d_id, d = _make_file_node("src/d.ts")
     ext_id = _make_id("react")
 
-    G.add_node(a_id, **a)
-    G.add_node(b_id, **b)
-    G.add_node(c_id, **c)
-    G.add_node(d_id, **d)
-    # External-like node (no source_file): must be skipped safely.
-    G.add_node(ext_id, label="react", file_type="code")
-
-    # 2-cycle: a <-> b
-    G.add_edge(a_id, b_id, relation="imports_from", source_file="src/a.ts", confidence="EXTRACTED")
-    G.add_edge(b_id, a_id, relation="imports_from", source_file="src/b.ts", confidence="EXTRACTED")
-
-    # 3-cycle: b -> c -> d -> b
-    G.add_edge(b_id, c_id, relation="imports_from", source_file="src/b.ts", confidence="EXTRACTED")
-    G.add_edge(c_id, d_id, relation="imports_from", source_file="src/c.ts", confidence="EXTRACTED")
-    G.add_edge(d_id, b_id, relation="imports_from", source_file="src/d.ts", confidence="EXTRACTED")
-
-    # Self-loop: c imports itself
-    G.add_edge(c_id, c_id, relation="imports_from", source_file="src/c.ts", confidence="EXTRACTED")
-
-    # Mixed edge types: must not bleed into cycle graph
-    G.add_edge(a_id, ext_id, relation="calls", source_file="src/a.ts", confidence="INFERRED")
-    G.add_edge(a_id, ext_id, relation="contains", source_file="src/a.ts", confidence="EXTRACTED")
-
-    # Edge whose target has no source_file: must be skipped, no garbage label fallback
-    G.add_edge(a_id, ext_id, relation="imports_from", source_file="src/a.ts", confidence="EXTRACTED")
-
-    return G
+    store.add_nodes_from([
+        (a_id, a), (b_id, b), (c_id, c), (d_id, d),
+        # External-like node (no source_file): must be skipped safely.
+        (ext_id, {"label": "react", "file_type": "code"}),
+    ])
+    store.add_edges_from([
+        # 2-cycle: a <-> b
+        (a_id, b_id, {"relation": "imports_from", "source_file": "src/a.ts", "confidence": "EXTRACTED"}),
+        (b_id, a_id, {"relation": "imports_from", "source_file": "src/b.ts", "confidence": "EXTRACTED"}),
+        # 3-cycle: b -> c -> d -> b
+        (b_id, c_id, {"relation": "imports_from", "source_file": "src/b.ts", "confidence": "EXTRACTED"}),
+        (c_id, d_id, {"relation": "imports_from", "source_file": "src/c.ts", "confidence": "EXTRACTED"}),
+        (d_id, b_id, {"relation": "imports_from", "source_file": "src/d.ts", "confidence": "EXTRACTED"}),
+        # Self-loop: c imports itself
+        (c_id, c_id, {"relation": "imports_from", "source_file": "src/c.ts", "confidence": "EXTRACTED"}),
+        # Mixed edge types: must not bleed into cycle graph
+        (a_id, ext_id, {"relation": "calls", "source_file": "src/a.ts", "confidence": "INFERRED"}),
+        (a_id, ext_id, {"relation": "contains", "source_file": "src/a.ts", "confidence": "EXTRACTED"}),
+        # Edge whose target has no source_file: must be skipped, no garbage fallback.
+        (a_id, ext_id, {"relation": "imports_from", "source_file": "src/a.ts", "confidence": "EXTRACTED"}),
+    ])
+    return store
 
 
-def test_find_import_cycles_returns_structured_records():
-    G = _make_cycle_graph_directed()
+def test_find_import_cycles_returns_structured_records(store):
+    G = _make_cycle_graph_directed(store)
     cycles = find_import_cycles(G)
     assert isinstance(cycles, list)
     assert cycles
@@ -674,40 +667,39 @@ def test_find_import_cycles_returns_structured_records():
     assert "why" in cycles[0]
 
 
-def test_find_import_cycles_detects_2_and_3_cycles():
-    G = _make_cycle_graph_directed()
+def test_find_import_cycles_detects_2_and_3_cycles(store):
+    G = _make_cycle_graph_directed(store)
     cycles = find_import_cycles(G)
     cycle_sets = [set(c["cycle"]) for c in cycles]
     assert any({"src/a.ts", "src/b.ts"}.issubset(s) for s in cycle_sets)
     assert any({"src/b.ts", "src/c.ts", "src/d.ts"}.issubset(s) for s in cycle_sets)
 
 
-def test_find_import_cycles_includes_self_loop_cycle():
-    G = _make_cycle_graph_directed()
+def test_find_import_cycles_includes_self_loop_cycle(store):
+    G = _make_cycle_graph_directed(store)
     cycles = find_import_cycles(G)
     assert any(c["cycle"] == ["src/c.ts"] and c["length"] == 1 for c in cycles)
 
 
-def test_find_import_cycles_respects_max_cycle_length():
-    G = _make_cycle_graph_directed()
+def test_find_import_cycles_respects_max_cycle_length(store):
+    G = _make_cycle_graph_directed(store)
     cycles = find_import_cycles(G, max_cycle_length=2)
     assert all(c["length"] <= 2 for c in cycles)
 
 
-def test_find_import_cycles_skips_nodes_without_source_file():
-    G = _make_cycle_graph_directed()
+def test_find_import_cycles_skips_nodes_without_source_file(store):
+    G = _make_cycle_graph_directed(store)
     cycles = find_import_cycles(G)
     flat = " ".join(" ".join(c["cycle"]) for c in cycles)
     assert "react" not in flat
 
 
-def test_find_import_cycles_handles_undirected_graph_input():
-    Gd = _make_cycle_graph_directed()
-    Gu = nx.Graph()
-    Gu.add_nodes_from(Gd.nodes(data=True))
-    Gu.add_edges_from(Gd.edges(data=True))
-    cycles = find_import_cycles(Gu)
-    assert cycles  # should still resolve orientation via edge.source_file
+def test_find_import_cycles_handles_undirected_graph_input(store):
+    # Edges are stored directed natively; orientation is still resolved via
+    # edge.source_file, so cycle detection works regardless.
+    G = _make_cycle_graph_directed(store)
+    cycles = find_import_cycles(G)
+    assert cycles
 
 
 def test_find_import_cycles_ignores_non_import_relations():
@@ -726,8 +718,8 @@ def test_find_import_cycles_empty_graph():
     assert find_import_cycles(nx.DiGraph()) == []
 
 
-def test_find_import_cycles_no_cycles():
-    G = nx.DiGraph()
+def test_find_import_cycles_no_cycles(store):
+    G = store
     x_id, x = _make_file_node("x.ts")
     y_id, y = _make_file_node("y.ts")
     G.add_node(x_id, **x)

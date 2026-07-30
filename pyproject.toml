@@ -12,7 +12,12 @@ license-files = ["LICENSE", "LICENSE-MIT", "NOTICE"]
 keywords = ["claude", "claude-code", "codex", "opencode", "kilo", "cursor", "gemini", "aider", "kiro", "pi", "devin", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
 requires-python = ">=3.10"
 dependencies = [
-    "networkx>=3.4",
+    "falkordb>=1.0",
+    # Embedded FalkorDB engine — lets graphify run with zero setup (no separate
+    # server) by auto-falling back to it when no local server is reachable.
+    # Only available on Python >= 3.12; on older interpreters a running FalkorDB
+    # server is required.
+    "falkordblite; python_version >= '3.12'",
     "numpy>=1.21",
     "rapidfuzz>=3.0",
     "tree-sitter>=0.23.0,<0.26",
@@ -58,11 +63,18 @@ Issues = "https://github.com/Graphify-Labs/graphify/issues"
 # #2291). starlette is capped below its next major for the same reason.
 mcp = ["mcp>=1,<2", "starlette>=1.3.1,<2"]
 neo4j = ["neo4j"]
-falkordb = ["falkordb"]
+# falkordb is a core dependency; this extra exists so the documented
+# `graphifyy[falkordb]` install command resolves instead of erroring on an
+# unknown extra.
+falkordb = ["falkordb>=1.0"]
 pdf = ["pypdf>=6.12.0", "markdownify"]
 watch = ["watchdog"]
 svg = ["matplotlib", "numpy>=2.0; python_version >= '3.13'"]
 leiden = ["graspologic; python_version < '3.13'"]
+# FalkorDB Lite: embedded in-process engine (redislite + bundled falkordb module),
+# no external server. Requires Python >= 3.12. Select with a falkordb-lite:// URI
+# or the GRAPHIFY_FALKORDB_LITE env var.
+lite = ["falkordblite; python_version >= '3.12'"]
 office = ["python-docx", "openpyxl"]
 google = ["openpyxl"]
 postgres = ["psycopg[binary]"]
@@ -125,7 +137,11 @@ include-package-data = false
 # under graphify/skills/<host>/references/, and the always-on injection blocks
 # under graphify/always_on/. There is no graphify/skills/<host>/SKILL.md in the
 # repo, so no SKILL.md glob is needed here.
-graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", "command-kilo.md", "skill-aider.md", "skill-amp.md", "skill-agents.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md", "skills/*/references/*.md", "always_on/*.md"]
+# "udfs/*.js" ships the FalkorDB server-side algorithms (Louvain, edge
+# betweenness, simple cycles) that store.py loads at runtime via
+# Path(__file__).parent / "udfs" — without it, wheel/sdist installs hit a
+# FileNotFoundError when clustering/analyze run (works only from a checkout).
+graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-kilo.md", "command-kilo.md", "skill-aider.md", "skill-amp.md", "skill-agents.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md", "skill-devin.md", "skills/*/references/*.md", "always_on/*.md", "udfs/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

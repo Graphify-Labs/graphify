@@ -3,7 +3,7 @@ import json
 import tempfile
 from pathlib import Path
 
-import networkx as nx
+from tests import nxcompat as nx
 
 from graphify.build import build_from_json
 from graphify.cluster import cluster, score_all

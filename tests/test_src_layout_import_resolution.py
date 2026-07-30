@@ -63,7 +63,7 @@ def test_resolve_python_module_path_walks_up_to_src_package_root(tmp_path):
     )
 
 
-def test_import_edges_identical_from_root_or_src(tmp_path):
+def test_import_edges_identical_from_root_or_src(tmp_path, make_store):
     """Headline (#2072): the same project yields the same import edges whether
     scanned from the repo root or from src/ (modulo the `src_` id prefix)."""
     direct = tmp_path / "direct"
@@ -73,8 +73,13 @@ def test_import_edges_identical_from_root_or_src(tmp_path):
 
     dpaths = [direct / r for r in _FILES]
     npaths = [nested / "src" / r for r in _FILES]
-    dG = build_from_json(extract(dpaths, cache_root=tmp_path / "cd", root=direct, parallel=False), root=str(direct))
-    nG = build_from_json(extract(npaths, cache_root=tmp_path / "cn", root=nested, parallel=False), root=str(nested))
+    # Distinct stores: build_from_json without an explicit store targets the
+    # default graph name, so both builds would land in ONE FalkorDB graph and the
+    # second would silently overwrite the first (comparing a graph with itself).
+    dG = build_from_json(extract(dpaths, cache_root=tmp_path / "cd", root=direct, parallel=False),
+                         root=str(direct), store=make_store())
+    nG = build_from_json(extract(npaths, cache_root=tmp_path / "cn", root=nested, parallel=False),
+                         root=str(nested), store=make_store())
 
     d_edges = _import_edges(dG)
     # strip the `src_` prefix the nested layout adds to every id.

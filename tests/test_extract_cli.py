@@ -664,6 +664,22 @@ def test_missing_manifest_code_only_preserves_semantic_layer(monkeypatch, tmp_pa
         {"id": "h1", "label": "Shared", "nodes": ["doc_readme_a", "doc_readme_b"],
          "relation": "participate_in", "source_file": "README.md"})
     graph_path.write_text(json.dumps(graph))
+    # The FalkorDB store — not graph.json — is the incremental baseline, so the
+    # committed semantic layer has to be injected there too. graph.json alone is
+    # a derived artifact and the rebuild would never see these nodes.
+    from graphify.store import open_store as _open_store
+
+    _st = _open_store(graphify_out, create=False)
+    _st.add_nodes_from([
+        (n["id"], {k: v for k, v in n.items() if k != "id"})
+        for n in graph["nodes"] if n["id"].startswith("doc_readme_")
+    ])
+    _st.add_edges_from([
+        (e["source"], e["target"], {k: v for k, v in e.items() if k not in ("source", "target")})
+        for e in graph["edges"] if str(e.get("source", "")).startswith("doc_readme_")
+    ])
+    _st.graph["hyperedges"] = graph["hyperedges"]
+    _st.save_meta()
     (graphify_out / ".graphify_semantic_marker").write_text(
         json.dumps({"output_tokens": 1}))
 

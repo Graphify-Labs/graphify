@@ -2,28 +2,29 @@ from __future__ import annotations
 
 import json
 
-import networkx as nx
-from networkx.readwrite import json_graph
+import pytest
+
+from tests import nxcompat as nx
+from tests.nxcompat import node_link_data
 
 import graphify.__main__ as mainmod
 
+_NODES = [
+    {"id": "target", "label": "Foo", "source_file": "pkg/foo.py", "source_location": "L1", "file_type": "code"},
+    {"id": "caller", "label": "X()", "source_file": "app.py", "source_location": "L4", "file_type": "code"},
+    {"id": "barrel", "label": "__init__.py", "source_file": "pkg/__init__.py", "file_type": "code"},
+    {"id": "consumer", "label": "app.py", "source_file": "app.py", "file_type": "code"},
+]
+_LINKS = [
+    {"source": "caller", "target": "target", "relation": "calls", "context": "call", "confidence": "EXTRACTED"},
+    {"source": "barrel", "target": "target", "relation": "re_exports", "context": "export", "confidence": "EXTRACTED"},
+    {"source": "consumer", "target": "target", "relation": "imports", "context": "import", "confidence": "EXTRACTED"},
+]
 
-def _write_graph(tmp_path):
-    graph = nx.DiGraph()
-    graph.add_node("target", label="Foo", source_file="pkg/foo.py", source_location="L1")
-    graph.add_node("caller", label="X()", source_file="app.py", source_location="L4")
-    graph.add_node("barrel", label="__init__.py", source_file="pkg/__init__.py", source_location=None)
-    graph.add_node("consumer", label="app.py", source_file="app.py", source_location=None)
-    graph.add_edge("caller", "target", relation="calls", context="call", confidence="EXTRACTED")
-    graph.add_edge("barrel", "target", relation="re_exports", context="export", confidence="EXTRACTED")
-    graph.add_edge("consumer", "target", relation="imports", context="import", confidence="EXTRACTED")
+
+def test_affected_cli_reverse_traverses_impact_edges(monkeypatch, tmp_path, capsys, seed_graph):
+    seed_graph(tmp_path, _NODES, _LINKS)
     graph_path = tmp_path / "graph.json"
-    graph_path.write_text(json.dumps(json_graph.node_link_data(graph, edges="links")), encoding="utf-8")
-    return graph_path
-
-
-def test_affected_cli_reverse_traverses_impact_edges(monkeypatch, tmp_path, capsys):
-    graph_path = _write_graph(tmp_path)
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -43,8 +44,9 @@ def test_affected_cli_reverse_traverses_impact_edges(monkeypatch, tmp_path, caps
     assert "imports" in out
 
 
-def test_affected_cli_relation_filter_limits_reverse_traversal(monkeypatch, tmp_path, capsys):
-    graph_path = _write_graph(tmp_path)
+def test_affected_cli_relation_filter_limits_reverse_traversal(monkeypatch, tmp_path, capsys, seed_graph):
+    seed_graph(tmp_path, _NODES, _LINKS)
+    graph_path = tmp_path / "graph.json"
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -60,38 +62,19 @@ def test_affected_cli_relation_filter_limits_reverse_traversal(monkeypatch, tmp_
     assert "__init__.py" not in out
 
 
-def test_affected_cli_forces_directed_on_undirected_graph(monkeypatch, tmp_path, capsys):
-    """A graph persisted with directed=false must still recover caller->callee
-    direction (#1174): affected on the callee returns the caller, not the callee
-    or nothing. Without forcing directed=True, node_link_graph builds an
-    undirected Graph, predecessors() collapses, and the reverse traversal breaks.
-    """
-    graph = nx.DiGraph()
-    graph.add_node("A", label="caller_fn", source_file="a.py", source_location="L1")
-    graph.add_node("B", label="callee_fn", source_file="b.py", source_location="L2")
-    graph.add_edge("A", "B", relation="calls", context="call", confidence="EXTRACTED")
-
-    data = json_graph.node_link_data(graph, edges="links")
-    # Persist as undirected on disk to reproduce the bug condition.
-    data["directed"] = False
-    graph_path = tmp_path / "graph.json"
-    graph_path.write_text(json.dumps(data), encoding="utf-8")
-
+def test_affected_cli_unbuilt_graph_exits_with_build_hint(monkeypatch, tmp_path):
+    """On a never-built graph, `affected` must exit non-zero (telling the user to
+    build) rather than silently reporting an empty result. Guards the
+    connect_graph empty-graph check (parity with query/path/explain)."""
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
         "argv",
-        ["graphify", "affected", "B", "--relation", "calls", "--graph", str(graph_path)],
+        ["graphify", "affected", "Foo", "--graph", str(tmp_path / "graph.json")],
     )
-
-    mainmod.main()
-
-    out = capsys.readouterr().out
-    # A (the caller) is affected by a change to B (the callee).
-    assert "caller_fn" in out
-    assert "calls" in out
-    # B is the query node, not an affected node, and the result is not empty.
-    assert "No affected nodes found." not in out
+    with pytest.raises(SystemExit) as exc:
+        mainmod.main()
+    assert exc.value.code != 0
 
 
 def test_affected_cli_loads_edges_keyed_graph(monkeypatch, tmp_path, capsys):
@@ -104,7 +87,7 @@ def test_affected_cli_loads_edges_keyed_graph(monkeypatch, tmp_path, capsys):
     graph.add_edge("caller", "target", relation="calls", context="call", confidence="EXTRACTED")
 
     # Emulate graphify extract output: top-level "edges" key instead of "links".
-    data = json_graph.node_link_data(graph, edges="links")
+    data = node_link_data(graph, edges="links")
     data["edges"] = data.pop("links")
     graph_path = tmp_path / "graph.json"
     graph_path.write_text(json.dumps(data), encoding="utf-8")
@@ -252,7 +235,7 @@ def test_affected_cli_source_file_path_uses_file_level_node(monkeypatch, tmp_pat
         confidence="EXTRACTED",
     )
     graph_path = tmp_path / "graph.json"
-    graph_path.write_text(json.dumps(json_graph.node_link_data(graph, edges="links")), encoding="utf-8")
+    graph_path.write_text(json.dumps(node_link_data(graph, edges="links")), encoding="utf-8")
 
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
@@ -284,7 +267,7 @@ def _write_callsite_graph(tmp_path):
                confidence="EXTRACTED", source_file="apollo_pipeline_status.py",
                source_location="L158")
     gp = tmp_path / "graph.json"
-    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+    gp.write_text(json.dumps(node_link_data(g, edges="links")), encoding="utf-8")
     return gp
 
 
@@ -306,7 +289,7 @@ def test_affected_falls_back_to_def_line_when_edge_has_no_location(monkeypatch, 
     g.add_node("t", label="target()", source_file="b.py", source_location="L5")
     g.add_edge("loader", "t", relation="calls", confidence="INFERRED")  # no source_location
     gp = tmp_path / "graph.json"
-    gp.write_text(json.dumps(json_graph.node_link_data(g, edges="links")), encoding="utf-8")
+    gp.write_text(json.dumps(node_link_data(g, edges="links")), encoding="utf-8")
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "affected", "target", "--graph", str(gp)])
     mainmod.main()

@@ -220,34 +220,32 @@ def normalize_edge(raw: dict, index: int) -> dict | None:
 
 
 def _node_link_payload(data: dict) -> tuple[list, list] | None:
-    """Read current graphify graph.json via NetworkX's node-link parser."""
+    """Parse a node-link graph.json dict directly (no NetworkX)."""
     if not isinstance(data.get("nodes"), list):
         return None
-    if not isinstance(data.get("links"), list) and not isinstance(data.get("edges"), list):
-        return None
-
-    try:
-        # Shared loader normalizes the raw writer's "edges" key to "links"
-        # before parsing; without it an edges-keyed payload raised
-        # KeyError: 'links' and this function silently returned None even
-        # though the shape check above accepts "edges" (#2212).
-        from graphify.paths import load_node_link_graph
-
-        graph = load_node_link_graph(data)
-    except Exception:
+    # Accept the raw writer's "edges" key as well as node-link "links"; without
+    # the fallback an edges-keyed payload silently returned None even though the
+    # shape check accepts it (#2212). Parsed inline — no NetworkX loader needed.
+    links = data.get("links")
+    if not isinstance(links, list):
+        links = data.get("edges")
+    if not isinstance(links, list):
         return None
 
     nodes = []
-    for node_id, attrs in graph.nodes(data=True):
-        node = dict(attrs)
-        node["id"] = node_id
-        nodes.append(node)
+    for n in data["nodes"]:
+        if not isinstance(n, dict):
+            continue
+        nodes.append(dict(n))
 
     edges = []
-    for index, (source, target, attrs) in enumerate(graph.edges(data=True), 1):
-        edge = dict(attrs)
-        edge["source"] = edge.get("_src", edge.get("source", source))
-        edge["target"] = edge.get("_tgt", edge.get("target", target))
+    for index, e in enumerate(links, 1):
+        if not isinstance(e, dict):
+            continue
+        edge = dict(e)
+        # Edges are stored in native direction; _src/_tgt fall back to source/target.
+        edge["source"] = edge.get("_src", edge.get("source"))
+        edge["target"] = edge.get("_tgt", edge.get("target"))
         edge.setdefault("id", f"edge_{index}")
         edges.append(edge)
     return nodes, edges

@@ -1,8 +1,7 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
 import json
 import pytest
-import networkx as nx
-from networkx.readwrite import json_graph
+from tests import nxcompat as nx
 
 from graphify.serve import (
     _communities_from_graph,
@@ -25,8 +24,8 @@ from graphify.serve import (
     _query_graph_text,
     _resolve_context_filters,
     _subgraph_to_text,
+    _connect_graph,
     _cut_lines_to_budget,
-    _load_graph,
     _community_header,
     _search_tokens,
 )
@@ -582,85 +581,82 @@ def test_query_graph_text_heuristic_context_filter_changes_traversal():
     assert "build" not in text
 
 
-# --- _load_graph ---
+# --- _connect_graph ---
 
-def test_load_graph_roundtrip(tmp_path):
-    G = _make_graph()
-    data = json_graph.node_link_data(G, edges="links")
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(data))
-    G2 = _load_graph(str(p))
-    assert G2.number_of_nodes() == G.number_of_nodes()
-    assert G2.number_of_edges() == G.number_of_edges()
+_LOAD_NODES = [
+    {"id": "n1", "label": "extract", "source_file": "extract.py", "source_location": "L10", "community": 0, "file_type": "code"},
+    {"id": "n2", "label": "cluster", "source_file": "cluster.py", "source_location": "L5", "community": 0, "file_type": "code"},
+    {"id": "n3", "label": "build", "source_file": "build.py", "source_location": "L1", "community": 1, "file_type": "code"},
+]
+_LOAD_LINKS = [{"source": "n1", "target": "n2", "relation": "calls", "confidence": "INFERRED"}]
+
+
+def test_load_graph_roundtrip(tmp_path, seed_graph):
+    seed_graph(tmp_path, _LOAD_NODES, _LOAD_LINKS)
+    G2 = _connect_graph(str(tmp_path / "graph.json"))
+    assert G2.number_of_nodes() == 3
+    assert G2.number_of_edges() == 1
 
 def test_load_graph_missing_file(tmp_path):
     graphify_dir = tmp_path / "graphify-out"
     graphify_dir.mkdir()
     with pytest.raises(SystemExit):
-        _load_graph(str(graphify_dir / "nonexistent.json"))
+        _connect_graph(str(graphify_dir / "nonexistent.json"))
 
 
-def test_load_graph_corrupted_json_prints_recovery_message(tmp_path, capsys):
-    """json.JSONDecodeError is a ValueError subclass, so its except clause
-    must be checked before the bare (ValueError, FileNotFoundError) clause,
-    or the corrupted-graph recovery hint is unreachable (#2005)."""
+# The #2005 corrupted-JSON / non-.json-suffix messages have no analogue on the
+# FalkorDB path: _connect_graph resolves a pointer to the engine rather than
+# parsing a file, so there is no decode step to distinguish from a generic
+# ValueError. A malformed graph.json now only matters on the back-compat import
+# path, which reports "graph empty" and is covered below.
+
+
+def test_connect_graph_rejects_oversized_backcompat_json(monkeypatch, tmp_path, capsys, _require_falkordb):
+    """#F4: the pre-FalkorDB graph.json import is the one path that still parses
+    an arbitrary file, so it must fail fast on an oversized one."""
     p = tmp_path / "graph.json"
-    p.write_text("{not valid json")
-    with pytest.raises(SystemExit):
-        _load_graph(str(p))
-    err = capsys.readouterr().err
-    assert "graph.json is corrupted" in err
-    assert "Re-run /graphify to rebuild" in err
-
-
-def test_load_graph_generic_value_error_message_unchanged(tmp_path, capsys):
-    """A non-decode ValueError (e.g. a non-.json path) must still print the
-    generic error, not the corrupted-graph hint — pins the except-clause
-    order from #2005 so a future refactor can't collapse them back."""
-    p = tmp_path / "graph.txt"
-    p.write_text("not a graph")
-    with pytest.raises(SystemExit):
-        _load_graph(str(p))
-    err = capsys.readouterr().err
-    assert "must be a .json file" in err
-    assert "corrupted" not in err
-
-
-def test_load_graph_rejects_oversized_file(monkeypatch, tmp_path, capsys):
-    # #F4: oversized graph.json must fail fast (SystemExit) with a clear error.
-    G = _make_graph()
-    data = json_graph.node_link_data(G, edges="links")
-    p = tmp_path / "graph.json"
-    p.write_text(json.dumps(data))
+    p.write_text(json.dumps({
+        "directed": True, "multigraph": False, "graph": {},
+        "nodes": [{"id": "a", "label": "alpha"}], "links": [],
+    }))
     monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 16)
     with pytest.raises(SystemExit):
-        _load_graph(str(p))
+        _connect_graph(str(p))
     err = capsys.readouterr().err
     assert "exceeds" in err
     assert "byte cap" in err
 
 
-def test_load_graph_accepts_under_cap(monkeypatch, tmp_path):
-    # Verifies the cap path does not regress the normal load.
-    G = _make_graph()
-    data = json_graph.node_link_data(G, edges="links")
+def test_connect_graph_imports_backcompat_json_under_cap(monkeypatch, tmp_path, _require_falkordb):
+    """Verifies the cap path does not regress the normal back-compat import."""
     p = tmp_path / "graph.json"
-    p.write_text(json.dumps(data))
-    # Cap well above the actual file size — load proceeds.
+    p.write_text(json.dumps({
+        "directed": True, "multigraph": False, "graph": {},
+        "nodes": [{"id": "a", "label": "alpha"}, {"id": "b", "label": "beta"}],
+        "links": [{"source": "a", "target": "b", "relation": "calls"}],
+    }))
     monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 10 * 1024 * 1024)
-    G2 = _load_graph(str(p))
-    assert G2.number_of_nodes() == G.number_of_nodes()
+    G = _connect_graph(str(p))
+    assert G.number_of_nodes() == 2
 
 
 # --- #874: MCP hot-reload ---
 
 def _write_graph(path, nodes: list[str]) -> None:
-    """Write a minimal graph.json with the given node IDs."""
-    G = nx.DiGraph()
-    for n in nodes:
-        G.add_node(n, label=n, community=0)
-    data = json_graph.node_link_data(G, edges="links")
-    path.write_text(json.dumps(data), encoding="utf-8")
+    """Seed the FalkorDB graph for path's output dir with the given node IDs."""
+    from pathlib import Path as _Path
+    from graphify.store import open_store
+
+    store = open_store(_Path(path).parent, create=True)
+    store.clear()
+    store.add_nodes_from([(n, {"label": n, "community": 0, "file_type": "code"}) for n in nodes])
+    # Also keep a graph.json artifact so file-stat based tests still work.
+    import json as _json
+    _Path(path).write_text(
+        _json.dumps({"directed": True, "multigraph": False, "graph": {},
+                     "nodes": [{"id": n, "label": n, "community": 0} for n in nodes], "links": []}),
+        encoding="utf-8",
+    )
 
 
 def test_maybe_reload_detects_graph_change(tmp_path):
@@ -673,15 +669,15 @@ def test_maybe_reload_detects_graph_change(tmp_path):
     graph_path = out / "graph.json"
     _write_graph(graph_path, ["alpha", "beta"])
 
-    # Bootstrap _load_graph + _communities_from_graph to verify the reload path
-    G1 = _load_graph(str(graph_path))
+    # Bootstrap _connect_graph + _communities_from_graph to verify the reload path
+    G1 = _connect_graph(str(graph_path))
     assert set(G1.nodes()) == {"alpha", "beta"}
 
     # Simulate file changing (bump mtime by touching)
     time.sleep(0.01)
     _write_graph(graph_path, ["alpha", "beta", "gamma"])
 
-    G2 = _load_graph(str(graph_path))
+    G2 = _connect_graph(str(graph_path))
     assert "gamma" in G2.nodes()
 
 
@@ -921,7 +917,7 @@ def test_query_seeds_from_identifier_not_noise():
 
 
 def test_query_graph_text_parameter_type_context_filter_changes_traversal():
-    import networkx as nx
+    from tests import nxcompat as nx
     from graphify.serve import _query_graph_text
 
     graph = nx.Graph()
@@ -939,7 +935,7 @@ def test_query_graph_text_parameter_type_context_filter_changes_traversal():
 
 
 def test_query_graph_text_context_filter_aliases_resolve():
-    import networkx as nx
+    from tests import nxcompat as nx
     from graphify.serve import _normalize_context_filters
 
     assert _normalize_context_filters(["param"]) == ["parameter_type"]

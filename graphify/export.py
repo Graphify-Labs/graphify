@@ -11,8 +11,6 @@ import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
-import networkx as nx
-from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
@@ -287,30 +285,45 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 return False
 
     node_community = _node_community_map(communities)
+    # FalkorDB is the source of truth: persist community ids onto the stored
+    # nodes. graph.json is now a derived export artifact built from the store.
+    if communities and hasattr(G, "set_communities"):
+        G.set_communities(communities)
+
     _labels: dict[int, str] = {int(k): v for k, v in (community_labels or {}).items()}
-    try:
-        data = json_graph.node_link_data(G, edges="links")
-    except TypeError:
-        data = json_graph.node_link_data(G)
-    for node in data["nodes"]:
-        cid = node_community.get(node["id"])
-        node["community"] = cid
+    nodes = []
+    for nid, attrs in G.nodes(data=True):
+        nd = {k: v for k, v in attrs.items() if not k.startswith("_")}
+        # Keep _origin (AST provenance): incremental rebuild reads it back to
+        # evict stale AST symbols removed from a surviving file (#1116).
+        if isinstance(attrs.get("_origin"), str):
+            nd["_origin"] = attrs["_origin"]
+        nd["id"] = nid
+        cid = node_community.get(nid)
+        nd["community"] = cid
+        # Carry the community name into the export (#1305) so query/MCP show
+        # names, not bare ids.
         if cid is not None and _labels:
-            node["community_name"] = _labels.get(cid, f"Community {cid}")
-        node["norm_label"] = _strip_diacritics(node.get("label", "")).lower()
-    for link in data["links"]:
-        if "confidence_score" not in link:
-            conf = link.get("confidence", "EXTRACTED")
-            link["confidence_score"] = _CONFIDENCE_SCORE_DEFAULTS.get(conf, 1.0)
-        # Restore original edge direction. Undirected NetworkX storage may
-        # canonicalize endpoint order, flipping `calls` and other directional
-        # edges in graph.json. The build path stashes the true endpoints in
-        # _src/_tgt for exactly this purpose (#563).
-        true_src = link.pop("_src", None)
-        true_tgt = link.pop("_tgt", None)
-        if true_src is not None and true_tgt is not None:
-            link["source"] = true_src
-            link["target"] = true_tgt
+            nd["community_name"] = _labels.get(cid, f"Community {cid}")
+        nd["norm_label"] = _strip_diacritics(nd.get("label", "")).lower()
+        nodes.append(nd)
+    # Edges are stored in native source→target direction, so no _src/_tgt restore.
+    links = []
+    for u, v, attrs in G.edges(data=True):
+        ld = {k: val for k, val in attrs.items() if not k.startswith("_")}
+        ld["source"] = u
+        ld["target"] = v
+        if "confidence_score" not in ld:
+            conf = ld.get("confidence", "EXTRACTED")
+            ld["confidence_score"] = _CONFIDENCE_SCORE_DEFAULTS.get(conf, 1.0)
+        links.append(ld)
+    data = {
+        "directed": True,
+        "multigraph": False,
+        "graph": {},
+        "nodes": nodes,
+        "links": links,
+    }
     data["hyperedges"] = getattr(G, "graph", {}).get("hyperedges", [])
     commit = built_at_commit if built_at_commit is not None else _git_head()
     if commit:
@@ -976,24 +989,12 @@ def to_graphml(
     Community IDs are written as a node attribute so Gephi can colour by community.
     Edge confidence (EXTRACTED/INFERRED/AMBIGUOUS) is preserved as an edge attribute.
     """
-    H = G.copy()
     node_community = _node_community_map(communities)
-    for node_id in H.nodes():
-        H.nodes[node_id]["community"] = node_community.get(node_id, -1)
-    # Drop internal markers (e.g. the AST-provenance "_origin" tag, #1116, and
-    # the "_src"/"_tgt" direction markers) — they are persistence/runtime details,
-    # not graph data, and should not leak into the exported file.
-    for _, attrs in H.nodes(data=True):
-        for k in [k for k in attrs if k.startswith("_")]:
-            del attrs[k]
-    for _, _, attrs in H.edges(data=True):
-        for k in [k for k in attrs if k.startswith("_")]:
-            del attrs[k]
-    # nx.write_graphml only accepts scalar attribute values: None raises, and a
-    # dict/list value (e.g. a per-node `metadata` dict, or the graph-level
-    # `hyperedges` list set by attach_hyperedges()) raises
-    # "GraphML does not support type <class 'dict'/'list'> as data values" (#1831).
-    # Coerce None -> "" and non-scalars -> a JSON string, across all three scopes.
+
+    # GraphML only accepts scalar attribute values: None has no representation,
+    # and a dict/list value (e.g. a per-node `metadata` dict, or the graph-level
+    # `hyperedges` list set by attach_hyperedges()) is not expressible (#1831).
+    # Coerce None -> "" and non-scalars -> a JSON string.
     def _graphml_safe(val):
         if val is None:
             return ""
@@ -1004,22 +1005,71 @@ def to_graphml(
         except (TypeError, ValueError):
             return str(val)
 
-    for key, val in list(H.graph.items()):
-        H.graph[key] = _graphml_safe(val)
-    for node_id in H.nodes():
-        for key, val in list(H.nodes[node_id].items()):
-            H.nodes[node_id][key] = _graphml_safe(val)
-    for u, v in H.edges():
-        for key, val in list(H.edges[u, v].items()):
-            H.edges[u, v][key] = _graphml_safe(val)
+    # Collect nodes/edges (dropping internal "_"-prefixed markers) and the set of
+    # attribute keys, so we can declare GraphML <key> elements up front.
+    node_rows = []
+    node_keys: dict[str, str] = {}  # attr name -> graphml type
+    for nid, attrs in G.nodes(data=True):
+        clean = {k: _graphml_safe(v) for k, v in attrs.items()
+                 if not k.startswith("_") and k != "id"}
+        clean["community"] = node_community.get(nid, -1)
+        node_rows.append((nid, clean))
+        for k, v in clean.items():
+            node_keys.setdefault(k, _graphml_type(v))
 
-    # Write atomically: a mid-serialization error otherwise leaves a 0-byte
+    edge_rows = []
+    edge_keys: dict[str, str] = {}
+    for u, v, attrs in G.edges(data=True):
+        clean = {k: _graphml_safe(val) for k, val in attrs.items() if not k.startswith("_")}
+        edge_rows.append((u, v, clean))
+        for k, val in clean.items():
+            edge_keys.setdefault(k, _graphml_type(val))
+
+    def esc(x):
+        return _html.escape(str(x), quote=True)
+
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<graphml xmlns="http://graphml.graphdrawing.org/xmlns">',
+    ]
+    # Graph-level attributes (notably the `hyperedges` list attached by
+    # attach_hyperedges) are part of the export too — dropping them would lose
+    # the hypergraph layer entirely. Same scalar coercion as nodes/edges (#1831).
+    graph_rows = {
+        k: _graphml_safe(v) for k, v in getattr(G, "graph", {}).items()
+        if not k.startswith("_")
+    }
+    for name, gtype in node_keys.items():
+        lines.append(f'  <key id="n_{esc(name)}" for="node" attr.name="{esc(name)}" attr.type="{gtype}"/>')
+    for name, gtype in edge_keys.items():
+        lines.append(f'  <key id="e_{esc(name)}" for="edge" attr.name="{esc(name)}" attr.type="{gtype}"/>')
+    for name, val in graph_rows.items():
+        lines.append(
+            f'  <key id="g_{esc(name)}" for="graph" attr.name="{esc(name)}" '
+            f'attr.type="{_graphml_type(val)}"/>'
+        )
+    lines.append('  <graph edgedefault="directed">')
+    for name, val in graph_rows.items():
+        lines.append(f'    <data key="g_{esc(name)}">{esc(val)}</data>')
+    for nid, attrs in node_rows:
+        lines.append(f'    <node id="{esc(nid)}">')
+        for k, v in attrs.items():
+            lines.append(f'      <data key="n_{esc(k)}">{esc(v)}</data>')
+        lines.append("    </node>")
+    for i, (u, v, attrs) in enumerate(edge_rows):
+        lines.append(f'    <edge id="e{i}" source="{esc(u)}" target="{esc(v)}">')
+        for k, val in attrs.items():
+            lines.append(f'      <data key="e_{esc(k)}">{esc(val)}</data>')
+        lines.append("    </edge>")
+    lines.append("  </graph>")
+    lines.append("</graphml>")
+    # Write atomically: a mid-serialization error otherwise leaves a truncated
     # .graphml on disk that downstream tooling mistakes for a completed export
     # (#1831). Write to a sibling temp file, then replace on success.
     out = Path(output_path)
     tmp = out.with_name(out.name + ".tmp")
     try:
-        nx.write_graphml(H, str(tmp))
+        tmp.write_text("\n".join(lines), encoding="utf-8")
         os.replace(str(tmp), str(out))
     finally:
         if tmp.exists():
@@ -1028,6 +1078,77 @@ def to_graphml(
             except OSError:
                 pass
 
+
+def _graphml_type(value) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "long"
+    if isinstance(value, float):
+        return "double"
+    return "string"
+
+
+def _spring_layout(G, seed: int = 42, iterations: int = 60) -> dict:
+    """Deterministic Fruchterman-Reingold layout (replaces nx.spring_layout).
+
+    Pure-Python, seeded for reproducibility. Returns {node_id: (x, y)} in roughly
+    [-1, 1]. Good enough for the static SVG overview; not performance-critical.
+    """
+    import math
+    import random as _random
+
+    nodes = list(G.nodes())
+    n = len(nodes)
+    if n == 0:
+        return {}
+    rng = _random.Random(seed)
+    pos = {nid: [rng.uniform(-1, 1), rng.uniform(-1, 1)] for nid in nodes}
+    if n == 1:
+        return {nodes[0]: (0.0, 0.0)}
+    adj = {nid: set() for nid in nodes}
+    for u, v in G.edges():
+        if u in adj and v in adj:
+            adj[u].add(v)
+            adj[v].add(u)
+    k = math.sqrt(1.0 / n)
+    t = 0.1
+    for _ in range(iterations):
+        disp = {nid: [0.0, 0.0] for nid in nodes}
+        for i in range(n):
+            a = nodes[i]
+            for j in range(i + 1, n):
+                b = nodes[j]
+                dx = pos[a][0] - pos[b][0]
+                dy = pos[a][1] - pos[b][1]
+                dist = math.hypot(dx, dy) or 0.01
+                rep = (k * k) / dist
+                ux, uy = dx / dist, dy / dist
+                disp[a][0] += ux * rep; disp[a][1] += uy * rep
+                disp[b][0] -= ux * rep; disp[b][1] -= uy * rep
+        for a in nodes:
+            for b in adj[a]:
+                if a >= b:
+                    continue
+                dx = pos[a][0] - pos[b][0]
+                dy = pos[a][1] - pos[b][1]
+                dist = math.hypot(dx, dy) or 0.01
+                att = (dist * dist) / k
+                ux, uy = dx / dist, dy / dist
+                disp[a][0] -= ux * att; disp[a][1] -= uy * att
+                disp[b][0] += ux * att; disp[b][1] += uy * att
+        for nid in nodes:
+            dlen = math.hypot(*disp[nid]) or 0.01
+            pos[nid][0] += (disp[nid][0] / dlen) * min(dlen, t)
+            pos[nid][1] += (disp[nid][1] / dlen) * min(dlen, t)
+        t = max(t * 0.95, 0.01)
+    return {nid: (p[0], p[1]) for nid, p in pos.items()}
+
+
+# Above this node count, to_svg renders a top-degree overview instead of the full
+# graph: a full-graph SVG is an unreadable hairball and the pure-Python force
+# layout is O(n^2) per iteration, so the full graph would be impractically slow.
+_SVG_MAX_NODES = 600
 
 def to_svg(
     G: nx.Graph,
@@ -1051,19 +1172,33 @@ def to_svg(
     except ImportError as e:
         raise ImportError("matplotlib not installed. Run: pip install matplotlib") from e
 
+    # For large graphs, render a top-degree overview built as an in-memory
+    # MemGraph (keeps the full node/edge/degree drawing API) so the SVG stays
+    # readable and the O(n^2) layout stays bounded.
+    if G.number_of_nodes() > _SVG_MAX_NODES and hasattr(G, "top_degree_nodes"):
+        from graphify.store import MemGraph
+        _top = [d["id"] for d in G.top_degree_nodes(limit=_SVG_MAX_NODES)]
+        _top_set = set(_top)
+        _attrs = G.node_attrs_batch(_top)
+        _nodes = [(nid, _attrs.get(nid, {})) for nid in _top]
+        _edges = [(u, v, d) for u, v, d in G.edges(nbunch=_top, data=True)
+                  if u in _top_set and v in _top_set]
+        G = MemGraph(_nodes, _edges, directed=G.is_directed())
+
     node_community = _node_community_map(communities)
 
     fig, ax = plt.subplots(figsize=figsize, facecolor="#1a1a2e")
     ax.set_facecolor("#1a1a2e")
     ax.axis("off")
 
-    pos = nx.spring_layout(G, seed=42, k=2.0 / (G.number_of_nodes() ** 0.5 + 1))
+    pos = _spring_layout(G, seed=42)
 
     degree = dict(G.degree())
     max_deg = max(degree.values(), default=1) or 1
 
-    node_colors = [COMMUNITY_COLORS[node_community.get(n, 0) % len(COMMUNITY_COLORS)] for n in G.nodes()]
-    node_sizes = [300 + 1200 * (degree.get(n, 1) / max_deg) for n in G.nodes()]
+    nodes_list = list(G.nodes())
+    node_colors = [COMMUNITY_COLORS[node_community.get(n, 0) % len(COMMUNITY_COLORS)] for n in nodes_list]
+    node_sizes = [300 + 1200 * (degree.get(n, 1) / max_deg) for n in nodes_list]
 
     # Draw edges - dashed for non-EXTRACTED
     for u, v, data in G.edges(data=True):
@@ -1075,11 +1210,13 @@ def to_svg(
         ax.plot([x0, x1], [y0, y1], color="#aaaaaa", linewidth=0.8,
                 linestyle=style, alpha=alpha, zorder=1)
 
-    nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
-                           node_size=node_sizes, alpha=0.9)
-    nx.draw_networkx_labels(G, pos, ax=ax,
-                            labels={n: G.nodes[n].get("label", n) for n in G.nodes()},
-                            font_size=7, font_color="white")
+    xs = [pos[n][0] for n in nodes_list]
+    ys = [pos[n][1] for n in nodes_list]
+    ax.scatter(xs, ys, s=node_sizes, c=node_colors, alpha=0.9, zorder=2, edgecolors="none")
+    for n in nodes_list:
+        x, y = pos[n]
+        ax.annotate(str(G.nodes[n].get("label", n)), (x, y), fontsize=7,
+                    color="white", ha="center", va="center", zorder=3)
 
     # Legend
     if community_labels:

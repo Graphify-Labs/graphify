@@ -4,30 +4,34 @@ import json
 import graphify.__main__ as mainmod
 
 
+_NODES = [
+    {"id": "validate", "label": "validateSanitySession()", "source_file": "server/sanity-validate-session.ts", "community": 0, "file_type": "code"},
+    {"id": "create_patch", "label": "createPatchHandler()", "source_file": "server/create-patch-handler.ts", "community": 0, "file_type": "code"},
+    {"id": "create_edit", "label": "createEditHandler()", "source_file": "server/create-edit-handler.ts", "community": 0, "file_type": "code"},
+    {"id": "stable_stringify", "label": "stableStringify()", "source_file": "shared/stringify.ts", "community": 0, "file_type": "code"},
+]
+_LINKS = [
+    {"source": "create_patch", "target": "validate", "relation": "calls", "confidence": "EXTRACTED"},
+    {"source": "create_edit", "target": "validate", "relation": "calls", "confidence": "EXTRACTED"},
+    {"source": "validate", "target": "stable_stringify", "relation": "calls", "confidence": "EXTRACTED"},
+]
+
+
 def _write_graph(tmp_path):
-    graph_data = {
-        "directed": False, "multigraph": False, "graph": {},
-        "nodes": [
-            {"id": "validate", "label": "validateSanitySession()",
-             "source_file": "server/sanity-validate-session.ts", "community": 0},
-            {"id": "create_patch", "label": "createPatchHandler()",
-             "source_file": "server/create-patch-handler.ts", "community": 0},
-            {"id": "create_edit", "label": "createEditHandler()",
-             "source_file": "server/create-edit-handler.ts", "community": 0},
-            {"id": "stable_stringify", "label": "stableStringify()",
-             "source_file": "shared/stringify.ts", "community": 0},
-        ],
-        "links": [
-            {"source": "create_patch", "target": "validate",
-             "relation": "calls", "confidence": "EXTRACTED"},
-            {"source": "create_edit", "target": "validate",
-             "relation": "calls", "confidence": "EXTRACTED"},
-            {"source": "validate", "target": "stable_stringify",
-             "relation": "calls", "confidence": "EXTRACTED"},
-        ],
-    }
+    """Seed the FalkorDB graph for tmp_path so `explain` (which loads from the
+    store) finds it."""
+    from graphify.store import open_store
+
+    store = open_store(tmp_path, create=True)
+    store.clear()
+    store.add_nodes_from([(n["id"], {k: v for k, v in n.items() if k != "id"}) for n in _NODES])
+    store.add_edges_from([
+        (e["source"], e["target"], {k: v for k, v in e.items() if k not in ("source", "target")})
+        for e in _LINKS
+    ])
     p = tmp_path / "graph.json"
-    p.write_text(json.dumps(graph_data))
+    p.write_text(json.dumps({"directed": True, "multigraph": False, "graph": {},
+                             "nodes": _NODES, "links": _LINKS}))
     return p
 
 
@@ -77,7 +81,11 @@ def test_explain_source_file_path_prefers_file_level_node(monkeypatch, tmp_path,
     out = _run(monkeypatch, p, source_file, capsys)
 
     assert "Node: route.ts" in out
-    assert "ID:        example_route" in out
+    # Importing a pre-FalkorDB graph.json runs the #1504 semantic re-key, which
+    # re-derives each node id from its full repo-relative source_file — so the
+    # authored short id canonicalizes to the path-qualified form. The point of
+    # this test is which NODE wins (the file node, not the symbol), not its id.
+    assert "ID:        app_api_example_route" in out
     assert f"Source:    {source_file} L1" in out
     assert "Node: GET()" not in out
 
@@ -223,7 +231,12 @@ def test_explain_grouping_boundary_at_exactly_21_vs_20_connections(monkeypatch, 
     connections (one past the cutoff) must show the grouped section with
     exactly one grouped entry; one node at exactly 20 (at the cutoff, not
     past it) must show neither."""
-    p21 = _write_high_degree_graph(tmp_path, n_callers=21, files=["lib/only.py"])
+    # Each graph gets its OWN directory: the FalkorDB store is keyed by output
+    # dir and imported once, so rewriting graph.json in a shared tmp_path would
+    # leave the first graph in place and silently compare the wrong one.
+    (tmp_path / "at21").mkdir()
+    (tmp_path / "at20").mkdir()
+    p21 = _write_high_degree_graph(tmp_path / "at21", n_callers=21, files=["lib/only.py"])
     out21 = _run(monkeypatch, p21, "hub", capsys)
     assert "Grouped by file:" in out21
     assert "<-- lib/only.py: 1 connection" in out21
@@ -232,7 +245,7 @@ def test_explain_grouping_boundary_at_exactly_21_vs_20_connections(monkeypatch, 
     ]
     assert len(grouped_lines21) == 1  # exactly one grouped entry, not zero, not more
 
-    p20 = _write_high_degree_graph(tmp_path, n_callers=20, files=["lib/only.py"])
+    p20 = _write_high_degree_graph(tmp_path / "at20", n_callers=20, files=["lib/only.py"])
     out20 = _run(monkeypatch, p20, "hub", capsys)
     assert "Grouped by file:" not in out20
     assert "more" not in out20

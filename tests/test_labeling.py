@@ -6,7 +6,7 @@ malformed replies, and the no-backend fallback.
 import json
 import sys
 
-import networkx as nx
+from tests import nxcompat as nx
 import pytest
 
 from graphify.llm import label_communities, generate_community_labels

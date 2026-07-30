@@ -6,7 +6,6 @@ from pathlib import Path
 import html as _html
 from graphify.analyze import _node_community_map
 import json
-import networkx as nx
 from graphify.security import sanitize_label
 
 
@@ -348,20 +347,26 @@ def to_html(
         if node_limit is not None:
             # Build aggregated community meta-graph
             from collections import Counter as _Counter
-            import networkx as _nx
+            from graphify.store import MemGraph
             print(f"Graph has {G.number_of_nodes()} nodes (above {limit} limit). Building aggregated community view...")
             node_to_community = {nid: cid for cid, members in communities.items() for nid in members}
-            meta = _nx.Graph()
-            for cid, members in communities.items():
-                meta.add_node(str(cid), label=(community_labels or {}).get(cid, f"Community {cid}"))
+            meta_nodes = [
+                (str(cid), {"label": (community_labels or {}).get(cid, f"Community {cid}")})
+                for cid, members in communities.items()
+            ]
             edge_counts = _Counter()
             for u, v in G.edges():
                 cu, cv = node_to_community.get(u), node_to_community.get(v)
                 if cu is not None and cv is not None and cu != cv:
                     edge_counts[(min(cu, cv), max(cu, cv))] += 1
-            for (cu, cv), w in edge_counts.items():
-                meta.add_edge(str(cu), str(cv), weight=w,
-                              relation=f"{w} cross-community edges", confidence="AGGREGATED")
+            meta_edges = [
+                (str(cu), str(cv), {"weight": w, "relation": f"{w} cross-community edges",
+                                    "confidence": "AGGREGATED"})
+                for (cu, cv), w in edge_counts.items()
+            ]
+            # MemGraph, not nx.Graph: the meta-graph feeds the same rendering API
+            # the store-backed graph uses, so the viz path stays NetworkX-free.
+            meta = MemGraph(meta_nodes, meta_edges)
             if meta.number_of_nodes() <= 1:
                 print("Single community - aggregated view not useful. Skipping graph.html.")
                 return

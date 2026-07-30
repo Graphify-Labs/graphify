@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-import networkx as nx
+from tests import nxcompat as nx
 import pytest
 
 from graphify.build import build_from_json

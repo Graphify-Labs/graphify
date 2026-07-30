@@ -28,7 +28,7 @@ import re
 import sys
 import unicodedata
 from pathlib import Path
-import networkx as nx
+from .store import GraphStore, DEFAULT_URI, graph_name_for
 from .ids import make_id, normalize_id as _normalize_id
 from .paths import default_graph_json as _default_graph_json
 from .validate import validate_extraction
@@ -72,6 +72,14 @@ _FILE_TYPE_SYNONYMS = {
     "gotcha": "concept",
     "framework": "concept",
 }
+
+
+def _search_norm_label(label: str) -> str:
+    """Diacritic-stripped, lowercased label for in-engine search prefiltering.
+    Must match serve._strip_diacritics(label).lower() so Cypher CONTAINS prefilters
+    agree with the Python scoring tiers."""
+    nfkd = unicodedata.normalize("NFKD", label or "")
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
 
 
 # Hyperedge member lists are canonically keyed `nodes` (see graphify/llm.py
@@ -304,25 +312,30 @@ def _infer_merge_root(graph_path: Path) -> str | None:
         return None
 
 
-def edge_data(G: nx.Graph, u: str, v: str) -> dict:
+def edge_data(G, u: str, v: str) -> dict:
     """Return one edge attribute dict for (u, v), tolerating MultiGraph.
 
-    For MultiGraph/MultiDiGraph there can be multiple parallel edges;
-    this returns the first one (sufficient for callers that only need
-    relation/confidence for rendering). Fixes #796.
+    FalkorDB stores parallel edges natively; ``G[u][v]`` returns the first
+    edge's attributes, which is sufficient for callers that only need
+    relation/confidence for rendering. Fixes #796.
     """
-    raw = G[u][v]
-    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
-        return next(iter(raw.values()), {})
-    return raw
+    return G[u][v]
 
 
-def edge_datas(G: nx.Graph, u: str, v: str) -> list[dict]:
-    """Return every edge attribute dict for (u, v); always a list."""
-    raw = G[u][v]
-    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
-        return list(raw.values())
-    return [raw]
+def edge_datas(G, u: str, v: str) -> list[dict]:
+    """Return every edge attribute dict for (u, v); always a list.
+
+    Stores expose ``edge_attrs_all`` so parallel links (e.g. a `references` and
+    a `calls` edge between the same pair) all survive; ``G[u][v]`` alone returns
+    only the first match, which let `path` print a relation the traversed pair
+    doesn't actually carry (#2074).
+    """
+    getter = getattr(G, "edge_attrs_all", None)
+    if getter is not None:
+        datas = getter(u, v)
+        if datas:
+            return datas
+    return [G[u][v]]
 
 
 def dedupe_nodes(nodes: list[dict]) -> list[dict]:
@@ -348,13 +361,13 @@ def dedupe_edges(edges: list[dict]) -> list[dict]:
     """Collapse exact parallel edges by ``(source, target, relation)``, keeping the
     first occurrence.
 
-    The clustered build path runs edges through a NetworkX ``DiGraph``, which
-    collapses parallel edges automatically. The ``--no-cluster`` and incremental
-    ``update`` write paths bypass NetworkX and concatenate edge lists raw, so
-    duplicates accumulate and edge counts become non-deterministic across build
-    modes / repeated updates (#1317). Deduping on the connectivity identity is
-    zero-signal-loss and restores idempotency. Callers that intentionally keep
-    parallel edges (multigraph output) must not use this.
+    The clustered build path runs edges through the GraphStore dedup (collapses
+    parallel edges). The ``--no-cluster`` and incremental ``update`` write paths
+    concatenate edge lists raw, so duplicates accumulate and edge counts become
+    non-deterministic across build modes / repeated updates (#1317). Deduping on
+    the connectivity identity is zero-signal-loss and restores idempotency.
+    Callers that intentionally keep parallel edges (multigraph output) must not
+    use this.
     """
     seen: set[tuple] = set()
     out: list[dict] = []
@@ -536,13 +549,25 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     return remap
 
 
-def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
-    """Build a NetworkX graph from an extraction dict.
+def build_from_json(
+    extraction: dict,
+    *,
+    directed: bool = False,
+    root: str | Path | None = None,
+    store: GraphStore | None = None,
+    graph_name: str = "graphify",
+    uri: str = DEFAULT_URI,
+) -> GraphStore:
+    """Build a FalkorDB-backed graph (GraphStore) from an extraction dict.
 
-    directed=True produces a DiGraph that preserves edge direction (source→target).
-    directed=False (default) produces an undirected Graph for backward compatibility.
+    Edges are always stored in their native source→target orientation. When
+    ``directed`` is False (default) a reverse-direction duplicate of the same
+    node pair + relation is collapsed to the first-seen edge, matching the old
+    undirected nx.Graph semantics; when True both directions are kept.
     root: if given, absolute source_file paths from semantic subagents are made
         relative to root so all nodes share a consistent path key (#932).
+    store: build into this GraphStore (cleared first); otherwise a new one is
+        created for ``graph_name`` at ``uri``.
     """
     _root = str(Path(root).resolve()) if root else None
     # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
@@ -670,13 +695,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             if isinstance(he, dict) and isinstance(he.get("nodes"), list):
                 he["nodes"] = [_doc_remap.get(n, n) for n in he["nodes"]]
 
-    G: nx.Graph = nx.DiGraph() if directed else nx.Graph()
+    # Collect node attributes in extraction order (last write wins per id), the
+    # same idempotent-overwrite semantics nx.add_node had.
+    node_attrs: dict[str, dict] = {}
+    node_order: list[str] = []
     for node in extraction.get("nodes", []):
         # Skip dict nodes with a missing or non-hashable id (e.g. a list emitted
-        # by a buggy LLM extraction) so NetworkX add_node never raises
-        # TypeError: unhashable type. Non-dict nodes are deliberately left to
-        # raise as before, so callers that probe build for shape errors (e.g.
-        # the multigraph diagnostic) still observe the malformed shape.
+        # by a buggy LLM extraction) so the store never receives an unusable key.
+        # Non-dict nodes are deliberately left to raise as before, so callers that
+        # probe build for shape errors (e.g. the multigraph diagnostic) still
+        # observe the malformed shape.
         if isinstance(node, dict):
             if "id" not in node:
                 continue
@@ -691,8 +719,15 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 continue
             if "source_file" in node:
                 node["source_file"] = _norm_source_file(node["source_file"], _root)
-        G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
-    node_set = set(G.nodes())
+        nid = node["id"]
+        if nid not in node_attrs:
+            node_order.append(nid)
+        attrs = {k: v for k, v in node.items() if k != "id"}
+        # Stored searchable label so query/explain can prefilter candidates in
+        # the engine (Cypher CONTAINS) instead of scanning every node in Python.
+        attrs["norm_label"] = _search_norm_label(str(attrs.get("label", "")))
+        node_attrs[nid] = attrs
+    node_set = set(node_attrs)
 
     # #1145 (extended): merge LLM ghost-duplicate nodes into AST canonical nodes.
     # Original bug: AST uses parent-qualified IDs (mingpt_bpe_get_pairs) while LLM
@@ -716,7 +751,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # with CPython's per-process string-hash seed (#1753) — the same reason the
     # edge-iteration loop further down sorts on purpose.
     for nid in sorted(node_set):
-        attrs = G.nodes[nid]
+        attrs = node_attrs[nid]
         label = str(attrs.get("label", "")).strip()
         sf = str(attrs.get("source_file", ""))
         if not label or not sf:
@@ -735,7 +770,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             if is_ast:
                 # Two AST nodes on the same key (same file, same label) is an
                 # ambiguous collision.
-                if key in _loc_nodes and G.nodes[_loc_nodes[key]].get("_origin") == "ast":
+                if key in _loc_nodes and node_attrs[_loc_nodes[key]].get("_origin") == "ast":
                     _loc_collisions.add(key)
                 # AST-origin nodes always overwrite a prior non-AST entry.
                 _loc_nodes[key] = nid
@@ -747,7 +782,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
 
     # Pass 2: find ghosts — non-AST nodes that have an AST canonical twin.
     for nid in sorted(node_set):
-        attrs = G.nodes[nid]
+        attrs = node_attrs[nid]
         if attrs.get("_origin") == "ast":
             continue  # AST nodes are never ghosts
         label = str(attrs.get("label", "")).strip()
@@ -765,9 +800,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         ast_id = _loc_nodes.get(key)
         if ast_id is not None:
             _ghost_remap[sem_id] = ast_id
-    # Remove ghost nodes from the graph; edges will be re-pointed via norm_to_id.
+    # Remove ghost nodes; edges will be re-pointed via norm_to_id.
     for ghost_id in _ghost_remap:
-        G.remove_node(ghost_id)
+        node_attrs.pop(ghost_id, None)
         node_set.discard(ghost_id)
 
     # Normalized ID map: lets edges survive when the LLM generates IDs with
@@ -810,7 +845,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     from graphify.extractors.base import _file_stem as _fs
     _alias_candidates: dict[str, set[str]] = {}
     for nid in node_set:
-        attrs = G.nodes[nid]
+        attrs = node_attrs[nid]
         sf = attrs.get("source_file")
         if not sf:
             continue
@@ -833,6 +868,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     for alias_key, candidates in _alias_candidates.items():
         if len(candidates) == 1:
             norm_to_id.setdefault(alias_key, next(iter(candidates)))
+    edge_items: list[tuple[str, str, dict]] = []
+    seen_exact: set[tuple] = set()  # (src, tgt, relation) — collapse exact directed dups
+    seen_pairs: dict[tuple, tuple[str, str]] = {}  # (unordered pair, relation) -> first src/tgt
     # Iterate edges in a deterministic order. The graph is undirected and stores
     # direction in _src/_tgt; when two edges collapse onto the same node pair the
     # last write wins, so an unstable iteration order flips _src/_tgt run-to-run
@@ -907,8 +945,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # flags and leaves query results with no file reference (#1279).
         if not attrs.get("source_file"):
             attrs["source_file"] = (
-                G.nodes[src].get("source_file")
-                or G.nodes[tgt].get("source_file")
+                node_attrs[src].get("source_file")
+                or node_attrs[tgt].get("source_file")
                 or ""
             )
         if "source_file" in attrs:
@@ -920,8 +958,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # Python `import time` must not bind to a `time.ts`, #1749).
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
-            src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
-            tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
+            src_ext = Path(node_attrs[src].get("source_file") or "").suffix.lower()
+            tgt_ext = Path(node_attrs[tgt].get("source_file") or "").suffix.lower()
             src_fam = _EDGE_LANG_FAMILY.get(src_ext)
             tgt_fam = _EDGE_LANG_FAMILY.get(tgt_ext)
             if _edge_rel == "calls":
@@ -948,24 +986,47 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # program structure rather than import-resolution artifacts.
         if src == tgt and _edge_rel in ("imports", "imports_from", "re_exports"):
             continue
-        # Preserve original edge direction - undirected graphs lose it otherwise,
-        # causing display functions to show edges backwards.
-        attrs["_src"] = src
-        attrs["_tgt"] = tgt
-        # When the graph is undirected and the same node pair appears twice with
-        # the same relation but opposite directions (e.g. a `calls` b and b `calls` a),
-        # nx.Graph collapses them into one edge. The deterministic sort above means
-        # the lexicographically-later direction would systematically overwrite the
-        # earlier one's _src/_tgt, silently flipping the surviving edge's caller
-        # and callee. First-seen direction wins instead — drop the redundant
-        # reverse-direction duplicate so the original direction is preserved (#1061).
-        if not G.is_directed() and G.has_edge(src, tgt):
-            existing = edge_data(G, src, tgt)
-            if existing.get("relation") == attrs.get("relation") and (
-                existing.get("_src") == tgt and existing.get("_tgt") == src
-            ):
+        # Edges are stored DIRECTED in their native source→target orientation, so
+        # direction survives without the old _src/_tgt markers. Collapse exact
+        # directed duplicates always (same as nx.DiGraph / the old MERGE upsert)
+        # so the fresh CREATE path doesn't emit duplicate edges.
+        exact_key = (src, tgt, attrs.get("relation"))
+        if exact_key in seen_exact:
+            continue
+        seen_exact.add(exact_key)
+        # When the graph is undirected (default) and the same node pair appears
+        # again with the same relation in the opposite direction (a `calls` b and
+        # b `calls` a), the deterministic sort above means the lexicographically-
+        # later direction would systematically win and silently flip the surviving
+        # edge's caller and callee. First-seen direction wins instead — drop the
+        # redundant reverse-direction duplicate (#1061).
+        if not directed:
+            pair_key = (frozenset((src, tgt)), attrs.get("relation"))
+            if pair_key in seen_pairs:
                 continue
-        G.add_edge(src, tgt, **attrs)
+            seen_pairs[pair_key] = (src, tgt)
+        edge_items.append((src, tgt, attrs))
+
+    # Runs LAST, after the alias-competition above (which relies on file-node
+    # labels still being bare basenames): give colliding-basename file nodes a
+    # directory-qualified display label so lookup/discovery can disambiguate them
+    # (#2032). Labels only — ids and edges are untouched. Applied to node_attrs
+    # before the write, since the store is populated in one shot below.
+    for _nid, _new_label in _file_label_reassignments(
+        [(nid, a.get("label"), a.get("source_file")) for nid, a in node_attrs.items()]
+    ).items():
+        node_attrs[_nid]["label"] = _new_label
+        # Keep the stored search key in sync with the relabel, or query/explain
+        # would prefilter on the pre-disambiguation label.
+        node_attrs[_nid]["norm_label"] = _search_norm_label(str(_new_label))
+
+    if store is None:
+        store = GraphStore(graph_name=graph_name, uri=uri, directed=True)
+    store.clear()
+    # Fresh build into a cleared graph: ids are unique and there are no existing
+    # edges, so CREATE (no MERGE existence-check) is correct and much faster.
+    store.add_nodes_from([(nid, node_attrs[nid]) for nid in node_order if nid in node_attrs], fresh=True)
+    store.add_edges_from(edge_items, fresh=True)
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:
         # Relativize hyperedge source_file the same way nodes and edges are
@@ -1007,13 +1068,24 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                     he["nodes"] = valid_members
             kept_hyperedges.append(he)
         if kept_hyperedges:
-            G.graph["hyperedges"] = kept_hyperedges
-    # Runs LAST, after the alias-competition above (which relies on file-node
-    # labels still being bare basenames): give colliding-basename file nodes a
-    # directory-qualified display label so lookup/discovery can disambiguate
-    # them (#2032). Labels only — ids and edges are untouched.
-    _disambiguate_file_node_labels(G)
-    return G
+            store.graph["hyperedges"] = kept_hyperedges
+            store.save_meta()
+    # Record the scan root on the graph itself. This is the FalkorDB replacement
+    # for the committed `graphify-out/.graphify_root` marker: a later build_merge
+    # called WITHOUT root (the skill's --update runbook does exactly that) reads
+    # it back to relativize absolute prune_sources against the stored relative
+    # source_file keys. Without it those paths never match and a deleted file's
+    # nodes survive as ghosts (#1571).
+    if _root:
+        store.graph["scan_root"] = _root
+        store.save_meta()
+    # Warm + persist the hub-threshold (p99 degree) so query traversals don't
+    # recompute it on every invocation.
+    try:
+        store._hub_threshold()
+    except Exception:
+        pass
+    return store
 
 
 def build(
@@ -1023,7 +1095,10 @@ def build(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
-) -> nx.Graph:
+    store: GraphStore | None = None,
+    graph_name: str = "graphify",
+    uri: str = DEFAULT_URI,
+) -> GraphStore:
     """Merge multiple extraction results into one graph.
 
     directed=True produces a DiGraph that preserves edge direction (source→target).
@@ -1039,7 +1114,6 @@ def build(
     from duplicate records of the same source entity. Genuine cross-file ID
     collisions remain isolated and are reported.
     """
-    from graphify.dedup import deduplicate_entities
     combined: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
     for ext in extractions:
         combined["nodes"].extend(ext.get("nodes", []))
@@ -1048,6 +1122,9 @@ def build(
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
     if dedup and combined["nodes"]:
+        # Imported lazily so dedup=False callers don't require the datasketch dep.
+        from graphify.dedup import deduplicate_entities
+
         # Fold legacy node field aliases before dedup (#2194): dedup runs BEFORE
         # build_from_json and keys on `label`, so a `name`/`path` alias node
         # would be invisible to it and only label-dedup one build later, after
@@ -1059,7 +1136,9 @@ def build(
             combined["nodes"], combined["edges"], communities={},
             dedup_llm_backend=dedup_llm_backend,
         )
-    return build_from_json(combined, directed=directed, root=root)
+    return build_from_json(
+        combined, directed=directed, root=root, store=store, graph_name=graph_name, uri=uri
+    )
 
 
 def _norm_label(label: str | None) -> str:
@@ -1257,15 +1336,16 @@ def merge_raw_extraction(
 
 def build_merge(
     new_chunks: list[dict],
-    graph_path: str | Path | None = None,
+    graph_name: str = "graphify",
     prune_sources: list[str] | None = None,
     *,
+    uri: str = DEFAULT_URI,
     directed: bool = False,
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
-) -> nx.Graph:
-    """Load existing graph.json, merge new chunks into it, and save back.
+) -> GraphStore:
+    """Merge new chunks into the existing FalkorDB graph and persist.
 
     Re-extracted files REPLACE their prior contribution: any source_file present
     in new_chunks is dropped from the loaded graph before merging, so a changed
@@ -1274,38 +1354,38 @@ def build_merge(
     Safe to call repeatedly.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
     """
-    graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
-    _loaded = _load_existing_graph(graph_path)
-    if _loaded is not None:
-        existing_nodes, existing_edges, existing_hyperedges = _loaded
-        had_graph = True
-    else:
-        existing_nodes = []
-        existing_edges = []
-        existing_hyperedges = []
-        had_graph = False
+    store = GraphStore(graph_name=graph_name, uri=uri, directed=True)
+    # Pull the existing graph back out of FalkorDB as an extraction-shaped chunk.
+    # Edges are stored in true direction, so (u, v) are the real source/target.
+    existing_nodes = [dict(attrs, id=nid) for nid, attrs in store.nodes(data=True)]
+    existing_edges = []
+    for u, v, a in store.edges(data=True):
+        e = {k: val for k, val in a.items()}
+        e["source"], e["target"] = u, v
+        existing_edges.append(e)
+    existing_hyperedges = list(store.graph.get("hyperedges", []) or [])
+    had_graph = bool(existing_nodes)
 
-    # Effective root for relativizing absolute source_file / prune paths back to the
-    # stored relative source_file keys. When the caller passes root we use it;
-    # otherwise fall back to the graph's recorded scan root, so absolute
-    # prune_sources and new-chunk paths still match even when a caller omits root
-    # (#1571 — the skill's --update runbook calls build_merge without root, so
-    # absolute deleted-file paths never matched the relative node keys and their
-    # nodes survived as ghosts).
+    # Effective root for relativizing absolute source_file / prune paths back to
+    # the stored relative source_file keys. When the caller passes root we use it;
+    # otherwise fall back to the scan root the graph recorded at build time — the
+    # FalkorDB replacement for the `.graphify_root` marker. Without that fallback
+    # a root-less call (the skill's --update runbook) never matches absolute
+    # prune_sources and the deleted files' nodes survive as ghosts (#1571).
     _eff_root = (
         str(Path(root).resolve()) if root is not None
-        else _infer_merge_root(graph_path)
+        else (store.graph.get("scan_root") or None)
     )
 
-    # Re-extracted files REPLACE their prior contribution. Every source_file
-    # present in new_chunks is dropped from the loaded base before merging, so a
-    # CHANGED file's stale nodes/edges don't accumulate across incremental
-    # updates. Without this, build() merges old+new for the same file and only
-    # exact-duplicate edges collapse — edges/nodes that disappeared from the new
-    # version survive forever. Brand-new files aren't in base, so this is a no-op
-    # for them; genuinely deleted files are still handled via prune_sources.
-    # Matched in both raw and _norm_source_file form because new_chunks may carry
-    # absolute win32 paths while the stored graph keeps relative posix (#1007).
+    # Re-extracted files REPLACE their prior contribution (#1344/#1007). Every
+    # source_file present in new_chunks is dropped from the loaded base before
+    # merging, so a CHANGED file's stale nodes/edges don't accumulate across
+    # incremental updates. Without this, build() merges old+new for the same file
+    # and only exact-duplicate edges collapse — edges/nodes that disappeared from
+    # the new version survive forever. Brand-new files aren't in base (no-op);
+    # genuinely deleted files are still handled via prune_sources. Matched in both
+    # raw and _norm_source_file form because new_chunks may carry absolute win32
+    # paths while the stored graph keeps relative posix.
     _replace_root = _eff_root
     new_sources: set[str] = set()
     for ch in new_chunks:
@@ -1327,7 +1407,10 @@ def build_merge(
     base = [{"nodes": existing_nodes, "edges": existing_edges}] if had_graph else []
 
     all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
+    G = build(
+        all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend,
+        root=root, store=store, graph_name=graph_name, uri=uri,
+    )
 
     # Prune set for deleted source files — both the raw form (matches nodes that
     # kept absolute source_file) and the normalised relative form (matches nodes
@@ -1434,7 +1517,7 @@ def build_merge(
 
     # Safety check: refuse to shrink the graph silently (#479)
     # Skip when dedup or prune_sources is active — shrinkage is intentional there.
-    if graph_path.exists() and not dedup and not prune_sources:
+    if existing_nodes and not dedup and not prune_sources:
         existing_n = len(existing_nodes)
         new_n = G.number_of_nodes()
         if new_n < existing_n:
@@ -1446,25 +1529,31 @@ def build_merge(
     return G
 
 
-def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
-    """Return a copy of G with all node IDs prefixed with repo_tag::.
+def prefix_graph_for_global(G, repo_tag: str, target: GraphStore) -> GraphStore:
+    """Copy G's nodes/edges into `target` with all node IDs prefixed repo_tag::.
 
-    Labels are preserved unchanged (for display). A 'local_id' attribute
-    is added to each node so the original ID can be recovered. Edges and
-    their directional attributes (_src/_tgt) are rewritten to match the new
-    prefixed IDs. The 'repo' attribute is set on every node.
+    Labels are preserved unchanged (for display). A 'local_id' attribute is added
+    so the original ID can be recovered, and 'repo' is set on every node. Edges
+    are rewritten to the prefixed IDs.
+
+    The #2261 ``_src``/``_tgt`` rewrite has no analogue here: those markers only
+    existed to recover direction from undirected NetworkX storage. Edges are
+    stored in their native source→target orientation, so prefixing both
+    endpoints keeps direction correct by construction.
     """
-    relabel = {n: f"{repo_tag}::{n}" for n in G.nodes}
-    H = nx.relabel_nodes(G, relabel, copy=True)
-    for node, data in H.nodes(data=True):
-        data["repo"] = repo_tag
-        data.setdefault("local_id", node.split("::", 1)[1])
-    for u, v, data in H.edges(data=True):
-        if "_src" in data and data["_src"] in relabel:
-            data["_src"] = relabel[data["_src"]]
-        if "_tgt" in data and data["_tgt"] in relabel:
-            data["_tgt"] = relabel[data["_tgt"]]
-    return H
+    def _pfx(n: str) -> str:
+        return f"{repo_tag}::{n}"
+
+    nodes = []
+    for nid, data in G.nodes(data=True):
+        attrs = dict(data)
+        attrs["repo"] = repo_tag
+        attrs.setdefault("local_id", nid)
+        nodes.append((_pfx(nid), attrs))
+    edges = [(_pfx(u), _pfx(v), dict(a)) for u, v, a in G.edges(data=True)]
+    target.add_nodes_from(nodes)
+    target.add_edges_from(edges)
+    return target
 
 
 def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
@@ -1495,8 +1584,6 @@ def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
     return unique
 
 
-def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
-    """Remove all nodes tagged with repo_tag from G in-place. Returns count removed."""
-    to_remove = [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
-    G.remove_nodes_from(to_remove)
-    return len(to_remove)
+def prune_repo_from_graph(G: GraphStore, repo_tag: str) -> int:
+    """Remove all nodes tagged with repo_tag from G. Returns count removed."""
+    return G.prune_repo(repo_tag)

@@ -1,28 +1,22 @@
 """Tests for graphify query CLI context filtering."""
 from __future__ import annotations
 
-import json
-
-import networkx as nx
-from networkx.readwrite import json_graph
-
 import graphify.__main__ as mainmod
 
+_NODES = [
+    {"id": "n1", "label": "extract", "source_file": "extract.py", "source_location": "L10", "community": 0, "file_type": "code"},
+    {"id": "n2", "label": "cluster", "source_file": "cluster.py", "source_location": "L5", "community": 0, "file_type": "code"},
+    {"id": "n3", "label": "build", "source_file": "build.py", "source_location": "L1", "community": 1, "file_type": "code"},
+]
+_LINKS = [
+    {"source": "n1", "target": "n2", "relation": "calls", "confidence": "EXTRACTED", "context": "call"},
+    {"source": "n2", "target": "n3", "relation": "imports", "confidence": "EXTRACTED", "context": "import"},
+]
 
-def _write_graph(tmp_path):
-    G = nx.Graph()
-    G.add_node("n1", label="extract", source_file="extract.py", source_location="L10", community=0)
-    G.add_node("n2", label="cluster", source_file="cluster.py", source_location="L5", community=0)
-    G.add_node("n3", label="build", source_file="build.py", source_location="L1", community=1)
-    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", context="call")
-    G.add_edge("n2", "n3", relation="imports", confidence="EXTRACTED", context="import")
+
+def test_query_cli_explicit_context_filter(monkeypatch, tmp_path, capsys, seed_graph):
+    seed_graph(tmp_path, _NODES, _LINKS)
     graph_path = tmp_path / "graph.json"
-    graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")))
-    return graph_path
-
-
-def test_query_cli_explicit_context_filter(monkeypatch, tmp_path, capsys):
-    graph_path = _write_graph(tmp_path)
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -36,8 +30,9 @@ def test_query_cli_explicit_context_filter(monkeypatch, tmp_path, capsys):
     assert "build" not in out
 
 
-def test_query_cli_heuristic_context_filter(monkeypatch, tmp_path, capsys):
-    graph_path = _write_graph(tmp_path)
+def test_query_cli_heuristic_context_filter(monkeypatch, tmp_path, capsys, seed_graph):
+    seed_graph(tmp_path, _NODES, _LINKS)
+    graph_path = tmp_path / "graph.json"
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -51,22 +46,17 @@ def test_query_cli_heuristic_context_filter(monkeypatch, tmp_path, capsys):
     assert "build" not in out
 
 
-def _write_calls_graph(tmp_path):
-    """A single directed `calls` edge on an (on-disk) undirected graph.json,
-
-    the standard `graphify extract`/`update` output shape (`"directed":
-    false`, direction implied only by each link's source/target).
-    """
-    G = nx.Graph()
-    G.add_node("caller", label="caller_fn", source_file="a.py", source_location="L1", community=0)
-    G.add_node("callee", label="callee_fn", source_file="b.py", source_location="L1", community=1)
-    G.add_edge("caller", "callee", relation="calls", confidence="EXTRACTED", context="call")
-    graph_path = tmp_path / "graph.json"
-    graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")))
-    return graph_path
+_CALLS_NODES = [
+    {"id": "caller", "label": "caller_fn", "source_file": "a.py", "source_location": "L1", "community": 0},
+    {"id": "callee", "label": "callee_fn", "source_file": "b.py", "source_location": "L1", "community": 1},
+]
+_CALLS_LINKS = [
+    {"source": "caller", "target": "callee", "relation": "calls",
+     "confidence": "EXTRACTED", "context": "call"},
+]
 
 
-def test_query_cli_preserves_calls_direction_when_seeded_on_callee(monkeypatch, tmp_path, capsys):
+def test_query_cli_preserves_calls_direction_when_seeded_on_callee(monkeypatch, tmp_path, capsys, seed_graph):
     """`graphify query` must render `calls` edges caller->callee regardless of
     which endpoint the query term matches first.
 
@@ -78,7 +68,8 @@ def test_query_cli_preserves_calls_direction_when_seeded_on_callee(monkeypatch, 
     "callee_fn --calls--> caller_fn". graph.json's `source`/`target` for this
     edge stay correct on disk either way; only the query rendering was wrong.
     """
-    graph_path = _write_calls_graph(tmp_path)
+    seed_graph(tmp_path, _CALLS_NODES, _CALLS_LINKS)
+    graph_path = tmp_path / "graph.json"
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -91,9 +82,10 @@ def test_query_cli_preserves_calls_direction_when_seeded_on_callee(monkeypatch, 
     assert "callee_fn --calls" not in out
 
 
-def test_query_cli_preserves_calls_direction_when_seeded_on_caller(monkeypatch, tmp_path, capsys):
+def test_query_cli_preserves_calls_direction_when_seeded_on_caller(monkeypatch, tmp_path, capsys, seed_graph):
     """Same edge, seeded from the caller side — must stay correct too."""
-    graph_path = _write_calls_graph(tmp_path)
+    seed_graph(tmp_path, _CALLS_NODES, _CALLS_LINKS)
+    graph_path = tmp_path / "graph.json"
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr(
         mainmod.sys,
@@ -106,11 +98,22 @@ def test_query_cli_preserves_calls_direction_when_seeded_on_caller(monkeypatch, 
     assert "callee_fn --calls" not in out
 
 
-def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys):
-    """#F4: query CLI must refuse to parse a graph.json that exceeds the cap."""
+def test_query_cli_rejects_oversized_graph(monkeypatch, tmp_path, capsys, _require_falkordb):
+    """#F4: the graph.json back-compat import must refuse a file over the cap.
+
+    No seed_graph here on purpose: with an empty store, `query` falls back to
+    importing graph.json, which is the one path that still parses an arbitrary
+    file and so must still enforce the size cap.
+    """
+    import json
+
     import pytest
 
-    graph_path = _write_graph(tmp_path)
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(
+        {"directed": True, "multigraph": False, "graph": {},
+         "nodes": _NODES, "links": _LINKS}
+    ))
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
     monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 16)
     monkeypatch.setattr(

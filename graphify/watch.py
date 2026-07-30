@@ -698,6 +698,10 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
             n.pop("community", None)
             n.pop("community_name", None)
             n.pop("norm_label", None)
+            # _origin is AST provenance (kept in graph.json for #1116 eviction),
+            # not topology — exclude it so an unchanged graph compares equal
+            # regardless of which serializer wrote each side.
+            n.pop("_origin", None)
             norm_nodes.append(n)
         canonical["nodes"] = sorted(
             norm_nodes,
@@ -742,13 +746,8 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
 
 
 def _topology_from_graph(G) -> dict:
-    from networkx.readwrite import json_graph
-    try:
-        data = json_graph.node_link_data(G, edges="links")
-    except TypeError:
-        data = json_graph.node_link_data(G)
-    data["hyperedges"] = getattr(G, "graph", {}).get("hyperedges", [])
-    return data
+    from graphify.graphjson import to_node_link
+    return to_node_link(G)
 
 
 def _check_shrink(
@@ -1258,7 +1257,10 @@ def _rebuild_code(
             "total_words": detected.get("total_words", 0),
         }
 
-        G = build_from_json(result)
+        # Build into the FalkorDB graph bound to this output dir so query/serve
+        # (which load via the pointer file) see the rebuilt graph.
+        from graphify.store import open_store as _open_store
+        G = build_from_json(result, store=_open_store(out, create=True))
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:

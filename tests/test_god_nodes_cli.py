@@ -73,4 +73,9 @@ def test_god_nodes_cli_missing_graph_errors(monkeypatch, tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         _run(monkeypatch, ["graphify", "god-nodes", "--graph", str(tmp_path / "nope.json")])
     assert exc.value.code == 1
-    assert "graph file not found" in capsys.readouterr().err
+    # FalkorDB-backed: the graph lives in the engine, so a missing graph.json is
+    # not itself the error — an unbuilt graph is, and it says so (same wording as
+    # `affected`, which shares connect_graph).
+    err = capsys.readouterr().err
+    assert "No graph found" in err
+    assert "Re-run /graphify" in err

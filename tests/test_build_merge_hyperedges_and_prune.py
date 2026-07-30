@@ -18,15 +18,27 @@ from pathlib import Path
 
 import pytest
 
-from graphify.build import build_merge, _infer_merge_root
+from graphify.build import build_merge, build_from_json, _infer_merge_root
 
 
-def _write_graph(graph_path: Path, nodes, edges, hyperedges) -> None:
-    """Write a graph.json in the shape to_json emits (top-level hyperedges)."""
-    graph_path.write_text(
-        json.dumps({"nodes": nodes, "edges": edges, "hyperedges": hyperedges}),
-        encoding="utf-8",
+def _seed(make_store, nodes, edges, hyperedges, *, root=None, scan_root=None):
+    """Seed a FalkorDB graph the way a prior build would have left it.
+
+    Replaces the old `_write_graph` graph.json fixture: build_merge now reads its
+    base from the store, so the "existing graph" has to live there. `root`
+    normalizes source_file the way a rooted build would; `scan_root` records the
+    root WITHOUT normalizing, which models a graph built with a root whose
+    semantic nodes still carry absolute source_file paths (#932/#2012).
+    """
+    st = make_store()
+    build_from_json(
+        {"nodes": nodes, "edges": edges, "hyperedges": hyperedges},
+        store=st, root=root,
     )
+    if scan_root is not None:
+        st.graph["scan_root"] = str(Path(scan_root).resolve())
+        st.save_meta()
+    return st
 
 
 def _he_ids(G) -> set[str]:
@@ -35,10 +47,9 @@ def _he_ids(G) -> set[str]:
 
 # ── #1574: hyperedge preservation ─────────────────────────────────────────────
 
-def _seed_two_file_graph(tmp_path):
+def _seed_two_file_graph(tmp_path, make_store):
     root = tmp_path / "corpus"
     root.mkdir()
-    graph_path = tmp_path / "graph.json"
     nodes = [
         {"id": "a1", "label": "a1", "file_type": "document", "source_file": "a.md"},
         {"id": "b1", "label": "b1", "file_type": "document", "source_file": "b.md"},
@@ -48,19 +59,19 @@ def _seed_two_file_graph(tmp_path):
         {"id": "he_b", "label": "flow B", "source_file": "b.md", "nodes": ["b1"]},
         {"id": "he_global", "label": "cross-file flow", "nodes": ["a1", "b1"]},  # no source_file
     ]
-    _write_graph(graph_path, nodes, [], hyperedges)
-    return root, graph_path
+    # scan_root recorded so the root-less calls below can still relativize (#1571).
+    return root, _seed(make_store, nodes, [], hyperedges, root=root, scan_root=root)
 
 
-def test_update_preserves_hyperedges_of_unchanged_files(tmp_path):
-    root, graph_path = _seed_two_file_graph(tmp_path)
+def test_update_preserves_hyperedges_of_unchanged_files(tmp_path, make_store):
+    root, st = _seed_two_file_graph(tmp_path, make_store)
     # Re-extract only b.md, with a fresh hyperedge for it.
     new_chunk = {
         "nodes": [{"id": "b1", "label": "b1", "file_type": "document", "source_file": "b.md"}],
         "edges": [],
         "hyperedges": [{"id": "he_b_v2", "label": "flow B v2", "source_file": "b.md", "nodes": ["b1"]}],
     }
-    G = build_merge([new_chunk], graph_path, dedup=False, root=root)
+    G = build_merge([new_chunk], st.graph_name, dedup=False, root=root)
     ids = _he_ids(G)
     assert "he_a" in ids           # unchanged file's hyperedge preserved (the bug)
     assert "he_global" in ids      # source_file-less hyperedge preserved
@@ -68,24 +79,24 @@ def test_update_preserves_hyperedges_of_unchanged_files(tmp_path):
     assert "he_b" not in ids       # re-extracted file's OLD hyperedge replaced
 
 
-def test_update_without_root_still_preserves_hyperedges(tmp_path):
+def test_update_without_root_still_preserves_hyperedges(tmp_path, make_store):
     """The runbook omits root; the fallback root must not break preservation."""
-    root, graph_path = _seed_two_file_graph(tmp_path)
+    root, st = _seed_two_file_graph(tmp_path, make_store)
     new_chunk = {
         "nodes": [{"id": "b1", "label": "b1", "file_type": "document", "source_file": "b.md"}],
         "edges": [],
         "hyperedges": [{"id": "he_b_v2", "source_file": "b.md", "nodes": ["b1"]}],
     }
-    G = build_merge([new_chunk], graph_path, dedup=False)  # no root
+    G = build_merge([new_chunk], st.graph_name, dedup=False)  # no root
     ids = _he_ids(G)
     assert {"he_a", "he_global", "he_b_v2"} <= ids
     assert "he_b" not in ids
 
 
-def test_deleted_file_hyperedges_are_pruned(tmp_path):
-    root, graph_path = _seed_two_file_graph(tmp_path)
+def test_deleted_file_hyperedges_are_pruned(tmp_path, make_store):
+    root, st = _seed_two_file_graph(tmp_path, make_store)
     deleted_abs = [str(root / "a.md")]
-    G = build_merge([], graph_path, prune_sources=deleted_abs, dedup=False, root=root)
+    G = build_merge([], st.graph_name, prune_sources=deleted_abs, dedup=False, root=root)
     ids = _he_ids(G)
     assert "he_a" not in ids        # deleted file's hyperedge pruned
     assert "he_b" in ids            # untouched file's hyperedge kept
@@ -96,41 +107,45 @@ def test_deleted_file_hyperedges_are_pruned(tmp_path):
 
 # ── #1571: root-less prune (absolute deleted paths vs relative node keys) ──────
 
-def test_prune_without_root_removes_ghost_nodes_via_grandparent_fallback(tmp_path):
+def test_prune_without_root_removes_ghost_nodes_via_recorded_scan_root(tmp_path, make_store):
+    """#1571, store edition: the graph records its scan root at build time (the
+    FalkorDB replacement for the `.graphify_root` marker), so a runbook-style
+    root-less call can still relativize an absolute prune path."""
     root = tmp_path / "corpus"
     (root / "graphify-out").mkdir(parents=True)
-    graph_path = root / "graphify-out" / "graph.json"
     nodes = [
         {"id": "h1", "label": "handoff", "file_type": "document", "source_file": "HANDOFF.md"},
         {"id": "k1", "label": "keep", "file_type": "document", "source_file": "KEEP.md"},
     ]
-    _write_graph(graph_path, nodes, [], [])
+    st = _seed(make_store, nodes, [], [], root=root)
     # Runbook-style call: absolute prune path, NO root passed.
     deleted_abs = [str(root / "HANDOFF.md")]
-    G = build_merge([], graph_path, prune_sources=deleted_abs, dedup=False)
+    G = build_merge([], st.graph_name, prune_sources=deleted_abs, dedup=False)
     labels = {d["label"] for _, d in G.nodes(data=True)}
     assert "handoff" not in labels, "deleted file's ghost node must be pruned without root"
     assert "keep" in labels
 
 
-def test_prune_without_root_uses_graphify_root_marker(tmp_path):
-    # graph.json not under a <root>/graphify-out layout, so grandparent wouldn't
-    # help — the committed .graphify_root marker must be honored instead.
+def test_prune_without_root_uses_recorded_root_outside_graphify_out_layout(tmp_path, make_store):
+    """A scan root that is NOT the output dir's parent must still be honored.
+    _infer_merge_root still reads the committed `.graphify_root` marker for the
+    file-based callers; the store carries the same value as `scan_root`."""
     out = tmp_path / "out"
     out.mkdir()
     graph_path = out / "graph.json"
     real_root = tmp_path / "elsewhere" / "repo"
     real_root.mkdir(parents=True)
     (out / ".graphify_root").write_text(str(real_root), encoding="utf-8")
-    nodes = [{"id": "h1", "label": "handoff", "file_type": "document", "source_file": "HANDOFF.md"}]
-    _write_graph(graph_path, nodes, [], [])
+    graph_path.write_text("{}", encoding="utf-8")
     assert _infer_merge_root(graph_path) == str(real_root.resolve())
-    G = build_merge([], graph_path, prune_sources=[str(real_root / "HANDOFF.md")], dedup=False)
+    nodes = [{"id": "h1", "label": "handoff", "file_type": "document", "source_file": "HANDOFF.md"}]
+    st = _seed(make_store, nodes, [], [], root=real_root)
+    G = build_merge([], st.graph_name, prune_sources=[str(real_root / "HANDOFF.md")], dedup=False)
     assert "handoff" not in {d["label"] for _, d in G.nodes(data=True)}
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
-def test_prune_matches_across_symlinked_root(tmp_path):
+def test_prune_matches_across_symlinked_root(tmp_path, make_store):
     """A symlinked scan root (macOS /var -> /private/var, symlinked home/worktree)
     makes the absolute prune path and the resolved root differ by prefix. The prune
     must still match — lexical relative_to fails, so normalization resolves both
@@ -139,27 +154,24 @@ def test_prune_matches_across_symlinked_root(tmp_path):
     (real / "graphify-out").mkdir(parents=True)
     link = tmp_path / "link"
     os.symlink(real, link)
-    graph_path = real / "graphify-out" / "graph.json"
-    _write_graph(graph_path, [
+    st = _seed(make_store, [
         {"id": "h1", "label": "handoff", "file_type": "document", "source_file": "HANDOFF.md"},
         {"id": "k1", "label": "keep", "file_type": "document", "source_file": "KEEP.md"},
-    ], [], [])
+    ], [], [], root=real)
     # prune path addressed via the SYMLINK, root resolved to the real dir
-    G = build_merge([], graph_path=graph_path,
+    G = build_merge([], st.graph_name,
                     prune_sources=[str(link / "HANDOFF.md")], root=str(real), dedup=False)
     labels = {d["label"] for _, d in G.nodes(data=True)}
     assert "handoff" not in labels and "keep" in labels
 
 
-def test_reextracted_file_in_prune_sources_is_not_deleted(tmp_path):
+def test_reextracted_file_in_prune_sources_is_not_deleted(tmp_path, make_store):
     """#1796: a file present in BOTH new_chunks (re-extracted) and prune_sources
     must be REPLACED, not deleted. The old edit-workflow passed the changed file
     in prune_sources; combined with dedup keeping a same-label node, that used to
     silently delete the freshly re-extracted concept. Replace wins over delete."""
-    graph_path = tmp_path / "graphify-out" / "graph.json"
-    graph_path.parent.mkdir(parents=True)
-    _write_graph(
-        graph_path,
+    st = _seed(
+        make_store,
         nodes=[
             {"id": "foo_widget_cache", "label": "Widget Cache Design",
              "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L1"},
@@ -168,6 +180,7 @@ def test_reextracted_file_in_prune_sources_is_not_deleted(tmp_path):
         ],
         edges=[],
         hyperedges=[],
+        root=tmp_path,
     )
     # foo.md edited: same-label node re-extracted (new content/line)
     new_chunk = {"nodes": [
@@ -175,19 +188,17 @@ def test_reextracted_file_in_prune_sources_is_not_deleted(tmp_path):
          "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L2"}
     ], "edges": []}
 
-    G = build_merge([new_chunk], graph_path=str(graph_path),
+    G = build_merge([new_chunk], st.graph_name,
                     prune_sources=["docs/foo.md"], root=str(tmp_path))
     labels = {G.nodes[n].get("label") for n in G.nodes()}
     assert "Widget Cache Design" in labels, "re-extracted node was wrongly pruned"
 
 
-def test_genuine_deletion_still_prunes(tmp_path):
+def test_genuine_deletion_still_prunes(tmp_path, make_store):
     """#1796 guard must not break real deletions: a file in prune_sources but NOT
     in new_chunks is still removed."""
-    graph_path = tmp_path / "graphify-out" / "graph.json"
-    graph_path.parent.mkdir(parents=True)
-    _write_graph(
-        graph_path,
+    st = _seed(
+        make_store,
         nodes=[
             {"id": "foo_widget_cache", "label": "Widget Cache Design",
              "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L1"},
@@ -196,13 +207,14 @@ def test_genuine_deletion_still_prunes(tmp_path):
         ],
         edges=[],
         hyperedges=[],
+        root=tmp_path,
     )
     new_chunk = {"nodes": [
         {"id": "foo_widget_cache", "label": "Widget Cache Design",
          "file_type": "concept", "source_file": "docs/foo.md", "source_location": "L2"}
     ], "edges": []}
     # bar.md genuinely deleted (not re-extracted)
-    G = build_merge([new_chunk], graph_path=str(graph_path),
+    G = build_merge([new_chunk], st.graph_name,
                     prune_sources=["docs/bar.md"], root=str(tmp_path))
     labels = {G.nodes[n].get("label") for n in G.nodes()}
     assert "Other" not in labels, "genuinely deleted file's node should be pruned"
@@ -211,7 +223,7 @@ def test_genuine_deletion_still_prunes(tmp_path):
 
 # ── #2012: form-insensitive prune (absolute node vs relative prune, and back) ──
 
-def test_prune_matches_node_stored_absolute_against_relative_delete(tmp_path):
+def test_prune_matches_node_stored_absolute_against_relative_delete(tmp_path, make_store):
     """#2012: a node whose source_file survived in ABSOLUTE form must still be
     pruned when the deletion is expressed relative to root. The runbook calls
     build_merge WITHOUT root, so build() does not re-normalize the node's stored
@@ -221,7 +233,6 @@ def test_prune_matches_node_stored_absolute_against_relative_delete(tmp_path):
     now normalizes the node side too + an absolute-identity fallback."""
     root = tmp_path / "corpus"
     (root / "graphify-out").mkdir(parents=True)
-    graph_path = root / "graphify-out" / "graph.json"
     nodes = [
         # gone.py's node kept an ABSOLUTE source_file (a semantic subagent wrote
         # it that way, #932); keep.py's is relative.
@@ -233,34 +244,35 @@ def test_prune_matches_node_stored_absolute_against_relative_delete(tmp_path):
         {"source": "g1", "target": "k1", "type": "calls",
          "source_file": str(root / "gone.py")},
     ]
-    _write_graph(graph_path, nodes, edges, [])
+    # scan_root (not root=) so the absolute source_file is NOT re-normalized —
+    # that mismatched-form survival is exactly what #2012 is about.
+    st = _seed(make_store, nodes, edges, [], scan_root=root)
     # Runbook-style: NO root passed (eff_root inferred from the graphify-out
     # grandparent), so build() leaves the absolute node form intact. Deletion is
     # expressed RELATIVE — a third form vs the stored absolute node.
-    G = build_merge([], graph_path, prune_sources=["gone.py"], dedup=False)
+    G = build_merge([], st.graph_name, prune_sources=["gone.py"], dedup=False)
     labels = {d["label"] for _, d in G.nodes(data=True)}
     assert "gone" not in labels, "absolute-stored node not pruned by relative delete (#2012)"
     assert "keep" in labels
     assert G.number_of_edges() == 0, "edge from the deleted file must be pruned too (#2012)"
 
 
-def test_prune_reextracted_absolute_node_not_deleted(tmp_path):
+def test_prune_reextracted_absolute_node_not_deleted(tmp_path, make_store):
     """#1796 protection must hold in absolute-identity space too: a file present
     in BOTH new_chunks and prune_sources (in mismatched forms) is REPLACED, not
     deleted — the #2012 form-insensitive match must not resurrect the delete for
     a re-extracted file."""
     root = tmp_path / "corpus"
     (root / "graphify-out").mkdir(parents=True)
-    graph_path = root / "graphify-out" / "graph.json"
-    _write_graph(graph_path, [
+    st = _seed(make_store, [
         {"id": "g1", "label": "gone", "file_type": "code",
          "source_file": str(root / "mod.py")},
-    ], [], [])
+    ], [], [], scan_root=root)
     # Re-extracted with a RELATIVE source_file; prune lists it RELATIVE too.
     # No root passed (runbook), so the stored absolute node is not re-normalized.
     new_chunk = {"nodes": [
         {"id": "g1", "label": "gone", "file_type": "code", "source_file": "mod.py"},
     ], "edges": []}
-    G = build_merge([new_chunk], graph_path, prune_sources=["mod.py"], dedup=False)
+    G = build_merge([new_chunk], st.graph_name, prune_sources=["mod.py"], dedup=False)
     labels = {d["label"] for _, d in G.nodes(data=True)}
     assert "gone" in labels, "re-extracted file wrongly pruned across mismatched forms (#2012/#1796)"

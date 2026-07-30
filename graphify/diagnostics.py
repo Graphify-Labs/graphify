@@ -9,8 +9,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-import networkx as nx
-
 
 _SUPPRESSION_DECL_RE = re.compile(r"^\s*(?P<name>seen_[A-Za-z0-9_]+)\s*[:=]")
 _TYPE_TUPLE_RE = re.compile(r"set\[tuple\[(?P<inside>[^\]]+)\]\]")
@@ -234,7 +232,7 @@ def diagnose_extraction(
     post_build_node_count: int | None = None
     try:
         graph_input = deepcopy(extraction)
-        graph: nx.Graph = build_from_json(graph_input, directed=directed, root=root)
+        graph = build_from_json(graph_input, directed=directed, root=root)
         graph_type = type(graph).__name__
         post_build_edge_count = graph.number_of_edges()
         post_build_node_count = graph.number_of_nodes()

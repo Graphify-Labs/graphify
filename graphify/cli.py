@@ -411,7 +411,7 @@ def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
     Delegates to ``graphify.security.check_graph_file_size_cap`` and turns the
     raised ``ValueError`` into a CLI-style ``error: ...`` message + exit 1.
     Use this from ``__main__.py`` subcommands that already use the ``print +
-    sys.exit(1)`` idiom. Library/MCP/loader callers (``serve._load_graph``,
+    sys.exit(1)`` idiom. Library/MCP/loader callers (``serve._connect_graph``,
     ``build``, ``benchmark``, ``tree_html``, ``callflow_html``, ``prs``,
     ``global_graph``, ``watch``, ``export``) call the security helper directly
     and let the ``ValueError`` propagate.
@@ -853,9 +853,8 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _query_graph_text
+        from graphify.serve import _query_graph_text, _connect_graph
         from graphify.security import sanitize_label
-        from networkx.readwrite import json_graph
         from graphify import querylog
 
         question = sys.argv[2]
@@ -892,53 +891,16 @@ def dispatch_command(cmd: str) -> None:
             else:
                 i += 1
         gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        if not gp.suffix == ".json":
-            print(f"error: graph file must be a .json file", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        try:
-            import json as _json
-            import networkx as _nx
-
-            _raw = _json.loads(gp.read_text(encoding="utf-8"))
-            if "links" not in _raw and "edges" in _raw:
-                _raw = dict(_raw, links=_raw["edges"])
-            # `query` deliberately keeps the graph undirected (unlike `path` /
-            # `explain`, which force directed=True): BFS/DFS here must explore
-            # both callers and callees of the seed node to build useful
-            # context, and forcing a DiGraph would make G.neighbors() return
-            # successors only, silently dropping every caller-side result for
-            # a seed with no outgoing edges. Direction is instead preserved
-            # per-edge below (mirrors graphify/build.py's _src/_tgt pattern)
-            # so the *rendering* stays correct without narrowing traversal.
-            _raw = dict(
-                _raw,
-                links=[
-                    {**link, "_src": link.get("source"), "_tgt": link.get("target")}
-                    for link in _raw.get("links", [])
-                ],
-            )
-            try:
-                G = json_graph.node_link_graph(_raw, edges="links")
-            except TypeError:
-                G = json_graph.node_link_graph(_raw)
-            try:
-                from graphify.build import graph_has_legacy_ids as _legacy
-                if _legacy(_raw.get("nodes", [])):
-                    print(
-                        "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
-                        "rebuild with `graphify extract --force` to get path-qualified IDs "
-                        "(fixes same-name-file collisions).",
-                        file=sys.stderr,
-                    )
-            except Exception:
-                pass
-        except Exception as exc:
-            print(f"error: could not load graph: {exc}", file=sys.stderr)
-            sys.exit(1)
+        # FalkorDB-only: the graph lives in the engine, located via the
+        # falkordb.json pointer next to graph_path; the legacy graph.json artifact
+        # need not exist, so there is no file-existence/suffix/size check here.
+        # Traversal direction is not narrowed the way the old undirected
+        # node_link_graph load was: the store keeps each edge's native
+        # source→target orientation, and _query_graph_text walks both incident
+        # directions, so caller-side results for a seed with no outgoing edges are
+        # still reachable. _connect_graph also emits the pre-#1504 legacy-node-ID
+        # nudge that the old json loader printed here.
+        G = _connect_graph(graph_path)
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
@@ -966,7 +928,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
+        from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, connect_graph
         query = sys.argv[2]
         graph_path = _default_graph_path()
         depth = 2
@@ -1002,17 +964,15 @@ def dispatch_command(cmd: str) -> None:
                 i += 1
             else:
                 i += 1
+        # FalkorDB-only: the graph lives in the engine, located via the
+        # falkordb.json pointer next to graph_path — the legacy graph.json file
+        # need not exist. connect_graph resolves the pointer and guards the
+        # empty/missing case (matches the `query` command).
         gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        if not gp.suffix == ".json":
-            print("error: graph file must be a .json file", file=sys.stderr)
-            sys.exit(1)
         try:
-            graph = load_graph(gp)
+            graph = connect_graph(gp)
         except Exception as exc:
-            print(f"error: could not load graph: {exc}", file=sys.stderr)
+            print(f"error: could not connect to graph: {exc}", file=sys.stderr)
             sys.exit(1)
         print(
             format_affected(
@@ -1027,7 +987,7 @@ def dispatch_command(cmd: str) -> None:
         # README-advertised capability, but never a CLI subcommand — `graphify
         # god_nodes` fell through to "unknown command" (#2004). Wire it as a
         # read-only graph query, mirroring `affected`.
-        from graphify.affected import load_graph
+        from graphify.affected import connect_graph
         from graphify.analyze import god_nodes as _god_nodes
         from graphify.security import sanitize_label as _sanitize_label
         graph_path = _default_graph_path()
@@ -1059,16 +1019,13 @@ def dispatch_command(cmd: str) -> None:
             else:
                 i += 1
         gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        if not gp.suffix == ".json":
-            print("error: graph file must be a .json file", file=sys.stderr)
-            sys.exit(1)
+        # FalkorDB-only: the graph lives in the engine, located via the
+        # falkordb.json pointer next to graph_path, so the legacy graph.json file
+        # need not exist (matches the `affected` command).
         try:
-            G = load_graph(gp)
+            G = connect_graph(gp)
         except Exception as exc:
-            print(f"error: could not load graph: {exc}", file=sys.stderr)
+            print(f"error: could not connect to graph: {exc}", file=sys.stderr)
             sys.exit(1)
         gods = _god_nodes(G, top_n=top_n)
         if as_json:
@@ -1172,9 +1129,7 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _pick_scored_endpoint, _score_nodes
-        from networkx.readwrite import json_graph
-        import networkx as _nx
+        from graphify.serve import _pick_scored_endpoint, _score_nodes, _connect_graph
 
         source_label = sys.argv[2]
         target_label = sys.argv[3]
@@ -1184,24 +1139,12 @@ def dispatch_command(cmd: str) -> None:
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
         gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        _raw = json.loads(gp.read_text(encoding="utf-8"))
-        if "links" not in _raw and "edges" in _raw:
-            _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee
-        # direction, and multigraph so exact-pair parallel links (e.g. a
-        # `references` and a `calls` edge between the same two nodes) survive load
-        # instead of being silently collapsed last-writer-wins — otherwise the
-        # printed relation could be one the traversed pair doesn't actually
-        # carry (#2074). Local to this read; serve's shared graph is untouched.
-        _raw = {**_raw, "directed": True, "multigraph": True}
-        try:
-            G = json_graph.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(_raw)
+        # FalkorDB-only: the graph lives in the engine (no graph.json file needed).
+        # The store keeps each edge's native caller→callee orientation and its
+        # parallel links, so the #2074 "directed + multigraph" load flags have no
+        # analogue here — direction comes from has_directed_edge and every
+        # parallel relation from edge_datas/edge_attrs_all.
+        G = _connect_graph(graph_path)
         src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
         if not src_scored:
@@ -1237,17 +1180,11 @@ def dispatch_command(cmd: str) -> None:
                         f"(top score {_top:g}, runner-up {_runner:g})",
                         file=sys.stderr,
                     )
-        # Deterministic shortest path (#2074): to_undirected(as_view=True)
-        # iterates neighbors via a hash-seeded set union, so among equal-length
-        # paths BFS returned an arbitrary route that varied per process. Build a
-        # sorted, materialized undirected graph so neighbor order — and thus the
-        # chosen path — is canonical for a given graph.json.
-        _und = _nx.Graph()
-        _und.add_nodes_from(sorted(G.nodes))
-        _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
-        try:
-            path_nodes = _nx.shortest_path(_und, src_nid, tgt_nid)
-        except (_nx.NetworkXNoPath, _nx.NodeNotFound):
+        # Deterministic shortest path (#2074): the store's BFS already walks a
+        # sorted adjacency, so among equal-length paths the chosen route is
+        # canonical for a given graph — no sorted scratch copy needed here.
+        path_nodes = G.shortest_path(src_nid, tgt_nid)
+        if not path_nodes:
             print(f"No path found between '{source_label}' and '{target_label}'.")
             sys.exit(0)
         hops = len(path_nodes) - 1
@@ -1259,7 +1196,7 @@ def dispatch_command(cmd: str) -> None:
             # direction — never a fabricated `calls` (#2074). A pair may carry
             # several parallel relations; show all, and fall back to an honest
             # "related" when the stored edge has no relation.
-            if G.has_edge(u, v):
+            if G.has_directed_edge(u, v):
                 datas = edge_datas(G, u, v)
                 forward = True
             else:
@@ -1289,8 +1226,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _find_node
-        from networkx.readwrite import json_graph
+        from graphify.serve import _find_node, _connect_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
@@ -1299,25 +1235,33 @@ def dispatch_command(cmd: str) -> None:
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
         gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        _raw = json.loads(gp.read_text(encoding="utf-8"))
-        if "links" not in _raw and "edges" in _raw:
-            _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee direction.
-        _raw = {**_raw, "directed": True}
-        try:
-            G = json_graph.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(_raw)
+        G = _connect_graph(graph_path)
         matches = _find_node(G, label)
         if not matches:
             print(f"No node matching '{label}' found.")
             sys.exit(0)
         nid = matches[0]
-        d = G.nodes[nid]
+        if hasattr(G, "node_connections"):
+            # FalkorDB-native: node detail + connections in two scoped queries
+            # instead of walking successors/predecessors node-by-node.
+            d, deg = G.node_detail(nid)
+            connections = [
+                (c["dir"], c["label"], c["relation"], c["confidence"], c["degree"],
+                 c["source_file"], c["source_location"])
+                for c in G.node_connections(nid)
+            ]
+        else:
+            from graphify.build import edge_data
+            d = G.nodes[nid]
+            deg = G.degree(nid)
+            _raw_conns = [("out", nb, edge_data(G, nid, nb)) for nb in G.successors(nid)]
+            _raw_conns += [("in", nb, edge_data(G, nb, nid)) for nb in G.predecessors(nid)]
+            connections = [
+                (dr, G.nodes[nb].get("label", nb), e.get("relation", ""),
+                 e.get("confidence", ""), G.degree(nb),
+                 e.get("source_file") or "", e.get("source_location") or "")
+                for dr, nb, e in _raw_conns
+            ]
         print(f"Node: {d.get('label', nid)}")
         print(f"  ID:        {nid}")
         print(
@@ -1349,27 +1293,17 @@ def dispatch_command(cmd: str) -> None:
                 print(_line)
         except Exception:
             pass
-        print(f"  Degree:    {G.degree(nid)}")
-        from graphify.build import edge_data
-        connections: list[tuple[str, str, dict]] = []  # (direction, neighbor_id, edge_data)
-        for nb in G.successors(nid):
-            connections.append(("out", nb, edge_data(G, nid, nb)))
-        for nb in G.predecessors(nid):
-            connections.append(("in", nb, edge_data(G, nb, nid)))
+        print(f"  Degree:    {deg}")
         if connections:
             print(f"\nConnections ({len(connections)}):")
-            connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
-            for direction, nb, edata in connections[:20]:
-                rel = edata.get("relation", "")
-                conf = edata.get("confidence", "")
+            connections.sort(key=lambda c: c[4], reverse=True)
+            for direction, nb_label, rel, conf, _deg, sfile, loc in connections[:20]:
                 arrow = "-->" if direction == "out" else "<--"
                 # Append the edge's location — the actual call/import/reference
                 # SITE (in the caller's file for an incoming call), not a def
                 # line (#BUG1). Labeled by [rel] so the meaning is unambiguous.
-                loc = edata.get("source_location") or ""
-                sfile = edata.get("source_file") or ""
                 at = f" {sfile}:{loc}" if loc else ""
-                print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}")
+                print(f"  {arrow} {nb_label} [{rel}] [{conf}]{at}")
             if len(connections) > 20:
                 remainder = connections[20:]
                 print(f"  ... and {len(remainder)} more")
@@ -1378,9 +1312,8 @@ def dispatch_command(cmd: str) -> None:
                 # connections by direction + file so their shape is visible
                 # without falling back to a repo-wide grep.
                 by_file: dict[tuple[str, str], int] = {}
-                for direction, _nb, edata in remainder:
-                    sfile = edata.get("source_file") or "(unknown file)"
-                    key = (direction, sfile)
+                for direction, _nb_label, _rel, _conf, _deg, sfile, _loc in remainder:
+                    key = (direction, sfile or "(unknown file)")
                     by_file[key] = by_file.get(key, 0) + 1
                 # Count desc, then (direction, file) so equal-count groups have a
                 # byte-stable order (not the degree-derived insertion order).
@@ -1605,15 +1538,11 @@ def dispatch_command(cmd: str) -> None:
                 i_arg += 1
         if watch_path is None:
             watch_path = Path(".")
+        # FalkorDB-only: graph_json locates the falkordb.json pointer (its parent
+        # dir); the legacy graph.json artifact need not exist. _connect_graph
+        # resolves the pointer and errors with "run /graphify" if no graph is built.
         graph_json = graph_override if graph_override is not None else watch_path / _GRAPHIFY_OUT / "graph.json"
-        if not graph_json.exists():
-            print(
-                f"error: no graph found at {graph_json} — run /graphify first",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        from networkx.readwrite import json_graph as _jg
-        from graphify.build import build_from_json
+        from graphify.serve import _connect_graph
         from graphify.cluster import cluster, score_all, remap_communities_to_previous
         from graphify.analyze import (
             god_nodes,
@@ -1624,29 +1553,13 @@ def dispatch_command(cmd: str) -> None:
         from graphify.export import to_json, to_html
 
         stages = _StageTimer(co_timing)
-        print("Loading existing graph...")
-        # Solution 3 (#1019): don't hard-exit on an oversized graph.json here.
-        # Core outputs (graph.json + GRAPH_REPORT.md) still get written; the
-        # graph.html render below falls back to the community-aggregation view
-        # (node_limit=5000) when over the cap.
-        from graphify.security import check_graph_file_size_cap as _check_cap
-        _over_cap = False
-        try:
-            _check_cap(graph_json)
-        except ValueError:
-            _over_cap = True
-            try:
-                _over_cap_bytes = graph_json.stat().st_size
-            except OSError:
-                _over_cap_bytes = -1
-            print(
-                f"warning: graph.json exceeds cap ({_over_cap_bytes} bytes); "
-                f"falling back to community-aggregation view (node_limit=5000)",
-                file=sys.stderr,
-            )
-        _raw = json.loads(graph_json.read_text(encoding="utf-8"))
-        _directed = bool(_raw.get("directed", False))
-        G = build_from_json(_raw, directed=_directed)
+        print("Connecting to existing graph...")
+        G = _connect_graph(str(graph_json))
+        # No graph.json file-size cap in FalkorDB mode (the graph lives in the
+        # engine). Preserve the #1019 huge-graph guard by node count: very large
+        # graphs still fall back to the community-aggregation view (node_limit=5000)
+        # in the graph.html render below.
+        _over_cap = G.number_of_nodes() > 5000
         print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
         stages.mark("load")
         print("Re-clustering...")
@@ -1657,9 +1570,9 @@ def dispatch_command(cmd: str) -> None:
         # labels follow raw cid index and become misaligned whenever the
         # graph has changed between labeling and cluster-only (#1027).
         previous_node_community = {
-            n["id"]: n["community"]
-            for n in _raw.get("nodes", [])
-            if n.get("community") is not None and n.get("id") is not None
+            nid: attrs["community"]
+            for nid, attrs in G.nodes(data=True)
+            if attrs.get("community") is not None
         }
         if previous_node_community:
             communities = remap_communities_to_previous(communities, previous_node_community)
@@ -2021,43 +1934,26 @@ def dispatch_command(cmd: str) -> None:
         # the merge so a human can investigate.
         _MERGE_MAX_BYTES = 50 * 1024 * 1024
         _MERGE_MAX_NODES = 100_000
-        import networkx as _nx
-        from networkx.readwrite import json_graph as _jg
-        def _load_graph(p: str):
-            path_obj = Path(p)
-            try:
-                size = path_obj.stat().st_size
-            except OSError as exc:
-                raise RuntimeError(f"cannot stat {p}: {exc}") from exc
-            if size > _MERGE_MAX_BYTES:
-                raise RuntimeError(
-                    f"graph.json {p} is {size} bytes, exceeds {_MERGE_MAX_BYTES}-byte cap"
-                )
-            data = json.loads(path_obj.read_text(encoding="utf-8"))
-            # A committed raw (--no-cluster) graph stores edges under "edges";
-            # parse via the shared links/edges-normalizing loader (#2212).
-            from graphify.paths import load_node_link_graph as _lnlg
-            return _lnlg(data), data
+        # Pure-JSON node-link handling, no NetworkX: this merges graph.json
+        # artifacts, not the live store. load_node_link enforces the byte cap and
+        # normalizes a raw --no-cluster graph's "edges" key to "links" (#2212).
+        from graphify.graphjson import load_node_link, merge_node_link, node_count
         try:
-            G_cur, _ = _load_graph(_current_path)
-            G_oth, _ = _load_graph(_other_path)
+            cur = load_node_link(_current_path, max_bytes=_MERGE_MAX_BYTES)
+            oth = load_node_link(_other_path, max_bytes=_MERGE_MAX_BYTES)
         except Exception as exc:
             print(f"[graphify merge-driver] error loading graphs: {exc}", file=sys.stderr)
             sys.exit(1)  # surface the conflict so git doesn't accept a corrupt merge
-        merged = _nx.compose(G_cur, G_oth)
-        if merged.number_of_nodes() > _MERGE_MAX_NODES:
+        merged = merge_node_link([cur, oth])
+        if node_count(merged) > _MERGE_MAX_NODES:
             print(
-                f"[graphify merge-driver] merged graph has {merged.number_of_nodes()} nodes, "
+                f"[graphify merge-driver] merged graph has {node_count(merged)} nodes, "
                 f"exceeds {_MERGE_MAX_NODES}-node cap; aborting merge.",
                 file=sys.stderr,
             )
             sys.exit(1)
-        try:
-            out_data = _jg.node_link_data(merged, edges="links")
-        except TypeError:
-            out_data = _jg.node_link_data(merged)
         from graphify.paths import write_json_atomic
-        write_json_atomic(_current_path, out_data, indent=2)
+        write_json_atomic(_current_path, merged, indent=2)
         sys.exit(0)
 
     elif cmd == "merge-graphs":
@@ -2079,49 +1975,22 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        import networkx as _nx
-        from networkx.readwrite import json_graph as _jg
-        from graphify.build import prefix_graph_for_global as _prefix, distinct_repo_tags as _repo_tags
-        graphs = []
+        # Pure-JSON node-link handling, no NetworkX: these are graph.json
+        # artifacts, not the live store. load_node_link normalizes an "edges"-keyed
+        # graph to "links" (#738/#2212). The old nx.compose type-normalization
+        # (#1606: directed vs undirected, multi vs simple) has no analogue — plain
+        # dicts carry no graph type to conflict on.
+        from graphify.build import distinct_repo_tags as _repo_tags
+        from graphify.graphjson import (
+            load_node_link, merge_node_link, prefix_node_link, node_count, edge_count,
+        )
+        datas = []
         for gp in graph_paths:
             if not gp.exists():
                 print(f"error: not found: {gp}", file=sys.stderr)
                 sys.exit(1)
             _enforce_graph_size_cap_or_exit(gp)
-            data = json.loads(gp.read_text(encoding="utf-8"))
-            # Normalize edges/links key before loading — graphify writes "links"
-            # via node_link_data but older runs may have used "edges" (#738).
-            if "links" not in data and "edges" in data:
-                data = dict(data, links=data["edges"])
-            # Preserve stored edge direction across undirected node_link_graph (#2261).
-            # Mirrors cli.py's query pattern and export.py's _src/_tgt restoration.
-            data = dict(
-                data,
-                links=[
-                    {**link, "_src": link.get("source"), "_tgt": link.get("target")}
-                    for link in data.get("links", [])
-                ],
-            )
-            try:
-                G = _jg.node_link_graph(data, edges="links")
-            except TypeError:
-                G = _jg.node_link_graph(data)
-            graphs.append(G)
-        # nx.compose requires all graphs to be the same type.  When input graphs
-        # come from different sources (e.g. an AST-only run vs a full LLM run) one
-        # may be a MultiGraph and another a Graph.  Normalise everything to Graph
-        # (the graphify default) by converting MultiGraphs with nx.Graph().
-        def _to_simple(g: "_nx.Graph") -> "_nx.Graph":
-            # nx.compose requires every graph to be the same type. Inputs may
-            # disagree on BOTH axes — directed vs undirected, and multi vs simple
-            # — because per-repo graph.json files are written by different extract
-            # paths at different times. Normalise everything to a plain undirected
-            # Graph (the merged cross-repo view is undirected anyway), which covers
-            # DiGraph / MultiGraph / MultiDiGraph. Without this a directed input
-            # crashed compose with "All graphs must be directed or undirected" (#1606).
-            if type(g) is not _nx.Graph:
-                return _nx.Graph(g)
-            return g
+            datas.append(load_node_link(gp))
         # Unique repo tag per graph. The bare `graphify-out/..` dir name is not
         # unique across inputs (src/graphify-out and frontend/src/graphify-out both
         # → "src"), which collides same-stem node ids and silently merges unrelated
@@ -2130,25 +1999,14 @@ def dispatch_command(cmd: str) -> None:
         naive_tags = [gp.parent.parent.name for gp in graph_paths]
         if len(set(naive_tags)) != len(naive_tags):
             print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
-        merged = _nx.Graph()
-        for G, repo_tag in zip(graphs, repo_tags):
-            prefixed = _to_simple(_prefix(G, repo_tag))
-            merged = _nx.compose(merged, prefixed)
-        try:
-            out_data = _jg.node_link_data(merged, edges="links")
-        except TypeError:
-            out_data = _jg.node_link_data(merged)
-        # Restore original edge direction from _src/_tgt markers (same pattern as export.py #563/#2261)
-        for link in out_data.get("links", []):
-            tsrc = link.pop("_src", None)
-            ttgt = link.pop("_tgt", None)
-            if tsrc is not None and ttgt is not None:
-                link["source"] = tsrc
-                link["target"] = ttgt
+        merged = merge_node_link(
+            [prefix_node_link(data, repo_tag) for data, repo_tag in zip(datas, repo_tags)],
+            directed=False,  # the combined cross-repo view is undirected (#1606)
+        )
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
-        _wja(out_path, out_data, indent=2)
-        print(f"Merged {len(graphs)} graphs -> {merged.number_of_nodes()} nodes, {merged.number_of_edges()} edges")
+        _wja(out_path, merged, indent=2)
+        print(f"Merged {len(datas)} graphs -> {node_count(merged)} nodes, {edge_count(merged)} edges")
         print(f"Written to: {out_path}")
 
     elif cmd == "clone":
@@ -2323,39 +2181,14 @@ def dispatch_command(cmd: str) -> None:
             print(f"callflow HTML written - open in any browser: {out}")
             sys.exit(0)
 
-        from networkx.readwrite import json_graph as _jg
-        from graphify.build import build_from_json as _bfj
-        from graphify.security import check_graph_file_size_cap as _check_cap
+        from graphify.serve import _connect_graph
 
-        # Solution 3 (#1019): for the HTML view, an oversized graph.json should
-        # not be a hard error. Detect the over-cap condition here and fall back
-        # to the community-aggregation view (node_limit=5000) below instead of
-        # exiting 1. All other subcommands keep the hard cap.
-        _over_cap = False
-        try:
-            _check_cap(graph_path)
-        except ValueError as _cap_err:
-            if subcmd == "html":
-                _over_cap = True
-                try:
-                    _over_cap_bytes = graph_path.stat().st_size
-                except OSError:
-                    _over_cap_bytes = -1
-                print(
-                    f"warning: graph.json exceeds cap ({_over_cap_bytes} bytes); "
-                    f"falling back to community-aggregation view (node_limit=5000)",
-                    file=sys.stderr,
-                )
-            else:
-                print(f"error: {_cap_err}", file=sys.stderr)
-                sys.exit(1)
-        _raw = json.loads(graph_path.read_text(encoding="utf-8"))
-        if "links" not in _raw and "edges" in _raw:
-            _raw = dict(_raw, links=_raw["edges"])
-        try:
-            G = _jg.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = _jg.node_link_graph(_raw)
+        G = _connect_graph(str(graph_path))
+        # No graph.json file-size cap in FalkorDB mode (the graph lives in the
+        # engine). Preserve the #1019 html guard by node count: for the html view,
+        # very large graphs fall back to the community-aggregation view
+        # (node_limit=5000) below instead of rendering an unusable full graph.
+        _over_cap = subcmd == "html" and G.number_of_nodes() > 5000
 
         # Load optional analysis/labels
         communities: dict[int, list[str]] = {}
@@ -3496,6 +3329,10 @@ def dispatch_command(cmd: str) -> None:
         from graphify.export import to_json as _to_json
         from graphify.analyze import god_nodes as _god_nodes, surprising_connections as _surprising
         dedup_backend = backend if dedup_llm else None
+        # Bind every build/merge/export step to the one FalkorDB graph for this
+        # output dir (open_store writes the pointer file so query/serve/etc. find it).
+        from graphify.store import open_store as _open_store
+        _store = _open_store(graphify_out, create=True)
         if incremental_mode:
             # Prune everything the current scan no longer covers: genuinely
             # deleted manifest rows, excluded-but-alive manifest rows (#1908),
@@ -3507,14 +3344,15 @@ def dispatch_command(cmd: str) -> None:
                     _prune_sources.append(_src)
             G = _build_merge(
                 [merged],
-                graph_path=existing_graph_path,
+                graph_name=_store.graph_name,
+                uri=_store.uri,
                 prune_sources=_prune_sources or None,
                 dedup=True,
                 dedup_llm_backend=dedup_backend,
                 root=target,
             )
         else:
-            G = _build([merged], dedup=True, dedup_llm_backend=dedup_backend, root=target)
+            G = _build([merged], dedup=True, dedup_llm_backend=dedup_backend, root=target, store=_store)
         stages.mark("build")
         if G.number_of_nodes() == 0:
             print(

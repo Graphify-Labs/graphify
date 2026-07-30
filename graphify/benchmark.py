@@ -1,10 +1,11 @@
 """Token-reduction benchmark - measures how much context graphify saves vs naive full-corpus approach."""
 from __future__ import annotations
 import sys
-import networkx as nx
+from pathlib import Path
 
 from graphify.build import edge_data
 from graphify.serve import _query_terms
+from graphify.store import open_store
 from graphify.paths import default_graph_json as _default_graph_json
 
 
@@ -96,12 +97,22 @@ def run_benchmark(
 
     Returns dict with: corpus_tokens, avg_query_tokens, reduction_ratio, per_question
     """
-    graph_path = graph_path or _default_graph_json()
-    # Size-cap check + links/edges normalization + node-link parse. A raw
-    # --no-cluster graph stores edges under "edges" and used to KeyError
-    # here (#2212).
-    from graphify.paths import load_node_link_graph
-    G = load_node_link_graph(graph_path)
+    # FalkorDB-only: graph_path is the legacy graph.json location; its parent dir
+    # holds the pointer to the actual graph, so no file parsing (and no "edges"
+    # vs "links" key normalization, #2212) is involved.
+    resolved = Path(graph_path or _default_graph_json())
+    out_dir = resolved.parent if resolved.suffix else resolved
+    G = open_store(out_dir, create=False)
+    if G.number_of_nodes() == 0:
+        # Back-compat, matching serve._connect_graph and affected.connect_graph:
+        # an empty store may still have a node-link graph.json beside it (a
+        # pre-FalkorDB project, or a `--no-cluster` run that only wrote JSON).
+        # Import it so `graphify benchmark` works on the same graphs the read
+        # commands already accept.
+        from graphify.serve import _import_graph_json_into_store
+
+        gj = resolved if resolved.suffix == ".json" else (out_dir / "graph.json")
+        _import_graph_json_into_store(gj, G)
 
     if corpus_words is None:
         # Rough estimate: each node label is ~3 words, plus source context

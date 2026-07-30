@@ -4,7 +4,6 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
-import networkx as nx
 
 from graphify.build import edge_data
 

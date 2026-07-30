@@ -1,6 +1,6 @@
 # graphify reference: query, path, explain
 
-Load this when the user asks a question against an existing graph, or runs `/graphify path` or `/graphify explain`. The core's query stub points here for the full traversal flow. These flows use the `graphify query` CLI when it is available and fall back to an inline NetworkX traversal otherwise.
+Load this when the user asks a question against an existing graph, or runs `/graphify path` or `/graphify explain`. The core's query stub points here for the full traversal flow. These flows use the `graphify query` CLI when it is available and fall back to an inline GraphStore traversal otherwise.
 
 Two traversal modes - choose based on the question:
 
@@ -12,8 +12,9 @@ Two traversal modes - choose based on the question:
 First check the graph exists:
 ```bash
 $(cat graphify-out/.graphify_python) -c "
-from pathlib import Path
-if not Path('graphify-out/graph.json').exists():
+from graphify.store import open_store
+G = open_store('graphify-out', create=False)
+if G.number_of_nodes() == 0:
     print('ERROR: No graph found. Run /graphify <path> first to build the graph.')
     raise SystemExit(1)
 "
@@ -68,7 +69,7 @@ graphify query "QUESTION"
 # or: graphify query "QUESTION" --dfs --budget 3000
 ```
 
-If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal inline:
+If the CLI is unavailable, open the FalkorDB-backed graph and run the traversal inline:
 
 1. Find the 1-3 nodes whose label best matches the expanded tokens.
 2. Run the appropriate traversal from each starting node.
@@ -78,13 +79,10 @@ If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal 
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
-import sys, json
-from networkx.readwrite import json_graph
-import networkx as nx
-from pathlib import Path
+import sys
+from graphify.store import open_store
 
-data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
-G = json_graph.node_link_graph(data, edges='links')
+G = open_store('graphify-out', create=False)
 
 question = 'QUESTION'
 mode = 'MODE'  # 'bfs' or 'dfs'
@@ -153,7 +151,7 @@ for nid in ranked_nodes:
     lines.append(f'  NODE {d.get(\"label\", nid)} [src={d.get(\"source_file\",\"\")} loc={d.get(\"source_location\",\"\")}]')
 for u, v in subgraph_edges:
     if u in subgraph_nodes and v in subgraph_nodes:
-        _raw = G[u][v]; d = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
+        d = G[u][v]
         lines.append(f'  EDGE {G.nodes[u].get(\"label\",u)} --{d.get(\"relation\",\"\")} [{d.get(\"confidence\",\"\")}]--> {G.nodes[v].get(\"label\",v)}')
 
 output = '\n'.join(lines)
@@ -195,13 +193,10 @@ If the CLI is unavailable, run it inline:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
-import json, sys
-import networkx as nx
-from networkx.readwrite import json_graph
-from pathlib import Path
+import sys
+from graphify.store import open_store
 
-data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
-G = json_graph.node_link_graph(data, edges='links')
+G = open_store('graphify-out', create=False)
 
 a_term = 'NODE_A'
 b_term = 'NODE_B'
@@ -222,22 +217,20 @@ if not src or not tgt:
     print(f'Could not find nodes matching: {a_term!r} or {b_term!r}')
     sys.exit(0)
 
-try:
-    path = nx.shortest_path(G, src, tgt)
+path = G.shortest_path(src, tgt)
+if not path:
+    print(f'No path found between {a_term!r} and {b_term!r}')
+else:
     print(f'Shortest path ({len(path)-1} hops):')
     for i, nid in enumerate(path):
         label = G.nodes[nid].get('label', nid)
         if i < len(path) - 1:
-            _raw = G[nid][path[i+1]]; edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
+            edge = G[nid][path[i+1]]
             rel = edge.get('relation', '')
             conf = edge.get('confidence', '')
             print(f'  {label} --{rel}--> [{conf}]')
         else:
             print(f'  {label}')
-except nx.NetworkXNoPath:
-    print(f'No path found between {a_term!r} and {b_term!r}')
-except nx.NodeNotFound as e:
-    print(f'Node not found: {e}')
 "
 ```
 
@@ -263,13 +256,10 @@ If the CLI is unavailable, run it inline:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
-import json, sys
-import networkx as nx
-from networkx.readwrite import json_graph
-from pathlib import Path
+import sys
+from graphify.store import open_store
 
-data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
-G = json_graph.node_link_graph(data, edges='links')
+G = open_store('graphify-out', create=False)
 
 term = 'NODE_NAME'
 term_lower = term.lower()
@@ -293,7 +283,7 @@ print(f'  degree: {G.degree(nid)}')
 print()
 print('CONNECTIONS:')
 for neighbor in G.neighbors(nid):
-    _raw = G[nid][neighbor]; edge = next(iter(_raw.values()), {}) if isinstance(G, nx.MultiGraph) else _raw
+    edge = G[nid][neighbor]
     nlabel = G.nodes[neighbor].get('label', neighbor)
     rel = edge.get('relation', '')
     conf = edge.get('confidence', '')
