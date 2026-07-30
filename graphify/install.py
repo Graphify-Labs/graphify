@@ -915,6 +915,9 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
         print(f"  {instructions}  ->  deleted (was empty after removal)")
 _ANTIGRAVITY_RULES_PATH = Path(".agents") / "rules" / "graphify.md"
 _ANTIGRAVITY_WORKFLOW_PATH = Path(".agents") / "workflows" / "graphify.md"
+# Names no SKILL.md location on purpose: this constant is shared by the global and
+# project-scoped installs, which put the skill in different places, so any hardcoded
+# path dangles for the other scope. Antigravity resolves the skill by frontmatter name.
 _ANTIGRAVITY_WORKFLOW = """\
 ---
 name: graphify
@@ -923,7 +926,7 @@ description: Turn any folder of files into a navigable knowledge graph
 
 # Workflow: graphify
 
-Follow the graphify skill installed at ~/.gemini/config/skills/graphify/SKILL.md to run the full pipeline.
+Follow the graphify skill to run the full pipeline.
 
 If no path argument is given, use `.` (current directory).
 """
