@@ -1119,8 +1119,9 @@ def _is_ignored(
 
     def _eval(target: Path) -> bool:
         """Apply last-match-wins to a single target path."""
-        if _cache is not None and target in _cache:
-            return _cache[target]
+        cache_key = (target, frozenset(sources)) if sources else target
+        if _cache is not None and cache_key in _cache:
+            return _cache[cache_key]
         def _matches(rel: str, p: str, path_relative: bool) -> bool:
             if path_relative:
                 return _match_anchored_ignore_pattern(rel, p)
@@ -1169,7 +1170,7 @@ def _is_ignored(
             if matched:
                 result = not negated  # last match wins; ! flips to un-ignore
         if _cache is not None:
-            _cache[target] = result
+            _cache[cache_key] = result
         return result
 
     # Gitignore parent-exclusion rule: a ! re-include cannot rescue a file

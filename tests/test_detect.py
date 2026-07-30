@@ -2655,3 +2655,35 @@ def test_info_exclude_does_not_drop_memory(tmp_path):
     memory_hits = [f for f in all_files if "graphify-out" in f.replace("\\", "/")]
     assert memory_hits, \
         "memory files must stay included even when graphify-out/ is in info/exclude"
+
+
+def test_memory_cache_not_poisoned_by_non_memory_eval(tmp_path):
+    """#2267: _is_ignored cache must not collide across source filters.
+
+    A non-memory file under ``graphify-out/`` is evaluated with ALL ignore
+    sources (including ``.gitignore``) and cached as ignored. When a memory
+    file under the same ``graphify-out/`` ancestor is later evaluated with
+    ``sources={'graphifyignore'}``, the ancestor walk must NOT reuse the
+    cached non-graphifyignore result — otherwise memory files are silently
+    dropped. The cache key must differentiate by source filter.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+
+    # graphify-out/ in .gitignore
+    (tmp_path / ".gitignore").write_text("graphify-out/\n")
+
+    # Seed memory + output
+    detect(tmp_path)
+
+    memory = tmp_path / "graphify-out" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "query_1.md").write_text("# Query\nThe calc module adds numbers.\n")
+    # A non-memory file under graphify-out/ that .gitignore will catch
+    (tmp_path / "graphify-out" / "output.json").write_text('{"k": 1}\n')
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    memory_hits = [f for f in all_files if "graphify-out" in f.replace("\\", "/")]
+    assert memory_hits, \
+        "cache collision: memory files dropped because non-memory eval poisoned the cache"
