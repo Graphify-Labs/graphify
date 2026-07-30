@@ -112,7 +112,8 @@ def extract_bash(path: Path) -> dict:
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
-                 context: str | None = None) -> None:
+                 context: str | None = None,
+                 target_file: str | None = None) -> None:
         if not src or not tgt or src == tgt:
             return
         edge = {"source": src, "target": tgt, "relation": relation,
@@ -120,6 +121,13 @@ def extract_bash(path: Path) -> dict:
                 "source_location": f"L{line}", "weight": weight}
         if context:
             edge["context"] = context
+        # Transient resolved-target hint (#1814/#2169), mirroring the Python/
+        # markdown extractors: lets the extract() id-remap pass canonicalize a
+        # target minted from an absolute path even when the target file is not
+        # in the batch (incremental run) or lives out of root (#2243). Popped
+        # before anything persists, never shipped into graph.json.
+        if target_file is not None:
+            edge["target_file"] = target_file
         edges.append(edge)
 
     file_nid = _make_id(str(path))
@@ -266,7 +274,8 @@ def extract_bash(path: Path) -> dict:
                             if resolved.exists():
                                 tgt_nid = _make_id(str(resolved))
                                 add_edge(file_nid, tgt_nid, "imports_from", line,
-                                         context="import")
+                                         context="import",
+                                         target_file=str(resolved))
                                 # Record the sourced file so resolve_bash_source_edges
                                 # can bind calls into its functions (#2141). Gated on
                                 # existence like the edge above, so crafted traversal
@@ -301,7 +310,8 @@ def extract_bash(path: Path) -> dict:
                                 if resolved.is_file():
                                     add_edge(file_nid, _make_id(str(resolved)),
                                              "imports_from", line,
-                                             confidence="INFERRED", context="import")
+                                             confidence="INFERRED", context="import",
+                                             target_file=str(resolved))
                                     # Integration (#2141 + #2079): record the resolved
                                     # sourced file so calls into its functions resolve
                                     # too, not just the source edge. target_path is
@@ -335,7 +345,8 @@ def extract_bash(path: Path) -> dict:
                                 # is a heuristic, so mark it INFERRED (#2171).
                                 add_edge(file_nid, _make_id(str(sibling)),
                                          "imports_from", line,
-                                         confidence="INFERRED", context="import")
+                                         confidence="INFERRED", context="import",
+                                         target_file=str(sibling))
                                 bash_sources.append({
                                     "target_path": raw,
                                     "source_file": str_path,
@@ -360,9 +371,15 @@ def extract_bash(path: Path) -> dict:
                                 except ValueError:
                                     pass
                             caller_nid = entry_nid if parent_nid == file_nid else parent_nid
+                            # target_file lets the extract() remap loop learn
+                            # this script's canonical id even when it is not in
+                            # the batch; the "__entry"-suffixed endpoint is
+                            # rewritten there via the suffix-aware entry
+                            # registration (#2243).
                             add_edge(caller_nid, _make_id(str(target_path)) + "__entry",
                                      "calls", node.start_point[0] + 1,
-                                     context="script_invocation")
+                                     context="script_invocation",
+                                     target_file=str(target_path))
             return
 
         if t == "declaration_command":

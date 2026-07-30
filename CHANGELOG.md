@@ -2,6 +2,27 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## 0.9.30 (2026-07-29)
+
+- Fix: pin `mcp` below 2.0 so a fresh `graphifyy[mcp]` / `graphifyy[all]` install works again (#2277, #2279, #2291). The `mcp` 2.0.0 major dropped the `mcp.types.AnyUrl` re-export and the `Server` decorator-registration API that `graphify/serve.py` uses, so an unpinned resolve broke `graphify-mcp` on every new install with an `ImportError`. The `mcp` and `all` extras now require `mcp>=1,<2` (resolving to 1.29.0) and `starlette>=1.3.1,<2`. Adapting to the mcp 2.x API is tracked as a follow-up.
+- Fix: TypeScript `.tsx` files no longer leak absolute-path / machine-slug ids into edge endpoints (#2262). The symbol-resolution pass parsed `.tsx` with the plain TypeScript grammar, so JSX misparsed and nested handlers floated to top level, emitting `calls` edges whose source was an absolute-stem id for a caller with no node. `.tsx` now uses the TSX grammar, a `calls` edge is never emitted from an unowned source, and a general backstop canonicalizes any node-less absolute-derived endpoint.
+- Fix: a warm AST-cache hit after a corpus move/clone no longer replays node ids minted under the original root (#2257, thanks @Kaushik2003). Cached ids are stored root-relative and re-anchored on read, matching the manifest/stat-index portability contracts.
+- Fix: the Bedrock backend reads the first *text* block of a Converse response instead of blindly indexing block 0, so reasoning-capable models (which emit a reasoning block first) no longer parse to zero nodes (#2287, thanks @zhiyanliu).
+- Fix: the Bedrock backend honors `GRAPHIFY_API_TIMEOUT` (and `GRAPHIFY_MAX_RETRIES`) instead of botocore's silent 60s default, so long generations no longer die with a read timeout (#2284, thanks @zhiyanliu).
+- Fix: `merge-graphs` preserves edge direction instead of rewiring import edges to the importing file (#2261, thanks @hopstreax).
+- Fix: the MCP server's multi-project graph-context cache is now bounded (LRU, default 8 via `GRAPHIFY_MAX_CONTEXTS`) instead of growing unbounded per project (#2268, thanks @Kkartik14).
+
+## 0.9.29 (2026-07-28)
+
+- Fix: absolute-path / machine-slug node ids no longer leak into edge endpoints (#2231, #2243). Module-top-level `indirect_call` sources, bash `source`/script-invocation targets, and other producers that minted an id from an absolute path are now canonicalized to the root-relative node id by a general backstop, so `graph.json` link endpoints are portable across machines and clones.
+- Fix: the post-commit hook no longer overwrites an existing `graph.json` it merely failed to read (#2251). If the existing graph is over the size cap or unparseable, the rebuild now refuses to write (matching the CLI) instead of silently replacing it with a code-only extraction; the `--no-cluster` write is also atomic with a protected-graph backup.
+- Fix: false `indirect_call` edges from JS/TS closure arguments are gone (#2241, thanks @Yyunozor). A closure parameter (`rows.map(r => ...)`) now shadows outer names, so `r` no longer binds to a corpus-wide callable of the same name.
+- Fix: the post-commit hook launcher no longer pops a focus-stealing console window on Windows (#2253, thanks @hopstreax); it uses `CREATE_NO_WINDOW`.
+- Fix: rationale node labels are normalized (whitespace collapsed) before the 80-character truncation, so labels are clean and filenames aren't malformed (#2206, thanks @Yyunozor).
+- Fix: committed `.env.example` / `.env.sample` / `.env.template` templates are indexed instead of dropped by the sensitive-file filter, while real `.env` files (and templates under a secrets directory) stay excluded (#2184, thanks @SyedFahad7).
+- Fix: Obsidian export no longer hides notes whose label starts with a dot (`.env` -> `dot-env`); an all-dot label falls back to `unnamed` (#2205, thanks @SyedFahad7).
+- Fix: Scala `self`-type annotations (`self: A with B =>`) now emit `requires` edges to the required traits (#2052, thanks @Yyunozor).
+
 ## 0.9.28 (2026-07-27)
 
 - Fix: incremental extraction no longer drops cross-file edges whose target file wasn't in the batch (#2211, #2213). Python relative imports and markdown reference links emitted absolute-path-derived target ids without the `target_file` stamp the incremental canonicalization needs, so a re-extracted file's imports/references dangled or vanished; both now stamp the resolved target and canonicalize to the root-relative node.

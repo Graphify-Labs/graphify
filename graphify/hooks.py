@@ -215,7 +215,7 @@ except Exception as exc:
 # requires Python, so we let Python do the detaching: a tiny outer process spawns
 # the real rebuild fully detached and returns immediately, so the hook never
 # blocks. POSIX uses start_new_session (the setsid equivalent); Windows uses
-# DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, breaking away from any job object
+# CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, breaking away from any job object
 # when allowed. This payload is carried inside a shell double-quoted -c argument,
 # so it deliberately uses only single-quoted Python strings (no ", $, ` or \\).
 _LAUNCHER_TEMPLATE = """\
@@ -232,7 +232,7 @@ except OSError:
 _kw = dict(stdout=_out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=os.getcwd(), close_fds=True)
 _cmd = [sys.executable, '-c', _src]
 if os.name == 'nt':
-    _flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    _flags = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     try:
         subprocess.Popen(_cmd, creationflags=_flags | 0x01000000, **_kw)  # + CREATE_BREAKAWAY_FROM_JOB
     except OSError:

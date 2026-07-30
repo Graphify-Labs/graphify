@@ -40,6 +40,25 @@ def test_prefix_graph_rewrites_edges(store, make_store):
     assert not H.has_edge("a", "b")
 
 
+def test_prefix_graph_preserves_edge_direction(store, make_store):
+    """#2261: prefixing must not lose the stored caller->callee orientation.
+
+    v8 pins this via the _src/_tgt markers that undirected NetworkX storage
+    needed to recover direction. Edges here are stored in their native
+    source->target orientation, so the guarantee is asserted directly: after
+    prefixing, the edge still runs rota -> collections and not the reverse.
+    """
+    from graphify.build import prefix_graph_for_global
+    store.add_nodes_from([
+        ("rota", {"label": "rota.js", "file_type": "code"}),
+        ("collections", {"label": "collections.js", "file_type": "code"}),
+    ])
+    store.add_edge("rota", "collections", relation="imports_from")
+    H = prefix_graph_for_global(store, "repoA", make_store())
+    assert H.has_directed_edge("repoA::rota", "repoA::collections")
+    assert not H.has_directed_edge("repoA::collections", "repoA::rota")
+
+
 def test_prune_repo_removes_correct_nodes(store):
     from graphify.build import prune_repo_from_graph
     store.add_nodes_from([

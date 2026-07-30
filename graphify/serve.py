@@ -2,10 +2,13 @@
 from __future__ import annotations
 import json
 import math
+import os
 import re
 import sys
 from array import array
+from collections import OrderedDict
 from pathlib import Path
+import threading
 from typing import NamedTuple
 from .store import open_store, MemGraph
 from graphify.security import sanitize_label, check_graph_file_size_cap
@@ -24,49 +27,69 @@ def _connect_graph(graph_path: str):
     NOT load the graph into memory.
 
     `graph_path` is the legacy graph.json location; its parent directory holds the
-    FalkorDB pointer (falkordb.json). Errors out if no graph has been built yet.
+    FalkorDB pointer (falkordb.json). CLI flavor: prints and exits 1 when no graph
+    has been built. The MCP server uses `_connect_graph_or_raise` instead, where a
+    bad client path must surface as one tool error rather than kill the process.
     """
     try:
-        resolved = Path(graph_path).resolve()
-        out_dir = resolved.parent if resolved.suffix else resolved
-        store = open_store(out_dir, create=False)
-        if store.number_of_nodes() == 0:
-            # Back-compat: the FalkorDB store is empty but a node-link graph.json
-            # may still hold the graph — an existing pre-FalkorDB project, or a
-            # `--no-cluster` run that only wrote JSON. Import it into the store on
-            # first use so query/path/explain/export work without forcing a
-            # rebuild, preserving the previous workflow.
-            gj = resolved if resolved.suffix == ".json" else (out_dir / "graph.json")
-            _import_graph_json_into_store(gj, store)
-        if store.number_of_nodes() == 0:
-            raise FileNotFoundError(
-                f"No graph found for {out_dir} (FalkorDB graph empty). Re-run /graphify to build."
-            )
-        # Nudge when the graph still uses pre-#1504 node IDs, as the old json
-        # loader did. Sampled via a scoped file-level query so this stays cheap.
-        try:
-            from graphify.build import graph_has_legacy_ids as _legacy
-            if _legacy(_file_level_sample(store)):
-                print(
-                    "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
-                    "rebuild with `graphify extract --force` for path-qualified IDs.",
-                    file=sys.stderr,
-                )
-        except Exception:
-            pass
-        # Attach the work-memory overlay (derived sidecar next to graph.json) so
-        # the query/MCP read surface can annotate NODE lines display-only. Empty
-        # when no sidecar exists, leaving un-annotated output byte-identical.
-        # The `_` prefix keeps save_meta from persisting it into the graph.
-        try:
-            from graphify.reflect import load_learning_overlay as _llo
-            store.graph["_learning_overlay"] = _llo(resolved)
-        except Exception:
-            store.graph["_learning_overlay"] = {}
-        return store
+        return _connect_graph_or_raise(graph_path)
     except (ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
+
+
+def _connect_graph_or_raise(graph_path: str):
+    """`_connect_graph` without the exit: raises ValueError / FileNotFoundError.
+
+    Keeping the exception (rather than an exit code plus a printed line) is what
+    lets a caller distinguish "no graph built here" from "the graph.json present
+    here is corrupt" and report the right one.
+    """
+    resolved = Path(graph_path).resolve()
+    out_dir = resolved.parent if resolved.suffix else resolved
+    store = open_store(out_dir, create=False)
+    if store.number_of_nodes() == 0:
+        # Back-compat: the FalkorDB store is empty but a node-link graph.json
+        # may still hold the graph — an existing pre-FalkorDB project, or a
+        # `--no-cluster` run that only wrote JSON. Import it into the store on
+        # first use so query/path/explain/export work without forcing a
+        # rebuild, preserving the previous workflow.
+        gj = resolved if resolved.suffix == ".json" else (out_dir / "graph.json")
+        _import_graph_json_into_store(gj, store)
+        if store.number_of_nodes() == 0 and gj.exists():
+            # The file is there but contributed nothing — corrupt/mid-write,
+            # or structurally wrong. Say that instead of "no graph found",
+            # which would send the user to rebuild a graph they do have.
+            raise ValueError(
+                f"could not load graph.json at {gj} — it may be corrupted. "
+                "Re-run /graphify to rebuild."
+            )
+    if store.number_of_nodes() == 0:
+        raise FileNotFoundError(
+            f"graph not found for {out_dir} (FalkorDB graph empty). Re-run /graphify to build."
+        )
+    # Nudge when the graph still uses pre-#1504 node IDs, as the old json
+    # loader did. Sampled via a scoped file-level query so this stays cheap.
+    try:
+        from graphify.build import graph_has_legacy_ids as _legacy
+        if _legacy(_file_level_sample(store)):
+            print(
+                "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
+                "rebuild with `graphify extract --force` for path-qualified IDs.",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
+    # Attach the work-memory overlay (derived sidecar next to graph.json) so
+    # the query/MCP read surface can annotate NODE lines display-only. Empty
+    # when no sidecar exists, leaving un-annotated output byte-identical.
+    # The `_` prefix keeps save_meta from persisting it into the graph.
+    try:
+        from graphify.reflect import load_learning_overlay as _llo
+        store.graph["_learning_overlay"] = _llo(resolved)
+    except Exception:
+        store.graph["_learning_overlay"] = {}
+    return store
 
 
 def _file_level_sample(store, limit: int = 300) -> list[dict]:
@@ -140,6 +163,98 @@ def _communities_from_graph(G: nx.Graph) -> dict[int, list[str]]:
         if cid is not None:
             communities.setdefault(int(cid), []).append(node_id)
     return communities
+
+
+def _max_server_contexts() -> int:
+    """Return the project-context LRU capacity (default 8, minimum 1).
+
+    ``GRAPHIFY_MAX_CONTEXTS`` overrides the default. Invalid or blank values
+    use 8; zero and negative values clamp to 1, since each request needs a
+    graph context. The server's configured default graph is pinned separately
+    and does not count against this limit.
+    """
+    raw = os.environ.get("GRAPHIFY_MAX_CONTEXTS", "").strip()
+    if not raw:
+        return 8
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 8
+
+
+class _GraphContextCache:
+    """Thread-safe graph contexts: one pinned default plus an LRU of projects."""
+
+    def __init__(self, max_contexts: int):
+        self._max_contexts = max_contexts
+        self._entries: OrderedDict[str, dict] = OrderedDict()
+        self._pinned: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(G) -> tuple[int, int]:
+        """Cache-validity key for a connected store.
+
+        The store is a live connection, so node/edge reads are never stale and
+        there is no file mtime to watch (a FalkorDB-only project may have no
+        graph.json at all). Only the DERIVED `communities` map can go stale, so
+        key on the graph's size: a rebuild underneath us changes it and forces a
+        recompute. Two cheap count queries, never a full-graph read.
+        """
+        return (G.number_of_nodes(), G.number_of_edges())
+
+    def _load_entry(self, resolved_path: str) -> dict:
+        """Build one entry for an already-resolved path.
+
+        ``_connect_graph`` is also used by the CLI, where invalid input
+        terminates the process. A client-supplied ``project_path`` must instead
+        become a tool error, so the shared MCP server can continue serving other
+        graphs.
+        """
+        try:
+            graph = _connect_graph_or_raise(resolved_path)
+        except (ValueError, FileNotFoundError) as exc:
+            # Surface the underlying message verbatim so the client can tell a
+            # never-built project ("graph not found") from a corrupt artifact
+            # ("could not load graph.json") — and raise rather than exit, so one
+            # bad project_path is a tool error, not a dead server.
+            raise RuntimeError(str(exc)) from exc
+        # Warm the index before exposing the graph so its first query does not
+        # pay the expensive build cost. Skipped for store-backed graphs: they
+        # prefilter with an in-engine search_nodes query, and building the index
+        # would read every node out of the engine.
+        if not hasattr(graph, "search_nodes"):
+            _get_trigram_index(graph)
+        return {
+            "key": self._key(graph),
+            "G": graph,
+            "communities": _communities_from_graph(graph),
+        }
+
+    def load(self, resolved_path: str, *, pinned: bool = False) -> tuple:
+        """Return a fresh context, retaining project contexts by LRU order.
+
+        ``resolved_path`` is resolved by the caller, making this method the sole
+        owner of cache-key construction.
+
+        ``pinned=True`` is reserved for the server's configured default graph;
+        it remains warm without consuming a project-cache slot.
+        """
+        with self._lock:
+            entries = self._pinned if pinned else self._entries
+            entry = entries.get(resolved_path)
+            if entry is not None and entry["key"] == self._key(entry["G"]):
+                if not pinned:
+                    self._entries.move_to_end(resolved_path)
+                return entry["G"], entry["communities"]
+
+            entry = self._load_entry(resolved_path)
+            entries[resolved_path] = entry
+            if not pinned:
+                self._entries.move_to_end(resolved_path)
+                while len(self._entries) > self._max_contexts:
+                    self._entries.popitem(last=False)
+            return entry["G"], entry["communities"]
 
 
 def _strip_diacritics(text: str | None) -> str:
@@ -1244,9 +1359,6 @@ def _filter_blank_stdin() -> None:
     JSONRPCMessage, so a bare newline triggers a Pydantic ValidationError.
     This installs an OS-level pipe that relays stdin while dropping blanks.
     """
-    import os
-    import threading
-
     r_fd, w_fd = os.pipe()
     saved_fd = os.dup(sys.stdin.fileno())
 
@@ -1290,8 +1402,6 @@ def _build_server(graph_path: str):
     graph.json change-sentinel is rewritten on disk) works the same way regardless
     of transport, since the reconnect happens inside the tool handlers.
     """
-    import threading
-
     try:
         from mcp.server import Server
         from mcp import types
@@ -1301,55 +1411,21 @@ def _build_server(graph_path: str):
 
     from graphify import paths as _paths
 
-    # Per-graph context cache: resolved graph.json path -> {key, G, communities}.
-    # The server's default graph is just the first entry; a tool call carrying a
-    # project_path adds its own. Routing every graph through one cache means the
-    # eager trigram index and the mtime+size hot-reload behave identically for
-    # the default graph and for any project graph.
-    _default_graph_path = graph_path
-    _ctx_lock = threading.Lock()
-    _ctx_cache: dict[str, dict] = {}
-
-    def _ctx_key(G):
-        """Cache-validity key for a connected store.
-
-        The store is a live connection, so node/edge reads are never stale and
-        there is no file mtime to watch (a FalkorDB-only project may have no
-        graph.json at all). Only the DERIVED `communities` map can go stale, so
-        key on the graph's size: a rebuild underneath us changes it and forces a
-        recompute. Two cheap count queries, never a full-graph read.
-        """
-        return (G.number_of_nodes(), G.number_of_edges())
+    # Graph contexts comprise one pinned configured default plus a bounded LRU
+    # of project_path graphs. This preserves the configured graph's warm index
+    # while preventing a shared server from retaining every project it serves.
+    _default_graph_path = str(Path(graph_path).resolve())
+    _ctx_cache = _GraphContextCache(_max_server_contexts())
 
     def _load_ctx(path: str):
-        """Return (G, communities) for a graph path, reusing a cached context
-        until the underlying graph changes and then transparently rebuilding it.
-        Unlike ``_connect_graph`` it never exits the process on a missing/empty
-        graph — it raises, so a bad project_path surfaces as a tool error instead
-        of killing a server that is happily serving other projects."""
-        ent = _ctx_cache.get(path)
-        if ent is not None and ent["key"] == _ctx_key(ent["G"]):
-            return ent["G"], ent["communities"]
-        with _ctx_lock:
-            ent = _ctx_cache.get(path)
-            if ent is not None and ent["key"] == _ctx_key(ent["G"]):
-                return ent["G"], ent["communities"]  # another thread built it
-            try:
-                new_G = _connect_graph(path)
-            except SystemExit as e:  # _connect_graph exits on missing/empty graph
-                # Phrased as not-found because that is what it is: no graph has
-                # been built for that project. Raised (not exited) so a bad
-                # project_path is one tool error, not a dead server.
-                raise RuntimeError(f"graph not found for {path} (no graph built there)") from e
-            # Warm the trigram index before exposing the graph so the first query
-            # against it is fast (same rationale as the original startup warm-up).
-            # Skipped for store-backed graphs: they prefilter with an in-engine
-            # search_nodes query, and building the index would read every node.
-            if not hasattr(new_G, "search_nodes"):
-                _get_trigram_index(new_G)
-            comm = _communities_from_graph(new_G)
-            _ctx_cache[path] = {"key": _ctx_key(new_G), "G": new_G, "communities": comm}
-            return new_G, comm
+        """Return the current default or project graph context as a tool error.
+
+        Unlike ``_connect_graph``, this never lets a missing or empty client
+        graph terminate the MCP process; it raises so other projects remain
+        available on the same server.
+        """
+        resolved_path = str(Path(path).resolve())
+        return _ctx_cache.load(resolved_path, pinned=resolved_path == _default_graph_path)
 
     def _resolve_graph_path(project_path) -> str:
         """Map an optional project_path to a concrete graph.json path. ``None``
@@ -1378,7 +1454,7 @@ def _build_server(graph_path: str):
         nonlocal G, communities, active_graph_path
         path = _resolve_graph_path(project_path)
         G, communities = _load_ctx(path)
-        active_graph_path = path
+        active_graph_path = str(Path(path).resolve())
 
     server = Server("graphify")
 

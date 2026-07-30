@@ -1535,6 +1535,11 @@ def prefix_graph_for_global(G, repo_tag: str, target: GraphStore) -> GraphStore:
     Labels are preserved unchanged (for display). A 'local_id' attribute is added
     so the original ID can be recovered, and 'repo' is set on every node. Edges
     are rewritten to the prefixed IDs.
+
+    The #2261 ``_src``/``_tgt`` rewrite has no analogue here: those markers only
+    existed to recover direction from undirected NetworkX storage. Edges are
+    stored in their native source→target orientation, so prefixing both
+    endpoints keeps direction correct by construction.
     """
     def _pfx(n: str) -> str:
         return f"{repo_tag}::{n}"

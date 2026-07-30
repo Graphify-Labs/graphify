@@ -34,18 +34,20 @@ def test_diagnostics_read_corrupt_raises_runtimeerror(tmp_path):
         _read_json_file(p)
 
 
-def test_backcompat_import_of_corrupt_json_reports_no_graph(monkeypatch, tmp_path, capsys, _require_falkordb):
+def test_backcompat_import_of_corrupt_json_reports_corruption(monkeypatch, tmp_path, capsys, _require_falkordb):
     """A corrupt graph.json must not surface as a JSONDecodeError traceback.
 
-    The import declines the file, so the caller falls through to the ordinary
-    "no graph built" guidance — actionable, not a stack trace (#1536/#1537).
+    It also must not be reported as "no graph found": the file IS there, so that
+    wording would send the user to rebuild a graph they already have. The error
+    names the file and says it looks corrupt (#1536/#1537).
     """
     p = _corrupt(tmp_path)
     with pytest.raises(SystemExit):
         _connect_graph(str(p))
     err = capsys.readouterr().err
-    assert "No graph found" in err
+    assert "could not load graph.json" in err
     assert "Re-run /graphify" in err
+    assert "not found" not in err
 
 
 def test_valid_graph_still_imports(tmp_path, _require_falkordb):

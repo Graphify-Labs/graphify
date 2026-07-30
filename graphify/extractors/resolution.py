@@ -1057,6 +1057,16 @@ def _apply_symbol_resolution_facts(
             local_alias=local_name if local_name != to_path.stem else None,
         )
 
+    # #2262 producer guard: never emit a `calls` use-edge from a source id
+    # that owns no node. All node appends (ensure_symbol_node, declarations,
+    # namespace exports) happened above, so the owned set is complete here.
+    # A node-less caller id can never be canonicalized by the extract()
+    # remaps (they learn only from nodes), so an absolute-derived one would
+    # leak the machine/scan-path slug into the edge source. Reattribute the
+    # edge to the caller's FILE node — the true file-level dependency
+    # survives, and the file id is exactly what the #2231 remap
+    # canonicalizes — or drop it when no file node id is available.
+    owned = {str(n.get("id")) for n in nodes}
     for use_fact in facts.uses:
         file_path = use_fact.file_path.resolve()
         target_id = None
@@ -1074,8 +1084,13 @@ def _apply_symbol_resolution_facts(
             target_id = symbol_nodes.get((file_path, use_fact.local_name))
         if target_id is None:
             continue
+        source_id = use_fact.source_id
+        if use_fact.relation == "calls" and source_id not in owned:
+            source_id = source_file_id.get(file_path)
+            if source_id is None:
+                continue
         add_edge(
-            use_fact.source_id,
+            source_id,
             target_id,
             use_fact.relation,
             use_fact.context,
@@ -1096,10 +1111,20 @@ def _parse_js_tree(path: Path):
             source = masked.encode("utf-8")
         else:
             source = path.read_bytes()
-        use_ts = path.suffix in (".ts", ".tsx", ".mts", ".cts") or (
+        use_ts = path.suffix in (".ts", ".mts", ".cts") or (
             path.suffix == ".vue" and vue_lang not in ("js", "jsx")
         )
-        if use_ts:
+        if path.suffix == ".tsx":
+            # .tsx must use the JSX-aware TSX grammar, mirroring the engine's
+            # _TSX_CONFIG (ts_language_fn="language_tsx"). Parsing .tsx with
+            # language_typescript misparses JSX, and tree-sitter's error
+            # recovery floats nested arrow components up to top level —
+            # _js_top_level_function_bodies then mints caller ids for callers
+            # that own no node, leaking absolute-path slugs into calls-edge
+            # sources (#2262).
+            import tree_sitter_typescript as tstypescript
+            language = Language(tstypescript.language_tsx())
+        elif use_ts:
             import tree_sitter_typescript as tstypescript
             language = Language(tstypescript.language_typescript())
         else:
