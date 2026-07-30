@@ -872,6 +872,9 @@ _CSHARP_CONFIG = LanguageConfig(
         "enum_declaration",
         "struct_declaration",
         "record_declaration",
+        "delegate_declaration",  # named delegate types (e.g. `delegate int Handler(...)`) —
+                                 # referenceable type definitions, like a class/interface.
+                                 # Has no declaration_list body, so no members are walked.
     }),
     function_types=frozenset({"method_declaration"}),
     import_types=frozenset({"using_directive"}),

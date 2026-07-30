@@ -9,6 +9,8 @@ namespace GraphifyDemo
         List<string> Process(List<string> items);
     }
 
+    public delegate string Transformer(string input);
+
     public class Processor
     {
     }
@@ -20,6 +22,8 @@ namespace GraphifyDemo
     public class DataProcessor : Processor, IProcessor
     {
         private readonly HttpClient _client;
+
+        private readonly Dictionary<string, IProcessor> _registry;
 
         public Processor Owner { get; set; }
 

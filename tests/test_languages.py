@@ -347,6 +347,13 @@ def test_csharp_finds_interface():
     r = extract_csharp(FIXTURES / "sample.cs")
     assert any("IProcessor" in l for l in _labels(r))
 
+def test_csharp_finds_delegate():
+    """A C# delegate declaration is a named, referenceable type and must be a node,
+    like class/interface. Without this, a parameter/field typed as the delegate
+    references a non-existent node and the edge dangles (pruned)."""
+    r = extract_csharp(FIXTURES / "sample.cs")
+    assert "Transformer" in _labels(r), "delegate declaration should be a node"
+
 def test_csharp_finds_methods():
     r = extract_csharp(FIXTURES / "sample.cs")
     labels = _labels(r)
@@ -383,6 +390,20 @@ def test_csharp_parameter_return_and_generic_contexts():
     assert ("Build", "HttpClient") in _edge_labels(result, "references", "parameter_type")
     assert ("Build", "Result") in _edge_labels(result, "references", "return_type")
     assert ("Build", "DataProcessor") in _edge_labels(result, "references", "generic_arg")
+
+
+def test_csharp_field_generic_type_arguments_have_generic_arg_context():
+    """A field like `Dictionary<string, IProcessor> _registry` must reference both
+    the outer collection (field context) and its generic type arguments
+    (generic_arg context). Previously the field handler read only the outer type
+    name, so a generic field produced an edge to the collection but none to its
+    type arguments, breaking definition->usage traceability. Mirrors the behavior
+    already applied to the property handler."""
+    result = extract_csharp(FIXTURES / "sample.cs")
+    # Outer collection type still referenced with field context.
+    assert ("DataProcessor", "Dictionary") in _edge_labels(result, "references", "field")
+    # Generic type argument is now referenced (string is a predefined type, skipped).
+    assert ("DataProcessor", "IProcessor") in _edge_labels(result, "references", "generic_arg")
 
 
 def test_java_normalizes_inherits_and_implements():
