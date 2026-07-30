@@ -26,7 +26,7 @@ from pathlib import Path, PurePosixPath
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
 
 
-def _atomic_replace(path: "str | Path", write_fn) -> None:
+def _atomic_replace(path: "str | Path", write_fn, *, before_replace=None) -> None:
     """Atomically replace ``path`` with content written by ``write_fn(f)``.
 
     Writes a temp file in the SAME directory, then ``os.replace``s it into place
@@ -63,6 +63,8 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
             os.chmod(tmp, mode)
         except OSError:
             pass
+        if before_replace is not None:
+            before_replace()
         try:
             os.replace(tmp, str(real))
         except PermissionError:
@@ -85,12 +87,23 @@ def write_text_atomic(path: "str | Path", text: str) -> None:
     _atomic_replace(path, lambda f: f.write(text))
 
 
-def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True) -> None:
+def write_json_atomic(
+    path: "str | Path",
+    obj,
+    *,
+    indent: "int | None" = None,
+    ensure_ascii: bool = True,
+    before_replace=None,
+) -> None:
     """Atomically write ``obj`` as JSON to ``path``, streaming the encode into the
     temp file rather than materializing the whole string first (matters for very
     large graphs). ``ensure_ascii`` mirrors ``json.dump`` so callers that emit raw
     UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. See :func:`_atomic_replace`."""
-    _atomic_replace(path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii))
+    _atomic_replace(
+        path,
+        lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii),
+        before_replace=before_replace,
+    )
 
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw

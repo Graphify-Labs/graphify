@@ -23,7 +23,8 @@ Each stage is a single function in its own module. They communicate through plai
 | `export.py` | `export(G, out_dir, ...)` | graph → Obsidian vault, graph.json, graph.html, graph.svg |
 | `callflow_html.py` | `write_callflow_html(...)` | graphify-out files → Mermaid architecture/call-flow HTML |
 | `ingest.py` | `ingest(url, ...)` | URL → file saved to corpus dir |
-| `cache.py` | `check_semantic_cache / save_semantic_cache` | files → (cached, uncached) split |
+| `cache.py` | prompt-scoped `check_semantic_cache / save_semantic_cache` | files → qualified cached/uncached split |
+| `semantic_cleanup.py` | sealed source-session, semantic fragment validation, and sanitizer | untrusted semantic JSON → validated exact-span evidence |
 | `security.py` | validation helpers | URL / path / label → validated or raises |
 | `validate.py` | `validate_extraction(data)` | extraction dict → raises on schema errors |
 | `serve.py` | `start_server(graph_path)` | graph file path → MCP stdio server |
@@ -37,15 +38,22 @@ Every extractor returns:
 ```json
 {
   "nodes": [
-    {"id": "unique_string", "label": "human name", "source_file": "path", "source_location": "L42"}
+    {"id": "unique_string", "label": "human name", "source_file": "path", "source_location": "L42", "source_sha256": "..."}
   ],
   "edges": [
-    {"source": "id_a", "target": "id_b", "relation": "calls|imports|uses|...", "confidence": "EXTRACTED|INFERRED|AMBIGUOUS"}
+    {"source": "id_a", "target": "id_b", "relation": "calls", "confidence": "EXTRACTED|INFERRED|AMBIGUOUS", "source_file": "path", "source_location": "L43", "source_sha256": "..."}
   ]
 }
 ```
 
 `validate.py` enforces this schema before `build_graph()` consumes it.
+Deterministic AST extractors use language-specific relation labels. Untrusted
+LLM semantic fragments instead pass through `semantic_cleanup.py` before merge
+or persistence. That boundary enforces a closed semantic relation vocabulary
+and exact, current file-and-span provenance. Generated skills validate both new
+worker chunks and the final cached-plus-new set under one sealed all-source
+manifest; native extraction rechecks accepted evidence before graph persistence. See
+[Semantic evidence contract](docs/semantic-evidence-contract.md).
 
 ## Confidence labels
 

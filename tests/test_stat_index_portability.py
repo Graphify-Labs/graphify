@@ -207,17 +207,23 @@ def test_semantic_cache_normalizes_absolute_source_file(tmp_path):
     f.write_text("x = 1\n")
 
     node = {"id": "m.x", "type": "variable", "source_file": str(f.resolve())}
-    saved = cache.save_semantic_cache([node], [], root=root)
+    saved = cache.save_semantic_cache(
+        [node], [], root=root, prompt="TEST PROMPT"
+    )
     assert saved == 1
     assert node["source_file"] == str(f.resolve()), "caller's dict must not be mutated"
 
-    entries = list((root / "graphify-out" / "cache" / "semantic").glob("*.json"))
+    entries = list(
+        (root / "graphify-out" / "cache" / "semantic").glob("p*/*.json")
+    )
     assert len(entries) == 1
     persisted = json.loads(entries[0].read_text(encoding="utf-8"))
     assert persisted["nodes"][0]["source_file"] == "m.py"
 
     # Replay resolves back to the same absolute shape a fresh extraction has.
-    _, _, _, uncached = cache.check_semantic_cache([str(f)], root=root)
+    _, _, _, uncached = cache.check_semantic_cache(
+        [str(f)], root=root, prompt="TEST PROMPT"
+    )
     assert uncached == []
 
 

@@ -8,7 +8,13 @@ from graphify import semantic_cleanup as sc
 def _valid_fragment():
     return {
         "nodes": [{"id": "module_func", "label": "func", "file_type": "code"}],
-        "edges": [{"source": "module_func", "target": "other_node"}],
+        "edges": [
+            {
+                "source": "module_func",
+                "target": "other_node",
+                "relation": "references",
+            }
+        ],
         "hyperedges": [],
     }
 
@@ -92,7 +98,7 @@ def test_load_validated_semantic_fragment_accepts_valid(tmp_path):
 
 
 def test_load_validated_semantic_fragment_rejects_oversize_before_parse(tmp_path, monkeypatch):
-    """Oversize files are rejected by stat() — payload is never parsed."""
+    """Oversize files are rejected by the bounded read before JSON parsing."""
     monkeypatch.setattr(sc, "MAX_SEMANTIC_FRAGMENT_BYTES", 64)
     chunk = tmp_path / ".graphify_chunk_99.json"
     # Write something that would PARSE successfully if read, but exceeds the size guard.
@@ -375,7 +381,12 @@ def test_validate_accepts_node_ids_keyed_hyperedge():
     fragment = _valid_fragment()
     fragment["nodes"].append({"id": "second", "label": "Second", "file_type": "code"})
     fragment["hyperedges"] = [
-        {"id": "grp", "label": "G", "node_ids": ["module_func", "second"]}
+        {
+            "id": "grp",
+            "label": "G",
+            "node_ids": ["module_func", "second"],
+            "relation": "participate_in",
+        }
     ]
     errors = sc.validate_semantic_fragment(fragment)
     assert errors == []

@@ -105,6 +105,7 @@ def test_checkpoint_with_cache_root_is_found_by_check_semantic_cache(tmp_path):
 
     doc = corpus / "paper.md"
     doc.write_text("Some academic content.")
+    prompt = "TEST PROMPT"
 
     nodes = [{"id": "p1", "label": "Paper", "source_file": str(doc)}]
 
@@ -115,12 +116,13 @@ def test_checkpoint_with_cache_root_is_found_by_check_semantic_cache(tmp_path):
         cache_root=out,
         merge_existing=True,
         allowed_source_files=[doc],
+        prompt=prompt,
     )
 
     # Recovery read: check_semantic_cache with the same root/cache_root split
     # cli.py now uses (root=target, cache_root=out_root).
     cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(
-        [str(doc)], root=corpus, cache_root=out
+        [str(doc)], root=corpus, cache_root=out, prompt=prompt
     )
 
     assert len(uncached) == 0, f"expected cache hit, got miss for: {uncached}"

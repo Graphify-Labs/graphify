@@ -3117,6 +3117,7 @@ def dispatch_command(cmd: str) -> None:
         _partial_semantic_files: set[str] = set()
         sem_cache_hits = 0
         sem_cache_misses = 0
+        sem_source_snapshot = None
         # Deep mode uses its own namespace (cache/semantic-deep/) so deep and
         # standard results for the same content never shadow each other (#1894).
         sem_cache_mode = "deep" if deep_mode else None
@@ -3241,6 +3242,30 @@ def dispatch_command(cmd: str) -> None:
                 sem_result["hyperedges"].extend(fresh.get("hyperedges", []))
                 sem_result["input_tokens"] += fresh.get("input_tokens", 0)
                 sem_result["output_tokens"] += fresh.get("output_tokens", 0)
+
+        if any(sem_result.get(bucket) for bucket in ("nodes", "edges", "hyperedges")):
+            from graphify.semantic_cleanup import (
+                prepare_current_semantic_evidence as _prepare_current_semantic,
+            )
+            sem_source_snapshot, semantic_evidence_errors = (
+                _prepare_current_semantic(sem_result, Path(target))
+            )
+            if semantic_evidence_errors or sem_source_snapshot is None:
+                print(
+                    "[graphify extract] error: assembled semantic evidence is "
+                    "not current and exact: "
+                    f"{'; '.join(semantic_evidence_errors[:5])}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+        def _assert_semantic_sources_current() -> None:
+            if sem_source_snapshot is None:
+                return
+            from graphify.semantic_cleanup import revalidate_semantic_sources
+            stale_errors = revalidate_semantic_sources(sem_source_snapshot)
+            if stale_errors:
+                raise ValueError("; ".join(stale_errors[:3]))
 
         # Prune orphaned semantic cache entries. The semantic cache is
         # content-hash-keyed and unversioned, so it is never swept by the AST
@@ -3478,7 +3503,20 @@ def dispatch_command(cmd: str) -> None:
             _backup(graphify_out)
             _invalidate_file_manifest_for_db_graph()
             from graphify.paths import write_json_atomic as _write_json_atomic
-            _write_json_atomic(graph_json_path, merged, indent=2)
+            try:
+                _write_json_atomic(
+                    graph_json_path,
+                    merged,
+                    indent=2,
+                    before_replace=_assert_semantic_sources_current,
+                )
+            except ValueError as exc:
+                print(
+                    "[graphify extract] error: semantic provenance became stale "
+                    f"before graph persistence: {exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             try:
                 # Record the scan root so a later build_merge / update runbook can
                 # relativize deleted-file paths correctly even for a custom --out
@@ -3598,7 +3636,21 @@ def dispatch_command(cmd: str) -> None:
         # passing --allow-partial (the good graph is preserved and the manifest
         # is not stamped, so the retry re-extracts).
         _force_write = cli_allow_partial or not _extraction_incomplete
-        _wrote = _to_json(G, communities, str(graph_json_path), force=_force_write)
+        try:
+            _wrote = _to_json(
+                G,
+                communities,
+                str(graph_json_path),
+                force=_force_write,
+                before_replace=_assert_semantic_sources_current,
+            )
+        except ValueError as exc:
+            print(
+                "[graphify extract] error: semantic provenance became stale "
+                f"before graph persistence: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if not _wrote:
             # The shrink guard refused: this partial build is smaller than the
             # existing graph. Exit before writing the manifest/marker below, which
@@ -3752,20 +3804,85 @@ def dispatch_command(cmd: str) -> None:
         (out / ".graphify_uncached.txt").write_text("\n".join(uncached), encoding="utf-8")
         print(f"Cache: {len(files) - len(uncached)} hit, {len(uncached)} miss")
 
+    elif cmd == "snapshot-sources":
+        # graphify snapshot-sources <files_from> --root <dir> --out <path>
+        # Captures the trusted source boundary before semantic subagents run.
+        if len(sys.argv) < 3:
+            print(
+                "Usage: graphify snapshot-sources <files_from> --root <dir> --out <path>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        files_from = Path(sys.argv[2])
+        root = Path(".")
+        out_path: Path | None = None
+        i = 3
+        while i < len(sys.argv):
+            if sys.argv[i] == "--root" and i + 1 < len(sys.argv):
+                root = Path(sys.argv[i + 1])
+                i += 2
+            elif sys.argv[i] == "--out" and i + 1 < len(sys.argv):
+                out_path = Path(sys.argv[i + 1])
+                i += 2
+            else:
+                i += 1
+        if out_path is None:
+            print("error: --out <path> required", file=sys.stderr)
+            sys.exit(1)
+        try:
+            files = [
+                line for line in files_from.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            from graphify.semantic_cleanup import snapshot_semantic_sources
+            snapshot = snapshot_semantic_sources(files, root)
+        except (OSError, ValueError) as exc:
+            print(f"[graphify snapshot-sources] error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        resolved_snapshot_out = Path(os.path.realpath(str(out_path)))
+        if any(
+            Path(source["resolved_path"]) == resolved_snapshot_out
+            for source in snapshot["sources"].values()
+        ):
+            print(
+                "[graphify snapshot-sources] error: output path is a provenance "
+                "source; refusing to overwrite source evidence",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        from graphify.paths import write_json_atomic as _wja
+        _wja(out_path, snapshot, ensure_ascii=False)
+        print(f"Snapshotted {len(snapshot['sources'])} semantic source files")
+        import hashlib as _hashlib
+        print(f"Manifest SHA-256: {_hashlib.sha256(out_path.read_bytes()).hexdigest()}")
+
     elif cmd == "merge-chunks":
-        # graphify merge-chunks <chunk_glob_or_files...> --out <path>
+        # graphify merge-chunks <chunk_glob_or_files...>
+        #     --source-manifest <path> --manifest-sha256 <digest> --out <path>
         # Concatenates .graphify_chunk_*.json files written by semantic subagents.
         # Deduplicates nodes by id (first writer wins). Sums token counts.
         import glob as _glob
         if len(sys.argv) < 3:
-            print("Usage: graphify merge-chunks <chunk_files...> --out <path>", file=sys.stderr)
+            print(
+                "Usage: graphify merge-chunks <chunk_files...> "
+                "--source-manifest <path> --manifest-sha256 <digest> --out <path>",
+                file=sys.stderr,
+            )
             sys.exit(1)
         out_path: Path | None = None
+        source_manifest_path: Path | None = None
+        manifest_sha256: str | None = None
         chunk_args: list[str] = []
         i = 2
         while i < len(sys.argv):
             if sys.argv[i] == "--out" and i + 1 < len(sys.argv):
                 out_path = Path(sys.argv[i + 1])
+                i += 2
+            elif sys.argv[i] == "--source-manifest" and i + 1 < len(sys.argv):
+                source_manifest_path = Path(sys.argv[i + 1])
+                i += 2
+            elif sys.argv[i] == "--manifest-sha256" and i + 1 < len(sys.argv):
+                manifest_sha256 = sys.argv[i + 1]
                 i += 2
             else:
                 chunk_args.append(sys.argv[i])
@@ -3773,34 +3890,127 @@ def dispatch_command(cmd: str) -> None:
         if not out_path:
             print("error: --out <path> required", file=sys.stderr)
             sys.exit(1)
+        if source_manifest_path is None:
+            print("error: --source-manifest <path> required", file=sys.stderr)
+            sys.exit(1)
+        if manifest_sha256 is None:
+            print("error: --manifest-sha256 <digest> required", file=sys.stderr)
+            sys.exit(1)
+        from graphify.semantic_cleanup import load_semantic_source_manifest
+        source_manifest, source_manifest_errors = load_semantic_source_manifest(
+            source_manifest_path,
+            expected_sha256=manifest_sha256,
+        )
+        if source_manifest_errors:
+            print(
+                "[graphify merge-chunks] error: invalid source manifest: "
+                f"{'; '.join(source_manifest_errors[:3])}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        resolved_out = Path(os.path.realpath(str(out_path)))
+        if any(
+            source.get("resolved_path") == resolved_out
+            for source in source_manifest.sources.values()
+        ):
+            print(
+                "[graphify merge-chunks] error: output path is a provenance source; "
+                "refusing to overwrite source evidence",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         chunk_files: list[str] = []
         for arg in chunk_args:
             expanded = _glob.glob(arg)
             chunk_files.extend(sorted(expanded) if expanded else [arg])
-        merged: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
-        seen_ids: set[str] = set()
-        valid_chunks = 0
+        validated_chunks: list[dict] = []
+        invalid_chunks: list[tuple[str, list[str]]] = []
         # These chunk files are untrusted subagent output. load_validated_...
-        # stats the file size BEFORE reading it (so a multi-GB chunk can't blow up
-        # memory), parses the JSON, and validates the security caps + the node/
-        # edge id charset that blocks path traversal (#825) — the same enforcement
-        # the skill merge path applies. A bad chunk is skipped with a warning
-        # while valid siblings still merge; if every chunk is invalid, fail
-        # closed instead of reporting success and replacing --out with an empty
-        # semantic layer. Deliberately NOT wired into
+        # reads at most the cap plus one byte from a single descriptor, parses the
+        # JSON, and validates the security caps, closed
+        # relation vocabularies, exact source spans, current source hashes, and
+        # node/edge ID charset before any fragment is merged or persisted. Any
+        # bad chunk fails the whole batch closed, preserving an existing output.
+        # Deliberately NOT wired into
         # build_from_json/load_graph_json, which must keep loading valid
         # pre-existing graphs. file_type is left to build's coercion (#840).
-        from graphify.semantic_cleanup import load_validated_semantic_fragment
+        from graphify.semantic_cleanup import (
+            MAX_SEMANTIC_AGGREGATE_BYTES,
+            MAX_SEMANTIC_FRAGMENT_BYTES,
+            load_validated_semantic_fragment_with_size,
+        )
+        aggregate_input_bytes = 0
         for cf in chunk_files:
-            chunk, _chunk_errs = load_validated_semantic_fragment(Path(cf))
+            remaining_bytes = MAX_SEMANTIC_AGGREGATE_BYTES - aggregate_input_bytes
+            if remaining_bytes <= 0:
+                invalid_chunks.append(
+                    (
+                        cf,
+                        [
+                            "combined worker payload exceeds "
+                            f"{MAX_SEMANTIC_AGGREGATE_BYTES} bytes"
+                        ],
+                    )
+                )
+                break
+            chunk, _chunk_errs, chunk_input_bytes = (
+                load_validated_semantic_fragment_with_size(
+                    Path(cf),
+                    source_manifest=source_manifest,
+                    max_bytes=min(MAX_SEMANTIC_FRAGMENT_BYTES, remaining_bytes),
+                )
+            )
             if _chunk_errs:
+                invalid_chunks.append((cf, _chunk_errs))
+                break
+            aggregate_input_bytes += chunk_input_bytes
+            if aggregate_input_bytes > MAX_SEMANTIC_AGGREGATE_BYTES:
+                invalid_chunks.append(
+                    (
+                        cf,
+                        [
+                            "combined worker payload exceeds "
+                            f"{MAX_SEMANTIC_AGGREGATE_BYTES} bytes"
+                        ],
+                    )
+                )
+                break
+            validated_chunks.append(chunk)
+        if invalid_chunks:
+            for cf, chunk_errors in invalid_chunks:
                 print(
-                    f"[graphify merge-chunks] warning: skipping invalid chunk {cf}: "
-                    f"{'; '.join(_chunk_errs[:3])}",
+                    f"[graphify merge-chunks] error: invalid chunk {cf}: "
+                    f"{'; '.join(chunk_errors[:3])}",
                     file=sys.stderr,
                 )
-                continue
-            valid_chunks += 1
+            print(
+                f"[graphify merge-chunks] error: refusing to merge or write {out_path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not validated_chunks:
+            print(
+                f"[graphify merge-chunks] error: no valid chunks to merge; "
+                f"refusing to write {out_path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # Sanitization intentionally follows whole-batch validation: no fragment
+        # is merged or transformed until every untrusted chunk has passed the
+        # relation, provenance, size, and identifier contracts.
+        from graphify.semantic_cleanup import sanitize_semantic_fragment
+        for chunk in validated_chunks:
+            sanitize_semantic_fragment(chunk)
+
+        merged: dict = {
+            "nodes": [],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+        seen_ids: set[str] = set()
+        for chunk in validated_chunks:
             for n in chunk.get("nodes", []):
                 if n.get("id") not in seen_ids:
                     seen_ids.add(n["id"])
@@ -3813,36 +4023,72 @@ def dispatch_command(cmd: str) -> None:
             for _tok in ("input_tokens", "output_tokens"):
                 _v = chunk.get(_tok, 0)
                 merged[_tok] += _v if isinstance(_v, (int, float)) else 0
-        if not valid_chunks:
+        from graphify.semantic_cleanup import validate_semantic_fragment
+        merged_errors = validate_semantic_fragment(
+            merged,
+            source_manifest=source_manifest,
+            enforce_collection_limits=False,
+            max_bytes=MAX_SEMANTIC_AGGREGATE_BYTES,
+        )
+        if merged_errors:
             print(
-                f"[graphify merge-chunks] error: no valid chunks to merge; "
-                f"refusing to write {out_path}",
+                "[graphify merge-chunks] error: invalid combined fragment: "
+                f"{'; '.join(merged_errors[:3])}",
+                file=sys.stderr,
+            )
+            print(
+                f"[graphify merge-chunks] error: refusing to write {out_path}",
                 file=sys.stderr,
             )
             sys.exit(1)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
-        _wja(out_path, merged, ensure_ascii=False)
-        chunk_summary = (
-            f"{valid_chunks} chunks"
-            if valid_chunks == len(chunk_files)
-            else f"{valid_chunks} of {len(chunk_files)} chunks"
-        )
+        from graphify.semantic_cleanup import revalidate_semantic_sources
+
+        def _assert_sources_still_current() -> None:
+            stale_errors = revalidate_semantic_sources(source_manifest)
+            if stale_errors:
+                raise ValueError("; ".join(stale_errors[:3]))
+
+        try:
+            _wja(
+                out_path,
+                merged,
+                ensure_ascii=False,
+                before_replace=_assert_sources_still_current,
+            )
+        except ValueError as exc:
+            print(
+                "[graphify merge-chunks] error: source provenance became stale "
+                f"before persistence: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(
-            f"Merged {chunk_summary}: {len(merged['nodes'])} nodes, {len(merged['edges'])} edges, "
+            f"Merged {len(validated_chunks)} chunks: "
+            f"{len(merged['nodes'])} nodes, {len(merged['edges'])} edges, "
             f"{merged['input_tokens']:,} in / {merged['output_tokens']:,} out tokens"
         )
 
     elif cmd == "merge-semantic":
-        # graphify merge-semantic --cached <path> --new <path> --out <path>
-        # Merges cached semantic results with freshly-extracted chunk results.
-        # Deduplicates nodes by id (cached entries take priority over new ones).
+        # graphify merge-semantic --cached <path> --new <path>
+        #   --source-manifest <path> --manifest-sha256 <digest> --out <path>
+        # Final package-owned cached+new acceptance seam. Both complete
+        # fragments are validated against one sealed all-source snapshot before
+        # they are combined, and sources are rechecked immediately before the
+        # atomic replacement.
         if len(sys.argv) < 3:
-            print("Usage: graphify merge-semantic --cached <path> --new <path> --out <path>", file=sys.stderr)
+            print(
+                "Usage: graphify merge-semantic --cached <path> --new <path> "
+                "--source-manifest <path> --manifest-sha256 <digest> --out <path>",
+                file=sys.stderr,
+            )
             sys.exit(1)
         cached_path: Path | None = None
         new_path: Path | None = None
         out_path2: Path | None = None
+        source_manifest_path2: Path | None = None
+        manifest_sha256_2: str | None = None
         i = 2
         while i < len(sys.argv):
             if sys.argv[i] == "--cached" and i + 1 < len(sys.argv):
@@ -3851,14 +4097,104 @@ def dispatch_command(cmd: str) -> None:
                 new_path = Path(sys.argv[i + 1]); i += 2
             elif sys.argv[i] == "--out" and i + 1 < len(sys.argv):
                 out_path2 = Path(sys.argv[i + 1]); i += 2
+            elif sys.argv[i] == "--source-manifest" and i + 1 < len(sys.argv):
+                source_manifest_path2 = Path(sys.argv[i + 1]); i += 2
+            elif sys.argv[i] == "--manifest-sha256" and i + 1 < len(sys.argv):
+                manifest_sha256_2 = sys.argv[i + 1]; i += 2
             else:
                 i += 1
         if not out_path2:
             print("error: --out <path> required", file=sys.stderr)
             sys.exit(1)
+        if source_manifest_path2 is None:
+            print("error: --source-manifest <path> required", file=sys.stderr)
+            sys.exit(1)
+        if manifest_sha256_2 is None:
+            print("error: --manifest-sha256 <digest> required", file=sys.stderr)
+            sys.exit(1)
+        from graphify.semantic_cleanup import (
+            MAX_SEMANTIC_AGGREGATE_BYTES as _MAX_SEMANTIC_AGGREGATE_BYTES,
+            load_semantic_source_manifest as _load_ssm,
+            load_validated_semantic_fragment_with_size as _load_vsf_with_size,
+            revalidate_semantic_sources as _revalidate_sources,
+            sanitize_semantic_fragment as _sanitize_semantic,
+            validate_semantic_fragment as _validate_semantic,
+        )
+        source_manifest2, manifest_errors2 = _load_ssm(
+            source_manifest_path2,
+            expected_sha256=manifest_sha256_2,
+        )
+        if manifest_errors2 or source_manifest2 is None:
+            print(
+                "[graphify merge-semantic] error: invalid source manifest: "
+                f"{'; '.join(manifest_errors2[:3])}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        resolved_out2 = Path(os.path.realpath(str(out_path2)))
+        if any(
+            source.get("resolved_path") == resolved_out2
+            for source in source_manifest2.sources.values()
+        ):
+            print(
+                "[graphify merge-semantic] error: output path is a provenance "
+                "source; refusing to overwrite source evidence",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         empty: dict = {"nodes": [], "edges": [], "hyperedges": []}
-        cached_data = json.loads(cached_path.read_text(encoding="utf-8")) if cached_path and cached_path.exists() else empty
-        new_data = json.loads(new_path.read_text(encoding="utf-8")) if new_path and new_path.exists() else empty
+        fragments2: list[tuple[str, dict]] = []
+        aggregate_input_bytes2 = 0
+        for label, path in (("cached", cached_path), ("new", new_path)):
+            fragment_input_bytes2 = 0
+            remaining_bytes2 = (
+                _MAX_SEMANTIC_AGGREGATE_BYTES - aggregate_input_bytes2
+            )
+            if remaining_bytes2 <= 0:
+                fragment = None
+                fragment_errors = [
+                    "combined cached-plus-new payload exceeds "
+                    f"{_MAX_SEMANTIC_AGGREGATE_BYTES} bytes"
+                ]
+            elif path is None or not path.exists():
+                fragment = dict(empty)
+                fragment_errors = _validate_semantic(
+                    fragment,
+                    source_manifest=source_manifest2,
+                    enforce_collection_limits=False,
+                    max_bytes=remaining_bytes2,
+                )
+                fragment_input_bytes2 = len(
+                    json.dumps(fragment, ensure_ascii=False).encode("utf-8")
+                )
+            else:
+                fragment, fragment_errors, fragment_input_bytes2 = _load_vsf_with_size(
+                    path,
+                    source_manifest=source_manifest2,
+                    enforce_collection_limits=False,
+                    max_bytes=remaining_bytes2,
+                )
+            if not fragment_errors and fragment is not None:
+                aggregate_input_bytes2 += fragment_input_bytes2
+                if aggregate_input_bytes2 > _MAX_SEMANTIC_AGGREGATE_BYTES:
+                    fragment_errors = [
+                        "combined cached-plus-new payload exceeds "
+                        f"{_MAX_SEMANTIC_AGGREGATE_BYTES} bytes"
+                    ]
+            if fragment_errors or fragment is None:
+                print(
+                    f"[graphify merge-semantic] error: invalid {label} fragment: "
+                    f"{'; '.join(fragment_errors[:3])}",
+                    file=sys.stderr,
+                )
+                print(
+                    f"[graphify merge-semantic] error: refusing to write {out_path2}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            fragments2.append((label, fragment))
+        cached_data = _sanitize_semantic(fragments2[0][1])
+        new_data = _sanitize_semantic(fragments2[1][1])
         seen_ids2: set[str] = set()
         all_nodes: list[dict] = []
         for n in cached_data.get("nodes", []) + new_data.get("nodes", []):
@@ -3870,9 +4206,45 @@ def dispatch_command(cmd: str) -> None:
             "edges": cached_data.get("edges", []) + new_data.get("edges", []),
             "hyperedges": cached_data.get("hyperedges", []) + new_data.get("hyperedges", []),
         }
+        merged_errors2 = _validate_semantic(
+            merged2,
+            source_manifest=source_manifest2,
+            enforce_collection_limits=False,
+            max_bytes=_MAX_SEMANTIC_AGGREGATE_BYTES,
+        )
+        if merged_errors2:
+            print(
+                "[graphify merge-semantic] error: invalid combined fragment: "
+                f"{'; '.join(merged_errors2[:3])}",
+                file=sys.stderr,
+            )
+            print(
+                f"[graphify merge-semantic] error: refusing to write {out_path2}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         out_path2.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
-        _wja(out_path2, merged2, ensure_ascii=False)
+
+        def _assert_all_sources_current() -> None:
+            stale_errors = _revalidate_sources(source_manifest2)
+            if stale_errors:
+                raise ValueError("; ".join(stale_errors[:3]))
+
+        try:
+            _wja(
+                out_path2,
+                merged2,
+                ensure_ascii=False,
+                before_replace=_assert_all_sources_current,
+            )
+        except ValueError as exc:
+            print(
+                "[graphify merge-semantic] error: source provenance became stale "
+                f"before persistence: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(f"Merged: {len(merged2['nodes'])} nodes, {len(merged2['edges'])} edges")
 
     elif Path(cmd).exists() or cmd in (".", "..") or cmd.startswith(("./", "../", "/", "~")):

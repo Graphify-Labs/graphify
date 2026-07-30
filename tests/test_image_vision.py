@@ -24,7 +24,13 @@ from graphify import llm
 # the bytes — so any non-empty byte string stands in for image content.
 _PNG_BYTES = b"\x89PNG\r\n\x1a\nFAKEPIXELDATA"
 _NODE_JSON = json.dumps({
-    "nodes": [{"id": "x", "label": "L", "file_type": "image", "source_file": "a.png"}],
+    "nodes": [{
+        "id": "x",
+        "label": "L",
+        "file_type": "image",
+        "source_file": "sub/diagram.png",
+        "source_location": f"B0-B{len(_PNG_BYTES)}",
+    }],
     "edges": [],
     "hyperedges": [],
 })
@@ -123,9 +129,7 @@ def test_build_image_refs_drops_oversized(tmp_path, monkeypatch):
     big = tmp_path / "big.jpg"
     big.write_bytes(b"x" * 64)
     monkeypatch.setattr(llm, "_MAX_IMAGE_BYTES", 8)
-    (ref,) = llm._build_image_refs([big], tmp_path)
-    assert ref.raw is None  # too large -> reference node only, no pixels
-    assert ref.media_type == "image/jpeg"
+    assert llm._build_image_refs([big], tmp_path) == []
 
 
 def test_path_backend_skips_byte_read_and_size_cap(tmp_path, monkeypatch):
@@ -497,9 +501,69 @@ def test_extract_files_direct_gates_pixels_by_capability(tmp_path, monkeypatch):
     llm.extract_files_direct([doc, img], backend="openai", root=tmp_path)
     assert isinstance(captured["messages"][1]["content"], list)
 
-    # non-vision backend (deepseek) -> pixels stripped, content is a plain string
+    # non-vision backend (deepseek) -> the unseen image is excluded rather than
+    # being presented as source-backed evidence.
     captured.clear()
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_NODE_JSON",
+        '{"nodes":[],"edges":[],"hyperedges":[]}',
+    )
     monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
     llm.extract_files_direct([doc, img], backend="deepseek", root=tmp_path)
     content = captured["messages"][1]["content"]
-    assert isinstance(content, str) and "sub/diagram.png" in content
+    assert isinstance(content, str) and "sub/diagram.png" not in content
+
+
+@pytest.mark.parametrize(
+    ("backend", "api_key", "max_image_bytes"),
+    [
+        ("deepseek", "test-key", None),
+        ("openai", "test-key", 4),
+    ],
+)
+def test_extract_files_direct_rejects_evidence_for_image_not_sent_to_provider(
+    tmp_path,
+    monkeypatch,
+    backend,
+    api_key,
+    max_image_bytes,
+):
+    image = tmp_path / "diagram.png"
+    image.write_bytes(_PNG_BYTES)
+    if max_image_bytes is not None:
+        monkeypatch.setattr(llm, "_MAX_IMAGE_BYTES", max_image_bytes)
+    provenance = {
+        "source_file": "diagram.png",
+        "source_location": f"B0-B{len(_PNG_BYTES)}",
+    }
+    fabricated = {
+        "nodes": [
+            {
+                "id": "diagram_claim",
+                "label": "Fabricated chart",
+                "file_type": "image",
+                **provenance,
+            }
+        ],
+        "edges": [],
+        "hyperedges": [],
+    }
+    seen_images = None
+
+    def fake_call(*args, **kwargs):
+        nonlocal seen_images
+        seen_images = kwargs.get("images")
+        return fabricated
+
+    monkeypatch.setattr(llm, "_call_openai_compat", fake_call)
+
+    with pytest.raises(ValueError, match="outside the dispatched source span"):
+        llm.extract_files_direct(
+            [image],
+            backend=backend,
+            api_key=api_key,
+            root=tmp_path,
+        )
+
+    assert seen_images == []

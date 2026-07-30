@@ -18,12 +18,31 @@ _ENVELOPE = {
     "is_error": False,
     "result": json.dumps({
         "nodes": [
-            {"id": "foo_module", "label": "Foo", "file_type": "document", "source_file": "foo.md"},
-            {"id": "foo_greet", "label": "greet", "file_type": "code", "source_file": "foo.md"},
+            {
+                "id": "foo_module",
+                "label": "Foo",
+                "file_type": "document",
+                "source_file": "foo.md",
+                "source_location": "L1",
+            },
+            {
+                "id": "foo_greet",
+                "label": "greet",
+                "file_type": "code",
+                "source_file": "foo.md",
+                "source_location": "L3",
+            },
         ],
         "edges": [
-            {"source": "foo_module", "target": "foo_greet",
-             "relation": "references", "confidence": "EXTRACTED", "confidence_score": 1.0},
+            {
+                "source": "foo_module",
+                "target": "foo_greet",
+                "relation": "references",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": "foo.md",
+                "source_location": "L3",
+            },
         ],
         "hyperedges": [],
         "input_tokens": 0,

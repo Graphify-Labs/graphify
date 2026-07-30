@@ -469,13 +469,24 @@ Format: {stem}_{entity} where stem = full repo-relative path with the extension 
 
 Edge direction rule — source is always the ACTOR, target is the ACTED-UPON:
 - calls: source = the function/method that CONTAINS the call site; target = the function/method BEING CALLED. Never reverse this.
-- imports/references: source = the file/entity that imports or references; target = the thing imported or referenced.
-- implements/inherits: source = the subclass/implementor; target = the base class/interface.
+- references: source = the file/entity that imports or references; target = the thing imported or referenced.
+- implements: source = the subclass/implementor; target = the base class/interface.
 
 Hyperedges: if 3 or more nodes clearly participate together in a shared concept, flow, or pattern that is not captured by pairwise edges alone, add a hyperedge to the top-level `hyperedges` array (e.g. all classes implementing one protocol, all functions in one auth flow even if they don't all call each other, all concepts from a paper section forming one coherent idea). Use sparingly — only when the group relationship adds information beyond the pairwise edges. Maximum 3 hyperedges per chunk.
 
+Relation labels are closed vocabularies. Edge relation MUST be exactly one of:
+calls, implements, references, cites, conceptually_related_to,
+shares_data_with, semantically_similar_to, rationale_for.
+Hyperedge relation MUST be exactly one of: participate_in, implement, form.
+
+Every node, edge, and hyperedge MUST cite the smallest exact supporting source
+span. Use L<line> for one UTF-8 text line or inclusive L<start>-L<end> for
+multiple lines. Use half-open B<start>-B<end> for PDF/raster evidence; the
+source wrapper/image note gives the allowed span. Missing or null provenance is
+invalid. Copy source_file exactly from the source wrapper/image note.
+
 Output exactly this schema:
-{"nodes":[{"id":"stem_entity","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"relative/path","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":null,"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path"}],"input_tokens":0,"output_tokens":0}
+{"nodes":[{"id":"stem_entity","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"relative/path","source_location":"L1-L3","source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to|rationale_for","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":"L2","weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path","source_location":"L1-L8"}],"input_tokens":0,"output_tokens":0}
 """
 
 _DEEP_EXTRACTION_SUFFIX = """\
@@ -545,23 +556,135 @@ def _neutralise_injection_sentinels(text: str) -> str:
     return _INJECTION_SENTINELS.sub(lambda m: m.group(0)[0] + "​" + m.group(0)[1:], text)
 
 
-def _wrap_untrusted(rel: str, content: str) -> str:
+def _wrap_untrusted(
+    rel: str,
+    content: str,
+    *,
+    source_sha256: str | None = None,
+    source_span: str | None = None,
+) -> str:
     """Wrap one file's content in a labelled, hash-stamped untrusted-data block.
 
     The model's system prompt instructs it to treat everything inside
     <untrusted_source> as inert data, never as instructions. The sha256 lets a
     reviewer correlate a suspicious node back to the exact bytes that produced it.
     """
-    sha = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+    sha = source_sha256 or hashlib.sha256(
+        content.encode("utf-8", errors="replace")
+    ).hexdigest()
     safe = _neutralise_injection_sentinels(content)
+    span_attr = f' source_span="{source_span}"' if source_span else ""
     return (
-        f'<untrusted_source path="{rel}" sha256="{sha}">\n'
+        f'<untrusted_source path="{rel}" sha256="{sha}"{span_attr}>\n'
         f"{safe}\n"
         f"</untrusted_source>"
     )
 
 
-def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
+def _semantic_source_key(unit: "Path | FileSlice", root: Path) -> str:
+    """Return the exact source_file string shown to the extraction model."""
+    path = unit_path(unit)
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _unit_source_span(
+    unit: "Path | FileSlice",
+    content: str,
+    manifest_entry: dict,
+) -> str | None:
+    """Exact original-file span represented by one dispatched prompt unit."""
+    extent = manifest_entry.get("extent")
+    if not isinstance(extent, int) or extent <= 0:
+        return None
+    if manifest_entry.get("span_kind") == "byte":
+        if isinstance(unit, FileSlice):
+            return None
+        return f"B0-B{extent}"
+    try:
+        source_path = unit.path if isinstance(unit, FileSlice) else unit
+        parent_text = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    if isinstance(unit, FileSlice):
+        start = max(0, min(unit.start, len(parent_text)))
+    else:
+        start = 0
+    shown_length = len(content[:_FILE_CHAR_CAP])
+    end = max(start, min(start + shown_length, len(parent_text)))
+    if end <= start:
+        return None
+
+    complete_lines: list[int] = []
+    offset = 0
+    for line_number, line in enumerate(parent_text.splitlines(keepends=True), 1):
+        line_start = offset
+        offset += len(line)
+        content_end = offset
+        if line.endswith("\n"):
+            content_end -= 1
+            if content_end > line_start and line[content_end - line_start - 1] == "\r":
+                content_end -= 1
+        if line_start >= start and content_end <= end:
+            complete_lines.append(line_number)
+    if not complete_lines:
+        return None
+    start_line = complete_lines[0]
+    end_line = complete_lines[-1]
+    return f"L{start_line}" if start_line == end_line else f"L{start_line}-L{end_line}"
+
+
+def _bind_dispatched_spans(
+    manifest: dict,
+    units: "list[Path | FileSlice]",
+    root: Path,
+) -> None:
+    """Restrict provenance to the exact prefix/slices shown to the provider."""
+    for entry in manifest.get("sources", {}).values():
+        if isinstance(entry, dict):
+            entry["allowed_spans"] = []
+    for unit in units:
+        key = _semantic_source_key(unit, root)
+        entry = manifest.get("sources", {}).get(key)
+        if not isinstance(entry, dict):
+            continue
+        path = unit_path(unit)
+        safe_path = _resolve_under_root(path, root)
+        if safe_path is None:
+            continue
+        try:
+            content = read_slice_text(unit) if isinstance(unit, FileSlice) else _file_to_text(safe_path)
+        except OSError:
+            continue
+        span = _unit_source_span(unit, content, entry)
+        spans = entry.setdefault("allowed_spans", [])
+        if span is not None:
+            if span not in spans:
+                spans.append(span)
+
+
+def _bind_dispatched_image_spans(
+    manifest: dict,
+    refs: "list[_ImageRef]",
+) -> None:
+    """Authorize only image bytes the selected provider can actually inspect."""
+    for ref in refs:
+        entry = manifest.get("sources", {}).get(ref.rel)
+        if not isinstance(entry, dict) or not ref.source_location:
+            continue
+        spans = entry.setdefault("allowed_spans", [])
+        if ref.source_location not in spans:
+            spans.append(ref.source_location)
+
+
+def _read_files(
+    units: "list[Path | FileSlice]",
+    root: Path,
+    *,
+    source_manifest: dict | None = None,
+) -> str:
     """Return file/slice contents formatted for the extraction prompt.
 
     Each unit is wrapped in an <untrusted_source> delimiter block and known
@@ -579,10 +702,7 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
         if safe_path is None:
             print(f"[graphify] skipping {p}: symlink target outside corpus root", file=sys.stderr)
             continue
-        try:
-            rel = str(p.relative_to(root))
-        except ValueError:
-            rel = str(p)
+        rel = _semantic_source_key(u, root)
         try:
             if isinstance(u, FileSlice):
                 content = read_slice_text(u)
@@ -592,7 +712,25 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
             continue
         # Whole files are still capped (covers non-splittable large files like
         # code); slices are already bounded to the cap, so the cap is a no-op.
-        parts.append(_wrap_untrusted(rel, content[:_FILE_CHAR_CAP]))
+        manifest_entry = (
+            source_manifest.get("sources", {}).get(rel)
+            if isinstance(source_manifest, dict)
+            else None
+        )
+        source_sha256 = manifest_entry.get("sha256") if manifest_entry else None
+        source_span = (
+            _unit_source_span(u, content, manifest_entry)
+            if manifest_entry
+            else None
+        )
+        parts.append(
+            _wrap_untrusted(
+                rel,
+                content[:_FILE_CHAR_CAP],
+                source_sha256=source_sha256,
+                source_span=source_span,
+            )
+        )
     return "\n\n".join(parts)
 
 
@@ -735,7 +873,7 @@ _IMAGE_MEDIA_TYPES = {
 }
 # Per-image byte ceiling. Anthropic caps a request at 32 MB and Bedrock images
 # at ~5 MB; 5 MB per image keeps every backend within limits. Oversized images
-# fall back to a text reference (the node is still created, just unseen).
+# are excluded because pixels the provider never received cannot be evidence.
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
 # Flat token estimate per image for chunk packing. Vision models bill an image
 # at a roughly fixed cost regardless of file size, so estimating by byte size
@@ -757,16 +895,17 @@ _PATH_IMAGE_BACKENDS = {"claude-cli"}
 class _ImageRef:
     """A single image destined for a vision request.
 
-    `raw` is None when the image is unreadable or exceeds `_MAX_IMAGE_BYTES`, or
-    when the target backend has no vision support — in every such case the
-    renderers emit a text reference instead of pixels, so the image still
-    becomes a graph node.
+    `raw` is None only for path-based vision backends, which read the image
+    themselves. Base64 backends exclude unreadable or oversized images instead
+    of emitting a source reference without pixels.
     """
 
     path: Path        # absolute path (claude-cli reads it via the Read tool)
     rel: str          # path relative to the corpus root (the node's source_file)
     media_type: str   # e.g. "image/png"
     raw: bytes | None
+    source_location: str = ""
+    source_sha256: str = ""
 
     @property
     def b64(self) -> str:
@@ -795,12 +934,18 @@ def _partition_semantic_files(
     return text_units, image_files
 
 
-def _build_image_refs(image_files: list[Path], root: Path, *, read_bytes: bool = True) -> list[_ImageRef]:
+def _build_image_refs(
+    image_files: list[Path],
+    root: Path,
+    *,
+    read_bytes: bool = True,
+    source_manifest: dict | None = None,
+) -> list[_ImageRef]:
     """Build `_ImageRef`s for raster images.
 
     `read_bytes=True` (base64 backends) loads the pixels and drops any image over
-    `_MAX_IMAGE_BYTES` to a reference, because a base64 request body has a hard
-    size ceiling. `read_bytes=False` (path-based backends — claude-cli)
+    `_MAX_IMAGE_BYTES`, because a base64 request body has a hard size ceiling.
+    `read_bytes=False` (path-based backends — claude-cli)
     skips the read entirely: those backends open the file themselves and
     downsample as needed, so there is no per-image size limit and no reason to
     load (potentially tens of MB of) bytes that would never be used.
@@ -827,11 +972,35 @@ def _build_image_refs(image_files: list[Path], root: Path, *, read_bytes: bool =
                 print(
                     f"[graphify] image {rel} is {len(raw) // 1024} KB, over the "
                     f"{_MAX_IMAGE_BYTES // (1024 * 1024)} MB inline-image limit for this "
-                    "backend; sending it as a reference node without inline pixels.",
+                    "backend; omitting it from semantic extraction.",
                     file=sys.stderr,
                 )
                 raw = None
-        refs.append(_ImageRef(abs_path, rel, media, raw))
+            if raw is None:
+                continue
+        manifest_entry = (
+            source_manifest.get("sources", {}).get(rel)
+            if isinstance(source_manifest, dict)
+            else None
+        )
+        source_location = ""
+        source_sha256 = ""
+        if manifest_entry:
+            if manifest_entry.get("span_kind") == "byte":
+                source_location = f"B0-B{manifest_entry['extent']}"
+            else:
+                source_location = f"L1-L{manifest_entry['extent']}"
+            source_sha256 = manifest_entry.get("sha256", "")
+        refs.append(
+            _ImageRef(
+                abs_path,
+                rel,
+                media,
+                raw,
+                source_location=source_location,
+                source_sha256=source_sha256,
+            )
+        )
     return refs
 
 
@@ -855,8 +1024,8 @@ def _backend_supports_vision(backend: str) -> bool:
 def _image_notes(refs: list[_ImageRef], *, with_paths: bool = False) -> str:
     """Text block listing the images so the model emits one node per image.
 
-    Always included alongside the visual payload (and used on its own when the
-    backend can't see pixels), so an image becomes a graph node either way.
+    Always included alongside a visual payload. Images the provider cannot
+    inspect are excluded before this renderer is called.
     `with_paths=True` also lists the absolute path and asks the model to open it
     with the Read tool — used by the claude-cli backend.
     """
@@ -880,6 +1049,10 @@ def _image_notes(refs: list[_ImageRef], *, with_paths: bool = False) -> str:
     ]
     for i, r in enumerate(refs, 1):
         note = f"[image {i}] source_file: {r.rel}"
+        if r.source_location:
+            note += f"  source_location: {r.source_location}"
+        if r.source_sha256:
+            note += f"  source_sha256: {r.source_sha256}"
         if with_paths:
             note += f"  path: {r.path}"
         if r.raw is None and not with_paths:
@@ -1740,19 +1913,36 @@ def extract_files_direct(
             f"No API key for backend '{backend}'. "
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
         )
+    from graphify.semantic_cleanup import snapshot_semantic_sources
+    source_manifest = snapshot_semantic_sources(
+        dict.fromkeys(_semantic_source_key(item, root) for item in files),
+        root,
+    )
     mdl = model or _default_model_for_backend(backend)
     # Separate raster images from text-like files. Text goes through _read_files
     # as before; images become structured refs the backend renders as pixels
     # (vision backends) or as a text reference node (everything else).
     text_files, image_files = _partition_semantic_files(files)
-    user_msg = _read_files(text_files, root)
+    user_msg = _read_files(text_files, root, source_manifest=source_manifest)
     vision = _backend_supports_vision(backend)
     # Only base64 (inline) vision backends need the bytes loaded + size-capped;
     # path-based backends (claude-cli) and non-vision backends do not.
     read_bytes = vision and backend not in _PATH_IMAGE_BACKENDS
-    image_refs = _build_image_refs(image_files, root, read_bytes=read_bytes) if image_files else []
+    image_refs = (
+        _build_image_refs(
+            image_files,
+            root,
+            read_bytes=read_bytes,
+            source_manifest=source_manifest,
+        )
+        if image_files
+        else []
+    )
     if image_refs and not vision:
-        image_refs = _strip_pixels(image_refs)
+        image_refs = []
+    _bind_dispatched_spans(source_manifest, text_files, root)
+    if vision:
+        _bind_dispatched_image_spans(source_manifest, image_refs)
     max_out = _resolve_max_tokens(cfg.get("max_tokens", 8192))
 
     if backend == "claude":
@@ -1797,6 +1987,34 @@ def extract_files_direct(
             images=image_refs,
             extra_body=cfg.get("extra_body"),
         )
+
+    # Reject invalid semantic relations and provenance before this provider
+    # fragment can be returned to adaptive retry, cache checkpointing, or corpus
+    # merge. The source manifest was captured before the provider call, so a file
+    # changed during extraction fails stale rather than being accepted as evidence.
+    from graphify.semantic_cleanup import (
+        bind_semantic_source_hashes,
+        prepare_semantic_source_manifest,
+        validate_semantic_fragment,
+    )
+    prepared_sources, manifest_errors = prepare_semantic_source_manifest(
+        source_manifest
+    )
+    if manifest_errors or prepared_sources is None:
+        raise ValueError(
+            "semantic source snapshot validation failed: "
+            + "; ".join(manifest_errors[:5])
+        )
+    validation_errors = validate_semantic_fragment(
+        result,
+        source_manifest=prepared_sources,
+    )
+    if validation_errors:
+        raise ValueError(
+            "semantic fragment validation failed: "
+            + "; ".join(validation_errors[:5])
+        )
+    bind_semantic_source_hashes(result, prepared_sources)
 
     # Verify code-typed nodes against the source the model read and downgrade the
     # confidence of any whose symbol name has no evidence there. Runs on the bytes

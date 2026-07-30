@@ -75,8 +75,8 @@ def _cleanup_stale_ast_entries(ast_base: Path, current_dir: Path) -> None:
 # caller supplies its prompt; callers that don't keep the historical flat layout.
 _PROMPT_FP_LEN = 12
 
-# Count of pre-fingerprint (flat-layout) entries served this process, so
-# check_semantic_cache can report N to the user (#1939).
+# Count of pre-fingerprint (flat-layout) entries served by an explicitly opted-in
+# low-level caller. Semantic extraction itself never enables this fallback.
 _legacy_semantic_hits = 0
 
 # Prompt-file fingerprints already computed, keyed by (path, size, mtime_ns) —
@@ -402,6 +402,22 @@ def file_hash(path: Path, root: Path = Path("."), cache_root: "Path | None" = No
         _stat_index_dirty = True
 
     return digest
+
+
+def _file_hash_from_raw(path: Path, raw: bytes, root: Path) -> str:
+    """Return the cache key for one already-read source snapshot."""
+    resolved = _normalize_path(Path(path)).resolve()
+    normalized_root = _normalize_path(Path(root))
+    try:
+        salt = resolved.relative_to(normalized_root.resolve()).as_posix().lower()
+    except ValueError:
+        salt = resolved.as_posix().lower()
+    content = _body_content(raw) if resolved.suffix.lower() == ".md" else raw
+    digest = hashlib.sha256()
+    digest.update(content)
+    digest.update(b"\x00")
+    digest.update(salt.encode())
+    return digest.hexdigest()
 
 
 def cached_word_count(path: Path, root: Path, compute, cache_root: "Path | None" = None) -> int:
@@ -772,7 +788,7 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
 def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
                 cache_root: Path | None = None, prompt: "str | Path | None" = None,
                 prompt_file: "str | Path | None" = None,
-                allow_legacy: bool = True,
+                allow_legacy: bool = False,
                 allow_partial: bool = False) -> dict | None:
     """Return cached extraction for this file if hash matches, else None.
 
@@ -796,12 +812,10 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
     the prompt file — that the caller is about to extract with. It selects the
     p{fingerprint}/ namespace, so an entry produced by a different prompt is a
     miss rather than a silent stale hit (#1939). When it is given and the
-    fingerprinted namespace misses, ``allow_legacy`` (default True) falls back
-    to a flat-layout entry: those predate fingerprinting, so their vintage is
-    unknowable — they are served rather than re-billed, and the hit is counted
-    so :func:`check_semantic_cache` can report N to the user. Callers that must
-    not mix vintages within one entry (see :func:`save_semantic_cache`'s
-    ``merge_existing``) pass allow_legacy=False.
+    fingerprinted namespace misses, ``allow_legacy=True`` explicitly opts into
+    the historical flat-layout fallback. Semantic extraction never opts in:
+    those entries predate the closed relation and exact-provenance contracts, so
+    their vintage and evidence guarantees are unknowable.
     Returns None if no cache entry or file has changed.
     """
     global _legacy_semantic_hits
@@ -822,6 +836,23 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
             result = json.loads(entry.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
+        if kind.startswith("semantic") and prompt_fp and isinstance(result, dict):
+            source_path = Path(path)
+            if not source_path.is_absolute():
+                source_path = Path(root) / source_path
+            try:
+                current_source_digest = hashlib.sha256(
+                    source_path.read_bytes()
+                ).hexdigest()
+            except OSError:
+                return None
+            for bucket in ("nodes", "edges", "hyperedges"):
+                for item in result.get(bucket, []) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    bound_digest = item.get("source_sha256")
+                    if bound_digest is not None and bound_digest != current_source_digest:
+                        return None
         # A ``partial`` entry was produced from a truncated LLM response and
         # covers only part of the file's symbols. Serving it as authoritative
         # would return the incomplete node set forever until the file is
@@ -852,7 +883,8 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
 
 def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast",
                 cache_root: Path | None = None, prompt: "str | Path | None" = None,
-                prompt_file: "str | Path | None" = None) -> None:
+                prompt_file: "str | Path | None" = None,
+                expected_source_sha256: str | None = None) -> None:
     """Save extraction result for this file.
 
     Stores as graphify-out/cache/{kind}/{hash}.json where hash = SHA256 of current file contents.
@@ -901,7 +933,20 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
         # the entry replays portably under any root (#2257). Strictly after the
         # source_file pass, which owns that field's bare-relative format.
         _relativize_ids_in(on_disk, p, root)
-    h = file_hash(p, root, cache_root=cache_root)
+    if expected_source_sha256 is not None:
+        raw = p.read_bytes()
+        current_source_sha256 = hashlib.sha256(raw).hexdigest()
+        if current_source_sha256 != expected_source_sha256:
+            raise ValueError(
+                "semantic source_sha256 differs from the source at cache persistence"
+            )
+        # Derive the entry key from the same bytes whose trusted digest was
+        # checked. If the path changes immediately afterwards, a later lookup
+        # computes a different key (or rejects the bound digest) rather than
+        # replaying stale evidence under the newer source state.
+        h = _file_hash_from_raw(p, raw, root)
+    else:
+        h = file_hash(p, root, cache_root=cache_root)
     location = cache_root if cache_root is not None else root
     target_dir = cache_dir(location, kind, _resolve_prompt_fp(prompt, prompt_file))
     entry = target_dir / f"{h}.json"
@@ -1033,9 +1078,7 @@ def check_semantic_cache(
     Uncached files need Claude extraction; cached files are merged directly.
 
     ``mode`` selects the cache namespace: ``None`` (the default) reads
-    ``cache/semantic/`` — byte-identical to the historical behavior, so
-    existing callers that omit it (including older installed skill flows)
-    are unaffected. A non-None mode (e.g. ``"deep"``) reads
+    ``cache/semantic/``. A non-None mode (e.g. ``"deep"``) reads
     ``cache/semantic-{mode}/`` instead, so deep-mode results never shadow
     (or get shadowed by) standard-mode entries for the same content (#1894).
 
@@ -1044,10 +1087,10 @@ def check_semantic_cache(
     agent loaded (skill path, ``references/extraction-spec.md``). Supplying it
     restricts hits to entries produced by that same prompt, so an upgrade that
     changed the prompt re-extracts instead of replaying the older vintage
-    (#1939). Entries written before fingerprinting existed still hit — their
-    vintage is unknowable and dropping them would re-bill a whole corpus — but
-    a warning reports how many were served. Omitting ``prompt`` keeps the
-    historical behavior for existing callers.
+    (#1939). Entries written before fingerprinting existed never hit: they also
+    predate the semantic evidence contract, so replaying them could surface null
+    provenance or open-vocabulary relations. Omitting ``prompt`` (or naming an
+    unreadable prompt file) makes every file a cache miss.
 
     ``cache_root`` decouples *where* the cache is read from the key-anchor
     ``root``, mirroring :func:`load_cached` and :func:`save_semantic_cache`
@@ -1055,38 +1098,28 @@ def check_semantic_cache(
     keys and relative-path resolution stay anchored to the source tree) and the
     output directory as ``cache_root``. Omitting it keeps ``root`` for both.
     """
-    global _legacy_semantic_hits
     kind = "semantic" if mode is None else f"semantic-{mode}"
     cached_nodes: list[dict] = []
     cached_edges: list[dict] = []
     cached_hyperedges: list[dict] = []
     uncached: list[str] = []
-    legacy_before = _legacy_semantic_hits
+    prompt_fp = _resolve_prompt_fp(prompt, prompt_file)
+    if prompt_fp is None:
+        return cached_nodes, cached_edges, cached_hyperedges, list(files)
 
     for fpath in files:
         p = Path(fpath)
         if not p.is_absolute():
             p = Path(root) / p
         result = load_cached(p, root, kind=kind, cache_root=cache_root,
-                             prompt=prompt, prompt_file=prompt_file)
+                             prompt=prompt, prompt_file=prompt_file,
+                             allow_legacy=False)
         if result is not None:
             cached_nodes.extend(result.get("nodes", []))
             cached_edges.extend(result.get("edges", []))
             cached_hyperedges.extend(result.get("hyperedges", []))
         else:
             uncached.append(fpath)
-
-    legacy = _legacy_semantic_hits - legacy_before
-    if legacy:
-        warnings.warn(
-            f"{legacy} semantic cache entr{'y' if legacy == 1 else 'ies'} predate "
-            "extraction-prompt fingerprinting and were written by an unknown prompt "
-            "version; they were replayed as-is, so this graph may mix extraction "
-            "vintages. Re-run with --force (or GRAPHIFY_FORCE=1) to re-extract them "
-            "with the current prompt (#1939).",
-            RuntimeWarning,
-            stacklevel=2,
-        )
 
     return cached_nodes, cached_edges, cached_hyperedges, uncached
 
@@ -1346,8 +1379,32 @@ def save_semantic_cache(
             )
             if is_partial:
                 result = {**result, "partial": True}
+            bound_digests: set[str] = set()
+            for bucket in ("nodes", "edges", "hyperedges"):
+                for item in result.get(bucket, []) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    bound_digest = item.get("source_sha256")
+                    if bound_digest is None:
+                        continue
+                    if (
+                        not isinstance(bound_digest, str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", bound_digest)
+                    ):
+                        raise ValueError(
+                            "semantic source_sha256 must be a lowercase SHA-256 digest"
+                        )
+                    bound_digests.add(bound_digest)
+            if len(bound_digests) > 1:
+                raise ValueError(
+                    "semantic cache group contains conflicting source_sha256 values"
+                )
+            expected_source_sha256 = (
+                next(iter(bound_digests)) if bound_digests else None
+            )
             save_cached(p, result, root, kind=kind, cache_root=cache_root,
-                        prompt=prompt, prompt_file=prompt_file)
+                        prompt=prompt, prompt_file=prompt_file,
+                        expected_source_sha256=expected_source_sha256)
             saved += 1
         else:
             skipped_not_file += 1

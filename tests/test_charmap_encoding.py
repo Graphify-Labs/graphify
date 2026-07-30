@@ -33,7 +33,7 @@ _ENVELOPE = {
     "is_error": False,
     "result": json.dumps({
         "nodes": [{"id": "n1", "label": "N1", "file_type": "document",
-                   "source_file": "u.md"}],
+                   "source_file": "u.md", "source_location": "L1"}],
         "edges": [],
         "hyperedges": [],
         "input_tokens": 0,
@@ -294,7 +294,8 @@ class TestSubstitutionValidation:
             "result": json.dumps({
                 "nodes": [{"id": "u_chunk", "label": "Unicode Chunk",
                            "file_type": "document",
-                           "source_file": "unicode_chunk.md"}],
+                           "source_file": "unicode_chunk.md",
+                           "source_location": "L1"}],
                 "edges": [], "hyperedges": [],
                 "input_tokens": 1, "output_tokens": 1,
             }),

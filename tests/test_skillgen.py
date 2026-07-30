@@ -300,14 +300,16 @@ def test_windows_frontmatter_name_and_shell_and_extra():
     assert core.index("## Troubleshooting") < core.index("## Honesty Rules")
 
 
-def test_codex_dispatch_is_agenttask_and_collects_in_memory():
-    """codex: spawn/wait/close_agent dispatch needing multi_agent = true."""
+def test_codex_dispatch_is_agenttask_and_writes_validated_chunks():
+    """codex: spawn/wait/close dispatch writes chunks for package validation."""
     core, _ = _platform_artifacts("codex")
     assert "spawn_agent" in core
     assert "wait_agent" in core
     assert "close_agent" in core
     assert "multi_agent = true" in core
-    assert "Codex collects in memory" in core
+    assert "Do not accumulate or merge results in memory" in core
+    assert "package validator" in core
+    assert "CHUNK_PATH" in core
     # The B2 dispatch slot itself (Codex heading -> Step B3) must not carry the
     # claude Agent-tool example. The shared Step B3 prose mentions the agent type
     # in a re-run hint, so scope the check to the dispatch block only.
@@ -479,6 +481,31 @@ def test_monolith_roundtrip_passes_for_aider_and_devin():
     for key in ("aider", "devin"):
         problems = gen.monolith_roundtrip(platforms[key])
         assert problems == [], f"[{key}]\n" + "\n".join(problems)
+
+
+def test_monolith_roundtrip_rejects_generic_sanctioned_line_elsewhere(monkeypatch):
+    """The full-artifact digest closes generic legacy-merger line allowances."""
+    platforms = gen.load_platforms()
+    real_render = gen.render
+
+    def render_with_unrelated_continue(platform):
+        artifacts = real_render(platform)
+        if platform.key != "aider":
+            return artifacts
+        artifact = artifacts[0]
+        return [
+            gen.RenderedArtifact(
+                path=artifact.path,
+                content=artifact.content + "continue\n",
+            )
+        ]
+
+    monkeypatch.setattr(gen, "render", render_with_unrelated_continue)
+
+    problems = gen.monolith_roundtrip(platforms["aider"])
+
+    assert problems
+    assert "does not match the reviewed contract" in problems[0]
 
 
 def test_monoliths_change_only_sanctioned_lines():

@@ -9,6 +9,8 @@ rejects nodes attributed to a file that was NOT dispatched — cannot see.
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from graphify import llm
 
 
@@ -24,6 +26,17 @@ _SOURCE = (
 
 def _run(files, nodes, tmp_path):
     """Drive extract_files_direct with a faked backend returning ``nodes``."""
+    nodes = [
+        {
+            **node,
+            **(
+                {"source_location": "L1"}
+                if node.get("source_file") and "source_location" not in node
+                else {}
+            ),
+        }
+        for node in nodes
+    ]
     result = {
         "nodes": nodes,
         "edges": [],
@@ -70,19 +83,24 @@ def test_qualified_and_prettified_labels_do_not_false_positive(tmp_path):
     assert "verification" not in out["charge_card(amount, token)"]
 
 
-def test_document_and_sourceless_nodes_are_never_flagged(tmp_path):
+def test_document_node_is_not_flagged_but_sourceless_node_fails_closed(tmp_path):
     src = tmp_path / "mod.py"
     src.write_text(_SOURCE, encoding="utf-8")
-    nodes = [
+    valid_nodes = [
         {"id": "a", "label": "Nonexistent Heading", "file_type": "document", "source_file": "mod.py"},
-        {"id": "b", "label": "orphan_symbol()", "file_type": "code"},  # no source_file
     ]
-    out = _by_label(_run([src], nodes, tmp_path))
+    out = _by_label(_run([src], valid_nodes, tmp_path))
     assert "verification" not in out["Nonexistent Heading"]
-    assert "verification" not in out["orphan_symbol()"]
+
+    with pytest.raises(ValueError, match="source_file"):
+        _run(
+            [src],
+            [{"id": "b", "label": "orphan_symbol()", "file_type": "code"}],
+            tmp_path,
+        )
 
 
-def test_node_attributed_to_undispatched_file_is_left_to_out_of_scope(tmp_path):
+def test_node_attributed_to_undispatched_file_fails_closed(tmp_path):
     src = tmp_path / "mod.py"
     src.write_text(_SOURCE, encoding="utf-8")
     # other.py exists on disk but is NOT dispatched in this call.
@@ -90,9 +108,8 @@ def test_node_attributed_to_undispatched_file_is_left_to_out_of_scope(tmp_path):
     nodes = [
         {"id": "a", "label": "ghost_func()", "file_type": "code", "source_file": "other.py"},
     ]
-    out = _by_label(_run([src], nodes, tmp_path))
-    # Not in the dispatched set -> #1895's domain, not evidence-binding's.
-    assert "verification" not in out["ghost_func()"]
+    with pytest.raises(ValueError, match="dispatched source snapshot"):
+        _run([src], nodes, tmp_path)
 
 
 def test_uncheckable_short_label_is_not_flagged(tmp_path):

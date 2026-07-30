@@ -324,6 +324,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 - **The "why"** — inline comments (`# NOTE:`, `# WHY:`, `# HACK:`), docstrings, and design rationale from docs are extracted as separate nodes linked to the code they explain.
 - **Suggested questions** — 4–5 questions the graph is uniquely positioned to answer.
 - **Confidence tags** — every inferred relationship is marked `EXTRACTED`, `INFERRED`, or `AMBIGUOUS`. You always know what was found vs guessed.
+- **Source-backed semantic evidence** — every semantic node, edge, and group relationship must cite an exact current line or byte span within the content dispatched to the model; sealed all-source manifests, source-bound prompt caches, package-owned cached-plus-new validation, and final source rechecks reject null, stale, non-resolving, out-of-range, or unknown-vintage evidence before persistence.
 
 ---
 

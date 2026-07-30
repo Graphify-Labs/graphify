@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -164,8 +166,18 @@ def test_incremental_partial_run_preserves_untouched_semantic_hash(
         if on_chunk:
             on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
         return {
-            "nodes": [{"id": f"n-{rel}", "source_file": rel,
-                       "file_type": "document"} for rel in sent],
+            "nodes": [
+                {
+                    "id": f"n-{rel}",
+                    "source_file": rel,
+                    "source_location": "L1",
+                    "source_sha256": hashlib.sha256(
+                        (corpus / rel).read_bytes()
+                    ).hexdigest(),
+                    "file_type": "document",
+                }
+                for rel in sent
+            ],
             "edges": [],
             "hyperedges": [],
             "input_tokens": 10,
@@ -230,7 +242,15 @@ def test_truncated_doc_semantic_hash_is_cleared_for_requeue(monkeypatch, tmp_pat
         on_chunk = kwargs.get("on_chunk_done")
         if on_chunk:
             on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
-        node = {"id": "n-readme", "source_file": "README.md", "file_type": "document"}
+        node = {
+            "id": "n-readme",
+            "source_file": "README.md",
+            "source_location": "L1",
+            "source_sha256": hashlib.sha256(
+                (corpus / "README.md").read_bytes()
+            ).hexdigest(),
+            "file_type": "document",
+        }
         if partial_run["on"] and "README.md" in rels:
             node["_partial"] = True  # this run truncated README.md
         return {"nodes": [node] if "README.md" in rels else [],
@@ -284,8 +304,17 @@ def test_manifest_stamps_freshly_extracted_semantic_docs(monkeypatch, tmp_path):
         # Root-relative source_file, exactly what a fresh extraction produces.
         # OMITTED.md gets no nodes/edges — the model skipped it.
         return {
-            "nodes": [{"id": "readme", "source_file": "README.md",
-                       "file_type": "document"}],
+            "nodes": [
+                {
+                    "id": "readme",
+                    "source_file": "README.md",
+                    "source_location": "L1",
+                    "source_sha256": hashlib.sha256(
+                        (corpus / "README.md").read_bytes()
+                    ).hexdigest(),
+                    "file_type": "document",
+                }
+            ],
             "edges": [],
             "hyperedges": [],
             "input_tokens": 10,
@@ -394,8 +423,19 @@ def test_manifest_stamps_hyperedge_only_docs(monkeypatch, tmp_path):
         return {
             "nodes": [],
             "edges": [],
-            "hyperedges": [{"id": "h1", "label": "Shared", "nodes": ["a", "b", "c"],
-                            "relation": "participate_in", "source_file": "README.md"}],
+            "hyperedges": [
+                {
+                    "id": "h1",
+                    "label": "Shared",
+                    "nodes": ["a", "b", "c"],
+                    "relation": "participate_in",
+                    "source_file": "README.md",
+                    "source_location": "L1",
+                    "source_sha256": hashlib.sha256(
+                        (corpus / "README.md").read_bytes()
+                    ).hexdigest(),
+                }
+            ],
             "input_tokens": 10,
             "output_tokens": 5,
         }
@@ -428,8 +468,17 @@ def _recording_extractor(calls):
         if on_chunk:
             on_chunk(0, 1, {"nodes": [], "edges": [], "hyperedges": []})
         return {
-            "nodes": [{"id": "readme", "source_file": "README.md",
-                       "file_type": "document"}],
+            "nodes": [
+                {
+                    "id": "readme",
+                    "source_file": "README.md",
+                    "source_location": "L1",
+                    "source_sha256": hashlib.sha256(
+                        Path(paths[0]).read_bytes()
+                    ).hexdigest(),
+                    "file_type": "document",
+                }
+            ],
             "edges": [],
             "hyperedges": [],
             "input_tokens": 10,
@@ -563,8 +612,10 @@ def test_cache_check_mode_deep_reads_deep_namespace(monkeypatch, tmp_path, capsy
 
     doc = tmp_path / "doc.md"
     doc.write_text("# Doc\n")
+    spec = tmp_path / "extraction-spec.md"
+    spec.write_text("TEST PROMPT", encoding="utf-8")
     save_semantic_cache([{"id": "d", "source_file": "doc.md"}], [],
-                        root=tmp_path, mode="deep")
+                        root=tmp_path, mode="deep", prompt_file=spec)
     files_from = tmp_path / "files.txt"
     files_from.write_text(str(doc) + "\n")
     monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
@@ -574,7 +625,8 @@ def test_cache_check_mode_deep_reads_deep_namespace(monkeypatch, tmp_path, capsy
     assert "Cache: 0 hit, 1 miss" in capsys.readouterr().out
 
     _run_extract(monkeypatch, ["graphify", "cache-check", str(files_from),
-                               "--root", str(tmp_path), "--mode", "deep"])
+                               "--root", str(tmp_path), "--mode", "deep",
+                               "--prompt-file", str(spec)])
     assert "Cache: 1 hit, 0 miss" in capsys.readouterr().out
 
 

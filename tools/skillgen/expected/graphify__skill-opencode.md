@@ -237,67 +237,88 @@ if cached_nodes or cached_edges or cached_hyperedges:
 else:
     Path('graphify-out/.graphify_cached.json').unlink(missing_ok=True)
 Path('graphify-out/.graphify_uncached.txt').write_text('\n'.join(uncached), encoding=\"utf-8\")
+Path('graphify-out/.graphify_semantic_sources.txt').write_text('\n'.join(all_files), encoding=\"utf-8\")
+Path('graphify-out/.graphify_semantic_new.json').unlink(missing_ok=True)
 print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
 "
 ```
 
-Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip to Part C directly.
+Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt`.
+If all files are cached, skip dispatch and the new-result cache save, but still
+run the final package-owned `merge-semantic` command below. Cached evidence must
+pass the same current all-source snapshot as fresh evidence.
 
 **Step B1 - Split into chunks**
 
+Before any subagent reads a source, snapshot every semantic source (cached and
+uncached), its content digest, and valid span bounds. This is the trusted
+provenance boundary used by both package validators and the final persistence:
+
+```bash
+graphify snapshot-sources graphify-out/.graphify_semantic_sources.txt --root INPUT_PATH --out graphify-out/.graphify_source_manifest.json
+```
+
+Record the printed digest as `MANIFEST_SHA256` in the parent agent's context.
+Do not write it to a file or include it in any subagent prompt. If this command
+fails, stop. Do not dispatch extraction against an incomplete or non-resolving
+source set.
+
 Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-25 files each. Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
+
+Before dispatch, remove only Graphify-owned chunk files from an earlier
+interrupted run: `rm -f graphify-out/.graphify_chunk_*.json`.
 
 **Step B2 - Dispatch ALL subagents in a single message (OpenCode)**
 
 > **OpenCode platform:** Uses `@mention` dispatch instead of the Agent tool. All mentions in a single message run in parallel.
 
-Dispatch one `@mention` per chunk — ALL in the same response:
+Before dispatch, assign every chunk a distinct absolute
+`CHUNK_PATH=graphify-out/.graphify_chunk_NN.json`. Dispatch one `@mention` per
+chunk — ALL in the same response:
 
 ```
-@agent Chunk CHUNK_NUM of TOTAL_CHUNKS: [extraction prompt with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE substituted]
+@agent Chunk CHUNK_NUM of TOTAL_CHUNKS: [extraction prompt with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE, and CHUNK_PATH substituted]. You must write the JSON object to CHUNK_PATH before returning.
 
-@agent Chunk 2 of TOTAL_CHUNKS: [next chunk]
+@agent Chunk 2 of TOTAL_CHUNKS: [next chunk with its distinct CHUNK_PATH; write it before returning]
 ```
 
-Wait for all agents to return. Parse each response as JSON. Accumulate nodes/edges/hyperedges across all results and write to `graphify-out/.graphify_semantic_new.json`. If the `@agent` path cannot write chunk files, fall back to the serial path that writes each `graphify-out/.graphify_chunk_NN.json` before merge.
+Wait for all agents to return. Treat every inline response as status only, never
+as semantic evidence. Verify that every named `CHUNK_PATH` exists; a missing or
+invalid chunk aborts the batch. Run the package-owned `graphify merge-chunks`
+command from Step B3 to validate and construct
+`graphify-out/.graphify_semantic_new.json`. If the `@agent` path cannot write
+chunk files, use the serial path that writes each
+`graphify-out/.graphify_chunk_NN.json` before that same package merge.
 
 Subagent prompt template:
 
-See `references/extraction-spec.md` for the exact subagent prompt (JSON schema, node-ID rules, confidence rubric, hyperedge, and vision rules). Load it only here, only when at least one chunk holds a doc, paper, or image; a pure-code corpus has skipped Part B and never reads it. Pass each agent that prompt verbatim with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, and DEEP_MODE substituted.
+See `references/extraction-spec.md` for the exact subagent prompt (JSON schema, node-ID rules, confidence rubric, hyperedge, and vision rules). Load it only here, only when at least one chunk holds a doc, paper, or image; a pure-code corpus has skipped Part B and never reads it. Pass each agent that prompt verbatim with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE, and CHUNK_PATH substituted.
 
 **Step B3 - Collect, cache, and merge**
 
 Wait for all subagents. For each result:
 - Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
-- If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
+- If the file exists, include it in the package-owned validation command below
 - If the file is missing, the subagent was likely dispatched as read-only (Explore type) — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
-- If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
+- If a subagent failed, returned invalid JSON, used an invalid relation, or
+  supplied provenance that is missing, null, malformed, stale, out of range, or
+  non-resolving, abort semantic extraction. Do not merge or cache a partial batch.
 
-If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
+**After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros.
 
-Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
+Do not merge chunks with inline JSON concatenation. Route every fragment
+through Graphify's existing pre-merge semantic validator:
+
 ```bash
-$(cat graphify-out/.graphify_python) -c "
-import json, glob
-from pathlib import Path
-
-chunks = sorted(glob.glob('graphify-out/.graphify_chunk_*.json'))
-all_nodes, all_edges, all_hyperedges = [], [], []
-total_in, total_out = 0, 0
-for c in chunks:
-    d = json.loads(Path(c).read_text(encoding=\"utf-8\"))
-    all_nodes += d.get('nodes', [])
-    all_edges += d.get('edges', [])
-    all_hyperedges += d.get('hyperedges', [])
-    total_in += d.get('input_tokens', 0)
-    total_out += d.get('output_tokens', 0)
-Path('graphify-out/.graphify_semantic_new.json').write_text(json.dumps({
-    'nodes': all_nodes, 'edges': all_edges, 'hyperedges': all_hyperedges,
-    'input_tokens': total_in, 'output_tokens': total_out,
-}, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens')
-"
+graphify merge-chunks 'graphify-out/.graphify_chunk_*.json' \
+  --source-manifest graphify-out/.graphify_source_manifest.json \
+  --manifest-sha256 MANIFEST_SHA256 \
+  --out graphify-out/.graphify_semantic_new.json
 ```
+
+Any validation failure exits non-zero before fragments are merged or the output
+is written. Stop on that failure; do not weaken validation or hand-edit chunks
+to make them pass.
 
 Save new results to cache. Pass the same SPEC_PATH as Step B0 — it stamps each entry with the prompt that produced it, and a write under a different prompt than the read lands where the next run won't look (#1939):
 ```bash
@@ -313,37 +334,16 @@ print(f'Cached {saved} files')
 "
 ```
 
-Merge cached + new results into `graphify-out/.graphify_semantic.json`:
+Merge cached + new results through the final package-owned acceptance seam:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
-import json
-from pathlib import Path
-
-cached = json.loads(Path('graphify-out/.graphify_cached.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_cached.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-new = json.loads(Path('graphify-out/.graphify_semantic_new.json').read_text(encoding=\"utf-8\")) if Path('graphify-out/.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-
-all_nodes = cached['nodes'] + new.get('nodes', [])
-all_edges = cached['edges'] + new.get('edges', [])
-all_hyperedges = cached.get('hyperedges', []) + new.get('hyperedges', [])
-seen = set()
-deduped = []
-for n in all_nodes:
-    if n['id'] not in seen:
-        seen.add(n['id'])
-        deduped.append(n)
-
-merged = {
-    'nodes': deduped,
-    'edges': all_edges,
-    'hyperedges': all_hyperedges,
-    'input_tokens': new.get('input_tokens', 0),
-    'output_tokens': new.get('output_tokens', 0),
-}
-Path('graphify-out/.graphify_semantic.json').write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-print(f'Extraction complete - {len(deduped)} nodes, {len(all_edges)} edges ({len(cached[\"nodes\"])} from cache, {len(new.get(\"nodes\",[]))} new)')
-"
+graphify merge-semantic \
+  --cached graphify-out/.graphify_cached.json \
+  --new graphify-out/.graphify_semantic_new.json \
+  --source-manifest graphify-out/.graphify_source_manifest.json \
+  --manifest-sha256 MANIFEST_SHA256 \
+  --out graphify-out/.graphify_semantic.json
 ```
-Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.graphify_uncached.txt graphify-out/.graphify_semantic_new.json`
+Clean up temp files: `rm -f graphify-out/.graphify_cached.json graphify-out/.graphify_uncached.txt graphify-out/.graphify_semantic_sources.txt graphify-out/.graphify_source_manifest.json graphify-out/.graphify_semantic_new.json graphify-out/.graphify_chunk_*.json`
 
 #### Part C - Merge AST + semantic into final extraction
 

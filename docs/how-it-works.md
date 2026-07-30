@@ -15,6 +15,24 @@ Video and audio files are transcribed with faster-whisper. To focus the transcri
 **Pass 3 — Docs, papers, images (Claude subagents, costs tokens)**
 Claude runs in parallel over markdown, PDFs, images, and transcripts. Each subagent reads a batch of files and outputs a JSON fragment: nodes, edges, and any group relationships. The fragments are merged into a single graph.
 
+Before dispatch, Graphify snapshots every semantic source path, digest, and
+addressable extent, including cache hits. Before merge, every semantic record
+must cite a current exact line or byte span and every relation must belong to
+the closed semantic vocabulary. A missing, null, malformed, non-resolving,
+out-of-range, or stale citation rejects the complete cached-and-new batch before
+it can replace existing output. See the [semantic evidence
+contract](semantic-evidence-contract.md).
+
+The generated skills retain a SHA-256 seal for the pre-dispatch source
+manifest, route new chunks and the final cached-plus-new merge through package
+validators, and recheck the source snapshot immediately before atomic
+replacement. Native extraction additionally limits citations to complete
+original source lines wholly shown to the model, rejects character slices of
+byte-addressed sources, excludes images whose pixels were not sent or exposed
+to a path-based vision backend, and rechecks evidence before final graph
+persistence. Source hashes and extents are streamed rather than loaded into
+memory as whole files.
+
 Before Pass 3, optional converters turn supported pointer/binary formats into
 Markdown sidecars under `graphify-out/converted/`. Office files (`.docx`,
 `.xlsx`) use the `[office]` extra. Google Workspace shortcuts (`.gdoc`,
@@ -76,7 +94,13 @@ Code files are extracted in parallel using `ProcessPoolExecutor` — bypasses Py
 
 ## SHA256 cache
 
-Every extracted file is fingerprinted by content hash. Re-runs skip unchanged files entirely — only new or modified files go through extraction again. The cache lives in `graphify-out/cache/`.
+Every extracted file is fingerprinted by content hash. Re-runs skip unchanged
+files entirely — only new or modified files go through extraction again. The
+cache lives in `graphify-out/cache/`. Semantic cache entries are also scoped to
+the extraction-prompt fingerprint and bound to the current source digest. Flat
+entries of unknown prompt vintage, stale source bindings, and reads that omit
+the current prompt are treated as misses because they cannot satisfy the
+semantic evidence contract.
 
 ---
 
@@ -87,6 +111,8 @@ The output `graph.json` uses NetworkX's node-link format. Each node has:
 - `label` — human-readable name
 - `file_type` — `code`, `document`, `paper`, `image`, `rationale`
 - `source_file` — where it came from
+- `source_location` — exact line or byte span supporting the semantic record
+- `source_sha256` — validated source snapshot digest for semantic records
 
 See [RFC: file-level node summaries](node-summaries-rfc.md) for two proposed
 ways to add compact optional summaries for AI navigation.
@@ -97,5 +123,10 @@ Each edge has:
 - `confidence` — `EXTRACTED`, `INFERRED`, or `AMBIGUOUS`
 - `confidence_score` — float (INFERRED only)
 - `source_file` — where the relationship was found
+- `source_location` — exact line or byte span supporting the relationship
+- `source_sha256` — validated source snapshot digest for semantic relationships
 
 Hyperedges (group relationships connecting 3+ nodes) live in `G.graph["hyperedges"]`.
+Semantic edge and hyperedge relations are the closed sets documented in the
+[semantic evidence contract](semantic-evidence-contract.md); deterministic AST
+relations such as `imports` remain language-specific.

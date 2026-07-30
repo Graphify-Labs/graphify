@@ -481,7 +481,8 @@ def _install_capturing_openai(monkeypatch):
         def create(self, **kwargs):
             captured.update(kwargs)
             return _fake_openai_response(
-                '{"nodes":[{"id":"x"}],"edges":[],"hyperedges":[]}',
+                '{"nodes":[{"id":"x","source_file":"f.py",'
+                '"source_location":"L1"}],"edges":[],"hyperedges":[]}',
                 finish_reason="stop",
                 completion_tokens=100,
             )

@@ -13,7 +13,7 @@ Usage (from the repo root)::
     python -m tools.skillgen --check         # byte-diff render vs committed + expected/, exit 1 on drift
     python -m tools.skillgen --audit-coverage# per host: assert every heading of that host's own v8 body single-homes in its render
     python -m tools.skillgen --schema-singleton  # assert the file_type enum is byte-identical everywhere
-    python -m tools.skillgen --monolith-roundtrip# assert each monolith == v8 modulo the enum unification
+    python -m tools.skillgen --monolith-roundtrip# assert sanctioned monolith changes only
     python -m tools.skillgen --always-on-roundtrip# assert each always_on/*.md reproduces its former constant
     python -m tools.skillgen --bless         # rewrite expected/ from the current render
 
@@ -954,6 +954,171 @@ def _is_semantic_cache_scope_fix_line(line: str) -> bool:
     ) or stripped.startswith("saved = save_semantic_cache(")
 
 
+def _is_semantic_evidence_contract_line(line: str) -> bool:
+    """Whether a line belongs to the semantic evidence contract (#534).
+
+    The distribution-owned extraction skills now snapshot dispatched sources,
+    require the closed edge/hyperedge vocabularies and exact source spans, and
+    replace their inline JSON concatenators with ``graphify merge-chunks`` and
+    the sealed all-source ``graphify merge-semantic`` final seam. Both removed
+    v8 concatenators and added package-validator runbook lines are sanctioned
+    here; the complete-artifact digest below still makes this allowance exact.
+    """
+    stripped = line.strip()
+    return (
+        "snapshot-sources" in line
+        or "Snapshot the exact source paths, current digests, and span bounds" in line
+        or "Snapshot the exact dispatched paths, current digests, and span bounds" in line
+        or "graphify-out/.graphify_uncached.txt --root INPUT_PATH --out" in line
+        or ".graphify_source_manifest.json" in line
+        or "closed vocabular" in line
+        or "Edge relations are" in line
+        or "Hyperedge relations are" in line
+        or "smallest exact supporting" in line
+        or "Missing, null, malformed, stale, or non-resolving provenance" in line
+        or "package-owned pre-merge" in line
+        or "Graphify's package-owned pre-merge" in line
+        or stripped == "validator."
+        or "validator stamps trusted `source_sha256`" in line
+        or "Graphify stamps trusted `source_sha256`" in line
+        or "copy a digest into model-authored output" in line
+        or "Do not merge with inline JSON concatenation" in line
+        or "Do not merge chunks with inline JSON concatenation" in line
+        or "Validate the complete batch before" in line
+        or "any merge or output write" in line
+        or "graphify merge-chunks" in line
+        or "graphify merge-semantic" in line
+        or stripped.startswith("--source-manifest ")
+        or stripped.startswith("--manifest-sha256 ")
+        or stripped.startswith("--cached .graphify_cached.json")
+        or stripped.startswith("--cached graphify-out/.graphify_cached.json")
+        or stripped.startswith("--new .graphify_semantic_new.json")
+        or stripped.startswith("--new graphify-out/.graphify_semantic_new.json")
+        or stripped.startswith("--out .graphify_semantic_new.json")
+        or stripped.startswith("--out graphify-out/.graphify_semantic_new.json")
+        or stripped.startswith("--out .graphify_semantic.json")
+        or stripped.startswith("--out graphify-out/.graphify_semantic.json")
+        or ".graphify_semantic_sources.txt" in line
+        or ".graphify_semantic_new.json').unlink(missing_ok=True)" in line
+        or "If all files are cached" in line
+        or "skip extraction and the new-result cache save" in line
+        or "skip dispatch and the new-result cache save" in line
+        or "run the final package-owned" in line
+        or "package-owned `merge-semantic` command below" in line
+        or "Snapshot every semantic source" in line
+        or "remove only Graphify-owned chunk files" in line
+        or "interrupted run: `rm -f" in line
+        or "Merge cached + new results through the final" in line
+        or "Merge cached + new results into `.graphify_semantic.json`" in line
+        or "Merge cached + new results into `graphify-out/.graphify_semantic.json`" in line
+        or stripped == (
+            "Only dispatch subagents for files listed in "
+            "`graphify-out/.graphify_uncached.txt`."
+        )
+        or "Stop on any validation failure" in line
+        or "Stop on failure; do not weaken validation" in line
+        or "contract to accept existing output" in line
+        or "partial batch" in line
+        or "Any missing or invalid chunk aborts semantic extraction" in line
+        or "The command fails before merge or persistence" in line
+        or stripped == "validation."
+        or "If more than half the chunks failed" in line
+        or "If any chunk failed, is missing, or is invalid" in line
+        or "print a warning and skip that chunk" in line
+        or stripped == "- If a subagent failed or returned invalid JSON, abort the semantic batch"
+        or stripped == "import graphify"
+        or stripped.startswith("prompt_file = Path(graphify.__file__).with_name(")
+        or (
+            stripped.startswith(
+                "cached_nodes, cached_edges, cached_hyperedges, uncached = "
+                "check_semantic_cache(all_files"
+            )
+        )
+        or (
+            stripped.startswith("saved = save_semantic_cache(")
+            and "prompt_file=prompt_file" in stripped
+        )
+        or "Record the printed digest as `MANIFEST_SHA256`" in line
+        or "context; do not persist it or give it to a subagent" in line
+        or "Do not write it to a file or include it in any subagent prompt" in line
+        or "After processing all files, write the accumulated result to" in line
+        or "After each subagent call completes, write its result" in line
+        or "Merge all chunk files into" in line
+        or "load_validated_semantic_fragment" in line
+        or "Skipping invalid chunk" in line
+        or "from graphify.semantic_cleanup import" in line
+        or stripped == "import json, glob"
+        or stripped == "import json"
+        or stripped == "from pathlib import Path"
+        or stripped == "from graphify.semantic_cleanup import sanitize_semantic_fragment"
+        or stripped.startswith("cached = json.loads(Path(")
+        or stripped.startswith("new = json.loads(Path(")
+        or stripped.startswith("all_nodes = cached[")
+        or stripped.startswith("all_edges = cached[")
+        or stripped.startswith("all_hyperedges = cached.get(")
+        or stripped == "seen = set()"
+        or stripped == "deduped = []"
+        or stripped == "for n in all_nodes:"
+        or stripped == "if n['id'] not in seen:"
+        or stripped == "seen.add(n['id'])"
+        or stripped == "deduped.append(n)"
+        or stripped == "merged = {"
+        or stripped.startswith("'nodes': deduped")
+        or stripped.startswith("'edges': all_edges")
+        or stripped.startswith("'hyperedges': all_hyperedges")
+        or stripped.startswith("'input_tokens': new.get(")
+        or stripped.startswith("'output_tokens': new.get(")
+        or stripped == "}"
+        or stripped == "merged = sanitize_semantic_fragment(merged)"
+        or stripped.startswith("Path('.graphify_semantic.json').write_text(")
+        or stripped.startswith(
+            "Path('graphify-out/.graphify_semantic.json').write_text("
+        )
+        or stripped.startswith("print(f'Extraction complete - ")
+        or stripped.startswith("chunks = sorted(glob.glob(")
+        or stripped == "all_nodes, all_edges, all_hyperedges = [], [], []"
+        or stripped == "total_in, total_out = 0, 0"
+        or stripped == "for c in chunks:"
+        or stripped.startswith("d = json.loads(Path(c).read_text(")
+        or stripped.startswith("d, errors = load_validated_semantic_fragment(")
+        or stripped == "if errors:"
+        or stripped.startswith("print(f'Skipping invalid chunk")
+        or stripped == "continue"
+        or stripped == "d = sanitize_semantic_fragment(d)"
+        or stripped.startswith("all_nodes += d.get(")
+        or stripped.startswith("all_edges += d.get(")
+        or stripped.startswith("all_hyperedges += d.get(")
+        or stripped.startswith("total_in += d.get(")
+        or stripped.startswith("total_out += d.get(")
+        or stripped.startswith("Path('graphify-out/.graphify_semantic_new.json')")
+        or stripped.startswith("'nodes': all_nodes, 'edges': all_edges")
+        or stripped.startswith("'input_tokens': total_in, 'output_tokens': total_out")
+        or stripped == "}, indent=2))"
+        or stripped.startswith("print(f'Merged {len(chunks)} chunks:")
+        or stripped.startswith("$(cat graphify-out/.graphify_python) -c ")
+        or stripped == '"'
+        or (
+            stripped.startswith("Clean up temp files:")
+            and (
+                ".graphify_semantic_new.json" in line
+                or ".graphify_source_manifest.json" in line
+            )
+        )
+    )
+
+
+# The semantic contract necessarily removes a legacy inline Python merger whose
+# individual lines include generic tokens such as ``continue`` and ``"``. A
+# line-level allowlist alone cannot distinguish those removals from an unrelated
+# edit elsewhere in a 50KB monolith. Pinning the complete rendered artifact makes
+# that allowance exact: any extra, removed, or moved byte fails roundtrip even if
+# one generic line happens to match a sanctioned predicate.
+_MONOLITH_CONTRACT_SHA256 = {
+    "aider": "02a40a119101f6bcab80b5279b7d247a4101f0913565fc300f2a1c3699bc2190",
+    "devin": "dd9968db749bed45223ac5386ca19ed75a1923839a98c66f2329c528a22d0c80",
+}
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -974,6 +1139,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
+    _is_semantic_evidence_contract_line,
 )
 
 
@@ -992,7 +1158,8 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
+    semantic-cache source scoping (#1757), and the semantic evidence contract
+    (#534).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``
@@ -1004,7 +1171,18 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     if platform.roundtrip_ref is None:
         return [f"[{platform.key}] monolith is missing roundtrip_ref"]
 
-    rendered_lines = render(platform)[0].content.splitlines()
+    rendered = render(platform)[0].content
+    expected_digest = _MONOLITH_CONTRACT_SHA256.get(platform.key)
+    if expected_digest is not None:
+        import hashlib
+
+        actual_digest = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+        if actual_digest != expected_digest:
+            return [
+                f"[{platform.key}] rendered monolith SHA-256 {actual_digest} "
+                f"does not match the reviewed contract {expected_digest}"
+            ]
+    rendered_lines = rendered.splitlines()
     # Strip trigger lines from the original — they are non-spec and their removal
     # (#1180) is a permitted diff.
     original_lines = [
@@ -1093,7 +1271,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--check", action="store_true", help="byte-diff render vs committed + expected/, exit 1 on drift")
     p.add_argument("--audit-coverage", action="store_true", help="per host: assert every heading of that host's own v8 body single-homes in its render")
     p.add_argument("--schema-singleton", action="store_true", help="assert the file_type enum is byte-identical everywhere")
-    p.add_argument("--monolith-roundtrip", action="store_true", help="assert each monolith == v8 modulo the enum unification")
+    p.add_argument(
+        "--monolith-roundtrip",
+        action="store_true",
+        help="assert each monolith differs from v8 only at sanctioned contract lines",
+    )
     p.add_argument("--always-on-roundtrip", action="store_true", help="assert each always_on/*.md reproduces its former __main__.py constant byte for byte")
     p.add_argument("--bless", action="store_true", help="rewrite expected/ from the current render")
     return p.parse_args(argv)
@@ -1153,7 +1335,10 @@ def main(argv: list[str] | None = None) -> int:
             for m in all_problems:
                 print(f"  {m}", file=sys.stderr)
             return 1
-        print("monolith-roundtrip OK: each monolith matches v8 modulo the enum unification.")
+        print(
+            "monolith-roundtrip OK: each monolith differs from v8 only at "
+            "sanctioned contract lines."
+        )
         return 0
 
     if args.always_on_roundtrip:

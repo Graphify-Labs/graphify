@@ -225,6 +225,7 @@ Before dispatching any subagents, check which files already have cached extracti
 $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.cache import check_semantic_cache
+import graphify
 from pathlib import Path
 
 detect = json.loads(Path('.graphify_detect.json').read_text())
@@ -233,7 +234,8 @@ detect = json.loads(Path('.graphify_detect.json').read_text())
 # extraction step re-read every source file (#1392).
 all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
 
-cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files)
+prompt_file = Path(graphify.__file__).with_name('skill-aider.md')
+cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(all_files, prompt_file=prompt_file)
 
 # Always (re)write the cache file: write hits, else DELETE any leftover from a
 # prior run so Part C never merges a stale .graphify_cached.json (#1392).
@@ -242,15 +244,30 @@ if cached_nodes or cached_edges or cached_hyperedges:
 else:
     Path('.graphify_cached.json').unlink(missing_ok=True)
 Path('.graphify_uncached.txt').write_text('\n'.join(uncached))
+Path('.graphify_semantic_sources.txt').write_text('\n'.join(all_files))
+Path('.graphify_semantic_new.json').unlink(missing_ok=True)
 print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
 "
 ```
 
-Only dispatch subagents for files listed in `.graphify_uncached.txt`. If all files are cached, skip to Part C directly.
+Only process files listed in `.graphify_uncached.txt`. If all files are cached,
+skip extraction and the new-result cache save, but still run the final
+package-owned `merge-semantic` command below.
 
 **Step B1 - Split into chunks**
 
+Snapshot every semantic source path, current digest, and span bounds before
+reading any uncached file by running `graphify snapshot-sources .graphify_semantic_sources.txt
+--root INPUT_PATH --out .graphify_source_manifest.json`.
+
+Stop if this fails. The snapshot is required by the package-owned pre-merge
+validator. Record the printed digest as `MANIFEST_SHA256` in the parent
+context; do not persist it or give it to a subagent.
+
 Load files from `.graphify_uncached.txt`. Split into chunks of 20-25 files each. Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
+
+Before extraction, remove only Graphify-owned chunk files from an earlier
+interrupted run: `rm -f .graphify_chunk_*.json`.
 
 **Step B2 - Sequential extraction (Aider)**
 
@@ -267,89 +284,63 @@ Process each file one at a time. For each file:
    - DEEP_MODE (if --mode deep): be aggressive with INFERRED edges
    - Semantic similarity: if two concepts solve the same problem without a structural link, add `semantically_similar_to` INFERRED edge (confidence 0.6-0.95). Non-obvious cross-file links only.
    - Hyperedges: if 3+ nodes share a concept/flow not captured by pairwise edges, add a hyperedge. Max 3 per file.
+   - Edge relations are a closed vocabulary: `calls`, `implements`, `references`, `cites`, `conceptually_related_to`, `shares_data_with`, `semantically_similar_to`, `rationale_for`. Hyperedge relations are exactly `participate_in`, `implement`, or `form`.
+   - Every node, edge, and hyperedge requires the smallest exact supporting source span: `L<line>` or inclusive `L<start>-L<end>` for UTF-8 text; half-open `B<start>-B<end>` for PDF/raster evidence. Use the whole-file byte span from `.graphify_source_manifest.json` when no finer binary mapping exists. Missing, null, malformed, stale, or non-resolving provenance fails validation.
    - confidence_score REQUIRED on every edge: EXTRACTED=1.0, INFERRED=0.6-0.9 (reason individually), AMBIGUOUS=0.1-0.3
 3. Accumulate results across all files
 
 Schema for each file's output:
-{"nodes":[{"id":"filestem_entityname","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"relative/path","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to|rationale_for","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":null,"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path"}],"input_tokens":0,"output_tokens":0}
+{"nodes":[{"id":"filestem_entityname","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"relative/path","source_location":"L1-L3","source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to|rationale_for","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":"L2","weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path","source_location":"L1-L8"}],"input_tokens":0,"output_tokens":0}
 
-After processing all files, write the accumulated result to `.graphify_semantic_new.json`.
+After processing all files, write the accumulated result to
+`.graphify_chunk_00.json`. The validator stamps trusted `source_sha256`; do not
+copy a digest into model-authored output.
 
 **Step B3 - Cache and merge**
 
 For the accumulated result:
 
-If more than half the chunks failed, stop and tell the user.
+If any chunk failed, is missing, or is invalid, stop and tell the user.
 
-Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
+Do not merge with inline JSON concatenation. Validate the complete batch before
+any merge or output write:
+
 ```bash
-$(cat graphify-out/.graphify_python) -c "
-import json, glob
-from pathlib import Path
-
-chunks = sorted(glob.glob('graphify-out/.graphify_chunk_*.json'))
-all_nodes, all_edges, all_hyperedges = [], [], []
-total_in, total_out = 0, 0
-for c in chunks:
-    d = json.loads(Path(c).read_text())
-    all_nodes += d.get('nodes', [])
-    all_edges += d.get('edges', [])
-    all_hyperedges += d.get('hyperedges', [])
-    total_in += d.get('input_tokens', 0)
-    total_out += d.get('output_tokens', 0)
-Path('graphify-out/.graphify_semantic_new.json').write_text(json.dumps({
-    'nodes': all_nodes, 'edges': all_edges, 'hyperedges': all_hyperedges,
-    'input_tokens': total_in, 'output_tokens': total_out,
-}, indent=2))
-print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens')
-"
+graphify merge-chunks '.graphify_chunk_*.json' \
+  --source-manifest .graphify_source_manifest.json \
+  --manifest-sha256 MANIFEST_SHA256 \
+  --out .graphify_semantic_new.json
 ```
+
+Stop on any validation failure. Do not cache a partial batch or weaken the
+contract to accept existing output.
 
 Save new results to cache:
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.cache import save_semantic_cache
+import graphify
 from pathlib import Path
 
 new = json.loads(Path('.graphify_semantic_new.json').read_text()) if Path('.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
 uncached = [line for line in Path('.graphify_uncached.txt').read_text().splitlines() if line]
-saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), allowed_source_files=uncached)
+prompt_file = Path(graphify.__file__).with_name('skill-aider.md')
+saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), allowed_source_files=uncached, prompt_file=prompt_file)
 print(f'Cached {saved} files')
 "
 ```
 
-Merge cached + new results into `.graphify_semantic.json`:
+Merge cached + new results through the final package-owned acceptance seam:
 ```bash
-$(cat graphify-out/.graphify_python) -c "
-import json
-from pathlib import Path
-
-cached = json.loads(Path('.graphify_cached.json').read_text()) if Path('.graphify_cached.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-new = json.loads(Path('.graphify_semantic_new.json').read_text()) if Path('.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-
-all_nodes = cached['nodes'] + new.get('nodes', [])
-all_edges = cached['edges'] + new.get('edges', [])
-all_hyperedges = cached.get('hyperedges', []) + new.get('hyperedges', [])
-seen = set()
-deduped = []
-for n in all_nodes:
-    if n['id'] not in seen:
-        seen.add(n['id'])
-        deduped.append(n)
-
-merged = {
-    'nodes': deduped,
-    'edges': all_edges,
-    'hyperedges': all_hyperedges,
-    'input_tokens': new.get('input_tokens', 0),
-    'output_tokens': new.get('output_tokens', 0),
-}
-Path('.graphify_semantic.json').write_text(json.dumps(merged, indent=2))
-print(f'Extraction complete - {len(deduped)} nodes, {len(all_edges)} edges ({len(cached[\"nodes\"])} from cache, {len(new.get(\"nodes\",[]))} new)')
-"
+graphify merge-semantic \
+  --cached .graphify_cached.json \
+  --new .graphify_semantic_new.json \
+  --source-manifest .graphify_source_manifest.json \
+  --manifest-sha256 MANIFEST_SHA256 \
+  --out .graphify_semantic.json
 ```
-Clean up temp files: `rm -f .graphify_cached.json .graphify_uncached.txt .graphify_semantic_new.json`
+Clean up temp files: `rm -f .graphify_cached.json .graphify_uncached.txt .graphify_semantic_sources.txt .graphify_source_manifest.json .graphify_semantic_new.json .graphify_chunk_*.json`
 
 #### Part C - Merge AST + semantic into final extraction
 

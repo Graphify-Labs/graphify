@@ -48,6 +48,7 @@ def _arm_extract(monkeypatch, tmp_path, *, chunk_total, chunk_succeeded, extra_a
                 on_chunk(i, chunk_total, {"nodes": [], "edges": [], "hyperedges": []})
         return {
             "nodes": [{"id": "s1", "source_file": str(corpus / "README.md"),
+                       "source_location": "L1",
                        "file_type": "document", "label": "Notes"}],
             "edges": [], "hyperedges": [], "input_tokens": 10, "output_tokens": 5,
         }
@@ -132,6 +133,7 @@ def _arm_no_cluster(monkeypatch, tmp_path, *, extra_argv=()):
         if on_chunk:
             on_chunk(0, 3, {"nodes": [], "edges": [], "hyperedges": []})  # 1 of 3 -> partial
         return {"nodes": [{"id": "s1", "source_file": str(corpus / "README.md"),
+                           "source_location": "L1",
                            "file_type": "document", "label": "Notes"}],
                 "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
 
