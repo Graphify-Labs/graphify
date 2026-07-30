@@ -279,15 +279,37 @@ def _fake_boto3(monkeypatch, captured):
                 "usage": {"inputTokens": 1, "outputTokens": 2},
                 "stopReason": "end_turn",
             }
+
+    def _make_client(svc, **kw):
+        # Record the client-construction kwargs (notably config=) separately so
+        # they don't collide with the converse() call kwargs captured above.
+        captured["_client_service"] = svc
+        captured["_client_config"] = kw.get("config")
+        return _Client()
+
     boto3 = types.ModuleType("boto3")
-    boto3.Session = lambda **kw: SimpleNamespace(client=lambda svc: _Client())
+    boto3.Session = lambda **kw: SimpleNamespace(client=_make_client)
     monkeypatch.setitem(sys.modules, "boto3", boto3)
+
     botocore = types.ModuleType("botocore")
     exc = types.ModuleType("botocore.exceptions")
     exc.ClientError = type("ClientError", (Exception,), {})
+    config_mod = types.ModuleType("botocore.config")
+
+    class _Config:
+        def __init__(self, **kw):
+            # Mirror botocore.config.Config: expose the kwargs as attributes so
+            # tests can assert read_timeout/connect_timeout/retries were wired.
+            self.read_timeout = kw.get("read_timeout")
+            self.connect_timeout = kw.get("connect_timeout")
+            self.retries = kw.get("retries")
+
+    config_mod.Config = _Config
     botocore.exceptions = exc
+    botocore.config = config_mod
     monkeypatch.setitem(sys.modules, "botocore", botocore)
     monkeypatch.setitem(sys.modules, "botocore.exceptions", exc)
+    monkeypatch.setitem(sys.modules, "botocore.config", config_mod)
 
 
 # ── backend payload shape (mocked) ────────────────────────────────────────────
@@ -328,6 +350,113 @@ def test_call_bedrock_sends_raw_image_bytes(tmp_path, monkeypatch):
     content = captured["messages"][0]["content"]
     img_block = next(b for b in content if "image" in b)
     assert img_block["image"]["source"]["bytes"] == _PNG_BYTES
+
+
+# ── Converse content-block selection ─────────────────────────────────────────
+# Converse returns a LIST of blocks and does not promise text is first: a
+# reasoning-capable model emits reasoningContent ahead of the answer. Selection
+# must key on block shape, not position, or those models yield no text at all.
+
+def _bedrock_resp(blocks: list) -> dict:
+    return {"output": {"message": {"content": blocks}}}
+
+
+def test_bedrock_response_text_single_text_block_unchanged():
+    resp = _bedrock_resp([{"text": _NODE_JSON}])
+    assert llm._bedrock_response_text(resp) == _NODE_JSON
+
+
+def test_bedrock_response_text_skips_leading_reasoning_block():
+    resp = _bedrock_resp([
+        {"reasoningContent": {"reasoningText": {"text": "deliberating"}}},
+        {"text": _NODE_JSON},
+    ])
+    assert llm._bedrock_response_text(resp, default="{}") == _NODE_JSON
+
+
+@pytest.mark.parametrize("leading", [
+    {"reasoningContent": {}},
+    {"toolUse": {"name": "x", "input": {}}},
+    {"someFutureBlockType": {"a": 1}},
+    {"text": "   "},
+])
+def test_bedrock_response_text_skips_non_text_leading_blocks(leading):
+    resp = _bedrock_resp([leading, {"text": _NODE_JSON}])
+    assert llm._bedrock_response_text(resp, default="{}") == _NODE_JSON
+
+
+@pytest.mark.parametrize("resp", [
+    {"output": {"message": {"content": []}}},
+    {"output": {"message": {"content": [{"reasoningContent": {}}]}}},
+    {"output": {"message": {"content": "not-a-list"}}},
+    {"output": {}},
+    {},
+])
+def test_bedrock_response_text_falls_back_without_text(resp):
+    assert llm._bedrock_response_text(resp, default="SENTINEL") == "SENTINEL"
+
+
+def test_bedrock_response_text_tolerates_malformed_blocks():
+    resp = _bedrock_resp(["not-a-dict", {"text": 123}, {"text": _NODE_JSON}])
+    assert llm._bedrock_response_text(resp, default="{}") == _NODE_JSON
+
+
+def test_call_bedrock_parses_reasoning_model_response(monkeypatch):
+    """End-to-end: a reasoning-model response must not look hollow."""
+    def _fake(monkeypatch):
+        class _Client:
+            def converse(self, **kw):
+                return {
+                    "output": {"message": {"content": [
+                        {"reasoningContent": {"reasoningText": {"text": "think"}}},
+                        {"text": _NODE_JSON},
+                    ]}},
+                    "usage": {"inputTokens": 1, "outputTokens": 2},
+                    "stopReason": "end_turn",
+                }
+        boto3 = types.ModuleType("boto3")
+        boto3.Session = lambda **kw: SimpleNamespace(client=lambda svc, **kwargs: _Client())
+        monkeypatch.setitem(sys.modules, "boto3", boto3)
+        botocore = types.ModuleType("botocore")
+        exc = types.ModuleType("botocore.exceptions")
+        exc.ClientError = type("ClientError", (Exception,), {})
+        config_mod = types.ModuleType("botocore.config")
+        config_mod.Config = lambda **kw: SimpleNamespace(**kw)
+        botocore.exceptions = exc
+        botocore.config = config_mod
+        monkeypatch.setitem(sys.modules, "botocore", botocore)
+        monkeypatch.setitem(sys.modules, "botocore.exceptions", exc)
+        monkeypatch.setitem(sys.modules, "botocore.config", config_mod)
+
+    _fake(monkeypatch)
+    result = llm._call_bedrock("model", "CORPUS")
+    assert len(result["nodes"]) == 1
+    # Hard-indexing block 0 yielded "{}" -> zero nodes -> relabelled "length".
+    assert result["finish_reason"] == "stop"
+def test_call_bedrock_honors_api_timeout(monkeypatch):
+    # GRAPHIFY_API_TIMEOUT must reach the botocore client's read_timeout; else
+    # Converse falls back to botocore's 60s default and a long generation dies
+    # with "Read timeout on endpoint URL" regardless of the env var.
+    monkeypatch.setenv("GRAPHIFY_API_TIMEOUT", "1800")
+    monkeypatch.delenv("GRAPHIFY_MAX_RETRIES", raising=False)
+    captured: dict = {}
+    _fake_boto3(monkeypatch, captured)
+    llm._call_bedrock("model", "CORPUS")
+    cfg = captured["_client_config"]
+    assert cfg is not None, "bedrock client built without a botocore config"
+    assert cfg.read_timeout == 1800.0
+    assert cfg.connect_timeout == 10
+    assert cfg.retries == {"max_attempts": 7, "mode": "adaptive"}  # retries + initial attempt
+
+
+def test_call_bedrock_api_timeout_defaults_when_unset(monkeypatch):
+    # With no override the client still gets an explicit 600s read timeout,
+    # not botocore's silent 60s default.
+    monkeypatch.delenv("GRAPHIFY_API_TIMEOUT", raising=False)
+    captured: dict = {}
+    _fake_boto3(monkeypatch, captured)
+    llm._call_bedrock("model", "CORPUS")
+    assert captured["_client_config"].read_timeout == 600.0
 
 
 # ── CLI backends (mocked subprocess) ──────────────────────────────────────────

@@ -5523,7 +5523,16 @@ def extract(
             sf_resolved = sf_path.resolve()
         except (OSError, RuntimeError):
             sf_resolved = sf_path
-        keys = tuple({_make_id(str(sf_path)), _make_id(str(sf_resolved))})
+        # Learn the STEM (extension-dropped) forms too: symbol producers mint
+        # compound ids as _make_id(_file_stem(path), name), so a node-less
+        # absolute-derived endpoint arrives as <stem-key>_<symbol> and only
+        # the stem prefix can identify the file it came from (#2262).
+        keys = tuple({
+            _make_id(str(sf_path)),
+            _make_id(str(sf_resolved)),
+            _make_id(_file_stem(sf_path)),
+            _make_id(_file_stem(sf_resolved)),
+        })
         entry = (new_sf, canonical_id, keys)
         _sf_forms[sf] = entry
         return entry
@@ -5560,6 +5569,21 @@ def extract(
                 return ext_id_remap[nid]
             if nid.endswith(_ENTRY) and nid[: -len(_ENTRY)] in ext_id_remap:
                 return ext_id_remap[nid[: -len(_ENTRY)]] + _ENTRY
+            if nid not in owned_ids:
+                # Node-less suffixed-compound endpoint (#2262): an id minted
+                # as _make_id(<absolute stem>, <symbol>) by a producer that
+                # never materialized the node. No node ever registers it, so
+                # rewrite by longest learned prefix: the endpoint stays
+                # dangling (no node is fabricated) but becomes
+                # machine-portable. Ids owned by real nodes are never
+                # touched (guard above), and only absolute-path-derived
+                # prefixes are in ext_id_remap, so ordinary ids can't match.
+                idx = nid.rfind("_")
+                while idx > 0:
+                    canonical = ext_id_remap.get(nid[:idx])
+                    if canonical is not None:
+                        return canonical + nid[idx:]
+                    idx = nid.rfind("_", 0, idx)
             return nid
 
         for n in all_nodes:
