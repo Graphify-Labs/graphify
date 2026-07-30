@@ -299,6 +299,197 @@ def test_cache_portable_across_roots(tmp_path):
     assert not str(repo_a) in loaded["nodes"][0]["source_file"]
 
 
+# --- AST cache id portability (#2257) ---------------------------------------
+# Sibling of the source_file portability above. Extractors mint node ids from
+# the path STRING they were handed, so a cached entry embeds the absolute scan
+# root in every id (`<root-slug>_pkg_mod_base`). extract()'s id-remap keys those
+# rewrites off the CURRENT path, so on a warm hit under a different root the
+# stored ids match no key and the original root's slug survives into graph.json.
+
+def _reset_stat_index():
+    """The stat-index location/anchor are chosen once per process via module
+    globals (#1747/#2199). Reset them so each test sees a fresh-process
+    decision — same pattern as tests/test_stat_index_portability.py."""
+    from graphify import cache as _cache
+
+    _cache._stat_index_root = None
+    _cache._stat_index_anchor = None
+    _cache._stat_index = {}
+    _cache._stat_index_dirty = False
+
+
+def _portability_corpus(base: Path) -> Path:
+    """A corpus covering every id/path carrier a cache entry can hold.
+
+    Deliberately NOT JavaScript/TypeScript: those suffixes are in
+    ``_JS_CACHE_BYPASS_SUFFIXES`` and are never cached, so a JS fixture would
+    make the warm-hit assertions below pass vacuously.
+
+    - python  -> cross-file `imports_from` with an already-canonical target
+    - C       -> `edges[].target_file` (absolute) on the `#include` edge
+    - bash    -> `bash_sources[].source_file` plus the `__entry` id suffix
+    - markdown-> `references` edge with a `target_file` stamp
+    """
+    c = base / "corpus"
+    (c / "pkg").mkdir(parents=True)
+    (c / "lib").mkdir(parents=True)
+    (c / "pkg" / "mod.py").write_text("class Base:\n    def hello(self):\n        return 1\n")
+    (c / "app.py").write_text(
+        "from pkg.mod import Base\n\n\ndef run():\n    return Base().hello()\n"
+    )
+    (c / "lib" / "util.h").write_text("int util_add(int a, int b);\n")
+    (c / "main.c").write_text('#include "lib/util.h"\nint main(void) { return util_add(1,2); }\n')
+    (c / "lib" / "common.sh").write_text("greet() { echo hi; }\n")
+    (c / "run.sh").write_text("#!/bin/bash\nsource ./lib/common.sh\ngreet\n")
+    (c / "doc.md").write_text("# Doc\n\nSee [util](lib/util.h).\n")
+    return c
+
+
+def _graph_ids(result: dict) -> tuple[list[str], list[tuple]]:
+    """Node ids + edge endpoint pairs — the granularity #2257 is about.
+
+    Deliberately not whole-dict equality: transient hints such as
+    ``target_file`` are minted from the resolved path while other fields keep
+    the given spelling, so they can differ harmlessly between a warm and a cold
+    run under a symlinked root (consumers ``.resolve()`` them anyway).
+    """
+    return (
+        sorted(str(n.get("id")) for n in result["nodes"]),
+        sorted((str(e.get("source")), str(e.get("target"))) for e in result["edges"]),
+    )
+
+
+def test_warm_cache_from_another_root_does_not_leak_that_root(tmp_path, monkeypatch):
+    """#2257: extract corpus under root A (populating the cache), copy the tree
+    AND graphify-out to root B, extract under B on the warm cache.
+
+    No node id or edge endpoint may carry root A's slug, and the ids must match
+    a cold B extraction exactly.
+    """
+    import shutil
+
+    import graphify.extract as ex
+
+    a_slug = "aaa_root_marker"
+    b_slug = "bbb_root_marker"
+    corpus_a = _portability_corpus(tmp_path / a_slug)
+    paths_a = sorted(p for p in corpus_a.rglob("*") if p.is_file())
+
+    _reset_stat_index()
+    result_a = ex.extract(paths_a, cache_root=corpus_a, root=corpus_a, parallel=False)
+    from graphify import cache as _cache
+    _cache._flush_stat_index()
+    assert result_a["nodes"], "run A should have extracted something"
+
+    # The entries on disk must be portable BY CONSTRUCTION: neither the scan
+    # root's slug (ids are casefolded, paths are not — compare case-insensitively)
+    # nor any absolute path from root A may be embedded in them.
+    entries = sorted((corpus_a / "graphify-out" / "cache" / "ast").rglob("*.json"))
+    assert entries, "run A should have written AST cache entries"
+    for entry in entries:
+        blob = entry.read_text(encoding="utf-8")
+        assert a_slug not in blob.lower(), (
+            f"{entry.name} embeds the scan root's slug, so replaying it under a "
+            f"different root replays root A's ids (#2257)"
+        )
+        assert str(corpus_a) not in blob, f"{entry.name} embeds an absolute scan path"
+
+    # Move the corpus; graphify-out/ (cache + stat index) rides along. copy2
+    # preserves mtime_ns so the stat-index fastpath stays warm.
+    corpus_b = tmp_path / b_slug / "corpus"
+    corpus_b.parent.mkdir()
+    shutil.copytree(corpus_a, corpus_b, copy_function=shutil.copy2)
+    paths_b = sorted(p for p in corpus_b.rglob("*") if p.is_file()
+                     and "graphify-out" not in p.parts)
+
+    # Warmth probe: _safe_extract_with_xaml_root runs only on a cache MISS. If
+    # run B silently re-extracts, cold ids come out clean and every assertion
+    # below passes while proving nothing. The probe requires parallel=False —
+    # the process pool extracts in a subprocess where this patch is invisible,
+    # so switching this call to parallel=True would make `misses` vacuously [].
+    misses = []
+    real_extract = ex._safe_extract_with_xaml_root
+
+    def _counting(extractor, path, root):
+        misses.append(str(path))
+        return real_extract(extractor, path, root)
+
+    monkeypatch.setattr(ex, "_safe_extract_with_xaml_root", _counting)
+
+    _reset_stat_index()
+    warm_b = ex.extract(paths_b, cache_root=corpus_b, root=corpus_b, parallel=False)
+    assert misses == [], f"run B must be served entirely from the cache, re-extracted: {misses}"
+
+    warm_ids, warm_edges = _graph_ids(warm_b)
+    leaked = [i for i in warm_ids if a_slug in i] + [
+        p for p in warm_edges if any(a_slug in x for x in p)
+    ]
+    assert not leaked, f"root A's slug survived a warm cache hit into run B (#2257): {leaked}"
+    assert not [i for i in warm_ids if "$" in i], "the storage placeholder escaped into the graph"
+
+    # ...and the replay is not merely clean but IDENTICAL to a cold B run.
+    monkeypatch.undo()
+    shutil.rmtree(corpus_b / "graphify-out")
+    _reset_stat_index()
+    cold_b = ex.extract(paths_b, cache_root=corpus_b, root=corpus_b, parallel=False)
+    cold_ids, cold_edges = _graph_ids(cold_b)
+
+    # Guards the save-side transform against mutating the caller's dict: a cold
+    # run's ids must still be the canonical root-relative spec form, since
+    # extract()'s id-remap is keyed on the ABSOLUTE form the extractor minted.
+    assert {"app", "app_run", "pkg_mod", "pkg_mod_base", "pkg_mod_base_hello"} <= set(cold_ids), (
+        f"cold run no longer produces canonical ids: {cold_ids}"
+    )
+    assert (warm_ids, warm_edges) == (cold_ids, cold_edges), (
+        "a warm cross-root cache hit must reproduce the cold extraction exactly"
+    )
+
+
+def test_cached_ids_round_trip_under_the_same_root(tmp_path):
+    """The stored placeholder form must restore to the exact absolute-derived id
+    the extractor minted, or a same-root warm hit would break extract()'s
+    id-remap (which is keyed on that absolute form)."""
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    f = root / "src" / "foo.py"
+    f.write_text("def x(): pass\n")
+
+    from graphify.extract import _make_id
+
+    minted = _make_id(str(f))
+    result = {
+        "nodes": [{"id": minted, "source_file": str(f)}],
+        "edges": [{"source": minted, "target": minted + "_x", "source_file": str(f)}],
+        "raw_calls": [{"caller_nid": minted + "_x", "source_file": str(f)}],
+    }
+    save_cached(f, result, root=root, kind="ast")
+
+    assert result["nodes"][0]["id"] == minted, "the caller's dict must not be mutated"
+
+    loaded = load_cached(f, root=root, kind="ast")
+    assert loaded["nodes"][0]["id"] == minted
+    assert loaded["edges"][0]["source"] == minted
+    assert loaded["edges"][0]["target"] == minted + "_x"
+    assert loaded["raw_calls"][0]["caller_nid"] == minted + "_x"
+
+
+def test_relative_root_does_not_reanchor_an_already_canonical_id(tmp_path, monkeypatch):
+    """A relative ``root`` (what save_semantic_cache forwards) must not be used
+    as an id anchor: with an absolute path the restore form is the RESOLVED
+    slug, so stripping the relative spelling would rewrite an already-canonical
+    id into an absolute-derived one — the very leak this guards against."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src" / "utils").mkdir(parents=True)
+    f = (tmp_path / "src" / "utils" / "foo.py").resolve()
+    f.write_text("x = 1\n")
+
+    canonical = {"nodes": [{"id": "src_utils_foo", "source_file": str(f)}], "edges": []}
+    save_cached(f, canonical, root=Path("src"), kind="semantic")
+
+    loaded = load_cached(f, root=Path("src"), kind="semantic")
+    assert loaded["nodes"][0]["id"] == "src_utils_foo"
+
+
 # --- AST cache versioning ----------------------------------------------------
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the graphify version that wrote them. Keying purely on
