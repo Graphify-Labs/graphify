@@ -505,6 +505,9 @@ def _lens_script() -> str:
 
   network.on('afterDrawing', function(ctx) {
     if (!on) return;
+    // Swat any popup an in-flight (pre-enter) tooltipDelay timer opened.
+    const tip = container.querySelector('.vis-tooltip');
+    if (tip && tip.style.visibility !== 'hidden') tip.style.visibility = 'hidden';
     const dpr = window.devicePixelRatio || 1;
     const rect = container.getBoundingClientRect();
     let R, S, ids, total;
@@ -711,9 +714,10 @@ def _lens_script() -> str:
     hoveredNodeId = null;
     network.unselectAll();
     nodesDS.update(RAW_NODES.map(n => ({ id: n.id, font: { size: 0 } })));
-    network.setOptions({ interaction: { hover: false, selectable: false } });
-    // A vis tooltip open at this moment would linger over the panel forever —
-    // hover is disabled, so the blur that normally clears it never fires.
+    // vis title popups are driven by tooltipDelay (not interaction.hover), so
+    // they would keep appearing over the panel for whatever sits behind it —
+    // push the delay out of reach and hide any popup that is already open.
+    network.setOptions({ interaction: { hover: false, selectable: false, tooltipDelay: 3600000 } });
     const tip = container.querySelector('.vis-tooltip');
     if (tip) tip.style.visibility = 'hidden';
     schedule();
@@ -725,7 +729,7 @@ def _lens_script() -> str:
     hud.classList.remove('on');
     container.style.cursor = 'default';
     nodesDS.update(RAW_NODES.map(n => ({ id: n.id, font: ORIG_FONT[n.id] })));
-    network.setOptions({ interaction: { hover: true, selectable: true, dragView: true, zoomView: true } });
+    network.setOptions({ interaction: { hover: true, selectable: true, dragView: true, zoomView: true, tooltipDelay: 100 } });
     on = false;
     network.redraw();
   }
