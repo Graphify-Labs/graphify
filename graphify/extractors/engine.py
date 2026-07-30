@@ -743,6 +743,93 @@ def _kotlin_function_return_type_node(func_node):
                 return c
     return None
 
+# kotlin-cross-file
+def _kotlin_property_name_node(property_node):
+    """Find the name `identifier` within a Kotlin property_declaration (the
+    binding name, not any identifier that's part of its type)."""
+    for c in property_node.children:
+        if c.type == "variable_declaration":
+            for sub in c.children:
+                if sub.type == "identifier":
+                    return sub
+            return None
+        if c.type == "identifier":
+            return c
+    return None
+
+def _kotlin_constructor_call_type(property_node, source: bytes) -> str | None:
+    """Infer a property's type from a bare initializer when there's no
+    explicit type annotation: a constructor call (`val vault =
+    SovereignKeyVault()`), a static-factory call (`val storage =
+    BCryptoSecureStorage.getInstance()` -- the standard Kotlin/Android
+    singleton idiom, ubiquitous alongside/instead of a real constructor call),
+    or a bare static-member access (`val s = Storage.shared`). In every case
+    only an upper-cased receiver/callee counts as a type (a lower-cased one is
+    a local factory function or builder, not reliably the property's own
+    type) -- mirrors Swift's #1356/#1604 `_swift_constructor_type` and its
+    `Type.shared` singleton-property inference.
+    # kotlin-cross-file
+    """
+    for child in property_node.children:
+        if child.type == "call_expression":
+            ctor = child.children[0] if child.children else None
+            if ctor is not None and ctor.type in ("identifier", "type_identifier"):
+                ctor_name = _read_text(ctor, source)
+                if ctor_name and ctor_name[:1].isupper():
+                    return ctor_name
+            elif ctor is not None and ctor.type == "navigation_expression":
+                recv = ctor.children[0] if ctor.children else None
+                if recv is not None and recv.type in ("identifier", "type_identifier"):
+                    recv_name = _read_text(recv, source)
+                    if recv_name and recv_name[:1].isupper():
+                        return recv_name
+            break
+        if child.type == "navigation_expression":
+            recv = child.children[0] if child.children else None
+            if recv is not None and recv.type in ("identifier", "type_identifier"):
+                recv_name = _read_text(recv, source)
+                if recv_name and recv_name[:1].isupper():
+                    return recv_name
+            break
+    return None
+
+def _kotlin_property_declared_type(node, source: bytes) -> str | None:
+    """Return the single flat type name of a Kotlin property_declaration: its
+    explicit type annotation if present, else a constructor-call inference."""
+    type_node = _kotlin_property_type_node(node)
+    if type_node is not None:
+        refs: list[tuple[str, str]] = []
+        _kotlin_collect_type_refs(type_node, source, False, refs)
+        for ref_name, role in refs:
+            if role == "type":
+                return ref_name
+        return None
+    return _kotlin_constructor_call_type(node, source)
+
+def _kotlin_local_var_types(body_node, source: bytes, type_table: dict[str, str]) -> None:
+    """Type local `val x: Foo` / `val x = Foo()` bindings inside a Kotlin
+    function body into the shared file-scoped type_table (mirrors Swift's
+    #1604 `_swift_local_var_types`) so a locally-declared receiver's member
+    call resolves cross-file. Conservative: does not descend into a nested
+    function/lambda/class body, since a raw call is only method-scoped (no
+    lexical-scope info survives to the cross-file pass), so a nested scope's
+    own locals could shadow an outer binding with the same name."""
+    if body_node is None:
+        return
+    stack = [body_node]
+    while stack:
+        n = stack.pop()
+        if n.type == "property_declaration":
+            name_node = _kotlin_property_name_node(n)
+            if name_node is not None:
+                prop_type = _kotlin_property_declared_type(n, source)
+                if prop_type:
+                    type_table[_read_text(name_node, source)] = prop_type
+            continue
+        if n.type in ("function_declaration", "lambda_literal", "anonymous_function", "class_declaration", "object_declaration"):
+            continue
+        stack.extend(n.children)
+
 def _swift_declaration_keyword(node) -> str | None:
     """Return the leading kind token for a Swift class_declaration: class/struct/enum/extension/actor."""
     for c in node.children:
@@ -2588,6 +2675,64 @@ def _extract_generic(
                                             add_edge(class_nid, target, "references", line,
                                                      context="generic_arg")
 
+            # Kotlin primary-constructor `val`/`var` parameters
+            # (`class Foo(private val bar: Bar)`) are real class properties --
+            # the extremely common constructor-injection idiom in Android/DI
+            # code -- but were previously invisible: no `references` edge to
+            # their type, and no type_table binding for member-call receiver
+            # typing (`bar.something()` inside the class). A plain constructor
+            # parameter without `val`/`var` is NOT a property (only in scope
+            # for property initializers/init blocks, not ordinary methods), so
+            # it's excluded from both the edge and the type_table binding.
+            # kotlin-cross-file
+            if config.ts_module == "tree_sitter_kotlin":
+                for child in node.children:
+                    if child.type != "primary_constructor":
+                        continue
+                    for cparams in child.children:
+                        if cparams.type != "class_parameters":
+                            continue
+                        for cp in cparams.children:
+                            if cp.type != "class_parameter":
+                                continue
+                            # #1356-equivalent: a class_parameter's default-value
+                            # expression (`storage: Storage = Storage.getInstance()`)
+                            # runs at construction time regardless of whether the
+                            # parameter is promoted to a property (`val`/`var`) --
+                            # collect any call in it for the same deferred walk
+                            # Swift/property initializers already get, so a
+                            # companion-object factory call used as a constructor
+                            # default isn't silently invisible to the call graph.
+                            # kotlin-cross-file
+                            for sub in cp.children:
+                                if sub.type in config.call_types:
+                                    initializer_nodes.append((class_nid, sub))
+                            if not any(sub.type in ("val", "var") for sub in cp.children):
+                                continue
+                            cp_name_node = None
+                            cp_type_node = None
+                            for sub in cp.children:
+                                if sub.type == "identifier" and cp_name_node is None:
+                                    cp_name_node = sub
+                                elif sub.type in ("user_type", "nullable_type", "type_reference"):
+                                    cp_type_node = sub
+                            if cp_type_node is None:
+                                continue
+                            cp_line = cp.start_point[0] + 1
+                            refs: list[tuple[str, str]] = []
+                            _kotlin_collect_type_refs(cp_type_node, source, False, refs)
+                            prop_type: str | None = None
+                            for ref_name, role in refs:
+                                ctx = "generic_arg" if role == "generic_arg" else "field"
+                                target_nid = ensure_named_node(ref_name, cp_line)
+                                if target_nid != class_nid:
+                                    add_edge(class_nid, target_nid, "references",
+                                             cp_line, context=ctx)
+                                if prop_type is None and role == "type":
+                                    prop_type = ref_name
+                            if cp_name_node is not None and prop_type:
+                                type_table[_read_text(cp_name_node, source)] = prop_type
+
             # Ruby: `class Dog < Animal` puts the base class in the `superclass`
             # field (a `<` token followed by a constant or scope_resolution).
             # There was no Ruby branch, so every Ruby inherits edge was dropped.
@@ -3057,6 +3202,34 @@ def _extract_generic(
                     target_nid = ensure_named_node(ref_name, line)
                     if target_nid != parent_class_nid:
                         add_edge(parent_class_nid, target_nid, "references", line, context=ctx)
+            # Receiver-typed member-call resolution (mirrors Swift #1356/#1604):
+            # bind this property's name to its declared type (explicit
+            # annotation, or a bare constructor-call initializer when
+            # untyped -- `private val vault = SovereignKeyVault()` is the common
+            # idiom and has no type_node above) into the shared file-scoped
+            # type_table so `vault.encrypt()` elsewhere in the class resolves
+            # cross-file via _resolve_swift_member_calls / kotlin_type_table.
+            # kotlin-cross-file
+            name_node = _kotlin_property_name_node(node)
+            if name_node is not None:
+                prop_type = _kotlin_property_declared_type(node, source)
+                if prop_type:
+                    type_table[_read_text(name_node, source)] = prop_type
+            # `by lazy { ... }` (and other property delegates) hold their
+            # initializer in a `property_delegate` child, not a direct
+            # call_expression/navigation_expression sibling -- so a call inside
+            # it (`private val identity: Foo by lazy { Foo(Bar.getInstance()) }`,
+            # the standard deferred-init idiom, ubiquitous in DI-heavy Android
+            # code) was invisible to the call graph entirely. walk_calls
+            # recurses through the delegate node on its own once queued the
+            # same way as any other initializer (#1356 pattern) -- no special
+            # unwrapping needed, it naturally finds both the `lazy(...)` call
+            # and any nested calls inside the lambda body.
+            # kotlin-cross-file
+            for child in node.children:
+                if child.type == "property_delegate":
+                    initializer_nodes.append((parent_class_nid, child))
+                    break
             return
 
         if (config.ts_module == "tree_sitter_swift"
@@ -3685,6 +3858,32 @@ def _extract_generic(
                 walk(child, parent_class_nid=parent_class_nid)
             return
 
+        # Kotlin `companion object { ... }` is a nested block whose members
+        # (`ClassName.staticMethod()`) are semantically the OUTER class's
+        # members, not a separate type. The default recurse below would clear
+        # parent_class_nid, so a companion-object function/property was
+        # extracted with no class ownership at all -- no `method`/`references`
+        # edge from the outer class, meaning a receiver-typed cross-file call
+        # to `ClassName.staticFactory()` (the common Kotlin singleton/factory
+        # idiom, e.g. `Foo.getInstance()`) could never resolve past the class
+        # itself (a `references` edge, not `calls`) even when the receiver
+        # type resolved correctly. Treat it as a transparent wrapper -- but
+        # unlike the decorated_definition pattern above, recurse into the
+        # companion object's OWN body's children (mirroring exactly how the
+        # class_types branch recurses via `_find_body`/`body.children`
+        # further below), not into companion_object's direct children: those
+        # include the nested `class_body` node itself, which -- if walked
+        # directly -- isn't a class_types/function_types/companion_object
+        # match, so it falls through to the default recurse and clears
+        # parent_class_nid right back to None one level down.
+        # kotlin-cross-file
+        if t == "companion_object":
+            body = _find_body(node, config)
+            if body:
+                for child in body.children:
+                    walk(child, parent_class_nid=parent_class_nid)
+            return
+
         # Default: recurse
         for child in node.children:
             walk(child, parent_class_nid=None)
@@ -3954,6 +4153,20 @@ def _extract_generic(
                             if child.type in ("simple_identifier", "identifier"):
                                 callee_name = _read_text(child, source)
                                 break
+                        # Receiver-typed member-call resolution (mirrors Swift
+                        # #1356): capture the depth-1 receiver so
+                        # _resolve_swift_member_calls (reused for Kotlin via
+                        # kotlin_type_table) can bind it through the file's local
+                        # type table. Only a direct identifier or `this` receiver
+                        # is captured; a chained/nested receiver (`a.b().c()`) is
+                        # left untyped rather than guessed.
+                        # kotlin-cross-file
+                        recv_node = first.children[0] if first.children else None
+                        if recv_node is not None:
+                            if recv_node.type in ("simple_identifier", "identifier"):
+                                member_receiver = _read_text(recv_node, source)
+                            elif recv_node.type == "this_expression":
+                                member_receiver = "this"
             elif config.ts_module == "tree_sitter_scala":
                 # Scala: first child
                 first = node.children[0] if node.children else None
@@ -4460,6 +4673,15 @@ def _extract_generic(
         for _caller_nid, body_node in function_bodies:
             _swift_local_var_types(body_node, source, type_table)
 
+    # Kotlin: type local `val x: Foo` / `val x = Foo()` bindings inside function
+    # bodies (mirrors Swift #1604 above) -- class-level properties and
+    # primary-constructor `val`/`var` params are typed in the walk, method-body
+    # locals were not.
+    # kotlin-cross-file
+    if config.ts_module == "tree_sitter_kotlin":
+        for _caller_nid, body_node in function_bodies:
+            _kotlin_local_var_types(body_node, source, type_table)
+
     # JS/TS: bodies already walked with their own caller_nid (const-assigned
     # arrows, methods). An INLINE/returned arrow or function-expression that is
     # NOT separately tracked (e.g. `return () => svc.doThing()`) is otherwise
@@ -4600,6 +4822,12 @@ def _extract_generic(
             result["ts_type_table"] = {"path": str_path, "table": type_table}
         elif config.ts_module == "tree_sitter_cpp":
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
+        elif config.ts_module == "tree_sitter_kotlin":
+            # Read by _resolve_swift_member_calls, which is language-agnostic
+            # once a (path -> {name: TypeName}) table exists -- see its
+            # docstring. No separate Kotlin resolver needed.
+            # kotlin-cross-file
+            result["kotlin_type_table"] = {"path": str_path, "table": type_table}
     # C#: a file-wide receiver type table (field/property/param/local -> Type) for
     # _resolve_csharp_member_calls (#1609). Built from the whole tree, not just
     # function bodies, so class-level fields/properties are in scope for every method.

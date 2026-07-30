@@ -45,6 +45,7 @@ from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
 from graphify.extractors.go import extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
+from graphify.extractors.kotlin import _resolve_cross_file_kotlin_imports  # kotlin-cross-file
 from graphify.extractors.markdown import extract_markdown  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
@@ -2087,8 +2088,8 @@ def _resolve_swift_member_calls(
     all_nodes: list[dict],
     all_edges: list[dict],
 ) -> None:
-    """Resolve cross-file Swift member calls (``recv.method()``) to the real
-    definition of the receiver's type (#1356).
+    """Resolve cross-file receiver-typed member calls (``recv.method()``) to the
+    real definition of the receiver's type (#1356).
 
     The shared cross-file call pass drops every ``is_member_call`` because a bare
     method name (``update``) collides across the corpus and inflates god-nodes
@@ -2098,7 +2099,17 @@ def _resolve_swift_member_calls(
     exactly one definition. A type-qualified call (``Type.staticMethod()``) is
     EXTRACTED (the type is named explicitly in source); an instance call typed via
     local inference (``obj.method()``) is INFERRED. The shared-pass member-call drop
-    stays intact: this is purely additive and fires only on receiver-typed Swift calls.
+    stays intact: this is purely additive and fires only on receiver-typed calls.
+
+    Despite the name, this pass is language-agnostic once a
+    ``(file path -> {name: TypeName})`` table exists for a file: Kotlin reuses it
+    via its own ``kotlin_type_table`` (same shape, populated by the Kotlin
+    property/class-parameter/local-var branches in engine.py) instead of
+    duplicating this whole resolver -- the receiver-typing logic below doesn't
+    care which language produced the table. The resolver is registered for both
+    ``.swift`` and ``.kt``/``.kts`` suffixes (see ``register_language_resolver``
+    below) so it activates for a Kotlin-only corpus with zero Swift files too.
+    # kotlin-cross-file
 
     Must run after id-disambiguation so node ids and caller_nids are final.
     """
@@ -2107,6 +2118,9 @@ def _resolve_swift_member_calls(
         tt = result.get("swift_type_table")
         if tt and tt.get("path"):
             type_table_by_file[tt["path"]] = tt.get("table", {})
+        ktt = result.get("kotlin_type_table")
+        if ktt and ktt.get("path"):
+            type_table_by_file[ktt["path"]] = ktt.get("table", {})
     if not type_table_by_file:
         return
 
@@ -2975,7 +2989,15 @@ def _resolve_objc_member_calls(
 # by adding one register() call below — no edits to extract()'s body. Order
 # preserved from the prior inlined wiring: Swift (#1356) before Python (#1446).
 register_language_resolver(
-    LanguageResolver("swift_member_calls", frozenset({".swift"}), _resolve_swift_member_calls)
+    LanguageResolver(
+        "swift_member_calls",
+        # Also gates Kotlin (#kotlin-cross-file): the resolver itself is
+        # language-agnostic once a per-file type table exists, see its
+        # docstring. Without .kt/.kts here the pass never runs for a
+        # Kotlin-only corpus (no .swift files present to trip the suffix gate).
+        frozenset({".swift", ".kt", ".kts"}),
+        _resolve_swift_member_calls,
+    )
 )
 register_language_resolver(
     LanguageResolver("python_member_calls", frozenset({".py"}), _resolve_python_member_calls)
@@ -5138,6 +5160,23 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
+
+    # Cross-file Kotlin import + same-package resolution. `_import_kotlin`
+    # (engine.py) emits a per-file `imports` edge whose target id is a bare
+    # module-name hash that almost never matches a real (file-qualified) Kotlin
+    # symbol id, so it's dropped as dangling by build.py; this pass re-parses
+    # each Kotlin file and resolves imports (plus Kotlin's no-import-needed
+    # same-package visibility) against the real corpus-wide symbol index,
+    # mirroring the Java cross-file import pass above.
+    # kotlin-cross-file
+    kotlin_paths = [p for p in paths if p.suffix in (".kt", ".kts")]
+    if kotlin_paths:
+        kotlin_results = [r for r, p in zip(per_file, paths) if p.suffix in (".kt", ".kts")]
+        try:
+            all_edges.extend(_resolve_cross_file_kotlin_imports(kotlin_results, kotlin_paths))
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Kotlin cross-file import resolution failed, skipping: %s", exc)
 
     # Cross-file C# type-reference resolution: re-point dangling inherits/implements/
     # references edges left on shadow stubs, disambiguating same-named types by the
