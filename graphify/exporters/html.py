@@ -712,6 +712,10 @@ def _lens_script() -> str:
     network.unselectAll();
     nodesDS.update(RAW_NODES.map(n => ({ id: n.id, font: { size: 0 } })));
     network.setOptions({ interaction: { hover: false, selectable: false } });
+    // A vis tooltip open at this moment would linger over the panel forever —
+    // hover is disabled, so the blur that normally clears it never fires.
+    const tip = container.querySelector('.vis-tooltip');
+    if (tip) tip.style.visibility = 'hidden';
     schedule();
   }
   function exit() {
