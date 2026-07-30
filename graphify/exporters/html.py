@@ -322,6 +322,444 @@ LEGEND.forEach(c => {{
 }});
 </script>"""
 
+def _lens_markup() -> str:
+    """Toggle button + HUD + scoped styles for the Focus Lens.
+
+    Emitted only inside the conditional lens block (not in _html_styles()) so a
+    graph without the lens renders byte-identically to the pre-feature output.
+    The HUD legend explains the two rectangles: dotted = capture area feeding
+    the tree, solid = the display panel it is drawn in.
+    """
+    return """<style>
+  #lens-toggle { position: fixed; left: 16px; bottom: 16px; z-index: 20; background: #1a1a2e; color: #e0e0e0; border: 1px solid #3a3a5e; border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; font-family: inherit; }
+  #lens-toggle:hover { border-color: #7c6df2; }
+  #lens-toggle.active { background: #7c6df2; border-color: #7c6df2; color: #fff; }
+  #lens-hud { position: fixed; left: 16px; bottom: 60px; z-index: 20; width: 300px; max-width: calc(100vw - 320px); background: rgba(26,26,46,0.96); border: 1px solid #3a3a5e; border-radius: 10px; padding: 12px 14px; display: none; }
+  #lens-hud.on { display: block; }
+  #lens-hud .lens-title { font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 3px; }
+  #lens-hud .lens-info { font-size: 12px; color: #b9b2ee; margin-bottom: 8px; }
+  #lens-hud .lens-legend { font-size: 11px; color: #aaa; line-height: 1.8; margin-bottom: 6px; }
+  #lens-hud .lens-glyph { display: inline-block; width: 18px; height: 11px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  #lens-hud .lens-glyph.capture { border: 1.5px dashed #9d8ff5; }
+  #lens-hud .lens-glyph.panel { border: 1.5px solid #7c6df2; }
+  #lens-hud .lens-keys { font-size: 11px; color: #aaa; line-height: 1.6; }
+</style>
+<button id="lens-toggle" aria-pressed="false">Lens</button>
+<div id="lens-hud" role="region" aria-label="Focus lens">
+  <div class="lens-title">Focus lens</div>
+  <div class="lens-info" id="lens-info">move the lens over the graph</div>
+  <div class="lens-legend"><span class="lens-glyph capture"></span>dotted box &mdash; capture area: the tree reads these nodes<br><span class="lens-glyph panel"></span>solid box &mdash; tree view of that region</div>
+  <div class="lens-keys">double-click / h &mdash; hold to inspect &middot; [ ] capture size &middot; arrow keys nudge &middot; f / esc exit</div>
+</div>"""
+
+def _lens_script() -> str:
+    """Client-side Focus Lens: opt-in, additive, dependency-free.
+
+    A small dotted capture region centered on the cursor selects the nodes under
+    it (live positions, legend filtering respected); a larger display panel
+    re-lays-out that selection as a layered tree (longest-path levels, wrapped
+    rows, capped at the most-connected 30) that updates as the mouse moves.
+    Double-click or 'h' holds the lens: hover a box for the longer label +
+    source tooltip, click one to inspect it in the sidebar; Esc releases, then
+    exits. The layout is cached on the selection key, so gliding re-layouts
+    only when the captured set changes.
+
+    All lens text is drawn with canvas fillText (an inert sink) from the same
+    sanitize_label'd labels vis renders; the HUD uses textContent and inspect
+    clicks delegate to the audited showInfo() — no new XSS surface (#1838).
+    """
+    return """<script>
+(function() {
+  const toggleBtn = document.getElementById('lens-toggle');
+  const hud = document.getElementById('lens-hud');
+  const infoEl = document.getElementById('lens-info');
+
+  // Capture (small, feeds the selection) vs display (big, room for the tree).
+  const DW = 660, DH = 480;
+  let CW = 220, CH = 150;
+  const CW_MIN = 120, CW_MAX = 560, CH_MIN = 84, CH_MAX = 420;
+  const TRUNC = 24, TRUNC_FULL = 70, MAX_TREE = 30;
+  const FONT = (w, s) => w + ' ' + s + 'px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+
+  let on = false;
+  let frozen = false;         // double-click holds the lens for reading
+  let held = null;            // frozen snapshot: { ids, total, R, S }
+  let hoverId = null;         // tree box under the cursor while held
+  let lastBoxes = [];         // drawn tree boxes, for hit-testing while held
+  let cx = null, cy = null;   // lens center in container CSS px; null => center
+  let raf = 0;
+
+  const LABELS = {}, SIZE = {}, COLOR = {}, META = {}, ID2COMM = {}, ORIG_FONT = {};
+  RAW_NODES.forEach(n => {
+    LABELS[n.id] = n.label || '';
+    SIZE[n.id] = n.size || 0;
+    COLOR[n.id] = (n.color && n.color.background) || '#7c6df2';
+    META[n.id] = [n.file_type, n.source_file].filter(Boolean).join(' \\u00b7 ');
+    ID2COMM[n.id] = n.community;
+    ORIG_FONT[n.id] = n.font;
+  });
+
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function currentRects(rect) {
+    const mx = (cx === null) ? rect.width / 2 : cx;
+    const my = (cy === null) ? rect.height / 2 : cy;
+    const dw = Math.min(DW, rect.width - 8), dh = Math.min(DH, rect.height - 8);
+    const R = { x: clamp(mx - dw / 2, 4, Math.max(4, rect.width - dw - 4)),
+                y: clamp(my - dh / 2, 4, Math.max(4, rect.height - dh - 4)), w: dw, h: dh };
+    const S = { x: mx - CW / 2, y: my - CH / 2, w: CW, h: CH };
+    return { R, S };
+  }
+
+  function captureIds(S) {
+    // Live position read every capture: node drags and re-stabilization are
+    // honored, and legend-hidden communities are excluded to match the page's
+    // own filtering model.
+    const pos = network.getPositions();
+    const tl = network.DOMtoCanvas({ x: S.x, y: S.y });
+    const br = network.DOMtoCanvas({ x: S.x + S.w, y: S.y + S.h });
+    const ids = [];
+    for (const id in pos) {
+      if (hiddenCommunities.has(ID2COMM[id])) continue;
+      const p = pos[id];
+      if (p.x >= tl.x && p.x <= br.x && p.y >= tl.y && p.y <= br.y) ids.push(id);
+    }
+    return ids;
+  }
+
+  function pickShown(inside) {
+    // Cap to the most-connected nodes so a dense region stays a readable tree;
+    // sort the final set for a stable draw order and layout-cache key.
+    let ids = inside;
+    if (ids.length > MAX_TREE) {
+      ids = ids.slice().sort((a, b) => (SIZE[b] - SIZE[a]) || (a < b ? -1 : 1)).slice(0, MAX_TREE);
+    }
+    return ids.slice().sort();
+  }
+
+  // Layered layout (longest-path levels, wrapped rows) in coords relative to a
+  // w x h rect, plus the induced edge list; cached on the selection + size so
+  // gliding re-layouts only when the captured set changes.
+  let layoutKey = '', layoutCache = null;
+  function layoutTreeRel(ids, w, h) {
+    const key = ids.join('|') + ':' + Math.round(w) + 'x' + Math.round(h);
+    if (key === layoutKey && layoutCache) return layoutCache;
+    const sel = new Set(ids);
+    const induced = RAW_EDGES.filter(e => e.from !== e.to && sel.has(e.from) && sel.has(e.to));
+    const level = {};
+    ids.forEach(id => { level[id] = 0; });
+    for (let iter = 0; iter < ids.length; iter++) {
+      let changed = false;
+      for (let i = 0; i < induced.length; i++) {
+        const e = induced[i];
+        if (level[e.to] < level[e.from] + 1) { level[e.to] = level[e.from] + 1; changed = true; }
+      }
+      if (!changed) break;   // bounded iterations tolerate cycles
+    }
+    let maxL = 0;
+    ids.forEach(id => { if (level[id] > maxL) maxL = level[id]; });
+    const byLevel = {};
+    ids.forEach(id => { const k = Math.min(level[id], maxL); (byLevel[k] = byLevel[k] || []).push(id); });
+    const levels = Object.keys(byLevel).map(Number).sort((a, b) => a - b);
+    levels.forEach(k => byLevel[k].sort((a, b) => (SIZE[b] - SIZE[a]) || (a < b ? -1 : 1)));
+    // ~6.6 px/char at the 11px box font, plus box padding.
+    function approxW(id) { const t = LABELS[id] || id; return Math.min(t.length, TRUNC) * 6.6 + 18; }
+    const padX = 16, padTop = 40, padBot = 16, gapX = 12, avail = w - 2 * padX;
+    const lines = [];                     // wrap wide levels onto multiple lines
+    levels.forEach(k => {
+      const row = byLevel[k];
+      let cur = [], lw = 0;
+      row.forEach(id => {
+        const bw = approxW(id);
+        if (cur.length && lw + bw > avail) { lines.push(cur); cur = []; lw = 0; }
+        cur.push(id); lw += bw + gapX;
+      });
+      if (cur.length) lines.push(cur);
+    });
+    const pos = {}, nL = lines.length || 1, availH = h - padTop - padBot;
+    lines.forEach((line, li) => {
+      const widths = line.map(approxW);
+      let tot = gapX * (line.length - 1);
+      widths.forEach(x => { tot += x; });
+      const scale = tot > avail ? avail / tot : 1;
+      let x = padX + (avail - tot * scale) / 2;
+      const y = padTop + (nL <= 1 ? availH / 2 : (li + 0.5) * availH / nL);
+      line.forEach((id, ci) => {
+        const bw = widths[ci] * scale;
+        pos[id] = { x: x + bw / 2, y: y, w: bw };
+        x += bw + gapX * scale;
+      });
+    });
+    layoutKey = key; layoutCache = { pos, induced };
+    return layoutCache;
+  }
+
+  network.on('afterDrawing', function(ctx) {
+    if (!on) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = container.getBoundingClientRect();
+    let R, S, ids, total;
+    if (frozen && held) {
+      R = held.R; S = held.S; ids = held.ids; total = held.total;
+    } else {
+      const c = currentRects(rect);
+      R = c.R; S = c.S;
+      const inside = captureIds(S);
+      total = inside.length;
+      ids = pickShown(inside);
+    }
+
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const rad = 14;
+    // Dim the whole view, punch out the panel.
+    ctx.beginPath();
+    ctx.rect(0, 0, rect.width, rect.height);
+    roundRect(ctx, R.x, R.y, R.w, R.h, rad);
+    ctx.fillStyle = 'rgba(9, 9, 20, 0.5)';
+    ctx.fill('evenodd');
+    // Panel (held state gets a brighter border).
+    ctx.beginPath(); roundRect(ctx, R.x, R.y, R.w, R.h, rad);
+    ctx.fillStyle = 'rgba(14, 14, 28, 0.97)'; ctx.fill();
+    ctx.beginPath(); roundRect(ctx, R.x, R.y, R.w, R.h, rad);
+    ctx.lineWidth = frozen ? 2.5 : 2;
+    ctx.strokeStyle = frozen ? '#9d8ff5' : '#7c6df2';
+    ctx.stroke();
+    // Capture region (dotted) -- the area the tree is built from.
+    ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = frozen ? 'rgba(157, 143, 245, 0.7)' : 'rgba(124, 109, 242, 0.45)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); roundRect(ctx, S.x, S.y, S.w, S.h, 8); ctx.stroke();
+    ctx.restore();
+
+    const countText = (total > ids.length ? ('top ' + ids.length + ' of ' + total)
+      : (ids.length + (ids.length === 1 ? ' node' : ' nodes')));
+    ctx.fillStyle = frozen ? '#b9b2ee' : '#8f86d8';
+    ctx.font = FONT(600, 11);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(frozen
+      ? 'HELD \\u00b7 ' + countText + ' \\u00b7 hover for details \\u00b7 click to inspect \\u00b7 double-click to release'
+      : (total ? countText + ' \\u00b7 double-click to hold' : countText), R.x + 14, R.y + 18);
+
+    lastBoxes = [];
+    if (ids.length >= 1) {
+      ctx.save();
+      ctx.beginPath(); roundRect(ctx, R.x + 1, R.y + 1, R.w - 2, R.h - 2, rad - 1); ctx.clip();
+      const lay = layoutTreeRel(ids, R.w, R.h);
+      const rel = lay.pos;
+      // Edges (arrows) under the boxes; the hovered node's edges are highlighted.
+      for (let i = 0; i < lay.induced.length; i++) {
+        const e = lay.induced[i];
+        const ra = rel[e.from], rb = rel[e.to];
+        if (!ra || !rb) continue;
+        const hot = frozen && hoverId !== null && (e.from === hoverId || e.to === hoverId);
+        ctx.strokeStyle = hot ? 'rgba(190, 180, 255, 0.95)' : 'rgba(150, 140, 225, 0.5)';
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.lineWidth = hot ? 2 : 1.2;
+        const ax = R.x + ra.x, ay = R.y + ra.y, bx = R.x + rb.x, by = R.y + rb.y;
+        const ang = Math.atan2(by - ay, bx - ax);
+        const px = bx - 13 * Math.cos(ang), py = by - 13 * Math.sin(ang);
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(px, py); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px - 6 * Math.cos(ang - 0.4), py - 6 * Math.sin(ang - 0.4));
+        ctx.lineTo(px - 6 * Math.cos(ang + 0.4), py - 6 * Math.sin(ang + 0.4));
+        ctx.closePath(); ctx.fill();
+      }
+      // Node boxes with community-colored borders + truncated labels.
+      const fs = 11;
+      ctx.font = FONT(600, fs);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (let i = 0; i < ids.length; i++) {
+        const id = ids[i], p = rel[id];
+        if (!p) continue;
+        let txt = LABELS[id] || id;
+        if (txt.length > TRUNC) txt = txt.slice(0, TRUNC - 1) + '\\u2026';
+        const bx = R.x + p.x, by = R.y + p.y, bw = p.w, bh = fs + 9;
+        const hot = frozen && hoverId === id;
+        ctx.fillStyle = hot ? '#26264a' : '#1a1a2e';
+        ctx.strokeStyle = COLOR[id];
+        ctx.lineWidth = hot ? 2.5 : 1.5;
+        ctx.beginPath(); roundRect(ctx, bx - bw / 2, by - bh / 2, bw, bh, 4);
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#e8e8f0';
+        ctx.fillText(txt, bx, by);
+        lastBoxes.push({ id, x: bx - bw / 2, y: by - bh / 2, w: bw, h: bh });
+      }
+      // Longer-label tooltip for the hovered box while held.
+      if (frozen && hoverId !== null && rel[hoverId]) {
+        const p = rel[hoverId];
+        let full = LABELS[hoverId] || hoverId;
+        if (full.length > TRUNC_FULL) full = full.slice(0, TRUNC_FULL - 1) + '\\u2026';
+        const meta = META[hoverId] || '';
+        ctx.font = FONT(600, 12);
+        const w1 = ctx.measureText(full).width;
+        ctx.font = FONT(500, 10);
+        const w2 = meta ? ctx.measureText(meta).width : 0;
+        const tw = Math.min(Math.max(w1, w2) + 20, R.w - 20);
+        const th = meta ? 40 : 26;
+        const tx = clamp(R.x + p.x - tw / 2, R.x + 8, R.x + R.w - tw - 8);
+        let ty = R.y + p.y - 14 - th;
+        if (ty < R.y + 30) ty = R.y + p.y + 14;
+        ctx.fillStyle = 'rgba(240, 240, 246, 0.98)';
+        ctx.beginPath(); roundRect(ctx, tx, ty, tw, th, 6); ctx.fill();
+        ctx.fillStyle = '#12121c';
+        ctx.textAlign = 'left';
+        ctx.font = FONT(600, 12);
+        ctx.fillText(full, tx + 10, ty + 14, tw - 20);
+        if (meta) {
+          ctx.fillStyle = '#555a70';
+          ctx.font = FONT(500, 10);
+          ctx.fillText(meta, tx + 10, ty + 29, tw - 20);
+        }
+      }
+      ctx.restore();
+    } else {
+      ctx.fillStyle = '#6a6a8a';
+      ctx.font = FONT(500, 12);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('move the lens over the graph', R.x + R.w / 2, R.y + R.h / 2);
+    }
+    ctx.restore();
+
+    infoEl.textContent = frozen
+      ? ('held \\u00b7 ' + countText + ' \\u00b7 double-click to release')
+      : (total ? countText + ' in view \\u00b7 double-click to hold' : 'move the lens over the graph');
+  });
+
+  function schedule() { if (!raf && on) raf = requestAnimationFrame(() => { raf = 0; network.redraw(); }); }
+
+  function onMove(e) {
+    if (!on) return;
+    const rect = container.getBoundingClientRect();
+    const px = e.clientX - rect.left, py = e.clientY - rect.top;
+    if (frozen) {
+      let hit = null;
+      for (let i = 0; i < lastBoxes.length; i++) {
+        const b = lastBoxes[i];
+        if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) { hit = b.id; break; }
+      }
+      if (hit !== hoverId) {
+        hoverId = hit;
+        container.style.cursor = hit !== null ? 'pointer' : 'default';
+        schedule();
+      }
+      return;
+    }
+    cx = px; cy = py;
+    schedule();
+  }
+  container.addEventListener('mousemove', onMove);
+
+  function toggleHold() {
+    if (!on) return;
+    if (frozen) {
+      frozen = false; held = null; hoverId = null;
+      network.setOptions({ interaction: { dragView: true, zoomView: true } });
+      container.style.cursor = 'crosshair';
+      schedule();
+      return;
+    }
+    const rect = container.getBoundingClientRect();
+    const c = currentRects(rect);
+    const inside = captureIds(c.S);
+    if (!inside.length) return;   // nothing under the lens to hold
+    held = { ids: pickShown(inside), total: inside.length, R: c.R, S: c.S };
+    frozen = true;
+    // A held panel should not slide around under pan/zoom.
+    network.setOptions({ interaction: { dragView: false, zoomView: false } });
+    container.style.cursor = 'default';
+    schedule();
+  }
+  container.addEventListener('dblclick', e => { if (on) { e.preventDefault(); toggleHold(); } });
+
+  // Swallow clicks that land on the panel so they never act on the dimmed graph
+  // behind it (vis selection is additionally disabled while the lens is on —
+  // stopping DOM propagation alone cannot stop vis's pointer pipeline). While
+  // held, a click on a tree box inspects that node via the audited showInfo().
+  container.addEventListener('click', e => {
+    if (!on) return;
+    const rect = container.getBoundingClientRect();
+    const px = e.clientX - rect.left, py = e.clientY - rect.top;
+    const R = (frozen && held) ? held.R : currentRects(rect).R;
+    if (px >= R.x && px <= R.x + R.w && py >= R.y && py <= R.y + R.h) {
+      if (frozen && hoverId !== null) showInfo(hoverId);
+      e.stopPropagation();
+    }
+  }, true);
+
+  function enter() {
+    on = true;
+    toggleBtn.classList.add('active');
+    toggleBtn.setAttribute('aria-pressed', 'true');
+    hud.classList.add('on');
+    container.style.cursor = 'crosshair';
+    // Hide vis labels (the lens draws its own), drop hover tooltips, and turn
+    // off tap-selection so clicks cannot reach invisible nodes behind the
+    // panel. hoveredNodeId is the main script's hover tracker — nulled here
+    // because disabling hover also silences the blurNode that would clear it.
+    hoveredNodeId = null;
+    network.unselectAll();
+    nodesDS.update(RAW_NODES.map(n => ({ id: n.id, font: { size: 0 } })));
+    network.setOptions({ interaction: { hover: false, selectable: false } });
+    schedule();
+  }
+  function exit() {
+    frozen = false; held = null; hoverId = null;
+    toggleBtn.classList.remove('active');
+    toggleBtn.setAttribute('aria-pressed', 'false');
+    hud.classList.remove('on');
+    container.style.cursor = 'default';
+    nodesDS.update(RAW_NODES.map(n => ({ id: n.id, font: ORIG_FONT[n.id] })));
+    network.setOptions({ interaction: { hover: true, selectable: true, dragView: true, zoomView: true } });
+    on = false;
+    network.redraw();
+  }
+  function toggle() { on ? exit() : enter(); }
+  toggleBtn.addEventListener('click', toggle);
+
+  document.addEventListener('keydown', e => {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;   // never eat browser chords (Cmd+F etc.)
+    if (e.key === 'f' || e.key === 'F') { e.preventDefault(); toggle(); return; }
+    if (!on) return;
+    if (e.key === 'Escape') { frozen ? toggleHold() : exit(); return; }
+    if (e.key === 'h' || e.key === 'H') { toggleHold(); return; }
+    if (frozen) return;   // held: the lens is fixed until released
+    if (e.key === ']') { CW = Math.min(CW_MAX, CW + 40); CH = Math.min(CH_MAX, CH + 30); schedule(); }
+    else if (e.key === '[') { CW = Math.max(CW_MIN, CW - 40); CH = Math.max(CH_MIN, CH - 30); schedule(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      if (cx === null) { cx = rect.width / 2; cy = rect.height / 2; }
+      const step = 40;
+      if (e.key === 'ArrowLeft') cx -= step;
+      else if (e.key === 'ArrowRight') cx += step;
+      else if (e.key === 'ArrowUp') cy -= step;
+      else cy += step;
+      cx = clamp(cx, 0, rect.width); cy = clamp(cy, 0, rect.height);
+      schedule();
+    }
+  });
+
+  // Keep the lens correct as the graph pans/zooms underneath it.
+  network.on('zoom', schedule);
+  network.on('dragging', schedule);
+  network.on('animationFinished', schedule);
+})();
+</script>"""
+
 def to_html(
     G: nx.Graph,
     communities: dict[int, list[str]],
@@ -522,6 +960,22 @@ def to_html(
     title = _html.escape(sanitize_label(str(output_path)))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
 
+    # Opt-in Focus Lens: a movable capture region whose contents are re-laid-out
+    # as a layered tree in a display panel. Emitted only for graphs large enough
+    # to benefit (>=15 nodes) with >=2 communities, at least one of which has >=2
+    # members — the last clause suppresses it in the aggregated community
+    # meta-graph, where every "community" is a single super-node. Gates on
+    # `communities` (not community_labels) so unlabeled builds keep the lens.
+    # When the gate is false, lens_block is "" and the output is byte-identical
+    # to the pre-feature HTML.
+    lens_block = ""
+    if (
+        G.number_of_nodes() >= 15
+        and len(communities) >= 2
+        and any(len(m) >= 2 for m in communities.values())
+    ):
+        lens_block = "\n" + _lens_markup() + "\n" + _lens_script()
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -553,7 +1007,7 @@ def to_html(
   <div id="stats">{stats}</div>
 </div>
 {_html_script(nodes_json, edges_json, legend_json)}
-{_hyperedge_script(hyperedges_json)}
+{_hyperedge_script(hyperedges_json)}{lens_block}
 </body>
 </html>"""
 

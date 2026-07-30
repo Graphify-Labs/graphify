@@ -831,3 +831,162 @@ def test_existing_graph_node_count(tmp_path):
     assert existing_graph_node_count(p) is MALFORMED_GRAPH  # structurally wrong -> fail closed
     p.write_text('{"nodes": [{"id": "a"}, {"id": "b"}], "links": []}', encoding="utf-8")
     assert existing_graph_node_count(p) == 2               # valid
+
+
+# --- Focus Lens (opt-in movable capture region rendered as a layered tree) ----
+
+def _lens_region(content: str) -> str:
+    """The emitted lens markup+script region (from the toggle button onward), or ''."""
+    i = content.find('<button id="lens-toggle"')
+    return content[i:] if i != -1 else ""
+
+
+def _large_two_community_graph(n_per: int = 10):
+    """A 2*n_per-node graph with two clear communities (each a star) plus one
+    bridge, for exercising the Focus Lens gate (>=15 nodes, >=2 communities,
+    one with >=2 members)."""
+    import networkx as nx
+    G = nx.Graph()
+    a = [f"a{i}" for i in range(n_per)]
+    b = [f"b{i}" for i in range(n_per)]
+    for nid in a:
+        G.add_node(nid, label=nid, file_type="code", source_file="a.py")
+    for nid in b:
+        G.add_node(nid, label=nid, file_type="code", source_file="b.py")
+    for nid in a[1:]:
+        G.add_edge(a[0], nid, relation="calls", confidence="EXTRACTED")
+    for nid in b[1:]:
+        G.add_edge(b[0], nid, relation="calls", confidence="EXTRACTED")
+    G.add_edge(a[0], b[0], relation="calls", confidence="EXTRACTED")  # bridge
+    return G, {0: a, 1: b}, {0: "Alpha", 1: "Beta"}
+
+
+def test_to_html_lens_emitted_for_large_multi_community_graph():
+    """A large multi-community graph gets the opt-in Focus Lens: toggle button,
+    HUD with the capture-area legend, and the static lens block (dotted capture
+    rectangle -> layered tree, double-click hold-to-inspect) emitted verbatim."""
+    from graphify.exporters.html import _lens_markup, _lens_script
+    G, communities, labels = _large_two_community_graph()
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), community_labels=labels)
+        content = out.read_text()
+    assert 'id="lens-toggle"' in content
+    assert "Focus lens" in content          # HUD title
+    assert "capture area" in content        # HUD legend explains the dotted rect
+    # The lens block is a static, data-free constant appended in one piece —
+    # this pins emission, placement, and staticness in a single assertion.
+    assert "\n" + _lens_markup() + "\n" + _lens_script() in content
+
+
+def test_to_html_lens_emitted_without_community_labels():
+    """The gate reads `communities`, not community_labels: an unlabeled build
+    (missing labels sidecar, --no-label) still gets the lens."""
+    G, communities, _ = _large_two_community_graph()
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out))
+        content = out.read_text()
+    assert 'id="lens-toggle"' in content
+
+
+def test_to_html_lens_absent_for_small_graph():
+    """A tiny graph (make_graph == 4 nodes) is below the lens node threshold: no
+    lens markup at all, so the render is byte-identical to pre-feature."""
+    G = make_graph()
+    communities = {0: ["n_transformer", "n_attention"], 1: ["n_layernorm", "n_concept_attn"]}
+    labels = {0: "Model core", 1: "Concepts"}
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), community_labels=labels)
+        content = out.read_text()
+    assert 'id="lens-toggle"' not in content
+    assert "#lens-" not in content          # no partial CSS/markup leakage either
+
+
+def test_to_html_lens_gate_boundary_at_15_nodes():
+    """The node-count clause is exact: 14 nodes -> no lens, 15 -> lens."""
+    G, communities, labels = _large_two_community_graph(n_per=7)  # 14 nodes
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), community_labels=labels)
+        assert 'id="lens-toggle"' not in out.read_text()
+    G.add_node("b7", label="b7", file_type="code", source_file="b.py")
+    G.add_edge("b0", "b7", relation="calls", confidence="EXTRACTED")
+    communities[1].append("b7")  # 15 nodes
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), community_labels=labels)
+        assert 'id="lens-toggle"' in out.read_text()
+
+
+def test_to_html_lens_absent_for_single_community():
+    """>=15 nodes but a single community -> no lens (the >=2-communities clause)."""
+    import networkx as nx
+    G = nx.Graph()
+    nodes = [f"n{i}" for i in range(16)]
+    for nid in nodes:
+        G.add_node(nid, label=nid, file_type="code", source_file="a.py")
+    for nid in nodes[1:]:
+        G.add_edge(nodes[0], nid, relation="calls", confidence="EXTRACTED")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, {0: nodes}, str(out), community_labels={0: "Everything"})
+        content = out.read_text()
+    assert 'id="lens-toggle"' not in content
+    assert "#lens-" not in content
+
+
+def test_to_html_lens_absent_for_aggregated_meta_graph():
+    """The aggregated community meta-graph (every community a single super-node,
+    rendered with member_counts) gets no lens — the any(>=2 members) clause."""
+    import networkx as nx
+    G = nx.Graph()
+    for i in range(16):
+        G.add_node(str(i), label=f"Community {i}")
+    for i in range(15):
+        G.add_edge(str(i), str(i + 1), relation="cross", confidence="AGGREGATED")
+    communities = {i: [str(i)] for i in range(16)}
+    labels = {i: f"Community {i}" for i in range(16)}
+    member_counts = {i: 5 for i in range(16)}
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), community_labels=labels,
+                member_counts=member_counts)
+        content = out.read_text()
+    assert 'id="lens-toggle"' not in content
+
+
+def test_to_html_lens_adds_no_user_text_sink():
+    """Node labels are rendered only via canvas fillText (an inert sink); the
+    lens's sole DOM sink is the HUD status line via textContent, and inspect
+    clicks delegate to the audited showInfo() (#1838 discipline). The lens block
+    is a static constant, so hostile node/community labels can never appear
+    inside it — and it must contain no HTML-injection sink of any spelling."""
+    G, communities, _ = _large_two_community_graph()
+    G.nodes["a1"]["label"] = "<script>alert(1)</script>"
+    labels = {0: "<img src=x onerror=alert(1)>", 1: "Beta"}
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), community_labels=labels)
+        content = out.read_text()
+    region = _lens_region(content)
+    assert region
+    for sink in (".innerHTML", ".outerHTML", "insertAdjacentHTML",
+                 "document.write", "srcdoc"):
+        assert sink not in region
+    assert "infoEl.textContent" in region
+    assert "<img src=x onerror=alert(1)>" not in region
+    assert "<script>alert(1)</script>" not in region
+
+
+def test_to_html_lens_deterministic():
+    """Same graph in => byte-identical HTML out."""
+    G, communities, labels = _large_two_community_graph()
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = Path(tmp) / "a.html", Path(tmp) / "b.html"
+        to_html(G, communities, str(a), community_labels=labels)
+        to_html(G, communities, str(b), community_labels=labels)
+        ca = a.read_text().replace("a.html", "X.html")
+        cb = b.read_text().replace("b.html", "X.html")
+    assert ca == cb

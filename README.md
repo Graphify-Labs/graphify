@@ -54,7 +54,7 @@ That's it. You get **three files**:
 
 ```
 graphify-out/
-├── graph.html       open in any browser — click nodes, filter, search
+├── graph.html       open in any browser — click nodes, filter, search, focus-lens dense regions
 ├── GRAPH_REPORT.md  the highlights: key concepts, surprising connections, suggested questions
 └── graph.json       the full graph — query it anytime without re-reading your files
 ```
