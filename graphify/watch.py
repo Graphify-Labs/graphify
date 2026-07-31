@@ -242,11 +242,21 @@ def _apply_resource_limits() -> None:
         pass
 
 
-def _git_head() -> str | None:
-    """Return current git HEAD commit hash, or None outside a repo."""
+def _git_head(cwd: Path | str | None = None) -> str | None:
+    """Return current git HEAD commit hash, or None outside a repo.
+
+    ``cwd`` selects the repository to ask (#2316). Without it the command
+    inherits the caller's working directory, so `graphify update <target>`
+    stamped the *invoking* repo's commit into the target's graph.json — the
+    same CWD-anchoring mistake as the manifest path, but writing wrong
+    provenance rather than a misplaced file.
+    """
     import subprocess as _sp
     try:
-        r = _sp.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3)
+        r = _sp.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3,
+            cwd=str(cwd) if cwd is not None else None,
+        )
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
@@ -947,6 +957,10 @@ def _rebuild_code(
             return ok
 
     watch_root = watch_path.resolve()
+    # project_root stays CWD-anchored for a relative invocation on purpose: the
+    # persisted graph rehomes source_file across invocation styles against it
+    # (tests/test_watch.py:1389, :1428). The manifest is a different artifact
+    # with a different anchor — see the save_manifest calls below.
     project_root = Path.cwd().resolve() if not watch_path.is_absolute() else watch_root
     report_root = _report_root_label(watch_path)
     try:
@@ -1114,7 +1128,7 @@ def _rebuild_code(
             # below still counts the doc as a rebuilt source.
             extract_targets = [p for p in code_files if p not in semantic_doc_files]
 
-        commit = _git_head()
+        commit = _git_head(cwd=watch_root)
         result = extract(extract_targets, cache_root=watch_root) if extract_targets else {
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
@@ -1230,7 +1244,8 @@ def _rebuild_code(
                 # scan but still exist on disk (newly excluded) are pruned
                 # instead of surviving as phantom "deleted" entries (#1908).
                 save_manifest(
-                    detected["files"], kind="ast", root=project_root,
+                    detected["files"], manifest_path=str(out / "manifest.json"),
+                    kind="ast", root=watch_root,
                     scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                 )
             except Exception:
@@ -1273,7 +1288,8 @@ def _rebuild_code(
                     from graphify.detect import save_manifest
                     # Full-scan save: prune excluded-but-alive rows (#1908).
                     save_manifest(
-                        detected["files"], kind="ast", root=project_root,
+                        detected["files"], manifest_path=str(out / "manifest.json"),
+                        kind="ast", root=watch_root,
                         scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                     )
                 except Exception:
@@ -1419,7 +1435,8 @@ def _rebuild_code(
             from graphify.detect import save_manifest
             # Full-scan save: prune excluded-but-alive rows (#1908).
             save_manifest(
-                detected["files"], kind="ast", root=project_root,
+                detected["files"], manifest_path=str(out / "manifest.json"),
+                kind="ast", root=watch_root,
                 scan_corpus={f for _fl in detected["files"].values() for f in _fl},
             )
         except Exception:
