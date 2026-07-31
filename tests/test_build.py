@@ -565,6 +565,97 @@ def test_build_merge_preserves_call_edge_direction(tmp_path):
     )
 
 
+def test_build_merge_directed_edge_direction_survives_round_trip(tmp_path):
+    """Regression for #2342: once build_merge correctly inherits the on-disk
+    `directed` flag, the resulting graph must actually be a DiGraph whose
+    edges are readable in the right direction (a -> b, not b -> a)."""
+    from graphify.extract import extract_js
+    from graphify.export import to_json
+
+    src = "function b() {}\nfunction a() { b(); }\n"
+    src_file = tmp_path / "x.js"
+    src_file.write_text(src)
+
+    extraction = extract_js(src_file)
+    call_edges = [e for e in extraction["edges"] if e["relation"] == "calls"]
+    assert len(call_edges) == 1
+    truth_src = call_edges[0]["source"]
+    truth_tgt = call_edges[0]["target"]
+
+    G1 = build([extraction], directed=True, dedup=False)
+    graph_path = tmp_path / "graph.json"
+    assert to_json(G1, {}, str(graph_path), force=True)
+
+    G2 = build_merge([], graph_path, dedup=False)
+    assert G2.is_directed() is True
+    assert G2.has_edge(truth_src, truth_tgt)
+    assert not G2.has_edge(truth_tgt, truth_src)
+
+
+def test_build_merge_inherits_directed_flag_from_disk(tmp_path):
+    """Regression for #2342.
+
+    build_merge with no explicit `directed=` must honor the on-disk graph's
+    own `directed` flag instead of silently defaulting to False, or an
+    incremental --update on a directed graph downgrades it to undirected.
+    """
+    ext = {
+        "nodes": [{"id": "a", "label": "a", "file_type": "concept",
+                   "source_file": "x.md", "source_location": "L1"}],
+        "edges": [],
+    }
+    from graphify.export import to_json
+
+    graph_path = tmp_path / "graph.json"
+
+    # Directed graph on disk -> no directed= kwarg -> stays directed.
+    G1 = build([ext], directed=True, dedup=False)
+    assert to_json(G1, {}, str(graph_path), force=True)
+    G2 = build_merge([], graph_path, dedup=False)
+    assert G2.is_directed() is True
+    saved = json.loads(graph_path.read_text())
+    assert saved.get("directed") is True
+
+    # Undirected graph on disk -> no directed= kwarg -> stays undirected (no regression).
+    G3 = build([ext], directed=False, dedup=False)
+    assert to_json(G3, {}, str(graph_path), force=True)
+    G4 = build_merge([], graph_path, dedup=False)
+    assert G4.is_directed() is False
+
+
+def test_build_merge_fresh_graph_defaults_undirected(tmp_path):
+    """No existing graph.json + no directed= kwarg -> falls back to the
+    current default (False), same as before #2342."""
+    graph_path = tmp_path / "does_not_exist.json"
+    G = build_merge([], graph_path, dedup=False)
+    assert G.is_directed() is False
+
+
+def test_build_merge_explicit_directed_overrides_disk_flag(tmp_path):
+    """An explicit directed=True/False from the caller must still win over
+    whatever is stored on disk (#2342)."""
+    ext = {
+        "nodes": [{"id": "a", "label": "a", "file_type": "concept",
+                   "source_file": "x.md", "source_location": "L1"}],
+        "edges": [],
+    }
+    from graphify.export import to_json
+
+    graph_path = tmp_path / "graph.json"
+
+    # Directed on disk, explicit directed=False -> caller wins.
+    G1 = build([ext], directed=True, dedup=False)
+    assert to_json(G1, {}, str(graph_path), force=True)
+    G2 = build_merge([], graph_path, directed=False, dedup=False)
+    assert G2.is_directed() is False
+
+    # Undirected on disk, explicit directed=True -> caller wins.
+    G3 = build([ext], directed=False, dedup=False)
+    assert to_json(G3, {}, str(graph_path), force=True)
+    G4 = build_merge([], graph_path, directed=True, dedup=False)
+    assert G4.is_directed() is True
+
+
 def test_build_from_json_preserves_first_direction_on_bidirectional_pair(tmp_path):
     """Regression for #1061.
 
